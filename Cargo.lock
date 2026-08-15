@@ -1734,6 +1734,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-subagent-spawn-in-process"
+version = "0.1.0-rc.5"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "cordis",
+ "dsh-invariants",
+ "dsh-subagent",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-subprocess"
 version = "0.1.0-rc.5"
 dependencies = [
