@@ -55,10 +55,8 @@ fn assert_timer_delay(timeout_ms: u64, name: &str) {
 /// Validate a caller's optional timeout hint, use the backend default, then
 /// cap it (TS `clampTimeout`).
 pub fn clamp_timeout(requested: Option<u64>, def: u64, max: u64, name: &str) -> u64 {
-    if let Some(requested) = requested {
-        if requested == 0 {
-            panic!("{name} must be a positive finite number");
-        }
+    if requested.is_some_and(|requested| requested == 0) {
+        panic!("{name} must be a positive finite number");
     }
     requested.unwrap_or(def).min(max)
 }
@@ -93,11 +91,20 @@ impl DeadlineSignal {
     /// Abort this signal (idempotent), optionally with a timeout reason.
     /// The first reason wins (TS `AbortSignal.any` adopts the first abort).
     pub fn cancel(&self, reason: Option<TimeoutReason>) {
+        self.cancel_after_observation(reason, || {});
+    }
+
+    fn cancel_after_observation(&self, reason: Option<TimeoutReason>, observed: impl FnOnce()) {
         if self.is_cancelled() {
             return;
         }
-        *self.inner.reason.lock() = reason;
-        self.inner.cancelled.store(true, Ordering::SeqCst);
+        observed();
+        let mut current_reason = self.inner.reason.lock();
+        if self.inner.cancelled.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        *current_reason = reason;
+        drop(current_reason);
         self.inner.notify.notify_waiters();
     }
 
@@ -112,11 +119,22 @@ impl DeadlineSignal {
 
     /// Resolve once cancelled (spurious-safe loop).
     pub async fn cancelled(&self) {
+        self.cancelled_after_observation(|| {}).await;
+    }
+
+    async fn cancelled_after_observation(&self, observed: impl FnOnce()) {
+        let mut observed = Some(observed);
         loop {
+            let notified = self.inner.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if self.is_cancelled() {
                 return;
             }
-            self.inner.notify.notified().await;
+            if let Some(observed) = observed.take() {
+                observed();
+            }
+            notified.await;
         }
     }
 
@@ -441,6 +459,66 @@ mod tests {
         upstream.cancel(None);
         let reason = deadline.signal.cancelled_with_reason().await;
         assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn concurrent_cancel_preserves_the_first_reason() {
+        let signal = std::sync::Arc::new(DeadlineSignal::new());
+        let observed = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (first_done, wait_for_first) = std::sync::mpsc::sync_channel(0);
+
+        let first_signal = std::sync::Arc::clone(&signal);
+        let first_observed = std::sync::Arc::clone(&observed);
+        let first = std::thread::spawn(move || {
+            first_signal.cancel_after_observation(
+                Some(TimeoutReason::new("FIRST", 10)),
+                || {
+                    first_observed.wait();
+                },
+            );
+            first_done.send(()).expect("report first cancellation");
+        });
+
+        let second_signal = std::sync::Arc::clone(&signal);
+        let second_observed = std::sync::Arc::clone(&observed);
+        let second = std::thread::spawn(move || {
+            second_signal.cancel_after_observation(
+                Some(TimeoutReason::new("SECOND", 20)),
+                || {
+                    second_observed.wait();
+                    wait_for_first.recv().expect("wait for first cancellation");
+                },
+            );
+        });
+
+        first.join().expect("first cancellation thread");
+        second.join().expect("second cancellation thread");
+        assert_eq!(signal.reason().expect("first reason retained").code, "FIRST");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_between_check_and_wait_is_not_lost() {
+        let signal = std::sync::Arc::new(DeadlineSignal::new());
+        let (observed, wait_for_observation) = std::sync::mpsc::sync_channel(0);
+        let (release, wait_for_release) = std::sync::mpsc::sync_channel(0);
+        let waiting_signal = std::sync::Arc::clone(&signal);
+        let waiter = tokio::spawn(async move {
+            waiting_signal
+                .cancelled_after_observation(move || {
+                    observed.send(()).expect("report cancellation check");
+                    wait_for_release.recv().expect("release cancellation waiter");
+                })
+                .await;
+        });
+
+        wait_for_observation.recv().expect("waiter checked signal");
+        signal.cancel(Some(TimeoutReason::new("BETWEEN", 30)));
+        release.send(()).expect("release waiter");
+
+        tokio::time::timeout(Duration::from_millis(200), waiter)
+            .await
+            .expect("registered waiter must observe cancellation")
+            .expect("waiter task");
     }
 
     #[tokio::test]
