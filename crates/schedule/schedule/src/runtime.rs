@@ -103,6 +103,18 @@ fn render_thrown(message: &str) -> String {
     message.to_string()
 }
 
+fn install_if_vacant<T>(
+    slot: &parking_lot::Mutex<Option<T>>,
+    create: impl FnOnce() -> T,
+) -> bool {
+    let mut slot = slot.lock();
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(create());
+    true
+}
+
 /// One process-local, disposable projection of an exact agent's durable
 /// schedules.
 pub struct ScheduleRuntime {
@@ -156,12 +168,10 @@ impl ScheduleRuntime {
         }
         self.clear_timer();
         self.requested.store(true, Ordering::SeqCst);
-        if self.run.lock().is_some() {
-            return;
-        }
         let runtime = self.self_arc();
-        let handle = tokio::spawn(async move { runtime.run_requested().await });
-        *self.run.lock() = Some(handle);
+        install_if_vacant(&self.run, || {
+            tokio::spawn(async move { runtime.run_requested().await })
+        });
     }
 
     /// Stop future work, cancel timers, and await every outstanding runtime
@@ -463,5 +473,38 @@ impl ScheduleRuntime {
             return false;
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vacant_run_slot_is_claimed_once_under_concurrency() {
+        const CONTENDERS: usize = 16;
+        let slot = Arc::new(parking_lot::Mutex::new(None));
+        let start = Arc::new(std::sync::Barrier::new(CONTENDERS));
+        let initializers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut threads = Vec::new();
+
+        for value in 0..CONTENDERS {
+            let slot = Arc::clone(&slot);
+            let start = Arc::clone(&start);
+            let initializers = Arc::clone(&initializers);
+            threads.push(std::thread::spawn(move || {
+                start.wait();
+                install_if_vacant(&slot, || {
+                    initializers.fetch_add(1, Ordering::SeqCst);
+                    value
+                });
+            }));
+        }
+
+        for thread in threads {
+            thread.join().expect("slot contender");
+        }
+        assert_eq!(initializers.load(Ordering::SeqCst), 1);
+        assert!(slot.lock().is_some());
     }
 }
