@@ -1,0 +1,27 @@
+[package]
+name = "dsh-repeat-tool-reminder"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Advisory per-agent repeat-call detector with logged model context — Rust port of @deepseek-ai/dsh-repeat-tool-reminder"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-llm = { path = "../../core/llm" }
+dsh-schemastery = { path = "../../vendor/schemastery" }
+dsh-tools = { path = "../../core/tools" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+regex = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-scope = { path = "../../core/scope" }
+dsh-session = { path = "../../core/session" }
+async-trait = { workspace = true }
+tokio = { workspace = true }

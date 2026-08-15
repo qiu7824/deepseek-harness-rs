@@ -1,0 +1,20 @@
+[package]
+name = "dsh-code-runtime"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Code-execution capability seam (ctx.codeRuntime): one model-written program against host async bindings — Rust port of @deepseek-ai/dsh-code-runtime"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-invariants = { path = "../../util/invariants" }
+regex = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }

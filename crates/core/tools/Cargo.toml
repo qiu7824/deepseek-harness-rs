@@ -1,0 +1,21 @@
+[package]
+name = "dsh-tools"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Tool schema DSL, enforced JSON Schema subset, registry, and execution pipeline: Rust port of @deepseek-ai/dsh-tools"
+
+[dependencies]
+dsh-llm = { path = "../llm" }
+dsh-agent = { path = "../agent" }
+dsh-scope = { path = "../scope" }
+dsh-system-prompt = { path = "../system-prompt" }
+cordis = { path = "../../vendor/cordis" }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

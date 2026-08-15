@@ -1,0 +1,20 @@
+[package]
+name = "dsh-session-projection"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Session-projection seam: Rust port of @deepseek-ai/dsh-session-projection"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-session = { path = "../../core/session" }
+dsh-invariants = { path = "../../util/invariants" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,86 @@
+[workspace]
+resolver = "2"
+# 成员随移植进度逐批加入。
+members = [
+  "crates/vendor/*",
+  "crates/core/*",
+  "crates/util/*",
+  "crates/session/*",
+  "crates/settings/*",
+  "crates/llm/*",
+  "crates/skill/*",
+  "crates/plan/*",
+  "crates/schedule/*",
+  "crates/subagent/*",
+  "crates/storage/*",
+  "crates/workspace/*",
+  "crates/spill/*",
+  "crates/credentials/*",
+  "crates/sandbox/*",
+  "crates/fs/*",
+  "crates/subprocess/*",
+  "crates/terminal/*",
+  "crates/shell/*",
+  "crates/code-runtime/*",
+  "crates/jobs/*",
+  "crates/goal/*",
+  "crates/context/*",
+  "crates/guard/*",
+  "crates/identity/*",
+  "crates/todo/*",
+  "crates/attachment/*",
+  "crates/interaction/*",
+  "crates/feedback/*",
+  "crates/compaction/*",
+  # "crates/feature/*",
+  # "crates/exec/*",
+  "crates/host/dsh-host",
+  # "crates/app/*",
+  # "apps/*",
+]
+
+[workspace.package]
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/deepseek-ai/deepseek-harness"
+rust-version = "1.97"
+
+[workspace.dependencies]
+# 基础运行时
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "io-util", "process", "fs", "net"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_yaml = "0.9"
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+async-trait = "0.1"
+parking_lot = "0.12"
+dashmap = "6.1"
+once_cell = "1.21"
+regex = "1.11"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.17", features = ["v4", "serde"] }
+futures = "0.3"
+indexmap = { version = "2.11", features = ["serde"] }
+sha2 = "0.10"
+
+# HTTP / Web 层
+axum = { version = "0.8", features = ["ws", "multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "cors", "trace", "compression-gzip"] }
+http = "1.3"
+headers = "0.4"
+mime_guess = "2.0"
+
+# 执行与系统
+which = "8.0"
+dirs = "6.0"
+rusqlite = { version = "0.32", features = ["bundled"] }
+notify = "8.0"
+libc = "0.2"
+
+[profile.release]
+lto = "thin"

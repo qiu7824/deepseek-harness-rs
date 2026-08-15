@@ -1,0 +1,11 @@
+[package]
+name = "dsh-cordis-timer"
+version = "1.1.3"
+edition = "2024"
+license = "MIT"
+description = "Timer service for cordis: Rust port of @deepseek-ai/cordis-plugin-timer (v1.1.3)"
+
+[dependencies]
+cordis = { path = "../cordis" }
+tokio = { workspace = true }
+async-trait = { workspace = true }

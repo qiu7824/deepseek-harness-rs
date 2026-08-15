@@ -1,0 +1,13 @@
+[package]
+name = "dsh-storage-test-support"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "In-memory KV backend test double for the storage-domain layer: Rust port of the TS tests/helpers/memory-backend.ts"
+
+[dependencies]
+dsh-storage = { path = "../storage" }
+dsh-storage-domain = { path = "../storage-domain" }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+async-trait = { workspace = true }

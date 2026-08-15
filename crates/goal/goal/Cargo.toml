@@ -1,0 +1,27 @@
+[package]
+name = "dsh-goal"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Same-session goal domain (ctx.goals): event-sourced state, compare-and-set mutations, and process-local continuation activation — Rust port of @deepseek-ai/dsh-goal"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-brand = { path = "../../util/brand" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+regex = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+dsh-scope = { path = "../../core/scope" }
+async-trait = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }

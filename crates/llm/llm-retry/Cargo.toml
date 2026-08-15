@@ -1,0 +1,25 @@
+[package]
+name = "dsh-llm-retry"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Provider-routed model-request retry policy executor: Rust port of @deepseek-ai/dsh-llm-retry"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-timeout = { path = "../../util/timeout" }
+dsh-brand = { path = "../../util/brand" }
+dsh-invariants = { path = "../../util/invariants" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+dsh-scope = { path = "../../core/scope" }

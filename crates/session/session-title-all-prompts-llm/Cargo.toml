@@ -1,0 +1,22 @@
+[package]
+name = "dsh-session-title-all-prompts-llm"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "All-human-messages model provider for ctx.sessionTitle: Rust port of @deepseek-ai/dsh-session-title-all-prompts-llm"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-session-title = { path = "../session-title" }
+dsh-session-title-llm = { path = "../session-title-llm" }
+dsh-invariants = { path = "../../util/invariants" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+parking_lot = { workspace = true }

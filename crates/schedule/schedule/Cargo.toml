@@ -1,0 +1,31 @@
+[package]
+name = "dsh-schedule"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Agent-scoped durable one-shot and fixed-rate reminders over the session event log: Rust port of @deepseek-ai/dsh-schedule"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-brand = { path = "../../util/brand" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-tools = { path = "../../core/tools" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+regex = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = "0.10"
+
+[dev-dependencies]
+dsh-scope = { path = "../../core/scope" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+tokio = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "dsh-typert-protocol"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Typert lookup provider registry: Rust port of the @deepseek-ai/dsh-typert-protocol subset the session store consumes"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

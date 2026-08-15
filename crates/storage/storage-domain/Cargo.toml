@@ -1,0 +1,21 @@
+[package]
+name = "dsh-storage-domain"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Domain data form: schema-validated, change-emitting KV domains over storage backends: Rust port of @deepseek-ai/dsh-storage-domain"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-storage = { path = "../storage" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+dsh-storage-test-support = { path = "../storage-test-support" }

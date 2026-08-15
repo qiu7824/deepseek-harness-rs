@@ -1,0 +1,22 @@
+[package]
+name = "dsh-session-stats"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Whole-log conversation counts and wall times projection (sessionStats): Rust port of @deepseek-ai/dsh-session-stats"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-session = { path = "../../core/session" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session-projection = { path = "../session-projection" }
+dsh-invariants = { path = "../../util/invariants" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

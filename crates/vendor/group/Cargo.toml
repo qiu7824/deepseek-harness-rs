@@ -1,0 +1,10 @@
+[package]
+name = "dsh-cordis-group"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+description = "Nested entry groups for the cordis loader: Rust port of @deepseek-ai/cordis-plugin-group"
+
+[dependencies]
+dsh-cordis-loader = { path = "../loader" }
+cordis = { path = "../cordis" }

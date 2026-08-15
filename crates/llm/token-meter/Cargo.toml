@@ -1,0 +1,21 @@
+[package]
+name = "dsh-token-meter"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Replay-aware token meter for request and surface pressure: Rust port of @deepseek-ai/dsh-token-meter"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-session-projection = { path = "../../session/session-projection" }
+dsh-invariants = { path = "../../util/invariants" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

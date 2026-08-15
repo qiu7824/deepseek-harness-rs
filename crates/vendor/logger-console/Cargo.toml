@@ -1,0 +1,17 @@
+[package]
+name = "dsh-cordis-logger-console"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+description = "Console logger exporter for cordis: Rust port of @deepseek-ai/cordis-plugin-logger-console"
+
+[dependencies]
+cordis = { path = "../cordis" }
+dsh-cosmokit = { path = "../cosmokit" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+anyhow = { workspace = true }

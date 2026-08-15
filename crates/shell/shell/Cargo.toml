@@ -1,0 +1,22 @@
+[package]
+name = "dsh-shell"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Bash executor capability seam (ctx.shell): foreground runs and background process handles — Rust port of @deepseek-ai/dsh-shell"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-sandbox = { path = "../../sandbox/sandbox" }
+dsh-settings = { path = "../../settings/settings" }
+dsh-subprocess = { path = "../../subprocess/subprocess" }
+regex = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }

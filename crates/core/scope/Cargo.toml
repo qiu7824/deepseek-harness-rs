@@ -1,0 +1,13 @@
+[package]
+name = "dsh-scope"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Scoped-context primitives: Rust port of @deepseek-ai/dsh-scope"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }

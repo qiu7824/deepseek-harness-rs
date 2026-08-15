@@ -1,0 +1,20 @@
+[package]
+name = "dsh-cordis-include"
+version = "1.0.6"
+edition = "2024"
+license = "MIT"
+description = "Include files in cordis configurations: Rust port of @deepseek-ai/cordis-plugin-include (v1.0.6)"
+
+[dependencies]
+cordis = { path = "../cordis" }
+dsh-cordis-loader = { path = "../loader" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+saphyr = "0.0"
+saphyr-parser = "0.0"
+indexmap = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "dsh-cosmokit"
+version = "1.8.2"
+edition = "2024"
+license = "MIT"
+description = "Common utilities: Rust port of @deepseek-ai/cosmokit (v1.8.2)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+regex = { workspace = true }
+chrono = { workspace = true }

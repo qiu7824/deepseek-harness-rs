@@ -1,0 +1,22 @@
+[package]
+name = "dsh-timeout-policy"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Cooperative tool-call timeout enforcer — Rust port of @deepseek-ai/dsh-tool-call-timeout-policy"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-llm = { path = "../../core/llm" }
+dsh-timeout = { path = "../../util/timeout" }
+dsh-tools = { path = "../../core/tools" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-session = { path = "../../core/session" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

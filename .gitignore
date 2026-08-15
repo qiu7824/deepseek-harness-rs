@@ -1,0 +1,28 @@
+# Rust build outputs
+**/target/
+
+# JavaScript dependencies and caches
+**/node_modules/
+**/.vite/
+
+# Local runtime and test artifacts
+*.log
+*.tmp
+*.profraw
+*.dmp
+.harness-evidence/
+
+# Local secrets and machine-specific settings
+.env
+.env.*
+!.env.example
+.credentials.yaml
+settings.local.yaml
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db

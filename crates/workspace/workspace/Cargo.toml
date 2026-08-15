@@ -1,0 +1,28 @@
+[package]
+name = "dsh-workspace"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Workspace entity registry (ctx.workspaceRegistry): durable workspace records, stable registry order, and header-validated session membership over the domain data form: Rust port of @deepseek-ai/dsh-workspace"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-brand = { path = "../../util/brand" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-session = { path = "../../core/session" }
+dsh-session-persistence = { path = "../../session/session-persistence" }
+dsh-storage-domain = { path = "../../storage/storage-domain" }
+dsh-storage = { path = "../../storage/storage" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+indexmap = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+dsh-storage-test-support = { path = "../../storage/storage-test-support" }

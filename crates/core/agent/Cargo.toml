@@ -1,0 +1,24 @@
+[package]
+name = "dsh-agent"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Agent interface, registry, initiator scope, and event vocabulary: Rust port of @deepseek-ai/dsh-agent"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-llm = { path = "../llm" }
+dsh-scope = { path = "../scope" }
+dsh-session = { path = "../session" }
+dsh-system-prompt = { path = "../system-prompt" }
+dsh-typert-protocol = { path = "../typert-protocol" }
+dsh-invariants = { path = "../../util/invariants" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,22 @@
+[package]
+name = "dsh-system-prompt"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "System prompt assembly registry: Rust port of @deepseek-ai/dsh-system-prompt"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-llm = { path = "../llm" }
+dsh-scope = { path = "../scope" }
+dsh-invariants = { path = "../../util/invariants" }
+schemastery = { package = "dsh-schemastery", path = "../../vendor/schemastery" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }

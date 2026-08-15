@@ -1,0 +1,620 @@
+//! Core session value types: Rust port of
+//! `packages/core/session/src/types.ts`.
+//!
+//! The TS `SessionEventMap` is merge-extensible (plugins append event types
+//! without touching core types). Rust models the merge-extensible map the
+//! same way the runtime sees it: a string `type` plus a lossless-JSON
+//! `data` payload, with typed constructors for every core event.
+
+use std::path::Path;
+
+use dsh_brand::Branded;
+use dsh_llm::{LlmCallConfig, LlmCallConfigAdapterDefaults, LlmFailure, ToolSchema};
+use serde::de::Error as DeError;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value as JsonValue;
+
+use crate::json::snapshot_json_value;
+
+/// Identifies one session in the store (and its persistence artifacts).
+#[doc(hidden)]
+pub enum SessionIdTag {}
+pub type SessionId = Branded<SessionIdTag>;
+
+/// Brand a string as a [`SessionId`] (a compile-time cast — no runtime
+/// cost; TS `SessionId(id)`).
+pub fn session_id(id: impl Into<String>) -> SessionId {
+    Branded::new(id)
+}
+
+/// The on-disk session format version, stamped into every newly-written
+/// [`SessionHeader`] and enforced by every persistence backend on load.
+pub const SESSION_FORMAT_VERSION: u64 = 0;
+
+/// Immutable validated storage metadata, kept outside the conversation
+/// event log.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionHeader {
+    /// On-disk format version (must equal [`SESSION_FORMAT_VERSION`]).
+    pub version: u64,
+    /// The session's id (mirrors the [`crate::Session`]'s id).
+    pub id: SessionId,
+    /// Non-negative Unix epoch milliseconds when the session was created.
+    #[serde(rename = "createdAt")]
+    pub created_at: u64,
+    /// Absolute working directory the session was created in (if any).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The session this one was forked from (seed lineage), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "parentSession")]
+    pub parent_session: Option<SessionId>,
+    /// How many leading events were inherited through a seed.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "seedLength")]
+    pub seed_length: Option<u64>,
+    /// Coarse product classification for a subagent child session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// Delegation depth; absent (zero) for a top-level session.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "delegationDepth")]
+    pub delegation_depth: Option<u64>,
+    /// Id of the agent preset this session's agent was composed from.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "agentPreset")]
+    pub agent_preset: Option<String>,
+}
+
+/// Options for creating a [`crate::Session`] via the store.
+#[derive(Debug, Clone, Default)]
+pub struct CreateSessionOptions {
+    /// Initial replay or fork history supplied at construction.
+    pub seed: Option<Vec<crate::SessionEvent>>,
+    /// Storage metadata folded into the [`SessionHeader`].
+    pub meta: Option<CreateSessionMeta>,
+}
+
+/// Caller-supplied storage metadata (TS `CreateSessionOptions.meta`).
+#[derive(Debug, Clone, Default)]
+pub struct CreateSessionMeta {
+    pub cwd: Option<String>,
+    pub parent_session: Option<SessionId>,
+    pub created_at: Option<u64>,
+    pub seed_length: Option<u64>,
+    pub origin: Option<String>,
+    pub delegation_depth: Option<u64>,
+    pub agent_preset: Option<String>,
+}
+
+/// Why an active agent driver was cancelled.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum AgentCancelCause {
+    User,
+    Parent,
+    Hook { reason: String },
+    Disposed,
+}
+
+/// Durable cancellation cause, including imports whose original coarse
+/// record carried no cause.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum TurnEndCancelCause {
+    User,
+    Parent,
+    Hook { reason: String },
+    Disposed,
+    Legacy,
+}
+
+impl From<AgentCancelCause> for TurnEndCancelCause {
+    fn from(cause: AgentCancelCause) -> Self {
+        match cause {
+            AgentCancelCause::User => TurnEndCancelCause::User,
+            AgentCancelCause::Parent => TurnEndCancelCause::Parent,
+            AgentCancelCause::Hook { reason } => TurnEndCancelCause::Hook { reason },
+            AgentCancelCause::Disposed => TurnEndCancelCause::Disposed,
+        }
+    }
+}
+
+/// Why a turn ended (merge-extensible sum type in TS).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum TurnEndReason {
+    Completed,
+    /// A cancellation request interrupted the live turn.
+    Aborted { reason: TurnEndCancelCause },
+    Blocked,
+    /// The turn failed with a structured failure.
+    Error { error: LlmFailure },
+    /// At least one step reached its output-token ceiling.
+    MaxTokens,
+    /// A persistence backend closed a crash-orphaned turn on reload.
+    Interrupted,
+}
+
+impl TurnEndReason {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            TurnEndReason::Completed => "completed",
+            TurnEndReason::Aborted { .. } => "aborted",
+            TurnEndReason::Blocked => "blocked",
+            TurnEndReason::Error { .. } => "error",
+            TurnEndReason::MaxTokens => "max-tokens",
+            TurnEndReason::Interrupted => "interrupted",
+        }
+    }
+}
+
+/// One entry in an agent's todo list — the unit of the `todo/write`
+/// event's whole-list snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoItem {
+    /// What this task is — a short imperative line shown in the UI.
+    pub content: String,
+    /// Lifecycle state.
+    pub status: TodoStatus,
+}
+
+/// Three-state todo lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+/// Logged request state outside derived history: call config, system
+/// prompt, and tools.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EpochHeader {
+    /// The conversation's call configuration.
+    pub config: LlmCallConfig,
+    /// Effective config fields materialized from the exact adapter.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "adapterDefaults")]
+    pub adapter_defaults: Option<LlmCallConfigAdapterDefaults>,
+    /// Rendered system prompt text; absent for a system-less request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    /// Assembled tool schemas; absent for a tool-less request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolSchema>>,
+}
+
+/// Registration-bound metadata for one resolved model route.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RequestContext {
+    /// Registered provider route the metadata belongs to.
+    pub provider: String,
+    /// Provider-owned model id the metadata belongs to.
+    pub model: String,
+    /// Maximum combined request and response context in tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "contextWindow")]
+    pub context_window: Option<u64>,
+}
+
+/// Why a `request/header` snapshot was appended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RequestHeaderReason {
+    Initial,
+    Resume,
+    Change,
+}
+
+/// How a session event entered the ordered surface.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SurfaceOp {
+    /// Added to the tail — the normal path.
+    Append,
+    /// Replaces surface nodes from `start` (inclusive) through `end`
+    /// (inclusive) with this node.
+    Replace { start: u64, end: u64 },
+}
+
+impl SurfaceOp {
+    pub fn is_append(&self) -> bool {
+        matches!(self, SurfaceOp::Append)
+    }
+}
+
+impl Serialize for SurfaceOp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            SurfaceOp::Append => serializer.serialize_str("append"),
+            SurfaceOp::Replace { start, end } => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(3))?;
+                map.serialize_entry("op", "replace")?;
+                map.serialize_entry("start", start)?;
+                map.serialize_entry("end", end)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SurfaceOp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct SurfaceOpVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for SurfaceOpVisitor {
+            type Value = SurfaceOp;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a surface operation ('append' or a replace object)")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                match value {
+                    "append" => Ok(SurfaceOp::Append),
+                    other => Err(E::custom(format!("invalid surface op string {other:?}"))),
+                }
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut op: Option<String> = None;
+                let mut start: Option<u64> = None;
+                let mut end: Option<u64> = None;
+                let mut count = 0;
+                while let Some((key, value)) = map.next_entry::<String, JsonValue>()? {
+                    count += 1;
+                    match key.as_str() {
+                        "op" => {
+                            op = value
+                                .as_str()
+                                .map(|s| s.to_string())
+                                .or_else(|| Some(value.to_string()));
+                        }
+                        "start" => start = value.as_u64(),
+                        "end" => end = value.as_u64(),
+                        _ => {}
+                    }
+                }
+                if count != 3 || op.as_deref() != Some("replace") {
+                    return Err(A::Error::custom("invalid replace surfaceOp shape"));
+                }
+                match (start, end) {
+                    (Some(start), Some(end)) => Ok(SurfaceOp::Replace { start, end }),
+                    _ => Err(A::Error::custom(
+                        "replace surfaceOp start/end must be non-negative integers",
+                    )),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(SurfaceOpVisitor)
+    }
+}
+
+/// Surface placement and cited source-event seqs for
+/// [`crate::Session::append`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceIntent {
+    pub surface_op: SurfaceOp,
+    /// Complete set of known source-event seqs; absent means the event does
+    /// not record which earlier events produced it.
+    pub source_event_seqs: Option<Vec<u64>>,
+}
+
+/// One immutable entry in the session log.
+///
+/// The TS discriminated union collapses to this runtime envelope: `type` +
+/// `seq` + `time` + lossless-JSON `data`, with surface metadata only on
+/// surface-eligible events.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionEvent {
+    #[serde(rename = "type")]
+    pub type_: String,
+    /// Monotonic sequence number within the session.
+    pub seq: u64,
+    /// Unix epoch milliseconds.
+    pub time: i64,
+    pub data: JsonValue,
+    /// `true` marks an event a reader may safely skip when it does not
+    /// recognize `type`; absent means required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignorable: Option<bool>,
+    /// How this event entered the surface; absent for non-surface events.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "surfaceOp")]
+    pub surface_op: Option<SurfaceOp>,
+    /// Seq numbers of earlier events that this event cites as sources.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "sourceEventSeqs")]
+    pub source_event_seqs: Option<Vec<u64>>,
+}
+
+// ---- Core event data constructors ----
+
+/// `turn/start` event data.
+pub fn turn_start_data(turn: u64) -> JsonValue {
+    serde_json::json!({ "turn": turn })
+}
+
+/// `turn/end` event data.
+pub fn turn_end_data(turn: u64, reason: &TurnEndReason) -> JsonValue {
+    serde_json::json!({ "turn": turn, "reason": reason })
+}
+
+/// `step/start` / `step/end` event data.
+pub fn step_data(turn: u64, step: u64) -> JsonValue {
+    serde_json::json!({ "turn": turn, "step": step })
+}
+
+/// `assistant/chunk` event data.
+pub fn assistant_chunk_data(turn: u64, step: u64, chunk: &dsh_llm::StreamChunk) -> JsonValue {
+    serde_json::json!({ "turn": turn, "step": step, "chunk": chunk })
+}
+
+/// `assistant/message` event data.
+pub fn assistant_message_data(
+    turn: u64,
+    step: u64,
+    message: &dsh_llm::Message,
+    usage: Option<&dsh_llm::TokenUsage>,
+) -> JsonValue {
+    let mut value = serde_json::json!({ "turn": turn, "step": step, "message": message });
+    if let Some(usage) = usage {
+        value["usage"] = serde_json::to_value(usage).unwrap_or_default();
+    }
+    value
+}
+
+/// `tool/call` event data.
+pub fn tool_call_data(turn: u64, step: u64, call_id: &dsh_llm::CallId, name: &str, arguments: &str) -> JsonValue {
+    serde_json::json!({
+        "turn": turn,
+        "step": step,
+        "callId": call_id,
+        "name": name,
+        "arguments": arguments,
+    })
+}
+
+/// `tool/result` event data.
+pub fn tool_result_data(
+    turn: u64,
+    step: u64,
+    message: &dsh_llm::Message,
+    error: Option<(&str, &str)>,
+    meta: Option<&JsonValue>,
+) -> JsonValue {
+    let mut value = serde_json::json!({ "turn": turn, "step": step, "message": message });
+    if let Some((name, code)) = error {
+        value["error"] = serde_json::json!({ "name": name, "code": code });
+    }
+    if let Some(meta) = meta {
+        value["meta"] = meta.clone();
+    }
+    value
+}
+
+/// `todo/write` event data.
+pub fn todo_write_data(todos: &[TodoItem]) -> JsonValue {
+    serde_json::json!({ "todos": todos })
+}
+
+/// `request/header` event data.
+pub fn request_header_data(header: &EpochHeader, reason: RequestHeaderReason) -> JsonValue {
+    serde_json::json!({ "header": header, "reason": reason })
+}
+
+/// `session/end-seed` event data (the empty payload).
+pub fn end_seed_data() -> JsonValue {
+    serde_json::json!({})
+}
+
+// ---- Header validation (TS index.ts `validateSessionHeader`) ----
+
+/// Validate and freeze one detached creation header in place.
+pub fn validate_session_header(id: &SessionId, input: &JsonValue) -> Result<SessionHeader, String> {
+    let Some(record) = input.as_object() else {
+        return Err("session header is not a plain JSON record".to_string());
+    };
+    let version = record
+        .get("version")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| {
+            format!(
+                "session header version must be {SESSION_FORMAT_VERSION}, got {}",
+                render_unknown(record.get("version"))
+            )
+        })?;
+    if version != SESSION_FORMAT_VERSION {
+        return Err(format!(
+            "session header version must be {SESSION_FORMAT_VERSION}, got {version}"
+        ));
+    }
+    let header_id = record
+        .get("id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "session header id must be a string".to_string())?;
+    if header_id != id.as_str() {
+        return Err(format!(
+            "session header id \"{header_id}\" does not match session id \"{}\"",
+            id.as_str()
+        ));
+    }
+    let created_at = record
+        .get("createdAt")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| "session header createdAt must be a non-negative safe integer".to_string())?;
+    if let Some(cwd) = record.get("cwd") {
+        let cwd = cwd
+            .as_str()
+            .ok_or_else(|| "session header cwd must be a string".to_string())?;
+        if !Path::new(cwd).is_absolute() {
+            return Err(format!("session header cwd must be an absolute path, got \"{cwd}\""));
+        }
+    }
+    if let Some(parent) = record.get("parentSession") {
+        if !parent.is_string() {
+            return Err("session header parentSession must be a string".to_string());
+        }
+    }
+    for (key, field) in [("seedLength", "seedLength"), ("delegationDepth", "delegationDepth")] {
+        if let Some(value) = record.get(key) {
+            if value.as_u64().is_none() {
+                return Err(format!("session header {field} must be a non-negative safe integer"));
+            }
+        }
+    }
+    if let Some(origin) = record.get("origin") {
+        if origin.as_str() != Some("subagent") {
+            return Err("session header origin must be \"subagent\"".to_string());
+        }
+    }
+    if let Some(preset) = record.get("agentPreset") {
+        if !preset.is_string() {
+            return Err("session header agentPreset must be a string".to_string());
+        }
+    }
+    Ok(SessionHeader {
+        version,
+        id: id.clone(),
+        created_at,
+        cwd: record.get("cwd").and_then(|value| value.as_str().map(str::to_string)),
+        parent_session: record
+            .get("parentSession")
+            .and_then(|value| value.as_str().map(session_id)),
+        seed_length: record.get("seedLength").and_then(|value| value.as_u64()),
+        origin: record.get("origin").and_then(|value| value.as_str().map(str::to_string)),
+        delegation_depth: record.get("delegationDepth").and_then(|value| value.as_u64()),
+        agent_preset: record
+            .get("agentPreset")
+            .and_then(|value| value.as_str().map(str::to_string)),
+    })
+}
+
+/// Detach, validate, and freeze the creation metadata published by a
+/// session (TS `snapshotSessionHeader`).
+pub fn snapshot_session_header(
+    id: &SessionId,
+    source: Option<&SessionHeader>,
+) -> Result<SessionHeader, String> {
+    let now = chrono::Utc::now().timestamp_millis() as u64;
+    let input: JsonValue = match source {
+        Some(source) => serde_json::to_value(source).map_err(|_| "session header is not losslessly JSON-serializable".to_string())?,
+        None => serde_json::json!({
+            "version": SESSION_FORMAT_VERSION,
+            "id": id,
+            "createdAt": now,
+        }),
+    };
+    let snapshot = snapshot_json_value(&input)
+        .ok_or_else(|| "session header is not losslessly JSON-serializable".to_string())?;
+    validate_session_header(id, &snapshot)
+}
+
+fn render_unknown(value: Option<&JsonValue>) -> String {
+    match value {
+        Some(value) => value.to_string(),
+        None => "undefined".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::json::is_json_value;
+
+    #[test]
+    fn session_id_is_branded_string() {
+        let id = session_id("abc");
+        assert_eq!(id.as_str(), "abc");
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "\"abc\"");
+        let back: SessionId = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, id);
+    }
+
+    #[test]
+    fn surface_op_wire_shapes() {
+        let append = SurfaceOp::Append;
+        assert_eq!(serde_json::to_value(&append).unwrap(), serde_json::json!("append"));
+        let replace = SurfaceOp::Replace { start: 1, end: 3 };
+        assert_eq!(
+            serde_json::to_value(&replace).unwrap(),
+            serde_json::json!({"op": "replace", "start": 1, "end": 3})
+        );
+        let back: SurfaceOp = serde_json::from_value(serde_json::json!({"op": "replace", "start": 1, "end": 3})).unwrap();
+        assert_eq!(back, replace);
+        let back: SurfaceOp = serde_json::from_value(serde_json::json!("append")).unwrap();
+        assert_eq!(back, append);
+        assert!(serde_json::from_value::<SurfaceOp>(serde_json::json!({"op": "replace", "start": 1}))
+            .is_err());
+        assert!(serde_json::from_value::<SurfaceOp>(serde_json::json!("other")).is_err());
+    }
+
+    #[test]
+    fn header_validation() {
+        let id = session_id("s1");
+        let valid = serde_json::json!({
+            "version": 0,
+            "id": "s1",
+            "createdAt": 1000,
+            "cwd": "C:\\work",
+            "parentSession": "s0",
+            "seedLength": 5,
+            "origin": "subagent",
+            "delegationDepth": 1,
+            "agentPreset": "p1",
+        });
+        let header = validate_session_header(&id, &valid).unwrap();
+        assert_eq!(header.created_at, 1000);
+        assert_eq!(header.cwd.as_deref(), Some("C:\\work"));
+        assert_eq!(header.parent_session.as_ref().map(Branded::as_str), Some("s0"));
+        assert_eq!(header.seed_length, Some(5));
+        assert_eq!(header.delegation_depth, Some(1));
+        assert_eq!(header.agent_preset.as_deref(), Some("p1"));
+
+        assert!(validate_session_header(&id, &serde_json::json!({"version": 1, "id": "s1", "createdAt": 1})).unwrap_err()
+            .contains("session header version must be 0, got 1"));
+        assert!(validate_session_header(&id, &serde_json::json!({"version": 0, "id": "s9", "createdAt": 1})).unwrap_err()
+            .contains("does not match session id"));
+        assert!(validate_session_header(&id, &serde_json::json!({"version": 0, "id": "s1", "createdAt": -1})).is_err());
+        assert!(validate_session_header(&id, &serde_json::json!({"version": 0, "id": "s1", "createdAt": 1, "cwd": "relative/path"})).unwrap_err()
+            .contains("cwd must be an absolute path"));
+        assert!(validate_session_header(&id, &serde_json::json!({"version": 0, "id": "s1", "createdAt": 1, "origin": "nope"})).unwrap_err()
+            .contains("origin must be \"subagent\""));
+        assert!(validate_session_header(&id, &serde_json::json!([1, 2])).unwrap_err()
+            .contains("not a plain JSON record"));
+    }
+
+    #[test]
+    fn snapshot_header_defaults() {
+        let id = session_id("s1");
+        let header = snapshot_session_header(&id, None).unwrap();
+        assert_eq!(header.version, SESSION_FORMAT_VERSION);
+        assert_eq!(header.id, id);
+        assert!(header.created_at > 0);
+        assert!(is_json_value(&serde_json::to_value(&header).unwrap()));
+    }
+
+    #[test]
+    fn event_constructors() {
+        let message = dsh_llm::create_user_message(
+            vec![dsh_llm::ContentBlock::Text { text: "hi".to_string() }],
+            dsh_llm::MessageSource::User { rpc_id: None, client_time_zone: None },
+        );
+        let data = serde_json::to_value(&message).unwrap();
+        assert_eq!(data["role"], "user");
+
+        let turn_end = turn_end_data(1, &TurnEndReason::Interrupted);
+        assert_eq!(turn_end, serde_json::json!({"turn": 1, "reason": {"kind": "interrupted"}}));
+
+        let call = tool_call_data(2, 1, &dsh_llm::call_id("c1"), "run", "{}");
+        assert_eq!(call, serde_json::json!({"turn": 2, "step": 1, "callId": "c1", "name": "run", "arguments": "{}"}));
+    }
+}

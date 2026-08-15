@@ -1,0 +1,17 @@
+[package]
+name = "dsh-fs-observation-policy"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Event-only filesystem observation policy (registers no service): Rust port of @deepseek-ai/dsh-fs-observation-policy"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-fs = { path = "../fs" }
+dsh-invariants = { path = "../../util/invariants" }
+async-trait = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

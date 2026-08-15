@@ -1,0 +1,20 @@
+[package]
+name = "dsh-spill-local"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "LocalSpillStore: the host-filesystem implementation of the dsh-spill storage seam: Rust port of @deepseek-ai/dsh-spill-local"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-spill = { path = "../spill" }
+dsh-invariants = { path = "../../util/invariants" }
+sha2 = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }

@@ -1,0 +1,23 @@
+[package]
+name = "dsh-tool-ask-user"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Model-facing consumer of the ctx.userQuestions capability seam — Rust port of @deepseek-ai/dsh-tool-ask-user"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-llm = { path = "../../core/llm" }
+dsh-tools = { path = "../../core/tools" }
+dsh-user-questions = { path = "../user-questions" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-llm = { path = "../../core/llm" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

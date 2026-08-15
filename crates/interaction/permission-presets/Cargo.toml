@@ -1,0 +1,35 @@
+[package]
+name = "dsh-permission-presets"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "User-facing permission presets over the sandbox-mode and approval-policy knobs — Rust port of @deepseek-ai/dsh-permission-presets"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-commands = { path = "../commands" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-sandbox = { path = "../../sandbox/sandbox" }
+dsh-sandbox-policy = { path = "../../sandbox/sandbox-policy" }
+dsh-session = { path = "../../core/session" }
+dsh-session-projection = { path = "../../session/session-projection" }
+dsh-settings = { path = "../../settings/settings" }
+dsh-shell = { path = "../../shell/shell" }
+dsh-user-approval = { path = "../user-approval" }
+schemastery = { package = "dsh-schemastery", path = "../../vendor/schemastery" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-llm = { path = "../../core/llm" }
+dsh-scope = { path = "../../core/scope" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

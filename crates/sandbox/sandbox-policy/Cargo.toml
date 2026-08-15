@@ -1,0 +1,19 @@
+[package]
+name = "dsh-sandbox-policy"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "The sandbox policy home (ctx.sandboxPolicy): deployment fallbacks plus per-session mode resolution: Rust port of @deepseek-ai/dsh-sandbox-policy"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-sandbox = { path = "../sandbox" }
+dsh-session = { path = "../../core/session" }
+dsh-invariants = { path = "../../util/invariants" }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

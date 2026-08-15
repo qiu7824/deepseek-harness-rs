@@ -1,0 +1,10 @@
+[package]
+name = "dsh-home-paths"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Shared filesystem path helpers for DeepSeek Harness user data: Rust port of @deepseek-ai/dsh-home-paths"
+
+[dependencies]
+dirs = { workspace = true }
+tokio = { workspace = true }

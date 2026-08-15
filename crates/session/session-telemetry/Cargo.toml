@@ -1,0 +1,23 @@
+[package]
+name = "dsh-session-telemetry"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Session-event telemetry capture seam: Rust port of @deepseek-ai/dsh-session-telemetry"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-session = { path = "../../core/session" }
+dsh-invariants = { path = "../../util/invariants" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+dsh-scope = { path = "../../core/scope" }

@@ -1,0 +1,23 @@
+[package]
+name = "dsh-subprocess-local"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "The local implementation of the subprocess capability seam: Rust port of @deepseek-ai/dsh-subprocess-local"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-subprocess = { path = "../subprocess" }
+dsh-timeout = { path = "../../util/timeout" }
+dsh-invariants = { path = "../../util/invariants" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }

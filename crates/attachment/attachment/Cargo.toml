@@ -1,0 +1,16 @@
+[package]
+name = "dsh-attachment"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Durable immutable attachment storage seam — Rust port of @deepseek-ai/dsh-attachment"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-brand = { path = "../../util/brand" }
+dsh-invariants = { path = "../../util/invariants" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,22 @@
+[package]
+name = "dsh-jobs"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Background-job capability seam (ctx.jobs): ids, session-scoped access, lifecycle state, completion listeners, and owner cleanup — Rust port of @deepseek-ai/dsh-jobs"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-brand = { path = "../../util/brand" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-session = { path = "../../core/session" }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+dsh-scope = { path = "../../core/scope" }
+async-trait = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }

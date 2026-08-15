@@ -1,0 +1,19 @@
+[package]
+name = "dsh-sandbox"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Service Definition for the same-world process-confinement capability seam (ctx.sandbox): Rust port of @deepseek-ai/dsh-sandbox"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-invariants = { path = "../../util/invariants" }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }

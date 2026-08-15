@@ -1,0 +1,17 @@
+[package]
+name = "dsh-skill-badge"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Bundled dsh-badge skill provider — Rust port of @deepseek-ai/dsh-skill-badge"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-skill = { path = "../skill" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }
+tokio = { workspace = true }

@@ -1,0 +1,26 @@
+[package]
+name = "dsh-session-projection-cache"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Persisted projection cache (ctx.sessionProjectionCache): Rust port of @deepseek-ai/dsh-session-projection-cache"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-session = { path = "../../core/session" }
+dsh-session-persistence = { path = "../session-persistence" }
+dsh-session-projection = { path = "../session-projection" }
+dsh-storage-domain = { path = "../../storage/storage-domain" }
+dsh-invariants = { path = "../../util/invariants" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+dsh-storage = { path = "../../storage/storage" }
+dsh-storage-test-support = { path = "../../storage/storage-test-support" }

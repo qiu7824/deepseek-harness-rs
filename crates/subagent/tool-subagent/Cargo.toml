@@ -1,0 +1,31 @@
+[package]
+name = "dsh-tool-subagent"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Model-facing delegation tool through one configured subagents provider — Rust port of @deepseek-ai/dsh-tool-subagent"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-jobs = { path = "../../jobs/jobs" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-subagent = { path = "../subagent" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-tools = { path = "../../core/tools" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-agent = { path = "../../core/agent" }
+dsh-scope = { path = "../../core/scope" }
+dsh-session = { path = "../../core/session" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-tools = { path = "../../core/tools" }
+tokio = { workspace = true }
+serde_json = { workspace = true }

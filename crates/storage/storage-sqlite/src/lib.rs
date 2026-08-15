@@ -1,0 +1,15 @@
+//! SQLite storage backend for the storage hub: one database file hosts
+//! every routed unit, document-per-row. Rust port of
+//! `@deepseek-ai/dsh-storage-sqlite`.
+
+pub mod index;
+pub mod invariant;
+pub mod schema;
+pub mod unit;
+
+pub use index::{
+    INJECT, NAME, Config, SqliteStorageBackend, SqliteStoragePlugin, apply,
+};
+pub use schema::{
+    STORAGE_SQLITE_SCHEMA_VERSION, JournalMode, open_database, record_table_name,
+};

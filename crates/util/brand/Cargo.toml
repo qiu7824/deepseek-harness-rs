@@ -1,0 +1,12 @@
+[package]
+name = "dsh-brand"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Nominal-typing primitive: Rust port of @deepseek-ai/dsh-brand"
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

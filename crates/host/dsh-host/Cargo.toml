@@ -1,0 +1,40 @@
+[package]
+name = "dsh-host"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Runnable DeepSeek Harness Host assembly (M6) — Rust port of the apps/host boot spine"
+
+[[bin]]
+name = "dsh-host"
+path = "src/main.rs"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-commands = { path = "../../interaction/commands" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-llm = { path = "../../core/llm" }
+dsh-schedule = { path = "../../schedule/schedule" }
+dsh-session = { path = "../../core/session" }
+dsh-session-persistence = { path = "../../session/session-persistence" }
+dsh-session-persistence-jsonl = { path = "../../session/session-persistence-jsonl" }
+dsh-session-query = { path = "../../session/session-query" }
+dsh-session-query-sqlite = { path = "../../session/session-query-sqlite" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-tools = { path = "../../core/tools" }
+dsh-user-questions = { path = "../../interaction/user-questions" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+dsh-scope = { path = "../../core/scope" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

@@ -1,0 +1,16 @@
+[package]
+name = "dsh-cordis-loader"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+description = "Loader service for cordis: Rust port of @deepseek-ai/cordis-plugin-loader"
+
+[dependencies]
+cordis = { path = "../cordis" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }

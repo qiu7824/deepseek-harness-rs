@@ -1,0 +1,33 @@
+[package]
+name = "dsh-agent-loop"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Agent loop scheduler, request reconstruction, and runtime-context projection: Rust port of @deepseek-ai/dsh-agent-loop"
+
+[dependencies]
+dsh-llm = { path = "../llm" }
+dsh-session = { path = "../session" }
+dsh-tools = { path = "../tools" }
+dsh-agent = { path = "../agent" }
+dsh-scope = { path = "../scope" }
+dsh-system-prompt = { path = "../system-prompt" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-settings = { path = "../../settings/settings" }
+dsh-session-persistence = { path = "../../session/session-persistence" }
+schemastery = { package = "dsh-schemastery", path = "../../vendor/schemastery" }
+cordis = { path = "../../vendor/cordis" }
+async-trait = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+dsh-scope = { path = "../scope" }
+dsh-system-prompt = { path = "../system-prompt" }
+dsh-agent = { path = "../agent" }
+tokio = { workspace = true, features = ["test-util"] }

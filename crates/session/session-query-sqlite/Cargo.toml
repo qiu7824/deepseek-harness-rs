@@ -1,0 +1,30 @@
+[package]
+name = "dsh-session-query-sqlite"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "SQLite FTS5 concrete session-query search backend: Rust port of @deepseek-ai/dsh-session-query-sqlite"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-session = { path = "../../core/session" }
+dsh-session-persistence = { path = "../session-persistence" }
+dsh-session-query = { path = "../session-query" }
+dsh-invariants = { path = "../../util/invariants" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
+base64 = "0.22"
+
+[dev-dependencies]
+dsh-session-persistence-sqlite = { path = "../session-persistence-sqlite" }
+dsh-llm = { path = "../../core/llm" }
+tokio = { workspace = true }
+serde_json = { workspace = true }

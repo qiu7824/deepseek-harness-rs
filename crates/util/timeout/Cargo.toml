@@ -1,0 +1,10 @@
+[package]
+name = "dsh-timeout"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Shared timeout arithmetic, signal fusion, and classification: Rust port of @deepseek-ai/dsh-timeout"
+
+[dependencies]
+tokio = { workspace = true }
+parking_lot = { workspace = true }

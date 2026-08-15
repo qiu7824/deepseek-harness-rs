@@ -1,0 +1,25 @@
+[package]
+name = "dsh-session-title-llm"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Shared LLM route, framing, timeout, assembly, and validation policy for model-backed session-title providers: Rust port of @deepseek-ai/dsh-session-title-llm"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-schemastery = { path = "../../vendor/schemastery" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-session-title = { path = "../session-title" }
+dsh-timeout = { path = "../../util/timeout" }
+dsh-invariants = { path = "../../util/invariants" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

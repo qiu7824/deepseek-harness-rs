@@ -1,0 +1,27 @@
+[package]
+name = "dsh-session-title"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Log-backed session title service, deterministic fallback, and provider contract: Rust port of @deepseek-ai/dsh-session-title"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-brand = { path = "../../util/brand" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-session-projection = { path = "../session-projection" }
+dsh-invariants = { path = "../../util/invariants" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+dsh-session-persistence = { path = "../session-persistence" }
+dsh-session-persistence-jsonl = { path = "../session-persistence-jsonl" }
+dsh-session-persistence-sqlite = { path = "../session-persistence-sqlite" }

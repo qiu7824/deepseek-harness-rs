@@ -1,0 +1,9 @@
+[package]
+name = "dsh-atomic-write"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Atomic file replacement and writer coordination: Rust port of @deepseek-ai/dsh-atomic-write"
+
+[dependencies]
+tokio = { workspace = true }

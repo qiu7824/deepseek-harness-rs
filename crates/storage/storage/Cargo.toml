@@ -1,0 +1,20 @@
+[package]
+name = "dsh-storage"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Storage hub (ctx.storage): a named backend registry plus mounted data-form facilities: Rust port of @deepseek-ai/dsh-storage"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-invariants = { path = "../../util/invariants" }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+dsh-storage-domain = { path = "../storage-domain" }
+indexmap = { workspace = true }

@@ -1,0 +1,32 @@
+[package]
+name = "dsh-message-feedback"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Lifecycle-bound per-message rating and note sidecar — Rust port of @deepseek-ai/dsh-message-feedback"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-brand = { path = "../../util/brand" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-session-persistence = { path = "../../session/session-persistence" }
+dsh-storage = { path = "../../storage/storage" }
+dsh-storage-domain = { path = "../../storage/storage-domain" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+dsh-storage-test-support = { path = "../../storage/storage-test-support" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

@@ -1,0 +1,23 @@
+[package]
+name = "dsh-session-persistence"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Abstract durable session persistence seam (ctx.sessionPersistence): Rust port of @deepseek-ai/dsh-session-persistence"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-brand = { path = "../../util/brand" }
+dsh-session = { path = "../../core/session" }
+dsh-timeout = { path = "../../util/timeout" }
+dsh-invariants = { path = "../../util/invariants" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

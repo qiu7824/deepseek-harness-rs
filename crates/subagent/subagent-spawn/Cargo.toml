@@ -1,0 +1,16 @@
+[package]
+name = "dsh-subagent-spawn-in-process"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "In-process SPAWN subagent backend: fresh child agents on the same context — Rust port of @deepseek-ai/dsh-subagent-spawn-in-process"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-subagent = { path = "../subagent" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,25 @@
+[package]
+name = "dsh-subagent-fork-in-process"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "In-process FORK subagent backend: children seeded with the parent's completed-turn prefix — Rust port of @deepseek-ai/dsh-subagent-fork-in-process"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-session = { path = "../../core/session" }
+dsh-subagent = { path = "../subagent" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-agent = { path = "../../core/agent" }
+dsh-llm = { path = "../../core/llm" }
+dsh-scope = { path = "../../core/scope" }
+dsh-session = { path = "../../core/session" }
+tokio = { workspace = true }
+serde_json = { workspace = true }

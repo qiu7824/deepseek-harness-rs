@@ -1,0 +1,2176 @@
+{
+  "generated": "2026-08-13T14:57:41.173Z",
+  "totalLines": 534339,
+  "packages": 241,
+  "rows": [
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-conversation",
+      "src": 11380,
+      "tests": 9925,
+      "config": 0,
+      "other": 4,
+      "files": 99,
+      "total": 21309
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-web-frontend",
+      "src": 24,
+      "tests": 20030,
+      "config": 0,
+      "other": 315,
+      "files": 86,
+      "total": 20369
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-host-apiproxy",
+      "src": 8613,
+      "tests": 9817,
+      "config": 0,
+      "other": 0,
+      "files": 62,
+      "total": 18430
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-runtime",
+      "src": 9033,
+      "tests": 7724,
+      "config": 0,
+      "other": 4,
+      "files": 70,
+      "total": 16761
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tools",
+      "src": 5630,
+      "tests": 8113,
+      "config": 0,
+      "other": 0,
+      "files": 22,
+      "total": 13743
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-agent-loop",
+      "src": 1649,
+      "tests": 10532,
+      "config": 0,
+      "other": 26,
+      "files": 27,
+      "total": 12207
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-primitives",
+      "src": 6771,
+      "tests": 5215,
+      "config": 0,
+      "other": 32,
+      "files": 66,
+      "total": 12018
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-trajectory",
+      "src": 7928,
+      "tests": 3475,
+      "config": 0,
+      "other": 4,
+      "files": 37,
+      "total": 11407
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-typert-generator",
+      "src": 6254,
+      "tests": 4671,
+      "config": 0,
+      "other": 0,
+      "files": 19,
+      "total": 10925
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-subagent",
+      "src": 4549,
+      "tests": 5154,
+      "config": 0,
+      "other": 0,
+      "files": 28,
+      "total": 9703
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session",
+      "src": 3166,
+      "tests": 5209,
+      "config": 0,
+      "other": 26,
+      "files": 24,
+      "total": 8401
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-connection",
+      "src": 4709,
+      "tests": 3323,
+      "config": 0,
+      "other": 4,
+      "files": 28,
+      "total": 8036
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-settings-models",
+      "src": 3359,
+      "tests": 4107,
+      "config": 0,
+      "other": 4,
+      "files": 29,
+      "total": 7470
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-cordis-client-runner",
+      "src": 5092,
+      "tests": 1892,
+      "config": 0,
+      "other": 4,
+      "files": 18,
+      "total": 6988
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-llm-pi-ai",
+      "src": 2716,
+      "tests": 4256,
+      "config": 0,
+      "other": 0,
+      "files": 23,
+      "total": 6972
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-persistence",
+      "src": 2165,
+      "tests": 4492,
+      "config": 0,
+      "other": 0,
+      "files": 11,
+      "total": 6657
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-agent-instructions",
+      "src": 1870,
+      "tests": 4773,
+      "config": 0,
+      "other": 0,
+      "files": 9,
+      "total": 6643
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-acp-snapshot",
+      "src": 3168,
+      "tests": 3460,
+      "config": 0,
+      "other": 0,
+      "files": 10,
+      "total": 6628
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-tool",
+      "src": 2325,
+      "tests": 4011,
+      "config": 0,
+      "other": 4,
+      "files": 42,
+      "total": 6340
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-cordis",
+      "src": 5992,
+      "tests": 288,
+      "config": 0,
+      "other": 0,
+      "files": 9,
+      "total": 6280
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-sandbox-windows-acl",
+      "src": 2542,
+      "tests": 3330,
+      "config": 0,
+      "other": 213,
+      "files": 28,
+      "total": 6085
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-workspace",
+      "src": 2984,
+      "tests": 2847,
+      "config": 0,
+      "other": 4,
+      "files": 20,
+      "total": 5835
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-llm",
+      "src": 2639,
+      "tests": 2376,
+      "config": 0,
+      "other": 0,
+      "files": 25,
+      "total": 5015
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-cordis-host-runner",
+      "src": 3368,
+      "tests": 1607,
+      "config": 0,
+      "other": 0,
+      "files": 14,
+      "total": 4975
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-compaction-basic",
+      "src": 1627,
+      "tests": 3331,
+      "config": 0,
+      "other": 0,
+      "files": 10,
+      "total": 4958
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-agent-preset",
+      "src": 2080,
+      "tests": 2609,
+      "config": 0,
+      "other": 4,
+      "files": 21,
+      "total": 4693
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-subprocess-e2b",
+      "src": 1842,
+      "tests": 2736,
+      "config": 0,
+      "other": 0,
+      "files": 9,
+      "total": 4578
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-persistence-jsonl",
+      "src": 1946,
+      "tests": 2624,
+      "config": 0,
+      "other": 0,
+      "files": 11,
+      "total": 4570
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-workflow-worker-thread",
+      "src": 1997,
+      "tests": 2539,
+      "config": 0,
+      "other": 30,
+      "files": 19,
+      "total": 4566
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-schedule",
+      "src": 2011,
+      "tests": 2277,
+      "config": 0,
+      "other": 26,
+      "files": 16,
+      "total": 4314
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-lsp-stdio",
+      "src": 1673,
+      "tests": 2299,
+      "config": 0,
+      "other": 0,
+      "files": 19,
+      "total": 3972
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-query-sqlite",
+      "src": 1787,
+      "tests": 2149,
+      "config": 0,
+      "other": 0,
+      "files": 7,
+      "total": 3936
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-fs",
+      "src": 1475,
+      "tests": 2430,
+      "config": 0,
+      "other": 0,
+      "files": 20,
+      "total": 3905
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-query",
+      "src": 1729,
+      "tests": 2041,
+      "config": 0,
+      "other": 0,
+      "files": 15,
+      "total": 3770
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-session-query",
+      "src": 1451,
+      "tests": 2307,
+      "config": 0,
+      "other": 0,
+      "files": 9,
+      "total": 3758
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-subprocess-local",
+      "src": 1396,
+      "tests": 2344,
+      "config": 0,
+      "other": 17,
+      "files": 13,
+      "total": 3757
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-llm-deepseek",
+      "src": 1223,
+      "tests": 2482,
+      "config": 0,
+      "other": 0,
+      "files": 16,
+      "total": 3705
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-app-boot",
+      "src": 1282,
+      "tests": 2355,
+      "config": 0,
+      "other": 20,
+      "files": 10,
+      "total": 3657
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-agent-presets",
+      "src": 1693,
+      "tests": 1927,
+      "config": 0,
+      "other": 0,
+      "files": 22,
+      "total": 3620
+    },
+    {
+      "pkg": "@deepseek-ai/dsh",
+      "src": 838,
+      "tests": 2732,
+      "config": 0,
+      "other": 19,
+      "files": 20,
+      "total": 3589
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-api-gateway",
+      "src": 1362,
+      "tests": 2220,
+      "config": 0,
+      "other": 4,
+      "files": 7,
+      "total": 3586
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-code-runtime-worker-thread",
+      "src": 1703,
+      "tests": 1805,
+      "config": 0,
+      "other": 30,
+      "files": 14,
+      "total": 3538
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-mcp-client",
+      "src": 934,
+      "tests": 2399,
+      "config": 0,
+      "other": 0,
+      "files": 11,
+      "total": 3333
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-fs-search",
+      "src": 1582,
+      "tests": 1678,
+      "config": 0,
+      "other": 0,
+      "files": 13,
+      "total": 3260
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-directory-picker-browse",
+      "src": 1230,
+      "tests": 1986,
+      "config": 0,
+      "other": 4,
+      "files": 9,
+      "total": 3220
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-agent",
+      "src": 1644,
+      "tests": 1536,
+      "config": 0,
+      "other": 26,
+      "files": 15,
+      "total": 3206
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-terminal-bash",
+      "src": 1022,
+      "tests": 2119,
+      "config": 0,
+      "other": 0,
+      "files": 10,
+      "total": 3141
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-commands",
+      "src": 1339,
+      "tests": 1784,
+      "config": 0,
+      "other": 4,
+      "files": 16,
+      "total": 3127
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-web-react",
+      "src": 1231,
+      "tests": 1847,
+      "config": 0,
+      "other": 33,
+      "files": 15,
+      "total": 3111
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-fs-local",
+      "src": 1214,
+      "tests": 1859,
+      "config": 0,
+      "other": 0,
+      "files": 7,
+      "total": 3073
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-settings-plugins",
+      "src": 1558,
+      "tests": 1286,
+      "config": 0,
+      "other": 4,
+      "files": 23,
+      "total": 2848
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-input-trigger",
+      "src": 1370,
+      "tests": 1468,
+      "config": 0,
+      "other": 4,
+      "files": 20,
+      "total": 2842
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-subagent-codex",
+      "src": 709,
+      "tests": 2074,
+      "config": 0,
+      "other": 0,
+      "files": 10,
+      "total": 2783
+    },
+    {
+      "pkg": "@deepseek-ai/cordis",
+      "src": 2702,
+      "tests": 0,
+      "config": 0,
+      "other": 17,
+      "files": 10,
+      "total": 2719
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-root",
+      "src": 878,
+      "tests": 1516,
+      "config": 0,
+      "other": 285,
+      "files": 13,
+      "total": 2679
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-goal",
+      "src": 1295,
+      "tests": 1159,
+      "config": 0,
+      "other": 26,
+      "files": 12,
+      "total": 2480
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-token-meter",
+      "src": 1009,
+      "tests": 1468,
+      "config": 0,
+      "other": 0,
+      "files": 13,
+      "total": 2477
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-settings",
+      "src": 1110,
+      "tests": 1336,
+      "config": 0,
+      "other": 26,
+      "files": 9,
+      "total": 2472
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-skill-filesystem",
+      "src": 1073,
+      "tests": 1328,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 2401
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-title",
+      "src": 953,
+      "tests": 1386,
+      "config": 0,
+      "other": 0,
+      "files": 12,
+      "total": 2339
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-llm-retry",
+      "src": 499,
+      "tests": 1808,
+      "config": 0,
+      "other": 26,
+      "files": 11,
+      "total": 2333
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-slots",
+      "src": 1567,
+      "tests": 748,
+      "config": 0,
+      "other": 7,
+      "files": 9,
+      "total": 2322
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-test-runtime",
+      "src": 1527,
+      "tests": 730,
+      "config": 0,
+      "other": 7,
+      "files": 14,
+      "total": 2264
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-subagent-claude-code",
+      "src": 608,
+      "tests": 1618,
+      "config": 0,
+      "other": 0,
+      "files": 9,
+      "total": 2226
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-skill",
+      "src": 900,
+      "tests": 1272,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 2172
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-workspace",
+      "src": 1148,
+      "tests": 1007,
+      "config": 0,
+      "other": 0,
+      "files": 8,
+      "total": 2155
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-llm-replay",
+      "src": 858,
+      "tests": 1227,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 2085
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-bash",
+      "src": 558,
+      "tests": 1523,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 2081
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-cordis",
+      "src": 1682,
+      "tests": 383,
+      "config": 0,
+      "other": 4,
+      "files": 20,
+      "total": 2069
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-theme",
+      "src": 702,
+      "tests": 1347,
+      "config": 0,
+      "other": 12,
+      "files": 18,
+      "total": 2061
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-plan-mode",
+      "src": 567,
+      "tests": 1469,
+      "config": 0,
+      "other": 0,
+      "files": 8,
+      "total": 2036
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-subagent",
+      "src": 499,
+      "tests": 1485,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 1984
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-sandbox-local",
+      "src": 658,
+      "tests": 1317,
+      "config": 0,
+      "other": 0,
+      "files": 9,
+      "total": 1975
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-web",
+      "src": 907,
+      "tests": 1066,
+      "config": 0,
+      "other": 0,
+      "files": 9,
+      "total": 1973
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-subagent-in-process-driver",
+      "src": 408,
+      "tests": 1553,
+      "config": 0,
+      "other": 0,
+      "files": 8,
+      "total": 1961
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-sdk-client",
+      "src": 958,
+      "tests": 995,
+      "config": 0,
+      "other": 0,
+      "files": 9,
+      "total": 1953
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-message-feedback",
+      "src": 777,
+      "tests": 1140,
+      "config": 0,
+      "other": 4,
+      "files": 12,
+      "total": 1921
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-subagent-acp",
+      "src": 590,
+      "tests": 1330,
+      "config": 0,
+      "other": 0,
+      "files": 7,
+      "total": 1920
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-pwsh",
+      "src": 624,
+      "tests": 1276,
+      "config": 0,
+      "other": 0,
+      "files": 7,
+      "total": 1900
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-agent-spine-demo",
+      "src": 297,
+      "tests": 1557,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 1854
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-hooks-claude-code",
+      "src": 517,
+      "tests": 1320,
+      "config": 0,
+      "other": 0,
+      "files": 10,
+      "total": 1837
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-compaction",
+      "src": 798,
+      "tests": 988,
+      "config": 0,
+      "other": 14,
+      "files": 10,
+      "total": 1800
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-sdk-jsonrpc-server",
+      "src": 365,
+      "tests": 1422,
+      "config": 0,
+      "other": 0,
+      "files": 7,
+      "total": 1787
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-jobs-local",
+      "src": 569,
+      "tests": 1205,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 1774
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-subagent",
+      "src": 905,
+      "tests": 857,
+      "config": 0,
+      "other": 4,
+      "files": 10,
+      "total": 1766
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-goal-round-driver",
+      "src": 558,
+      "tests": 1177,
+      "config": 0,
+      "other": 26,
+      "files": 6,
+      "total": 1761
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-hook-protocol",
+      "src": 863,
+      "tests": 839,
+      "config": 0,
+      "other": 0,
+      "files": 16,
+      "total": 1702
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-settings-general",
+      "src": 725,
+      "tests": 966,
+      "config": 0,
+      "other": 4,
+      "files": 19,
+      "total": 1695
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-acp",
+      "src": 535,
+      "tests": 1134,
+      "config": 0,
+      "other": 0,
+      "files": 11,
+      "total": 1669
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-persistence-sqlite",
+      "src": 717,
+      "tests": 950,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 1667
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-message-feedback",
+      "src": 651,
+      "tests": 1012,
+      "config": 0,
+      "other": 0,
+      "files": 8,
+      "total": 1663
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-host-directory-picker-native",
+      "src": 745,
+      "tests": 857,
+      "config": 0,
+      "other": 32,
+      "files": 15,
+      "total": 1634
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-bash-sandbox",
+      "src": 331,
+      "tests": 1263,
+      "config": 0,
+      "other": 0,
+      "files": 8,
+      "total": 1594
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-system-prompt",
+      "src": 607,
+      "tests": 975,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 1582
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-layout",
+      "src": 687,
+      "tests": 876,
+      "config": 0,
+      "other": 4,
+      "files": 16,
+      "total": 1567
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-llm-mock-server",
+      "src": 1035,
+      "tests": 508,
+      "config": 0,
+      "other": 14,
+      "files": 8,
+      "total": 1557
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-time-context",
+      "src": 524,
+      "tests": 999,
+      "config": 0,
+      "other": 26,
+      "files": 9,
+      "total": 1549
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-skill",
+      "src": 463,
+      "tests": 1086,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 1549
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-typert-registry",
+      "src": 914,
+      "tests": 586,
+      "config": 0,
+      "other": 4,
+      "files": 7,
+      "total": 1504
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-storage-domain",
+      "src": 863,
+      "tests": 612,
+      "config": 0,
+      "other": 0,
+      "files": 9,
+      "total": 1475
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-model-selection",
+      "src": 949,
+      "tests": 509,
+      "config": 0,
+      "other": 4,
+      "files": 12,
+      "total": 1462
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-credentials-local",
+      "src": 529,
+      "tests": 925,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 1454
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-settings-file",
+      "src": 403,
+      "tests": 1038,
+      "config": 0,
+      "other": 0,
+      "files": 7,
+      "total": 1441
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-modules",
+      "src": 977,
+      "tests": 459,
+      "config": 0,
+      "other": 4,
+      "files": 8,
+      "total": 1440
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-hooks-codex",
+      "src": 448,
+      "tests": 981,
+      "config": 0,
+      "other": 0,
+      "files": 9,
+      "total": 1429
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-fs-e2b",
+      "src": 614,
+      "tests": 807,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 1421
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-web-search-deepseek",
+      "src": 569,
+      "tests": 830,
+      "config": 0,
+      "other": 0,
+      "files": 8,
+      "total": 1399
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-user-questions",
+      "src": 735,
+      "tests": 656,
+      "config": 0,
+      "other": 4,
+      "files": 13,
+      "total": 1395
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-reference",
+      "src": 733,
+      "tests": 662,
+      "config": 0,
+      "other": 0,
+      "files": 8,
+      "total": 1395
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-jobs",
+      "src": 434,
+      "tests": 891,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 1325
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-terminal",
+      "src": 609,
+      "tests": 701,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 1310
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-locale",
+      "src": 685,
+      "tests": 608,
+      "config": 0,
+      "other": 4,
+      "files": 18,
+      "total": 1297
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-terminal",
+      "src": 686,
+      "tests": 604,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 1290
+    },
+    {
+      "pkg": "@deepseek-ai/node-addon-landlock-run-workspace",
+      "src": 0,
+      "tests": 215,
+      "config": 0,
+      "other": 1009,
+      "files": 14,
+      "total": 1224
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-workflow",
+      "src": 569,
+      "tests": 648,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 1217
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-scope",
+      "src": 565,
+      "tests": 622,
+      "config": 0,
+      "other": 28,
+      "files": 8,
+      "total": 1215
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-telemetry",
+      "src": 532,
+      "tests": 683,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 1215
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-bash-persistent",
+      "src": 478,
+      "tests": 735,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 1213
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-permission-presets",
+      "src": 619,
+      "tests": 588,
+      "config": 0,
+      "other": 4,
+      "files": 12,
+      "total": 1211
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-ralph",
+      "src": 511,
+      "tests": 678,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 1189
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-workflow-run",
+      "src": 589,
+      "tests": 590,
+      "config": 0,
+      "other": 4,
+      "files": 9,
+      "total": 1183
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-typert-loader",
+      "src": 474,
+      "tests": 693,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 1167
+    },
+    {
+      "pkg": "@deepseek-ai/cordis-plugin-loader",
+      "src": 1144,
+      "tests": 0,
+      "config": 0,
+      "other": 17,
+      "files": 8,
+      "total": 1161
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-commands",
+      "src": 587,
+      "tests": 556,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 1143
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-user-approval",
+      "src": 490,
+      "tests": 622,
+      "config": 0,
+      "other": 31,
+      "files": 6,
+      "total": 1143
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-str-replace-editor",
+      "src": 555,
+      "tests": 580,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 1135
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-goal",
+      "src": 521,
+      "tests": 613,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 1134
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-subagent-control",
+      "src": 345,
+      "tests": 772,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 1117
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-typert-protocol",
+      "src": 804,
+      "tests": 300,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 1104
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-goal",
+      "src": 510,
+      "tests": 586,
+      "config": 0,
+      "other": 4,
+      "files": 13,
+      "total": 1100
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-pwsh-local",
+      "src": 475,
+      "tests": 608,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 1083
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-deliverables",
+      "src": 500,
+      "tests": 532,
+      "config": 0,
+      "other": 4,
+      "files": 10,
+      "total": 1036
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-lsp",
+      "src": 487,
+      "tests": 538,
+      "config": 0,
+      "other": 0,
+      "files": 8,
+      "total": 1025
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-permission-presets",
+      "src": 530,
+      "tests": 490,
+      "config": 0,
+      "other": 0,
+      "files": 7,
+      "total": 1020
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-todo",
+      "src": 330,
+      "tests": 682,
+      "config": 0,
+      "other": 0,
+      "files": 9,
+      "total": 1012
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-telemetry-otel",
+      "src": 334,
+      "tests": 670,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 1004
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-attachment",
+      "src": 521,
+      "tests": 436,
+      "config": 0,
+      "other": 36,
+      "files": 13,
+      "total": 993
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-web",
+      "src": 653,
+      "tests": 301,
+      "config": 0,
+      "other": 32,
+      "files": 17,
+      "total": 986
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-skill",
+      "src": 440,
+      "tests": 537,
+      "config": 0,
+      "other": 4,
+      "files": 9,
+      "total": 981
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-subagent-dsh-sdk",
+      "src": 378,
+      "tests": 591,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 969
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-settings",
+      "src": 488,
+      "tests": 476,
+      "config": 0,
+      "other": 4,
+      "files": 10,
+      "total": 968
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-sidebar",
+      "src": 406,
+      "tests": 554,
+      "config": 0,
+      "other": 4,
+      "files": 15,
+      "total": 964
+    },
+    {
+      "pkg": "@deepseek-ai/schemastery",
+      "src": 903,
+      "tests": 0,
+      "config": 0,
+      "other": 18,
+      "files": 2,
+      "total": 921
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-web-fetch-http",
+      "src": 480,
+      "tests": 430,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 910
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-spill-policy",
+      "src": 291,
+      "tests": 605,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 896
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-acp-demo",
+      "src": 209,
+      "tests": 648,
+      "config": 0,
+      "other": 20,
+      "files": 7,
+      "total": 877
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-log-export",
+      "src": 358,
+      "tests": 504,
+      "config": 0,
+      "other": 4,
+      "files": 16,
+      "total": 866
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-projection",
+      "src": 486,
+      "tests": 366,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 852
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-output-retention",
+      "src": 475,
+      "tests": 377,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 852
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-api-remotes",
+      "src": 455,
+      "tests": 382,
+      "config": 0,
+      "other": 8,
+      "files": 9,
+      "total": 845
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-bash-local",
+      "src": 365,
+      "tests": 466,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 831
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-projection-cache",
+      "src": 408,
+      "tests": 388,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 796
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-pwsh-sandbox",
+      "src": 342,
+      "tests": 445,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 787
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-storage-sqlite",
+      "src": 480,
+      "tests": 286,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 766
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-workflow",
+      "src": 523,
+      "tests": 239,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 762
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-loader-smoke",
+      "src": 345,
+      "tests": 413,
+      "config": 0,
+      "other": 0,
+      "files": 9,
+      "total": 758
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-sdk-protocol",
+      "src": 444,
+      "tests": 308,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 752
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-fs",
+      "src": 506,
+      "tests": 241,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 747
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-attachment-local",
+      "src": 397,
+      "tests": 348,
+      "config": 0,
+      "other": 0,
+      "files": 7,
+      "total": 745
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-subagent-report",
+      "src": 174,
+      "tests": 560,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 734
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-web-app",
+      "src": 300,
+      "tests": 407,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 707
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tmux-context",
+      "src": 279,
+      "tests": 414,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 693
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-title-llm",
+      "src": 326,
+      "tests": 366,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 692
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-subagent-spawn-in-process",
+      "src": 96,
+      "tests": 596,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 692
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-stats",
+      "src": 308,
+      "tests": 380,
+      "config": 0,
+      "other": 0,
+      "files": 7,
+      "total": 688
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-compaction-tool-result-pruner",
+      "src": 335,
+      "tests": 346,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 681
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-jobs",
+      "src": 330,
+      "tests": 336,
+      "config": 0,
+      "other": 4,
+      "files": 9,
+      "total": 670
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-repeat-tool-reminder",
+      "src": 265,
+      "tests": 404,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 669
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-hmr",
+      "src": 451,
+      "tests": 205,
+      "config": 0,
+      "other": 4,
+      "files": 6,
+      "total": 660
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-storage-json",
+      "src": 429,
+      "tests": 229,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 658
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-e2b",
+      "src": 214,
+      "tests": 433,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 647
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-sandbox",
+      "src": 456,
+      "tests": 188,
+      "config": 0,
+      "other": 0,
+      "files": 7,
+      "total": 644
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-command-compact",
+      "src": 138,
+      "tests": 486,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 624
+    },
+    {
+      "pkg": "@deepseek-ai/cordis-plugin-hmr",
+      "src": 614,
+      "tests": 0,
+      "config": 0,
+      "other": 0,
+      "files": 2,
+      "total": 614
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-jobs",
+      "src": 428,
+      "tests": 185,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 613
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-headless",
+      "src": 240,
+      "tests": 360,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 600
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-host-directory-picker-browse",
+      "src": 351,
+      "tests": 232,
+      "config": 0,
+      "other": 16,
+      "files": 4,
+      "total": 599
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-web-search-exa",
+      "src": 307,
+      "tests": 286,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 593
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-sandbox-policy",
+      "src": 270,
+      "tests": 285,
+      "config": 0,
+      "other": 26,
+      "files": 6,
+      "total": 581
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-host-directory-picker-auto",
+      "src": 224,
+      "tests": 356,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 580
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-web",
+      "src": 364,
+      "tests": 216,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 580
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-settings-plugin-inventory",
+      "src": 328,
+      "tests": 238,
+      "config": 0,
+      "other": 4,
+      "files": 10,
+      "total": 570
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-web-search-perplexity",
+      "src": 300,
+      "tests": 268,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 568
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-checkpoint-policy",
+      "src": 115,
+      "tests": 444,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 559
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-host-webserver",
+      "src": 327,
+      "tests": 227,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 554
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-fs-sandbox",
+      "src": 257,
+      "tests": 295,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 552
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-invariants",
+      "src": 232,
+      "tests": 311,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 543
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-subprocess",
+      "src": 431,
+      "tests": 101,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 532
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-lsp",
+      "src": 343,
+      "tests": 188,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 531
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-storage",
+      "src": 336,
+      "tests": 193,
+      "config": 0,
+      "other": 0,
+      "files": 7,
+      "total": 529
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-timeout",
+      "src": 222,
+      "tests": 292,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 514
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-command-feedback",
+      "src": 140,
+      "tests": 364,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 504
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-shell-env",
+      "src": 249,
+      "tests": 239,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 488
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-subagent-fork-in-process",
+      "src": 126,
+      "tests": 361,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 487
+    },
+    {
+      "pkg": "@deepseek-ai/cosmokit",
+      "src": 483,
+      "tests": 0,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 483
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-shell",
+      "src": 354,
+      "tests": 122,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 476
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-user-questions",
+      "src": 242,
+      "tests": 223,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 465
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-ask-user",
+      "src": 133,
+      "tests": 321,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 454
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-code-runtime",
+      "src": 297,
+      "tests": 147,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 444
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-cmdline",
+      "src": 204,
+      "tests": 233,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 437
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-command-goal",
+      "src": 202,
+      "tests": 235,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 437
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-fs-observation-policy",
+      "src": 192,
+      "tests": 237,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 429
+    },
+    {
+      "pkg": "@deepseek-ai/node-addon-landlock-run",
+      "src": 427,
+      "tests": 0,
+      "config": 0,
+      "other": 0,
+      "files": 2,
+      "total": 427
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-plan",
+      "src": 208,
+      "tests": 202,
+      "config": 0,
+      "other": 4,
+      "files": 9,
+      "total": 414
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-ui-directory-picker-native",
+      "src": 150,
+      "tests": 237,
+      "config": 0,
+      "other": 4,
+      "files": 6,
+      "total": 391
+    },
+    {
+      "pkg": "@deepseek-ai/cordis-plugin-include",
+      "src": 378,
+      "tests": 0,
+      "config": 0,
+      "other": 0,
+      "files": 1,
+      "total": 378
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-credentials",
+      "src": 217,
+      "tests": 160,
+      "config": 0,
+      "other": 0,
+      "files": 6,
+      "total": 377
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-spill-local",
+      "src": 218,
+      "tests": 146,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 364
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-tool-call-timeout-policy",
+      "src": 113,
+      "tests": 245,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 358
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-title-first-prompt-llm",
+      "src": 72,
+      "tests": 267,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 339
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-client-schema-form",
+      "src": 198,
+      "tests": 114,
+      "config": 0,
+      "other": 7,
+      "files": 6,
+      "total": 319
+    },
+    {
+      "pkg": "@fixture/host",
+      "src": 305,
+      "tests": 0,
+      "config": 0,
+      "other": 0,
+      "files": 2,
+      "total": 305
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-host-frontend-static",
+      "src": 146,
+      "tests": 134,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 280
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-agent-default-model",
+      "src": 139,
+      "tests": 99,
+      "config": 0,
+      "other": 26,
+      "files": 4,
+      "total": 264
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-anonymous-user-id",
+      "src": 133,
+      "tests": 119,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 252
+    },
+    {
+      "pkg": "dsh-jsonrpc-agent-pkg",
+      "src": 165,
+      "tests": 0,
+      "config": 0,
+      "other": 84,
+      "files": 2,
+      "total": 249
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-persona",
+      "src": 101,
+      "tests": 143,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 244
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-agent-tool-presentation",
+      "src": 106,
+      "tests": 130,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 236
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-atomic-write",
+      "src": 150,
+      "tests": 82,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 232
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-host-plugin-inventory",
+      "src": 123,
+      "tests": 107,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 230
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-launch-environment",
+      "src": 156,
+      "tests": 70,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 226
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-spill",
+      "src": 164,
+      "tests": 61,
+      "config": 0,
+      "other": 0,
+      "files": 4,
+      "total": 225
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-home-paths",
+      "src": 144,
+      "tests": 77,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 221
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-host-directory-picker",
+      "src": 170,
+      "tests": 36,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 206
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-attachment",
+      "src": 176,
+      "tests": 0,
+      "config": 0,
+      "other": 0,
+      "files": 5,
+      "total": 176
+    },
+    {
+      "pkg": "@deepseek-ai/cordis-plugin-logger-console",
+      "src": 148,
+      "tests": 0,
+      "config": 0,
+      "other": 25,
+      "files": 4,
+      "total": 173
+    },
+    {
+      "pkg": "@deepseek-ai/cordis-plugin-timer",
+      "src": 148,
+      "tests": 0,
+      "config": 0,
+      "other": 0,
+      "files": 1,
+      "total": 148
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-sdk-jsonrpc-demo",
+      "src": 123,
+      "tests": 0,
+      "config": 0,
+      "other": 22,
+      "files": 6,
+      "total": 145
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-session-title-all-prompts-llm",
+      "src": 68,
+      "tests": 74,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 142
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-skill-badge",
+      "src": 92,
+      "tests": 41,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 133
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-native-command",
+      "src": 77,
+      "tests": 44,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 121
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-base",
+      "src": 39,
+      "tests": 78,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 117
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-agent-loop-testkit",
+      "src": 78,
+      "tests": 21,
+      "config": 0,
+      "other": 0,
+      "files": 3,
+      "total": 99
+    },
+    {
+      "pkg": "@fixture/remote-workspace",
+      "src": 0,
+      "tests": 75,
+      "config": 0,
+      "other": 0,
+      "files": 1,
+      "total": 75
+    },
+    {
+      "pkg": "@deepseek-ai/dsh-brand",
+      "src": 59,
+      "tests": 0,
+      "config": 0,
+      "other": 0,
+      "files": 2,
+      "total": 59
+    },
+    {
+      "pkg": "@fixture/remote",
+      "src": 55,
+      "tests": 0,
+      "config": 0,
+      "other": 0,
+      "files": 2,
+      "total": 55
+    },
+    {
+      "pkg": "@fixture/client",
+      "src": 40,
+      "tests": 0,
+      "config": 0,
+      "other": 0,
+      "files": 1,
+      "total": 40
+    },
+    {
+      "pkg": "@fixture/domain",
+      "src": 23,
+      "tests": 0,
+      "config": 0,
+      "other": 0,
+      "files": 2,
+      "total": 23
+    },
+    {
+      "pkg": "@fixture/write",
+      "src": 19,
+      "tests": 0,
+      "config": 0,
+      "other": 0,
+      "files": 1,
+      "total": 19
+    },
+    {
+      "pkg": "@fixture/workspace",
+      "src": 0,
+      "tests": 8,
+      "config": 0,
+      "other": 0,
+      "files": 1,
+      "total": 8
+    },
+    {
+      "pkg": "@deepseek-ai/cordis-plugin-group",
+      "src": 4,
+      "tests": 0,
+      "config": 0,
+      "other": 0,
+      "files": 1,
+      "total": 4
+    }
+  ]
+}

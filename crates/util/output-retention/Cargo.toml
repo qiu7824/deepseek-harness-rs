@@ -1,0 +1,6 @@
+[package]
+name = "dsh-output-retention"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Bounded model-facing output retention: Rust port of @deepseek-ai/dsh-output-retention"

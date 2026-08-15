@@ -1,0 +1,22 @@
+[package]
+name = "dsh-settings"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "User-settings capability seam: Rust port of @deepseek-ai/dsh-settings"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-brand = { path = "../../util/brand" }
+dsh-invariants = { path = "../../util/invariants" }
+schemastery = { package = "dsh-schemastery", path = "../../vendor/schemastery" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

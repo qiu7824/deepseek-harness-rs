@@ -1,0 +1,16 @@
+[package]
+name = "dsh-agent-tool-presentation"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Agent-plane tool presentation selector: Rust port of @deepseek-ai/dsh-agent-tool-presentation"
+
+[dependencies]
+dsh-tools = { path = "../tools" }
+dsh-scope = { path = "../scope" }
+cordis = { path = "../../vendor/cordis" }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+dsh-system-prompt = { path = "../system-prompt" }
+tokio = { workspace = true, features = ["test-util"] }

@@ -1,0 +1,23 @@
+[package]
+name = "cordis"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Meta-framework for modern applications: Rust port of @deepseek-ai/cordis (v4.0.1)"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+futures = { workspace = true }
+dashmap = { workspace = true }
+chrono = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
