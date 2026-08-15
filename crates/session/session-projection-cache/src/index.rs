@@ -28,7 +28,7 @@ use parking_lot::Mutex;
 use serde_json::Value as JsonValue;
 
 use cordis::{
-    ArcValue, Context, Disposer, EventOptions, Listener, Service, arc, downcast, make_disposer,
+    ArcValue, Context, EventOptions, Listener, Service, arc, downcast, make_disposer,
 };
 use dsh_session::{Session, SessionEvent, SessionHeader, SessionId, SessionStore};
 use dsh_session_persistence::SessionPersistenceApi;
@@ -263,8 +263,25 @@ impl SessionProjectionCache {
     /// Durably checkpoint one live session NOW (TS `write`). NOT fail-soft
     /// — callers on the fail-soft paths contain it.
     pub async fn write(&self, session: &Session) -> Result<(), String> {
+        let rows = self.checkpoint_for_write(session);
+        self.write_checkpoint(session, &rows).await
+    }
+
+    /// Capture the checkpoint cut and reset its dirty window synchronously.
+    /// TS async functions execute this prefix before their first `await`; the
+    /// detached Rust path must do the same before yielding to the executor.
+    fn checkpoint_for_write(&self, session: &Session) -> ProjectionCheckpoint {
         let rows = self.registry().checkpoint(session);
         self.mark_clean(session);
+        rows
+    }
+
+    /// Persist a checkpoint whose cut and dirty-window reset already happened.
+    async fn write_checkpoint(
+        &self,
+        session: &Session,
+        rows: &ProjectionCheckpoint,
+    ) -> Result<(), String> {
         // Durability barrier: the checkpoint cut was taken above, so
         // flushing AFTER it guarantees every event inside the cut is
         // durably logged before the cache row lands.
@@ -272,15 +289,14 @@ impl SessionProjectionCache {
             .ctx
             .get_typed::<Arc<SessionStore>>("sessions", false)
             .map(|store| store.as_ref().clone());
-        if let Some(store) = store {
-            if store
+        if let Some(store) = store
+            && store
                 .get(session.id())
                 .is_some_and(|live| live.ptr_eq(session))
-            {
-                store.flush(session).await?;
-            }
+        {
+            store.flush(session).await?;
         }
-        self.put(session.id(), &identity_of(session.header()), &rows).await
+        self.put(session.id(), &identity_of(session.header()), rows).await
     }
 
     /// Cold-read one persisted session's projections with zero full-log
@@ -326,10 +342,11 @@ impl SessionProjectionCache {
 
     /// One fail-soft durable checkpoint (TS `flushSoft`).
     fn spawn_flush(self: &Arc<Self>, session: &Session, trigger: &'static str) {
+        let rows = self.checkpoint_for_write(session);
         let service = self.clone();
         let session = session.clone();
         spawn_detached(async move {
-            match service.write(&session).await {
+            match service.write_checkpoint(&session, &rows).await {
                 Ok(_) => {}
                 Err(error) => {
                     service.ctx.named_logger(Some("session-projection-cache")).warn(vec![arc(
