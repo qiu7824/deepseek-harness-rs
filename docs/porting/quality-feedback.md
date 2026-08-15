@@ -42,7 +42,9 @@ purpose: Rust 移植缺陷复盘、质量门改进与移植模型优化数据
 | `cargo test --workspace --all-targets --no-fail-fast` | 191 个测试目标，1311 项通过，0 失败，Cargo 退出码 0 |
 | `cargo clippy -p dsh-timeout -p dsh-brand -p dsh-cosmokit --all-targets --no-deps -- -D warnings` | 三个已清理组件均退出码 0 |
 | `cargo clippy -p dsh-session-projection-cache --lib --no-deps -- -D warnings` | 退出码 0 |
-| `cargo clippy --workspace --all-targets -- -D warnings` | 退出码 101；剩余 26 个源码 lint 阻塞项位于 `dsh-schemastery`、`dsh-home-paths`、`cordis`，另有 4 条编译汇总错误 |
+| `cargo clippy -p dsh-goal --all-targets --no-deps -- -D warnings` | 退出码 101；本批新增 lint 已清除，仍有 6 个既有源码 lint 位于 `fold.rs`、`index.rs` |
+| `cargo clippy -p dsh-session-projection-cache --all-targets --no-deps -- -D warnings` | 退出码 101；生产库已通过，测试夹具仍有 6 个既有 lint |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 退出码 101；首个全局失败波次至少暴露 26 个源码 lint，位于 `dsh-schemastery`、`dsh-home-paths`、`cordis`，另有 4 条编译汇总错误；该数字不是 workspace 全部欠账总数 |
 | `git diff --check` | 通过 |
 
 严格 Clippy 的 workspace 历史欠账未计作本批修复已通过；后续质量批次必须继续处理或建立逐项豁免，不能用全量测试通过替代静态质量门。
