@@ -56,10 +56,8 @@ fn tokenize(source: &str, delimiters: &[u32], delimiter: u32) -> String {
         if (65..=90).contains(&code) {
             let next = codes.get(i + 1).copied();
             if state == TokenState::Upper {
-                if let Some(next) = next {
-                    if (97..=122).contains(&next) {
-                        output.push(char::from_u32(delimiter).unwrap());
-                    }
+                if next.is_some_and(|next| (97..=122).contains(&next)) {
+                    output.push(char::from_u32(delimiter).unwrap());
                 }
                 output.push(char::from_u32(code + 32).unwrap());
             } else {

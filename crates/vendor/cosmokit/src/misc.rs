@@ -61,10 +61,10 @@ where
         Some(keys) => {
             let mut result = IndexMap::new();
             for key in keys {
-                if let Some(value) = source.get(&key) {
-                    if forced || value.is_some() {
-                        result.insert(key, value.clone());
-                    }
+                if let Some(value) = source.get(&key)
+                    && (forced || value.is_some())
+                {
+                    result.insert(key, value.clone());
                 }
             }
             result

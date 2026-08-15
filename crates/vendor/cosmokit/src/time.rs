@@ -220,8 +220,8 @@ mod tests {
         assert_eq!(format(500), "500ms");
         assert_eq!(format(1000), "1s");
         assert_eq!(format(90_000), "2m"); // rounds (90s >= 60s-0.5s)
-        assert_eq!(format(3600_000), "1h");
-        assert_eq!(format(86400_000), "1d");
+        assert_eq!(format(3_600_000), "1h");
+        assert_eq!(format(86_400_000), "1d");
         assert_eq!(format(-500), "-500ms");
         assert_eq!(to_digits(5, 2), "05");
         assert_eq!(to_digits(5, 3), "005");
