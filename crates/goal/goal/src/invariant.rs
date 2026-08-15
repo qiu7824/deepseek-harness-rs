@@ -20,7 +20,7 @@ pub const NAME: &str = "goal-invariant";
 pub const INJECT: [&str; 1] = ["invariants"];
 
 fn session_key(session: &Session) -> usize {
-    Arc::as_ptr(&session.events()) as *const () as usize
+    session.identity()
 }
 
 /// Apply one event through the strict goal decoder and attribute failures.
@@ -191,5 +191,26 @@ impl Plugin for GoalInvariantPlugin {
     async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
         apply(ctx);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dsh_session::session_id;
+
+    #[test]
+    fn invariant_session_key_uses_stable_session_identity() {
+        let session = Session::create(session_id("goal-invariant-key"), None, None).unwrap();
+        let key_before = session_key(&session);
+        let previous_snapshot = session.events();
+
+        session
+            .append("goal-invariant/noop", serde_json::json!({}), None)
+            .unwrap();
+
+        assert_eq!(key_before, session.identity());
+        assert_eq!(session_key(&session), key_before);
+        drop(previous_snapshot);
     }
 }
