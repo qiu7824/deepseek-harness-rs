@@ -104,6 +104,54 @@ struct GoalCache {
     pending_activation: Option<(u64, GoalActivation)>,
 }
 
+/// Stable process-local state for one exact Session object.
+struct SessionGoalState {
+    session: Session,
+    cache: Mutex<GoalCache>,
+    mutating: AtomicBool,
+    disarm_requested: AtomicBool,
+}
+
+/// RAII ownership of the single in-flight mutation for one Session.
+struct MutationClaim {
+    state: Arc<SessionGoalState>,
+    active: bool,
+}
+
+impl MutationClaim {
+    fn acquire(state: Arc<SessionGoalState>) -> Result<Self, GoalError> {
+        state
+            .mutating
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| {
+                GoalError::new(
+                    format!(
+                        "a goal mutation is already in progress for session \"{}\"",
+                        state.session.id()
+                    ),
+                    GoalErrorCode::CommitFailed,
+                )
+            })?;
+        Ok(Self {
+            state,
+            active: true,
+        })
+    }
+
+    fn release(&mut self) {
+        if self.active {
+            self.state.mutating.store(false, Ordering::Release);
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for MutationClaim {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 fn resolve_max_goal_rounds(value: u64) -> Result<u64, GoalError> {
     if value < 1 {
         return Err(GoalError::new(
@@ -143,20 +191,13 @@ fn resolve_block_reason(reason: &GoalBlockReason) -> Result<GoalBlockReason, Goa
 pub struct GoalService {
     pub ctx: Context,
     resolved: ResolvedConfig,
-    caches: Mutex<HashMap<String, GoalCache>>,
+    caches: Mutex<HashMap<usize, Arc<SessionGoalState>>>,
 }
 
 impl Service for GoalService {
     fn service_name(&self) -> &'static str {
         "goals"
     }
-}
-
-/// Cache-map key for one owning agent (the TS `WeakMap<Session>` collapse 鈥?/// goal access always rides the exact live agent, so the session id is the
-/// stable identity; the session's event-snapshot pointer is NOT stable
-/// across appends).
-fn agent_key(agent: &Arc<dyn Agent>) -> String {
-    agent.id().as_str().to_string()
 }
 
 impl GoalService {
@@ -205,23 +246,26 @@ impl GoalService {
     /// Read the current goal for one exact live agent.
     pub fn get(&self, agent: &Arc<dyn Agent>) -> Result<Option<GoalView>, GoalError> {
         self.assert_live(agent)?;
-        let session = agent.session().clone();
-        let mut caches = self.caches.lock();
-        let cache = self.entry(&mut caches, agent);
-        self.sync(&session, cache);
-        Ok(self.view(cache))
+        let state = self.state_for(agent);
+        let mut cache = state.cache.lock();
+        self.sync(&state.session, &mut cache);
+        Ok(self.view(&cache))
     }
 
     /// Remove process-local continuation authority without changing durable
     /// goal phase or revision.
     pub fn disarm(&self, agent: &Arc<dyn Agent>) -> Result<Option<GoalView>, GoalError> {
         self.assert_live(agent)?;
-        let session = agent.session().clone();
-        let mut caches = self.caches.lock();
-        let cache = self.entry(&mut caches, agent);
-        self.sync(&session, cache);
+        let state = self.state_for(agent);
+        state.disarm_requested.store(true, Ordering::Release);
+        let mut cache = state.cache.lock();
+        self.sync(&state.session, &mut cache);
         cache.activation = GoalActivation::Disarmed;
-        Ok(self.view(cache))
+        let view = self.view(&cache);
+        if !state.mutating.load(Ordering::Acquire) {
+            state.disarm_requested.store(false, Ordering::Release);
+        }
+        Ok(view)
     }
 
     /// Create and arm a goal. A completed goal may be replaced; every other
@@ -237,7 +281,7 @@ impl GoalService {
                 .max_goal_rounds
                 .unwrap_or(self.resolved.default_max_goal_rounds),
         )?;
-        let (session, key, mut cache) = self.prepare_mutation(agent)?;
+        let (state, mut cache, mut claim) = self.prepare_mutation(agent)?;
         if let Some(current) = &cache.state.goal {
             if current.phase != GoalPhase::Complete {
                 return Err(GoalError::new(
@@ -270,7 +314,6 @@ impl GoalService {
             now,
             GoalActivation::Armed,
         )?;
-        self.caches.lock().insert(key, cache);
         Ok(view)
     }
 
@@ -281,7 +324,7 @@ impl GoalService {
         ref_: &GoalRef,
         request: &EditGoalRequest,
     ) -> Result<GoalView, GoalError> {
-        let (session, key, mut cache) = self.prepare_mutation(agent)?;
+        let (state, mut cache, mut claim) = self.prepare_mutation(agent)?;
         let current = self.expect_current(&cache, ref_)?.clone();
         if request.objective.is_none() && request.max_goal_rounds.is_none() {
             return Err(GoalError::new(
@@ -310,7 +353,6 @@ impl GoalService {
             goal,
             activation,
         )?;
-        self.caches.lock().insert(key, cache);
         Ok(view)
     }
 
@@ -329,7 +371,7 @@ impl GoalService {
     /// Resume and arm a stopped goal, or rearm an active goal after a
     /// session-start edge, while its round budget still has capacity.
     pub fn resume(&self, agent: &Arc<dyn Agent>, ref_: &GoalRef) -> Result<GoalView, GoalError> {
-        let (session, key, mut cache) = self.prepare_mutation(agent)?;
+        let (state, mut cache, mut claim) = self.prepare_mutation(agent)?;
         let current = self.expect_current(&cache, ref_)?.clone();
         let resumable = matches!(
             current.phase,
@@ -366,7 +408,6 @@ impl GoalService {
             goal,
             GoalActivation::Armed,
         )?;
-        self.caches.lock().insert(key, cache);
         Ok(view)
     }
 
@@ -389,7 +430,7 @@ impl GoalService {
         ref_: &GoalRef,
         reason: &GoalBlockReason,
     ) -> Result<GoalView, GoalError> {
-        let (session, key, mut cache) = self.prepare_mutation(agent)?;
+        let (state, mut cache, mut claim) = self.prepare_mutation(agent)?;
         let current = self.expect_current(&cache, ref_)?.clone();
         if current.phase != GoalPhase::Active {
             return Err(self.transition_error(&current, GoalOperation::Block, &["active"]));
@@ -404,14 +445,13 @@ impl GoalService {
             goal,
             GoalActivation::Disarmed,
         )?;
-        self.caches.lock().insert(key, cache);
         Ok(view)
     }
 
     /// Clear the current goal while retaining a durable tombstone and
     /// history.
     pub fn clear(&self, agent: &Arc<dyn Agent>, ref_: &GoalRef) -> Result<GoalRef, GoalError> {
-        let (session, key, mut cache) = self.prepare_mutation(agent)?;
+        let (state, mut cache, mut claim) = self.prepare_mutation(agent)?;
         let current = self.expect_current(&cache, ref_)?.clone();
         let tombstone = GoalRef {
             id: current.id,
@@ -428,7 +468,6 @@ impl GoalService {
             change,
             GoalActivation::Disarmed,
         )?;
-        self.caches.lock().insert(key, cache);
         Ok(tombstone)
     }
 
@@ -555,7 +594,7 @@ impl GoalService {
         phase: GoalPhase,
         activation: GoalActivation,
     ) -> Result<GoalView, GoalError> {
-        let (session, key, mut cache) = self.prepare_mutation(agent)?;
+        let (state, mut cache, mut claim) = self.prepare_mutation(agent)?;
         let current = self.expect_current(&cache, ref_)?.clone();
         if !allowed.contains(&current.phase) {
             return Err(self.transition_error(
@@ -566,7 +605,6 @@ impl GoalService {
         }
         let goal = self.with_phase(&current, phase);
         let view = self.commit_current(agent, &session, &mut cache, operation, goal, activation)?;
-        self.caches.lock().insert(key, cache);
         Ok(view)
     }
 
