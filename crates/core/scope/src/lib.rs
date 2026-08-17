@@ -96,6 +96,7 @@ fn link_scope_parent(key: &ScopeKey, parent: &ScopeKey) {
 }
 
 /// The privileged handle to move one scope key's parent link.
+#[derive(Clone)]
 pub struct ScopeParentBinding {
     key: ScopeKey,
 }
@@ -208,13 +209,25 @@ pub fn create_scope(ctx: &Context, key: ScopeKey, options: &CreateScopeOptions) 
     Scope { ctx: fiber_ctx, raw_dispose, dispose }
 }
 
-/// Read the nearest scope tag inherited by a context (TS `scopeOf`).
+/// Read the nearest scope tag inherited by a context (TS `scopeOf`). The
+/// lookup walks the fiber parent chain: a plugin mounted under a scope
+/// context receives a child fiber whose own tag is absent, and the TS
+/// composition still resolves the enclosing scope. The root fiber binds
+/// itself as its own parent, so the walk is cycle-guarded.
 pub fn scope_of(ctx: &Context) -> Option<ScopeKey> {
-    let fiber = &ctx.fiber;
-    SCOPE_TAGS
-        .lock()
-        .get(&(Arc::as_ptr(fiber) as *const () as usize))
-        .cloned()
+    let tags = SCOPE_TAGS.lock();
+    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut fiber = Some(ctx.fiber.clone());
+    while let Some(current) = fiber {
+        if !seen.insert(Arc::as_ptr(&current) as *const () as usize) {
+            break;
+        }
+        if let Some(key) = tags.get(&(Arc::as_ptr(&current) as *const () as usize)) {
+            return Some(key.clone());
+        }
+        fiber = current.parent_ctx().map(|parent| parent.fiber.clone());
+    }
+    None
 }
 
 /// Remove the scope tag when a scope fiber is disposed (host bookkeeping;

@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cordis::{ArcValue, Context, Disposer, InjectSpec, Plugin, PluginError};
+use dsh_agent::Agent;
 
 use crate::descriptor::{snapshot_subagent_descriptor, SubagentDescriptorData};
 use crate::error::SubagentError;
@@ -33,6 +34,33 @@ use crate::types::{
 pub struct SubagentRuntime {
     pub ctx: Context,
     providers: Arc<parking_lot::Mutex<HashMap<String, Arc<dyn SubagentProvider>>>>,
+    continuations: Arc<std::sync::OnceLock<std::sync::Weak<crate::continuation::SubagentContinuationManager>>>,
+}
+
+/// The runtime's continuation host hooks (TS `ContinuationHost`).
+struct RuntimeContinuationHost {
+    runtime: Arc<SubagentRuntime>,
+}
+
+impl crate::continuation::ContinuationHost for RuntimeContinuationHost {
+    fn prepare_continuable(
+        &self,
+        name: &str,
+        request: ContinuableCreateRequest,
+    ) -> cordis::BoxFuture<'static, Result<ContinuableCreateSpec, SubagentError>> {
+        let runtime = self.runtime.clone();
+        let name = name.to_string();
+        Box::pin(async move { runtime.prepare_continuable(&name, request).await })
+    }
+
+    fn observe_activation(
+        &self,
+        provider: &str,
+        child_id: &dsh_session::SessionId,
+        parent: &Arc<dyn Agent>,
+    ) -> crate::lifecycle::ActivationObserver {
+        crate::lifecycle::create_activation_observer(&self.runtime.ctx, provider, child_id, parent.clone())
+    }
 }
 
 impl SubagentRuntime {
@@ -41,8 +69,62 @@ impl SubagentRuntime {
         let runtime = Arc::new(Self {
             ctx: ctx.clone(),
             providers: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            continuations: Arc::new(std::sync::OnceLock::new()),
         });
         ctx.register_service(runtime.clone());
+        // Install the continuable-subagent manager behind this runtime.
+        let host: Arc<dyn crate::continuation::ContinuationHost> =
+            Arc::new(RuntimeContinuationHost {
+                runtime: runtime.clone(),
+            });
+        let manager = crate::continuation::SubagentContinuationManager::new(ctx, host);
+        runtime
+            .continuations
+            .set(Arc::downgrade(&manager))
+            .expect("continuations once");
+        // Register the two session projection units whenever the projection
+        // registry is mounted (TS constructor inject).
+        ctx.inject(
+            InjectSpec::new(["sessionProjections"]),
+            Arc::new(move |type_ctx: &Context, _config: ArcValue| {
+                let type_ctx = type_ctx.clone();
+                Box::pin(async move {
+                    if let Some(projections) = type_ctx
+                        .get_typed::<Arc<dsh_session_projection::SessionProjectionRegistry>>(
+                            "sessionProjections",
+                            false,
+                        )
+                        .map(|slot| slot.as_ref().clone())
+                    {
+                        let timing = projections
+                            .register(
+                                &type_ctx,
+                                crate::projection::subagent_timing_projection_definition(),
+                            )
+                            .map_err(|error| PluginError::from(anyhow::anyhow!(error)))?;
+                        let identity = projections
+                            .register(
+                                &type_ctx,
+                                crate::projection::subagent_identity_projection_definition(),
+                            )
+                            .map_err(|error| PluginError::from(anyhow::anyhow!(error)))?;
+                        let disposer: Disposer = cordis::events::make_disposer(move || {
+                            let timing = timing.clone();
+                            let identity = identity.clone();
+                            Box::pin(async move {
+                                timing().await;
+                                identity().await;
+                            })
+                        });
+                        let _ = type_ctx.effect(
+                            "subagents.projections()",
+                            Box::pin(async move { Some(disposer) }),
+                        );
+                    }
+                    Ok(())
+                })
+            }),
+        );
         runtime
     }
 
@@ -184,25 +266,82 @@ impl SubagentRuntime {
         provider.prepare_continuable(request).await
     }
 
-    /// Continuable operations are unavailable until the continuation manager
-    /// is ported.
-    pub fn require_continuations(&self) -> Result<(), SubagentError> {
-        Err(SubagentError::new(
-            "CONTINUATION_UNAVAILABLE",
-            "continuable subagents require the agents service (continuation manager not ported)",
-        ))
+    /// Start one continuable background child (TS `startContinuable`).
+    pub async fn start_continuable(
+        &self,
+        spec: crate::continuation::ContinuableStartSpec,
+    ) -> Result<crate::continuation::ContinuableStart, SubagentError> {
+        self.manager().start_continuable(spec).await
     }
 
-    /// Enumerate the parent's direct session-backed subagents (not ported
-    /// yet; the listing ladder arrives with the session projections).
+    /// Deliver one later message to a continuable child (TS `followup`).
+    pub async fn followup(
+        &self,
+        parent: Arc<dyn Agent>,
+        child_id: &dsh_session::SessionId,
+        content: &[dsh_llm::ContentBlock],
+        options: crate::continuation::SubagentFollowupOptions,
+    ) -> Result<dsh_llm::MessageId, SubagentError> {
+        self.manager()
+            .followup(parent, child_id, content, &options)
+            .await
+    }
+
+    /// Interrupt one live continuable child's current turn (TS `interrupt`).
+    pub fn interrupt(
+        &self,
+        target_session_id: &dsh_session::SessionId,
+        authority: &crate::continuation::SubagentInterruptAuthority,
+    ) -> Result<(), SubagentError> {
+        self.manager().interrupt(target_session_id, authority)
+    }
+
+    /// Deliver selected content from one live continuable child to its
+    /// durable direct parent (TS `reportFrom`).
+    pub async fn report_from(
+        &self,
+        child: Arc<dyn Agent>,
+        content: &[dsh_llm::ContentBlock],
+        options: crate::continuation::SubagentReportOptions,
+    ) -> Result<dsh_llm::MessageId, SubagentError> {
+        self.manager()
+            .report_from(&child, content, &options)
+            .await
+    }
+
+    /// Close admission below exact live parent Agents (TS
+    /// `drainContinuableDescendants`).
+    pub async fn drain_continuable_descendants(
+        &self,
+        parents: &[Arc<dyn Agent>],
+    ) -> Result<(), SubagentError> {
+        self.manager().drain_descendants(parents).await
+    }
+
+    /// The continuable-subagent manager behind this runtime.
+    fn manager(&self) -> Arc<crate::continuation::SubagentContinuationManager> {
+        self.continuations
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .expect("continuation manager must be installed")
+    }
+
+    /// Enumerate the parent's direct session-backed subagents.
     pub async fn list_children(
         &self,
-        _parent_session_id: &dsh_session::SessionId,
-    ) -> Result<Vec<serde_json::Value>, SubagentError> {
-        Err(SubagentError::new(
-            "UNSUPPORTED_CAPABILITY",
-            "subagent child listing requires the session projections (not ported)",
-        ))
+        parent_session_id: &dsh_session::SessionId,
+        signal: Option<&Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) -> Result<Vec<crate::list_children::SubagentListEntry>, SubagentError> {
+        crate::list_children::list_children(&self.ctx, parent_session_id, signal).await
+    }
+
+    /// Enumerate the root's complete session-backed subagent tree.
+    pub async fn list_descendants(
+        &self,
+        root_session_id: &dsh_session::SessionId,
+        signal: Option<&Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) -> Result<Vec<crate::list_children::SubagentDescendantListEntry>, SubagentError> {
+        crate::list_children::list_descendants(&self.ctx, root_session_id, signal).await
     }
 }
 

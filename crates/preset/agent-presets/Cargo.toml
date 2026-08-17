@@ -1,0 +1,34 @@
+[package]
+name = "dsh-agent-presets"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Per-session agent composition from preset cordis.yml files — Rust port of @deepseek-ai/dsh-agent-presets"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-cordis-loader = { path = "../../vendor/loader" }
+dsh-cordis-include = { path = "../../vendor/include" }
+dsh-scope = { path = "../../core/scope" }
+dsh-settings = { path = "../../settings/settings" }
+dsh-home-paths = { path = "../../util/home-paths" }
+dsh-session = { path = "../../core/session" }
+dsh-agent = { path = "../../core/agent" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-schemastery = { path = "../../vendor/schemastery" }
+dsh-atomic-write = { path = "../../util/atomic-write" }
+dsh-invariants = { path = "../../util/invariants" }
+async-trait = { workspace = true }
+futures = { workspace = true }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true }

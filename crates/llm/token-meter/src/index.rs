@@ -29,6 +29,7 @@ use crate::usage_projection::{
     context_pressure_projection_definition, token_usage_projection_definition,
 };
 
+#[derive(Clone)]
 struct MeasurementAnchor {
     header: Option<EpochHeader>,
     surface_tokens: u64,
@@ -115,9 +116,7 @@ impl TokenMeter {
             let session = downcast::<Session>(&args[0]).cloned().expect("session arg");
             let meter = Arc::clone(&event_meter);
             Box::pin(async move {
-                if meter.states.lock().contains_key(&session.identity()) {
-                    meter.sync(&session);
-                }
+                meter.sync_tracked(&session);
                 None
             })
         });
@@ -145,17 +144,21 @@ impl TokenMeter {
     /// Measure current request pressure and surface through the durable tail
     /// (TS `measure`).
     pub fn measure(&self, session: &Session, request_header: Option<EpochHeader>) -> TokenMeasurement {
-        let mut state = self.sync(session);
+        let mut states = self.states.lock();
+        let state = states
+            .entry(session.identity())
+            .or_insert_with(Self::fresh_state);
+        self.sync_state(session, state);
         let header = match request_header {
             Some(header) => Some(header),
             None => state.header.clone(),
         };
-        let anchor = state.anchor.take();
+        let anchor = state.anchor.as_ref();
 
         let (baseline, surface_delta_tokens) = match anchor {
             Some(anchor) if optional_header_equals(anchor.header.as_ref(), header.as_ref()) => {
                 let delta = state.surface_tokens as i64 - anchor.surface_tokens as i64;
-                (anchor.baseline, delta)
+                (anchor.baseline.clone(), delta)
             }
             _ if header.is_none() && state.surface_tokens == 0 => {
                 (TokenMeasurementBaseline::None { tokens: 0 }, 0)
@@ -178,7 +181,7 @@ impl TokenMeter {
             surface_delta_tokens,
             total_tokens: (baseline_tokens as i64 + surface_delta_tokens).max(0) as u64,
             surface_tokens: state.surface_tokens,
-            nodes: state.surface,
+            nodes: state.surface.clone(),
         }
     }
 
@@ -187,33 +190,35 @@ impl TokenMeter {
         estimate_message(message)
     }
 
-    /// Catch one session's fold up to the current durable tail (TS `_sync`).
-    fn sync(&self, session: &Session) -> ReplayState {
-        let identity = session.identity();
-        if !self.states.lock().contains_key(&identity) {
-            self.states.lock().insert(
-                identity,
-                ReplayState {
-                    consumed_events: 0,
-                    header: None,
-                    surface: Vec::new(),
-                    surface_tokens: 0,
-                    step_start: None,
-                    anchor: None,
-                },
-            );
+    fn fresh_state() -> ReplayState {
+        ReplayState {
+            consumed_events: 0,
+            header: None,
+            surface: Vec::new(),
+            surface_tokens: 0,
+            step_start: None,
+            anchor: None,
         }
-        let mut state = self.states.lock().remove(&identity).expect("inserted");
-        let events = session.events();
-        while state.consumed_events < events.len() as u64 {
-            let event = &events[state.consumed_events as usize];
-            if let Err(error) = self.fold_event(session, &mut state, event) {
+    }
+
+    /// Eagerly catch up only a session already observed by a consumer.
+    fn sync_tracked(&self, session: &Session) {
+        let mut states = self.states.lock();
+        let Some(state) = states.get_mut(&session.identity()) else {
+            return;
+        };
+        self.sync_state(session, state);
+    }
+
+    /// Catch one replay state up to the current durable tail (TS `_sync`).
+    fn sync_state(&self, session: &Session, state: &mut ReplayState) {
+        let events = session.events_from(state.consumed_events);
+        for event in &events {
+            if let Err(error) = self.fold_event(session, state, event) {
                 panic!("{error}");
             }
             state.consumed_events += 1;
         }
-        self.states.lock().insert(identity, state);
-        self.states.lock().remove(&identity).expect("just inserted")
     }
 
     /// Validate and prepare every fallible part before mutating replay state
@@ -226,7 +231,7 @@ impl TokenMeter {
     ) -> Result<(), String> {
         let mut next_header = state.header.clone();
         let mut next_step_start = state.step_start;
-        let mut next_anchor = state.anchor.take();
+        let mut next_anchor = state.anchor.clone();
 
         match event.type_.as_str() {
             "request/header" => {
@@ -353,7 +358,12 @@ impl TokenMeter {
                     event.seq
                 ));
             }
-            let source = &session.events()[*seq as usize];
+            let source = session.event_at(*seq).ok_or_else(|| {
+                format!(
+                    "token meter: assistant/message at seq {} cites missing source seq {seq}",
+                    event.seq
+                )
+            })?;
             if source.type_ != "assistant/chunk" {
                 return Err(format!(
                     "token meter: assistant/message at seq {} source seq {seq} is not assistant/chunk",
@@ -467,4 +477,59 @@ impl LocalBlockAssembler {
 #[allow(dead_code)]
 fn _unused(_: &Context) {
     let _ = derive_event_message;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dsh_session::session_id;
+
+    #[test]
+    fn measurement_retains_replay_state_for_incremental_observers() {
+        let meter = TokenMeter {
+            states: Mutex::new(HashMap::new()),
+        };
+        let session = Session::create(session_id("meter-state"), None, None).unwrap();
+
+        let measurement = meter.measure(&session, None);
+
+        assert_eq!(measurement.log_revision, 0);
+        let states = meter.states.lock();
+        let state = states
+            .get(&session.identity())
+            .expect("measurement must retain replay state");
+        assert_eq!(state.consumed_events, 0);
+    }
+
+    #[test]
+    fn failed_fold_preserves_the_previous_anchor() {
+        let meter = TokenMeter {
+            states: Mutex::new(HashMap::new()),
+        };
+        let session = Session::create(session_id("meter-atomic-fold"), None, None).unwrap();
+        let mut state = TokenMeter::fresh_state();
+        state.anchor = Some(MeasurementAnchor {
+            header: None,
+            surface_tokens: 7,
+            baseline: TokenMeasurementBaseline::Estimated { tokens: 11 },
+        });
+        let malformed = SessionEvent {
+            type_: "request/header".to_string(),
+            seq: 0,
+            time: 0,
+            data: serde_json::json!({ "header": "malformed" }),
+            ignorable: None,
+            surface_op: None,
+            source_event_seqs: None,
+        };
+
+        let error = meter
+            .fold_event(&session, &mut state, &malformed)
+            .expect_err("malformed header must fail");
+
+        assert!(error.contains("request/header"), "{error}");
+        let anchor = state.anchor.as_ref().expect("failed fold must preserve anchor");
+        assert_eq!(anchor.surface_tokens, 7);
+        assert_eq!(anchor.baseline, TokenMeasurementBaseline::Estimated { tokens: 11 });
+    }
 }

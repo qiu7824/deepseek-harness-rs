@@ -298,6 +298,12 @@ impl SettingsProvider {
         self.storage.document_path()
     }
 
+    /// Whether updates may persist through this provider (TS `writable`;
+    /// the storage's own answer forwarded).
+    pub fn writable(&self) -> bool {
+        self.storage.writable()
+    }
+
     /// Prepare the document for a native editor (TS `prepareDocument`).
     pub async fn prepare_document(&self) -> Option<String> {
         self.document_path()

@@ -17,6 +17,12 @@
 | Host/后端及共享基础源码行 | 161,745 |
 | Host/后端及共享基础测试行 | 206,707 |
 
+第 127 轮当前验收快照：`cargo test --workspace` 共 371 个 test-result
+分组，**1714 passed / 0 failed / 1 ignored**。按可运行入口、核心运行时、
+Host API/CLI、wire/存储兼容、平台安全与发布切换加权审计，真实移植完成度
+约 **52%（保守区间 48%–56%）**；该估算不以文件数、LOC、轮次或清单
+勾选率代替行为兼容。
+
 本项目的"后端"范围包含：
 
 - Cordis、loader/include/hmr/timer/schemastery/cosmokit；
@@ -136,8 +142,8 @@ logger-console,group}` + `crates/core/{scope,llm,typert-protocol,session,system-
 `crates/plan/plan-mode` +
 `crates/session/session-query-sqlite` +
 `crates/schedule/schedule` +
-`crates/subagent/subagent` +
-`cargo test --workspace` 1302 项全绿（第 30–33 轮 storage Hub/domain/json/sqlite 落地；
+`crates/subagent/{subagent,subagent-fork,subagent-spawn,tool-subagent}` +
+`cargo test --workspace` 1440 项全绿（第 30–33 轮 storage Hub/domain/json/sqlite 落地；
 第 34 轮 dsh-workspace 落地：49 项测试，workspace.spec.ts + invariant.spec.ts 全部移植；
 第 35 轮 spill 三包落地：spill-local 11 项 + spill-policy 16 项；
 第 36 轮 launch-environment 7 项 + credentials seam 9 项；
@@ -521,7 +527,220 @@ completedTurnPrefix 切片（最后一个 turn/end 含、在飞回合排除、�
 前缀捕获 + invariant 伴生 no-op）；fork 2 项测试（前缀三形态 +
 注册/能力/上下文契约）；dsh-subagent 合计 11 项、subagent 组合计
 13 项。
+第 76 轮 subagent spawn 后端 + tool-subagent 落地：① 新 crate
+`crates/subagent/subagent-spawn`（dsh-subagent-spawn-in-process：fresh
+child 零种子 + prepareContinuable 空 spec + 能力旗标同 fork +
+invariant 伴生）；② 新 crate `crates/subagent/tool-subagent`
+（dsh-tool-subagent：模型面 `subagent` 工具——provider 上下文敏感
+文案（inheritsParentContext 双版本 description/prompt 描述）、
+foreground 全链路（start → settleForegroundRun：结果/处置双失败
+合并 AggregateError 语义、非 completed → ToolBodyError + 部分输出
+保留 `Partial output before the run ended:`）、后台 one-shot
+（JobStart kind=subagent + SettledRunHooks 封装 start 即 settleRun +
+cancel 置 killed、JobRegistry 缺失即错误）、enableRunInBackground
+关闭时拒绝强制后台、maxDepth 能力先于挂载校验（provider 无
+depthLimit → 挂载错误）、输出 schema 前景/后台 oneOf + render；
+`backgroundMode: continuable` 挂载即拒（continuation manager 未移植，
+偏差）；`items: {type: json}` 输出 schema 在 Rust 校验器不支持 →
+改 `{type: array}`（偏差））；tool-subagent 4 项测试（前台输出/
+处置、非 completed 错误 + 部分文本、后台 job id、禁用后台拒绝）。
+第 77 轮 subagent 投影 + 子代理枚举落地：① `projection.rs`（subagentTiming
+纯投影：turn 边界围绕子代理自有 descriptor 折叠——descriptor 重置
+settled、pendingTurnStart 提升、turn/end 结算 settledMs、active 截
+through 随每个事件推进（含 end-seed，与 TS 一致）；subagent 身份投影：
+descriptor 事件 last-wins、畸形/未知版本 → null 哨兵、stateVersion=2
+带 seq；状态为纯 JSON ArcValue + 同引用零工作）；② `list_children.rs`
+（live-preferred 语料合并（persistence.list + sessions.list）+
+subagentParents 集合、活子代理走注册表 watermark 快照（schema 失败 →
+corrupt 诊断）、冷子代理三阶梯（投影缓存 seq 门 → inspect 折叠 +
+sameLifecycle 见证键 → corrupt/unavailable 诊断）、后代稳定前序 +
+parentId/depth、createdAt-then-id 排序、取消检查点 CANCELLED）；
+SubagentRuntime 挂载两个投影单元（inject sessionProjections 子
+fiber）+ listChildren/listDescendants 接入；③ dsh-subagent 3 项新测试
+（timing 折叠含 end-seed through 语义、live 子代理按投影身份排序/
+创建窗省略/普通会话不解释、冷子代理 inspect + corrupt 诊断）；dsh-
+subagent 合计 14 项。
 关键移植决策与偏差见 `docs/porting/cordis-rust-notes.md`、`docs/porting/schemastery-rust-notes.md`。
+
+第 78 轮 subagent continuation 管理器落地：① `continuation.rs`（TS
+`continuation.ts` 移植：ContinuableStartSpec/Start、FollowupOptions、
+ReportDelivery/Options、InterruptAuthority 契约 + SubagentContinuationManager
+——startContinuable 全链：persistence 前置断言 → 深度校验 → 保留 UUID 子会话
+→ descriptor 快照 → provider prepareContinuable 贡献 → 信号取消 → descriptor
+seed（prepared.seed + descriptor 事件）→ ChildLock 逐子代串行化（lock_owned
+Send 守卫）→ materialize（注册表 create + 委托策略追加 + 组合应用 +
+lineage/ancestry 指针集 + Activation 安装 + 所有权登记 + watchSettlement
+观察者）；followup：resident 直投、未知子代 NOT_RESUMABLE、exact-live-parent
+双重校验（注册表 ptr_eq + header 父会话）、child-lock 提交截止重试；
+interrupt：User/Ancestor 两权校验（ancestry 指针集）；reportFrom：
+Quiet→inject / Wakeup→followup + SubagentReport 源；drain：全量关停（根
+激活发现 + 递归子先释放 + 失败聚合 ACTIVATION_TEARDOWN_FAILED + DRAINING
+后拒新）；drainDescendants：exact-live 根作用域剪枝（roots 指针 + ancestry
+过滤）；settlement：notifySettlement（Idle→followup / Running→steer +
+SubagentSettled 源 + boundContextSummary）；管理器监听 agent/disposed 清
+closing scope）；② dsh-llm MessageSource 增 Coordinator/SubagentReport/
+SubagentSettled 三变体 + kind() 覆盖；③ lifecycle.rs 增
+ActivationTerminal/ActivationObserver/createActivationObserver（start 边界
+快照 → capture（foldConsumedWork + finalAssistantOutput + epochStopReason）
+→ terminal → settle 一次性 End 边）；④ SubagentRuntime 挂接（continuations
+OnceLock<Weak> + RuntimeContinuationHost（prepareContinuable 走 provider
+能力）+ startContinuable/followup/interrupt/reportFrom/
+drainContinuableDescendants 转发）；⑤ dsh-subagent 18 项新测试（start 身份/
+描述符/元数据、persistence 前置、非 continuable provider、准备期信号回滚、
+深度拒绝、组合记录、工厂失败回滚、followup 顺序/未知/陌生父/同 id 替换、
+settle→父通知 + subagent/end、drain 关停 + DRAINING 拒新、drainDescendants
+森林剪枝、interrupt 双权、reportFrom 双投递、runtime 级转发）；dsh-subagent
+合计 32 项。
+偏差：冷恢复未移植（followup 非 resident 即 NOT_RESUMABLE，TS 会从持久化
+冷物化）；inbox claimed/discarded 记账未接线（settlement 观察者只看 status +
+owned_children 静止，本侧测试以显式 teardown 触发）；创建窗 setup 注册表
+未移植（materialize 在发布后组合，与 in_process 共享偏差）；Activation 的
+accepted 集合只增不减（无 inbox claim 清账回调，自动 settle 依赖后续接线）。
+
+第 79 轮 dsh-tool-jobs 落地 + 三处基础设施修复：① 新 crate
+`crates/jobs/tool-jobs`（TS `tool-jobs` 全量：Config schema 校验
+（schemastery number min 1 + union quiet/wakeup + 默认补全；apply 期
+waitTimeoutMs>cap 拒绝、maxConsecutiveWakes 整数性拒绝——2.5/1e300 拒，
+JS Infinity 不可表示记录偏差）、publicJob/statusLine、TextRetainer 截断
+族（fitWithSuffix/fitCompletionNotice 保留 job id + 收集动作尾）、三个
+控制工具（job_output：wait 钳制 min(timeout??default, cap) + consuming
+delta/终态输出 + finalize 保留 canonical status 分割；job_list：注册序
+渲染 + 空态；job_kill：already-finished 非消费快照）、tools/pre-execute
+prepend 捕获 outputLimit（exec token 键控 WeakMap 塌缩）、
+finalizeContent 对 pre/around/post 各阶段 policy 结果统一截断、
+attachController + onJobDone（caller ctx 显式传递）完成通知（Idle→
+followup 预算内、Running→inject、claimed 用户消息复位预算、reported
+抑制 kill/wait 已报、teardown reported 抑制、exact-owner 直投）+ 系统
+提示 tool:jobs 段 + 三个 Generic 呈现卡 + invariant companion；②
+dsh-jobs seam 重构：on_job_done/on_jobs_changed/attach_controller 增
+显式 caller Context（TS Proxy 重绑塌缩——修复第 48 轮遗漏，scoped
+mount 测试暴露：listener/controller 此前恒挂 global 层）；③ jobs-local
+注册 erased `Arc<dyn JobRegistry>`（get_typed 查询面修复）+ list 按
+单调 ordinal 注册序（此前 HashMap+同毫秒 startedAt 排序不稳定）+
+onJobDone/onJobsChanged listener 包含与 teardown cancel 抛错改走
+logger.warn（TS 通道）；④ dsh-scope `scope_of` 沿 fiber 父链上溯 + 环
+检测（root 自父绑定）——scope ctx 下挂载插件的子 fiber 现在解析到包围
+scope，systemPrompt.section/tools.register 的 scoped 层因此正确；
+⑤ dsh-tool-jobs 42 项测试全绿（TS 33 例 + 分步断言适配：watch channel
+send_replace 存值（spawned done 驱动尚未 subscribe）、wait 同步前缀
+futures::poll! 驱动、cancel settle 注入、1e300 替代 Infinity）。
+
+第 80 轮 dsh-tool-str-replace-editor 落地（M4 收尾项校验：TS 仓库并无
+credentials-encrypted/OS-keychain 包——README 明言 deferred，该项自
+backlog 移除）：① 新 crate `crates/fs/tool-str-replace-editor`（TS
+`tool-str-replace-editor` 全量：view（cat -n 行号 + view_range 校验/
+[start,-1] 尾部 + 截断标记）/create（存在即拒 + write-intent 瀑布）/
+str_replace（唯一性匹配 + FS_EDIT_NOT_FOUND/FS_AMBIGUOUS_EDIT 行号报告
++ 字面替换）+ insert（行界校验 + 单次 join 语义——三段 join 会多出尾
+换行，本轮实测修正）+ list（2 层深、隐藏/node_modules/__pycache__ 过滤
++ 路径排序）+ MutationPolicy（sandbox_mode 能力 → sandboxPolicy 缺失
+启动期拒绝、per-call SandboxExecutionPolicy、FS_SANDBOX_DENIED →
+sandboxDenialMarker 重标）+ presentCall 四形态（Generic read/Edit + Diff
+diff 卡片）+ schemastery Config schema + invariant companion）；②
+dsh-fs-sandbox 拆 `build`（构造不注册,fs-local 同构——测试注入转发
+包装器避免同服务名双注册）；③ 14 项测试全绿（TS 14 例全量：schema/
+presentation/dispose、canonical 四命令、absence 恢复、字面替换、列表
+截断、空行/范围/尾插、歧义/多行/CRLF/相对路径、18 项非法参数不动
+文件、observation-policy 读前编辑门、sandbox policy 拒绝 + ownerless、
+tab 保留、write 失败映射、配置拒绝）。
+关键点：fs/edit-intent 的 FsError 拒绝以 panic 走 Rust waterfall（无
+错误通道），工具层 catch_unwind 恢复结构化 {name,code} info（测试断言
+error.info.code）；MockFs 转发包装器 + 覆写槽（TS 的 ctx.fs 方法补丁
+等价）；session policy 请求用 Arc::new(session.clone())。
+
+第 81 轮 subprocess-local 终端层落地（M4 尾项 PTY 的可移植半）：①
+`process_inspector.rs`（TS process-inspector.ts 全量：ProcessIdentity
+（pid+started 身份）、ProcessInspector trait 7 法、ProcessInspectorInternals
+注入边界（readFile/readDir/open/read/close/exec/kill）、parseProcStat
+完整字段（含 comm 括号、state 单字符、started）、processTree 纯函数
+（children-first + visited 防环）、linuxProcessGroupHasLiveMembers、
+LinuxProcessInspector（tpgid 前台组、syscall 表 x64/arm64 的 read/
+select/pselect/poll/ppoll/epollWait/epollPwait 等待检测——/proc/mem
+fd_set、pollfd 小端解析、fdinfo tfd 匹配）、MacProcessInspector（ps
+表解析）、createProcessInspector（平台门控 win32 拒）；②
+`terminal.rs`（TS terminal.ts 全量：PtyTerminal trait（node-pty IPty
+塌缩）+ LocalTerminalHandle——onData 桥接 unbounded 输出流（exit 时
+sender drop 结束流）、onExit 一次性结算（信号反查表 1/2/9/15/20 +
+exitCode/signal 语义）、write/inspectForeground/signalForeground
+（SIGKILL 自组拒绝）、terminateForHostExit 同步三扫、descendants 采纳
+的 rootIdentity started 验证（PID 复用防串树）、TERM→wait→KILL→wait
+升级 + 幸存报告、terminate 幂等共享 future（失败重置槽）、disposers
+释放；③ 25 项新测试全绿（TS terminal.spec 18 例 + process-inspector.
+spec 7 例全量：fake timers 塌缩为真实短 grace、缓存 promise 身份断言
+塌缩为同结果语义）；dsh-subprocess-local 合计 39 项。
+偏差：真实 OS 绑定（DEFAULT_INTERNALS）与 node-pty 后端仍留待 PTY
+里程碑（无真实后端消费者）；subprocess-local 的 spawnTerminal 保持
+桩拒绝。
+
+第 82 轮 dsh-e2b 落地（E2B 三件套的第一件）：① 新 crate
+`crates/e2b/e2b`（TS e2b 全量：quoteE2bShellArg 单引号转义
+（'"'"'）、e2bControlEnvs 随机 HOME 隔离（/.dsh-e2b-control-uuid +
+不可覆盖）、Config 校验（apiKey 配置/E2B_API_KEY 环境回退——环境查找
+注入化免进程全局 env 竞态、cwd POSIX 绝对、timeoutMs 正整数）、
+E2bRuntime（注册 ctx.e2b、cwd/runtimeRoot、getSandbox disposing 双查、
+open 创建窗：makeDir cwd + runtimeRoot + getInfo 真目录校验（symlink/
+非目录拒）+ chmod 700 + 失败单次回滚 kill、dispose teardown effect：
+kill 的 NotFound 吞/其他 logger.error）；② npm SDK 边界塌缩为
+E2bSdk::create + E2bSandbox trait（makeDir/getInfo/run/kill）+
+E2bSdkError{kind: NotFound/Other}（SandboxNotFoundError 重导出）；
+共享创建用 tokio OnceCell<Result> 缓存（并发首调串行化，TS ready
+promise 等价——Shared<BoxFuture> 推断问题绕开）；③ 13 项测试全绿
+（TS 12 例 + quote 拆分：控制 HOME、共享沙箱创建/处置、处置期创建竞
+速（oneshot 门 + poll! 驱动）、env/cwd/timeout、NotFound 吞/他错
+logger.error、setup 失败回滚、回滚再败保原错、symlink/文件根拒、
+配置 3 例拒 + env 缺失拒、invariant companion）；dsh-e2b 合计 13 项。
+偏差：eager ready 变惰性（首个 getSandbox/dispose 触发创建，可观察
+契约不变）；真实 HTTP SDK 后端留待 e2b SDK 里程碑。
+
+第 83 轮 dsh-fs-e2b 落地（E2B 三件套第二件）：① dsh-e2b SDK 边界
+扩展：E2bEntryInfo 全字段（name/path/type/size/mode/modifiedTimeMs/
+symlinkTarget/metadata）、E2bSandbox 增 readBytes/readStream/list/
+write(metadata)/rename/remove + makeDir 返回 bool、E2bSdkErrorKind 增
+CommandExit{exitCode}（stderr 载荷）；② 新 crate `crates/e2b/fs-e2b`
+（TS fs-e2b 全量：posix resolve/relative 手写、canonicalPath 经
+`realpath -mz | base64 -w0` 命令 + 严格 NUL framing/base64 往返/UTF-8
+校验、entryVersion = sha256(metadata.dsh-version+path+type+size+
+mode+modifiedTime+symlinkTarget)、resolve/stat/lstat/readText/
+readBytes（stat 预检 + 流式增量上限 + 取消）/streamText（前 8192 字节
+NUL 采样 + 手写增量 UTF-8 解码器 TextDecoder{stream:true} 语义）/
+listDir（1 层 + symlink 单独 canonicalize + 稳定序）/writeText（per-
+key 锁 + checkWriteIntent + readForDiff（非文本→null）+ writeAtomic：
+随机 staging 目录 chmod 700 → write(metadata) → chmod 模式 →
+createIfAbsent 走 guardedLink 命令 / 否则 rename → remove staging）/
+editText（version 校验 + CRLF normalize/detect/restore + literalEdit
+replaceAll）；permission denied/operation not permitted 匹配→
+FS_PERMISSION_DENIED；③ 19 项测试全绿（TS 25 例核心子集：身份/
+symlink/列表、URL/包含、多字节路径、framing 5 拒、整读+跨块流、
+SDK 空流怪癖、二进制/无效/缺失/非正规映射、readBytes 上限、abort、
+创建元数据/模式保留/CRLF 归一/版本变化、意图强制、guardedLink
+竞速、字面编辑+CRLF 恢复、编辑失败码、并发串行化、staging 清理+
+命令/权限映射、canonicalization 失败、list 仅 symlink canonicalize）；
+fs-e2b 合计 19 项。
+关键点：测试 FakeRemote 完整移植远端节点树+命令解析（realpath/
+chmod/guardedLink/mv 引号对）——parking_lot 锁内嵌套 raw_info 死锁
+（list 的 filter/map 链持锁）、chmod 模式必须八进制解析、runtime
+真实挂载的 creation-window 副作用（.dsh-e2b 节点/chmod 命令）污染
+断言——setup 预热 open + 断言前删节点；TS 测试子集（剩余 stream
+cancel/binary 采样边界等用例留待后续轮次）。
+
+  第 84 轮 dsh-host-webserver 落地：
+  ① 新 crate `crates/host/webserver`（TS `@deepseek-ai/dsh-host-webserver`
+  全量接口：`WebServer` 注册 `ctx.webServer`；`Config { host, port }`
+  仅接受 `127.0.0.1` / `0.0.0.0` 与 0–65535；`register` exact/prefix
+  路由、`registerUpgrade`、`registerFallback` 唯一座位、`tapIndex` /
+  `applyIndexTaps`；exact 先于 prefix、最长前缀优先、未认领 404、
+  per-request panic/Err 收口为 400 且服务器继续服务；upgrade 精确匹配，
+  hyper `on_upgrade` 101 握手后把 `TokioIo<Upgraded>` 交给 handler；
+  teardown abort accept/connection/upgrade 任务以显式关闭 upgraded
+  socket；EADDRINUSE 作为 PluginError fail-loud）；② invariant companion
+  （`internal/plugin` 上 route/upgrade disposer 对称探针）；③
+  `tests/webserver.rs` 2 项全绿：路由优先级、fallback 语义、index tap、
+  index tap、malformed `%zz` 400、重复注册 panic / disposer 恢复、
+  upgrade 101 与重复拒绝、失败 upgrade 不影响服务、teardown 关闭
+  upgraded socket、端口占用失败；④ 偏差：未匹配 upgrade 返回 400 而非
+  裸 socket destroy；node `ServerResponse` 塌缩为返回 `axum::body::Body`。
+  
+  
 
 ### M2 — 类型、契约与共享工具
 
@@ -817,7 +1036,19 @@ completedTurnPrefix 切片（最后一个 turn/end 含、在飞回合排除、�
 - [x] timeout-policy（`crates/guard/timeout-policy`，9 项测试全绿——
       `@deepseek-ai/dsh-tool-call-timeout-policy`：协作式工具超时执行器；
       见上）；
-- [ ] goal-round-driver/tool-goal/command-goal；
+- [ ] goal-round-driver/tool-goal；
+- [x] command-goal（第 127 轮：新建 `crates/goal/command-goal`，将真实
+      `/goal` 人类命令接到 `CommandRuntime + GoalService`：show/create/
+      CAS edit/pause/resume/clear、complete 后创建新 identity、精确控制词
+      解析、Unicode objective、active/paused/blocked/complete 与 activation/
+      blocker/可用命令呈现、预期 GoalError→人类错误、command run/done 与
+      durable `goal/change` 闭环；append 失败新增 `GOAL_COMMIT_FAILED` 原子
+      回滚（不更新 cache/不广播），并从 command handler 作为基础设施错误
+      逃逸；补 Cordis Plugin、package-owned no-op invariant、direct/plugin
+      disposer 生命周期与缺依赖 fail-loud；生产 dsh-host 安装 goals、注册
+      `/goal`、挂载 goal domain + command adapter 两个 invariant，boot report
+      服务数 12→13。command-goal 19 项（lib 2 + integration 17）、dsh-goal
+      14 项、Host boot/真实网络/安全 10 项全绿）；
 - [x] tool-todo（`crates/todo/tool-todo`，12 项测试全绿——
       `@deepseek-ai/dsh-tool-todo`：整表替换 todo 工具 + `todos` 投影
       单元；见上）；
@@ -867,12 +1098,278 @@ completedTurnPrefix 切片（最后一个 turn/end 含、在飞回合排除、�
 - [x] dsh-host M6 组合升级（第 72 轮：10 服务真实启动 + JSONL
       持久化 + SQLite FTS5 搜索 + schedule + 端到端 durability/search
       探针；见上）；
-- [ ] webserver 路由服务；
-- [ ] frontend-static + SPA fallback/index injection；
-- [ ] directory-picker browse/native/auto；
-- [ ] plugin-inventory；
-- [ ] apiproxy 52 RPC + SSE/download/respond；
+- [x] webserver 路由服务（`crates/host/webserver`，第 84 轮，2 项测试全绿）；
+- [x] frontend-static + SPA fallback/index injection
+      （`crates/host/frontend-static`，第 85 轮：403 穿越/200 回退/405/HEAD/
+      index taps，2 项测试全绿）；
+- [x] directory-picker seam（`crates/host/directory-picker`，第 85 轮：
+      native/browse 判别能力 + 三值错误码闭集 + AbortSignal，3 项测试全绿）；
+- [x] directory-picker browse 后端（`crates/host/directory-picker-browse`，
+      第 85 轮：有界窗口流式列表 + 完全限定路径栅栏 + 非递归创建 +
+      raceAbort，14 项测试全绿）；
+- [ ] directory-picker native/auto 后端；
+- [x] directory-picker auto 判定（第 115 轮：resolve 纯函数（bind/SSH/
+      平台/显示/chooser 矩阵）+ PATH 探针（zenity/kdialog 注入谓词）
+      3 项测试全绿；静态组合偏差记录）；
+- [x] directory-picker native 后端（第 115 轮：macOS osascript + Linux
+      zenity/kdialog 子进程 + 取消观察，1 项测试全绿；Windows
+      IFileOpenDialog COM 对话留待 win32-dialog 里程碑）；
+- [x] plugin-inventory（`crates/host/plugin-inventory`，第 86 轮：非组
+      条目只读投影 + FiberState→phase 映射 + Remote 注解留待 typert，
+      2 项测试全绿；顺带修复 loader `update` 缺失的禁用即释放 fiber
+      分支——上游 entry.ts 181–192 行语义）；
+- [x] apiproxy 契约层（`crates/host/apiproxy`，第 87 轮：四象限
+      RpcMessage + 40 码 RpcError 判别联合 + bool 字面量 RpcResult +
+      54 条方法注册表 + 载体 receipt，12 项测试全绿）；
+- [x] apiproxy 载体层（第 87 轮：fetch/handler 状态机——404/415/400/500
+      载体纪律 + envelope 解析与 rpcId 抢救 + SSE 帧化 + respond receipt
+      + session.export 转发，ApiProxyCarrier trait 待组合层实现，
+      8 项测试全绿）；
+- [x] apiproxy 事件帧词汇（第 88 轮：MuxFrame 11 变体 + HostFrame 10
+      变体判别联合 + ToolEventView/QueuedInboxItem + EventsApi trait +
+      JobView/WorkspaceView wire 视图，4 项测试全绿；顺带授予
+      dsh-user-approval::ApprovalOutcome wire serde）；
+- [x] apiproxy sessions 契约层（第 88 轮：12 方法 SessionsApi trait +
+      SessionSummary/HistoryEntry/ModelSelection 系列/SessionModels +
+      PromptContentPart/QueueAction 判别联合 + 全部请求/响应 wire 结构，
+      3 项测试全绿）；
+- [x] apiproxy 域契约补齐（第 89 轮：host 5 方法 + skills + goals 6 动词
+      + credentials 3 方法 + subagents 4 方法 + settings 5 方法 + llm 3
+      方法，各自请求/响应 wire 结构一次编译全绿；存量 27 项测试保持
+      全绿）；
+- [x] apiproxy 契约层收官（第 90 轮：agent-presets 6 方法 + downloads +
+      approvals + questions，api/ 全部 15 域 + rpc + rpc-map + fetch/
+      handler 齐备，27 项测试全绿）；
+- [x] apiproxy 组合层 host 域 + skill.list + credentials（第 91–92 轮：
+      ApiProxyService 骨架 + host 5 方法全接线（8 项端到端测试）+ 
+      skill.list 会话解析/用户可调用过滤（4 项测试）+ credentials 3
+      方法（REF_PATTERN 校验/bad-request/credential-rejected），累计
+      39 项测试全绿）；
+- [x] apiproxy agent 解析器 + goal 域（第 93–94 轮：AgentResolver 单飞
+      冷恢复/子代理归属 fence/错误分类（4 项测试全绿）+ goal 6 动词
+      接线（mutateGoal + goalServiceFor + goalError 映射），第 95 轮
+      goal 端到端 3 项全绿（create→pause→clear CAS 链 + session-not-
+      found + 无服务 internal）；累计 52 项测试全绿）；
+- [x] apiproxy llm + settings 域（第 96–97 轮：llm.providers 目录合并/
+      models catalog/discoverModels 失败词汇 4 项测试全绿 + settings 5
+      方法（describe 全量映射/update/replace/mutate/冲突判定/openDocument）
+      6 项测试全绿；顺带补 SettingsProvider::writable 转发；累计 59 项）；
+- [x] apiproxy workspace 域（第 98 轮：list/create/rename/delete/
+      insertBefore/archiveSession/unarchiveSession 7 方法 + WorkspaceApi
+      trait 与全部请求/响应 wire 结构；第 99 轮 memory domain 装配下
+      5 项端到端全绿（create 复用 created 位/rename/delete 链 +
+      workspace-invalid-path + archive 会话词汇）；累计 64 项）；
+- [x] apiproxy session.list/create（第 100 轮：attached/cold 汇总合并
+      （updatedAt 降序、blank/running/header 透传，cold blank 保守
+      false 偏差）+ create 全链路（sessions.create + agents.create +
+      工厂），3 项测试全绿；累计 67 项）；
+- [x] apiproxy session.rename/cancel（第 101 轮：session-title 服务
+      rename（title-invalid/internal 词汇）+ agents.get cancel（User
+      cause + keepInbox + 子代理 fence），2 项测试全绿；累计 69 项）；
+- [x] apiproxy session.history/models/selectModel（第 102 轮：paginate
+      消息对齐分页（sourceEventSeqs groupStart 切割 + beforeSeq 窗口 +
+      hasMore）3 项测试全绿；models（selectionFor 进程内选择 + catalog +
+      routable）与 selectModel（resolveCallConfig 校验 + selections
+      记录，图片准入留待 attachment 里程碑）3 项测试全绿；累计 75 项）；
+- [x] apiproxy session.fork（第 103 轮：turn/end 边界定位（anchored/
+      末尾回退）+ out-of-band 切割扩展 + 子会话创建（seed 前缀 +
+      parentSession/seedLength/cwd/agentPreset 继承），3 项测试全绿；
+      workspace 附加留待 attach 里程碑；累计 78 项）；
+- [x] apiproxy session.updateQueue（第 104 轮：收件箱 edit/remove/steer
+      + 非文本编辑 attachment-error/未决 item queue-item-not-found/steer
+      前置 steer-unavailable 词汇，3 项测试全绿；累计 81 项）；
+- [x] apiproxy session.prompt（第 105 轮：时区规范化（invalid-time-zone
+      词汇）+ queue/steer 投递（rpcId/clientTimeZone 源透传）+ 图片准入
+      暂拒，3 项测试全绿；顺带修 workspace 测试并行时间戳撞车；累计
+      84 项）；
+- [x] apiproxy session.attachment（第 106 轮：会话引用授权（递归图片
+      引用扫描 + ATTACHMENT_NOT_REFERENCED）+ 图片读取 base64 应答，
+      2 项测试全绿；累计 86 项）；
+- [x] apiproxy session.search（第 107 轮：可见性授权边界 + 预算循环
+      （INVALID_LIMIT 半减/STALE_CURSOR 重置/游标去重/调用上限）+
+      snippet 截断，2 项测试全绿；**session 域 12 方法全部接线并测试
+      闭环**；累计 88 项）；
+- [x] apiproxy subagent 域（第 108–109 轮：list/history/prompt/interrupt
+      4 方法接线 + 4 项测试全绿（空目录与父可用性翻转/中断火忘确认/
+      父缺失词汇/服务缺失）；累计 92 项）；
+- [x] apiproxy mux 事件流（第 110 轮：subscribed 基线 + session/event
+      订阅转发（SSE 端到端 1 项全绿）；approval/question/queue/jobs/
+      projection 基线随各里程碑；累计 93 项）；
+- [x] apiproxy host 事件流（第 124 轮：events_host 从空占位升级为完整
+      帧流——session/created → host/session-added（blank + header 字段
+      投影）、session/disposed 与 workspace/session-deleted →
+      host/session-removed、domain/changed → workspace 帧家族（global 表
+      Put：新增 workspace/顺序变化/归档集合变化；workspaces 表
+      Deleted/Put：移除/既有实体变化，经 workspace_record_view 从 record
+      JSON 构造视图）、11 个 allowlist 事件（TS API_REMOTE_FORWARDED_
+      EVENTS 原样清单）→ host/remote-event（args 转 JSON，不可序列化
+      参数跳过）；基线去重状态与 TS 同构；1 项组合测试全绿（session-
+      added 帧 + remote-event 帧）。顺带修复实现期缺陷：13 处
+      ctx.on(...) 注册漏 await 导致监听器从未注册；偏差：agent/status
+      与 agent/error 帧等待 dsh-agent 的状态/错误事件发布（Rust
+      registry 目前只发 created/disposed）、registry 缺失 workspace 时
+      跳过而非 throw）；
+- [x] apiproxy native-path-opener（第 111 轮：跨平台打开器 1:1（浏览器
+      意图/macOS 默认浏览器/WSL 翻译/PowerShell 字面量/canOpenNativePath/
+      text-editor 意图），6 项测试全绿（命令构造断言 + 可达矩阵）；累计
+      99 项）；
+- [x] apiproxy downloads.sessionLog 真实接线（第 114 轮：deps 解析
+      500/501/404 语义 + flush 屏障 + root artifact 读取 + zip 组装 +
+      content-disposition；顺带修复 dsh-session-query corpus.rs 锁跨
+      await 的 !Send future 缺陷）；**apiproxy 组合层全部实质接线完成**；
+      累计 103 项）；
+- [x] apiproxy agentPreset 域接线（第 122 轮：6 方法
+      list/select/read/copy/open_document/remove 全部接线——list 空部署
+      空 roster + trust/isDefault/authorable/hasDocument；select per-session
+      单飞链 + 链内重读 blank（started → agent-preset-locked）+ recompose
+      + 成功才 append agent-preset/selected；read resolve 类型化 +
+      read_composition；copy/remove 服务方法 + 错误分类器（not-found/
+      read-only/invalid/exists 按 thiserror 固定模板精确映射）；
+      openDocument trust 门（shipped → read-only）+ dirname +
+      can_open_paths 三级回退（注入 can → 注入 opener → 平台探测）+
+      open_target（abort → cancelled）；9 项组合测试全绿。顺带修复
+      dsh-agent-presets recompose 同线程重入死锁：`match
+      self.bindings.lock().get(...)` 的 parking_lot guard 存活到整个
+      match 表达式，None 分支的 insert 重锁同锁永久挂起——改为先
+      cloned() 快照再 match（dsh-scope 的 ScopeParentBinding 补
+      #[derive(Clone)]）；原 64 项测试未覆盖 recompose None 分支故
+      第 121 轮全绿时未暴露）；
+- [x] apiproxy approval/question respond + 物理 HTTP/SSE 闭环（第 126 轮：
+      pending registry、requested 重放、rpcId 一次性认领、严格 question
+      answer/approval 关联校验、resolved/cancelled 广播、并行审批配对与
+      response-vs-abort 首次认领；mux stream Drop/idle abort 同步释放
+      listener，`session/subscribed.lastSeq` 修正为 `session.seq - 1`；
+      dsh-host 挂载 ApprovalService 与 `/api` fetch bridge，160 MiB body cap、
+      bytes/SSE 流映射、Host + Sec-Fetch-Site + Origin loopback trust fence；
+      真实端口验证 POST `/api/respond` 200 receipt 与 GET `/api/events.mux`
+      200 `text/event-stream`。交互 12 项、Host boot 8 项、approval 26 项、
+      mux 聚焦 1 项全绿）；
 - [ ] Rust CLI、profile bundles、composition/HMR/信号退出；
+- [x] dsh CLI 入口骨架（第 116 轮：parseDshArgs 1:1（profile/web/plugin/
+      dump-config 模式 + 内参透传 + help/version/错误语义）6 项测试全绿
+      + bin 冒烟三路径（--version/-h/缺 profile 均正确退出码）；profile
+      boot 与 plugin 转发留待 profile-boot 里程碑）；
+- [x] dsh profile-boot 组合层（第 119+ 轮：home_patch_path/
+      resolve_telemetry_patch（任意非空值禁用）/prepare_profile（空根
+      配置重写）/ComposedProfile + compose_profile（bundle→profile→
+      home→--patch overlay→telemetry 五层栈 + rows 索引）/all_patches/
+      compose_live（用户层每代重读）；4 项测试全绿（insert 数组形状
+      对齐 TS applyEntryPatches）；累计 10 项。偏差：telemetry env
+      参数化注入、healProfilesModuleFallback 无对应、runProfile（信号/
+      启动环境/cmdline/HMR 回退挂载/boot 调用）留待对应服务移植后
+      接线）；
+- [x] dsh-e2b 命令面扩展 + subprocess-e2b 适配器（第 125 轮：
+      dsh-e2b 的 E2bSandbox::run 升级为 E2bCommandOptions（envs/cwd/
+      流式 on_stdout/on_stderr 回调/signal），新增 E2bBackgroundOptions +
+      E2bCommandHandle（pid/wait/kill/send_stdin/close_stdin）与
+      run_background（TS commands.run 的 background 模式）；新建
+      crates/e2b/subprocess-e2b（TS packages/e2b/subprocess-e2b 核心子集：
+      environment（远程环境 base64 探针/scrub/bootstrap/serialize）、
+      remote（wait_tick/signalRemoteGroups 容错信号）、output
+      （E2bBase64Decoder 帧协议 + E2bOutputReader 尾窗/spill 广告）、
+      process（E2bSubprocessHandle：bootstrap shell + 构造即启动的 run
+      状态机——环境探针→state 目录→run_background→pid 校验→批量
+      stdin→pgid/exit-code 轮询→outcome；TERM→grace→KILL 阶梯）、
+      index（E2bSubprocessRuntime：install/dispose/resolve_executable
+      1:1/spawn 校验链）；6 项聚焦测试全绿（resolve 两路径、spawn
+      校验、exit-code 结算、terminate 阶梯、环境词表）。偏差：
+      spawnTerminal 与 terminal 阶梯留待 terminal 里程碑（fail-loud
+      占位）、pipe 流为 mpsc 桥接（TS PassThrough 背压为尽力语义）、
+      输出编码器远端注入留待真实 SDK 后端）；
+- [x] dsh-host 生产组合挂载 agent-presets（第 123 轮：compose_host 在
+      loader 之后挂 AgentPresets——default=standard、shipped root 为
+      manifest 锚定的 config/agent-presets system 根（cwd 无关）、
+      include_user_root=true + 生产 env；HostSpine 增 agent_presets 字段；
+      boot_report services 增至 11 项并新增 probe.presetCount（真实
+      discovery 读）；boot 集成测试断言服务可解析 + presetCount≥4；
+      `cargo run -p dsh-host` 冒烟输出 11 服务 + presetCount 5（4
+      shipped + 1 user）；dsh-cli 的 compose_profile 同步解除
+      shipped-root 跳过偏差——resolve_agent_presets_patch 1:1 TS
+      composeProfile 159-167 行（保留行内 config、仅覆盖 roots，经
+      AGENT_PRESETS_ROW_ID 常量 + shipped_preset_root() manifest 锚定）；
+      dsh-cli 11 项测试全绿）；
+- [x] dsh-app-boot render_config_dump + dsh dump-config（第 120 轮：
+      ConfigDumpLayer/render_config_dump 1:1（逐层前缀快照 positional
+      diff provenance、`# == origin, patched by ...` 分组注释、unmatched
+      patch 按层标签 warn、!!js 经 yaml.rs 反向转 Tagged verbatim 输出）
+      + load_profile_with_user_layer（defaultOnly 恢复诊断跳过解析损坏
+      用户层）+ dsh-host-cli run_dump_config（bundle 层→用户层→home 层
+      →--patch overlay 标注输出与警告分离）；app-boot 12 项/dsh-cli
+      11 项测试全绿；偏差：%C printf 替换无对应（Rust warn 为字面量））；
+- [x] dsh-host 外壳组合升级（第 117 轮：loader + webserver（OS 端口）+
+      frontend-static（web/dist 托管）+ directory-picker browse +
+      plugin-inventory + apiproxy 网关；cargo run exit 0 且 durability/
+      search 探针全过；顺带处理 D 盘 172 GB 构建产物积压（cargo clean））；
+      浏览器级 GUI 验证留待 CLI profile-boot 组合后）；
+- [x] dsh-app-boot profile 核心（第 118 轮：profile 目录解析/名称校验/
+      初始化脚手架（manifest/patch/pnpm 工作区幂等）/manifest 解析/
+      bundle 层目录式解析/patch 文件解析/optional+overlay 装载语义/
+      compose_entries 扁平应用；3 项测试全绿；Node 模块解析与 watchUser
+      Patches/boot 组合留待 app-boot 完整里程碑）；
+- [x] dsh-app-boot boot 核心（第 118+ 轮：mount_entries/assert_entries_
+      loaded/assert_entries_activated/boot 落地；错误链 1:1 对齐 TS——
+      mount 与 settle 失败统一 `plugin tree failed to load` 标签，import
+      失败透传 loader 的 `failed to import loader entry {id} ({name})`
+      诊断（LoaderError Display 与 TS updateError 逐字一致），fiber-less
+      entry 审计输出 TS 格式 `plugin(s) failed to load: {names}`；5 项
+      测试全绿（新增 boot 成功/未知插件名错误链、fiber-less 审计）；
+      install_fail_loud/watch_user_patches 与 profile-boot CLI 接线
+      留待后续）；
+- [x] dsh-app-boot install_fail_loud（第 119 轮：FailLoudProcess trait +
+      FailLoudGuard；单次 latch 只报告首个 rejection、诊断先于 release、
+      release 竞速 FAIL_LOUD_RELEASE_TIMEOUT_MS 超时后强制 exit(1)、
+      release 自身失败吞掉、uninstall 摘除；3 项测试全绿（无 release
+      立即退出/挂起 release 虚拟时钟超时/卸载失效）；累计 8 项测试；
+      TS assembledActivationRejections checkpoint 集合留待 activation
+      审计改写为 rejection 收集后接线）；
+- [x] dsh-app-boot watch_user_patches + include patches-only 更新（第
+      119+ 轮：修复 dsh-cordis-include internal/update 监听与 TS 相反的
+      移植 bug——TS index.ts:206-213 是 path 相同才重应用 patches（消费
+      事件）、path 不同透传；Rust 原实现反了。新增
+      apply_patches_with_config（已读 data 重应用不重读文件）+
+      config_update_reapplies_patches_without_rereading 集成测试（14/14
+      全绿）；app-boot 落地 refresh_user_patches（保留 include 非 patch
+      配置/compose 应用/entry config 更新驱动重应用）与
+      watch_user_patches（UserPatchWatcher 注入 HMR register_config 面、
+      INACTIVE_EFFECT → no-op disposer、hmr 缺失错误文案逐字对齐；3 项
+      测试全绿（端到端 patch 文件变化 probe 配置 1→2→3 + path 保留/
+      hmr 必需/INACTIVE_EFFECT no-op）；累计 11 项测试。偏差：root
+      Include entry 直接传入（TS bootstrapIncludes WeakMap 注册表随
+      root-include mount 移植）、HMR 服务注入式（dsh-cordis-hmr crate
+      尚未移植））；
+- [x] dsh-agent-presets 落地（第 121 轮）：新 crate
+      `crates/preset/agent-presets`（TS `@deepseek-ai/dsh-agent-presets`
+      全量：词表（PresetTrust/AgentPreset/PresetRoot/Config/PRESET_ID/
+      UnknownPresetError/PresetMountError）、metadata 显示元数据
+      （read/render：坏 YAML/非文本/空白/identity 不可携带 + integral
+      order 渲染）、session 解析（resolveSessionPreset：header 创建值 +
+      agent-preset/selected 事件末次胜）、discovery（scanRoot/
+      discoverPresets：id 模式门控、缺失/坏 YAML/形状错误 → broken 行、
+      order+id 排序、first-root-wins）、authoring（copy 整目录递归解引用
+      symlink + tightenModes 0600/0700 + metadata 重写（描述保留/名字
+      丢弃）+ 失败清理、delete 的 shipped/containment 拒绝、writableRoot
+      首个 user root）、mount（PresetTreePlugin fiber 承载 Include 子树、
+      readonly + no-op write-back（self-dispose 不截断文件）、inactiveRows
+      审计（inject 缺失诊断）、leakedServices 根 realm 泄漏审计（isolate
+      realm 放行）、standingMountFor/serviceForAgent/livePresetMounts）、
+      AgentPresets 服务（settings 段注册（base default 层）/agent/created
+      警告（advisory）/session/event 转发 agent-preset/selected/standing
+      单飞 + compositionStamp 换代/挂载/composeFrom/composedPreset/
+      recompose/standingKeyFor/copy 查重/remove 清默认）、invariant 伴生
+      （internal/service 重查泄漏 + assemble 未 join 检查（无 agent 接线
+      暂惰性））；顺带修复 dsh-cordis-loader 两处移植缺口：
+      EntryOptions.isolate 接受 TS 的 `true`（entry-local realm）形式 +
+      LoaderError::Aggregate Display 展开每行 cause（对齐 TS
+      mountDetail）；64 项测试全绿（lib 30 + mount 8 + authoring 7 +
+      roster 8 + invariant 2 + 词表/元数据/发现）。偏差：ScopeKey 为
+      不透明身份（TS `{agentPreset:id}` 结构化键）；bindings 强引用表
+      （TS WeakMap）；dsh_home_path 经注入 env 闭包（测试隔离 DSH_HOME，
+      生产传进程 env）；localeCompare 塌缩为码位序；Windows 无 chmod
+      语义（cfg(unix) 收紧）；settings 默认读取经 to_json 投影；
+      AssembleContext 无 agent 字段（unjoined-agent 检查惰性）；inject
+      回调 config 参数与 TS 依赖值不同（服务经 ctx 读取）。
+      **apiproxy agentPreset 域阻塞自此解除**（wire 契约第 90 轮已落地，
+      下一步接线 6 方法）。
 - [ ] 托管现有 `web/dist`，用现有 GUI 完成浏览器验证。
 
 ### M7 — 全量一致性与切换
@@ -890,7 +1387,20 @@ completedTurnPrefix 切片（最后一个 turn/end 含、在飞回合排除、�
    `start_returns_immediately_with_a_running_handle_that_settles_as_completed`
    与 `dsh-credentials-local` 的
    `keeps_both_refs_when_two_providers_write_the_same_document_concurrently`
-   在全量并行负载下偶发时序抖动（单独运行必过），与移植无关；第 70 轮
+   （第 111 轮起另见 `dsh-tool-jobs` 的
+   `keeps_the_complete_pty_job_id_and_collection_action_at_the_minimum_pty_limit`
+   ——全量并发下 owner job 计数串扰报 "background job limit reached"，
+   单 crate 42 项必过）
+   （第 82 轮起另见 `lets_a_non_empty_process_environment_win_read_only_over_the_file`
+   ——同一二进制的并行测试共享进程 env，`unsafe set_var` 探针在全量
+   并发下偶发读不到，单独运行必过；第 83 轮起另见 dsh-settings 的
+   `mutate_applies_path_ops_on_the_current_section`——共享全局 storage
+   桩在全量并发下偶发串扰，单 crate/单测必过；第 124 轮起另见
+   dsh-host-apiproxy 的
+   `list_merges_attached_and_cold_sessions_sorted_by_updated_at`——同一
+   测试二进制的三个并行测试共享进程级 session 格式状态，v1 日志偶发
+   报 "reads only v0"，单独运行 3/3 必过）在全量并行负载下偶发
+   时序抖动（单独运行必过），与移植无关；第 70 轮
    机器重载时曾连续 3 次全量命中（150ms 启动时限断言）、隔离运行 14/14
    绿、第 4 次全量即通过——重试直到绿即可，后续加宽容差或串行化。
 1. **动态 JS 插件与 workflow 脚本**：TS 版依赖 `node:vm`；Rust 需要嵌入式 JS runtime
@@ -905,29 +1415,45 @@ completedTurnPrefix 切片（最后一个 turn/end 含、在飞回合排除、�
 5. **Windows 安全**：受限令牌、能力 SID、DACL、COM picker、Job Object/PTY 均需真实 Windows 集成测试。
 6. **存储兼容**：JSONL/zstd/SQLite 必须通过现有 fixture，不能只做"相似格式"。
 
-## 6. 下一步（第 73 轮收尾状态）
+## 6. 下一步（第 127 轮收尾状态）
 
-已落地：workspace 成员 60+ 个 crate（vendor/cordis 生态 7 包 + core +
+已落地：workspace 成员 65+ 个 crate（vendor/cordis 生态 7 包 + core +
 util + session 12 + settings + llm + skill 4 + plan + schedule +
-subagent 契约层 + storage/workspace/spill/credentials/sandbox/fs/
-subprocess/terminal/shell/code-runtime/jobs/goal/context/guard/identity/
-todo/attachment/interaction/feedback/compaction 各分组核心 +
-dsh-host 可启动组合），`cargo test --workspace` 全绿（总数见 §1），
-`cargo run -p dsh-host` 实际运行并输出 10 服务 + 端到端
-durability/search 探针。
+subagent 契约层/服务核心/进程内驱动/fork/spawn/tool-subagent/投影/枚举/
+continuation + jobs 三件套（seam/local/tool-jobs）+ fs 四件套（seam/
+local/observation-policy/sandbox）+ tool-str-replace-editor +
+storage/workspace/spill/credentials/sandbox/subprocess/terminal/shell/
+code-runtime/goal/context/guard/identity/todo/attachment/interaction/
+feedback/compaction 各分组核心 + preset/agent-presets（第 121 轮）+
+apiproxy agentPreset 域 6 方法接线（第 122 轮，9 项组合测试）+
+dsh-host 生产组合挂载 agent-presets + profile-boot shipped-root 偏差
+解除（第 123 轮）+ apiproxy host 事件流（第 124 轮）+
+**subprocess-e2b 适配器（第 125 轮，6 项聚焦测试）** + **ApiProxy
+approval/question respond 与真实 HTTP/SSE、安全 fence 闭环（第 126 轮）** +
+**command-goal 人类命令与生产 Host goals/invariant 闭环（第 127 轮）** +
+dsh-host 可启动组合），最终 `cargo test --workspace` 验收为
+1714 passed / 0 failed / 1 ignored（371 个结果分组；见 §1）。
+
+第 128 轮目标：**tool-goal**。沿用已完成的 GoalService/Host goal domain，
+补齐模型工具入口的 create/edit/pause/resume/complete/clear 与严格 schema、
+CAS/取消/审计事件闭环；暂不把 46+ 项高竞态的 goal-round-driver 混入同轮。
+`runProfile` 继续判定为阻塞：默认 web profile 使用 npm bundle 名，Rust resolver
+目前只支持目录式 bundle，生产 loader 静态注册表为空，且 shipped 配置含 `!!js`
+与动态/HMR 语义；Windows native picker 可作为独立平台能力轮次推进。
 
 未完成（按剩余工作量排序）：
 
-1. subagent 运行时层（registry/backends/in-process/spawn/acp + tool-
-   subagent 三件套 + list-children/continuation/投影——TS 约 4400 行
-   源码 + 4700 行测试）；
-2. workflow（engine/worker/tool/ralph——依赖嵌入式 JS 运行时，独立
+1. workflow（engine/worker/tool/ralph——依赖嵌入式 JS 运行时，独立
    里程碑）与 MCP/LSP/ACP 系列；
-3. M4 收尾：sandbox-local（Linux/macOS-only）、Windows ACL restricted
-   token、credentials-encrypted（DPAPI/keychain）、subprocess PTY、
-   E2B、code-runtime-worker-thread（嵌入 JS/TS 运行时）、tool-jobs；
-4. M6 外壳剩余：webserver 路由、frontend-static、directory-picker、
-   plugin-inventory、apiproxy 52 RPC + SSE/download/respond、Rust CLI
-   与 profile bundles；
-5. M7 全量一致性：conformance fixture、golden wire/storage/session
+2. M4 收尾：sandbox-local（Linux/macOS-only）、Windows ACL restricted
+   token、code-runtime-worker-thread（嵌入 JS/TS 运行时）；E2B 三件套
+   已完成 core + fs 适配器（第 82–83 轮）+ subprocess-e2b 适配器
+   （第 125 轮），真实 HTTP SDK 后端留待后续；subprocess-e2b 的
+   spawnTerminal/terminal 阶梯与 PTY 真实 node-pty/ConPTY 后端
+   （第 81 轮落地终端 handle 与进程检查层逻辑，真实 OS 绑定留待
+   后端里程碑）；credentials-encrypted/OS-keychain 自 backlog 移除
+   （TS README 明言 deferred，仓库无此包）；
+3. M6 外壳剩余：Rust CLI 与 profile bundles（runProfile 接线）、
+   托管现有 `web/dist` 浏览器级 GUI 验证；
+4. M7 全量一致性：conformance fixture、golden wire/storage/session
    数据、CI 矩阵、Rust Host 默认入口与 1:1 完成声明。

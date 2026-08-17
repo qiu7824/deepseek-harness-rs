@@ -258,7 +258,8 @@ impl WorkspaceEntity {
     }
 
     pub async fn status(&self) -> Result<&'static str, String> {
-        match tokio::fs::metadata(self.record.lock().path.as_str()).await {
+        let path = self.record.lock().path.clone();
+        match tokio::fs::metadata(&path).await {
             Ok(meta) if meta.is_dir() => Ok("ok"),
             _ => Ok("missing-dir"),
         }
@@ -320,5 +321,61 @@ impl WorkspaceEntity {
                 },
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::task::{Context as TaskContext, Poll};
+
+    use futures::future::BoxFuture;
+    use futures::task::noop_waker_ref;
+
+    use super::*;
+    use crate::types::workspace_id;
+
+    struct UnusedHost;
+
+    impl WorkspaceEntityHost for UnusedHost {
+        fn table(&self) -> Arc<dyn dsh_storage_domain::KvTable> {
+            panic!("status does not access storage")
+        }
+
+        fn session_path(&self, _id: &SessionId) -> Option<String> {
+            None
+        }
+
+        fn read_session_header(
+            &self,
+            _id: &SessionId,
+        ) -> BoxFuture<'static, Result<SessionHeader, String>> {
+            Box::pin(async { Err("unused".to_string()) })
+        }
+
+        fn remember_session_path(&self, _id: &SessionId, _path: &str) {}
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn status_releases_record_lock_before_filesystem_await() {
+        let entity = WorkspaceEntity::new(
+            Arc::new(UnusedHost),
+            workspace_id("status-lock"),
+            WorkspaceRecord {
+                path: "D:\\definitely-missing-dsh-workspace-status".to_string(),
+                title: "status".to_string(),
+                session_ids: Vec::new(),
+                created_at: "2026-01-01T00:00:00.000Z".to_string(),
+                updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+            },
+        );
+        let mut status = Box::pin(entity.status());
+        let mut task_context = TaskContext::from_waker(noop_waker_ref());
+
+        assert!(matches!(status.as_mut().poll(&mut task_context), Poll::Pending));
+        assert!(
+            entity.record.try_lock().is_some(),
+            "status must release the record lock before awaiting filesystem I/O"
+        );
     }
 }

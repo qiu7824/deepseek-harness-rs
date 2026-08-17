@@ -123,7 +123,10 @@ impl SessionCorpus {
         if aborted(signal) {
             return Err(abort_error());
         }
-        let persisted: Vec<SessionHeader> = match self.persistence.lock().clone() {
+        // Clone the backend out of the lock BEFORE the await (a guard held
+        // across `list_persisted` makes the future !Send).
+        let persistence_backend = self.persistence.lock().clone();
+        let persisted: Vec<SessionHeader> = match persistence_backend {
             Some(persistence) => list_persisted(&*persistence, signal).await?,
             None => Vec::new(),
         };

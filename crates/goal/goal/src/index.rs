@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cordis::{ArcValue, Context, EventOptions, Service, arc};
@@ -24,10 +25,12 @@ use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::domain::{
-    GoalChangeMeta, GoalChanged, GoalChangedPayload, GoalClearChangeMeta, GoalError,
-    GoalErrorCode, GoalOperation, GoalSnapshotChangeMeta,
+    GoalChangeMeta, GoalChanged, GoalChangedPayload, GoalClearChangeMeta, GoalError, GoalErrorCode,
+    GoalOperation, GoalSnapshotChangeMeta,
 };
-use crate::fold::{apply_goal_event, decode_goal_change, empty_goal_fold_state, goal_change_ref, GoalFoldState};
+use crate::fold::{
+    GoalFoldState, apply_goal_event, decode_goal_change, empty_goal_fold_state, goal_change_ref,
+};
 use crate::runtime::GOAL_CHANGE_VERSION;
 use crate::types::{
     CreateGoalRequest, CreateGoalResult, EditGoalRequest, GoalActivation, GoalBlockReason,
@@ -38,8 +41,8 @@ pub use crate::types::{
     CreateGoalRequest as CreateGoalRequestType, CreateGoalResult as CreateGoalResultType,
     EditGoalRequest as EditGoalRequestType, GoalActivation as GoalActivationType,
     GoalBlockReason as GoalBlockReasonType, GoalPhase as GoalPhaseType,
-    GoalProjection as GoalProjectionType, GoalRef as GoalRefType,
-    GoalSnapshot as GoalSnapshotType, GoalView as GoalViewType,
+    GoalProjection as GoalProjectionType, GoalRef as GoalRefType, GoalSnapshot as GoalSnapshotType,
+    GoalView as GoalViewType,
 };
 
 /// Deployment default for goal creation (TS `Config`).
@@ -62,7 +65,10 @@ pub const DEFAULT_MAX_GOAL_ROUNDS: u64 = 256;
 /// Light last-wins fold of the `goal` projection unit (TS
 /// `applyGoalProjection`). Any non-goal or malformed event returns the
 /// previous state.
-pub fn apply_goal_projection(state: &Option<GoalProjection>, event: &SessionEvent) -> Option<GoalProjection> {
+pub fn apply_goal_projection(
+    state: &Option<GoalProjection>,
+    event: &SessionEvent,
+) -> Option<GoalProjection> {
     if event.type_ != "goal/change" {
         return state.clone();
     }
@@ -171,21 +177,22 @@ impl GoalService {
             caches: Mutex::new(HashMap::new()),
         });
         let service_for_listener = service.clone();
-        let listener: Arc<cordis::Listener> = Arc::new(
-            move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+        let listener: Arc<cordis::Listener> =
+            Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
                 let service = service_for_listener.clone();
                 Box::pin(async move {
                     let agent = args
                         .first()
-                        .and_then(|value| value.downcast_ref::<dsh_agent::AgentSessionStartPayload>())
+                        .and_then(|value| {
+                            value.downcast_ref::<dsh_agent::AgentSessionStartPayload>()
+                        })
                         .map(|payload| payload.agent.clone());
                     if let Some(agent) = agent {
                         let _ = service.disarm(&agent);
                     }
                     None
                 })
-            },
-        );
+            });
         let _ = ctx.on(
             "agent/session-start",
             listener,
@@ -219,10 +226,16 @@ impl GoalService {
 
     /// Create and arm a goal. A completed goal may be replaced; every other
     /// current phase must be cleared or resumed instead.
-    pub fn create(&self, agent: &Arc<dyn Agent>, request: CreateGoalRequest) -> Result<GoalView, GoalError> {
+    pub fn create(
+        &self,
+        agent: &Arc<dyn Agent>,
+        request: CreateGoalRequest,
+    ) -> Result<GoalView, GoalError> {
         let objective = resolve_objective(&request.objective)?;
         let max_goal_rounds = resolve_max_goal_rounds(
-            request.max_goal_rounds.unwrap_or(self.resolved.default_max_goal_rounds),
+            request
+                .max_goal_rounds
+                .unwrap_or(self.resolved.default_max_goal_rounds),
         )?;
         let (session, key, mut cache) = self.prepare_mutation(agent)?;
         if let Some(current) = &cache.state.goal {
@@ -323,7 +336,11 @@ impl GoalService {
             GoalPhase::Active | GoalPhase::Paused | GoalPhase::Blocked
         );
         if !resumable {
-            return Err(self.transition_error(&current, GoalOperation::Resume, &["active", "paused", "blocked"]));
+            return Err(self.transition_error(
+                &current,
+                GoalOperation::Resume,
+                &["active", "paused", "blocked"],
+            ));
         }
         if current.phase == GoalPhase::Active && cache.activation == GoalActivation::Armed {
             return Err(GoalError::new(
@@ -404,7 +421,13 @@ impl GoalService {
             cleared: tombstone.clone(),
             cleared_at: self.next_mutation_time(&cache)?,
         });
-        self.commit(agent, &session, &mut cache, change, GoalActivation::Disarmed);
+        self.commit(
+            agent,
+            &session,
+            &mut cache,
+            change,
+            GoalActivation::Disarmed,
+        )?;
         self.caches.lock().insert(key, cache);
         Ok(tombstone)
     }
@@ -412,7 +435,10 @@ impl GoalService {
     /// Resolve and validate the cache used by a mutation (clone-out, then
     /// write-back after the mutation 鈥?the borrow-safe Rust shape of the TS
     /// in-place map access).
-    fn prepare_mutation(&self, agent: &Arc<dyn Agent>) -> Result<(Session, String, GoalCache), GoalError> {
+    fn prepare_mutation(
+        &self,
+        agent: &Arc<dyn Agent>,
+    ) -> Result<(Session, String, GoalCache), GoalError> {
         self.assert_live(agent)?;
         let session = agent.session().clone();
         let mut caches = self.caches.lock();
@@ -422,7 +448,11 @@ impl GoalService {
         Ok((session, key, cache.clone()))
     }
 
-    fn expect_current<'a>(&self, cache: &'a GoalCache, ref_: &GoalRef) -> Result<&'a GoalSnapshot, GoalError> {
+    fn expect_current<'a>(
+        &self,
+        cache: &'a GoalCache,
+        ref_: &GoalRef,
+    ) -> Result<&'a GoalSnapshot, GoalError> {
         let current = cache
             .state
             .goal
@@ -447,7 +477,10 @@ impl GoalService {
             .get_typed::<Arc<AgentRegistry>>("agents", false)
             .map(|slot| slot.as_ref().clone())
             .and_then(|registry| registry.get(agent.id()));
-        if !live.as_ref().is_some_and(|registered| Arc::ptr_eq(registered, agent)) {
+        if !live
+            .as_ref()
+            .is_some_and(|registered| Arc::ptr_eq(registered, agent))
+        {
             return Err(GoalError::new(
                 format!("agent \"{}\" is not live in this registry", agent.id()),
                 GoalErrorCode::AgentNotLive,
@@ -458,7 +491,11 @@ impl GoalService {
 
     /// Return the per-session cache, folding a seed once with activation
     /// disarmed.
-    fn entry<'a>(&self, caches: &'a mut HashMap<String, GoalCache>, agent: &Arc<dyn Agent>) -> &'a mut GoalCache {
+    fn entry<'a>(
+        &self,
+        caches: &'a mut HashMap<String, GoalCache>,
+        agent: &Arc<dyn Agent>,
+    ) -> &'a mut GoalCache {
         let key = agent_key(agent);
         if !caches.contains_key(&key) {
             let session = agent.session().clone();
@@ -521,7 +558,11 @@ impl GoalService {
         let (session, key, mut cache) = self.prepare_mutation(agent)?;
         let current = self.expect_current(&cache, ref_)?.clone();
         if !allowed.contains(&current.phase) {
-            return Err(self.transition_error(&current, operation, &["active", "paused", "blocked"]));
+            return Err(self.transition_error(
+                &current,
+                operation,
+                &["active", "paused", "blocked"],
+            ));
         }
         let goal = self.with_phase(&current, phase);
         let view = self.commit_current(agent, &session, &mut cache, operation, goal, activation)?;
@@ -558,10 +599,12 @@ impl GoalService {
         goal: GoalSnapshot,
         activation: GoalActivation,
     ) -> Result<GoalView, GoalError> {
-        let created_at = cache
-            .state
-            .created_at
-            .ok_or_else(|| GoalError::new("current goal cache lacks createdAt", GoalErrorCode::NotFound))?;
+        let created_at = cache.state.created_at.ok_or_else(|| {
+            GoalError::new(
+                "current goal cache lacks createdAt",
+                GoalErrorCode::NotFound,
+            )
+        })?;
         let updated_at = self.next_mutation_time(cache)?;
         self.commit_snapshot(
             agent,
@@ -577,10 +620,12 @@ impl GoalService {
     }
 
     fn next_mutation_time(&self, cache: &GoalCache) -> Result<u64, GoalError> {
-        let updated_at = cache
-            .state
-            .updated_at
-            .ok_or_else(|| GoalError::new("current goal cache lacks updatedAt", GoalErrorCode::NotFound))?;
+        let updated_at = cache.state.updated_at.ok_or_else(|| {
+            GoalError::new(
+                "current goal cache lacks updatedAt",
+                GoalErrorCode::NotFound,
+            )
+        })?;
         Ok(epoch_ms().max(updated_at))
     }
 
@@ -605,10 +650,13 @@ impl GoalService {
             created_at,
             updated_at,
         });
-        self.commit(agent, session, cache, change, activation);
-        let view = self
-            .view(cache)
-            .ok_or_else(|| GoalError::new("snapshot commit cleared the goal unexpectedly", GoalErrorCode::NotFound))?;
+        self.commit(agent, session, cache, change, activation)?;
+        let view = self.view(cache).ok_or_else(|| {
+            GoalError::new(
+                "snapshot commit cleared the goal unexpectedly",
+                GoalErrorCode::NotFound,
+            )
+        })?;
         Ok(view)
     }
 
@@ -620,11 +668,17 @@ impl GoalService {
         cache: &mut GoalCache,
         change: GoalChangeMeta,
         activation: GoalActivation,
-    ) {
+    ) -> Result<(), GoalError> {
         let ref_ = goal_change_ref(&change);
         cache.pending_activation = Some((session.seq() as u64, activation));
         let json = change_to_json(&change);
-        let _ = session.append("goal/change", json, None);
+        if let Err(error) = session.append("goal/change", json, None) {
+            cache.pending_activation = None;
+            return Err(GoalError::new(
+                format!("failed to append durable goal change: {error}"),
+                GoalErrorCode::CommitFailed,
+            ));
+        }
         self.sync(session, cache);
         cache.pending_activation = None;
         let goal = self.view(cache);
@@ -639,6 +693,7 @@ impl GoalService {
                 change: notification,
             })
         });
+        Ok(())
     }
 
     /// Build a detached current view.
@@ -682,11 +737,23 @@ fn change_to_json(change: &GoalChangeMeta) -> Value {
     match change {
         GoalChangeMeta::Snapshot(change) => {
             let mut goal = serde_json::Map::new();
-            goal.insert("id".to_string(), Value::String(change.goal.id.as_str().to_string()));
+            goal.insert(
+                "id".to_string(),
+                Value::String(change.goal.id.as_str().to_string()),
+            );
             goal.insert("revision".to_string(), Value::from(change.goal.revision));
-            goal.insert("objective".to_string(), Value::String(change.goal.objective.clone()));
-            goal.insert("phase".to_string(), Value::String(change.goal.phase.as_str().to_string()));
-            goal.insert("maxGoalRounds".to_string(), Value::from(change.goal.max_goal_rounds));
+            goal.insert(
+                "objective".to_string(),
+                Value::String(change.goal.objective.clone()),
+            );
+            goal.insert(
+                "phase".to_string(),
+                Value::String(change.goal.phase.as_str().to_string()),
+            );
+            goal.insert(
+                "maxGoalRounds".to_string(),
+                Value::from(change.goal.max_goal_rounds),
+            );
             if let Some(reason) = &change.goal.blocked_reason {
                 let mut blocked = serde_json::Map::new();
                 blocked.insert("code".to_string(), Value::String(reason.code.clone()));
@@ -696,16 +763,25 @@ fn change_to_json(change: &GoalChangeMeta) -> Value {
             let mut object = serde_json::Map::new();
             object.insert("kind".to_string(), Value::String("goal/change".to_string()));
             object.insert("version".to_string(), Value::from(GOAL_CHANGE_VERSION));
-            object.insert("operation".to_string(), Value::String(change.operation.as_str().to_string()));
+            object.insert(
+                "operation".to_string(),
+                Value::String(change.operation.as_str().to_string()),
+            );
             object.insert("goal".to_string(), Value::Object(goal));
-            object.insert("roundsStarted".to_string(), Value::from(change.rounds_started));
+            object.insert(
+                "roundsStarted".to_string(),
+                Value::from(change.rounds_started),
+            );
             object.insert("createdAt".to_string(), Value::from(change.created_at));
             object.insert("updatedAt".to_string(), Value::from(change.updated_at));
             Value::Object(object)
         }
         GoalChangeMeta::Clear(clear) => {
             let mut cleared = serde_json::Map::new();
-            cleared.insert("id".to_string(), Value::String(clear.cleared.id.as_str().to_string()));
+            cleared.insert(
+                "id".to_string(),
+                Value::String(clear.cleared.id.as_str().to_string()),
+            );
             cleared.insert("revision".to_string(), Value::from(clear.cleared.revision));
             let mut object = serde_json::Map::new();
             object.insert("kind".to_string(), Value::String("goal/change".to_string()));

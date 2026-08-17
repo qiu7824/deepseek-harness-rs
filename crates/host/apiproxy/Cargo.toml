@@ -1,0 +1,62 @@
+[package]
+name = "dsh-host-apiproxy"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Host API gateway: four-quadrant RPC message model and the 54-method wire registry. Rust port of @deepseek-ai/dsh-host-apiproxy (contract layer first)"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-agent-presets = { path = "../../preset/agent-presets" }
+dsh-attachment = { path = "../../attachment/attachment" }
+dsh-brand = { path = "../../util/brand" }
+dsh-credentials = { path = "../../credentials/credentials" }
+dsh-goal = { path = "../../goal/goal" }
+dsh-host-directory-picker = { path = "../directory-picker" }
+dsh-llm = { path = "../../core/llm" }
+dsh-native-command = { path = "../../util/native-command" }
+dsh-session = { path = "../../core/session" }
+dsh-session-persistence = { path = "../../session/session-persistence" }
+dsh-session-query = { path = "../../session/session-query" }
+dsh-session-title = { path = "../../session/session-title" }
+dsh-settings = { path = "../../settings/settings" }
+dsh-skill = { path = "../../skill/skill" }
+dsh-storage-domain = { path = "../../storage/storage-domain" }
+dsh-subagent = { path = "../../subagent/subagent" }
+dsh-tools = { path = "../../core/tools" }
+dsh-time-context = { path = "../../context/time-context" }
+dsh-user-approval = { path = "../../interaction/user-approval" }
+dsh-user-questions = { path = "../../interaction/user-questions" }
+dsh-workspace = { path = "../../workspace/workspace" }
+async-trait = { workspace = true }
+base64 = "0.22"
+futures = { workspace = true }
+http = "1"
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+dsh-agent-presets = { path = "../../preset/agent-presets" }
+dsh-attachment = { path = "../../attachment/attachment" }
+dsh-cordis-loader = { path = "../../vendor/loader" }
+dsh-credentials-local = { path = "../../credentials/credentials-local" }
+dsh-host-directory-picker-browse = { path = "../directory-picker-browse" }
+dsh-scope = { path = "../../core/scope" }
+dsh-session-persistence-jsonl = { path = "../../session/session-persistence-jsonl" }
+dsh-session-query = { path = "../../session/session-query" }
+dsh-session-projection = { path = "../../session/session-projection" }
+dsh-settings = { path = "../../settings/settings" }
+dsh-subagent = { path = "../../subagent/subagent" }
+dsh-storage = { path = "../../storage/storage" }
+dsh-storage-domain = { path = "../../storage/storage-domain" }
+dsh-storage-test-support = { path = "../../storage/storage-test-support" }
+dsh-workspace = { path = "../../workspace/workspace" }
+schemastery = { package = "dsh-schemastery", path = "../../vendor/schemastery" }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }

@@ -20,7 +20,9 @@ fn js_expr_of(value: &Value) -> Option<JsExpr> {
         object
             .get("__jsExpr")
             .and_then(|expr| expr.as_str())
-            .map(|expr| JsExpr { expr: expr.to_string() })
+            .map(|expr| JsExpr {
+                expr: expr.to_string(),
+            })
     })
 }
 

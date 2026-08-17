@@ -273,6 +273,63 @@ async fn refresh_reapplies_changed_file() {
 }
 
 #[tokio::test]
+async fn config_update_reapplies_patches_without_rereading() {
+    let (_ctx, service) = setup().await;
+    let (probe_plugin, runs, configs) = probe("probe");
+    service.core.register("probe", probe_plugin);
+
+    let dir = temp_dir("patch-update");
+    let path = dir.join("cordis.yml");
+    std::fs::write(&path, "- id: a\n  name: probe\n  config: 1\n").unwrap();
+
+    let mut patch = indexmap::IndexMap::new();
+    patch.insert("id".to_string(), json!("a"));
+    patch.insert("config".to_string(), json!(2));
+    mount_include(
+        &service,
+        IncludeConfig {
+            path: path.to_string_lossy().to_string(),
+            initial: None,
+            patches: Some(vec![patch]),
+            enable_logs: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(configs.lock().unwrap().as_slice(), &[json!(2)]);
+
+    // A patches-only config update (the watchUserPatches path) re-applies
+    // over the settled data without re-reading the file.
+    let include_entry = service
+        .tree
+        .entries()
+        .into_iter()
+        .find(|entry| entry.options.lock().name == "include")
+        .expect("include entry");
+    let mut patch = indexmap::IndexMap::new();
+    patch.insert("id".to_string(), json!("a"));
+    patch.insert("config".to_string(), json!(3));
+    let new_config = IncludeConfig {
+        path: path.to_string_lossy().to_string(),
+        initial: None,
+        patches: Some(vec![patch]),
+        enable_logs: None,
+    };
+    let mut update = indexmap::IndexMap::new();
+    update.insert("config".to_string(), serde_json::to_value(&new_config).unwrap());
+    include_entry
+        .update(update, false)
+        .await
+        .expect("patches update applies");
+    service.tree.await_ready().await.unwrap();
+
+    assert_eq!(configs.lock().unwrap().as_slice(), &[json!(2), json!(3)]);
+    assert_eq!(runs.load(Ordering::SeqCst), 2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn js_expr_in_file_fails_loudly() {
     let (_ctx, service) = setup().await;
     let (probe_plugin, runs, _configs) = probe("probe");

@@ -1,0 +1,24 @@
+[package]
+name = "dsh-host-frontend-static"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "SPA dist server over the webserver fallback seat. Rust port of @deepseek-ai/dsh-host-frontend-static"
+
+[dependencies]
+axum = { workspace = true }
+cordis = { path = "../../vendor/cordis" }
+dsh-host-webserver = { path = "../webserver" }
+dsh-invariants = { path = "../../util/invariants" }
+async-trait = { workspace = true }
+futures = { workspace = true }
+http = "1"
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio = { workspace = true }

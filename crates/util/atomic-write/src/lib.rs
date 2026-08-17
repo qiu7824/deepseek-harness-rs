@@ -37,6 +37,43 @@ fn temp_suffix() -> String {
     format!("{pid:x}{counter:08x}")
 }
 
+#[cfg(windows)]
+fn is_transient_windows_replace_error(error: &std::io::Error) -> bool {
+    // Windows may deny rename-over-target while a reader temporarily omits
+    // FILE_SHARE_DELETE. Preserve permanent failures by retrying only the
+    // platform's access/sharing/lock denial codes and keeping a hard deadline.
+    matches!(error.raw_os_error(), Some(5 | 32 | 33))
+}
+
+async fn rename_over_target(temp: &Path, filename: &Path) -> std::io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        return fs::rename(temp, filename).await;
+    }
+
+    #[cfg(windows)]
+    {
+        const RETRY_INITIAL_MS: u64 = 10;
+        const RETRY_MAX_MS: u64 = 50;
+        const RETRY_TIMEOUT_MS: u64 = 500;
+
+        let deadline = Instant::now() + Duration::from_millis(RETRY_TIMEOUT_MS);
+        let mut delay = RETRY_INITIAL_MS;
+        loop {
+            match fs::rename(temp, filename).await {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if is_transient_windows_replace_error(&error) && Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    delay = (delay * 2).min(RETRY_MAX_MS);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
 /// Replace `filename` with `content` in one atomic step, creating parent
 /// directories (TS `writeFileAtomic`).
 pub async fn write_file_atomic(
@@ -90,7 +127,7 @@ pub async fn write_file_atomic(
         {
             let _ = options.mode;
         }
-        fs::rename(&temp, filename).await?;
+        rename_over_target(&temp, filename).await?;
         Ok::<(), std::io::Error>(())
     }
     .await;
@@ -100,8 +137,19 @@ pub async fn write_file_atomic(
     result
 }
 
-fn is_already_exists(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::AlreadyExists
+fn is_lock_contention(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::AlreadyExists {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // Create-new races around another writer's lock release can surface
+        // as access/sharing/lock denial rather than AlreadyExists on Windows.
+        // The existing deadline keeps permanent permission failures loud.
+        return matches!(error.raw_os_error(), Some(5 | 32 | 33));
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 const LOCK_RETRY_INITIAL_MS: u64 = 20;
@@ -137,7 +185,7 @@ pub async fn with_file_lock<T>(
                 drop(file);
                 break;
             }
-            Err(error) if is_already_exists(&error) => {}
+            Err(error) if is_lock_contention(&error) => {}
             Err(error) => return Err(error),
         }
         if Instant::now() >= deadline {
@@ -163,7 +211,8 @@ mod tests {
     use std::sync::Arc;
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("dsh-atomic-write-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("dsh-atomic-write-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -173,10 +222,14 @@ mod tests {
         let dir = temp_dir("replace");
         let target = dir.join("file.txt");
         std::fs::write(&target, "old").unwrap();
-        write_file_atomic(&target, b"new content", WriteFileAtomicOptions {
-            mode: 0o600,
-            dir_mode: None,
-        })
+        write_file_atomic(
+            &target,
+            b"new content",
+            WriteFileAtomicOptions {
+                mode: 0o600,
+                dir_mode: None,
+            },
+        )
         .await
         .unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "new content");
@@ -190,14 +243,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn retries_a_transient_windows_sharing_denial_during_replacement() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+
+        let dir = temp_dir("sharing-denial");
+        let target = dir.join("file.txt");
+        std::fs::write(&target, "old").unwrap();
+        // Excluding FILE_SHARE_DELETE makes a rename-over-target fail with
+        // ERROR_ACCESS_DENIED until this reader releases the destination.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&target)
+            .unwrap();
+        let target_for_write = target.clone();
+        let write = tokio::spawn(async move {
+            write_file_atomic(
+                &target_for_write,
+                b"new content",
+                WriteFileAtomicOptions {
+                    mode: 0o600,
+                    dir_mode: None,
+                },
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(held);
+
+        write
+            .await
+            .unwrap()
+            .expect("replacement retries after the sharing denial clears");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new content");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn creates_parent_directories() {
         let dir = temp_dir("parents");
         let target = dir.join("a/b/file.txt");
-        write_file_atomic(&target, b"x", WriteFileAtomicOptions {
-            mode: 0o600,
-            dir_mode: None,
-        })
+        write_file_atomic(
+            &target,
+            b"x",
+            WriteFileAtomicOptions {
+                mode: 0o600,
+                dir_mode: None,
+            },
+        )
         .await
         .unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");

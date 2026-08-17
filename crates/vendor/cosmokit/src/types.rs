@@ -83,7 +83,7 @@ pub mod binary {
     /// Decode hex, mirroring the TS leniency: an odd trailing character is
     /// dropped and invalid characters decode to zero.
     pub fn from_hex(source: &str) -> Vec<u8> {
-        let hex = if source.len() % 2 == 0 {
+        let hex = if source.len().is_multiple_of(2) {
             source.to_string()
         } else {
             source[..source.len() - 1].to_string()

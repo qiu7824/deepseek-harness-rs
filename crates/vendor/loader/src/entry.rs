@@ -40,8 +40,43 @@ pub struct EntryOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intercept: Option<IndexMap<String, Value>>,
     /// Service isolation scopes (`true` = entry-local, string = shared label).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_isolate"
+    )]
     pub isolate: Option<IndexMap<String, Option<String>>>,
+}
+
+/// Accept the TS `isolate` map forms: `true` names an entry-local realm
+/// (stored as `None`), a string names a shared realm label (TS
+/// `EntryOptions.isolate: Record<string, boolean | string>`).
+fn deserialize_isolate<'de, D>(
+    deserializer: D,
+) -> Result<Option<IndexMap<String, Option<String>>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let Some(map) = value.as_object() else {
+        return Err(serde::de::Error::custom(
+            "isolate must be a map of service names to `true` or a realm label",
+        ));
+    };
+    let mut out = IndexMap::new();
+    for (name, entry) in map {
+        let label = match entry {
+            serde_json::Value::Bool(true) => None,
+            serde_json::Value::String(label) => Some(label.clone()),
+            _ => {
+                return Err(serde::de::Error::custom(format!(
+                    "isolate value for {name:?} must be `true` or a string label"
+                )));
+            }
+        };
+        out.insert(name.clone(), label);
+    }
+    Ok(Some(out))
 }
 
 /// One configured plugin node inside an [`EntryTree`].
@@ -150,12 +185,9 @@ impl Entry {
     /// Import and start the configured plugin (TS `init`).
     pub async fn init(self: &Arc<Self>) -> Result<(), LoaderError> {
         let options = self.options.lock().clone();
-        let plugin = self
-            .core
-            .import(&options.name)
-            .map_err(|error| {
-                LoaderError::update("import", &options.id, &options.name, error.to_string())
-            })?;
+        let plugin = self.core.import(&options.name).map_err(|error| {
+            LoaderError::update("import", &options.id, &options.name, error.to_string())
+        })?;
         self.start(plugin).await
     }
 
@@ -282,7 +314,8 @@ impl Entry {
                         candidate.inject = serde_json::from_value(value).ok().or(candidate.inject)
                     }
                     "intercept" => {
-                        candidate.intercept = serde_json::from_value(value).ok().or(candidate.intercept)
+                        candidate.intercept =
+                            serde_json::from_value(value).ok().or(candidate.intercept)
                     }
                     "isolate" => {
                         candidate.isolate = serde_json::from_value(value).ok().or(candidate.isolate)
@@ -309,9 +342,29 @@ impl Entry {
             return Ok(());
         }
 
-        let replace = diff
-            .iter()
-            .any(|key| matches!(key.as_str(), "name" | "inject" | "group" | "isolate" | "intercept"));
+        // TS update: a candidate whose effective state is disabled (own or
+        // inherited) disposes the live fiber before any replace decision.
+        if self.disabled_of(&candidate)? {
+            *self.options.lock() = candidate.clone();
+            if let Err(error) = self.dispose_fiber().await {
+                *self.options.lock() = previous.clone();
+                return Err(LoaderError::update(
+                    "dispose",
+                    &candidate.id,
+                    &candidate.name,
+                    error.to_string(),
+                ));
+            }
+            self.emit_partial_dispose(&previous, true);
+            return Ok(());
+        }
+
+        let replace = diff.iter().any(|key| {
+            matches!(
+                key.as_str(),
+                "name" | "inject" | "group" | "isolate" | "intercept"
+            )
+        });
         if !replace {
             *self.options.lock() = candidate.clone();
             if let Err(error) = self.patch_context().await {
@@ -335,17 +388,25 @@ impl Entry {
                         &candidate.id,
                         &candidate.name,
                         error.to_string(),
-                    ))
+                    ));
                 }
             }
         } else {
-            let Some(fiber) = &previous_fiber else { unreachable!() };
-            let Some(runtime) = &fiber.runtime else { unreachable!() };
+            let Some(fiber) = &previous_fiber else {
+                unreachable!()
+            };
+            let Some(runtime) = &fiber.runtime else {
+                unreachable!()
+            };
             runtime.plugin.clone()
         };
         let previous_plugin = {
-            let Some(fiber) = &previous_fiber else { unreachable!() };
-            let Some(runtime) = &fiber.runtime else { unreachable!() };
+            let Some(fiber) = &previous_fiber else {
+                unreachable!()
+            };
+            let Some(runtime) = &fiber.runtime else {
+                unreachable!()
+            };
             runtime.plugin.clone()
         };
         *self.options.lock() = candidate.clone();
@@ -454,21 +515,41 @@ fn disabled_value(value: &Option<Value>) -> Result<bool, LoaderError> {
 fn diff_keys(candidate: &EntryOptions, previous: &EntryOptions) -> Vec<String> {
     let pairs: Vec<(&str, Value, Value)> = vec![
         ("id", json_string(&candidate.id), json_string(&previous.id)),
-        ("name", json_string(&candidate.name), json_string(&previous.name)),
-        ("config", json_opt(candidate.config.as_ref()), json_opt(previous.config.as_ref())),
+        (
+            "name",
+            json_string(&candidate.name),
+            json_string(&previous.name),
+        ),
+        (
+            "config",
+            json_opt(candidate.config.as_ref()),
+            json_opt(previous.config.as_ref()),
+        ),
         (
             "group",
             json_opt(candidate.group.map(|b| Value::Bool(b)).as_ref()),
             json_opt(previous.group.map(|b| Value::Bool(b)).as_ref()),
         ),
-        ("disabled", json_opt(candidate.disabled.as_ref()), json_opt(previous.disabled.as_ref())),
-        ("inject", json_map_opt(candidate.inject.as_ref()), json_map_opt(previous.inject.as_ref())),
+        (
+            "disabled",
+            json_opt(candidate.disabled.as_ref()),
+            json_opt(previous.disabled.as_ref()),
+        ),
+        (
+            "inject",
+            json_map_opt(candidate.inject.as_ref()),
+            json_map_opt(previous.inject.as_ref()),
+        ),
         (
             "intercept",
             json_map_opt(candidate.intercept.as_ref()),
             json_map_opt(previous.intercept.as_ref()),
         ),
-        ("isolate", json_map_opt(candidate.isolate.as_ref()), json_map_opt(previous.isolate.as_ref())),
+        (
+            "isolate",
+            json_map_opt(candidate.isolate.as_ref()),
+            json_map_opt(previous.isolate.as_ref()),
+        ),
     ];
     pairs
         .into_iter()

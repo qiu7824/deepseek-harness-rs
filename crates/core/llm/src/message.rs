@@ -128,6 +128,28 @@ pub enum MessageSource {
         /// Injected skill bodies are instructions for the model to follow.
         form: ContextForm,
     },
+    /// A model coordinator's follow-up to one of its children (TS
+    /// `coordinator` source augmentation).
+    Coordinator {
+        form: ContextForm,
+        #[serde(rename = "senderSessionId")]
+        sender_session_id: String,
+    },
+    /// Durable attribution for a continuable child's explicit parent report
+    /// (TS `subagent-report` source augmentation).
+    SubagentReport {
+        form: ContextForm,
+        #[serde(rename = "senderSessionId")]
+        sender_session_id: String,
+    },
+    /// Durable attribution for the runtime's account of a continuable child
+    /// settling (TS `subagent-settled` source augmentation).
+    SubagentSettled {
+        form: ContextForm,
+        summary: String,
+        #[serde(rename = "senderSessionId")]
+        sender_session_id: String,
+    },
 }
 
 impl MessageSource {
@@ -139,6 +161,9 @@ impl MessageSource {
             MessageSource::Tool { .. } => "tool",
             MessageSource::SkillCatalog { .. } => "skill-catalog",
             MessageSource::SkillInvocation { .. } => "skill-invocation",
+            MessageSource::Coordinator { .. } => "coordinator",
+            MessageSource::SubagentReport { .. } => "subagent-report",
+            MessageSource::SubagentSettled { .. } => "subagent-settled",
         }
     }
 }

@@ -45,21 +45,27 @@ pub struct SandboxedFileSystem {
 }
 
 impl SandboxedFileSystem {
-    /// Construct the backend over the local implementation and register as
-    /// `ctx.fs` (the TS constructor + `super(ctx, config)` collapse). The
-    /// `sandboxPolicy` service must be installed first (the TS
-    /// `static inject = ['sandboxPolicy']`).
-    pub fn install(ctx: &Context, config: Config) -> Result<Arc<Self>, String> {
+    /// Construct the backend over the local implementation WITHOUT
+    /// registering a service (the TS `super(ctx, config)` half).
+    pub fn build(ctx: &Context, config: Config) -> Result<Arc<Self>, String> {
         let policy = ctx
             .get_typed::<Arc<SandboxPolicyService>>("sandboxPolicy", false)
             .map(|slot| slot.as_ref().clone())
             .ok_or_else(|| "dsh-fs-sandbox requires the sandboxPolicy service".to_string())?;
         let local = LocalFileSystem::build(config)?;
-        let backend = Arc::new(Self {
+        Ok(Arc::new(Self {
             local,
             default_mode: policy.default_mode,
             policy,
-        });
+        }))
+    }
+
+    /// Construct the backend over the local implementation and register as
+    /// `ctx.fs` (the TS constructor + `super(ctx, config)` collapse). The
+    /// `sandboxPolicy` service must be installed first (the TS
+    /// `static inject = ['sandboxPolicy']`).
+    pub fn install(ctx: &Context, config: Config) -> Result<Arc<Self>, String> {
+        let backend = Self::build(ctx, config)?;
         let erased: Arc<dyn FileSystem> = backend.clone();
         ctx.register_service(erased);
         Ok(backend)

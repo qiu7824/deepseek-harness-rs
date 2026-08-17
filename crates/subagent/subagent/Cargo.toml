@@ -13,10 +13,14 @@ dsh-jobs = { path = "../../jobs/jobs" }
 dsh-llm = { path = "../../core/llm" }
 dsh-sandbox = { path = "../../sandbox/sandbox" }
 dsh-sandbox-policy = { path = "../../sandbox/sandbox-policy" }
+dsh-session-persistence = { path = "../../session/session-persistence" }
+dsh-session-projection = { path = "../../session/session-projection" }
+dsh-session-projection-cache = { path = "../../session/session-projection-cache" }
 dsh-scope = { path = "../../core/scope" }
 dsh-system-prompt = { path = "../../core/system-prompt" }
 dsh-session = { path = "../../core/session" }
 dsh-tools = { path = "../../core/tools" }
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 parking_lot = { workspace = true }

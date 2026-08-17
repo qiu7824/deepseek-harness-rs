@@ -43,7 +43,8 @@ pub fn approval_request_id(id: impl Into<String>) -> ApprovalRequestId {
 
 /// Closed approval outcomes: a one-shot grant, explicit rejection, withdrawn
 /// request, or unavailable answerer. Callers fail closed on `unavailable`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ApprovalOutcome {
     AllowedOnce,
     Rejected,
@@ -336,8 +337,7 @@ impl ApprovalService {
             Box::pin(async { arc(ApprovalOutcome::Unavailable) });
         let payload = arc(req.clone());
         let answer = async move {
-            let dispatch =
-                dispatch_ctx.waterfall("approval/request", vec![payload], fallback);
+            let dispatch = dispatch_ctx.waterfall("approval/request", vec![payload], fallback);
             // Contain a throwing answerer (sync or async): the question fails
             // closed, never the caller's tool call.
             match futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(dispatch)).await {
@@ -367,6 +367,7 @@ impl ApprovalService {
         tokio::pin!(answer);
         tokio::pin!(poller);
         tokio::select! {
+            biased;
             outcome = &mut answer => outcome,
             // After an abort wins the race the late answer is discarded by
             // construction: the answer future is dropped.

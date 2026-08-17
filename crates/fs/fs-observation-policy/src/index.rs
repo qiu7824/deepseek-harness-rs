@@ -22,12 +22,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cordis::{
-    ArcValue, Context, Disposer, EventOptions, Listener, arc, downcast, make_disposer,
-};
-use dsh_fs::{
-    FsEditGuard, FsError, FsErrorCode, FsObservation, FsTarget, FsWriteIntent,
-};
+use cordis::{ArcValue, Context, Disposer, EventOptions, Listener, arc, downcast, make_disposer};
+use dsh_fs::{FsEditGuard, FsError, FsErrorCode, FsObservation, FsTarget, FsWriteIntent};
 use parking_lot::Mutex;
 
 /// The opaque observed-state owner identity (the TS `WeakMap` object key).
@@ -84,7 +80,11 @@ impl ObservedStateGate {
     /// Decide the write intent: unseen or confirmed absent ⇒
     /// `CreateIfAbsent`; confirmed present ⇒ `ReplaceIfVersion` at the
     /// observed version.
-    pub fn write_intent(&self, target: &FsTarget, actor: Option<&FsObservationActorHandle>) -> FsWriteIntent {
+    pub fn write_intent(
+        &self,
+        target: &FsTarget,
+        actor: Option<&FsObservationActorHandle>,
+    ) -> FsWriteIntent {
         let owner = self.owner(actor);
         let prior = owner.and_then(|owner| self.get(owner, target.target_key.as_str()));
         match prior {
@@ -120,7 +120,12 @@ impl ObservedStateGate {
 
     /// Record an authoritative present or absent observation for this owner
     /// and target.
-    pub fn observe(&self, target: &FsTarget, observation: FsObservation, actor: Option<&FsObservationActorHandle>) {
+    pub fn observe(
+        &self,
+        target: &FsTarget,
+        observation: FsObservation,
+        actor: Option<&FsObservationActorHandle>,
+    ) {
         if let Some(owner) = self.owner(actor) {
             self.set(owner, target.target_key.as_str(), observation);
         }
@@ -144,55 +149,55 @@ pub fn apply(ctx: &Context) -> Disposer {
 
     // fs/write-intent: occupy the single decision slot — do NOT call next().
     let gate_for_write = gate.clone();
-    let write_listener: Arc<Listener> = Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
-        let target = downcast::<FsTarget>(&args[0]).cloned();
-        let actor = downcast_actor(&args[1]);
-        let gate = gate_for_write.clone();
-        Box::pin(async move {
-            let Some(target) = target else {
-                return None;
-            };
-            // A throw rejects through the waterfall; the decision itself is
-            // the resolved value.
-            Some(arc(gate.write_intent(&target, actor.as_ref())))
-        })
-    });
+    let write_listener: Arc<Listener> =
+        Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+            let target = downcast::<FsTarget>(&args[0]).cloned();
+            let actor = downcast_actor(&args[1]);
+            let gate = gate_for_write.clone();
+            Box::pin(async move {
+                let Some(target) = target else {
+                    return None;
+                };
+                // A throw rejects through the waterfall; the decision itself is
+                // the resolved value.
+                Some(arc(gate.write_intent(&target, actor.as_ref())))
+            })
+        });
 
     // fs/edit-intent: occupy the single decision slot — do NOT call next().
     // A rejection travels through the waterfall as a panic (the Rust
     // waterfall has no error channel; the TS rejection surfaces the same
     // FsError to the caller).
     let gate_for_edit = gate.clone();
-    let edit_listener: Arc<Listener> = Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
-        let target = downcast::<FsTarget>(&args[0]).cloned();
-        let actor = downcast_actor(&args[1]);
-        let gate = gate_for_edit.clone();
-        Box::pin(async move {
-            let Some(target) = target else {
-                return None;
-            };
-            match gate.edit_intent(&target, actor.as_ref()) {
-                Ok(guard) => Some(arc(guard)),
-                Err(error) => std::panic::panic_any(error),
-            }
-        })
-    });
+    let edit_listener: Arc<Listener> =
+        Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+            let target = downcast::<FsTarget>(&args[0]).cloned();
+            let actor = downcast_actor(&args[1]);
+            let gate = gate_for_edit.clone();
+            Box::pin(async move {
+                let Some(target) = target else {
+                    return None;
+                };
+                match gate.edit_intent(&target, actor.as_ref()) {
+                    Ok(guard) => Some(arc(guard)),
+                    Err(error) => std::panic::panic_any(error),
+                }
+            })
+        });
 
     // fs/observed must stay synchronous and non-throwing: emit does not
     // await promises, and successful mutations have already committed.
     let gate_for_observe = gate.clone();
-    let observe_listener: Arc<Listener> = Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
-        let target = downcast::<FsTarget>(&args[0]).cloned();
-        let observation = downcast::<FsObservation>(&args[1]).cloned();
-        let actor = downcast_actor(&args[2]);
-        let gate = gate_for_observe.clone();
-        Box::pin(async move {
+    let observe_listener: Arc<Listener> =
+        Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+            let target = downcast::<FsTarget>(&args[0]);
+            let observation = downcast::<FsObservation>(&args[1]);
+            let actor = downcast_actor(&args[2]);
             if let (Some(target), Some(observation)) = (target, observation) {
-                gate.observe(&target, observation, actor.as_ref());
+                gate_for_observe.observe(target, observation.clone(), actor.as_ref());
             }
-            None
-        })
-    });
+            Box::pin(async { None })
+        });
 
     let write_disposer = futures::executor::block_on(ctx.on(
         "fs/write-intent",

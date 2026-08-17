@@ -1,0 +1,25 @@
+[package]
+name = "dsh-subprocess-e2b"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "E2B service provider for the subprocess capability seam. Rust port of @deepseek-ai/dsh-subprocess-e2b (packages/e2b/subprocess-e2b)"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-e2b = { path = "../e2b" }
+dsh-subprocess = { path = "../../subprocess/subprocess" }
+dsh-timeout = { path = "../../util/timeout" }
+async-trait = { workspace = true }
+base64 = "0.22"
+futures = { workspace = true }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }

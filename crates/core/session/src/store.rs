@@ -409,6 +409,23 @@ impl Session {
         state.events_snapshot.as_ref().unwrap().clone()
     }
 
+    /// Clone only the durable tail at or after `from_seq` without
+    /// materializing the full immutable [`Self::events`] snapshot.
+    pub fn events_from(&self, from_seq: u64) -> Vec<SessionEvent> {
+        let Ok(start) = usize::try_from(from_seq) else {
+            return Vec::new();
+        };
+        let state = self.inner.state.lock();
+        state.log.get(start..).unwrap_or_default().to_vec()
+    }
+
+    /// Clone one event by durable sequence without materializing the full
+    /// immutable [`Self::events`] snapshot.
+    pub fn event_at(&self, seq: u64) -> Option<SessionEvent> {
+        let index = usize::try_from(seq).ok()?;
+        self.inner.state.lock().log.get(index).cloned()
+    }
+
     /// The next event's sequence number — always the log length.
     pub fn seq(&self) -> usize {
         self.inner.state.lock().log.len()
@@ -1402,6 +1419,25 @@ mod tests {
             .unwrap();
         input["content"][0]["text"] = serde_json::json!("mutated");
         assert_eq!(logged.data["content"][0]["text"], "mutated later");
+    }
+
+    #[test]
+    fn incremental_event_reads_do_not_materialize_full_snapshot() {
+        let session = Session::create(session_id("incremental-events"), None, None).unwrap();
+        append_user(&session, "m1", "a");
+        append_user(&session, "m2", "b");
+
+        assert!(session.inner.state.lock().events_snapshot.is_none());
+
+        let tail = session.events_from(1);
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].seq, 1);
+        assert!(session.inner.state.lock().events_snapshot.is_none());
+
+        let first = session.event_at(0).expect("event at seq 0");
+        assert_eq!(first.seq, 0);
+        assert!(session.event_at(2).is_none());
+        assert!(session.inner.state.lock().events_snapshot.is_none());
     }
 
     #[test]

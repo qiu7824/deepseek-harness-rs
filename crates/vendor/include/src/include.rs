@@ -431,7 +431,9 @@ impl Plugin for IncludePlugin {
         })?;
 
         // internal/update: re-apply when the include config changes
-        // (TS ctor listener).
+        // (TS ctor listener, index.ts:206-213 — a path change passes
+        // through untouched; a patches-only change re-applies over the
+        // settled data and consumes the event).
         let include_for_listener = include.clone();
         ctx.on(
             "internal/update",
@@ -441,28 +443,31 @@ impl Plugin for IncludePlugin {
                     let next = args
                         .last()
                         .and_then(|value| cordis::downcast::<cordis::NextFn>(value));
-                    let result = match next {
-                        Some(next) => next.call().await,
-                        None => arc(()),
+                    let pass_through = || async {
+                        match next {
+                            Some(next) => Some(next.call().await),
+                            None => None,
+                        }
                     };
                     let Some(raw) = args
                         .first()
                         .and_then(|value| cordis::downcast::<Value>(value))
                     else {
-                        return Some(result);
+                        return pass_through().await;
                     };
                     let Ok(new_config) = serde_json::from_value::<IncludeConfig>(raw.clone())
                     else {
-                        return Some(result);
+                        return pass_through().await;
                     };
                     let old_path = include.config.lock().path.clone();
-                    if new_config.path == old_path {
-                        return Some(result);
+                    if new_config.path != old_path {
+                        return pass_through().await;
                     }
-                    if let Err(error) = include.refresh_with_config(new_config).await {
-                        return Some(arc(PluginError::new(arc(error.to_string()))));
+                    match include.enqueue(include.apply_patches_with_config(new_config)).await {
+                        // TS consumes the event without calling next.
+                        Ok(()) => None,
+                        Err(error) => Some(arc(PluginError::new(arc(error.to_string())))),
                     }
-                    Some(result)
                 })
             }),
             EventOptions::default(),
@@ -491,15 +496,28 @@ impl Plugin for IncludePlugin {
 }
 
 impl Include {
-    /// Re-apply with a new config (path/patches changed).
-    async fn refresh_with_config(
+    /// Re-apply patches over the settled entry data without re-reading the
+    /// file (TS include internal/update path-equal branch).
+    async fn apply_patches_with_config(
         self: &Arc<Self>,
         new_config: IncludeConfig,
     ) -> Result<(), IncludeError> {
-        *self.config.lock() = new_config.clone();
-        let candidate = self.read(true).await?.ok_or_else(|| {
-            IncludeError::Message(format!("config file not found: {}", self.filename))
-        })?;
-        self.apply(candidate).await
+        let data = self.data.lock().clone();
+        let patched = apply_entry_patches(
+            &data,
+            new_config.patches.as_deref(),
+            &mut |message| self.warn(message),
+        );
+        let entries: Vec<EntryOptions> = patched
+            .iter()
+            .map(|value| {
+                serde_json::from_value::<EntryOptions>(value.clone()).map_err(|error| {
+                    IncludeError::Message(format!("invalid loader entry: {error}"))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        self.tree.root_group().update(entries).await?;
+        *self.config.lock() = new_config;
+        Ok(())
     }
 }

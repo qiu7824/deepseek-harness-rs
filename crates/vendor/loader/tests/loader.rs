@@ -76,7 +76,9 @@ async fn entry_starts_and_runs_plugin() {
     let (_ctx, service) = setup().await;
     let runs = Arc::new(AtomicU32::new(0));
     let configs = Arc::new(std::sync::Mutex::new(Vec::new()));
-    service.core.register("probe", probe("probe", runs.clone(), configs.clone()));
+    service
+        .core
+        .register("probe", probe("probe", runs.clone(), configs.clone()));
 
     let id = service
         .tree
@@ -98,7 +100,9 @@ async fn config_update_restarts_plugin_in_place() {
     let (_ctx, service) = setup().await;
     let runs = Arc::new(AtomicU32::new(0));
     let configs = Arc::new(std::sync::Mutex::new(Vec::new()));
-    service.core.register("probe", probe("probe", runs.clone(), configs.clone()));
+    service
+        .core
+        .register("probe", probe("probe", runs.clone(), configs.clone()));
 
     let id = service
         .tree
@@ -116,12 +120,12 @@ async fn config_update_restarts_plugin_in_place() {
     service.tree.await_ready().await.unwrap();
 
     let fiber_after = entry.fiber.lock().clone().expect("still live");
-    assert!(Arc::ptr_eq(&fiber_before, &fiber_after), "config-only update keeps the fiber");
-    assert_eq!(runs.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        configs.lock().unwrap().as_slice(),
-        &[json!(1), json!(2)]
+    assert!(
+        Arc::ptr_eq(&fiber_before, &fiber_after),
+        "config-only update keeps the fiber"
     );
+    assert_eq!(runs.load(Ordering::SeqCst), 2);
+    assert_eq!(configs.lock().unwrap().as_slice(), &[json!(1), json!(2)]);
 }
 
 #[tokio::test]
@@ -129,8 +133,12 @@ async fn name_update_replaces_fiber() {
     let (_ctx, service) = setup().await;
     let runs = Arc::new(AtomicU32::new(0));
     let configs = Arc::new(std::sync::Mutex::new(Vec::new()));
-    service.core.register("probe", probe("probe", runs.clone(), configs.clone()));
-    service.core.register("probe2", probe("probe2", runs.clone(), configs.clone()));
+    service
+        .core
+        .register("probe", probe("probe", runs.clone(), configs.clone()));
+    service
+        .core
+        .register("probe2", probe("probe2", runs.clone(), configs.clone()));
 
     let id = service
         .tree
@@ -159,7 +167,9 @@ async fn remove_disposes_entry() {
     let (_ctx, service) = setup().await;
     let runs = Arc::new(AtomicU32::new(0));
     let configs = Arc::new(std::sync::Mutex::new(Vec::new()));
-    service.core.register("probe", probe("probe", runs.clone(), configs.clone()));
+    service
+        .core
+        .register("probe", probe("probe", runs.clone(), configs.clone()));
 
     let id = service
         .tree
@@ -177,7 +187,9 @@ async fn disabled_entries_do_not_start() {
     let (_ctx, service) = setup().await;
     let runs = Arc::new(AtomicU32::new(0));
     let configs = Arc::new(std::sync::Mutex::new(Vec::new()));
-    service.core.register("probe", probe("probe", runs.clone(), configs.clone()));
+    service
+        .core
+        .register("probe", probe("probe", runs.clone(), configs.clone()));
 
     let mut options = entry("probe", json!(1));
     options.disabled = Some(json!(true));
@@ -193,7 +205,9 @@ async fn nested_groups_mount_child_entries() {
     let (_ctx, service) = setup().await;
     let runs = Arc::new(AtomicU32::new(0));
     let configs = Arc::new(std::sync::Mutex::new(Vec::new()));
-    service.core.register("probe", probe("probe", runs.clone(), configs.clone()));
+    service
+        .core
+        .register("probe", probe("probe", runs.clone(), configs.clone()));
 
     let mut group_options = EntryOptions {
         name: "group".to_string(),
@@ -201,7 +215,11 @@ async fn nested_groups_mount_child_entries() {
         ..EntryOptions::default()
     };
     group_options.config = Some(json!([{ "name": "probe", "config": 7 }]));
-    let group_id = service.tree.create(group_options, None, None).await.unwrap();
+    let group_id = service
+        .tree
+        .create(group_options, None, None)
+        .await
+        .unwrap();
     service.tree.await_ready().await.unwrap();
 
     let group = service
@@ -220,7 +238,9 @@ async fn self_dispose_marks_entry_disabled() {
     let (_ctx, service) = setup().await;
     let runs = Arc::new(AtomicU32::new(0));
     let configs = Arc::new(std::sync::Mutex::new(Vec::new()));
-    service.core.register("probe", probe("probe", runs.clone(), configs.clone()));
+    service
+        .core
+        .register("probe", probe("probe", runs.clone(), configs.clone()));
 
     let id = service
         .tree
@@ -278,13 +298,19 @@ async fn unsupported_js_exprs_fail_entries() {
     let (_ctx, service) = setup().await;
     let runs = Arc::new(AtomicU32::new(0));
     let configs = Arc::new(std::sync::Mutex::new(Vec::new()));
-    service.core.register("probe", probe("probe", runs.clone(), configs.clone()));
+    service
+        .core
+        .register("probe", probe("probe", runs.clone(), configs.clone()));
 
     // TS also rejects at entry create: the fiber fails to apply and the
     // update propagates out of `group.create`.
     let result = service
         .tree
-        .create(entry("probe", json!({ "__jsExpr": "process.env.X" })), None, None)
+        .create(
+            entry("probe", json!({ "__jsExpr": "process.env.X" })),
+            None,
+            None,
+        )
         .await;
     assert!(result.is_err(), "js-expr config must fail loudly");
     assert_eq!(runs.load(Ordering::SeqCst), 0);
@@ -300,7 +326,11 @@ fn entry_options_serde_round_trip() {
         disabled: Some(json!(false)),
         inject: Some([("foo".to_string(), None)].into_iter().collect()),
         intercept: Some([("bar".to_string(), json!(1))].into_iter().collect()),
-        isolate: Some([("baz".to_string(), Some("shared".to_string()))].into_iter().collect()),
+        isolate: Some(
+            [("baz".to_string(), Some("shared".to_string()))]
+                .into_iter()
+                .collect(),
+        ),
     };
     let value = serde_json::to_value(&options).unwrap();
     let back: EntryOptions = serde_json::from_value(value).unwrap();
@@ -308,5 +338,8 @@ fn entry_options_serde_round_trip() {
     assert_eq!(back.name, "probe");
     assert_eq!(back.config, Some(json!({ "a": 1 })));
     assert_eq!(back.group, Some(true));
-    assert_eq!(back.isolate.unwrap().get("baz").cloned(), Some(Some("shared".to_string())));
+    assert_eq!(
+        back.isolate.unwrap().get("baz").cloned(),
+        Some(Some("shared".to_string()))
+    );
 }

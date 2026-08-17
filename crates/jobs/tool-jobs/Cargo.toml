@@ -1,0 +1,32 @@
+[package]
+name = "dsh-tool-jobs"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Model-facing job_output/job_list/job_kill tools over ctx.jobs with completion notices — Rust port of @deepseek-ai/dsh-tool-jobs"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-schemastery = { path = "../../vendor/schemastery" }
+dsh-agent = { path = "../../core/agent" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-jobs = { path = "../jobs" }
+dsh-llm = { path = "../../core/llm" }
+dsh-output-retention = { path = "../../util/output-retention" }
+dsh-session = { path = "../../core/session" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-tools = { path = "../../core/tools" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-jobs-local = { path = "../jobs-local" }
+dsh-scope = { path = "../../core/scope" }
+tokio = { workspace = true }
+serde_json = { workspace = true }

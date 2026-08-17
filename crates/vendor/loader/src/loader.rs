@@ -31,12 +31,7 @@ pub enum LoaderError {
 }
 
 impl LoaderError {
-    pub fn update(
-        stage: &'static str,
-        id: &str,
-        name: &str,
-        message: impl Into<String>,
-    ) -> Self {
+    pub fn update(stage: &'static str, id: &str, name: &str, message: impl Into<String>) -> Self {
         Self::Update {
             stage,
             id: id.to_string(),
@@ -49,13 +44,22 @@ impl LoaderError {
 impl std::fmt::Display for LoaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LoaderError::Update { stage, id, name, message } => {
+            LoaderError::Update {
+                stage,
+                id,
+                name,
+                message,
+            } => {
                 write!(f, "failed to {stage} loader entry {id} ({name}): {message}")
             }
             LoaderError::UnsupportedJs(message) => write!(f, "{message}"),
             LoaderError::Import(message) => write!(f, "{message}"),
             LoaderError::Aggregate(errors) => {
-                write!(f, "loader entries failed ({} errors)", errors.len())
+                write!(f, "loader entries failed ({} errors)", errors.len())?;
+                for error in errors {
+                    write!(f, "\n- {error}")?;
+                }
+                Ok(())
             }
         }
     }
@@ -119,7 +123,9 @@ impl LoaderCore {
 
     /// Register the fiber→entry association (TS sets `fiber.entry`).
     pub fn track_fiber(&self, fiber: &Arc<FiberCore>, entry: Arc<Entry>) {
-        self.entries_by_fiber.lock().insert(Self::fiber_key(fiber), entry);
+        self.entries_by_fiber
+            .lock()
+            .insert(Self::fiber_key(fiber), entry);
     }
 
     /// Drop the fiber→entry association (entry dispose).
@@ -140,7 +146,10 @@ impl LoaderCore {
 
     /// Look up the entry owning a fiber (TS `fiber.entry`).
     pub fn entry_of(&self, fiber: &Arc<FiberCore>) -> Option<Arc<Entry>> {
-        self.entries_by_fiber.lock().get(&Self::fiber_key(fiber)).cloned()
+        self.entries_by_fiber
+            .lock()
+            .get(&Self::fiber_key(fiber))
+            .cloned()
     }
 }
 
@@ -159,7 +168,11 @@ impl LoaderService {
     pub async fn new(ctx: &Context) -> Arc<Self> {
         let core = LoaderCore::new();
         let tree = crate::tree::EntryTree::new(ctx.clone(), core.clone());
-        let service = Arc::new(Self { core: core.clone(), tree, enable_logs: true });
+        let service = Arc::new(Self {
+            core: core.clone(),
+            tree,
+            enable_logs: true,
+        });
 
         // Built-in plugin: nested entry groups.
         core.register("group", Arc::new(GroupPlugin { core: core.clone() }));
@@ -182,7 +195,9 @@ impl LoaderService {
                             Some(next) => next.call().await,
                             None => arc(()),
                         };
-                        let Some(config) = args.first() else { return Some(result) };
+                        let Some(config) = args.first() else {
+                            return Some(result);
+                        };
                         let Some(raw) = cordis::downcast::<serde_json::Value>(config) else {
                             return Some(result);
                         };
@@ -212,8 +227,9 @@ impl LoaderService {
                     let core = core.clone();
                     let tree = tree.clone();
                     Box::pin(async move {
-                        let Some(next) =
-                            args.last().and_then(|v| cordis::downcast::<cordis::NextFn>(v))
+                        let Some(next) = args
+                            .last()
+                            .and_then(|v| cordis::downcast::<cordis::NextFn>(v))
                         else {
                             return None;
                         };
@@ -228,8 +244,7 @@ impl LoaderService {
                         }
                         if let Some(entry) = core.entry_of(&ctx.fiber) {
                             if let Some(config) = args.first() {
-                                if let Some(raw) = cordis::downcast::<serde_json::Value>(config)
-                                {
+                                if let Some(raw) = cordis::downcast::<serde_json::Value>(config) {
                                     entry.options.lock().config = Some(raw.clone());
                                 }
                             }
@@ -251,9 +266,10 @@ impl LoaderService {
                 Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
                     let core = core.clone();
                     Box::pin(async move {
-                        let Some(fiber_value) = args.first() else { return None };
-                        let Some(fiber_arc) =
-                            cordis::downcast::<Arc<FiberCore>>(fiber_value)
+                        let Some(fiber_value) = args.first() else {
+                            return None;
+                        };
+                        let Some(fiber_arc) = cordis::downcast::<Arc<FiberCore>>(fiber_value)
                         else {
                             return None;
                         };

@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -352,6 +353,45 @@ async fn flushes_when_the_in_turn_event_count_reaches_the_configured_threshold()
     settle().await;
     let rows = stored_rows(&pool, "count").expect("stored");
     assert_eq!(rows["cache-test/marks"]["val"], json!({"marks": ["3"]}));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn coalesces_count_threshold_flushes_before_spawned_tasks_are_polled() {
+    let pool = Arc::new(MemoryMediaPool::new());
+    let h = harness(
+        pool,
+        HashMap::new(),
+        Config { write_every_events: 100, write_interval_ms: 60_000 },
+        1,
+    )
+    .await;
+    let flushes = Arc::new(AtomicUsize::new(0));
+    let flushes_for_listener = Arc::clone(&flushes);
+    h.ctx
+        .on(
+            "session/flush",
+            Arc::new(move |_ctx, _args| {
+                let flushes = Arc::clone(&flushes_for_listener);
+                Box::pin(async move {
+                    flushes.fetch_add(1, Ordering::SeqCst);
+                    None
+                })
+            }),
+            Default::default(),
+        )
+        .await;
+    let session = live_session(&h.store, &h.ctx, "count-coalescing").await;
+
+    for event in 1..=500 {
+        mark(&session, &[&event.to_string()]);
+    }
+    settle().await;
+
+    assert_eq!(
+        flushes.load(Ordering::SeqCst),
+        5,
+        "one count-triggered flush is allowed per 100 newly dirty events"
+    );
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]

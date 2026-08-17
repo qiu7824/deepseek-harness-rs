@@ -1,0 +1,11 @@
+[package]
+name = "dsh-host-directory-picker-auto"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Adaptive chooser of the directory-picker seam: boot-time backend resolution from host facts. Rust port of @deepseek-ai/dsh-host-directory-picker-auto"
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]

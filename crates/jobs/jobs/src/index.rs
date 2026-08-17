@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use cordis::{Disposer, Service};
+use cordis::{Context, Disposer, Service};
 use dsh_agent::Agent;
 use futures::future::BoxFuture;
 
@@ -93,18 +93,18 @@ pub trait JobRegistry: Send + Sync + 'static {
     /// settlements of the owners its registering context's scope covers;
     /// each listener is contained; returned work is observed but not
     /// awaited. No listener runs after service disposal.
-    fn on_job_done(&self, listener: JobDoneListener) -> Disposer;
+    fn on_job_done(&self, caller: &Context, listener: JobDoneListener) -> Disposer;
 
     /// Register an effect-scoped observer of visible-set changes. It fires
     /// after every commit that changes what `list` returns for that owner.
     /// This is not a superset of [`JobRegistry::on_job_done`]: it carries no
     /// delivery meaning and marks nothing reported.
-    fn on_jobs_changed(&self, listener: JobsChangedListener) -> Disposer;
+    fn on_jobs_changed(&self, caller: &Context, listener: JobsChangedListener) -> Disposer;
 
     /// Attach an effect-scoped controller that can read and stop jobs. It
     /// serves the owners its registering context's scope covers, and `start`
     /// refuses an owner no attached controller serves.
-    fn attach_controller(&self, name: &str) -> Disposer;
+    fn attach_controller(&self, caller: &Context, name: &str) -> Disposer;
 }
 
 impl Service for dyn JobRegistry {

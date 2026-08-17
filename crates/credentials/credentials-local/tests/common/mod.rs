@@ -57,7 +57,11 @@ pub fn boot(path: &str, watch: bool) -> (Context, Arc<LocalCredentialProvider>) 
     let ctx = Context::root();
     let provider = LocalCredentialProvider::install(
         &ctx,
-        Config { path: Some(path.to_string()), watch: Some(watch), ..Default::default() },
+        Config {
+            path: Some(path.to_string()),
+            watch: Some(watch),
+            ..Default::default()
+        },
     )
     .expect("boot");
     (ctx, provider)
@@ -75,7 +79,11 @@ pub fn boot_with(
 ) -> Result<Arc<LocalCredentialProvider>, String> {
     LocalCredentialProvider::install_with_seams(
         ctx,
-        Config { path: Some(path.to_string()), watch: Some(watch), ..Default::default() },
+        Config {
+            path: Some(path.to_string()),
+            watch: Some(watch),
+            ..Default::default()
+        },
         writer,
         watcher_factory,
         reader.unwrap_or_else(default_reader),
@@ -112,7 +120,11 @@ pub fn fake_instances() -> &'static Mutex<Vec<FakeWatcherInstance>> {
 pub fn fake_watcher_factory() -> WatcherFactory {
     Arc::new(|target: String, sink: Arc<dyn WatchSink>, debounce: u64| {
         Box::pin(async move {
-            fake_instances().lock().push(FakeWatcherInstance { target, debounce, sink });
+            fake_instances().lock().push(FakeWatcherInstance {
+                target,
+                debounce,
+                sink,
+            });
             Ok(Arc::new(FakeControl) as Arc<dyn WatchControl>)
         })
     })
@@ -155,7 +167,10 @@ pub fn real_writer() -> DocumentWriter {
             dsh_atomic_write::write_file_atomic(
                 &path,
                 &content,
-                dsh_atomic_write::WriteFileAtomicOptions { mode: 0o600, dir_mode: Some(0o700) },
+                dsh_atomic_write::WriteFileAtomicOptions {
+                    mode: 0o600,
+                    dir_mode: Some(0o700),
+                },
             )
             .await
             .map_err(|error| error.to_string())
@@ -170,7 +185,9 @@ pub struct GatedWriter {
 
 impl GatedWriter {
     pub fn new() -> Self {
-        Self { gate: Arc::new(tokio::sync::Mutex::new(None)) }
+        Self {
+            gate: Arc::new(tokio::sync::Mutex::new(None)),
+        }
     }
 
     pub fn writer(&self) -> DocumentWriter {

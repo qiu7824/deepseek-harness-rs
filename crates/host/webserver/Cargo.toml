@@ -1,0 +1,25 @@
+[package]
+name = "dsh-host-webserver"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Web route-registration plugin: HTTP and upgrade routes, index transform taps, and the single fallback seat. Rust port of @deepseek-ai/dsh-host-webserver"
+
+[dependencies]
+axum = { workspace = true }
+cordis = { path = "../../vendor/cordis" }
+dsh-invariants = { path = "../../util/invariants" }
+async-trait = { workspace = true }
+bytes = "1"
+futures = { workspace = true }
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

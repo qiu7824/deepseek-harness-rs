@@ -224,7 +224,7 @@ async fn rejects_start_without_a_serving_controller() {
 #[tokio::test(flavor = "current_thread")]
 async fn validates_start_inputs() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
-    harness.registry.attach_controller("test");
+    harness.registry.attach_controller(&harness.ctx, "test");
     let (hooks, mut _rx) = TestHooks::new();
 
     let error = harness
@@ -252,7 +252,7 @@ async fn validates_start_inputs() {
 #[tokio::test(flavor = "current_thread")]
 async fn mints_sequential_ids_per_kind() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
-    harness.registry.attach_controller("test");
+    harness.registry.attach_controller(&harness.ctx, "test");
     let (a, _rx_a) = TestHooks::new();
     let (b, _rx_b) = TestHooks::new();
     let (c, _rx_c) = TestHooks::new();
@@ -270,7 +270,7 @@ async fn enforces_the_per_owner_concurrency_limit() {
         max_concurrent_jobs_per_owner: Some(1),
     })
     .await;
-    harness.registry.attach_controller("test");
+    harness.registry.attach_controller(&harness.ctx, "test");
     let (first, _rx) = TestHooks::new();
     let (second, _rx2) = TestHooks::new();
     harness
@@ -288,7 +288,7 @@ async fn enforces_the_per_owner_concurrency_limit() {
 #[tokio::test(flavor = "current_thread")]
 async fn fences_access_by_owner_session() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
-    harness.registry.attach_controller("test");
+    harness.registry.attach_controller(&harness.ctx, "test");
     let (owner, _owner_fiber) = StubAgent::new(&harness.ctx, "owner");
     let (foreign, _foreign_fiber) = StubAgent::new(&harness.ctx, "foreign");
     register_agent(&harness, &owner).await;
@@ -333,7 +333,7 @@ async fn fences_access_by_owner_session() {
 #[tokio::test(flavor = "current_thread")]
 async fn reads_stream_output_and_marks_reported() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
-    harness.registry.attach_controller("test");
+    harness.registry.attach_controller(&harness.ctx, "test");
     let (hooks, mut rx) = TestHooks::new();
     hooks.stream.lock().push_back("chunk-a\n".to_string());
     hooks.stream.lock().push_back("chunk-b\n".to_string());
@@ -365,7 +365,7 @@ async fn reads_stream_output_and_marks_reported() {
 #[tokio::test(flavor = "current_thread")]
 async fn reads_final_output_after_settlement_idempotently() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
-    harness.registry.attach_controller("test");
+    harness.registry.attach_controller(&harness.ctx, "test");
     let (hooks, mut rx) = TestHooks::new();
     let id = harness.registry.start(start_spec("bash", "final", hooks.clone())).expect("start");
     let _ = hooks.outcome.send(Some(JobOutcome {
@@ -386,7 +386,7 @@ async fn reads_final_output_after_settlement_idempotently() {
 #[tokio::test(flavor = "current_thread")]
 async fn kill_requests_then_marks_stopping_and_reported() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
-    harness.registry.attach_controller("test");
+    harness.registry.attach_controller(&harness.ctx, "test");
     let (hooks, mut _rx) = TestHooks::new();
     let id = harness.registry.start(start_spec("bash", "kill me", hooks.clone())).expect("start");
 
@@ -404,7 +404,7 @@ async fn kill_requests_then_marks_stopping_and_reported() {
 #[tokio::test(flavor = "current_thread")]
 async fn kill_returns_already_finished_after_settlement() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
-    harness.registry.attach_controller("test");
+    harness.registry.attach_controller(&harness.ctx, "test");
     let (hooks, mut rx) = TestHooks::new();
     let id = harness.registry.start(start_spec("bash", "done soon", hooks.clone())).expect("start");
     let _ = hooks.outcome.send(Some(JobOutcome {
@@ -421,23 +421,19 @@ async fn kill_returns_already_finished_after_settlement() {
 #[tokio::test(flavor = "current_thread")]
 async fn settlement_is_first_wins_and_notifies_listeners() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
-    harness.registry.attach_controller("test");
+    harness.registry.attach_controller(&harness.ctx, "test");
     let done_events: Arc<Mutex<Vec<(String, Option<String>)>>> = Arc::new(Mutex::new(Vec::new()));
     let changed_events: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
     let listener_events = done_events.clone();
-    harness
-        .registry
-        .on_job_done(Arc::new(move |snapshot, owner| {
-            listener_events
-                .lock()
-                .push((snapshot.status.as_str().to_string(), owner.map(|o| o.id().as_str().to_string())));
-        }));
+    harness.registry.on_job_done(&harness.ctx, Arc::new(move |snapshot, owner| {
+        listener_events
+            .lock()
+            .push((snapshot.status.as_str().to_string(), owner.map(|o| o.id().as_str().to_string())));
+    }));
     let changed_events_for_listener = changed_events.clone();
-    harness
-        .registry
-        .on_jobs_changed(Arc::new(move |_owner| {
-            *changed_events_for_listener.lock() += 1;
-        }));
+    harness.registry.on_jobs_changed(&harness.ctx, Arc::new(move |_owner| {
+        *changed_events_for_listener.lock() += 1;
+    }));
 
     let (hooks, mut rx) = TestHooks::new();
     let id = harness.registry.start(start_spec("bash", "settle me", hooks.clone())).expect("start");
@@ -471,7 +467,7 @@ async fn settlement_is_first_wins_and_notifies_listeners() {
 #[tokio::test(flavor = "current_thread")]
 async fn wait_resolves_on_terminal_timeout_and_abort() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
-    harness.registry.attach_controller("test");
+    harness.registry.attach_controller(&harness.ctx, "test");
 
     // A live job waits until settlement.
     let (hooks, mut rx) = TestHooks::new();
@@ -523,7 +519,7 @@ async fn wait_resolves_on_terminal_timeout_and_abort() {
 #[tokio::test(flavor = "current_thread")]
 async fn teardown_cancels_live_work_and_force_fails_throwing_cancels() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
-    harness.registry.attach_controller("test");
+    harness.registry.attach_controller(&harness.ctx, "test");
     let (hooks, mut _rx) = TestHooks::new();
     harness
         .registry
@@ -545,7 +541,7 @@ async fn teardown_cancels_live_work_and_force_fails_throwing_cancels() {
 #[tokio::test(flavor = "current_thread")]
 async fn a_throwing_teardown_cancel_force_fails_the_record() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
-    harness.registry.attach_controller("test");
+    harness.registry.attach_controller(&harness.ctx, "test");
     // Owner disposal keeps listeners open, so the force-failed terminal
     // snapshot is observable through the completion channel (service
     // disposal clears the store before any external read).
@@ -560,12 +556,10 @@ async fn a_throwing_teardown_cancel_force_fails_the_record() {
 
     let done_events: Arc<Mutex<Vec<dsh_jobs::JobSnapshot>>> = Arc::new(Mutex::new(Vec::new()));
     let listener_events = done_events.clone();
-    harness
-        .registry
-        .on_job_done(Arc::new(move |snapshot, _owner| {
-            listener_events.lock().push(snapshot);
+    harness.registry.on_job_done(&harness.ctx, Arc::new(move |snapshot, _owner| {
+        listener_events.lock().push(snapshot);
     // Let the owner-cleanup effect body run (its disposer registers     // asynchronously) BEFORE the fiber starts draining.
-        }));
+    }));
 
     owner_fiber.dispose().await;
     let events = done_events.lock().clone();
@@ -581,7 +575,7 @@ async fn a_throwing_teardown_cancel_force_fails_the_record() {
 #[tokio::test(flavor = "current_thread")]
 async fn owner_disposal_cancels_owned_work() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
-    harness.registry.attach_controller("test");
+    harness.registry.attach_controller(&harness.ctx, "test");
     let (owner, owner_fiber) = StubAgent::new(&harness.ctx, "owner");
     register_agent(&harness, &owner).await;
 

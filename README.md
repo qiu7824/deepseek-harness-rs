@@ -26,7 +26,9 @@ D:\deepwork\deepseek-harness-rs
 - 已复制 Web 前端、配置和 examples，未复制 `node_modules`。
 - 已完成 241 个 workspace 包的自动 LOC 清点；剔除纯浏览器包后，Host/后端及共享基础约 192 个包、161,745 行源码、206,707 行测试。
 - 已完成六组包级盘点，见 `docs/porting/inventory/`。
-- 已开始移植最底层 `@deepseek-ai/cordis`，Rust crate 位于 `crates/vendor/cordis/`。
+- 已完成最底层 `@deepseek-ai/cordis` 生态，Rust crate 位于 `crates/vendor/`。
+- M6 Host 外壳：`dsh-host` 可启动组合、webserver、frontend-static、directory-picker、plugin-inventory、apiproxy 契约与组合层（103 项测试）、CLI 骨架、profile-boot 均已落地。
+- 最新一轮（第 125 轮）：dsh-e2b 命令面扩展（cwd/流式回调/abort/后台命令）+ 新建 `crates/e2b/subprocess-e2b` 适配器（environment/remote/output/process/index，6 项聚焦测试全绿），全量 1664 项通过。
 
 完整阶段、风险和状态见 [`PORTING.md`](PORTING.md)。
 

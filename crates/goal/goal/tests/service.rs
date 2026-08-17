@@ -13,7 +13,7 @@ use dsh_goal::{
     GoalPhase, GoalRef, GoalService,
 };
 use dsh_scope::ScopeKey;
-use dsh_session::{Session, SessionId, session_id};
+use dsh_session::{Session, SessionId, SessionStore, session_id};
 
 struct NoopPlugin;
 
@@ -34,10 +34,15 @@ struct StubAgent {
 
 impl StubAgent {
     fn new(ctx: &Context, raw_id: &str) -> (Arc<dyn Agent>, Arc<FiberCore>) {
+        let id = session_id(raw_id);
+        let session = Session::create(id, None, None).expect("session");
+        Self::with_session(ctx, session)
+    }
+
+    fn with_session(ctx: &Context, session: Session) -> (Arc<dyn Agent>, Arc<FiberCore>) {
         let fiber = ctx.plugin(Arc::new(NoopPlugin), cordis::arc(()));
         let agent_ctx = fiber.ctx().expect("plugin ctx bound at load");
-        let id = session_id(raw_id);
-        let session = Session::create(id.clone(), None, None).expect("session");
+        let id = session.id().clone();
         let inbox = Inbox::new(&session, Default::default()).expect("inbox");
         let agent: Arc<dyn Agent> = Arc::new(Self {
             id,
@@ -80,7 +85,12 @@ impl Agent for StubAgent {
         &self.scope_key
     }
 
-    fn cancel(&self, _cause: dsh_agent::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_agent::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -93,7 +103,13 @@ impl Agent for StubAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 
@@ -170,11 +186,13 @@ async fn creates_an_armed_active_goal_and_rejects_a_second() {
     assert!(view.id.as_str().starts_with("goal-"));
 
     // The durable change committed to the session log.
-    assert!(agent
-        .session()
-        .events()
-        .iter()
-        .any(|event| event.type_ == "goal/change"));
+    assert!(
+        agent
+            .session()
+            .events()
+            .iter()
+            .any(|event| event.type_ == "goal/change")
+    );
 
     let error = harness
         .goals
@@ -189,7 +207,10 @@ async fn edits_objective_and_cap_without_changing_phase() {
     let harness = setup(Config::default()).await;
     let (agent, _fiber) = StubAgent::new(&harness.ctx, "owner");
     register_agent(&harness, &agent).await;
-    let created = harness.goals.create(&agent, create_request("original")).expect("create");
+    let created = harness
+        .goals
+        .create(&agent, create_request("original"))
+        .expect("create");
     let ref_ = GoalRef {
         id: created.id.clone(),
         revision: created.revision,
@@ -245,13 +266,19 @@ async fn pauses_and_resumes_through_the_phase_ladder() {
     let harness = setup(Config::default()).await;
     let (agent, _fiber) = StubAgent::new(&harness.ctx, "owner");
     register_agent(&harness, &agent).await;
-    let created = harness.goals.create(&agent, create_request("ladder")).expect("create");
+    let created = harness
+        .goals
+        .create(&agent, create_request("ladder"))
+        .expect("create");
 
     let paused = harness
         .goals
         .pause(
             &agent,
-            &GoalRef { id: created.id.clone(), revision: 1 },
+            &GoalRef {
+                id: created.id.clone(),
+                revision: 1,
+            },
         )
         .expect("pause");
     assert_eq!(paused.phase, GoalPhase::Paused);
@@ -262,7 +289,10 @@ async fn pauses_and_resumes_through_the_phase_ladder() {
         .goals
         .resume(
             &agent,
-            &GoalRef { id: created.id.clone(), revision: 2 },
+            &GoalRef {
+                id: created.id.clone(),
+                revision: 2,
+            },
         )
         .expect("resume");
     assert_eq!(resumed.phase, GoalPhase::Active);
@@ -273,7 +303,10 @@ async fn pauses_and_resumes_through_the_phase_ladder() {
         .goals
         .resume(
             &agent,
-            &GoalRef { id: created.id.clone(), revision: 3 },
+            &GoalRef {
+                id: created.id.clone(),
+                revision: 3,
+            },
         )
         .err()
         .expect("already armed");
@@ -285,7 +318,10 @@ async fn pauses_and_resumes_through_the_phase_ladder() {
         .goals
         .pause(
             &agent,
-            &GoalRef { id: created.id.clone(), revision: 2 },
+            &GoalRef {
+                id: created.id.clone(),
+                revision: 2,
+            },
         )
         .err()
         .expect("stale phase");
@@ -294,7 +330,10 @@ async fn pauses_and_resumes_through_the_phase_ladder() {
         .goals
         .pause(
             &agent,
-            &GoalRef { id: created.id.clone(), revision: 3 },
+            &GoalRef {
+                id: created.id.clone(),
+                revision: 3,
+            },
         )
         .expect("pause active again");
     assert_eq!(paused_again.phase, GoalPhase::Paused);
@@ -306,7 +345,10 @@ async fn completes_allows_replacement_and_blocks_with_reasons() {
     let (agent, _fiber) = StubAgent::new(&harness.ctx, "owner");
     register_agent(&harness, &agent).await;
 
-    let created = harness.goals.create(&agent, create_request("first")).expect("create");
+    let created = harness
+        .goals
+        .create(&agent, create_request("first"))
+        .expect("create");
 
     // A bad reason is refused at the boundary (while the goal is still
     // active at revision 1).
@@ -314,7 +356,10 @@ async fn completes_allows_replacement_and_blocks_with_reasons() {
         .goals
         .block(
             &agent,
-            &GoalRef { id: created.id.clone(), revision: 1 },
+            &GoalRef {
+                id: created.id.clone(),
+                revision: 1,
+            },
             &GoalBlockReason {
                 code: "BadCode".to_string(),
                 message: "x".to_string(),
@@ -328,7 +373,10 @@ async fn completes_allows_replacement_and_blocks_with_reasons() {
         .goals
         .block(
             &agent,
-            &GoalRef { id: created.id.clone(), revision: 1 },
+            &GoalRef {
+                id: created.id.clone(),
+                revision: 1,
+            },
             &GoalBlockReason {
                 code: "round-limit".to_string(),
                 message: "hit the cap".to_string(),
@@ -349,14 +397,20 @@ async fn completes_allows_replacement_and_blocks_with_reasons() {
         .goals
         .complete(
             &agent,
-            &GoalRef { id: created.id.clone(), revision: 2 },
+            &GoalRef {
+                id: created.id.clone(),
+                revision: 2,
+            },
         )
         .expect("complete");
     assert_eq!(completed.phase, GoalPhase::Complete);
     assert_eq!(completed.activation, GoalActivation::Disarmed);
 
     // A completed goal may be replaced.
-    let replacement = harness.goals.create(&agent, create_request("second")).expect("replace");
+    let replacement = harness
+        .goals
+        .create(&agent, create_request("second"))
+        .expect("replace");
     assert_eq!(replacement.revision, 1);
 }
 
@@ -365,13 +419,19 @@ async fn clears_with_a_tombstone_and_allows_a_fresh_create() {
     let harness = setup(Config::default()).await;
     let (agent, _fiber) = StubAgent::new(&harness.ctx, "owner");
     register_agent(&harness, &agent).await;
-    let created = harness.goals.create(&agent, create_request("to clear")).expect("create");
+    let created = harness
+        .goals
+        .create(&agent, create_request("to clear"))
+        .expect("create");
 
     let tombstone = harness
         .goals
         .clear(
             &agent,
-            &GoalRef { id: created.id.clone(), revision: 1 },
+            &GoalRef {
+                id: created.id.clone(),
+                revision: 1,
+            },
         )
         .expect("clear");
     assert_eq!(tombstone.id, created.id);
@@ -379,19 +439,24 @@ async fn clears_with_a_tombstone_and_allows_a_fresh_create() {
 
     assert!(harness.goals.get(&agent).expect("get").is_none());
     // The durable tombstone is in the log.
-    assert!(agent
-        .session()
-        .events()
-        .iter()
-        .any(|event| event.type_ == "goal/change"
-            && event.data.get("operation").and_then(|v| v.as_str()) == Some("clear")));
+    assert!(
+        agent
+            .session()
+            .events()
+            .iter()
+            .any(|event| event.type_ == "goal/change"
+                && event.data.get("operation").and_then(|v| v.as_str()) == Some("clear"))
+    );
 
     // Missing and stale refs fail loudly.
     let error = harness
         .goals
         .edit(
             &agent,
-            &GoalRef { id: created.id.clone(), revision: 2 },
+            &GoalRef {
+                id: created.id.clone(),
+                revision: 2,
+            },
             &EditGoalRequest {
                 objective: Some("x".to_string()),
                 max_goal_rounds: None,
@@ -401,7 +466,10 @@ async fn clears_with_a_tombstone_and_allows_a_fresh_create() {
         .expect("no current goal");
     assert_code(&error, GoalErrorCode::NotFound);
 
-    let fresh = harness.goals.create(&agent, create_request("fresh")).expect("fresh create");
+    let fresh = harness
+        .goals
+        .create(&agent, create_request("fresh"))
+        .expect("fresh create");
     assert_eq!(fresh.revision, 1);
 }
 
@@ -413,35 +481,140 @@ async fn emits_goal_changed_after_each_durable_mutation() {
 
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let seen_for_listener = seen.clone();
-    let listener: Arc<cordis::Listener> = Arc::new(
-        move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+    let listener: Arc<cordis::Listener> =
+        Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
             let seen = seen_for_listener.clone();
             Box::pin(async move {
                 if let Some(payload) = args
                     .first()
                     .and_then(|value| downcast::<dsh_goal::domain::GoalChangedPayload>(value))
                 {
-                    seen.lock().push(payload.change.operation.as_str().to_string());
+                    seen.lock()
+                        .push(payload.change.operation.as_str().to_string());
                 }
                 None
             })
-        },
-    );
+        });
     harness
         .ctx
-        .on("goal/changed", listener, cordis::EventOptions::default().global(true))
+        .on(
+            "goal/changed",
+            listener,
+            cordis::EventOptions::default().global(true),
+        )
         .await;
 
-    let created = harness.goals.create(&agent, create_request("events")).expect("create");
+    let created = harness
+        .goals
+        .create(&agent, create_request("events"))
+        .expect("create");
     let _ = harness
         .goals
         .complete(
             &agent,
-            &GoalRef { id: created.id.clone(), revision: 1 },
+            &GoalRef {
+                id: created.id.clone(),
+                revision: 1,
+            },
         )
         .expect("complete");
 
     let seen = seen.lock().clone();
     assert!(seen.contains(&"create".to_string()), "{seen:?}");
     assert!(seen.contains(&"complete".to_string()), "{seen:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_durable_append_does_not_commit_or_publish_a_goal_mutation() {
+    let harness = setup(Config::default()).await;
+    let sessions = SessionStore::install(&harness.ctx);
+    let session = sessions
+        .create(&harness.ctx, Some(session_id("append-failure")), None)
+        .await
+        .expect("attached session");
+    let (agent, _fiber) = StubAgent::with_session(&harness.ctx, session);
+    register_agent(&harness, &agent).await;
+    let created = harness
+        .goals
+        .create(&agent, create_request("must remain active"))
+        .expect("create");
+
+    let published: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let published_for_listener = published.clone();
+    harness
+        .ctx
+        .on(
+            "goal/changed",
+            Arc::new(move |_ctx, args| {
+                if let Some(payload) = args
+                    .first()
+                    .and_then(|value| downcast::<dsh_goal::domain::GoalChangedPayload>(value))
+                {
+                    published_for_listener
+                        .lock()
+                        .push(payload.change.operation.as_str().to_string());
+                }
+                Box::pin(async { None })
+            }),
+            cordis::EventOptions::default().global(true),
+        )
+        .await;
+
+    let pause_result = Arc::new(Mutex::new(None));
+    let pause_result_for_listener = pause_result.clone();
+    let goals = harness.goals.clone();
+    let agent_for_listener = agent.clone();
+    let ref_ = GoalRef {
+        id: created.id.clone(),
+        revision: created.revision,
+    };
+    harness
+        .ctx
+        .on(
+            "session/event",
+            Arc::new(move |_ctx, args| {
+                let is_trigger = args
+                    .get(1)
+                    .and_then(|value| downcast::<dsh_session::SessionEvent>(value))
+                    .is_some_and(|event| event.type_ == "goal-test/trigger");
+                if is_trigger {
+                    let result = goals.pause(&agent_for_listener, &ref_);
+                    *pause_result_for_listener.lock() = Some(result);
+                }
+                Box::pin(async { None })
+            }),
+            cordis::EventOptions::default().global(true),
+        )
+        .await;
+
+    agent
+        .session()
+        .append("goal-test/trigger", serde_json::json!({}), None)
+        .expect("outer append");
+
+    let result = pause_result.lock().take().expect("pause attempted");
+    let error = result.expect_err("reentrant durable append must fail the mutation");
+    assert_eq!(error.code, GoalErrorCode::CommitFailed);
+    let current = harness
+        .goals
+        .get(&agent)
+        .expect("get")
+        .expect("goal remains");
+    assert_eq!(current.id, created.id);
+    assert_eq!(current.revision, 1);
+    assert_eq!(current.phase, GoalPhase::Active);
+    assert_eq!(
+        agent
+            .session()
+            .events()
+            .iter()
+            .filter(|event| event.type_ == "goal/change")
+            .count(),
+        1,
+        "only the original create may be durable"
+    );
+    assert!(
+        published.lock().is_empty(),
+        "a failed mutation must not publish goal/changed"
+    );
 }

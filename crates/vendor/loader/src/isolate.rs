@@ -23,7 +23,9 @@ pub struct Realm {
 
 impl Realm {
     pub fn new() -> Self {
-        Self { store: Mutex::new(HashMap::new()) }
+        Self {
+            store: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Resolve the label for `key`. With `create`, the label is persisted in
@@ -57,7 +59,10 @@ pub struct LocalRealm {
 
 impl LocalRealm {
     pub fn new(entry_id: String) -> Arc<Self> {
-        Arc::new(Self { entry_id, realm: Realm::new() })
+        Arc::new(Self {
+            entry_id,
+            realm: Realm::new(),
+        })
     }
 }
 
@@ -70,6 +75,9 @@ pub struct GlobalRealm {
 
 impl GlobalRealm {
     pub fn new(label: String) -> Arc<Self> {
-        Arc::new(Self { label, realm: Realm::new() })
+        Arc::new(Self {
+            label,
+            realm: Realm::new(),
+        })
     }
 }

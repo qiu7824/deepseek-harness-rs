@@ -1,0 +1,28 @@
+[package]
+name = "dsh-fs-e2b"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "E2B provider for the filesystem capability seam — Rust port of @deepseek-ai/dsh-fs-e2b"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-e2b = { path = "../e2b" }
+dsh-fs = { path = "../../fs/fs" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-sandbox = { path = "../../sandbox/sandbox" }
+anyhow = { workspace = true }
+async-stream = "0.3"
+async-trait = { workspace = true }
+base64 = "0.22"
+futures = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }

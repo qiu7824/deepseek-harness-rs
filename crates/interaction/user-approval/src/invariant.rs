@@ -211,8 +211,7 @@ pub fn installer() -> InvariantInstaller {
                             return None;
                         };
                         apply_turn(&traces, session.id().as_str(), &event);
-                        if let Err(message) =
-                            validate_event(&traces, session.id().as_str(), &event)
+                        if let Err(message) = validate_event(&traces, session.id().as_str(), &event)
                         {
                             fail(&message);
                         }

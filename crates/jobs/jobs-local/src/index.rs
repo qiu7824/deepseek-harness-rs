@@ -69,6 +69,9 @@ struct TrackedJob {
     started_at: u64,
     finished_at: Mutex<Option<u64>>,
     reported: AtomicBool,
+    /// Monotonic registration ordinal (the TS registration-order contract
+    /// for `list`; `startedAt` alone is ms-grained and unstable).
+    ordinal: u64,
     /// Settled once the terminal snapshot is recorded and listeners notified.
     settled: Arc<Notify>,
     /// The settled fact itself (a `Notify` stores no permit; late waiters
@@ -137,6 +140,8 @@ pub struct LocalJobRegistry {
     max_concurrent_jobs_per_owner: u64,
     store: Mutex<HashMap<JobId, Arc<TrackedJob>>>,
     counters: Mutex<HashMap<String, u64>>,
+    /// Monotonic registration sequence for the `list` order.
+    next_ordinal: AtomicU64,
     layers: ScopedLayers<JobLayer>,
     listeners_closed: AtomicBool,
     /// Owner agents with attached scope cleanup, mapped to the exact disposer.
@@ -168,6 +173,7 @@ impl LocalJobRegistry {
             max_concurrent_jobs_per_owner,
             store: Mutex::new(HashMap::new()),
             counters: Mutex::new(HashMap::new()),
+            next_ordinal: AtomicU64::new(0),
             layers: ScopedLayers::new(|_scope| JobLayer::new(), || {}),
             listeners_closed: AtomicBool::new(false),
             owner_cleanups: Mutex::new(HashMap::new()),
@@ -186,7 +192,11 @@ impl LocalJobRegistry {
                 }))
             }),
         );
-        ctx.register_service(registry.clone());
+        // Register the ERASED capability seam (the concrete handle is
+        // returned to the installer; a same-scope concrete registration
+        // would make `get_typed::<Arc<dyn JobRegistry>>` lookups fail).
+        let erased: Arc<dyn JobRegistry> = registry.clone();
+        ctx.register_service(erased);
         registry
     }
 
@@ -256,9 +266,12 @@ impl LocalJobRegistry {
             if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 listener(owner.cloned())
             })) {
-                eprintln!(
-                    "jobs: onJobsChanged listener threw: {}",
-                    render_panic(error)
+                self.ctx.logger.warn(
+                    &self.ctx,
+                    vec![cordis::arc(format!(
+                        "jobs: onJobsChanged listener threw: {}",
+                        render_panic(error)
+                    ))],
                 );
             }
         }
@@ -294,10 +307,13 @@ impl LocalJobRegistry {
             if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 listener(snapshot.clone(), job.owner.clone())
             })) {
-                eprintln!(
-                    "jobs: onJobDone listener threw for {}: {}",
-                    job.id,
-                    render_panic(error)
+                self.ctx.logger.warn(
+                    &self.ctx,
+                    vec![cordis::arc(format!(
+                        "jobs: onJobDone listener threw for {}: {}",
+                        job.id,
+                        render_panic(error)
+                    ))],
                 );
             }
         }
@@ -419,9 +435,16 @@ impl LocalJobRegistry {
                     self.notify_changed(job.owner.as_ref());
                 }
                 Err(error) => {
+                    let rendered = render_panic(error);
                     let detail = format!(
-                        "cancel threw during teardown; work may be orphaned: {}",
-                        render_panic(error)
+                        "cancel threw during teardown; work may be orphaned: {rendered}"
+                    );
+                    self.ctx.logger.warn(
+                        &self.ctx,
+                        vec![cordis::arc(format!(
+                            "jobs: cancel of {} threw during teardown; job record forced failed and work may be orphaned: {rendered}",
+                            job.id
+                        ))],
                     );
                     self.settle(
                         job,
@@ -510,6 +533,7 @@ impl JobRegistry for LocalJobRegistry {
             started_at: epoch_ms(),
             finished_at: Mutex::new(None),
             reported: AtomicBool::new(false),
+            ordinal: self.next_ordinal.fetch_add(1, SeqCst) + 1,
             settled: Arc::new(Notify::new()),
             settled_flag: AtomicBool::new(false),
             waiters: AtomicU64::new(0),
@@ -551,7 +575,7 @@ impl JobRegistry for LocalJobRegistry {
 
     fn list(&self, caller: Option<&Arc<dyn Agent>>) -> Vec<JobSnapshot> {
         let session = caller.map(|caller| caller.id().clone());
-        let mut jobs: Vec<JobSnapshot> = self
+        let mut jobs: Vec<Arc<TrackedJob>> = self
             .store
             .lock()
             .values()
@@ -559,10 +583,10 @@ impl JobRegistry for LocalJobRegistry {
                 None => true,
                 Some(owner) => Some(owner.id()) == session.as_ref(),
             })
-            .map(|job| job.snapshot())
+            .cloned()
             .collect();
-        jobs.sort_by_key(|job| job.started_at);
-        jobs
+        jobs.sort_by_key(|job| job.ordinal);
+        jobs.iter().map(|job| job.snapshot()).collect()
     }
 
     fn get(&self, id: &JobId, caller: Option<&Arc<dyn Agent>>) -> Result<JobSnapshot, String> {
@@ -710,27 +734,27 @@ impl JobRegistry for LocalJobRegistry {
         })
     }
 
-    fn on_job_done(&self, listener: JobDoneListener) -> Disposer {
+    fn on_job_done(&self, caller: &Context, listener: JobDoneListener) -> Disposer {
         self.layers.effect(
-            &self.ctx,
+            caller,
             move |layer| layer.listeners.append(listener.clone()),
             "jobs.onJobDone()",
             false,
         )
     }
 
-    fn on_jobs_changed(&self, listener: JobsChangedListener) -> Disposer {
+    fn on_jobs_changed(&self, caller: &Context, listener: JobsChangedListener) -> Disposer {
         self.layers.effect(
-            &self.ctx,
+            caller,
             move |layer| layer.changed.append(listener.clone()),
             "jobs.onJobsChanged()",
             false,
         )
     }
 
-    fn attach_controller(&self, _name: &str) -> Disposer {
+    fn attach_controller(&self, caller: &Context, _name: &str) -> Disposer {
         self.layers.effect(
-            &self.ctx,
+            caller,
             move |layer| layer.controllers.append(()),
             "jobs.attachController()",
             false,

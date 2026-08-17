@@ -103,7 +103,9 @@ impl EntryTree {
                 return Err(LoaderError::Aggregate(errors));
             }
         }
-        self.ctx.reflect.notify(&self.ctx, vec!["loader".to_string()]);
+        self.ctx
+            .reflect
+            .notify(&self.ctx, vec!["loader".to_string()]);
         Ok(())
     }
 
@@ -135,9 +137,11 @@ impl EntryTree {
                 .get(part)
                 .cloned()
                 .ok_or_else(|| LoaderError::Import(format!("cannot resolve entry {id}")))?;
-            let subtree = entry.subtree.lock().clone().ok_or_else(|| {
-                LoaderError::Import(format!("cannot resolve entry {id}"))
-            })?;
+            let subtree = entry
+                .subtree
+                .lock()
+                .clone()
+                .ok_or_else(|| LoaderError::Import(format!("cannot resolve entry {id}")))?;
             chain.push(subtree);
             current = chain.last().expect("subtree just pushed");
         }
@@ -155,9 +159,7 @@ impl EntryTree {
             Some(id) => {
                 let entry = self.resolve(id)?;
                 let subgroup = entry.subgroup.lock().clone();
-                subgroup.ok_or_else(|| {
-                    LoaderError::Import(format!("entry {id} is not a group"))
-                })
+                subgroup.ok_or_else(|| LoaderError::Import(format!("entry {id} is not a group")))
             }
         }
     }
@@ -185,9 +187,11 @@ impl EntryTree {
     /// Stop and remove an entry from its parent group (TS `remove`).
     pub async fn remove(&self, id: &str) -> Result<(), LoaderError> {
         let entry = self.resolve(id)?;
-        let parent = entry.parent.lock().clone().ok_or_else(|| {
-            LoaderError::Import(format!("entry {id} has no parent group"))
-        })?;
+        let parent = entry
+            .parent
+            .lock()
+            .clone()
+            .ok_or_else(|| LoaderError::Import(format!("entry {id} has no parent group")))?;
         // Never extend a lock guard across an await (same-thread reentrant
         // deadlock): extract the id first.
         let entry_id = entry.options.lock().id.clone();

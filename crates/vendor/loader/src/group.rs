@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cordis::{ArcValue, Context, Plugin, PluginError, EventOptions};
+use cordis::{ArcValue, Context, EventOptions, Plugin, PluginError};
 use parking_lot::Mutex;
 use serde_json::Value;
 
@@ -44,7 +44,11 @@ impl EntryGroup {
     }
 
     /// Create (or re-home) one entry in this group (TS `create`).
-    pub async fn create(self: &Arc<Self>, mut options: EntryOptions) -> Result<String, LoaderError> {        let id = self.tree.ensure_id(&mut options);
+    pub async fn create(
+        self: &Arc<Self>,
+        mut options: EntryOptions,
+    ) -> Result<String, LoaderError> {
+        let id = self.tree.ensure_id(&mut options);
         let existing = self.tree.store.lock().get(&id).cloned();
         let entry = match &existing {
             Some(entry) => entry.clone(),
@@ -181,13 +185,19 @@ impl Plugin for GroupPlugin {
     }
 
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
-        let entry = self
-            .core
-            .entry_of(&ctx.fiber)
-            .ok_or_else(|| PluginError::new(cordis::arc("group plugin requires a loader entry".to_string())))?;
-        let tree = entry.parent.lock().as_ref().map(|g| g.tree.clone()).ok_or_else(|| {
-            PluginError::new(cordis::arc("group entry has no parent tree".to_string()))
+        let entry = self.core.entry_of(&ctx.fiber).ok_or_else(|| {
+            PluginError::new(cordis::arc(
+                "group plugin requires a loader entry".to_string(),
+            ))
         })?;
+        let tree = entry
+            .parent
+            .lock()
+            .as_ref()
+            .map(|g| g.tree.clone())
+            .ok_or_else(|| {
+                PluginError::new(cordis::arc("group entry has no parent tree".to_string()))
+            })?;
         let group = EntryGroup::new(ctx.clone(), tree, Some(entry.clone()));
         *entry.subgroup.lock() = Some(group.clone());
 
@@ -199,16 +209,21 @@ impl Plugin for GroupPlugin {
             Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
                 let group = group_for_listener.clone();
                 Box::pin(async move {
-                    let next_result = match args.last().and_then(|v| cordis::downcast::<cordis::NextFn>(v)) {
+                    let next_result = match args
+                        .last()
+                        .and_then(|v| cordis::downcast::<cordis::NextFn>(v))
+                    {
                         Some(next) => next.call().await,
                         None => cordis::arc(()),
                     };
-                    if let Some(config) =
-                        args.first().and_then(|v| cordis::downcast::<Value>(v))
-                    {
-                        if let Ok(entries) = serde_json::from_value::<Vec<EntryOptions>>(config.clone()) {
+                    if let Some(config) = args.first().and_then(|v| cordis::downcast::<Value>(v)) {
+                        if let Ok(entries) =
+                            serde_json::from_value::<Vec<EntryOptions>>(config.clone())
+                        {
                             if let Err(error) = group.update(entries).await {
-                                return Some(cordis::arc(PluginError::new(cordis::arc(error.to_string()))));
+                                return Some(cordis::arc(PluginError::new(cordis::arc(
+                                    error.to_string(),
+                                ))));
                             }
                         }
                     }
@@ -219,11 +234,14 @@ impl Plugin for GroupPlugin {
         )
         .await;
 
-        let raw_config = cordis::downcast::<Value>(&config).cloned().unwrap_or(Value::Null);
+        let raw_config = cordis::downcast::<Value>(&config)
+            .cloned()
+            .unwrap_or(Value::Null);
         let entries: Vec<EntryOptions> = serde_json::from_value(raw_config).unwrap_or_default();
-        group.update(entries).await.map_err(|error| {
-            PluginError::new(cordis::arc(error.to_string()))
-        })?;
+        group
+            .update(entries)
+            .await
+            .map_err(|error| PluginError::new(cordis::arc(error.to_string())))?;
         Ok(())
     }
 }

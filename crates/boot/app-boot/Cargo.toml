@@ -1,0 +1,22 @@
+[package]
+name = "dsh-app-boot"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Profile discovery, initialization, and patch-layer composition for the dsh launcher family. Rust port of @deepseek-ai/dsh-app-boot (profile core first)"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-cordis-include = { path = "../../vendor/include" }
+dsh-cordis-loader = { path = "../../vendor/loader" }
+dsh-home-paths = { path = "../../util/home-paths" }
+indexmap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

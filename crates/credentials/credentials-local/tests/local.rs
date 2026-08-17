@@ -118,7 +118,11 @@ async fn treats_an_absent_file_as_an_empty_writable_store() {
     assert_eq!(provider.resolve(&key()).await, None);
     assert_eq!(
         provider.describe(&key()).await,
-        dsh_credentials::CredentialInfo { configured: false, source: None, writable: true }
+        dsh_credentials::CredentialInfo {
+            configured: false,
+            source: None,
+            writable: true
+        }
     );
 }
 
@@ -126,19 +130,32 @@ async fn treats_an_absent_file_as_an_empty_writable_store() {
 async fn serves_file_entries_alongside_comments_and_quoted_values() {
     let temp = TempRoot::new();
     let path = temp.path(".credentials.yaml");
-    write_credentials(&path, "# notes\nDSH_CRED_TEST: plain\nDSH_CRED_OTHER: \"with space\"\n");
+    write_credentials(
+        &path,
+        "# notes\nDSH_CRED_TEST: plain\nDSH_CRED_OTHER: \"with space\"\n",
+    );
     let (_ctx, provider) = boot(&path, false);
     assert_eq!(
         provider.resolve(&key()).await,
-        Some(dsh_credentials::ResolvedCredential { value: "plain".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "plain".to_string(),
+            source: "file".to_string()
+        })
     );
     assert_eq!(
         provider.resolve(&other()).await,
-        Some(dsh_credentials::ResolvedCredential { value: "with space".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "with space".to_string(),
+            source: "file".to_string()
+        })
     );
     assert_eq!(
         provider.describe(&key()).await,
-        dsh_credentials::CredentialInfo { configured: true, source: Some("file".to_string()), writable: true }
+        dsh_credentials::CredentialInfo {
+            configured: true,
+            source: Some("file".to_string()),
+            writable: true
+        }
     );
 }
 
@@ -147,18 +164,25 @@ async fn lets_a_non_empty_process_environment_win_read_only_over_the_file() {
     let temp = TempRoot::new();
     let path = temp.path(".credentials.yaml");
     write_credentials(&path, "DSH_CRED_TEST: from-file\n");
-    let probe = format!("DSH_CRED_TEST_{}", std::process::id());
+    let probe = format!("DSH_CRED_TEST_NON_EMPTY_{}", std::process::id());
     // SAFETY: test-process-local variable, removed at the end.
     unsafe { std::env::set_var(&probe, "from-env") };
     let reference = credential_ref(&probe);
     let (_ctx, provider) = boot(&path, false);
     assert_eq!(
         provider.resolve(&reference).await,
-        Some(dsh_credentials::ResolvedCredential { value: "from-env".to_string(), source: "env".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "from-env".to_string(),
+            source: "env".to_string()
+        })
     );
     assert_eq!(
         provider.describe(&reference).await,
-        dsh_credentials::CredentialInfo { configured: true, source: Some("env".to_string()), writable: false }
+        dsh_credentials::CredentialInfo {
+            configured: true,
+            source: Some("env".to_string()),
+            writable: false
+        }
     );
     unsafe { std::env::remove_var(&probe) };
 }
@@ -167,14 +191,17 @@ async fn lets_a_non_empty_process_environment_win_read_only_over_the_file() {
 async fn treats_an_empty_environment_value_as_absent_falling_through_to_the_file() {
     let temp = TempRoot::new();
     let path = temp.path(".credentials.yaml");
-    let probe = format!("DSH_CRED_TEST_{}", std::process::id());
+    let probe = format!("DSH_CRED_TEST_EMPTY_{}", std::process::id());
     write_credentials(&path, &format!("{probe}: stored\n"));
     unsafe { std::env::set_var(&probe, "") };
     let reference = credential_ref(&probe);
     let (_ctx, provider) = boot(&path, false);
     assert_eq!(
         provider.resolve(&reference).await,
-        Some(dsh_credentials::ResolvedCredential { value: "stored".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "stored".to_string(),
+            source: "file".to_string()
+        })
     );
     unsafe { std::env::remove_var(&probe) };
 }
@@ -187,7 +214,11 @@ async fn fails_boot_loud_when_the_document_exists_but_cannot_be_read() {
     let ctx = Context::root();
     let error = LocalCredentialProvider::install(
         &ctx,
-        Config { path: Some(path), watch: Some(false), ..Default::default() },
+        Config {
+            path: Some(path),
+            watch: Some(false),
+            ..Default::default()
+        },
     )
     .err()
     .expect("boot rejects");
@@ -206,7 +237,11 @@ fn layered_env(
     ctx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, Some(arc(snapshot)));
     let provider = LocalCredentialProvider::install(
         &ctx,
-        Config { path: Some(path.to_string()), watch: Some(false), ..Default::default() },
+        Config {
+            path: Some(path.to_string()),
+            watch: Some(false),
+            ..Default::default()
+        },
     )
     .expect("boot layered");
     (ctx, provider)
@@ -216,7 +251,10 @@ fn process_layer(values: &[(&str, &str)]) -> LaunchEnvironmentLayerInput {
     LaunchEnvironmentLayerInput {
         source: LaunchEnvironmentSource::Process,
         path: None,
-        values: values.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        values: values
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
     }
 }
 
@@ -225,40 +263,56 @@ async fn lets_the_stored_value_beat_the_user_env_so_a_ui_write_takes_effect_imme
     let temp = TempRoot::new();
     let path = temp.path(".credentials.yaml");
     write_credentials(&path, "DSH_CRED_TEST: stored\n");
-    let (_ctx, provider) = layered_env(&path, &[
-        process_layer(&[]),
-        LaunchEnvironmentLayerInput {
-            source: LaunchEnvironmentSource::UserEnv,
-            path: Some("/home/.dsh/.env".to_string()),
-            values: vec![("DSH_CRED_TEST".to_string(), "older-user-env".to_string())],
-        },
-    ]);
+    let (_ctx, provider) = layered_env(
+        &path,
+        &[
+            process_layer(&[]),
+            LaunchEnvironmentLayerInput {
+                source: LaunchEnvironmentSource::UserEnv,
+                path: Some("/home/.dsh/.env".to_string()),
+                values: vec![("DSH_CRED_TEST".to_string(), "older-user-env".to_string())],
+            },
+        ],
+    );
     assert_eq!(
         provider.resolve(&key()).await,
-        Some(dsh_credentials::ResolvedCredential { value: "stored".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "stored".to_string(),
+            source: "file".to_string()
+        })
     );
     assert_eq!(
         provider.describe(&key()).await,
-        dsh_credentials::CredentialInfo { configured: true, source: Some("file".to_string()), writable: true }
+        dsh_credentials::CredentialInfo {
+            configured: true,
+            source: Some("file".to_string()),
+            writable: true
+        }
     );
     provider.set(&key(), "rotated").await.expect("set");
     assert_eq!(
         provider.resolve(&key()).await,
-        Some(dsh_credentials::ResolvedCredential { value: "rotated".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "rotated".to_string(),
+            source: "file".to_string()
+        })
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn serves_the_user_env_only_when_nothing_is_stored() {
     let temp = TempRoot::new();
-    let (_ctx, provider) = layered_env(&temp.path(".credentials.yaml"), &[
-        process_layer(&[]),
-        LaunchEnvironmentLayerInput {
-            source: LaunchEnvironmentSource::UserEnv,
-            path: Some("/home/.dsh/.env".to_string()),
-            values: vec![("DSH_CRED_TEST".to_string(), "from-user-env".to_string())],
-        },
-    ]);
+    let (_ctx, provider) = layered_env(
+        &temp.path(".credentials.yaml"),
+        &[
+            process_layer(&[]),
+            LaunchEnvironmentLayerInput {
+                source: LaunchEnvironmentSource::UserEnv,
+                path: Some("/home/.dsh/.env".to_string()),
+                values: vec![("DSH_CRED_TEST".to_string(), "from-user-env".to_string())],
+            },
+        ],
+    );
     assert_eq!(
         provider.resolve(&key()).await,
         Some(dsh_credentials::ResolvedCredential {
@@ -306,7 +360,10 @@ async fn serves_the_invoking_project_env_over_the_user_one_but_never_over_the_st
     let (_ctx, stored) = layered_env(&path, &layers);
     assert_eq!(
         stored.resolve(&key()).await,
-        Some(dsh_credentials::ResolvedCredential { value: "stored".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "stored".to_string(),
+            source: "file".to_string()
+        })
     );
 }
 
@@ -321,11 +378,18 @@ async fn refuses_a_document_other_os_users_can_read() {
     let ctx = Context::root();
     let error = LocalCredentialProvider::install(
         &ctx,
-        Config { path: Some(path.clone()), watch: Some(false), ..Default::default() },
+        Config {
+            path: Some(path.clone()),
+            watch: Some(false),
+            ..Default::default()
+        },
     )
     .err()
     .expect("rejects world-readable");
-    assert!(error.contains("readable beyond its owner (mode 644)"), "{error}");
+    assert!(
+        error.contains("readable beyond its owner (mode 644)"),
+        "{error}"
+    );
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
 }
 
@@ -338,7 +402,12 @@ async fn propagates_a_permission_check_that_fails_for_a_reason_other_than_absenc
     let error = LocalCredentialProvider::install(
         &ctx,
         Config {
-            path: Some(std::path::Path::new(&not_a_directory).join(".credentials.yaml").to_string_lossy().into_owned()),
+            path: Some(
+                std::path::Path::new(&not_a_directory)
+                    .join(".credentials.yaml")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
             watch: Some(false),
             ..Default::default()
         },
@@ -353,19 +422,29 @@ async fn lets_only_the_inherited_environment_shadow_the_store_read_only() {
     let temp = TempRoot::new();
     let path = temp.path(".credentials.yaml");
     write_credentials(&path, "DSH_CRED_TEST: stored\n");
-    let (_ctx, provider) = layered_env(&path, &[
-        process_layer(&[("DSH_CRED_TEST", "from-shell")]),
-        LaunchEnvironmentLayerInput {
-            source: LaunchEnvironmentSource::UserEnv,
-            path: Some("/home/.dsh/.env".to_string()),
-            values: vec![("DSH_CRED_TEST".to_string(), "from-user-env".to_string())],
-        },
-    ]);
+    let (_ctx, provider) = layered_env(
+        &path,
+        &[
+            process_layer(&[("DSH_CRED_TEST", "from-shell")]),
+            LaunchEnvironmentLayerInput {
+                source: LaunchEnvironmentSource::UserEnv,
+                path: Some("/home/.dsh/.env".to_string()),
+                values: vec![("DSH_CRED_TEST".to_string(), "from-user-env".to_string())],
+            },
+        ],
+    );
     assert_eq!(
         provider.resolve(&key()).await,
-        Some(dsh_credentials::ResolvedCredential { value: "from-shell".to_string(), source: "env".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "from-shell".to_string(),
+            source: "env".to_string()
+        })
     );
-    let error = provider.set(&key(), "next").await.err().expect("shadowed set rejects");
+    let error = provider
+        .set(&key(), "next")
+        .await
+        .err()
+        .expect("shadowed set rejects");
     assert!(error.contains("launching environment"), "{error}");
 }
 
@@ -380,7 +459,10 @@ async fn fails_boot_on_every_invalid_document_shape() {
         ("not-a-ref: value\n", "must match"),
         ("DSH_CRED_TEST: 123\n", "must be a string"),
         ("DSH_CRED_TEST: \"\"\n", "is empty"),
-        ("DSH_CRED_TEST: one\nDSH_CRED_TEST: two\n", "invalid document"),
+        (
+            "DSH_CRED_TEST: one\nDSH_CRED_TEST: two\n",
+            "invalid document",
+        ),
         ("DSH_CRED_TEST: \"unterminated\n", "invalid document"),
     ];
     for (text, needle) in cases {
@@ -390,7 +472,11 @@ async fn fails_boot_on_every_invalid_document_shape() {
         let ctx = Context::root();
         let error = LocalCredentialProvider::install(
             &ctx,
-            Config { path: Some(path), watch: Some(false), ..Default::default() },
+            Config {
+                path: Some(path),
+                watch: Some(false),
+                ..Default::default()
+            },
         )
         .err()
         .expect("boot rejects");
@@ -407,7 +493,11 @@ async fn never_puts_a_credential_value_in_a_diagnostic() {
     let ctx = Context::root();
     let error = LocalCredentialProvider::install(
         &ctx,
-        Config { path: Some(path), watch: Some(false), ..Default::default() },
+        Config {
+            path: Some(path),
+            watch: Some(false),
+            ..Default::default()
+        },
     )
     .err()
     .expect("boot rejects");
@@ -434,7 +524,10 @@ async fn adds_a_missing_key_to_a_fresh_document_and_emits_the_commit() {
     let (ctx, provider) = boot(&path, false);
     let seen = update_listener(&ctx);
     provider.set(&key(), "sk-fresh").await.expect("set");
-    assert_eq!(std::fs::read_to_string(&path).expect("read"), "DSH_CRED_TEST: sk-fresh\n");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read"),
+        "DSH_CRED_TEST: sk-fresh\n"
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -445,7 +538,10 @@ async fn adds_a_missing_key_to_a_fresh_document_and_emits_the_commit() {
     }
     assert_eq!(
         provider.resolve(&key()).await,
-        Some(dsh_credentials::ResolvedCredential { value: "sk-fresh".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "sk-fresh".to_string(),
+            source: "file".to_string()
+        })
     );
     assert_eq!(seen.lock().clone(), vec![key()]);
 }
@@ -478,11 +574,17 @@ async fn round_trips_values_no_dotenv_line_could_represent() {
     let (_ctx, reread) = boot(&path, false);
     assert_eq!(
         reread.resolve(&key()).await,
-        Some(dsh_credentials::ResolvedCredential { value: multi_line.to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: multi_line.to_string(),
+            source: "file".to_string()
+        })
     );
     assert_eq!(
         reread.resolve(&other()).await,
-        Some(dsh_credentials::ResolvedCredential { value: mixed_quotes.to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: mixed_quotes.to_string(),
+            source: "file".to_string()
+        })
     );
 }
 
@@ -512,15 +614,27 @@ async fn rejects_empty_values_and_writes_the_environment_would_shadow() {
     write_credentials(&path, "DSH_CRED_TEST: stored\n");
     let (_ctx, provider) = boot(&path, false);
 
-    let error = provider.set(&key(), "").await.err().expect("empty set rejects");
+    let error = provider
+        .set(&key(), "")
+        .await
+        .err()
+        .expect("empty set rejects");
     assert!(error.contains("empty value"), "{error}");
 
-    let probe = format!("DSH_CRED_TEST_{}", std::process::id());
+    let probe = format!("DSH_CRED_TEST_SHADOW_{}", std::process::id());
     unsafe { std::env::set_var(&probe, "shadowing") };
     let reference = credential_ref(&probe);
-    let error = provider.set(&reference, "next").await.err().expect("shadowed set rejects");
+    let error = provider
+        .set(&reference, "next")
+        .await
+        .err()
+        .expect("shadowed set rejects");
     assert!(error.contains("shadowed"), "{error}");
-    let error = provider.unset(&reference).await.err().expect("shadowed unset rejects");
+    let error = provider
+        .unset(&reference)
+        .await
+        .err()
+        .expect("shadowed unset rejects");
     assert!(error.contains("shadowed"), "{error}");
     unsafe { std::env::remove_var(&probe) };
 }
@@ -543,7 +657,11 @@ async fn fails_a_write_loud_when_the_on_disk_document_became_invalid() {
     let path = temp.path(".credentials.yaml");
     let (_ctx, provider) = boot(&path, false);
     write_credentials(&path, "DSH_CRED_TEST: \"unterminated\n");
-    let error = provider.set(&other(), "lands").await.err().expect("write rejects");
+    let error = provider
+        .set(&other(), "lands")
+        .await
+        .err()
+        .expect("write rejects");
     assert!(error.contains("invalid document"), "{error}");
 }
 
@@ -558,7 +676,10 @@ async fn chains_past_a_rejected_write_so_one_bad_value_cannot_poison_the_queue()
     let good = provider.set(&o, "lands");
     assert!(bad.await.is_err());
     good.await.expect("good write lands");
-    assert_eq!(std::fs::read_to_string(&path).expect("read"), "DSH_CRED_OTHER: lands\n");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read"),
+        "DSH_CRED_OTHER: lands\n"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -583,7 +704,11 @@ async fn refuses_writes_after_disposal() {
     let path = temp.path(".credentials.yaml");
     let (_ctx, provider) = boot(&path, false);
     provider.drain().await;
-    let error = provider.set(&key(), "late").await.err().expect("late set rejects");
+    let error = provider
+        .set(&key(), "late")
+        .await
+        .err()
+        .expect("late set rejects");
     assert!(error.contains("disposed"), "{error}");
 }
 
@@ -604,10 +729,16 @@ async fn folds_an_unobserved_external_edit_into_a_write_instead_of_overwriting_i
     let text = std::fs::read_to_string(&path).expect("read");
     assert!(text.contains("DSH_REVIEW_BETA: external"), "{text}");
     assert!(text.contains("DSH_REVIEW_ALPHA: two"), "{text}");
-    assert_eq!(seen.lock().clone(), vec![alpha.clone(), beta.clone(), alpha.clone()]);
+    assert_eq!(
+        seen.lock().clone(),
+        vec![alpha.clone(), beta.clone(), alpha.clone()]
+    );
     assert_eq!(
         provider.resolve(&beta).await,
-        Some(dsh_credentials::ResolvedCredential { value: "external".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "external".to_string(),
+            source: "file".to_string()
+        })
     );
 }
 
@@ -633,11 +764,17 @@ async fn keeps_both_refs_when_two_providers_write_the_same_document_concurrently
     let (_ctx, third) = boot(&path, false);
     assert_eq!(
         third.resolve(&alpha).await,
-        Some(dsh_credentials::ResolvedCredential { value: "3".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "3".to_string(),
+            source: "file".to_string()
+        })
     );
     assert_eq!(
         third.resolve(&beta).await,
-        Some(dsh_credentials::ResolvedCredential { value: "3".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "3".to_string(),
+            source: "file".to_string()
+        })
     );
 }
 
@@ -647,9 +784,18 @@ async fn creates_the_credentials_directory_owner_only() {
     use std::os::unix::fs::PermissionsExt;
     let temp = TempRoot::new();
     let home = temp.path("home");
-    let (_ctx, provider) = boot(&std::path::Path::new(&home).join(".credentials.yaml").to_string_lossy().as_ref(), false);
+    let (_ctx, provider) = boot(
+        &std::path::Path::new(&home)
+            .join(".credentials.yaml")
+            .to_string_lossy()
+            .as_ref(),
+        false,
+    );
     provider.set(&key(), "one").await.expect("set");
-    assert_eq!(std::fs::metadata(&home).expect("stat").permissions().mode() & 0o777, 0o700);
+    assert_eq!(
+        std::fs::metadata(&home).expect("stat").permissions().mode() & 0o777,
+        0o700
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -661,9 +807,8 @@ async fn does_not_fail_a_committed_set_when_a_listener_throws_and_later_listener
     let path = temp.path(".credentials.yaml");
     let (ctx, provider) = boot(&path, false);
     let second_ran: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-    let boom: Arc<cordis::Listener> = Arc::new(move |_ctx, _args| {
-        Box::pin(async move { panic!("observer boom") })
-    });
+    let boom: Arc<cordis::Listener> =
+        Arc::new(move |_ctx, _args| Box::pin(async move { panic!("observer boom") }));
     let _ = futures::executor::block_on(ctx.on(
         "credentials/updated",
         boom,
@@ -686,7 +831,10 @@ async fn does_not_fail_a_committed_set_when_a_listener_throws_and_later_listener
     assert!(second_ran.load(Ordering::SeqCst));
     assert_eq!(
         provider.resolve(&key()).await,
-        Some(dsh_credentials::ResolvedCredential { value: "one".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "one".to_string(),
+            source: "file".to_string()
+        })
     );
 }
 
@@ -722,13 +870,24 @@ async fn rethrows_an_invariant_coded_failure_after_the_commit_and_the_remaining_
         second,
         cordis::EventOptions::default(),
     ));
-    let error = provider.set(&key(), "one").await.err().expect("invariant failure rethrows");
+    let error = provider
+        .set(&key(), "one")
+        .await
+        .err()
+        .expect("invariant failure rethrows");
     assert!(error.contains("forged relation"), "{error}");
     assert!(second_ran.load(Ordering::SeqCst));
-    assert!(std::fs::read_to_string(&path).expect("read").contains("DSH_CRED_TEST: one"));
+    assert!(
+        std::fs::read_to_string(&path)
+            .expect("read")
+            .contains("DSH_CRED_TEST: one")
+    );
     assert_eq!(
         provider.resolve(&key()).await,
-        Some(dsh_credentials::ResolvedCredential { value: "one".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "one".to_string(),
+            source: "file".to_string()
+        })
     );
 }
 
@@ -749,8 +908,13 @@ async fn leaves_a_sibling_multi_line_value_untouched_while_patching_one_entry() 
         "DSH_REVIEW_WRAPPED: |-\n  line1\n  line2\nDSH_REVIEW_ALPHA: b\n"
     );
     assert_eq!(
-        provider.resolve(&credential_ref("DSH_REVIEW_WRAPPED")).await,
-        Some(dsh_credentials::ResolvedCredential { value: "line1\nline2".to_string(), source: "file".to_string() })
+        provider
+            .resolve(&credential_ref("DSH_REVIEW_WRAPPED"))
+            .await,
+        Some(dsh_credentials::ResolvedCredential {
+            value: "line1\nline2".to_string(),
+            source: "file".to_string()
+        })
     );
 }
 
@@ -761,7 +925,10 @@ async fn stores_a_value_that_looks_like_another_entry_without_creating_one() {
     let (_ctx, provider) = boot(&path, false);
     let alpha = credential_ref("DSH_REVIEW_ALPHA");
     let inner = credential_ref("DSH_REVIEW_INNER");
-    provider.set(&alpha, "DSH_REVIEW_INNER: injected").await.expect("set");
+    provider
+        .set(&alpha, "DSH_REVIEW_INNER: injected")
+        .await
+        .expect("set");
     let (_ctx, reread) = boot(&path, false);
     assert_eq!(
         reread.resolve(&alpha).await,

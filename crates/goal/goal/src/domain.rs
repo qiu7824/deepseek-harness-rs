@@ -117,6 +117,7 @@ pub enum GoalErrorCode {
     InvalidBlockReason,
     InvalidEdit,
     InvalidTransition,
+    CommitFailed,
 }
 
 impl GoalErrorCode {
@@ -131,6 +132,7 @@ impl GoalErrorCode {
             GoalErrorCode::InvalidBlockReason => "GOAL_INVALID_BLOCK_REASON",
             GoalErrorCode::InvalidEdit => "GOAL_INVALID_EDIT",
             GoalErrorCode::InvalidTransition => "GOAL_INVALID_TRANSITION",
+            GoalErrorCode::CommitFailed => "GOAL_COMMIT_FAILED",
         }
     }
 }

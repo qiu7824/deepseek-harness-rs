@@ -83,15 +83,19 @@ impl JobRegistry for StubJobRegistry {
         Box::pin(async move { Ok(snapshot) })
     }
 
-    fn on_job_done(&self, _listener: JobDoneListener) -> cordis::Disposer {
+    fn on_job_done(&self, _caller: &Context, _listener: JobDoneListener) -> cordis::Disposer {
         cordis::make_disposer(|| Box::pin(async {}))
     }
 
-    fn on_jobs_changed(&self, _listener: JobsChangedListener) -> cordis::Disposer {
+    fn on_jobs_changed(
+        &self,
+        _caller: &Context,
+        _listener: JobsChangedListener,
+    ) -> cordis::Disposer {
         cordis::make_disposer(|| Box::pin(async {}))
     }
 
-    fn attach_controller(&self, _name: &str) -> cordis::Disposer {
+    fn attach_controller(&self, _caller: &Context, _name: &str) -> cordis::Disposer {
         cordis::make_disposer(|| Box::pin(async {}))
     }
 }
@@ -136,9 +140,9 @@ async fn boot() -> (Context, Arc<dyn JobRegistry>) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_concrete_subclass_registers_as_ctx_jobs_and_serves_the_abstract_api() {
-    let (_ctx, registry) = boot().await;
+    let (ctx, registry) = boot().await;
 
-    let detach_controller = registry.attach_controller("seam-test");
+    let detach_controller = registry.attach_controller(&ctx, "seam-test");
     let id = registry
         .start(JobStart {
             kind: "bash".to_string(),
@@ -158,9 +162,9 @@ async fn a_concrete_subclass_registers_as_ctx_jobs_and_serves_the_abstract_api()
     );
     let waited = registry.wait(&id, 5, None, None).await.expect("wait");
     assert_eq!(waited.id, id);
-    let detach_listener = registry.on_job_done(Arc::new(|_snapshot, _owner| {}));
+    let detach_listener = registry.on_job_done(&ctx, Arc::new(|_snapshot, _owner| {}));
     (detach_listener)().await;
-    let detach_changes = registry.on_jobs_changed(Arc::new(|_owner| {}));
+    let detach_changes = registry.on_jobs_changed(&ctx, Arc::new(|_owner| {}));
     (detach_changes)().await;
     (detach_controller)().await;
 }

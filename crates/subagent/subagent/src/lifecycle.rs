@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use cordis::{ArcValue, Context, DispatchMode, Listener, arc};
 use dsh_agent::Agent;
+use dsh_session::SessionEvent;
 use dsh_scope::{ScopeCarrier, scope_target};
 
 use crate::types::{SubagentRun, SubagentRunEndInfo, SubagentRunInfo, SubagentStopReason, subagent_run_id};
@@ -115,4 +116,137 @@ pub fn observe_run(
     });
     emit_lifecycle_edge(ctx, LifecycleEdge::Start(identity, parent));
     run
+}
+
+/// How one Activation's residency epoch ended.
+#[derive(Debug, Clone, Default)]
+pub struct ActivationTerminal {
+    /// Why this epoch's last ordinary turn ended, or `error` when teardown
+    /// failed.
+    pub stop_reason: SubagentStopReason,
+    /// The epoch's final assistant content, absent when it produced none or
+    /// failed.
+    pub output: Option<Vec<dsh_llm::ContentBlock>>,
+}
+
+impl Default for SubagentStopReason {
+    fn default() -> Self {
+        SubagentStopReason::Completed
+    }
+}
+
+/// Lifecycle observer for one Activation's residency epoch.
+#[derive(Clone)]
+pub struct ActivationObserver {
+    emit_ctx: Context,
+    identity: SubagentRunInfo,
+    parent: Arc<dyn Agent>,
+    boundary: Arc<parking_lot::Mutex<usize>>,
+    captured: Arc<parking_lot::Mutex<ActivationTerminal>>,
+}
+
+impl ActivationObserver {
+    /// Publish the start edge once the epoch is resident.
+    pub fn start(&self, child: &Arc<dyn Agent>) {
+        *self.boundary.lock() = child.session().events().len();
+        emit_lifecycle_edge(
+            &self.emit_ctx,
+            LifecycleEdge::Start(self.identity.clone(), self.parent.clone()),
+        );
+    }
+
+    /// Snapshot the child-dependent terminal facts while the child is still
+    /// registered.
+    pub fn capture(&self, child: &Arc<dyn Agent>) {
+        let boundary = *self.boundary.lock();
+        let events = child.session().events();
+        let own: &[SessionEvent] = &events[boundary.min(events.len())..];
+        let output = crate::assistant_output::final_assistant_output(own);
+        let captured = ActivationTerminal {
+            stop_reason: epoch_stop_reason(own),
+            output,
+        };
+        *self.captured.lock() = captured;
+    }
+
+    /// Resolve the terminal facts `settle` will publish.
+    pub fn terminal(&self, failure: Option<&str>) -> ActivationTerminal {
+        match failure {
+            None => self.captured.lock().clone(),
+            Some(_) => ActivationTerminal {
+                stop_reason: SubagentStopReason::Error,
+                output: None,
+            },
+        }
+    }
+
+    /// Publish the terminal edge exactly once.
+    pub fn settle(&self, failure: Option<&str>) {
+        let terminal = self.terminal(failure);
+        emit_lifecycle_edge(
+            &self.emit_ctx,
+            LifecycleEdge::End(
+                SubagentRunEndInfo {
+                    run_id: self.identity.run_id.clone(),
+                    provider: self.identity.provider.clone(),
+                    id: self.identity.id.clone(),
+                    local: self.identity.local,
+                    stop_reason: terminal.stop_reason,
+                    last_assistant_message: terminal.output,
+                },
+                self.parent.clone(),
+            ),
+        );
+    }
+}
+
+/// Build the observer for one continuable Activation's residency epoch.
+pub fn create_activation_observer(
+    ctx: &Context,
+    provider: &str,
+    child_id: &dsh_session::SessionId,
+    parent: Arc<dyn Agent>,
+) -> ActivationObserver {
+    let identity = SubagentRunInfo {
+        run_id: subagent_run_id(uuid::Uuid::new_v4().to_string()),
+        provider: provider.to_string(),
+        id: child_id.clone(),
+        local: true,
+    };
+    ActivationObserver {
+        emit_ctx: ctx.clone(),
+        identity,
+        parent,
+        boundary: Arc::new(parking_lot::Mutex::new(0)),
+        captured: Arc::new(parking_lot::Mutex::new(ActivationTerminal {
+            stop_reason: SubagentStopReason::Completed,
+            output: None,
+        })),
+    }
+}
+
+/// Why this child's epoch ended, for the terminal lifecycle edge and the
+/// manager's own parent delivery.
+fn epoch_stop_reason(events: &[SessionEvent]) -> SubagentStopReason {
+    let consumed = dsh_agent::fold_consumed_work(events);
+    let reason_kind = consumed
+        .end
+        .as_ref()
+        .and_then(|event| event.data.get("reason"))
+        .and_then(|reason| reason.get("kind"))
+        .and_then(|kind| kind.as_str());
+    match reason_kind {
+        Some("max-tokens") => SubagentStopReason::MaxTokens,
+        Some("aborted") | Some("interrupted") => SubagentStopReason::Aborted,
+        Some("error") => SubagentStopReason::Error,
+        Some("blocked") => SubagentStopReason::Refusal,
+        Some("completed") | None => {
+            if consumed.dropped_unrun {
+                SubagentStopReason::Aborted
+            } else {
+                SubagentStopReason::Completed
+            }
+        }
+        Some(_) => SubagentStopReason::Error,
+    }
 }

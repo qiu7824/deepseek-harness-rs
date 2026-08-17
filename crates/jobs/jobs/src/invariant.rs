@@ -83,7 +83,7 @@ pub fn installer() -> InvariantInstaller {
                         validate_snapshot(&snapshot, owner.as_ref(), &|message| fail(message));
                     },
                 );
-                let _disposer = registry.on_job_done(listener);
+                let _disposer = registry.on_job_done(&ctx, listener);
             })
         }),
     }

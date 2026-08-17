@@ -1975,3 +1975,284 @@
   种子必须构造完整事件,不能裸 json!({turn}))。
 - **能力面**:fork provider outputSchema=false(结构化捕获未移植),
   其余三旗标全开;structured.ts 的 capture 工具 + 指令留待后续。
+
+## 67. subagent spawn + tool-subagent(第 76 轮)
+
+- **spawn**:与 fork 同构,差异只在 seed(None)+
+  prepareContinuable 返回空 spec + inheritsParentContext=false。
+- **tool-subagent 挂载**:provider 缺失 → 挂载错误(TS 是先挂监听器
+  后检查,provider 后到再补挂——Rust 版记录偏差:不做动态补挂,挂载
+  时 provider 必须在场);maxDepth 数字 + provider 无 depthLimit →
+  挂载期报错(TS 同);backgroundMode=continuable → 挂载即拒
+  (continuation manager 未移植)。
+- **输出 schema**:TS `items: {type: 'json'}` 在 Rust 校验器词表外 →
+  改 `{type: 'array'}`(去 items);oneOf 前景/后台双形态 + render
+  按 kind 分流(outputValueText 只信 type=text 的字符串块)。
+- **settleForegroundRun**:result 与 dispose 双路径
+  allSettled 语义——执行失败 + 处置失败 → 合并消息;非 completed
+  → 错误 + 部分输出保留(stopReasonError 五词表 + withPartialText)。
+- **后台 one-shot**:JobStart.run 闭包返回 'static JobHooks → 捕获
+  必须 owned clone(subagents Arc + provider 名 + request clone 在
+  move 闭包外层克隆,闭包内再 clone;start 调用包进 Box::pin async
+  move 里避免借用局部);SettledRunHooks 用
+  `Mutex<Option<JoinHandle<JobOutcome>>>` + cancelled 旗标(cancel
+  置 killed 语义);JobRegistry 是 trait 服务,dyn JobRegistry
+  erased 注册(fake 测试 8 方法全实现)。
+- **JobHooks.done** 返回 `cordis::BoxFuture<'static, JobOutcome>`
+  (不可拒绝),与 ToolBodyError 通道正交。
+
+## 68. subagent 投影 + 子代理枚举(第 77 轮)
+
+- **投影注册**:SubagentRuntime::install 用 inject(["sessionProjections"])
+  子 fiber 注册两个单元;register 返回 Result<Disposer, String> →
+  转 PluginError;单元状态 = 纯 JSON ArcValue(downcast::<serde_json::
+  Value> 取读),schema 闭包透传(view 输出即 wire 值)。
+- **timing 折叠语义**:descriptor 事件重置 settled + 提升
+  pendingTurnStart 为 active(since=pending, through=事件 time);
+  turn/end 结算 `settled += max(0, end.time - active.since)`;其他事件
+  只推进 active.through——包括 Session::create 自动追加的
+  session/end-seed(测试断言 through == 最后事件 time,TS 同款)。
+- **种子时间陷阱**:Session::create 的种子重放可能重打事件 time
+  (投影读 event.time 时不能用种子时间断言,改从 session.events()
+  回读真实时间推导期望)。
+- **list 阶梯**:冷读并发用 chunks(4) + join_all(顺序索引回填),
+  比共享队列 worker 简单且结果有序;cache 阶梯 catch_unwind 后静默
+  落权威重折;inspect 失败 → unavailable、sameLifecycle 见证键
+  (version/id/createdAt/cwd/parentSession/seedLength/delegationDepth)
+  不符 → corrupt;语料合并 live 整体覆盖 persisted 同 id。
+- **descendantCandidates**:children 邻接表 + 显式栈前序 + visited
+  集防环;origin != subagent 仅作遍历节点(不下发)。
+- **投影快照 panic**:registry.snapshot 的 schema 失败是 panic →
+  listing 用 catch_unwind 降级为单子 corrupt 诊断(TS try/catch 同款)。
+
+## 69. subagent continuation 管理器(第 78 轮)
+
+- **ChildLock 逐子代串行门**:`HashMap<String, Arc<tokio::sync::Mutex<()>>>`
+  entry 惰性创建(锁条目不回收,key 数有界——微偏差);run 闭包收
+  `FnOnce() -> Fut` 返回 `Fut::Output`——**run 是 async fn,调用点必须
+  `.await` 后再 `?`**(直接 `?` 会报"future 不实现 Try",本轮踩过);
+  spawn 内跨 await 持守卫必须 `lock_owned()`(OwnedMutexGuard 是 Send,
+  `lock()` 的 MutexGuard 非 Send → watch_settlement 的 tokio::spawn
+  future 非 Send 编译失败)。
+- **parking_lot 临时守卫跨 await**:`run(&activation.lock().child_id, ...)`
+  的临时 MutexGuard 存活到语句尾(含 await)→ future 非 Send;先
+  `let child_id = activation.lock().child_id.clone();` 出块再 await。
+- **async fn 递归需装箱**:dispose → finish_disposal → 子 dispose 环,
+  E0733——递归调用点 `Box::pin(self.dispose(&child)).await` 破环(类型
+  经 Pin<Box> 变具体)。
+- **&self 借用的 future 不能从 async 块逃逸**:watch_settlement 想把
+  `manager.dispose(&activation)` 的 future 从闭包带出——&self/&activation
+  借用不能 'static;包一层 `Box::pin(async move { manager.dispose(
+  &activation).await })`(manager/activation 均 owned clone 移入)。
+- **child_id 被 async move 块移动**:locks.run 的闭包内 async move 块用
+  `&child_id`(materialize 参数)会把外层 child_id 移走,E0505/E0382——
+  块外 `let child_id_for_child = child_id.clone();` 供块内使用,run 的
+  `&child_id` 借用随语句结束释放,返回值构造再 move 原值。
+- **derive Debug 不可用于含谓词/Agent 的结构**:Arc<dyn Fn() -> bool>
+  与 Arc<dyn Agent> 均无 Debug——ContinuableStartSpec/FollowupOptions/
+  ReportOptions/InterruptAuthority 只 derive Clone;Activation.provider
+  字段未被读取(死代码警告)直接删除(observer 已携带 provider 身份)。
+- **exact-live-parent 双检**:authorize_lineage = 注册表 `ptr_eq`(同 id
+  替换实例即拒)+ header.parent_session 恒等;live_lineage 沿
+  header.parent_session 链经注册表上溯(Arc 指针集做 ancestry 比较)。
+- **subagent/end 观察**:observer.start 在 materialize 后快照事件边界;
+  capture(foldConsumedWork + finalAssistantOutput + epochStopReason)→
+  terminal → settle 一次性 End 边(SubagentRunEndInfo 带 run_id 配对)。
+- **settlement 通知路由**:notify_settlement 按 parent.status()
+  Idle→followup / Running→steer;源 = MessageSource::SubagentSettled
+  (form=Notice + boundContextSummary ≤120 码点);reportFrom 同理
+  Quiet→inject / Wakeup→followup + SubagentReport(form=Relay)。
+- **MessageSource 第四次扩展**:Coordinator/SubagentReport/SubagentSettled
+  三变体(tag kebab-case 生成 "coordinator"/"subagent-report"/
+  "subagent-settled",senderSessionId 字段)+ kind() 全表覆盖。
+- **drain 的根发现**:activations 全集 - owned_children 并集 = 根集;
+  递归 dispose 子先、失败聚合 ACTIVATION_TEARDOWN_FAILED;draining
+  AtomicBool 只由全量 drain 置位(drainDescendants 不置)——测试断言
+  drain 后 followup 先报 DRAINING(assert_admitting 在 NOT_RESUMABLE
+  之前,顺序偏差)。
+- **测试工厂必须复刻 TS 发布语义**:AgentRegistry::create 只是转发
+  factory——测试 ProbeFactory 要在 create_agent 里 enter + announce
+  (发布),否则 authorize_lineage 的注册表 ptr_eq 校验直接拒子代链
+  (本轮 5 个测试同因失败);dispose 闭包执行 detach(handle 置换后
+  await 原 dispose)。
+- **偏差清单**:① 冷恢复未移植(followup 非 resident 即 NOT_RESUMABLE,
+  TS 会持久化冷物化;cold-resume 测试未移植);② inbox claimed/
+  discarded 记账未接线(settlement 观察者只看 status + owned_children,
+  accepted 只增不减 → 自动 settle 需要后续接线;本轮测试以显式 drain
+  触发);③ 创建窗 setup 注册表未移植(materialize 在发布后组合,与
+  in_process 共享);④ Activation 无 provider 字段(observer 携带)。
+
+## 70. dsh-tool-jobs(第 79 轮)
+
+- **JSON Schema 子集与 TS 属性级 required**:TS 的 PUBLIC_TASK_SCHEMA
+  在属性级写 `required: true`(dsh-tools 参数扩展);Rust 校验器只认
+  标准根级 `required: [...]` 数组——属性级 boolean 被拒("required must
+  be an array of strings"),三个输出 schema 改为根级 required 数组
+  (线格式语义等价)。
+- **schema 默认值经 f64 往返**:schemastery `Data::Number(f64)` 校验后
+  `to_json` 产出 `30000.0`(浮点 JSON)——serde_json 的 `as_u64()` 对
+  浮点存储返回 None,插件 apply 读配置全部被拒;config 读取改用
+  `whole_number()`(as_u64 优先 + f64 整数性/finite/非负 + 2^53-1 上界
+  对齐 TS Number.isSafeInteger;1e300 替代 JS Infinity 的测试面)。
+- **caller ctx 是 scoped 分发的命门**:第 48 轮 jobs-local 的
+  onJobDone/attachController 用了 registry 自己的 ctx(恒 global 层),
+  而 TS 经 Proxy 重绑到调用方——scoped mount 测试(两个 scope 挂
+  tool-jobs 共享一个 registry)暴露双通知;seam 加显式 caller 参数
+  (全仓惯例),jobs/tool-subagent 测试同步改签名。
+- **注册序是契约不是排序**:jobs-local list 曾按 started_at(毫秒粒度)
+  排序——同毫秒注册的 job 在 HashMap 迭代下乱序;改为 start 时分配
+  单调 ordinal,list 按 ordinal 稳定排序(TS 的注册序契约)。
+- **listener 包含的日志通道**:TS settle 的 listener containment 走
+  `logger.warn`;第 48 轮 Rust 版用了 eprintln——teardown cancel 抛错
+  路径连 warn 都没有;两处改 `self.ctx.logger.warn`,测试用
+  CaptureExporter(Exporter trait,default_level Warn)断言文案。
+- **scope_of 必须沿 fiber 父链**:create_scope 只给 scope fiber 打 tag,
+  而 `scope.ctx.plugin(...)` 的 apply ctx 是子 fiber(无 tag)→
+  scope_of 返回 None → section/tools 注册落 global 层,第二个 mount
+  的 "tool:jobs" 段重复注册 panic;修复为沿 `parent_ctx()` 链上溯,
+  **root fiber 的 parent 是它自己**(bind_parent 自绑定),必须做指针
+  环检测——否则 scope_of 死循环挂死整个测试套件(本轮最凶险的 bug)。
+- **spawned done 驱动的 watch 时序**:settle 用 `send_replace` 而非
+  `send`——start 的 done 驱动是 spawned 任务,subscribe 可能尚未执行,
+  此时 `send` 因无 receiver 返回 Err 丢弃值(done 永不结算);wait 的
+  同步前缀(waiter 注册)同理是惰性的,测试用 `futures::poll!` 先 poll
+  一次再 settle(TS async 调用即执行到首个 await)。
+- **final-output vs 流的分界**:JobHooks::read_output 返回 None 才是
+  final-output 语义(终态读 outcome.output);测试桩默认 None,流模式
+  显式开启——TS producer 默认无 readOutput(undefined)即 final-output。
+- **通知截断的字节预算**:fitCompletionNotice 的 fixed/compact/action
+  三级回退按 UTF-8 字节长比较(prefix 27 字节时 pty 64 字节预算恰好
+  fixed=64);`TextRetainer` push 收 `&[u8]`,finish().text 为
+  lossy 重建(截断只发生在 UTF-8 边界)。
+
+## 71. dsh-tool-str-replace-editor(第 80 轮)
+
+- **fs/edit-intent 的 FsError 拒绝走 panic 通道**:Rust waterfall 无错误
+  通道(fs-observation-policy 的 edit 监听器 `panic_any(FsError)`),而
+  dsh-tools 的 `tool_error_from_panic` 只识别 ToolOutputError/
+  ToolNotFoundError(依赖倒置不能 import FsError)——工具层必须自己
+  `FutureExt::catch_unwind` 包 waterfall future,downcast 回 FsError 后
+  `ToolBodyError::coded(message, "FsError", code)`,否则测试断言的
+  `error.info.code == FS_NOT_OBSERVED` 丢码。
+- **工具内部函数收 Arc<ToolExecution> 而非 &ToolRunContext**:body
+  future 是 'static——`&exec` 不能跨;execute 闭包先捕获
+  `exec.execution.clone()`(Arc)再 Box::pin,signal 每处
+  `execution.signal.lock().clone()`(tool-jobs 同款教训)。
+- **SandboxPolicyRequest.session 是 Arc<Session>**:Agent 只暴露
+  `&Session`;`Arc::new(agent.session().clone())` 构造(Session 是
+  Arc 包装的 Clone 值,clone 共享 inner 身份)。
+- **insert 的单次 join 语义**:TS
+  `[...lines.slice(0,i), ...value.split('\n'), ...lines.slice(i)].join('\n')`
+  是**一次** join——三段式 `[a.join,b,c.join].join` 会因尾部空切片
+  多出一个尾换行("one\ntwo\nthree\n"),本轮两个测试(尾插/canonical)
+  抓到;必须把三组 &str 拼进一个 Vec 后 join 一次。
+- **str_replace 的字节偏移安全**:match_offsets 用 `content[offset..]
+  .find`(字节偏移),search 的匹配位置必然在 UTF-8 边界;line_numbers_at
+  按 `content.as_bytes()[cursor] == b'\n'` 计行。
+- **同服务名双注册**:测试想用转发包装器(MockFs)打桩 ctx.fs 方法
+  (TS 的 defineProperty 等价)——LocalFileSystem/SandboxedFileSystem 的
+  install 都注册 erased fs,再注册包装器会 panic;给 fs-sandbox 补
+  `build`(构造不注册,fs-local 同构),测试 build inner + 只注册 mock。
+- **parking_lot 守卫跨 await 非 Send**:MockFs 覆写槽读
+  `self.override.lock().clone()` 的守卫若存活到 `.await` 即非 Send——
+  `let f = { self.override.lock().clone() };` 出块再 await。
+- **config 默认值 f64 往返 + whole_number**:与 tool-jobs 同款
+  (maxOutputChars 16_000.0);apply 直调的 cross-field 校验必须在
+  服务获取之前(maxOutputChars/description 校验先于 get_typed fs)。
+- **M4 尾项校验**:TS 仓库无 credentials-encrypted/OS-keychain 包
+  (README "OS-keychain provider is deferred")——backlog 幻影项移除,
+  本轮改做 tool-str-replace-editor。
+
+## 72. subprocess-local 终端层(第 81 轮)
+
+- **node-pty 边界塌缩**:`PtyTerminal` trait(pid/write/kill/on_data/
+  on_exit 回调 + Box<dyn Fn> disposer)——TS 的 IDisposable 返回;真实
+  后端留待 PTY 里程碑,handle 逻辑全部用 fake 测(TS terminal.spec
+  本身就是 FakePty/FakeInspector 纯单测,Windows 上完全可移植)。
+- **输出流生命周期**:unbounded channel 的 sender 存 handle,onExit
+  一次性结算时 `take()` drop sender → receiver 流自然结束(TS 的
+  PassThrough end);output() 单次消费 receiver(TS 属性流)。
+- **exit 语义**:`signal.is_none() || signal == Some(0)` 时保留
+  exit_code,否则 None + 信号名反查;未知信号号(999)→ signal None
+  (固定表 1/2/9/15/20,TS os.constants 平台表近似)。
+- **terminate 幂等共享 + 失败重置**:Mutex<Option<Arc<tokio::Mutex<
+  Option<Result>>>> slot——lock_owned 拿守卫跨 await(Send),Err 时清
+  slot 供重试(TS 的 promise 缓存 + catch 重置);身份断言(toBe)塌缩
+  为同结果语义。
+- **rootIdentity 采纳门**:descendants() 只在「构造时捕获的 root
+  started == 当前树的 root started」时采纳新扫描成员——PID 复用后不
+  串树(TS 的回收防护);trackedDescendants 已采纳成员永保留(重新
+  reparent 后仍 TERM/KILL)。
+- **signal_process 覆写语义**:TS 测试的 `vi.spyOn` 覆写是「原方法 +
+  副作用」;Rust fake 的 override 槽完全替换——覆写闭包必须自己复刻
+  原逻辑(is_alive 门 + remove_on_signal),否则 force-kills 测试的
+  第二次扫描多杀一次已死成员。
+- **parse_proc_stat 的 state 校验**:`chars().next()` 取单字符会放过
+  "SS"——必须按字段 `chars().count() != 1` 判整字段长度。
+- **mac ps 解析**:splitn(3, is_whitespace) 拿 pid/ppid/started 余段
+  (lstart 含空格);ps 表两行互为父子靠 visited 集合防环。
+- **fake timers 塌缩**:TS 的 advanceTimersByTimeAsync 中途断言改
+  「spawn 后台 + 分阶段真实 sleep + oneshot 汇合」(grace 20→60ms
+  拉宽窗口);纯终态断言直接 await。
+
+## 73. dsh-e2b(第 82 轮)
+
+- **SDK 边界塌缩**:npm `Sandbox.create` 静态工厂 + 实例方法塌缩为
+  `E2bSdk::create -> Arc<dyn E2bSandbox>` + makeDir/getInfo/run/kill
+  trait 方法;`SandboxNotFoundError` 等 SDK 错误类塌缩为
+  `E2bSdkError { kind: NotFound | Other }`,消费者 match not_found。
+- **共享创建的缓存推断坑**:`futures::Shared<BoxFuture>` 在
+  tokio OnceCell::get_or_init(闭包返回 future 的 T 推断)下死活对不齐
+  (expected Shared,found Result 的连环误报)——绕开为
+  `OnceCell<Result<Arc<dyn E2bSandbox>, String>>` 直接缓存结果,
+  get_or_init 本身串行化并发首调(TS ready promise 语义等价)。
+- **tokio OnceCell::get_or_init 是 async fn**:返回
+  Future<Output=&T>,必须 `.await` 再 `.clone()`(sync fn 里想用会
+  报 "no method clone on opaque Future")。
+- **oneshot 门方向**:创建门用 Receiver 存 SDK 侧(`let _ = gate.await`),
+  测试 drop Sender 放行——Sender 不是 Future,不能 await。
+- **环境查找注入化**:apiKey 的 E2B_API_KEY 回退走注入闭包
+  (`Arc<dyn Fn(&str) -> Option<String>>`),避免 Rust 2024 的
+  `unsafe set_var` + 多线程测试 env 竞态;闭包参数必须显式
+  `|name: &str|` 标注,否则 HRTB "implementation of Fn is not general
+  enough"。
+- **eager→lazy 创建偏差**:TS 构造即 open;Rust 首个 getSandbox/dispose
+  触发(dispose 会 ensure_open 再 kill,ready 失败的 dispose 直接跳过
+  ——TS 同);getSandbox 的 disposed 双查(await 前后)保留竞速语义。
+- **dispose 错误通道**:TS fiber dispose 的 throw → cordis 捕获 →
+  logger.error;Rust effect disposer 内手动 catch →
+  `ctx.logger.error(&ctx, vec![arc(msg)])`(NotFound 静默),测试用
+  CaptureExporter(default_level Error)断言。
+
+## 74. dsh-fs-e2b(第 83 轮)
+
+- **canonicalPath 经远端命令**:`set -o pipefail; realpath -mz -- '<q>'
+  | base64 -w0` 的 stdout 做严格解码——base64 往返逐字节相等 + 尾部
+  恰一个 NUL + 前段无 NUL + UTF-8 + POSIX 绝对;CommandExit 错误经
+  E2bSdkErrorKind::CommandExit 带 stderr(map 成 FS_IO_ERROR)。
+- **增量 UTF-8 解码器手写**:TS `TextDecoder({fatal:true,stream:true})`
+  语义 = 跨块保留不完整尾序列(from_utf8 的 error_len None + streaming
+  → 保留 valid_up_to 之后的字节),非 streaming flush 时尾序列非空即
+  FS_NOT_TEXT;二进制采样只取前 8192 字节(与 dsh-fs-local 同构)。
+- **guardedLink 命令的引号对解析**:fake 远端必须按
+  `strip_prefix("if ln -T -- '")` + `split_once("' '")` 提取两个引号
+  参数——naive split+index 解析会把目标路径截空;quote 反转义
+  `'"'"'` → `'`。
+- **chmod 模式的八进制解析**:`{:o}` 输出八进制字符串("600"),fake
+  按十进制 parse 会得 600 ≠ 0o600(384)——`from_str_radix(mode, 8)`。
+- **锁内嵌套持锁死锁**:FakeRemote.list 的
+  `nodes.lock().keys().filter(...).map(|c| self.raw_info(c))` ——filter/
+  map 链的守卫存活到表达式尾,raw_info 的 required 再锁即死锁
+  (parking_lot 不可重入)——先 collect 候选(释放锁)再 map。
+- **真实 runtime 的 creation-window 副作用**:TS 测试用假 `ctx.e2b`
+  对象避开;Rust 挂真 E2bRuntime → open 会建 `/workspace/.dsh-e2b`
+  节点 + 跑 chmod 命令——污染列表断言与脚本化错误队列;setup 预热
+  `get_sandbox().await` + 断言前删节点。
+- **entryVersion 的 facts 形状**:sha256 输入是 JSON 数组
+  [metadata['dsh-version'], path, type, size, mode, modifiedTime,
+  symlinkTarget](modifiedTime 用 epoch ms 而非 ISO 串——TS 用
+  toISOString,Rust 存 i64 ms,sha 前置形状一致即可)。
+- **permission 匹配**:TS 正则 /permission denied|operation not
+  permitted/i 大小写不敏感——Rust `to_lowercase().contains(...)` 双
+  分支。
+

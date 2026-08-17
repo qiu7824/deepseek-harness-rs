@@ -1,0 +1,18 @@
+[package]
+name = "dsh-host-directory-picker"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Directory-picking capability seam: a discriminated capability (native chooser vs browse listing primitives) registered as ctx.directoryPicker. Rust port of @deepseek-ai/dsh-host-directory-picker"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-invariants = { path = "../../util/invariants" }
+async-trait = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

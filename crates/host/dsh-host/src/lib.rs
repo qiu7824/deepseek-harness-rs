@@ -4,15 +4,29 @@
 //! run the package-owned invariant companions, and expose a boot report
 //! with a real end-to-end durability + search probe.
 //!
-//! This is the composition half of the TS `apps/host` boot; the webserver,
-//! apiproxy, and CLI front end build on it in later milestones. It is also
-//! the seam the `dsh-host` binary and the integration tests share.
+//! The M6 shell upgrade composes the web face on top: the webserver route
+//! service, the SPA dist server (fallback seat), the directory-picker seam
+//! (browse backend), the plugin inventory, and the apiproxy gateway.
 
 use std::sync::Arc;
 
+use axum::body::Body as WebBody;
 use cordis::{Context, arc};
 use dsh_agent::AgentRegistry;
 use dsh_commands::CommandRuntime;
+use dsh_goal::GoalService;
+use dsh_host_apiproxy::{
+    ApiProxyDefaults, ApiProxyService, Body as CarrierBody, CarrierRequest, FetchHandler,
+    to_fetch_handler,
+};
+use dsh_host_directory_picker_browse::{BrowseDirectoryPicker, Config as PickerConfig};
+use dsh_host_frontend_static::Config as FrontendConfig;
+use dsh_host_frontend_static::apply as apply_frontend_static;
+use dsh_host_plugin_inventory::PluginInventoryGateway;
+use dsh_host_webserver::{
+    Config as WebConfig, Host as BindHost, RouteDisposer, WebRequest, WebResponse, WebRoute,
+    WebRouteKind, WebServer,
+};
 use dsh_invariants::{InvariantConfig, InvariantRegistry};
 use dsh_session::{SessionStore, session_id};
 use dsh_session_persistence::SessionPersistenceApi;
@@ -21,7 +35,194 @@ use dsh_session_query::{SessionQueryEngine, SessionSearchRequest};
 use dsh_session_query_sqlite::{Config as SqliteSearchConfig, SqliteSearch};
 use dsh_system_prompt::SystemPrompt;
 use dsh_tools::ToolRuntime;
+use dsh_user_approval::ApprovalService;
 use dsh_user_questions::UserQuestionService;
+
+const MAX_API_REQUEST_BODY_BYTES: usize = 160 * 1024 * 1024;
+
+fn decode_query_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => decoded.push(b' '),
+            b'%' if index + 2 < bytes.len() => {
+                let pair = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
+                if let Ok(byte) = u8::from_str_radix(pair, 16) {
+                    decoded.push(byte);
+                    index += 2;
+                } else {
+                    decoded.push(b'%');
+                }
+            }
+            byte => decoded.push(byte),
+        }
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn parse_query(raw: &str) -> Vec<(String, String)> {
+    raw.split('&')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let (key, value) = part.split_once('=').unwrap_or((part, ""));
+            (decode_query_component(key), decode_query_component(value))
+        })
+        .collect()
+}
+
+fn valid_authority_port(port: Option<&str>) -> bool {
+    port.is_none_or(|port| !port.is_empty() && port.parse::<u16>().is_ok())
+}
+
+fn is_loopback_authority(authority: &str) -> bool {
+    if authority.is_empty() || authority.trim() != authority {
+        return false;
+    }
+    if let Some(ipv6) = authority.strip_prefix('[') {
+        let Some((host, suffix)) = ipv6.split_once(']') else {
+            return false;
+        };
+        let port = if suffix.is_empty() {
+            None
+        } else if let Some(port) = suffix.strip_prefix(':') {
+            Some(port)
+        } else {
+            return false;
+        };
+        return host == "::1" && valid_authority_port(port);
+    }
+
+    let (host, port) = match authority.split_once(':') {
+        Some((host, port)) if !port.contains(':') => (host, Some(port)),
+        Some(_) => return false,
+        None => (authority, None),
+    };
+    if !valid_authority_port(port) {
+        return false;
+    }
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let octets = host.split('.').collect::<Vec<_>>();
+    octets.len() == 4
+        && octets[0] == "127"
+        && octets.iter().all(|octet| {
+            (1..=3).contains(&octet.len())
+                && octet.bytes().all(|byte| byte.is_ascii_digit())
+                && octet.parse::<u8>().is_ok()
+        })
+}
+
+fn canonical_authority(authority: &str, default_port: Option<u16>) -> Option<String> {
+    let parsed = authority.parse::<http::uri::Authority>().ok()?;
+    let host = parsed.host().to_ascii_lowercase();
+    let port = parsed.port_u16().filter(|port| Some(*port) != default_port);
+    Some(match port {
+        Some(port) if host.contains(':') => format!("[{host}]:{port}"),
+        Some(port) => format!("{host}:{port}"),
+        None if host.contains(':') => format!("[{host}]"),
+        None => host,
+    })
+}
+
+fn origin_matches_host(origin: &str, host: &str) -> bool {
+    if origin == "null" {
+        return false;
+    }
+    let Ok(uri) = origin.parse::<http::Uri>() else {
+        return false;
+    };
+    let default_port = match uri.scheme_str() {
+        Some("http") => Some(80),
+        Some("https") => Some(443),
+        _ => return false,
+    };
+    let Some(origin_authority) = uri.authority() else {
+        return false;
+    };
+    canonical_authority(origin_authority.as_str(), default_port)
+        == canonical_authority(host, Some(80))
+}
+
+async fn bridge_api_request(request: WebRequest, handler: Arc<FetchHandler>) -> WebResponse {
+    let (parts, incoming) = request.into_parts();
+    let host = parts
+        .headers
+        .get(http::header::HOST)
+        .and_then(|value| value.to_str().ok());
+    let trusted_host = host.is_some_and(is_loopback_authority);
+    let cross_site = parts
+        .headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|site| site == "cross-site");
+    let mismatched_origin = parts
+        .headers
+        .get(http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|origin| !host.is_some_and(|host| origin_matches_host(origin, host)));
+    if !trusted_host || cross_site || mismatched_origin {
+        return http::Response::builder()
+            .status(http::StatusCode::FORBIDDEN)
+            .body(WebBody::from("forbidden"))
+            .expect("static response");
+    }
+    if parts
+        .headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > MAX_API_REQUEST_BODY_BYTES)
+    {
+        return http::Response::builder()
+            .status(http::StatusCode::PAYLOAD_TOO_LARGE)
+            .body(WebBody::empty())
+            .expect("static response");
+    }
+    let bytes = match axum::body::to_bytes(WebBody::new(incoming), MAX_API_REQUEST_BODY_BYTES).await
+    {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return http::Response::builder()
+                .status(http::StatusCode::PAYLOAD_TOO_LARGE)
+                .body(WebBody::empty())
+                .expect("static response");
+        }
+    };
+    let query = parts.uri.query().map(parse_query).unwrap_or_default();
+    let headers = parts
+        .headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect();
+    let response = handler
+        .handle(CarrierRequest {
+            method: parts.method,
+            path: parts.uri.path().to_string(),
+            query,
+            headers,
+            body: (!bytes.is_empty()).then(|| bytes.to_vec()),
+        })
+        .await;
+    let (parts, body) = response.into_parts();
+    let body = match body {
+        CarrierBody::Bytes(bytes) => WebBody::from(bytes),
+        CarrierBody::Stream(stream) => {
+            use futures::StreamExt;
+            let stream = stream.map(|chunk| Ok::<Vec<u8>, std::convert::Infallible>(chunk));
+            WebBody::from_stream(stream)
+        }
+    };
+    WebResponse::from_parts(parts, body)
+}
 
 /// One booted host spine: the root context plus its registered services and
 /// the disposable data directories owned by this boot.
@@ -32,15 +233,22 @@ pub struct HostSpine {
     pub tools: Arc<ToolRuntime>,
     pub system_prompt: Arc<SystemPrompt>,
     pub commands: Arc<CommandRuntime>,
+    pub goals: Arc<GoalService>,
     pub questions: Arc<UserQuestionService>,
+    pub approval: Arc<ApprovalService>,
     pub persistence: Arc<JsonlSessionPersistence>,
     pub search: Arc<SqliteSearch>,
     pub query: Arc<SessionQueryEngine>,
+    pub web_server: Arc<WebServer>,
+    pub api_proxy: Arc<ApiProxyService>,
+    pub agent_presets: Arc<dsh_agent_presets::AgentPresets>,
+    api_route: RouteDisposer,
     data_root: std::path::PathBuf,
 }
 
 impl Drop for HostSpine {
     fn drop(&mut self) {
+        (self.api_route)();
         let _ = std::fs::remove_dir_all(&self.data_root);
     }
 }
@@ -76,7 +284,13 @@ pub fn compose_host(ctx: &Context) -> Result<HostSpine, String> {
     )
     .map_err(|error| format!("tools: {error}"))?;
     let commands = CommandRuntime::install(ctx);
+    let goals = GoalService::install(ctx, dsh_goal::Config::default());
+    let _goal_command =
+        dsh_command_goal::apply(ctx).map_err(|error| format!("command-goal: {error}"))?;
+    let _goal_tools = dsh_tool_goal::apply(ctx, &dsh_tool_goal::Config::default())
+        .map_err(|error| format!("tool-goal: {error}"))?;
     let questions = UserQuestionService::install(ctx);
+    let approval = ApprovalService::install(ctx, dsh_user_approval::Config::default());
     let persistence = JsonlSessionPersistence::install(
         ctx,
         JsonlConfig {
@@ -101,6 +315,74 @@ pub fn compose_host(ctx: &Context) -> Result<HostSpine, String> {
         .map(|slot| slot.as_ref().clone())
         .ok_or_else(|| "sessionQuery service missing".to_string())?;
     dsh_schedule::apply(ctx);
+    // ---- M6 shell: the web face over the spine ----
+    // The loader service anchors the plugin inventory and profile
+    // composition (the Rust static registry serves empty for now).
+    let loader = futures::executor::block_on(dsh_cordis_loader::LoaderService::new(ctx));
+    ctx.register_service(loader);
+    // The agent-presets roster: the shipped presets beside this app's
+    // config plus the harness-home user root the service appends itself.
+    // Anchored to the manifest, not the process cwd (tests and launchers
+    // run from different directories; TS anchors to the package location
+    // the same way).
+    let shipped_preset_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../config/agent-presets")
+        .to_string_lossy()
+        .into_owned();
+    let agent_presets = dsh_agent_presets::AgentPresets::install(
+        ctx,
+        dsh_agent_presets::Config {
+            default: "standard".to_string(),
+            roots: vec![dsh_agent_presets::PresetRoot {
+                path: shipped_preset_root,
+                trust: dsh_agent_presets::PresetTrust::System,
+            }],
+            include_user_root: true,
+        },
+        dsh_agent_presets::process_env(),
+    )
+    .map_err(|error| format!("agentPresets: {error}"))?;
+    // The webserver binds an OS-assigned port (the report publishes it).
+    let web_server = futures::executor::block_on(WebServer::install(
+        ctx,
+        WebConfig {
+            host: BindHost::Loopback,
+            port: 0,
+        },
+    ))
+    .map_err(|error| format!("webserver: {error}"))?;
+    // The SPA dist server claims the fallback seat.
+    let dist_index = std::path::absolute("web/dist/index.html")
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "web/dist/index.html".to_string());
+    let _ = apply_frontend_static(ctx, FrontendConfig { dist_index })
+        .map_err(|error| format!("frontend-static: {error}"))?;
+    // The directory-picker seam serves the browse interaction.
+    BrowseDirectoryPicker::install(ctx, PickerConfig::default());
+    // The plugin inventory projects the loader tree (no loader composed in
+    // this spine yet; the gateway installs and serves an empty catalog).
+    let _ = PluginInventoryGateway::install(ctx);
+    // The apiproxy gateway wires the 52-RPC surface onto the spine.
+    let api_proxy = ApiProxyService::install(
+        ctx,
+        ApiProxyDefaults {
+            default_model_selection: Arc::new(|| dsh_host_apiproxy::ModelSelection {
+                provider: "deepseek-official".to_string(),
+                model: "deepseek-chat".to_string(),
+                reasoning_effort: None,
+            }),
+            ..Default::default()
+        },
+    );
+    let fetch_handler = Arc::new(to_fetch_handler(api_proxy.clone()));
+    let api_route = web_server.register(WebRoute {
+        kind: WebRouteKind::Prefix,
+        path: "/api".to_string(),
+        handler: Arc::new(move |request| {
+            let fetch_handler = Arc::clone(&fetch_handler);
+            Box::pin(async move { Ok(bridge_api_request(request, fetch_handler).await) })
+        }),
+    });
     Ok(HostSpine {
         ctx: ctx.clone(),
         sessions,
@@ -108,10 +390,16 @@ pub fn compose_host(ctx: &Context) -> Result<HostSpine, String> {
         tools,
         system_prompt,
         commands,
+        goals,
         questions,
+        approval,
         persistence,
         search,
         query,
+        web_server,
+        api_proxy,
+        agent_presets,
+        api_route,
         data_root,
     })
 }
@@ -226,6 +514,14 @@ pub async fn boot_report(spine: &HostSpine) -> Result<serde_json::Value, String>
         .await
         .map_err(|error| format!("persisted search: {}", error.message))?;
 
+    // The agent-presets roster serves the shipped presets beside this app's
+    // config (a live discovery read proves the mount).
+    let roster = spine
+        .agent_presets
+        .list()
+        .await
+        .map_err(|error| format!("preset roster: {error}"))?;
+
     Ok(serde_json::json!({
         "services": [
             "invariants",
@@ -234,10 +530,13 @@ pub async fn boot_report(spine: &HostSpine) -> Result<serde_json::Value, String>
             "systemPrompt",
             "tools",
             "commands",
+            "goals",
             "userQuestions",
+            "approval",
             "sessionPersistence",
             "sessionQuery",
             "schedule",
+            "agentPresets",
         ],
         "session": {
             "id": session.id().as_str(),
@@ -249,6 +548,7 @@ pub async fn boot_report(spine: &HostSpine) -> Result<serde_json::Value, String>
             "persistedSnapshotCount": snapshots.len(),
             "liveSearchHits": live_hits.items.len(),
             "persistedSearchHits": persisted_hits.items.len(),
+            "presetCount": roster.len(),
         },
     }))
 }
@@ -256,6 +556,9 @@ pub async fn boot_report(spine: &HostSpine) -> Result<serde_json::Value, String>
 /// Mount the package-owned invariant companions onto a composed spine.
 pub fn mount_companions(spine: &HostSpine) {
     let _ = futures::executor::block_on(dsh_session::invariant::apply(&spine.ctx));
+    let _goal = dsh_goal::invariant::apply(&spine.ctx);
+    let _command_goal = dsh_command_goal::invariant::apply(&spine.ctx);
+    let _tool_goal = dsh_tool_goal::invariant::apply(&spine.ctx);
     let _schedule = dsh_schedule::invariant::apply(&spine.ctx);
     let _query_sqlite = dsh_session_query_sqlite::invariant::apply(&spine.ctx);
     let _ = spine

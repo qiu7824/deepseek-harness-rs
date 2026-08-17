@@ -58,10 +58,10 @@ pub fn checkpoint_record_schema() -> dsh_storage_domain::RecordSchema {
             .and_then(|created_at| created_at.as_u64())
             .ok_or_else(|| "checkpoint identity createdAt must be a non-negative integer".to_string())?;
         let _ = created_at;
-        if let Some(cwd) = identity.get("cwd") {
-            if !cwd.is_string() {
-                return Err("checkpoint identity cwd must be a string".to_string());
-            }
+        if let Some(cwd) = identity.get("cwd")
+            && !cwd.is_string()
+        {
+            return Err("checkpoint identity cwd must be a string".to_string());
         }
         let rows = object
             .get("rows")
