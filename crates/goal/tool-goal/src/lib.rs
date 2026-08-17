@@ -22,8 +22,8 @@ use dsh_llm::{
 };
 use dsh_system_prompt::{PromptSection, PromptText, SystemPrompt};
 use dsh_tools::{
-    ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition, ToolRunContext,
-    ToolRuntime, validate_json_schema_value,
+    ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition,
+    ToolRunContext, ToolRuntime, validate_json_schema_value,
 };
 use serde_json::{Value, json};
 
@@ -354,9 +354,7 @@ fn execute_update(
                 ));
             }
             let blocked_reason = args.get("blocked_reason").and_then(Value::as_str);
-            if action == "blocked"
-                && blocked_reason.is_none_or(|reason| reason.trim().is_empty())
-            {
+            if action == "blocked" && blocked_reason.is_none_or(|reason| reason.trim().is_empty()) {
                 return Err(invalid_update(
                     "blocked_reason is required with action blocked",
                 ));
@@ -381,7 +379,9 @@ fn execute_update(
                     &ref_,
                     &GoalBlockReason {
                         code: "model-reported".to_string(),
-                        message: blocked_reason.expect("validated blocked reason").to_string(),
+                        message: blocked_reason
+                            .expect("validated blocked reason")
+                            .to_string(),
                     },
                 )
             }
@@ -391,9 +391,8 @@ fn execute_update(
                 exec.defer_context(create_user_message(
                     wrapup::render_wrapup_context(
                         &goal.objective,
-                        (action == "blocked").then_some(
-                            blocked_reason.expect("validated blocked reason"),
-                        ),
+                        (action == "blocked")
+                            .then_some(blocked_reason.expect("validated blocked reason")),
                     ),
                     MessageSource::Plugin {
                         plugin: NAME.to_string(),
@@ -432,11 +431,7 @@ fn present_update(args: &Value) -> Option<ToolCallView> {
     let title = if action == "blocked" {
         "Mark goal".to_string()
     } else {
-        format!(
-            "{}{} goal",
-            action[..1].to_ascii_uppercase(),
-            &action[1..]
-        )
+        format!("{}{} goal", action[..1].to_ascii_uppercase(), &action[1..])
     };
     let raw_input = if has_text(args, "blocked_reason") {
         Some(Value::String(args["blocked_reason"].as_str()?.to_string()))
@@ -461,6 +456,11 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
         .get_typed::<Arc<SystemPrompt>>("systemPrompt", false)
         .map(|slot| slot.as_ref().clone())
         .ok_or_else(|| "tool-goal requires the systemPrompt service".to_string())?;
+    for name in ["get_goal", "create_goal", "update_goal"] {
+        if tools.get(name, None).is_some() {
+            panic!("tool \"{name}\" is already registered");
+        }
+    }
 
     let mut disposers = vec![system_prompt.section(
         ctx,
@@ -568,8 +568,8 @@ impl Plugin for ToolGoalPlugin {
             .downcast_ref::<Config>()
             .cloned()
             .ok_or_else(|| PluginError::from(anyhow::anyhow!("tool-goal requires config")))?;
-        let disposer = apply(ctx, &config)
-            .map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
+        let disposer =
+            apply(ctx, &config).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
         let _ = ctx.effect("tool-goal", Box::pin(async move { Some(disposer) }));
         Ok(())
     }

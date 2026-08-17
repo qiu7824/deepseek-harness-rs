@@ -56,9 +56,10 @@ pub(crate) fn goal_tool_execution(
     ctx: &Context,
     exec: &ToolRunContext,
 ) -> Result<GoalToolExecution, ToolBodyError> {
-    let agent = exec.agent.clone().ok_or_else(|| {
-        policy_error("goal tools require a calling agent", AGENT_REQUIRED)
-    })?;
+    let agent = exec
+        .agent
+        .clone()
+        .ok_or_else(|| policy_error("goal tools require a calling agent", AGENT_REQUIRED))?;
     let agents = ctx
         .get_typed::<Arc<AgentRegistry>>("agents", false)
         .map(|slot| slot.as_ref().clone())
@@ -120,16 +121,17 @@ fn is_matching_goal_round(execution: &GoalToolExecution, goal: &GoalView) -> boo
         if event.type_ != "user/message" {
             return false;
         }
-        let Some(source) = event.data.get("source").and_then(serde_json::Value::as_object) else {
+        let Some(source) = event
+            .data
+            .get("source")
+            .and_then(serde_json::Value::as_object)
+        else {
             return false;
         };
         source.get("kind").and_then(serde_json::Value::as_str) == Some("goal")
-            && source.get("goalId").and_then(serde_json::Value::as_str)
-                == Some(goal.id.as_str())
-            && source.get("revision").and_then(serde_json::Value::as_u64)
-                == Some(goal.revision)
-            && source.get("round").and_then(serde_json::Value::as_u64)
-                == Some(goal.rounds_started)
+            && source.get("goalId").and_then(serde_json::Value::as_str) == Some(goal.id.as_str())
+            && source.get("revision").and_then(serde_json::Value::as_u64) == Some(goal.revision)
+            && source.get("round").and_then(serde_json::Value::as_u64) == Some(goal.rounds_started)
     })
 }
 
