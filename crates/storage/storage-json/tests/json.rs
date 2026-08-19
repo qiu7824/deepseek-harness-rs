@@ -21,10 +21,7 @@ fn descriptor() -> dsh_storage::KvUnitDescriptor {
 }
 
 fn fresh_root(tag: &str) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "dsh-storage-json-{tag}-{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("dsh-storage-json-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     root
 }
@@ -37,8 +34,15 @@ fn cleanup(root: &std::path::Path) {
 async fn publishes_a_human_readable_pretty_printed_file() {
     let root = fresh_root("pretty");
     let backend = JsonStorageBackend::new(root.to_string_lossy().to_string());
-    let unit = backend.kv().expect("kv").open(&descriptor()).await.expect("open");
-    unit.put_record("t", "k", json!({"hello": "world"})).await.expect("put");
+    let unit = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .expect("open");
+    unit.put_record("t", "k", json!({"hello": "world"}))
+        .await
+        .expect("put");
     let text = std::fs::read_to_string(root.join("shape.json")).expect("read");
     let expected = "{\n  \"unit\": {\n    \"name\": \"shape\",\n    \"version\": 1\n  },\n  \"global\": null,\n  \"tables\": {\n    \"t\": {\n      \"k\": {\n        \"hello\": \"world\"\n      }\n    }\n  }\n}\n";
     assert_eq!(text, expected);
@@ -50,7 +54,12 @@ async fn publishes_a_human_readable_pretty_printed_file() {
 async fn defers_materialization_until_the_first_write() {
     let root = fresh_root("lazy");
     let backend = JsonStorageBackend::new(root.to_string_lossy().to_string());
-    let _unit = backend.kv().expect("kv").open(&descriptor()).await.expect("open");
+    let _unit = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .expect("open");
     assert!(!root.join("shape.json").exists());
     let _ = backend.close().await;
     cleanup(&root);
@@ -62,7 +71,13 @@ async fn rejects_a_malformed_medium_and_a_foreign_unit_header() {
     std::fs::create_dir_all(&root).expect("mkdir");
     std::fs::write(root.join("shape.json"), "not json at all").expect("write");
     let backend = JsonStorageBackend::new(root.to_string_lossy().to_string());
-    let error = backend.kv().expect("kv").open(&descriptor()).await.err().expect("reject");
+    let error = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .err()
+        .expect("reject");
     assert_eq!(error.code, StorageErrorCode::MalformedMedium);
 
     std::fs::write(
@@ -70,7 +85,13 @@ async fn rejects_a_malformed_medium_and_a_foreign_unit_header() {
         json!({"unit": {"name": "other", "version": 1}, "global": null, "tables": {}}).to_string(),
     )
     .expect("write");
-    let error = backend.kv().expect("kv").open(&descriptor()).await.err().expect("reject");
+    let error = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .err()
+        .expect("reject");
     assert_eq!(error.code, StorageErrorCode::MalformedMedium);
     let _ = backend.close().await;
     cleanup(&root);
@@ -80,8 +101,19 @@ async fn rejects_a_malformed_medium_and_a_foreign_unit_header() {
 async fn rejects_double_open_of_one_unit_as_a_plain_caller_error() {
     let root = fresh_root("double");
     let backend = JsonStorageBackend::new(root.to_string_lossy().to_string());
-    let _unit = backend.kv().expect("kv").open(&descriptor()).await.expect("open");
-    let error = backend.kv().expect("kv").open(&descriptor()).await.err().expect("reject");
+    let _unit = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .expect("open");
+    let error = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .err()
+        .expect("reject");
     assert!(error.message.contains("already open"), "{}", error.message);
     let _ = backend.close().await;
     cleanup(&root);
@@ -91,17 +123,34 @@ async fn rejects_double_open_of_one_unit_as_a_plain_caller_error() {
 async fn rolls_back_memory_when_a_publish_fails() {
     let root = fresh_root("rollback");
     let backend = JsonStorageBackend::new(root.to_string_lossy().to_string());
-    let unit = backend.kv().expect("kv").open(&descriptor()).await.expect("open");
-    unit.put_record("t", "k", json!({"v": "committed"})).await.expect("put");
-    unit.set_global(json!({"g": "committed"})).await.expect("set");
+    let unit = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .expect("open");
+    unit.put_record("t", "k", json!({"v": "committed"}))
+        .await
+        .expect("put");
+    unit.set_global(json!({"g": "committed"}))
+        .await
+        .expect("set");
     let path = root.join("shape.json");
     let backup = root.join("shape.committed.json");
     // A directory at the publish target rejects atomic replacement on every
     // host.
     std::fs::rename(&path, &backup).expect("rename");
     std::fs::create_dir(&path).expect("mkdir");
-    assert!(unit.put_record("t", "k", json!({"v": "rejected"})).await.is_err());
-    assert!(unit.put_record("t", "k2", json!({"v": "also rejected"})).await.is_err());
+    assert!(
+        unit.put_record("t", "k", json!({"v": "rejected"}))
+            .await
+            .is_err()
+    );
+    assert!(
+        unit.put_record("t", "k2", json!({"v": "also rejected"}))
+            .await
+            .is_err()
+    );
     assert!(unit.delete_record("t", "k").await.is_err());
     assert!(unit.set_global(json!({"g": "rejected"})).await.is_err());
     std::fs::remove_dir_all(&path).expect("remove dir");
@@ -111,7 +160,9 @@ async fn rolls_back_memory_when_a_publish_fails() {
     assert!(!snapshot.tables["t"].contains_key("k2"));
     assert_eq!(snapshot.global, json!({"g": "committed"}));
     // The next successful publish must not carry rejected writes to disk.
-    unit.put_record("t", "k3", json!({"v": "later"})).await.expect("put");
+    unit.put_record("t", "k3", json!({"v": "later"}))
+        .await
+        .expect("put");
     let text = std::fs::read_to_string(&path).expect("read");
     assert!(!text.contains("rejected"), "{text}");
     let _ = backend.close().await;
@@ -128,11 +179,28 @@ async fn rejects_undeclared_table_and_global_access_as_caller_errors() {
         tables: vec!["t".to_string()],
         has_global: false,
     };
-    let unit = backend.kv().expect("kv").open(&descriptor).await.expect("open");
-    let error = unit.put_record("undeclared", "k", json!({})).await.err().expect("reject");
-    assert!(error.message.contains("does not declare table"), "{}", error.message);
+    let unit = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor)
+        .await
+        .expect("open");
+    let error = unit
+        .put_record("undeclared", "k", json!({}))
+        .await
+        .err()
+        .expect("reject");
+    assert!(
+        error.message.contains("does not declare table"),
+        "{}",
+        error.message
+    );
     let error = unit.set_global(json!({})).await.err().expect("reject");
-    assert!(error.message.contains("does not declare a global slot"), "{}", error.message);
+    assert!(
+        error.message.contains("does not declare a global slot"),
+        "{}",
+        error.message
+    );
     let _ = backend.close().await;
     cleanup(&root);
 }
@@ -147,7 +215,13 @@ async fn rejects_invalid_unit_and_table_names_and_closed_backend() {
         tables: vec!["t".to_string()],
         has_global: true,
     };
-    let error = backend.kv().expect("kv").open(&bad_name).await.err().expect("reject");
+    let error = backend
+        .kv()
+        .expect("kv")
+        .open(&bad_name)
+        .await
+        .err()
+        .expect("reject");
     assert_eq!(error.code, StorageErrorCode::MalformedMedium);
     let bad_table = dsh_storage::KvUnitDescriptor {
         name: "shape".to_string(),
@@ -155,10 +229,22 @@ async fn rejects_invalid_unit_and_table_names_and_closed_backend() {
         tables: vec!["ok".to_string(), "not ok".to_string()],
         has_global: true,
     };
-    let error = backend.kv().expect("kv").open(&bad_table).await.err().expect("reject");
+    let error = backend
+        .kv()
+        .expect("kv")
+        .open(&bad_table)
+        .await
+        .err()
+        .expect("reject");
     assert_eq!(error.code, StorageErrorCode::MalformedMedium);
     let _ = backend.close().await;
-    let error = backend.kv().expect("kv").open(&descriptor()).await.err().expect("reject");
+    let error = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .err()
+        .expect("reject");
     assert_eq!(error.code, StorageErrorCode::Closed);
     cleanup(&root);
 }
@@ -184,7 +270,12 @@ async fn opens_a_file_missing_a_declared_table_as_that_table_empty() {
         tables: vec!["alpha".to_string(), "beta".to_string()],
         has_global: true,
     };
-    let unit = backend.kv().expect("kv").open(&descriptor).await.expect("open");
+    let unit = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor)
+        .await
+        .expect("open");
     let snapshot = unit.load_all().await.expect("load");
     assert_eq!(snapshot.tables["alpha"]["k"], json!(1));
     assert!(snapshot.tables["beta"].is_empty());
@@ -199,8 +290,18 @@ async fn propagates_non_missing_read_failures() {
     // A directory where the unit file should be: the read rejects.
     std::fs::create_dir(root.join("shape.json")).expect("mkdir dir");
     let backend = JsonStorageBackend::new(root.to_string_lossy().to_string());
-    let error = backend.kv().expect("kv").open(&descriptor()).await.err().expect("reject");
-    assert!(error.message.contains("failed to read"), "{}", error.message);
+    let error = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .err()
+        .expect("reject");
+    assert!(
+        error.message.contains("failed to read"),
+        "{}",
+        error.message
+    );
     let _ = backend.close().await;
     cleanup(&root);
 }
@@ -216,7 +317,13 @@ async fn rejects_malformed_table_shapes_and_foreign_versions_distinctly() {
     )
     .expect("write");
     let backend = JsonStorageBackend::new(root.to_string_lossy().to_string());
-    let error = backend.kv().expect("kv").open(&descriptor()).await.err().expect("reject");
+    let error = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .err()
+        .expect("reject");
     assert_eq!(error.code, StorageErrorCode::MalformedMedium);
 
     std::fs::write(
@@ -224,7 +331,13 @@ async fn rejects_malformed_table_shapes_and_foreign_versions_distinctly() {
         json!({"unit": {"name": "shape", "version": 9}, "global": null, "tables": {}}).to_string(),
     )
     .expect("write");
-    let error = backend.kv().expect("kv").open(&descriptor()).await.err().expect("reject");
+    let error = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .err()
+        .expect("reject");
     assert_eq!(error.code, StorageErrorCode::VersionMismatch);
 
     std::fs::write(
@@ -232,7 +345,13 @@ async fn rejects_malformed_table_shapes_and_foreign_versions_distinctly() {
         json!({"unit": {"name": "shape", "version": 1}, "global": null}).to_string(),
     )
     .expect("write");
-    let error = backend.kv().expect("kv").open(&descriptor()).await.err().expect("reject");
+    let error = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .err()
+        .expect("reject");
     assert_eq!(error.code, StorageErrorCode::MalformedMedium);
     let _ = backend.close().await;
     cleanup(&root);
@@ -245,7 +364,9 @@ async fn registers_on_the_hub_via_apply_and_closes_on_dispose() {
     let _hub = Storage::install(&ctx);
     let fiber = ctx.plugin(
         Arc::new(JsonStoragePlugin {
-            config: Config { root: root.to_string_lossy().to_string() },
+            config: Config {
+                root: root.to_string_lossy().to_string(),
+            },
         }),
         arc(()),
     );
@@ -255,8 +376,15 @@ async fn registers_on_the_hub_via_apply_and_closes_on_dispose() {
         .expect("lifecycle service")
         .as_ref()
         .clone();
-    let unit = lifecycle.kv().expect("kv").open(&descriptor()).await.expect("open");
-    unit.put_record("t", "k", json!({"v": 1})).await.expect("put");
+    let unit = lifecycle
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .expect("open");
+    unit.put_record("t", "k", json!({"v": 1}))
+        .await
+        .expect("put");
     fiber.dispose().await;
     // After dispose: the hub registry name is gone and the unit is closed.
     let error = ctx
@@ -267,7 +395,11 @@ async fn registers_on_the_hub_via_apply_and_closes_on_dispose() {
         .err()
         .expect("unregistered");
     assert_eq!(error.code, StorageErrorCode::BackendNotFound);
-    let error = unit.put_record("t", "x", json!({})).await.err().expect("closed");
+    let error = unit
+        .put_record("t", "x", json!({}))
+        .await
+        .err()
+        .expect("closed");
     assert_eq!(error.code, StorageErrorCode::Closed);
     cleanup(&root);
 }
@@ -275,11 +407,14 @@ async fn registers_on_the_hub_via_apply_and_closes_on_dispose() {
 #[tokio::test(flavor = "current_thread")]
 async fn registers_the_invariant_companion_and_disposes_cleanly() {
     let ctx = Context::root();
-    let _registry = InvariantRegistry::new(&ctx, InvariantConfig {
-        enabled: true,
-        package_allowlist: vec![],
-        package_blocklist: vec![],
-    });
+    let _registry = InvariantRegistry::new(
+        &ctx,
+        InvariantConfig {
+            enabled: true,
+            package_allowlist: vec![],
+            package_blocklist: vec![],
+        },
+    );
     let fiber = ctx.plugin(Arc::new(invariant::JsonStorageInvariantPlugin), arc(()));
     fiber.settle().await.expect("settle");
     fiber.dispose().await;
@@ -293,7 +428,12 @@ async fn registers_the_invariant_companion_and_disposes_cleanly() {
 async fn close_drains_in_flight_writes_and_blocks_in_flight_opens() {
     let root = fresh_root("drain");
     let backend = JsonStorageBackend::new(root.to_string_lossy().to_string());
-    let unit = backend.kv().expect("kv").open(&descriptor()).await.expect("open");
+    let unit = backend
+        .kv()
+        .expect("kv")
+        .open(&descriptor())
+        .await
+        .expect("open");
     // Start the write INLINE (one manual poll runs the synchronous prefix —
     // the closed guard and the state mutation — and parks in the publish),
     // so it is genuinely in flight when close lands.
@@ -301,7 +441,10 @@ async fn close_drains_in_flight_writes_and_blocks_in_flight_opens() {
     futures::pin_mut!(write_future);
     let waker = futures::task::noop_waker();
     let mut cx = std::task::Context::from_waker(&waker);
-    assert!(write_future.as_mut().poll(&mut cx).is_pending(), "write must be in flight");
+    assert!(
+        write_future.as_mut().poll(&mut cx).is_pending(),
+        "write must be in flight"
+    );
     // Drive close on a real task; completing the write future below runs
     // the publish's continuation (releasing the in-flight slot), which the
     // close's drain barrier is waiting for.
@@ -322,7 +465,11 @@ async fn close_drains_in_flight_writes_and_blocks_in_flight_opens() {
     // The open races the close; both orderings surface a `closed` failure.
     let opened = opening.await.expect("task");
     let error = match opened {
-        Ok(unit2) => unit2.put_record("t", "x", json!({})).await.err().expect("closed"),
+        Ok(unit2) => unit2
+            .put_record("t", "x", json!({}))
+            .await
+            .err()
+            .expect("closed"),
         Err(error) => error,
     };
     assert_eq!(error.code, StorageErrorCode::Closed);

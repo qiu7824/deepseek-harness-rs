@@ -128,7 +128,12 @@ impl Serialize for SearchResultView {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
         match self {
-            SearchResultView::Matches { title, files, truncated, total } => {
+            SearchResultView::Matches {
+                title,
+                files,
+                truncated,
+                total,
+            } => {
                 map.serialize_entry("shape", "matches")?;
                 if let Some(title) = title {
                     map.serialize_entry("title", title)?;
@@ -137,7 +142,12 @@ impl Serialize for SearchResultView {
                 map.serialize_entry("truncated", truncated)?;
                 map.serialize_entry("total", total)?;
             }
-            SearchResultView::Paths { title, paths, truncated, total } => {
+            SearchResultView::Paths {
+                title,
+                paths,
+                truncated,
+                total,
+            } => {
                 map.serialize_entry("shape", "paths")?;
                 if let Some(title) = title {
                     map.serialize_entry("title", title)?;
@@ -164,7 +174,10 @@ impl<'de> Deserialize<'de> for SearchResultView {
                     .and_then(JsonValue::as_str)
                     .map(str::to_string),
                 files: serde_json::from_value(
-                    object.get("files").cloned().unwrap_or_else(|| JsonValue::Array(Vec::new())),
+                    object
+                        .get("files")
+                        .cloned()
+                        .unwrap_or_else(|| JsonValue::Array(Vec::new())),
                 )
                 .map_err(serde::de::Error::custom)?,
                 truncated: object
@@ -179,7 +192,10 @@ impl<'de> Deserialize<'de> for SearchResultView {
                     .and_then(JsonValue::as_str)
                     .map(str::to_string),
                 paths: serde_json::from_value(
-                    object.get("paths").cloned().unwrap_or_else(|| JsonValue::Array(Vec::new())),
+                    object
+                        .get("paths")
+                        .cloned()
+                        .unwrap_or_else(|| JsonValue::Array(Vec::new())),
                 )
                 .map_err(serde::de::Error::custom)?,
                 truncated: object
@@ -191,7 +207,9 @@ impl<'de> Deserialize<'de> for SearchResultView {
             Some(other) => Err(serde::de::Error::custom(format!(
                 "unknown search result shape {other:?}"
             ))),
-            None => Err(serde::de::Error::custom("search result view requires a shape")),
+            None => Err(serde::de::Error::custom(
+                "search result view requires a shape",
+            )),
         }
     }
 }
@@ -223,7 +241,11 @@ pub struct WebSource {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "publishedAt")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "publishedAt"
+    )]
     pub published_at: Option<String>,
 }
 
@@ -249,7 +271,12 @@ impl Serialize for WebResultView {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
         match self {
-            WebResultView::Search { title, sources, answer, truncated } => {
+            WebResultView::Search {
+                title,
+                sources,
+                answer,
+                truncated,
+            } => {
                 map.serialize_entry("kind", "search")?;
                 if let Some(title) = title {
                     map.serialize_entry("title", title)?;
@@ -260,7 +287,12 @@ impl Serialize for WebResultView {
                 }
                 map.serialize_entry("truncated", truncated)?;
             }
-            WebResultView::Fetch { title, url, status_code, truncated } => {
+            WebResultView::Fetch {
+                title,
+                url,
+                status_code,
+                truncated,
+            } => {
                 map.serialize_entry("kind", "fetch")?;
                 if let Some(title) = title {
                     map.serialize_entry("title", title)?;
@@ -287,7 +319,10 @@ impl<'de> Deserialize<'de> for WebResultView {
                     .and_then(JsonValue::as_str)
                     .map(str::to_string),
                 sources: serde_json::from_value(
-                    object.get("sources").cloned().unwrap_or_else(|| JsonValue::Array(Vec::new())),
+                    object
+                        .get("sources")
+                        .cloned()
+                        .unwrap_or_else(|| JsonValue::Array(Vec::new())),
                 )
                 .map_err(serde::de::Error::custom)?,
                 answer: object
@@ -406,7 +441,12 @@ impl Serialize for ToolResultView {
                             map.serialize_entry("content", content)?;
                         }
                     }
-                    ToolResultView::Terminal { title, output, exit_code, signal } => {
+                    ToolResultView::Terminal {
+                        title,
+                        output,
+                        exit_code,
+                        signal,
+                    } => {
                         map.serialize_entry("card", "terminal")?;
                         if let Some(title) = title {
                             map.serialize_entry("title", title)?;
@@ -428,7 +468,9 @@ impl Serialize for ToolResultView {
                         }
                         map.serialize_entry("diffs", diffs)?;
                     }
-                    ToolResultView::Search(_) | ToolResultView::Web(_) | ToolResultView::Read(_) => {
+                    ToolResultView::Search(_)
+                    | ToolResultView::Web(_)
+                    | ToolResultView::Read(_) => {
                         unreachable!()
                     }
                 }
@@ -452,7 +494,9 @@ impl<'de> Deserialize<'de> for ToolResultView {
                     .map(str::to_string),
                 content: object
                     .get("content")
-                    .map(|value| serde_json::from_value(value.clone()).map_err(serde::de::Error::custom))
+                    .map(|value| {
+                        serde_json::from_value(value.clone()).map_err(serde::de::Error::custom)
+                    })
                     .transpose()?,
             }),
             Some("terminal") => Ok(ToolResultView::Terminal {
@@ -476,7 +520,10 @@ impl<'de> Deserialize<'de> for ToolResultView {
                     .and_then(JsonValue::as_str)
                     .map(str::to_string),
                 diffs: serde_json::from_value(
-                    object.get("diffs").cloned().unwrap_or_else(|| JsonValue::Array(Vec::new())),
+                    object
+                        .get("diffs")
+                        .cloned()
+                        .unwrap_or_else(|| JsonValue::Array(Vec::new())),
                 )
                 .map_err(serde::de::Error::custom)?,
             }),

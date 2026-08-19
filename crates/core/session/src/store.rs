@@ -21,11 +21,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Weak};
 
 use cordis::{
-    ArcValue, Context, Disposer, DispatchMode, InjectSpec, Listener, Service, arc, make_disposer,
+    ArcValue, Context, DispatchMode, Disposer, InjectSpec, Listener, Service, arc, make_disposer,
 };
 use dsh_llm::Message;
 use dsh_scope::{ScopeCarrier, scope_of, scope_target};
 use dsh_typert_protocol::{TypertLookup, TypertService};
+use futures::FutureExt;
 use parking_lot::Mutex;
 use serde_json::{Map, Value as JsonValue};
 
@@ -61,8 +62,12 @@ fn assert_session_event_envelope(value: &JsonValue, index: usize) -> Result<(), 
         }
     }
     let type_ok = record.get("type").is_some_and(|value| value.is_string());
-    let seq_ok = record.get("seq").is_some_and(|value| value.as_u64().is_some());
-    let time_ok = record.get("time").is_some_and(|value| value.as_i64().is_some());
+    let seq_ok = record
+        .get("seq")
+        .is_some_and(|value| value.as_u64().is_some());
+    let time_ok = record
+        .get("time")
+        .is_some_and(|value| value.as_i64().is_some());
     let data_present = record.contains_key("data");
     let ignorable_ok = match record.get("ignorable") {
         None => true,
@@ -85,8 +90,13 @@ fn has_provider_model(value: Option<&JsonValue>) -> bool {
     let Some(pair) = value.and_then(|value| value.as_object()) else {
         return false;
     };
-    pair.get("provider").and_then(|value| value.as_str()).is_some_and(|value| !value.is_empty())
-        && pair.get("model").and_then(|value| value.as_str()).is_some_and(|value| !value.is_empty())
+    pair.get("provider")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| !value.is_empty())
+        && pair
+            .get("model")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.is_empty())
 }
 
 /// Validate adapter-default markers imported from a durable request header.
@@ -105,10 +115,18 @@ fn assert_adapter_defaults(
     let unknown_key = defaults
         .keys()
         .any(|key| key != "reasoningEffort" && key != "maxTokens");
-    let non_true_marker = defaults.values().any(|marker| marker.as_bool() != Some(true));
-    let dangling_effort = defaults.get("reasoningEffort").and_then(|marker| marker.as_bool()) == Some(true)
+    let non_true_marker = defaults
+        .values()
+        .any(|marker| marker.as_bool() != Some(true));
+    let dangling_effort = defaults
+        .get("reasoningEffort")
+        .and_then(|marker| marker.as_bool())
+        == Some(true)
         && !config.contains_key("reasoningEffort");
-    let dangling_max = defaults.get("maxTokens").and_then(|marker| marker.as_bool()) == Some(true)
+    let dangling_max = defaults
+        .get("maxTokens")
+        .and_then(|marker| marker.as_bool())
+        == Some(true)
         && !config.contains_key("maxTokens");
     if unknown_key || non_true_marker || dangling_effort || dangling_max {
         return Err(invalid());
@@ -119,13 +137,20 @@ fn assert_adapter_defaults(
 /// Reject obsolete request headers and malformed messages at the seed/load
 /// boundary (TS `assertCurrentLlmShape`).
 fn assert_current_llm_shape(record: &Map<String, JsonValue>, index: usize) -> Result<(), String> {
-    let type_ = record.get("type").and_then(|value| value.as_str()).unwrap_or("");
+    let type_ = record
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
     let data = record.get("data").and_then(|value| value.as_object());
     if type_ == "request/header" {
-        let header = data.and_then(|data| data.get("header")).and_then(|header| header.as_object());
+        let header = data
+            .and_then(|data| data.get("header"))
+            .and_then(|header| header.as_object());
         let config = header.and_then(|header| header.get("config"));
         if !has_provider_model(config) {
-            return Err(format!("seed request/header at index {index} lacks provider/model"));
+            return Err(format!(
+                "seed request/header at index {index} lacks provider/model"
+            ));
         }
         let config_record = config.and_then(|config| config.as_object()).unwrap();
         if let Some(effort) = config_record.get("reasoningEffort") {
@@ -135,7 +160,11 @@ fn assert_current_llm_shape(record: &Map<String, JsonValue>, index: usize) -> Re
                 ));
             }
         }
-        assert_adapter_defaults(header.and_then(|header| header.get("adapterDefaults")), config_record, index)?;
+        assert_adapter_defaults(
+            header.and_then(|header| header.get("adapterDefaults")),
+            config_record,
+            index,
+        )?;
     }
     if type_ != "user/message" && type_ != "assistant/message" && type_ != "tool/result" {
         return Ok(());
@@ -146,7 +175,10 @@ fn assert_current_llm_shape(record: &Map<String, JsonValue>, index: usize) -> Re
 /// Validate only the event-specific invariants needed to safely replay a
 /// message (TS `assertMessageEventShape`).
 fn assert_message_event_shape(event: &Map<String, JsonValue>, subject: &str) -> Result<(), String> {
-    let type_ = event.get("type").and_then(|value| value.as_str()).unwrap_or("");
+    let type_ = event
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
     if type_ != "user/message" && type_ != "assistant/message" && type_ != "tool/result" {
         return Ok(());
     }
@@ -163,16 +195,30 @@ fn assert_message_event_shape(event: &Map<String, JsonValue>, subject: &str) -> 
     if id.is_none_or(|id| id.is_empty()) {
         return Err(format!("{subject} lacks an identified message"));
     }
-    let expected_role = if type_ == "assistant/message" { "assistant" } else { "user" };
+    let expected_role = if type_ == "assistant/message" {
+        "assistant"
+    } else {
+        "user"
+    };
     if message_record.get("role").and_then(|value| value.as_str()) != Some(expected_role) {
-        return Err(format!("{subject} message must have role \"{expected_role}\""));
+        return Err(format!(
+            "{subject} message must have role \"{expected_role}\""
+        ));
     }
-    let source = message_record.get("source").and_then(|value| value.as_object());
-    let source_kind = source.and_then(|source| source.get("kind")).and_then(|value| value.as_str());
+    let source = message_record
+        .get("source")
+        .and_then(|value| value.as_object());
+    let source_kind = source
+        .and_then(|source| source.get("kind"))
+        .and_then(|value| value.as_str());
     if source_kind.is_none_or(|kind| kind.is_empty()) {
         return Err(format!("{subject} message has invalid source"));
     }
-    if message_record.get("content").and_then(|value| value.as_array()).is_none() {
+    if message_record
+        .get("content")
+        .and_then(|value| value.as_array())
+        .is_none()
+    {
         return Err(format!("{subject} message has invalid content"));
     }
     let source = source.unwrap();
@@ -206,7 +252,9 @@ fn assert_message_event_shape(event: &Map<String, JsonValue>, subject: &str) -> 
             .and_then(|value| value.as_array())
             .is_some();
     if !block_ok {
-        return Err(format!("{subject} message must contain one tool-result block"));
+        return Err(format!(
+            "{subject} message must contain one tool-result block"
+        ));
     }
     let tool_call_id = block.and_then(|block| block.get("toolCallId"));
     if tool_call_id != source.get("callId") {
@@ -222,12 +270,16 @@ fn assert_supported_request_header(
     location: &str,
 ) -> Result<(), String> {
     if type_ == "request/header-delta" {
-        return Err(format!("{location} uses unsupported legacy request/header-delta format"));
+        return Err(format!(
+            "{location} uses unsupported legacy request/header-delta format"
+        ));
     }
     if type_ == "request/header"
         && data.get("reason").and_then(|value| value.as_str()) == Some("fallback")
     {
-        return Err(format!("{location} uses unsupported legacy request/header reason \"fallback\""));
+        return Err(format!(
+            "{location} uses unsupported legacy request/header reason \"fallback\""
+        ));
     }
     Ok(())
 }
@@ -265,7 +317,9 @@ pub(crate) struct SessionInner {
 
 impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Session").field("id", &self.inner.id).finish()
+        f.debug_struct("Session")
+            .field("id", &self.inner.id)
+            .finish()
     }
 }
 
@@ -304,8 +358,9 @@ impl Session {
         let mut state = SessionState::default();
         if let Some(seed) = seed {
             for (index, source) in seed.iter().enumerate() {
-                let value = serde_json::to_value(source)
-                    .map_err(|_| format!("seed event at index {index} is not losslessly JSON-serializable"))?;
+                let value = serde_json::to_value(source).map_err(|_| {
+                    format!("seed event at index {index} is not losslessly JSON-serializable")
+                })?;
                 let snapshot_value = if restore {
                     value.clone()
                 } else {
@@ -314,7 +369,9 @@ impl Session {
                     })?
                 };
                 let snapshot: SessionEvent = serde_json::from_value(snapshot_value.clone())
-                    .map_err(|_| format!("seed event at index {index} has an invalid event envelope"))?;
+                    .map_err(|_| {
+                        format!("seed event at index {index} has an invalid event envelope")
+                    })?;
                 assert_session_event_envelope(&snapshot_value, index)?;
                 assert_supported_request_header(
                     &snapshot.type_,
@@ -337,15 +394,17 @@ impl Session {
         let first_live_seq = state.log.len();
         let header = match header {
             Some(header) => {
-                let value = serde_json::to_value(header)
-                    .map_err(|_| "session header is not losslessly JSON-serializable".to_string())?;
+                let value = serde_json::to_value(header).map_err(|_| {
+                    "session header is not losslessly JSON-serializable".to_string()
+                })?;
                 validate_session_header(&id, &value)?
             }
             None => snapshot_session_header(&id, None)?,
         };
         // Appended here so the marker is already in `events` when a backend
         // captures the creation seed; re-marking is skipped.
-        if had_seed && state.log.last().map(|event| event.type_.as_str()) != Some("session/end-seed")
+        if had_seed
+            && state.log.last().map(|event| event.type_.as_str()) != Some("session/end-seed")
         {
             let event = SessionEvent {
                 type_: "session/end-seed".to_string(),
@@ -437,7 +496,10 @@ impl Session {
         let state = &mut *self.inner.state.lock();
         let nodes = state.surface.nodes(&state.log)?;
         let replace_generation = state.surface.replace_generation(&state.log)?;
-        Ok(crate::surface::SessionSurface { nodes, replace_generation })
+        Ok(crate::surface::SessionSurface {
+            nodes,
+            replace_generation,
+        })
     }
 
     /// Append one typed event to the log and notify observers via the
@@ -451,13 +513,18 @@ impl Session {
         let data_snapshot = snapshot_json_value(&data).ok_or_else(|| {
             format!("session event \"{type_}\" carries non-JSON-serializable data")
         })?;
-        assert_supported_request_header(type_, &data_snapshot, &format!("session event \"{type_}\""))?;
+        assert_supported_request_header(
+            type_,
+            &data_snapshot,
+            &format!("session event \"{type_}\""),
+        )?;
         let entry = attachment_of(self);
-        if entry.as_ref().is_some_and(|entry| entry.is_appending()) {
-            return Err("session append cannot reenter while another append is being published".to_string());
-        }
-        if let Some(entry) = &entry {
-            entry.set_appending(true);
+        if let Some(entry) = &entry
+            && !entry.try_begin_append()
+        {
+            return Err(
+                "session append cannot reenter while another append is being published".to_string(),
+            );
         }
         let outcome = (|| -> Result<(SessionEvent, Vec<(Context, Arc<Listener>)>), String> {
             let state = &mut *self.inner.state.lock();
@@ -476,11 +543,25 @@ impl Session {
             let listeners: Vec<(Context, Arc<Listener>)> = match &entry {
                 Some(entry) => {
                     let dispatch_ctx = entry.emit_ctx.with_filter(entry.carrier.filter.clone());
-                    let args: Vec<ArcValue> = vec![arc(self.clone()), arc(event.clone())];
-                    entry
-                        .emit_ctx
-                        .events
-                        .collect(DispatchMode::Emit, Some(&dispatch_ctx), "session/event", &args)
+                    let prefix = match &state.events_snapshot {
+                        Some(prefix) => prefix.clone(),
+                        None => {
+                            let prefix = Arc::new(state.log.clone());
+                            state.events_snapshot = Some(prefix.clone());
+                            prefix
+                        }
+                    };
+                    // The third argument is internal-only authority context:
+                    // the immutable durable prefix before `event`. Public
+                    // session/event observers still receive two arguments.
+                    let args: Vec<ArcValue> =
+                        vec![arc(self.clone()), arc(event.clone()), arc(prefix)];
+                    entry.emit_ctx.events.collect(
+                        DispatchMode::Emit,
+                        Some(&dispatch_ctx),
+                        "session/event",
+                        &args,
+                    )
                 }
                 None => Vec::new(),
             };
@@ -492,8 +573,7 @@ impl Session {
             Ok(result) => result,
             Err(error) => {
                 if let Some(entry) = &entry {
-                    entry.set_appending(false);
-                    if entry.is_detach_requested() && !entry.is_announcing() {
+                    if entry.finish_append() {
                         entry.detach_now();
                     }
                 }
@@ -511,8 +591,7 @@ impl Session {
                 &args,
                 &listeners,
             );
-            entry.set_appending(false);
-            if entry.is_detach_requested() && !entry.is_announcing() {
+            if entry.finish_append() {
                 entry.detach_now();
             }
         }
@@ -618,7 +697,10 @@ fn invoke_contained_session_observers(
         })) {
             Ok(_) => {}
             Err(payload) => {
-                logger.warn(vec![arc(format!("{prefix} threw: {}", render_panic(payload)))]);
+                logger.warn(vec![arc(format!(
+                    "{prefix} threw: {}",
+                    render_panic(payload)
+                ))]);
             }
         }
     }
@@ -658,6 +740,21 @@ impl SessionEntry {
         self.flags.lock().appending
     }
 
+    fn try_begin_append(&self) -> bool {
+        let mut flags = self.flags.lock();
+        if flags.appending {
+            return false;
+        }
+        flags.appending = true;
+        true
+    }
+
+    fn finish_append(&self) -> bool {
+        let mut flags = self.flags.lock();
+        flags.appending = false;
+        flags.detach_requested && !flags.announcing
+    }
+
     fn is_detach_requested(&self) -> bool {
         self.flags.lock().detach_requested
     }
@@ -668,10 +765,6 @@ impl SessionEntry {
 
     fn set_announcing(&self, value: bool) {
         self.flags.lock().announcing = value;
-    }
-
-    fn set_appending(&self, value: bool) {
-        self.flags.lock().appending = value;
     }
 
     fn set_detach_requested(&self, value: bool) {
@@ -785,7 +878,8 @@ impl SessionStore {
                 let store = Arc::clone(&store_for_inject);
                 let type_ctx = type_ctx.clone();
                 Box::pin(async move {
-                    if let Some(typert) = type_ctx.get_typed::<Arc<TypertService>>("typert", false) {
+                    if let Some(typert) = type_ctx.get_typed::<Arc<TypertService>>("typert", false)
+                    {
                         let disposer = typert.lookups.register(
                             "session",
                             TypertLookup {
@@ -793,7 +887,8 @@ impl SessionStore {
                                 parameter: "session".to_string(),
                                 wire: "sessionId".to_string(),
                                 host_type_symbol: "@deepseek-ai/dsh-session#Session".to_string(),
-                                wire_type_symbol: "@deepseek-ai/dsh-session/types#SessionId".to_string(),
+                                wire_type_symbol: "@deepseek-ai/dsh-session/types#SessionId"
+                                    .to_string(),
                                 resolve: Arc::new(move |id| {
                                     store.get(&session_id(id)).map(|session| arc(session))
                                 }),
@@ -854,7 +949,10 @@ impl SessionStore {
             },
         };
         if self.store.lock().contains_key(session_id.as_str()) {
-            return Err(format!("session \"{}\" already exists", session_id.as_str()));
+            return Err(format!(
+                "session \"{}\" already exists",
+                session_id.as_str()
+            ));
         }
         let meta = &options.meta;
         let header = SessionHeader {
@@ -889,33 +987,35 @@ impl SessionStore {
         {
             let attachments = ATTACHMENTS.lock();
             if attachments.contains_key(&(Arc::as_ptr(&session.inner) as *const () as usize)) {
-                return Err(format!("session \"{}\" is already attached to a store", id.as_str()));
+                return Err(format!(
+                    "session \"{}\" is already attached to a store",
+                    id.as_str()
+                ));
             }
         }
 
         let store_map = self.store.clone();
-        let detach_fn: Arc<dyn Fn(&Arc<SessionEntry>) + Send + Sync> =
-            Arc::new(move |entry| {
-                entry.set_detach_requested(false);
-                // A stale capability cannot remove observers or storage
-                // belonging to a later same-id lifecycle.
-                {
-                    let mut store = store_map.lock();
-                    let is_current = store
-                        .get(entry.id.as_str())
-                        .is_some_and(|live| Arc::ptr_eq(live, entry));
-                    if !is_current {
-                        return;
-                    }
-                    store.remove(entry.id.as_str());
+        let detach_fn: Arc<dyn Fn(&Arc<SessionEntry>) + Send + Sync> = Arc::new(move |entry| {
+            entry.set_detach_requested(false);
+            // A stale capability cannot remove observers or storage
+            // belonging to a later same-id lifecycle.
+            {
+                let mut store = store_map.lock();
+                let is_current = store
+                    .get(entry.id.as_str())
+                    .is_some_and(|live| Arc::ptr_eq(live, entry));
+                if !is_current {
+                    return;
                 }
-                ATTACHMENTS
-                    .lock()
-                    .remove(&(Arc::as_ptr(&entry.session.inner) as *const () as usize));
-                if entry.is_announced() {
-                    emit_disposed(entry);
-                }
-            });
+                store.remove(entry.id.as_str());
+            }
+            ATTACHMENTS
+                .lock()
+                .remove(&(Arc::as_ptr(&entry.session.inner) as *const () as usize));
+            if entry.is_announced() {
+                emit_disposed(entry);
+            }
+        });
 
         let entry = Arc::new(SessionEntry {
             id: id.clone(),
@@ -925,7 +1025,9 @@ impl SessionStore {
             flags: Mutex::new(EntryFlags::default()),
             detach: detach_fn,
         });
-        self.store.lock().insert(id.as_str().to_string(), Arc::clone(&entry));
+        self.store
+            .lock()
+            .insert(id.as_str().to_string(), Arc::clone(&entry));
         ATTACHMENTS.lock().insert(
             Arc::as_ptr(&session.inner) as *const () as usize,
             Arc::downgrade(&entry),
@@ -956,17 +1058,22 @@ impl SessionStore {
     pub async fn announce(&self, session: &Session) -> Result<(), String> {
         let entry = self.live_entry_for(session)?;
         if entry.is_announced() || entry.is_announcing() {
-            return Err(format!("session \"{}\" was already announced", entry.id.as_str()));
+            return Err(format!(
+                "session \"{}\" was already announced",
+                entry.id.as_str()
+            ));
         }
         // Mark before emit so rollback pairs the creation with disposal.
         entry.set_announced(true);
         entry.set_announcing(true);
         let dispatch_ctx = entry.emit_ctx.with_filter(entry.carrier.filter.clone());
         let args: Vec<ArcValue> = vec![arc(session.clone())];
-        let listeners = entry
-            .emit_ctx
-            .events
-            .collect(DispatchMode::Emit, Some(&dispatch_ctx), "session/created", &args);
+        let listeners = entry.emit_ctx.events.collect(
+            DispatchMode::Emit,
+            Some(&dispatch_ctx),
+            "session/created",
+            &args,
+        );
         let mut veto: Option<String> = None;
         for (listener_ctx, callback) in &listeners {
             let future = callback(listener_ctx, args.clone());
@@ -996,19 +1103,24 @@ impl SessionStore {
         let entry = self.live_entry_for(session)?;
         let dispatch_ctx = entry.emit_ctx.with_filter(entry.carrier.filter.clone());
         let args: Vec<ArcValue> = vec![arc(session.clone())];
-        let listeners = entry
-            .emit_ctx
-            .events
-            .collect(DispatchMode::Parallel, Some(&dispatch_ctx), "session/flush", &args);
+        let listeners = entry.emit_ctx.events.collect(
+            DispatchMode::Parallel,
+            Some(&dispatch_ctx),
+            "session/flush",
+            &args,
+        );
         let mut futures: Vec<cordis::BoxFuture<'static, Result<(), String>>> = Vec::new();
         for (listener_ctx, callback) in &listeners {
-            let future = callback(listener_ctx, args.clone());
+            let future = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                callback(listener_ctx, args.clone())
+            }));
             futures.push(Box::pin(async move {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    futures::executor::block_on(future)
-                }))
-                .map_err(|payload| render_panic(payload))
-                .map(|_| ())
+                let future = future.map_err(render_panic)?;
+                std::panic::AssertUnwindSafe(future)
+                    .catch_unwind()
+                    .await
+                    .map_err(render_panic)
+                    .map(|_| ())
             }));
         }
         let results = futures::future::join_all(futures).await;
@@ -1039,12 +1151,19 @@ impl SessionStore {
 
     /// Look up a live session by id.
     pub fn get(&self, id: &SessionId) -> Option<Session> {
-        self.store.lock().get(id.as_str()).map(|entry| entry.session.clone())
+        self.store
+            .lock()
+            .get(id.as_str())
+            .map(|entry| entry.session.clone())
     }
 
     /// All live sessions, in creation order.
     pub fn list(&self) -> Vec<Session> {
-        self.store.lock().values().map(|entry| entry.session.clone()).collect()
+        self.store
+            .lock()
+            .values()
+            .map(|entry| entry.session.clone())
+            .collect()
     }
 
     /// Create a live child session from a stable prefix of a live source
@@ -1077,7 +1196,10 @@ impl SessionStore {
         self.create(
             caller,
             child_session_id,
-            Some(CreateSessionOptions { seed: Some(seed), meta: Some(meta) }),
+            Some(CreateSessionOptions {
+                seed: Some(seed),
+                meta: Some(meta),
+            }),
         )
         .await
         .map_err(ForkError::Store)
@@ -1171,10 +1293,12 @@ impl SessionStore {
 fn emit_disposed(entry: &Arc<SessionEntry>) {
     let dispatch_ctx = entry.emit_ctx.with_filter(entry.carrier.filter.clone());
     let args: Vec<ArcValue> = vec![arc(entry.session.clone())];
-    let listeners = entry
-        .emit_ctx
-        .events
-        .collect(DispatchMode::Emit, Some(&dispatch_ctx), "session/disposed", &args);
+    let listeners = entry.emit_ctx.events.collect(
+        DispatchMode::Emit,
+        Some(&dispatch_ctx),
+        "session/disposed",
+        &args,
+    );
     invoke_contained_session_observers(
         &entry.emit_ctx,
         "session/disposed",
@@ -1212,7 +1336,10 @@ mod tests {
             .append(
                 "user/message",
                 user_data(id, text),
-                Some(SurfaceIntent { surface_op: SurfaceOp::Append, source_event_seqs: None }),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
             )
             .unwrap()
     }
@@ -1355,22 +1482,32 @@ mod tests {
             source_event_seqs: None,
         };
         let error = Session::create(session_id("s1"), Some(vec![legacy]), None).unwrap_err();
-        assert!(error.contains("unsupported legacy request/header-delta format"), "{error}");
+        assert!(
+            error.contains("unsupported legacy request/header-delta format"),
+            "{error}"
+        );
     }
 
     #[test]
     fn append_validates_data_and_surface() {
         let session = Session::create(session_id("s1"), None, None).unwrap();
         // non-JSON data (negative zero) rejected at the source
-        let negative_zero =
-            serde_json::Number::from_f64(-0.0).map(JsonValue::Number).unwrap();
+        let negative_zero = serde_json::Number::from_f64(-0.0)
+            .map(JsonValue::Number)
+            .unwrap();
         let error = session
-            .append("turn/start", serde_json::json!({"turn": 1, "bad": negative_zero}), None)
+            .append(
+                "turn/start",
+                serde_json::json!({"turn": 1, "bad": negative_zero}),
+                None,
+            )
             .unwrap_err();
         assert!(error.contains("non-JSON-serializable"), "{error}");
 
         // surface-eligible event without a marker rejected
-        let error = session.append("user/message", user_data("m1", "x"), None).unwrap_err();
+        let error = session
+            .append("user/message", user_data("m1", "x"), None)
+            .unwrap_err();
         assert!(error.contains("requires a surfaceOp marker"), "{error}");
 
         // marker on a log-only event rejected
@@ -1378,7 +1515,10 @@ mod tests {
             .append(
                 "turn/start",
                 serde_json::json!({"turn": 1}),
-                Some(SurfaceIntent { surface_op: SurfaceOp::Append, source_event_seqs: None }),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
             )
             .unwrap_err();
         assert!(error.contains("not surface-eligible"), "{error}");
@@ -1400,11 +1540,21 @@ mod tests {
         // the events snapshot is reused until the next append
         let snapshot_a = session.events();
         let snapshot_b = session.events();
-        assert!(Arc::ptr_eq(&snapshot_a, &snapshot_b), "no append → same snapshot");
+        assert!(
+            Arc::ptr_eq(&snapshot_a, &snapshot_b),
+            "no append → same snapshot"
+        );
         append_user(&session, "m3", "c");
         let snapshot_c = session.events();
-        assert!(!Arc::ptr_eq(&snapshot_a, &snapshot_c), "append → fresh snapshot");
-        assert_eq!(snapshot_a.len(), 2, "previously returned snapshots never grow");
+        assert!(
+            !Arc::ptr_eq(&snapshot_a, &snapshot_c),
+            "append → fresh snapshot"
+        );
+        assert_eq!(
+            snapshot_a.len(),
+            2,
+            "previously returned snapshots never grow"
+        );
         assert_eq!(snapshot_c.len(), 3);
 
         // returned event.data is the logged snapshot, not the caller's input
@@ -1414,7 +1564,10 @@ mod tests {
             .append(
                 "user/message",
                 input.clone(),
-                Some(SurfaceIntent { surface_op: SurfaceOp::Append, source_event_seqs: None }),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
             )
             .unwrap();
         input["content"][0]["text"] = serde_json::json!("mutated");
@@ -1454,7 +1607,9 @@ mod tests {
                     1,
                     1,
                     &dsh_llm::create_assistant_message(
-                        vec![ContentBlock::Text { text: "hi".to_string() }],
+                        vec![ContentBlock::Text {
+                            text: "hi".to_string(),
+                        }],
                         dsh_llm::ModelMessageSource {
                             provider: "p".to_string(),
                             model: "m".to_string(),
@@ -1467,7 +1622,10 @@ mod tests {
                         ..Default::default()
                     }),
                 ),
-                Some(SurfaceIntent { surface_op: SurfaceOp::Append, source_event_seqs: None }),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
             )
             .unwrap();
 
@@ -1487,7 +1645,10 @@ mod tests {
                         "source": {"kind": "model", "provider": "p", "model": "m"},
                     },
                 }),
-                Some(SurfaceIntent { surface_op: SurfaceOp::Append, source_event_seqs: None }),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
             )
             .unwrap();
         assert_eq!(session.derive_messages().unwrap().len(), 2);
@@ -1600,7 +1761,10 @@ mod tests {
         let session = store.create(&ctx, None, None).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(created.load(MemOrder::SeqCst), 1);
-        assert_eq!(store.get(session.id()).map(|s| s.id().clone()), Some(session.id().clone()));
+        assert_eq!(
+            store.get(session.id()).map(|s| s.id().clone()),
+            Some(session.id().clone())
+        );
         assert_eq!(store.list().len(), 1);
 
         append_user(&session, "m1", "hello");
@@ -1617,9 +1781,11 @@ mod tests {
 
     #[test]
     fn probe_panic_payload_through_block_on() {
-        let future: cordis::BoxFuture<'static, Option<ArcValue>> = Box::pin(async { panic!("veto") });
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| futures::executor::block_on(future)));
+        let future: cordis::BoxFuture<'static, Option<ArcValue>> =
+            Box::pin(async { panic!("veto") });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            futures::executor::block_on(future)
+        }));
         let payload = result.unwrap_err();
         assert_eq!(render_panic(payload), "veto");
     }
@@ -1647,26 +1813,41 @@ mod tests {
         // a panicking creation listener vetoes publication
         ctx.on(
             "session/created",
-            Arc::new(|_ctx, _args| Box::pin(async move {
-                panic!("veto");
-            })),
+            Arc::new(|_ctx, _args| {
+                Box::pin(async move {
+                    panic!("veto");
+                })
+            }),
             cordis::EventOptions::default(),
         )
         .await;
 
-        let error = store.create(&ctx, Some(session_id("vetoed")), None).await.unwrap_err();
+        let error = store
+            .create(&ctx, Some(session_id("vetoed")), None)
+            .await
+            .unwrap_err();
         assert_eq!(error, "veto");
-        assert!(store.get(&session_id("vetoed")).is_none(), "attach rolled back");
+        assert!(
+            store.get(&session_id("vetoed")).is_none(),
+            "attach rolled back"
+        );
         assert_eq!(store.list().len(), 0);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert_eq!(disposed.load(MemOrder::SeqCst), 1, "paired disposal edge emitted");
+        assert_eq!(
+            disposed.load(MemOrder::SeqCst),
+            1,
+            "paired disposal edge emitted"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn duplicate_ids_reject_at_prepare_and_enter() {
         let ctx = Context::root();
         let store = SessionStore::install(&ctx);
-        let session = store.create(&ctx, Some(session_id("dup")), None).await.unwrap();
+        let session = store
+            .create(&ctx, Some(session_id("dup")), None)
+            .await
+            .unwrap();
 
         let error = store
             .create(&ctx, Some(session_id("dup")), None)
@@ -1703,21 +1884,127 @@ mod tests {
             cordis::EventOptions::default(),
         )
         .await;
-        assert!(store.flush(&session).await.unwrap(), "listener participated");
+        assert!(
+            store.flush(&session).await.unwrap(),
+            "listener participated"
+        );
         assert_eq!(flushed.load(MemOrder::SeqCst), 1);
 
         // a failing listener rejects the flush after every listener settles
         ctx.on(
             "session/flush",
-            Arc::new(|_ctx, _args| Box::pin(async move {
-                panic!("disk full");
-            })),
+            Arc::new(|_ctx, _args| {
+                Box::pin(async move {
+                    panic!("disk full");
+                })
+            }),
             cordis::EventOptions::default(),
         )
         .await;
         let error = store.flush(&session).await.unwrap_err();
         assert_eq!(error, "disk full");
-        assert_eq!(flushed.load(MemOrder::SeqCst), 2, "every listener still ran");
+        assert_eq!(
+            flushed.load(MemOrder::SeqCst),
+            2,
+            "every listener still ran"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_contains_synchronous_callback_panics_and_runs_other_listeners() {
+        let ctx = Context::root();
+        let store = SessionStore::install(&ctx);
+        let session = store.create(&ctx, None, None).await.unwrap();
+        let completed = Arc::new(AtomicU32::new(0));
+
+        for _ in 0..2 {
+            let completed = completed.clone();
+            ctx.on(
+                "session/flush",
+                Arc::new(move |_ctx, _args| {
+                    let completed = completed.clone();
+                    Box::pin(async move {
+                        completed.fetch_add(1, MemOrder::SeqCst);
+                        None
+                    })
+                }),
+                cordis::EventOptions::default(),
+            )
+            .await;
+        }
+        ctx.on(
+            "session/flush",
+            Arc::new(
+                |_ctx, _args| -> cordis::BoxFuture<'static, Option<ArcValue>> {
+                    panic!("sync callback panic")
+                },
+            ),
+            cordis::EventOptions::default().prepend(true),
+        )
+        .await;
+
+        let error = store
+            .flush(&session)
+            .await
+            .expect_err("sync panic must be contained");
+        assert_eq!(error, "sync callback panic");
+        assert_eq!(
+            completed.load(MemOrder::SeqCst),
+            2,
+            "every non-panicking listener must still run"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn flush_does_not_block_tokio_tasks_needed_by_async_listeners() {
+        let ctx = Context::root();
+        let store = SessionStore::install(&ctx);
+        let session = store.create(&ctx, None, None).await.unwrap();
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fallback_used = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let notify = Arc::new(tokio::sync::Notify::new());
+
+        let released_for_listener = released.clone();
+        let notify_for_listener = notify.clone();
+        ctx.on(
+            "session/flush",
+            Arc::new(move |_ctx, _args| {
+                let released = released_for_listener.clone();
+                let notify = notify_for_listener.clone();
+                Box::pin(async move {
+                    let released_for_task = released.clone();
+                    let notify_for_task = notify.clone();
+                    tokio::spawn(async move {
+                        released_for_task.store(true, MemOrder::SeqCst);
+                        notify_for_task.notify_waiters();
+                    });
+                    while !released.load(MemOrder::SeqCst) {
+                        notify.notified().await;
+                    }
+                    None
+                })
+            }),
+            cordis::EventOptions::default(),
+        )
+        .await;
+
+        let released_for_fallback = released.clone();
+        let fallback_for_thread = fallback_used.clone();
+        let notify_for_fallback = notify.clone();
+        let fallback = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if !released_for_fallback.swap(true, MemOrder::SeqCst) {
+                fallback_for_thread.store(true, MemOrder::SeqCst);
+                notify_for_fallback.notify_waiters();
+            }
+        });
+
+        assert!(store.flush(&session).await.unwrap());
+        fallback.join().expect("fallback thread");
+        assert!(
+            !fallback_used.load(MemOrder::SeqCst),
+            "flush synchronously blocked the Tokio task required by its listener"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1727,6 +2014,40 @@ mod tests {
         let detached = Session::create(session_id("detached"), None, None).unwrap();
         let error = store.flush(&detached).await.unwrap_err();
         assert!(error.contains("not live in this store"), "{error}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn append_publication_claim_is_atomic_across_threads() {
+        let session =
+            Session::create(session_id("append-claim-race"), None, None).expect("session");
+        let ctx = Context::root();
+        let store = SessionStore::install(&ctx);
+        let _detach = store.enter(&session).expect("enter");
+        let entry = attachment_of(&session).expect("attachment");
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let results = Arc::new(Mutex::new(Vec::new()));
+        let mut threads = Vec::new();
+        for _ in 0..2 {
+            let entry = entry.clone();
+            let barrier = barrier.clone();
+            let results = results.clone();
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                let claimed = entry.try_begin_append();
+                results.lock().push(claimed);
+                barrier.wait();
+                if claimed {
+                    entry.finish_append();
+                }
+            }));
+        }
+        barrier.wait();
+        barrier.wait();
+        for thread in threads {
+            thread.join().expect("claim thread");
+        }
+        let claims = results.lock().clone();
+        assert_eq!(claims.iter().filter(|claimed| **claimed).count(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1766,14 +2087,22 @@ mod tests {
     async fn fork_creates_seeded_child() {
         let ctx = Context::root();
         let store = SessionStore::install(&ctx);
-        let parent = store.create(&ctx, Some(session_id("parent")), None).await.unwrap();
+        let parent = store
+            .create(&ctx, Some(session_id("parent")), None)
+            .await
+            .unwrap();
         append_turn_boundary(&parent, "turn/start", 1, false);
         append_user(&parent, "m1", "a");
         append_user(&parent, "m2", "b");
         append_turn_boundary(&parent, "turn/end", 1, true);
 
         let child = store
-            .fork(&ctx, SessionForkSource::Session(parent.clone()), Some(3), Some(session_id("child")))
+            .fork(
+                &ctx,
+                SessionForkSource::Session(parent.clone()),
+                Some(3),
+                Some(session_id("child")),
+            )
             .await
             .unwrap();
         assert_eq!(child.id().as_str(), "child");
@@ -1794,7 +2123,10 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             error,
-            ForkError::Fork(SessionForkError { code: SessionForkErrorCode::SessionNotLive, .. })
+            ForkError::Fork(SessionForkError {
+                code: SessionForkErrorCode::SessionNotLive,
+                ..
+            })
         ));
     }
 
@@ -1802,13 +2134,21 @@ mod tests {
     async fn fork_boundary_errors() {
         let ctx = Context::root();
         let store = SessionStore::install(&ctx);
-        let parent = store.create(&ctx, Some(session_id("parent")), None).await.unwrap();
+        let parent = store
+            .create(&ctx, Some(session_id("parent")), None)
+            .await
+            .unwrap();
         append_turn_boundary(&parent, "turn/start", 1, false);
         append_user(&parent, "m1", "a");
 
         // boundary beyond the log
         let error = store
-            .fork(&ctx, SessionForkSource::Id(session_id("parent")), Some(5), None)
+            .fork(
+                &ctx,
+                SessionForkSource::Id(session_id("parent")),
+                Some(5),
+                None,
+            )
             .await
             .unwrap_err();
         match error {
@@ -1820,7 +2160,12 @@ mod tests {
 
         // unknown source id
         let error = store
-            .fork(&ctx, SessionForkSource::Id(session_id("missing")), None, None)
+            .fork(
+                &ctx,
+                SessionForkSource::Id(session_id("missing")),
+                None,
+                None,
+            )
             .await
             .unwrap_err();
         match error {
@@ -1832,7 +2177,12 @@ mod tests {
 
         // boundary inside an open turn
         let error = store
-            .fork(&ctx, SessionForkSource::Id(session_id("parent")), Some(1), None)
+            .fork(
+                &ctx,
+                SessionForkSource::Id(session_id("parent")),
+                Some(1),
+                None,
+            )
             .await
             .unwrap_err();
         match error {
@@ -1843,7 +2193,10 @@ mod tests {
         }
 
         // taken child id
-        let _child = store.create(&ctx, Some(session_id("taken")), None).await.unwrap();
+        let _child = store
+            .create(&ctx, Some(session_id("taken")), None)
+            .await
+            .unwrap();
         let error = store
             .fork(
                 &ctx,
@@ -1882,11 +2235,18 @@ mod tests {
         .await;
 
         let session = store.prepare(Some(session_id("tx")), None).unwrap();
-        assert!(store.get(&session_id("tx")).is_none(), "prepared session is not live");
+        assert!(
+            store.get(&session_id("tx")).is_none(),
+            "prepared session is not live"
+        );
 
         let detach = store.enter(&session).unwrap();
         assert!(store.get(&session_id("tx")).is_some());
-        assert_eq!(announced.load(MemOrder::SeqCst), 0, "enter does not announce");
+        assert_eq!(
+            announced.load(MemOrder::SeqCst),
+            0,
+            "enter does not announce"
+        );
 
         store.announce(&session).await.unwrap();
         assert_eq!(announced.load(MemOrder::SeqCst), 1);
@@ -1920,7 +2280,11 @@ mod tests {
         let quiet_detach = store.enter(&quiet).unwrap();
         quiet_detach().await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert_eq!(disposed.load(MemOrder::SeqCst), 1, "no second disposal edge");
+        assert_eq!(
+            disposed.load(MemOrder::SeqCst),
+            1,
+            "no second disposal edge"
+        );
     }
 
     #[test]
@@ -1950,7 +2314,10 @@ mod tests {
         assert_eq!(session.header().created_at, 5);
 
         // a mismatched header rejects
-        let bad_header = SessionHeader { id: session_id("other"), ..header.clone() };
+        let bad_header = SessionHeader {
+            id: session_id("other"),
+            ..header.clone()
+        };
         assert!(Session::from_restore(session_id("r1"), Vec::new(), &bad_header).is_err());
     }
 

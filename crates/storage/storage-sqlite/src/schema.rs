@@ -64,7 +64,12 @@ fn create_database_file(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        match OpenOptions::new().write(true).create_new(true).mode(0o600).open(path) {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+        {
             Ok(handle) => {
                 drop(handle);
                 Ok(())
@@ -138,7 +143,8 @@ fn configure_database(
     path: &str,
     journal_mode: JournalMode,
 ) -> Result<(), StorageError> {
-    db.execute_batch("PRAGMA foreign_keys = ON").map_err(sql_error)?;
+    db.execute_batch("PRAGMA foreign_keys = ON")
+        .map_err(sql_error)?;
     // The validated enum is safe to interpolate into a non-bindable PRAGMA.
     db.execute_batch(&format!("PRAGMA journal_mode = {}", journal_mode.pragma()))
         .map_err(sql_error)?;
@@ -170,8 +176,10 @@ fn configure_database(
     if on_disk == 0 {
         // Stamp fresh databases LAST: the stamp asserts the layout is
         // complete, so a failure above must leave the medium unstamped.
-        db.execute_batch(&format!("PRAGMA user_version = {STORAGE_SQLITE_SCHEMA_VERSION}"))
-            .map_err(sql_error)?;
+        db.execute_batch(&format!(
+            "PRAGMA user_version = {STORAGE_SQLITE_SCHEMA_VERSION}"
+        ))
+        .map_err(sql_error)?;
     }
     Ok(())
 }
@@ -189,7 +197,10 @@ mod tests {
 
     #[test]
     fn record_table_names_are_safe_identifiers() {
-        assert_eq!(record_table_name("specimen", "records"), "u_specimen_records");
+        assert_eq!(
+            record_table_name("specimen", "records"),
+            "u_specimen_records"
+        );
     }
 
     #[test]
@@ -223,7 +234,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         {
             let db = Connection::open(&path).expect("open");
-            db.execute_batch("PRAGMA user_version = 999").expect("stamp");
+            db.execute_batch("PRAGMA user_version = 999")
+                .expect("stamp");
         }
         let error = open_database(path.to_string_lossy().as_ref(), JournalMode::default())
             .err()

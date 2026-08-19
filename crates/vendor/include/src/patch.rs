@@ -30,7 +30,10 @@ fn index_entries(
         if let Some(id) = entry.get("id").and_then(|value| value.as_str()) {
             map.insert(id.to_string(), path.clone());
         }
-        let is_group = entry.get("group").and_then(|value| value.as_bool()).unwrap_or(false);
+        let is_group = entry
+            .get("group")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
         if is_group {
             if let Some(list) = entry.get("config").and_then(|value| value.as_array()) {
                 let mut child = path.clone();
@@ -80,9 +83,15 @@ pub fn apply_entry_patches(
     index_entries(&data, &[], 0, &mut entry_map);
 
     for patch in patches {
-        let id = patch.get("id").and_then(|value| value.as_str()).map(|s| s.to_string());
+        let id = patch
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(|s| s.to_string());
         let insert = patch.get("insert").and_then(|value| value.as_array());
-        let name = patch.get("name").and_then(|value| value.as_str()).map(|s| s.to_string());
+        let name = patch
+            .get("name")
+            .and_then(|value| value.as_str())
+            .map(|s| s.to_string());
 
         if let Some(insert) = insert {
             if let Some(id) = &id {
@@ -91,16 +100,15 @@ pub fn apply_entry_patches(
                     continue;
                 };
                 let target = get_mut(&mut data, &path);
-                let is_group =
-                    target.get("group").and_then(|value| value.as_bool()).unwrap_or(false);
+                let is_group = target
+                    .get("group")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
                 if !is_group {
                     warn(&format!("patch insert: entry {id} is not a group"));
                     continue;
                 }
-                if !target
-                    .get("config")
-                    .is_some_and(|config| config.is_array())
-                {
+                if !target.get("config").is_some_and(|config| config.is_array()) {
                     target["config"] = Value::Array(Vec::new());
                 }
                 let config = target
@@ -175,7 +183,9 @@ mod tests {
     use serde_json::json;
 
     fn patch(map: &[(&str, Value)]) -> PatchOptions {
-        map.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+        map.iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
     }
 
     fn noop_warn(_message: &str) {}
@@ -190,11 +200,13 @@ mod tests {
         ]);
         let patches = vec![
             patch(&[("id", json!("a")), ("config", json!(9))]),
-            patch(&[("id", json!("g")), ("insert", json!([{ "id": "c", "name": "p3" }]))]),
+            patch(&[
+                ("id", json!("g")),
+                ("insert", json!([{ "id": "c", "name": "p3" }])),
+            ]),
             patch(&[("id", json!("c")), ("config", json!(7))]),
         ];
-        let result =
-            apply_entry_patches_json(&data, Some(&patches), &mut noop_warn).unwrap();
+        let result = apply_entry_patches_json(&data, Some(&patches), &mut noop_warn).unwrap();
         assert_eq!(result[0]["config"], json!(9));
         let group_children = result[1]["config"].as_array().unwrap();
         assert_eq!(group_children.len(), 2);
@@ -207,11 +219,9 @@ mod tests {
         let data = json!([{ "id": "a", "name": "p1" }]);
         let mut warnings = Vec::new();
         let patches = vec![patch(&[("id", json!("nope")), ("config", json!(1))])];
-        let result = apply_entry_patches_json(
-            &data,
-            Some(&patches),
-            &mut |message| warnings.push(message.to_string()),
-        )
+        let result = apply_entry_patches_json(&data, Some(&patches), &mut |message| {
+            warnings.push(message.to_string())
+        })
         .unwrap();
         assert_eq!(result, data);
         assert_eq!(warnings.len(), 1);
@@ -226,8 +236,7 @@ mod tests {
             ("name", json!("other")),
             ("config", json!(2)),
         ])];
-        let result =
-            apply_entry_patches_json(&data, Some(&patches), &mut noop_warn).unwrap();
+        let result = apply_entry_patches_json(&data, Some(&patches), &mut noop_warn).unwrap();
         assert_eq!(result[0]["config"], json!(1));
     }
 
@@ -235,8 +244,7 @@ mod tests {
     fn unknown_overrides_apply() {
         let data = json!([{ "id": "a", "name": "p1" }]);
         let patches = vec![patch(&[("id", json!("a")), ("customKey", json!("v"))])];
-        let result =
-            apply_entry_patches_json(&data, Some(&patches), &mut noop_warn).unwrap();
+        let result = apply_entry_patches_json(&data, Some(&patches), &mut noop_warn).unwrap();
         assert_eq!(result[0]["customKey"], json!("v"));
     }
 }

@@ -7,9 +7,7 @@ use cordis::Context;
 use dsh_host_apiproxy::{
     ApiProxyDefaults, ApiProxyService, Body, CarrierRequest, to_fetch_handler,
 };
-use dsh_session::{
-    CreateSessionMeta, CreateSessionOptions, SessionStore, session_id,
-};
+use dsh_session::{CreateSessionMeta, CreateSessionOptions, SessionStore, session_id};
 
 fn run<F: std::future::Future>(future: F) -> F::Output {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -97,9 +95,12 @@ fn the_host_stream_forwards_session_added_and_remote_events() {
         assert_eq!(payload["payload"]["cwd"], "D:\\proj");
 
         // An allowlisted host event rides one verbatim wrapper frame.
-        let _ = ctx.emit("llm/adapters-updated", vec![cordis::arc(
-            serde_json::json!({ "provider": "deepseek-official" }),
-        )]);
+        let _ = ctx.emit(
+            "llm/adapters-updated",
+            vec![cordis::arc(
+                serde_json::json!({ "provider": "deepseek-official" }),
+            )],
+        );
         let remote = frames.next().await.expect("remote-event frame");
         let payload = frame_payload(remote);
         assert_eq!(payload["method"], "host/remote-event");

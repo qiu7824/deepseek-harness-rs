@@ -67,12 +67,20 @@ impl SubprocessHandle for StubHandle {
     }
 
     fn done(&self) -> BoxFuture<'static, Result<SubprocessOutcome, String>> {
-        Box::pin(async { Ok(SubprocessOutcome { exit_code: Some(0), signal: None }) })
+        Box::pin(async {
+            Ok(SubprocessOutcome {
+                exit_code: Some(0),
+                signal: None,
+            })
+        })
     }
 
     fn terminate(&self) {}
 
-    fn wait_for_exit(&self, _signal: Option<dsh_subprocess::SubprocessAbort>) -> BoxFuture<'static, bool> {
+    fn wait_for_exit(
+        &self,
+        _signal: Option<dsh_subprocess::SubprocessAbort>,
+    ) -> BoxFuture<'static, bool> {
         Box::pin(async { true })
     }
 }
@@ -89,20 +97,33 @@ impl SubprocessTerminalHandle for StubTerminalHandle {
     }
 
     fn done(&self) -> BoxFuture<'static, Result<SubprocessOutcome, String>> {
-        Box::pin(async { Ok(SubprocessOutcome { exit_code: Some(0), signal: None }) })
+        Box::pin(async {
+            Ok(SubprocessOutcome {
+                exit_code: Some(0),
+                signal: None,
+            })
+        })
     }
 
     fn write(&self, _data: &str) -> BoxFuture<'static, Result<(), String>> {
         Box::pin(async { Ok(()) })
     }
 
-    fn inspect_foreground(&self) -> BoxFuture<'static, Result<Option<SubprocessTerminalForeground>, String>> {
+    fn inspect_foreground(
+        &self,
+    ) -> BoxFuture<'static, Result<Option<SubprocessTerminalForeground>, String>> {
         Box::pin(async {
-            Ok(Some(SubprocessTerminalForeground { process_group_id: 1, input_waiting: true }))
+            Ok(Some(SubprocessTerminalForeground {
+                process_group_id: 1,
+                input_waiting: true,
+            }))
         })
     }
 
-    fn signal_foreground(&self, _signal: SubprocessTerminalSignal) -> BoxFuture<'static, Result<u32, String>> {
+    fn signal_foreground(
+        &self,
+        _signal: SubprocessTerminalSignal,
+    ) -> BoxFuture<'static, Result<u32, String>> {
         Box::pin(async { Ok(1) })
     }
 
@@ -167,7 +188,12 @@ fn a_concrete_service_registers_as_ctx_subprocess_and_serves_the_abstract_api() 
     assert_eq!(handle.pid(), 1);
     assert_eq!(
         handle.collected().stdout.expect("reader").read_from(0),
-        SubprocessOutputRead { text: String::new(), next_offset: 0, lossy: false, spill_path: None }
+        SubprocessOutputRead {
+            text: String::new(),
+            next_offset: 0,
+            lossy: false,
+            spill_path: None
+        }
     );
     handle.terminate();
 }
@@ -196,7 +222,11 @@ async fn the_handle_outcome_and_wait_resolve() {
     assert_eq!(handle.wait_for_exit(None).await, true);
     let outcome = handle.done().await.expect("outcome");
     assert_eq!(outcome.exit_code, Some(0));
-    let _ = CollectedOutput { text: String::new(), truncated: false, spill_path: None };
+    let _ = CollectedOutput {
+        text: String::new(),
+        truncated: false,
+        spill_path: None,
+    };
 }
 
 #[test]
@@ -216,7 +246,10 @@ fn scrubbed_parent_env_drops_credential_shaped_and_dsh_names_but_keeps_path() {
     // SAFETY: test-process-local names, removed before the test ends.
     unsafe {
         std::env::set_var(format!("DSH_SCRUB_PROBE_{}", std::process::id()), "stale");
-        std::env::set_var(format!("dsh_scrub_probe_lower_{}", std::process::id()), "stale");
+        std::env::set_var(
+            format!("dsh_scrub_probe_lower_{}", std::process::id()),
+            "stale",
+        );
         std::env::set_var(format!("{probe}_TOKEN"), "secret");
         std::env::set_var(format!("{probe}_PASSWORD"), "secret");
         std::env::set_var(&probe, "visible");
@@ -224,7 +257,10 @@ fn scrubbed_parent_env_drops_credential_shaped_and_dsh_names_but_keeps_path() {
     let env = scrubbed_parent_env();
     let key_of = |name: &str| env.iter().any(|(key, _)| key.eq_ignore_ascii_case(name));
     assert!(!key_of(&format!("DSH_SCRUB_PROBE_{}", std::process::id())));
-    assert!(!key_of(&format!("dsh_scrub_probe_lower_{}", std::process::id())));
+    assert!(!key_of(&format!(
+        "dsh_scrub_probe_lower_{}",
+        std::process::id()
+    )));
     assert!(!key_of(&format!("{probe}_TOKEN")));
     assert!(!key_of(&format!("{probe}_PASSWORD")));
     assert!(key_of(&probe));

@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use cordis::{
-    ArcValue, BoxFuture, Context, Disposer, DispatchMode, InjectSpec, Service, arc, make_disposer,
+    ArcValue, BoxFuture, Context, DispatchMode, Disposer, InjectSpec, Service, arc, make_disposer,
 };
 use dsh_brand::Branded;
 use futures::FutureExt;
@@ -45,12 +45,16 @@ pub type SettingsNamespace = Branded<SettingsNamespaceTag>;
 pub fn settings_namespace(value: &str) -> Result<SettingsNamespace, String> {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
-        return Err(format!("settings namespace \"{value}\" must match /^[a-z][a-z0-9-]*$/"));
+        return Err(format!(
+            "settings namespace \"{value}\" must match /^[a-z][a-z0-9-]*$/"
+        ));
     };
     let valid = first.is_ascii_lowercase()
         && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-');
     if !valid {
-        return Err(format!("settings namespace \"{value}\" must match /^[a-z][a-z0-9-]*$/"));
+        return Err(format!(
+            "settings namespace \"{value}\" must match /^[a-z][a-z0-9-]*$/"
+        ));
     }
     Ok(Branded::new(value))
 }
@@ -112,11 +116,13 @@ pub struct SettingsDescribeOptions {
 
 impl Default for SettingsDescribeOptions {
     fn default() -> Self {
-        Self { redact_secrets: false }
+        Self {
+            redact_secrets: false,
+        }
     }
 }
 
-    /// Owner-facing handle for one registered namespace.
+/// Owner-facing handle for one registered namespace.
 #[derive(Clone)]
 pub struct SettingsScope {
     pub get: Arc<dyn Fn() -> Data + Send + Sync>,
@@ -125,8 +131,10 @@ pub struct SettingsScope {
             + Send
             + Sync,
     >,
-    pub update: Arc<dyn Fn(serde_json::Value) -> BoxFuture<'static, Result<(), String>> + Send + Sync>,
-    pub replace: Arc<dyn Fn(serde_json::Value) -> BoxFuture<'static, Result<(), String>> + Send + Sync>,
+    pub update:
+        Arc<dyn Fn(serde_json::Value) -> BoxFuture<'static, Result<(), String>> + Send + Sync>,
+    pub replace:
+        Arc<dyn Fn(serde_json::Value) -> BoxFuture<'static, Result<(), String>> + Send + Sync>,
 }
 
 /// A write refused because the namespace moved since the caller read it.
@@ -319,10 +327,18 @@ impl SettingsProvider {
         options: SettingsRegisterOptions,
     ) -> Result<SettingsScope, String> {
         if self.registrations.lock().contains_key(ns.as_str()) {
-            return Err(format!("settings namespace \"{}\" is already registered", ns.as_str()));
+            return Err(format!(
+                "settings namespace \"{}\" is already registered",
+                ns.as_str()
+            ));
         }
         let section = self.section(&ns)?;
-        let resolved = self.resolve(&schema, options.base.as_ref(), section.as_ref(), options.validate.as_ref())?;
+        let resolved = self.resolve(
+            &schema,
+            options.base.as_ref(),
+            section.as_ref(),
+            options.validate.as_ref(),
+        )?;
         let registration = Arc::new(Registration {
             ns: ns.clone(),
             schema,
@@ -353,7 +369,9 @@ impl SettingsProvider {
                 }))
             }),
         );
-        self.registrations.lock().insert(ns.as_str().to_string(), registration);
+        self.registrations
+            .lock()
+            .insert(ns.as_str().to_string(), registration);
         Ok(self.scope(ns))
     }
 
@@ -407,7 +425,9 @@ impl SettingsProvider {
             replace: Arc::new(move |section| {
                 let provider = Arc::clone(&provider_replace);
                 let ns = replace_ns.clone();
-                Box::pin(async move { provider.write(&ns, section, WriteMode::Replace, None).await })
+                Box::pin(
+                    async move { provider.write(&ns, section, WriteMode::Replace, None).await },
+                )
             }),
         }
     }
@@ -422,42 +442,40 @@ impl SettingsProvider {
         let registrations = self.registrations.lock();
         let document = self.document.lock();
         let mut values = Vec::new();
-        registrations
-            .values()
-            .for_each(|registration| {
-                let user = self
-                    .section_from(&document, &registration.ns)
-                    .ok()
-                    .flatten();
-                let descriptor = SettingsDescriptor {
-                    ns: registration.ns.clone(),
-                    schema: serde_json::Value::Null,
-                    value: registration.resolved.lock().clone(),
-                    revision: *registration.revision.lock(),
-                    base: registration.base.clone(),
-                    user,
-                    applies: registration.applies,
-                    secrets: Vec::new(),
-                };
-                if !options.redact_secrets {
-                    values.push(descriptor);
-                    return;
-                }
-                let redacted = redact_secrets(&registration.schema, &descriptor.value);
-                values.push(SettingsDescriptor {
-                    value: redacted.value,
-                    base: descriptor
-                        .base
-                        .as_ref()
-                        .map(|base| redact_secrets(&registration.schema, base).value),
-                    user: descriptor
-                        .user
-                        .as_ref()
-                        .map(|user| redact_secrets(&registration.schema, user).value),
-                    secrets: redacted.secrets,
-                    ..descriptor
-                });
+        registrations.values().for_each(|registration| {
+            let user = self
+                .section_from(&document, &registration.ns)
+                .ok()
+                .flatten();
+            let descriptor = SettingsDescriptor {
+                ns: registration.ns.clone(),
+                schema: serde_json::Value::Null,
+                value: registration.resolved.lock().clone(),
+                revision: *registration.revision.lock(),
+                base: registration.base.clone(),
+                user,
+                applies: registration.applies,
+                secrets: Vec::new(),
+            };
+            if !options.redact_secrets {
+                values.push(descriptor);
+                return;
+            }
+            let redacted = redact_secrets(&registration.schema, &descriptor.value);
+            values.push(SettingsDescriptor {
+                value: redacted.value,
+                base: descriptor
+                    .base
+                    .as_ref()
+                    .map(|base| redact_secrets(&registration.schema, base).value),
+                user: descriptor
+                    .user
+                    .as_ref()
+                    .map(|user| redact_secrets(&registration.schema, user).value),
+                secrets: redacted.secrets,
+                ..descriptor
             });
+        });
         values
     }
 
@@ -474,7 +492,8 @@ impl SettingsProvider {
         patch: serde_json::Value,
         expected_revision: Option<u64>,
     ) -> Result<(), String> {
-        self.write(ns, patch, WriteMode::Merge, expected_revision).await
+        self.write(ns, patch, WriteMode::Merge, expected_revision)
+            .await
     }
 
     /// Replace one namespace's user section wholesale (TS `replace`).
@@ -484,7 +503,8 @@ impl SettingsProvider {
         section: serde_json::Value,
         expected_revision: Option<u64>,
     ) -> Result<(), String> {
-        self.write(ns, section, WriteMode::Replace, expected_revision).await
+        self.write(ns, section, WriteMode::Replace, expected_revision)
+            .await
     }
 
     /// Apply path-addressed edits to one namespace's user section (TS
@@ -496,7 +516,8 @@ impl SettingsProvider {
         expected_revision: Option<u64>,
     ) -> Result<(), String> {
         let payload = serde_json::json!({ "ops": ops });
-        self.write(ns, payload, WriteMode::Mutate, expected_revision).await
+        self.write(ns, payload, WriteMode::Mutate, expected_revision)
+            .await
     }
 
     fn write(
@@ -512,8 +533,10 @@ impl SettingsProvider {
             Some(registration) => registration,
             None => {
                 return Box::pin(async move {
-                    Err(format!("settings namespace \"{ns_name}\" is not registered"))
-                })
+                    Err(format!(
+                        "settings namespace \"{ns_name}\" is not registered"
+                    ))
+                });
             }
         };
         if self.stopped.load(Ordering::SeqCst) {
@@ -548,7 +571,7 @@ impl SettingsProvider {
                     Err(format!(
                         "settings {verb} for \"{ns_name}\" must contain only JSON-compatible data (found {label})"
                     ))
-                })
+                });
             }
         };
         let ns_owned = ns.clone();
@@ -564,7 +587,9 @@ impl SettingsProvider {
                 let provider = Arc::clone(&provider);
                 let ns = ns_owned.clone();
                 Box::pin(async move {
-                    provider.write_now(&ns, snapshot, mode, expected_revision, registration).await
+                    provider
+                        .write_now(&ns, snapshot, mode, expected_revision, registration)
+                        .await
                 }) as BoxFuture<'static, Result<(), String>>
             })
             .boxed()
@@ -622,7 +647,10 @@ impl SettingsProvider {
                         section = apply_path_op(section, op)?;
                     }
                 } else {
-                    return Err(format!("settings mutate for \"{}\" ops must be an array", ns.as_str()));
+                    return Err(format!(
+                        "settings mutate for \"{}\" ops must be an array",
+                        ns.as_str()
+                    ));
                 }
                 section
             }
@@ -635,7 +663,9 @@ impl SettingsProvider {
         )?;
         self.storage.persist(ns, section.clone()).await?;
         {
-            self.document.lock().insert(ns.as_str().to_string(), section.clone());
+            self.document
+                .lock()
+                .insert(ns.as_str().to_string(), section.clone());
         }
         // Commit only when this registration is still the namespace owner.
         if self.registration(ns).as_ref().map(Arc::as_ptr) == Some(Arc::as_ptr(&registration))
@@ -694,7 +724,10 @@ impl SettingsProvider {
         match document.get(ns.as_str()) {
             None => Ok(None),
             Some(Data::Object(_)) => Ok(Some(document.get(ns.as_str()).unwrap().clone())),
-            Some(_) => Err(format!("settings section \"{}\" must be an object of keys", ns.as_str())),
+            Some(_) => Err(format!(
+                "settings section \"{}\" must be an object of keys",
+                ns.as_str()
+            )),
         }
     }
 
@@ -719,7 +752,12 @@ impl SettingsProvider {
     }
 
     /// Advance a namespace's revision when its RAW section changed.
-    fn bump_revision(&self, registration: &Registration, before: Option<&Data>, after: Option<&Data>) {
+    fn bump_revision(
+        &self,
+        registration: &Registration,
+        before: Option<&Data>,
+        after: Option<&Data>,
+    ) {
         let before = before.cloned().unwrap_or(Data::Undefined);
         let after = after.cloned().unwrap_or(Data::Undefined);
         if deep_equal_json(&before, &after) {
@@ -792,16 +830,17 @@ impl SettingsProvider {
                             if !active || stopped {
                                 return;
                             }
-                            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                futures::executor::block_on(callback(&next, &prev))
-                            }));
+                            let outcome =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    futures::executor::block_on(callback(&next, &prev))
+                                }));
                             if let Err(payload) = outcome {
-                                ctx_for_log
-                                    .named_logger(Some("settings"))
-                                    .warn(vec![arc(format!(
+                                ctx_for_log.named_logger(Some("settings")).warn(vec![arc(
+                                    format!(
                                         "watcher for \"{ns}\" failed: {}",
                                         render_panic(payload)
-                                    ))]);
+                                    ),
+                                )]);
                             }
                         }) as BoxFuture<'static, ()>
                     })
@@ -864,8 +903,13 @@ impl SettingsProvider {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum SettingsPathOp {
-    Set { path: Vec<String>, value: serde_json::Value },
-    Unset { path: Vec<String> },
+    Set {
+        path: Vec<String>,
+        value: serde_json::Value,
+    },
+    Unset {
+        path: Vec<String>,
+    },
 }
 
 /// Apply one path op to a detached section (TS `applyPathOp`).
@@ -902,7 +946,9 @@ fn apply_set(mut section: Data, path: &[String], value: &Data) -> Result<Data, S
     if path.is_empty() {
         // The empty path addresses the section itself.
         if !value.is_object() {
-            return Err("settings mutate: setting the section root requires a plain object".to_string());
+            return Err(
+                "settings mutate: setting the section root requires a plain object".to_string(),
+            );
         }
         return Ok(value.clone());
     }
@@ -1086,12 +1132,18 @@ pub fn install_settings_section(
                     .ok_or_else(|| {
                         cordis::PluginError::new(arc("settings service is not configured"))
                     })?;
-                let scope = provider.register(&sctx, ns.clone(), schema, SettingsRegisterOptions {
-                    base: Some(entry.clone()),
-                    validate: hooks.validate.clone(),
-                    ..Default::default()
-                })
-                .map_err(|error| cordis::PluginError::new(arc(error)))?;
+                let scope = provider
+                    .register(
+                        &sctx,
+                        ns.clone(),
+                        schema,
+                        SettingsRegisterOptions {
+                            base: Some(entry.clone()),
+                            validate: hooks.validate.clone(),
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(|error| cordis::PluginError::new(arc(error)))?;
                 (hooks.set_source)(Arc::new({
                     let scope = scope.clone();
                     move || (scope.get)()

@@ -57,14 +57,18 @@ impl E2bBase64Decoder {
                 continue;
             }
             if self.complete {
-                return Err("subprocess-e2b: output transport continued after completion".to_string());
+                return Err(
+                    "subprocess-e2b: output transport continued after completion".to_string(),
+                );
             }
             if !is_base64_text(&frame) {
                 return Err("subprocess-e2b: invalid base64 output transport".to_string());
             }
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(&frame)
-                .map_err(|error| format!("subprocess-e2b: invalid base64 output transport: {error}"))?;
+                .map_err(|error| {
+                    format!("subprocess-e2b: invalid base64 output transport: {error}")
+                })?;
             decoded.extend_from_slice(&bytes);
         }
         Ok(decoded)

@@ -76,13 +76,23 @@ async fn resolves_each_session_mode_and_cwd_together_without_changing_the_fallba
     let session = session_with_cwd(Some(&cwd.to_string_lossy()));
 
     // A session with no override runs under the default, rooted at its cwd.
-    let policy = service.resolve(&SandboxPolicyRequest { session: Some(session.clone()), mode: None });
+    let policy = service.resolve(&SandboxPolicyRequest {
+        session: Some(session.clone()),
+        mode: None,
+    });
     assert_eq!(policy.mode, SandboxMode::ReadOnly);
-    assert!(policy.workspace_root.contains("dsh-policy-cwd"), "{}", policy.workspace_root);
+    assert!(
+        policy.workspace_root.contains("dsh-policy-cwd"),
+        "{}",
+        policy.workspace_root
+    );
 
     // A session override outranks the default.
     set_sandbox_mode(&session, SandboxMode::WorkspaceWrite).expect("switch");
-    let policy = service.resolve(&SandboxPolicyRequest { session: Some(session.clone()), mode: None });
+    let policy = service.resolve(&SandboxPolicyRequest {
+        session: Some(session.clone()),
+        mode: None,
+    });
     assert_eq!(policy.mode, SandboxMode::WorkspaceWrite);
 
     // The fallback stays unchanged for agentless calls.
@@ -93,7 +103,10 @@ async fn resolves_each_session_mode_and_cwd_together_without_changing_the_fallba
 
 #[tokio::test(flavor = "current_thread")]
 async fn lets_an_approved_mode_outrank_the_session_mode_while_retaining_its_root() {
-    let (_ctx, service) = boot(Config { mode: Some(SandboxMode::ReadOnly), workspace_root: None });
+    let (_ctx, service) = boot(Config {
+        mode: Some(SandboxMode::ReadOnly),
+        workspace_root: None,
+    });
     let session = session_with_cwd(None);
     set_sandbox_mode(&session, SandboxMode::WorkspaceWrite).expect("switch");
     let policy = service.resolve(&SandboxPolicyRequest {
@@ -111,11 +124,18 @@ async fn uses_the_configured_root_when_a_session_has_no_cwd() {
         workspace_root: Some(std::env::temp_dir().to_string_lossy().into_owned()),
     });
     let session = session_with_cwd(None);
-    let policy = service.resolve(&SandboxPolicyRequest { session: Some(session.clone()), mode: None });
+    let policy = service.resolve(&SandboxPolicyRequest {
+        session: Some(session.clone()),
+        mode: None,
+    });
     // The fallback root resolves canonical; compare against the canonical
     // temp spelling.
     let canonical_temp = dsh_sandbox::canonical_path(&std::env::temp_dir().to_string_lossy());
-    assert!(policy.workspace_root.contains(&canonical_temp), "{}", policy.workspace_root);
+    assert!(
+        policy.workspace_root.contains(&canonical_temp),
+        "{}",
+        policy.workspace_root
+    );
     let _ = policy;
 }
 
@@ -123,7 +143,11 @@ async fn uses_the_configured_root_when_a_session_has_no_cwd() {
 async fn the_session_mode_kit_folds_and_appends() {
     assert_eq!(
         SANDBOX_MODES,
-        &[SandboxMode::ReadOnly, SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess]
+        &[
+            SandboxMode::ReadOnly,
+            SandboxMode::WorkspaceWrite,
+            SandboxMode::DangerFullAccess
+        ]
     );
     let session = session_with_cwd(None);
     assert_eq!(effective_sandbox_mode(&session.events()), None);
@@ -159,5 +183,9 @@ fn the_invariant_validates_the_package_owned_event_fields() {
     assert!(failures.lock().is_empty());
     validate_event(&event(json!("bogus-mode")), &fail);
     assert_eq!(failures.lock().len(), 1);
-    assert!(failures.lock()[0].contains("unknown mode"), "{}", failures.lock()[0]);
+    assert!(
+        failures.lock()[0].contains("unknown mode"),
+        "{}",
+        failures.lock()[0]
+    );
 }

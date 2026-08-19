@@ -408,10 +408,7 @@ impl PermissionPresetService {
         // The schema defaulted the table; the default applies when the
         // composed defaults match a preset, else the config must say.
         let inferred_default = service.derive(&EMPTY_KNOBS);
-        let default_preset = config
-            .default_preset
-            .clone()
-            .unwrap_or(inferred_default);
+        let default_preset = config.default_preset.clone().unwrap_or(inferred_default);
         if default_preset == CUSTOM_PRESET {
             return Err(
                 "permission: composed sandbox and approval defaults match no preset; configure defaultPreset explicitly"
@@ -459,7 +456,11 @@ impl PermissionPresetService {
                     if preset.is_empty() || !presets_for_validate.contains_key(&preset) {
                         return Err(format!(
                             "permission: unknown preset \"{preset}\" (known: {})",
-                            presets_for_validate.keys().cloned().collect::<Vec<_>>().join(", ")
+                            presets_for_validate
+                                .keys()
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         ));
                     }
                     Ok(())
@@ -526,26 +527,32 @@ impl PermissionPresetService {
                         let service_for_view = service.clone();
                         let definition = ProjectionDefinition {
                             key: "permissions".to_string(),
-                            schema: Arc::new(|value: &ArcValue| -> Result<serde_json::Value, String> {
-                                let json = downcast::<serde_json::Value>(value).ok_or_else(
-                                    || "permissions projection view must be JSON".to_string(),
-                                )?;
-                                validate_permission_select(json)?;
-                                Ok(json.clone())
-                            }),
+                            schema: Arc::new(
+                                |value: &ArcValue| -> Result<serde_json::Value, String> {
+                                    let json =
+                                        downcast::<serde_json::Value>(value).ok_or_else(|| {
+                                            "permissions projection view must be JSON".to_string()
+                                        })?;
+                                    validate_permission_select(json)?;
+                                    Ok(json.clone())
+                                },
+                            ),
                             init: Arc::new(|| arc(knob_state_to_json(&EMPTY_KNOBS))),
-                            apply: Arc::new(move |state: &ArcValue, event: &SessionEvent| -> ArcValue {
-                                let current = downcast::<serde_json::Value>(state)
-                                    .expect("permissions projection state must be plain JSON");
-                                let Some(next) = apply_knob_json(current, event) else {
-                                    return state.clone();
-                                };
-                                arc(next)
-                            }),
+                            apply: Arc::new(
+                                move |state: &ArcValue, event: &SessionEvent| -> ArcValue {
+                                    let current = downcast::<serde_json::Value>(state)
+                                        .expect("permissions projection state must be plain JSON");
+                                    let Some(next) = apply_knob_json(current, event) else {
+                                        return state.clone();
+                                    };
+                                    arc(next)
+                                },
+                            ),
                             view: Arc::new(move |state: &ArcValue| -> ArcValue {
                                 let json = downcast::<serde_json::Value>(state)
                                     .expect("permissions projection state must be plain JSON");
-                                let select = service_for_view.select_for(&knob_state_from_json(json));
+                                let select =
+                                    service_for_view.select_for(&knob_state_from_json(json));
                                 arc(serde_json::to_value(select).expect("select serializes"))
                             }),
                             state_version: 1,
@@ -611,9 +618,13 @@ impl PermissionPresetService {
                                         });
                                     }
                                     let service_for_set = service.clone();
-                                    service.apply(&session, &name, Arc::new(move |policy| {
-                                        service_for_set.approval().set_policy(&agent, policy)
-                                    }))?;
+                                    service.apply(
+                                        &session,
+                                        &name,
+                                        Arc::new(move |policy| {
+                                            service_for_set.approval().set_policy(&agent, policy)
+                                        }),
+                                    )?;
                                     Ok(CommandResult::Success {
                                         text: Some(format!("preset {name}")),
                                         source_event_seq: None,
@@ -643,10 +654,7 @@ impl PermissionPresetService {
             self.command_fiber.lock().clone(),
         ];
         for fiber in fibers.into_iter().flatten() {
-            fiber
-                .settle()
-                .await
-                .map_err(|error| error.message())?;
+            fiber.settle().await.map_err(|error| error.message())?;
         }
         Ok(())
     }
@@ -739,9 +747,7 @@ impl PermissionPresetService {
                 ),
             };
         }
-        let spec = self
-            .resolve(name)
-            .unwrap_or_else(|error| panic!("{error}"));
+        let spec = self.resolve(name).unwrap_or_else(|error| panic!("{error}"));
         PresetOption {
             value: name.to_string(),
             name: spec.name.clone().unwrap_or_else(|| name.to_string()),
@@ -753,9 +759,13 @@ impl PermissionPresetService {
     /// own setter (TS `set`).
     pub fn set(&self, session: &Session, name: &str) -> Result<(), String> {
         let session_for_setter = session.clone();
-        self.apply(session, name, Arc::new(move |policy: ApprovalPolicy| {
-            set_approval_policy(&session_for_setter, policy).map(|_| ())
-        }))
+        self.apply(
+            session,
+            name,
+            Arc::new(move |policy: ApprovalPolicy| {
+                set_approval_policy(&session_for_setter, policy).map(|_| ())
+            }),
+        )
     }
 
     /// Apply one preset with the caller-selected live or initialization

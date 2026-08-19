@@ -50,7 +50,8 @@ impl WiderModes {
 /// Advertised whenever the mounted capability confines: cutting the enum
 /// down to the modes wider than the composition's DEFAULT would strand a
 /// session whose effective mode sits below it.
-pub static ESCALATION_TARGETS: &[SandboxMode] = &[SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
+pub static ESCALATION_TARGETS: &[SandboxMode] =
+    &[SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
 
 /// Validate the escalation argument pairing a tool schema cannot express:
 /// `sandbox_permissions` and `justification` travel together — an approval
@@ -108,7 +109,10 @@ pub enum EscalationOutcome {
 /// agent type `A` and call-id type `C` (TS `EscalationApprover`).
 pub trait EscalationApprover<A, C>: Send + Sync {
     /// Ask the human to approve one action, resolving to a closed outcome.
-    fn request(&self, request: EscalationApproveRequest<A, C>) -> BoxFuture<'static, EscalationOutcome>;
+    fn request(
+        &self,
+        request: EscalationApproveRequest<A, C>,
+    ) -> BoxFuture<'static, EscalationOutcome>;
 }
 
 /// One approval request handed to the approver (the TS inline request
@@ -169,7 +173,12 @@ pub async fn approve_escalation<A: Send + Sync + 'static, C: Send + Sync + 'stat
     request: EscalationRequest,
     approval: EscalationApproval<'_, A, C>,
 ) -> Result<SandboxMode, String> {
-    let EscalationRequest { requested_mode, justification, effective_mode, subject } = request;
+    let EscalationRequest {
+        requested_mode,
+        justification,
+        effective_mode,
+        subject,
+    } = request;
     // Strict widening is an EXECUTION check against the call's effective
     // mode — deliberately not a schema constraint.
     let wider = WIDER_MODES.get(effective_mode.as_str()).unwrap_or(&[]);

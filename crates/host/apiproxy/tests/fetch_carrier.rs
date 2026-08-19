@@ -63,18 +63,15 @@ impl ApiProxyCarrier for StubApi {
             rpc_id: request.rpc_id,
             payload: serde_json::json!({"type": "session/event", "n": 1}),
         };
-        let stream = futures::stream::unfold(
-            (Some(frame), signal),
-            |(frame, signal)| async move {
-                if signal.aborted() {
-                    return None;
-                }
-                match frame {
-                    Some(frame) => Some((frame, (None, signal))),
-                    None => None,
-                }
-            },
-        );
+        let stream = futures::stream::unfold((Some(frame), signal), |(frame, signal)| async move {
+            if signal.aborted() {
+                return None;
+            }
+            match frame {
+                Some(frame) => Some((frame, (None, signal))),
+                None => None,
+            }
+        });
         Box::pin(stream)
     }
 
@@ -83,15 +80,12 @@ impl ApiProxyCarrier for StubApi {
         request: FrameRequest,
         signal: AbortSignal,
     ) -> Pin<Box<dyn Stream<Item = FrameRequest> + Send>> {
-        let stream = futures::stream::unfold(
-            (signal, request),
-            |(signal, _request)| async move {
-                if signal.aborted() {
-                    return None;
-                }
-                None
-            },
-        );
+        let stream = futures::stream::unfold((signal, request), |(signal, _request)| async move {
+            if signal.aborted() {
+                return None;
+            }
+            None
+        });
         Box::pin(stream)
     }
 
@@ -101,11 +95,7 @@ impl ApiProxyCarrier for StubApi {
         }
     }
 
-    async fn session_log(
-        &self,
-        query: SessionLogQuery,
-        _signal: AbortSignal,
-    ) -> DownloadResponse {
+    async fn session_log(&self, query: SessionLogQuery, _signal: AbortSignal) -> DownloadResponse {
         DownloadResponse {
             status: StatusCode::OK,
             headers: vec![("content-type".to_string(), "application/zip".to_string())],
@@ -237,10 +227,12 @@ fn mismatched_method_is_200_with_a_bad_request_error() {
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
         assert_eq!(parsed["result"]["ok"], false);
         assert_eq!(parsed["result"]["error"]["code"], "bad-request");
-        assert!(parsed["result"]["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains("does not match path"));
+        assert!(
+            parsed["result"]["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("does not match path")
+        );
     });
 }
 

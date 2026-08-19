@@ -56,7 +56,11 @@ pub struct WorkspaceDomainState {
     pub workspace_ids: Vec<WorkspaceId>,
     #[serde(rename = "archivedSessionIds", default)]
     pub archived_session_ids: Vec<SessionId>,
-    #[serde(rename = "pendingMutation", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "pendingMutation",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub pending_mutation: Option<WorkspacePendingMutation>,
 }
 
@@ -114,15 +118,17 @@ pub fn workspace_domain_state_schema() -> dsh_storage_domain::RecordSchema {
         if !ids.iter().all(|id| id.is_string()) {
             return Err("workspace domain state workspaceIds entries must be strings".to_string());
         }
-        let archived = object.get("archivedSessionIds").cloned().unwrap_or(JsonValue::Null);
+        let archived = object
+            .get("archivedSessionIds")
+            .cloned()
+            .unwrap_or(JsonValue::Null);
         if !archived.is_null()
             && !archived
                 .as_array()
                 .is_some_and(|ids| ids.iter().all(|id| id.is_string()))
         {
             return Err(
-                "workspace domain state archivedSessionIds must be an array of strings"
-                    .to_string(),
+                "workspace domain state archivedSessionIds must be an array of strings".to_string(),
             );
         }
         if let Some(pending) = object.get("pendingMutation") {

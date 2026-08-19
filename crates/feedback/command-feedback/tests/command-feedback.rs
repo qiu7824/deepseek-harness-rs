@@ -5,9 +5,7 @@
 use std::sync::Arc;
 
 use cordis::Context;
-use dsh_command_feedback::{
-    NAME, execute_feedback_command, record_feedback, sharing_sentence,
-};
+use dsh_command_feedback::{NAME, execute_feedback_command, record_feedback, sharing_sentence};
 use dsh_commands::{CommandInvocation, CommandResult, CommandRuntime};
 use dsh_session::{Session, SessionId, session_id};
 use dsh_session_telemetry::{
@@ -67,7 +65,12 @@ impl dsh_agent::Agent for ProbeAgent {
         KEY.get_or_init(dsh_scope::ScopeKey::new)
     }
 
-    fn cancel(&self, _cause: dsh_session::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_session::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -80,7 +83,13 @@ impl dsh_agent::Agent for ProbeAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 
@@ -116,7 +125,9 @@ fn never_abort() -> Arc<dyn Fn() -> bool + Send + Sync> {
     Arc::new(|| false)
 }
 
-async fn harness(sharing: Option<SessionTelemetrySharingStatus>) -> (Context, Arc<CommandRuntime>, Arc<dyn dsh_agent::Agent>) {
+async fn harness(
+    sharing: Option<SessionTelemetrySharingStatus>,
+) -> (Context, Arc<CommandRuntime>, Arc<dyn dsh_agent::Agent>) {
     let ctx = Context::root();
     let commands = CommandRuntime::install(&ctx);
     if let Some(sharing) = sharing {
@@ -166,11 +177,18 @@ async fn registers_and_executes_the_feedback_command() {
         .find(|descriptor| descriptor.name == "feedback")
         .expect("registered");
     assert_eq!(descriptor.description, "record feedback about this session");
-    assert_eq!(descriptor.input.as_ref().map(|input| input.hint.as_str()), Some("<text>"));
+    assert_eq!(
+        descriptor.input.as_ref().map(|input| input.hint.as_str()),
+        Some("<text>")
+    );
     assert!(commands.find(&agent, "feedback").is_some());
 
     let execution = commands
-        .execute(&agent, "/feedback the diff view is unreadable", never_abort())
+        .execute(
+            &agent,
+            "/feedback the diff view is unreadable",
+            never_abort(),
+        )
         .await
         .expect("execute")
         .expect("resolved");
@@ -183,7 +201,10 @@ async fn registers_and_executes_the_feedback_command() {
         dsh_anonymous_user_id::get_or_create_anonymous_user_id(Default::default())
     );
     assert_eq!(text, Some(expected));
-    assert_eq!(feedback_texts(agent.session()), vec!["the diff view is unreadable"]);
+    assert_eq!(
+        feedback_texts(agent.session()),
+        vec!["the diff view is unreadable"]
+    );
     // The command/run record omits args (recordInput: false).
     let events = agent.session().events();
     let run = events
@@ -192,11 +213,11 @@ async fn registers_and_executes_the_feedback_command() {
         .expect("command/run");
     assert!(run.data.get("args").is_none());
     // Exactly three lifecycle events, in order.
-    let types: Vec<&str> = events
-        .iter()
-        .map(|event| event.type_.as_str())
-        .collect();
-    assert_eq!(types, vec!["command/run", "feedback/record", "command/done"]);
+    let types: Vec<&str> = events.iter().map(|event| event.type_.as_str()).collect();
+    assert_eq!(
+        types,
+        vec!["command/run", "feedback/record", "command/done"]
+    );
     let _ = ctx;
 }
 

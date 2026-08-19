@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 
 use dsh_session::{
-    SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionId,
-    decode_storage_record, pack_chunk_runs,
+    SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionId, decode_storage_record,
+    pack_chunk_runs,
 };
 use dsh_session_persistence::session_format_version_refusal;
 
@@ -54,15 +54,27 @@ pub struct HeaderLine {
     pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "parentSession")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "parentSession"
+    )]
     pub parent_session: Option<SessionId>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "seedLength")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "seedLength"
+    )]
     pub seed_length: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
     #[serde(rename = "delegationDepth")]
     pub delegation_depth: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "agentPreset")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "agentPreset"
+    )]
     pub agent_preset: Option<String>,
 }
 
@@ -108,7 +120,10 @@ fn is_header_line(value: &serde_json::Value) -> bool {
         && record.get("version").and_then(|v| v.as_u64()).is_some()
         && record.get("id").and_then(|v| v.as_str()).is_some()
         && record.get("createdAt").and_then(|v| v.as_u64()).is_some()
-        && record.get("delegationDepth").and_then(|v| v.as_u64()).is_some()
+        && record
+            .get("delegationDepth")
+            .and_then(|v| v.as_u64())
+            .is_some()
         && match record.get("origin") {
             None => true,
             Some(value) => value.as_str() == Some("subagent"),
@@ -227,7 +242,10 @@ pub struct SessionLogScan {
 fn parse_header_record(record: &[u8]) -> Result<SessionHeader, String> {
     if record.is_empty()
         || record.last() != Some(&0x0A)
-        || record.iter().take(record.len() - 1).any(|byte| *byte == 0x0A)
+        || record
+            .iter()
+            .take(record.len() - 1)
+            .any(|byte| *byte == 0x0A)
     {
         return Err("empty or header-less session log".to_string());
     }
@@ -303,8 +321,7 @@ impl SessionLogScanner {
         self.input_bytes += chunk.len();
         let mut line_start = 0usize;
         loop {
-            let Some(relative) = chunk[line_start..].iter().position(|byte| *byte == 0x0A)
-            else {
+            let Some(relative) = chunk[line_start..].iter().position(|byte| *byte == 0x0A) else {
                 break;
             };
             let newline = line_start + relative;
@@ -396,7 +413,10 @@ impl SessionLogScanner {
                     self.event_line, event.seq
                 ));
                 // TS throws when the offending ROW contains a turn/end.
-                if decoded.iter().any(|candidate| candidate.type_ == "turn/end") {
+                if decoded
+                    .iter()
+                    .any(|candidate| candidate.type_ == "turn/end")
+                {
                     return Err(self.issue.clone().expect("issue just set"));
                 }
                 return Ok(());
@@ -473,10 +493,7 @@ mod tests {
     #[test]
     fn directory_layout() {
         let root = "root";
-        assert_eq!(
-            project_dir(root, None),
-            Path::new("root").join("_no-cwd")
-        );
+        assert_eq!(project_dir(root, None), Path::new("root").join("_no-cwd"));
         assert_eq!(
             session_dir(root, Some("C:\\work"), &session_id("a/b")),
             Path::new("root").join("--C-work--").join("a~002Fb")
@@ -526,7 +543,10 @@ mod tests {
         };
         let json = serde_json::to_value(to_header_line(&minimal)).unwrap();
         assert_eq!(json["delegationDepth"], 0);
-        assert_eq!(from_header_line(&to_header_line(&minimal)).delegation_depth, Some(0));
+        assert_eq!(
+            from_header_line(&to_header_line(&minimal)).delegation_depth,
+            Some(0)
+        );
     }
 
     fn event(seq: u64, type_: &str) -> SessionEvent {
@@ -547,7 +567,10 @@ mod tests {
         let lines = event_lines(&events, false);
         assert_eq!(lines.lines().count(), 2);
         let packed = event_lines(&events, true);
-        assert_eq!(packed, lines, "non-chunk events are identical in both layouts");
+        assert_eq!(
+            packed, lines,
+            "non-chunk events are identical in both layouts"
+        );
     }
 
     #[test]
@@ -567,8 +590,11 @@ mod tests {
         let mut bytes = format!("{header}\n").into_bytes();
         for seq in 0..3 {
             bytes.extend_from_slice(
-                format!("{}\n", serde_json::to_string(&event(seq, "turn/start")).unwrap())
-                    .as_bytes(),
+                format!(
+                    "{}\n",
+                    serde_json::to_string(&event(seq, "turn/start")).unwrap()
+                )
+                .as_bytes(),
             );
         }
         let torn = format!("{}", serde_json::to_string(&event(3, "turn/end")).unwrap());
@@ -595,10 +621,25 @@ mod tests {
         }))
         .unwrap();
         let mut bytes = format!("{header}\n").into_bytes();
-        bytes.extend_from_slice(format!("{}\n", serde_json::to_string(&event(0, "turn/start")).unwrap()).as_bytes());
-        bytes.extend_from_slice(format!("{}\n", serde_json::to_string(&event(5, "turn/end")).unwrap()).as_bytes());
+        bytes.extend_from_slice(
+            format!(
+                "{}\n",
+                serde_json::to_string(&event(0, "turn/start")).unwrap()
+            )
+            .as_bytes(),
+        );
+        bytes.extend_from_slice(
+            format!(
+                "{}\n",
+                serde_json::to_string(&event(5, "turn/end")).unwrap()
+            )
+            .as_bytes(),
+        );
         let error = scan_log(&bytes).unwrap_err();
-        assert!(error.contains("seq gap in committed region at line 2"), "{error}");
+        assert!(
+            error.contains("seq gap in committed region at line 2"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -616,10 +657,17 @@ mod tests {
         }))
         .unwrap();
         let mut bytes = format!("{header}\n").into_bytes();
-        let first = format!("{}\n", serde_json::to_string(&event(0, "turn/start")).unwrap());
+        let first = format!(
+            "{}\n",
+            serde_json::to_string(&event(0, "turn/start")).unwrap()
+        );
         bytes.extend_from_slice(first.as_bytes());
         bytes.extend_from_slice(
-            format!("{}\n", serde_json::to_string(&event(5, "turn/start")).unwrap()).as_bytes(),
+            format!(
+                "{}\n",
+                serde_json::to_string(&event(5, "turn/start")).unwrap()
+            )
+            .as_bytes(),
         );
         // A gap before any turn/end keeps the committed prefix silently
         // (TS tolerates this: only a turn/end row throws).
@@ -655,10 +703,8 @@ mod tests {
             "createdAt": 1,
             "delegationDepth": 0,
         });
-        let refusal = scan_log(
-            format!("{}\n", serde_json::to_string(&future).unwrap()).as_bytes(),
-        )
-        .unwrap_err();
+        let refusal = scan_log(format!("{}\n", serde_json::to_string(&future).unwrap()).as_bytes())
+            .unwrap_err();
         assert!(refusal.contains("written by a newer harness"), "{refusal}");
     }
 

@@ -17,11 +17,21 @@
 | Host/后端及共享基础源码行 | 161,745 |
 | Host/后端及共享基础测试行 | 206,707 |
 
-第 127 轮当前验收快照：`cargo test --workspace` 共 371 个 test-result
-分组，**1714 passed / 0 failed / 1 ignored**。按可运行入口、核心运行时、
-Host API/CLI、wire/存储兼容、平台安全与发布切换加权审计，真实移植完成度
-约 **52%（保守区间 48%–56%）**；该估算不以文件数、LOC、轮次或清单
-勾选率代替行为兼容。
+宏阶段 3 最终验收快照：`cargo test --workspace` 共 428 个 test-result 分组，
+**1885 passed / 0 failed / 1 ignored**。最终日志
+`C:\Users\Administrator\AppData\Local\Temp\dsh-rs-macro3-workspace-final-v3.log`
+的 SHA-256 为 `46799e45386e6aacbe8e08fe1928d8d0eefc14d9f7fe6c94147adcfdf3442e58`。
+MCP 已具备真实 stdio、loopback streamable HTTP、模型工具注册、schema/命名、一次
+受控重连及有界进程树清理；LSP 已具备有界 Content-Length framing、四类查询、
+transient document、canonical workspace 单飞进程池和模型工具。正式 `dsh.exe`
+承载 SDK JSON-RPC 与 ACP stdio 入口：上游 Python SDK 已通过生产 Host 完成真实 turn，
+ACP prompt、assistant 更新、整 Agent idle 和立即 cancel 均有产品 E2E。默认 spawn
+subagent 与出进程 Codex provider 已接入；Codex 使用预解析绝对路径，拒绝工作区 shim
+劫持。DeepSeek transport 对成功流施加总量预算，模型取消会关闭真实 TCP；远端明文
+MCP/DeepSeek 均在网络 I/O 前 fail-closed。最终独立短复核为 `passed: true`，无 P0/P1。
+按可运行入口、核心运行时、Host API/CLI、wire/存储兼容、平台安全与发布切换
+加权审计，当前可记账真实移植完成度约 **86%（保守区间 83%–89%）**；该估算不以
+文件数、LOC、轮次或清单勾选率代替行为兼容。
 
 本项目的"后端"范围包含：
 
@@ -72,7 +82,7 @@ Host API/CLI、wire/存储兼容、平台安全与发布切换加权审计，真
 ### 3.3 安全与系统
 
 - Sandbox 模式和升级：`read-only / workspace-write / danger-full-access`；
-- Windows 受限令牌 + WRITE_RESTRICTED + ACL 能力 SID，失败不透传；
+- Windows AppContainer + 临时 ACL package SID，失败不透传；
 - Linux bwrap/landlock、macOS seatbelt 选择与探测 fail-closed；
 - subprocess 进程树、PTY、kill、stdio/spill 行为一致；
 - 凭证脱敏、路径边界、批准栈与会话所有权授权一致。
@@ -1016,13 +1026,13 @@ cancel/binary 采样边界等用例留待后续轮次）。
 - [x] `dsh-native-command`（`crates/util/native-command`，4 项测试全绿——
       无 shell 执行器：utf8 stdio 捕获、非零退出 code+stdio 附加、
       ENOENT、abort 谓词传播终止、Windows CREATE_NO_WINDOW hide）；
-- [ ] tool-jobs（工具控制器）；
-- [ ] subprocess E2B、PTY、process tree（PTY 需 portable-pty/ConPTY；
-      E2B 需外部沙箱 SDK）；
+- [x] tool-jobs（后台任务列表、输出、等待与终止工具）；
+- [x] 本地 subprocess PTY / Windows ConPTY / process tree；
+- [ ] subprocess E2B terminal（需外部沙箱 SDK 的远端终端能力）；
 - [ ] code-runtime-worker-thread（TypeScript bootstrap，需嵌入 JS/TS
       运行时——boa/deno_core 级依赖，独立里程碑）；
-- [ ] sandbox-local（bwrap/Landlock/Seatbelt 方言——Linux/macOS-only）；
-- [ ] Windows ACL restricted-token backend；
+- [x] sandbox-local（Linux bwrap、macOS Seatbelt 方言与 fail-closed 选择）；
+- [x] Windows AppContainer + ACL package-SID backend；
 - [ ] credentials-encrypted backend（DPAPI/keychain）。
 
 ### M5 — 产品功能
@@ -1036,7 +1046,33 @@ cancel/binary 采样边界等用例留待后续轮次）。
 - [x] timeout-policy（`crates/guard/timeout-policy`，9 项测试全绿——
       `@deepseek-ai/dsh-tool-call-timeout-policy`：协作式工具超时执行器；
       见上）；
-- [ ] goal-round-driver/tool-goal；
+- [x] tool-goal（第 128 轮：`crates/goal/tool-goal` 将模型侧
+      `get_goal/create_goal/update_goal` 接到真实 `ToolRuntime + GoalService`；
+      严格 schema 与标准 `ToolArgsError/INVALID_ARGS`、JS safe-integer wire
+      边界、exact live Agent/ambient initiator/root-child authority、open-turn
+      与 strict replay 防伪、GoalRef CAS、条件参数/empty filler、直接人类与
+      autonomous complete/blocked 策略、三轮 blocker 下限、终态 wrap-up、
+      预分派取消和 `GOAL_COMMIT_FAILED` typed fail-loud 均有真实执行证据；
+      修复工具注册半安装、round 0/重复 round 越权及 complete 后 wrap-up
+      panic。AgentLoop 整个 driver 继承 exact initiator，ReactLoopAgent 使用
+      独立真实 ScopeKey，Cordis `ctx.agent` accessor 可解析最近 live agent，
+      子代理不再误判为 root；生产 dsh-host 安装 `LlmRuntime + AgentLoop`、
+      三个 Goal 工具和 goal/command-goal/tool-goal/agent-loop companions，
+      脚本模型真实产生 durable Goal + tool/call + tool/result；追加同步 prepare/commit
+      跨注册表事务，prompt/工具冲突均返回 `Err` 且零 partial 残留，listener 抛错
+      rollback 发布第二次 change 通知。tool-goal 24 项、dsh-scope 10 项、
+      SystemPrompt 29 项、Tools 15 项、Host 12 项全绿）；
+- [x] goal-round-driver（第 129 轮：新增 `crates/goal/goal-round-driver` 并
+      接入 production dsh-host；实现 active+armed Goal 的 durable checkpoint、
+      canonical positive round、Queued/Claimed/Admitted reservation、pre-step
+      前后 exact authority fence、human/plugin 工作优先、预算/terminal/error/
+      max-tokens/checkpoint-failure 收敛、session-start/hot-load 撤权、owned
+      teardown 与 in-flight task drain；companion invariant 以 listener-first +
+      durable-prefix 关闭 late-load 安装窗口。同步补 Agent emit 重入前缀、
+      AgentLoop MaintenanceGuard/Running wake latch、Goal mutation release 的
+      disarm-wins 及 Session append 原子 publication claim。第 129 轮最终
+      workspace 为 1800 passed / 0 failed / 1 ignored；当前覆盖 production
+      纵向主链与高风险边界，不以 Rust 测试数冒充上游 50 项逐项全覆盖）；
 - [x] command-goal（第 127 轮：新建 `crates/goal/command-goal`，将真实
       `/goal` 人类命令接到 `CommandRuntime + GoalService`：show/create/
       CAS edit/pause/resume/clear、complete 后创建新 identity、精确控制词
@@ -1244,7 +1280,10 @@ cancel/binary 采样边界等用例留待后续轮次）。
       真实端口验证 POST `/api/respond` 200 receipt 与 GET `/api/events.mux`
       200 `text/event-stream`。交互 12 项、Host boot 8 项、approval 26 项、
       mux 聚焦 1 项全绿）；
-- [ ] Rust CLI、profile bundles、composition/HMR/信号退出；
+- [x] Rust CLI、静态 shipped profile、production runProfile 与信号退出（宏阶段 1：
+      `dsh web`/headless/plugin 真实入口；Web 任意 cwd + SPA boot data；
+      DeepSeek HTTP/SSE；Ctrl+C 早到信号锁存、Pending stream 取消、durable flush、
+      Agent/Session 完整解绑及 Host 有界 shutdown；动态 `!!js`/HMR 仍归后续里程碑）；
 - [x] dsh CLI 入口骨架（第 116 轮：parseDshArgs 1:1（profile/web/plugin/
       dump-config 模式 + 内参透传 + help/version/错误语义）6 项测试全绿
       + bin 冒烟三路径（--version/-h/缺 profile 均正确退出码）；profile
@@ -1254,10 +1293,10 @@ cancel/binary 采样边界等用例留待后续轮次）。
       配置重写）/ComposedProfile + compose_profile（bundle→profile→
       home→--patch overlay→telemetry 五层栈 + rows 索引）/all_patches/
       compose_live（用户层每代重读）；4 项测试全绿（insert 数组形状
-      对齐 TS applyEntryPatches）；累计 10 项。偏差：telemetry env
-      参数化注入、healProfilesModuleFallback 无对应、runProfile（信号/
-      启动环境/cmdline/HMR 回退挂载/boot 调用）留待对应服务移植后
-      接线）；
+      对齐 TS applyEntryPatches）；累计 10 项。宏阶段 1 已补齐静态 shipped
+      web/headless runProfile、首次初始化、生产 DeepSeek 与信号生命周期接线；
+      剩余偏差为动态 `!!js`、完整 Node 模块解析、HMR 与
+      healProfilesModuleFallback）；
 - [x] dsh-e2b 命令面扩展 + subprocess-e2b 适配器（第 125 轮：
       dsh-e2b 的 E2bSandbox::run 升级为 E2bCommandOptions（envs/cwd/
       流式 on_stdout/on_stderr 回调/signal），新增 E2bBackgroundOptions +
@@ -1415,7 +1454,7 @@ cancel/binary 采样边界等用例留待后续轮次）。
 5. **Windows 安全**：受限令牌、能力 SID、DACL、COM picker、Job Object/PTY 均需真实 Windows 集成测试。
 6. **存储兼容**：JSONL/zstd/SQLite 必须通过现有 fixture，不能只做"相似格式"。
 
-## 6. 下一步（第 127 轮收尾状态）
+## 6. 下一步（宏阶段 1 封板状态）
 
 已落地：workspace 成员 65+ 个 crate（vendor/cordis 生态 7 包 + core +
 util + session 12 + settings + llm + skill 4 + plan + schedule +
@@ -1431,29 +1470,31 @@ dsh-host 生产组合挂载 agent-presets + profile-boot shipped-root 偏差
 **subprocess-e2b 适配器（第 125 轮，6 项聚焦测试）** + **ApiProxy
 approval/question respond 与真实 HTTP/SSE、安全 fence 闭环（第 126 轮）** +
 **command-goal 人类命令与生产 Host goals/invariant 闭环（第 127 轮）** +
-dsh-host 可启动组合），最终 `cargo test --workspace` 验收为
-1714 passed / 0 failed / 1 ignored（371 个结果分组；见 §1）。
+**tool-goal 模型入口、真实 AgentLoop/Host 生产闭环（第 128 轮）** +
+dsh-host 可启动组合），第 128 轮当时的 `cargo test --workspace` 快照为
+1747 passed / 0 failed / 1 ignored（374 个结果分组）；当前权威验收见 §1。
 
-第 128 轮目标：**tool-goal**。沿用已完成的 GoalService/Host goal domain，
-补齐模型工具入口的 create/edit/pause/resume/complete/clear 与严格 schema、
-CAS/取消/审计事件闭环；暂不把 46+ 项高竞态的 goal-round-driver 混入同轮。
-`runProfile` 继续判定为阻塞：默认 web profile 使用 npm bundle 名，Rust resolver
-目前只支持目录式 bundle，生产 loader 静态注册表为空，且 shipped 配置含 `!!js`
-与动态/HMR 语义；Windows native picker 可作为独立平台能力轮次推进。
+宏阶段 1–3 已完成 **Rust 产品入口、本地执行与外部协议闭环**：静态 shipped web/headless
+profile、production runProfile、DeepSeek HTTP/SSE、Host 生命周期与 Ctrl+C 收敛、
+PowerShell foreground/background、job 工具、Windows ConPTY、持久终端模型工具和
+AppContainer/ACL 文件边界均已落地。Agent/Session/PTY/进程树在 shutdown 后完成解绑
+和有界清理；MCP/LSP/ACP、Python SDK、默认 spawn 与 Codex 出进程 subagent 均通过
+真实协议 fixture。最终 workspace 为 1885 passed / 0 failed / 1 ignored，独立 P0/P1
+复核通过。动态 `!!js`、完整 Node 模块解析、workflow/HMR 与浏览器级 GUI 仍保留到
+最终里程碑。
 
 未完成（按剩余工作量排序）：
 
-1. workflow（engine/worker/tool/ralph——依赖嵌入式 JS 运行时，独立
-   里程碑）与 MCP/LSP/ACP 系列；
-2. M4 收尾：sandbox-local（Linux/macOS-only）、Windows ACL restricted
-   token、code-runtime-worker-thread（嵌入 JS/TS 运行时）；E2B 三件套
+1. 宏阶段 4：JS runtime 决策与 code-runtime worker；
+2. workflow（engine/worker/tool/ralph——依赖嵌入式 JS 运行时，独立
+   里程碑）；
+3. 平台收尾：Linux Landlock 实际 launcher；E2B 三件套
    已完成 core + fs 适配器（第 82–83 轮）+ subprocess-e2b 适配器
    （第 125 轮），真实 HTTP SDK 后端留待后续；subprocess-e2b 的
    spawnTerminal/terminal 阶梯与 PTY 真实 node-pty/ConPTY 后端
    （第 81 轮落地终端 handle 与进程检查层逻辑，真实 OS 绑定留待
    后端里程碑）；credentials-encrypted/OS-keychain 自 backlog 移除
    （TS README 明言 deferred，仓库无此包）；
-3. M6 外壳剩余：Rust CLI 与 profile bundles（runProfile 接线）、
-   托管现有 `web/dist` 浏览器级 GUI 验证；
-4. M7 全量一致性：conformance fixture、golden wire/storage/session
+4. M6 外壳剩余：动态 profile/HMR 与托管现有 `web/dist` 的浏览器级 GUI 验证；
+5. M7 全量一致性：conformance fixture、golden wire/storage/session
    数据、CI 矩阵、Rust Host 默认入口与 1:1 完成声明。

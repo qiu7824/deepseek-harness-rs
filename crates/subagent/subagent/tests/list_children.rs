@@ -1,6 +1,6 @@
 //! Rust port of the core `packages/subagent/subagent/tests/list-children.spec.ts`
 //! + projection behaviors: the timing and identity projection units, and the
-//! live/cold child-listing ladder.
+//!   live/cold child-listing ladder.
 //!
 //! # Deviations
 //!
@@ -126,7 +126,11 @@ async fn folds_timing_across_descriptor_and_turn_boundaries() {
     .await;
     let snapshot = projections.snapshot(&session);
     let timing: SubagentTimingProjection = serde_json::from_value(
-        snapshot.values.get("subagentTiming").expect("timing").clone(),
+        snapshot
+            .values
+            .get("subagentTiming")
+            .expect("timing")
+            .clone(),
     )
     .expect("timing json");
     // Seed replay may re-stamp event times; derive the expectation from the
@@ -251,7 +255,11 @@ impl SessionPersistenceApi for ColdPersistence {
         Ok(())
     }
 
-    async fn append(&self, _id: &dsh_session::SessionId, _events: &[SessionEvent]) -> Result<(), String> {
+    async fn append(
+        &self,
+        _id: &dsh_session::SessionId,
+        _events: &[SessionEvent],
+    ) -> Result<(), String> {
         Ok(())
     }
 
@@ -286,7 +294,11 @@ impl SessionPersistenceApi for ColdPersistence {
     }
 
     async fn list(&self) -> Result<Vec<SessionHeader>, String> {
-        Ok(self.entries.values().map(|(meta, _)| meta.clone()).collect())
+        Ok(self
+            .entries
+            .values()
+            .map(|(meta, _)| meta.clone())
+            .collect())
     }
 
     async fn list_snapshots(&self) -> Result<Vec<SessionPersistenceSnapshot>, String> {
@@ -353,7 +365,10 @@ async fn lists_cold_children_through_persistence_inspection() {
         entries: HashMap::from([
             (
                 "cold-child".to_string(),
-                (cold_header.clone(), vec![descriptor_event(0, "one-shot", None)]),
+                (
+                    cold_header.clone(),
+                    vec![descriptor_event(0, "one-shot", None)],
+                ),
             ),
             // A malformed current-version descriptor folds to no identity.
             (

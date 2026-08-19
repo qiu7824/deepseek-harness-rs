@@ -7,16 +7,17 @@
 
 pub mod index;
 pub mod invariant;
+mod portable_terminal;
 pub mod process_inspector;
 pub mod spawn;
 pub mod terminal;
 
 pub use index::LocalSubprocessRuntime;
+pub use portable_terminal::PortableTerminalHandle;
 pub use process_inspector::{
-    LinuxProcessInspector, MacProcessInspector, ProcStat, ProcessIdentity,
-    ProcessInspector, ProcessInspectorInternals, ProcessTreeEntry, TerminalKillSignal,
-    create_process_inspector, linux_process_group_has_live_members, parse_proc_stat,
-    process_tree,
+    LinuxProcessInspector, MacProcessInspector, ProcStat, ProcessIdentity, ProcessInspector,
+    ProcessInspectorInternals, ProcessTreeEntry, TerminalKillSignal, create_process_inspector,
+    linux_process_group_has_live_members, parse_proc_stat, process_tree,
 };
 pub use spawn::{
     CollectorReader, LocalHandle, LocalSubprocessHandle, OutputCollector, SpawnInternals,

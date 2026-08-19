@@ -139,7 +139,10 @@ pub fn create_launch_environment_snapshot(
             .collect();
         by_source.insert(
             layer.source,
-            Layer { path: layer.path.clone(), values },
+            Layer {
+                path: layer.path.clone(),
+                values,
+            },
         );
     }
     Arc::new(LaunchEnvironmentSnapshot { by_source })

@@ -22,9 +22,9 @@ use std::sync::Arc;
 use cordis::{Context, Service};
 use dsh_session::{SessionEvent, SessionHeader, SessionId, SessionPreparation};
 use dsh_session_persistence::{
-    DEFAULT_PREPARED_SESSION_CACHE_SIZE, DEFAULT_WRITE_BATCH_MAX_DELAY_MS, MAX_WRITE_BATCH_DELAY_MS,
-    PersistenceBackend, PersistenceCoordinator, PersistenceCoordinatorOptions, StoredPrefix,
-    StoredSuffix,
+    DEFAULT_PREPARED_SESSION_CACHE_SIZE, DEFAULT_WRITE_BATCH_MAX_DELAY_MS,
+    MAX_WRITE_BATCH_DELAY_MS, PersistenceBackend, PersistenceCoordinator,
+    PersistenceCoordinatorOptions, StoredPrefix, StoredSuffix,
 };
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -74,7 +74,12 @@ pub fn parse_config(value: &serde_json::Value) -> Result<SqliteConfig, String> {
             "delete" => JournalMode::Delete,
             "truncate" => JournalMode::Truncate,
             "persist" => JournalMode::Persist,
-            _ => return Err("journalMode must be \"wal\", \"delete\", \"truncate\", or \"persist\"".to_string()),
+            _ => {
+                return Err(
+                    "journalMode must be \"wal\", \"delete\", \"truncate\", or \"persist\""
+                        .to_string(),
+                );
+            }
         },
         Some(_) => return Err("journalMode must be a string".to_string()),
     };
@@ -223,9 +228,9 @@ fn open_db_blocking(
     };
     if actual != ":memory:" {
         let file = Path::new(&actual);
-        let parent = file.parent().ok_or_else(|| {
-            format!("session database at \"{actual}\" has no parent directory")
-        })?;
+        let parent = file
+            .parent()
+            .ok_or_else(|| format!("session database at \"{actual}\" has no parent directory"))?;
         create_parent_dirs(parent)?;
         create_database_file(file)?;
     }
@@ -274,7 +279,10 @@ fn create_database_file(path: &Path) -> Result<(), String> {
         }
         #[cfg(not(unix))]
         {
-            std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
         }
     };
     match open() {
@@ -346,7 +354,10 @@ fn read_store_identity(db: &Connection, actual: &str) -> Result<String, String> 
 
 impl SqliteSessionPersistence {
     /// Run one synchronous operation under the connection mutex.
-    fn with_db<R>(&self, operation: impl FnOnce(&Connection) -> Result<R, String>) -> Result<R, String> {
+    fn with_db<R>(
+        &self,
+        operation: impl FnOnce(&Connection) -> Result<R, String>,
+    ) -> Result<R, String> {
         let guard = self.db.lock();
         let db = guard
             .as_ref()
@@ -454,7 +465,8 @@ impl SqliteSessionPersistence {
         self.ensure_ready().await?;
         let identity = self.store_identity();
         let result = self.with_db(|db| {
-            db.execute_batch("BEGIN").map_err(|error| error.to_string())?;
+            db.execute_batch("BEGIN")
+                .map_err(|error| error.to_string())?;
             let outcome = (|| -> Result<Option<StoredPrefix<u64>>, String> {
                 let Some(row) = self.row_for(db, id)? else {
                     return Ok(None);
@@ -470,7 +482,8 @@ impl SqliteSessionPersistence {
             })();
             match outcome {
                 Ok(value) => {
-                    db.execute_batch("COMMIT").map_err(|error| error.to_string())?;
+                    db.execute_batch("COMMIT")
+                        .map_err(|error| error.to_string())?;
                     Ok(value)
                 }
                 Err(error) => {
@@ -568,11 +581,17 @@ impl dsh_session_persistence::SessionPersistenceApi for SqliteSessionPersistence
         self.coordinator().prepare(id).await
     }
 
-    async fn load(&self, id: &SessionId) -> Result<dsh_session_persistence::SessionInspection, String> {
+    async fn load(
+        &self,
+        id: &SessionId,
+    ) -> Result<dsh_session_persistence::SessionInspection, String> {
         self.coordinator().load(id).await
     }
 
-    async fn inspect(&self, id: &SessionId) -> Result<dsh_session_persistence::SessionInspection, String> {
+    async fn inspect(
+        &self,
+        id: &SessionId,
+    ) -> Result<dsh_session_persistence::SessionInspection, String> {
         self.coordinator().inspect(id).await
     }
 
@@ -586,12 +605,7 @@ impl dsh_session_persistence::SessionPersistenceApi for SqliteSessionPersistence
 
     async fn list(&self) -> Result<Vec<SessionHeader>, String> {
         self.ensure_ready().await?;
-        self.with_db(|db| {
-            self.all_session_rows(db)?
-                .iter()
-                .map(row_to_meta)
-                .collect()
-        })
+        self.with_db(|db| self.all_session_rows(db)?.iter().map(row_to_meta).collect())
     }
 
     async fn list_snapshots(
@@ -658,7 +672,10 @@ impl PersistenceBackend<u64> for SqliteSessionPersistence {
             let meta = row_to_meta(&row)?;
             let event_rows = self.event_rows_from(db, id, from_seq)?;
             let ScanRowsResult { preserved, .. } = scan_rows(&event_rows, from_seq)?;
-            Ok(Some(StoredSuffix { meta, events: preserved }))
+            Ok(Some(StoredSuffix {
+                meta,
+                events: preserved,
+            }))
         })
     }
 
@@ -670,7 +687,8 @@ impl PersistenceBackend<u64> for SqliteSessionPersistence {
     ) -> Result<(), String> {
         self.ensure_ready().await?;
         self.with_db(|db| {
-            db.execute_batch("BEGIN").map_err(|error| error.to_string())?;
+            db.execute_batch("BEGIN")
+                .map_err(|error| error.to_string())?;
             let outcome = (|| -> Result<(), String> {
                 if !is_materialized {
                     self.write_row(db, meta)?;
@@ -683,7 +701,8 @@ impl PersistenceBackend<u64> for SqliteSessionPersistence {
                     [meta.id.as_str()],
                 )
                 .map_err(|error| error.to_string())?;
-                db.execute_batch("COMMIT").map_err(|error| error.to_string())?;
+                db.execute_batch("COMMIT")
+                    .map_err(|error| error.to_string())?;
                 Ok(())
             })();
             if outcome.is_err() {
@@ -701,7 +720,8 @@ impl PersistenceBackend<u64> for SqliteSessionPersistence {
     ) -> Result<(), String> {
         self.ensure_ready().await?;
         self.with_db(|db| {
-            db.execute_batch("BEGIN").map_err(|error| error.to_string())?;
+            db.execute_batch("BEGIN")
+                .map_err(|error| error.to_string())?;
             let outcome = (|| -> Result<(), String> {
                 if let Some(torn) = torn_marker {
                     db.execute(
@@ -720,7 +740,8 @@ impl PersistenceBackend<u64> for SqliteSessionPersistence {
                     )
                     .map_err(|error| error.to_string())?;
                 }
-                db.execute_batch("COMMIT").map_err(|error| error.to_string())?;
+                db.execute_batch("COMMIT")
+                    .map_err(|error| error.to_string())?;
                 Ok(())
             })();
             if outcome.is_err() {
@@ -732,12 +753,7 @@ impl PersistenceBackend<u64> for SqliteSessionPersistence {
 
     async fn list(&self) -> Result<Vec<SessionHeader>, String> {
         self.ensure_ready().await?;
-        self.with_db(|db| {
-            self.all_session_rows(db)?
-                .iter()
-                .map(row_to_meta)
-                .collect()
-        })
+        self.with_db(|db| self.all_session_rows(db)?.iter().map(row_to_meta).collect())
     }
 
     async fn close(&self) -> Result<(), String> {
@@ -755,7 +771,10 @@ mod tests {
 
     fn fresh_db_path(tag: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir()
-            .join(format!("dsh-sqlite-{tag}-{}", uuid::Uuid::new_v4().simple()))
+            .join(format!(
+                "dsh-sqlite-{tag}-{}",
+                uuid::Uuid::new_v4().simple()
+            ))
             .join("sessions.db");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         path
@@ -901,8 +920,12 @@ mod tests {
 
         assert!(parse_config(&serde_json::json!({})).is_err());
         assert!(parse_config(&serde_json::json!({"path": "x", "journalMode": "off"})).is_err());
-        assert!(parse_config(&serde_json::json!({"path": "x", "preparedSessionCacheSize": 0})).is_err());
-        assert!(parse_config(&serde_json::json!({"path": "x", "writeBatchMaxDelayMs": 0})).is_err());
+        assert!(
+            parse_config(&serde_json::json!({"path": "x", "preparedSessionCacheSize": 0})).is_err()
+        );
+        assert!(
+            parse_config(&serde_json::json!({"path": "x", "writeBatchMaxDelayMs": 0})).is_err()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -913,15 +936,30 @@ mod tests {
 
         // Lazy materialization: no row until the first append.
         backend.create(header("s1", None)).await.unwrap();
-        assert!(SessionPersistenceApi::list(backend.as_ref()).await.unwrap().is_empty());
+        assert!(
+            SessionPersistenceApi::list(backend.as_ref())
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         backend
             .append(&session_id("s1"), &one_turn_log())
             .await
             .unwrap();
         let inspection = backend.load(&session_id("s1")).await.unwrap();
-        assert_eq!(inspection.events, one_turn_log(), "balanced log loads verbatim");
-        assert_eq!(SessionPersistenceApi::list(backend.as_ref()).await.unwrap().len(), 1);
+        assert_eq!(
+            inspection.events,
+            one_turn_log(),
+            "balanced log loads verbatim"
+        );
+        assert_eq!(
+            SessionPersistenceApi::list(backend.as_ref())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         // seek-capable readFrom returns only the suffix.
         let suffix = backend.read_from(&session_id("s1"), 4).await.unwrap();
@@ -974,19 +1012,38 @@ mod tests {
         let (_ctx, backend) = backend(path.to_str().unwrap()).await;
         let loaded = backend.load(&m.id).await.unwrap();
         assert_eq!(
-            loaded.events.iter().map(|event| event.type_.as_str()).collect::<Vec<_>>(),
+            loaded
+                .events
+                .iter()
+                .map(|event| event.type_.as_str())
+                .collect::<Vec<_>>(),
             vec![
-                "turn/start", "user/message", "step/start", "assistant/message", "step/end", "turn/end",
-                "turn/start", "step/start", "step/end", "turn/end",
+                "turn/start",
+                "user/message",
+                "step/start",
+                "assistant/message",
+                "step/end",
+                "turn/end",
+                "turn/start",
+                "step/start",
+                "step/end",
+                "turn/end",
             ]
         );
         assert_eq!(
-            loaded.events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            loaded
+                .events
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
             vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
         );
         let last = loaded.events.last().unwrap();
         assert_eq!(last.type_, "turn/end");
-        assert_eq!(last.data.get("reason"), Some(&serde_json::json!({"kind": "interrupted"})));
+        assert_eq!(
+            last.data.get("reason"),
+            Some(&serde_json::json!({"kind": "interrupted"}))
+        );
 
         // load() is mutating: the synthetic closers MUST be on disk.
         let stored = probe_rows(&path, "crash");
@@ -1051,7 +1108,11 @@ mod tests {
 
         let (_ctx, backend) = backend(path.to_str().unwrap()).await;
         let loaded = backend.load(&m.id).await.unwrap();
-        assert_eq!(loaded.events, one_turn_log(), "torn tail discarded, committed intact");
+        assert_eq!(
+            loaded.events,
+            one_turn_log(),
+            "torn tail discarded, committed intact"
+        );
 
         // The torn row was physically deleted: a fresh append continues at 6.
         backend
@@ -1082,7 +1143,11 @@ mod tests {
             .unwrap();
         let reloaded = backend.load(&m.id).await.unwrap();
         assert_eq!(
-            reloaded.events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            reloaded
+                .events
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
             vec![0, 1, 2, 3, 4, 5, 6, 7]
         );
         let _ = backend.close().await;
@@ -1142,7 +1207,11 @@ mod tests {
 
         let loaded = b1.load(&m.id).await.unwrap();
         assert_eq!(
-            loaded.events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            loaded
+                .events
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
             vec![0, 1, 2, 3, 4, 5, 6, 7]
         );
         let _ = b1.close().await;
@@ -1163,7 +1232,12 @@ mod tests {
         }
         let (_ctx, backend) = backend(path.to_str().unwrap()).await;
         assert_eq!(
-            SessionPersistenceApi::list(backend.as_ref()).await.unwrap().iter().map(|meta| meta.id.as_str()).collect::<Vec<_>>(),
+            SessionPersistenceApi::list(backend.as_ref())
+                .await
+                .unwrap()
+                .iter()
+                .map(|meta| meta.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["persist"]
         );
         let loaded = backend.load(&m.id).await.unwrap();
@@ -1189,7 +1263,10 @@ mod tests {
         // Reopening the SAME file keeps the revision.
         {
             let (_ctx, backend) = backend(path_a.to_str().unwrap()).await;
-            assert_eq!(backend.list_snapshots().await.unwrap()[0].revision, revision_a);
+            assert_eq!(
+                backend.list_snapshots().await.unwrap()[0].revision,
+                revision_a
+            );
             let _ = backend.close().await;
         }
         // A DIFFERENT store yields a different revision (distinct store ids).
@@ -1207,7 +1284,8 @@ mod tests {
         // Deleting the session and re-materializing mints a new incarnation.
         {
             let db = open_database(path_a.to_str().unwrap(), JournalMode::Wal).unwrap();
-            db.execute("DELETE FROM sessions WHERE id = ?1", [m.id.as_str()]).unwrap();
+            db.execute("DELETE FROM sessions WHERE id = ?1", [m.id.as_str()])
+                .unwrap();
         }
         {
             let (_ctx, backend) = backend(path_a.to_str().unwrap()).await;
@@ -1263,7 +1341,10 @@ mod tests {
         }
         let (_ctx, backend) = backend(path.to_str().unwrap()).await;
         let error = backend.load(&m.id).await.unwrap_err();
-        assert!(error.contains("unsupported legacy request/header-delta event at seq 1"), "{error}");
+        assert!(
+            error.contains("unsupported legacy request/header-delta event at seq 1"),
+            "{error}"
+        );
         let _ = backend.close().await;
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
@@ -1313,7 +1394,10 @@ mod tests {
             let _ = backend.close().await;
         }
         let mut wal_sidecar = delete_path.clone();
-        wal_sidecar.set_file_name(format!("{}-wal", wal_sidecar.file_name().unwrap().to_string_lossy()));
+        wal_sidecar.set_file_name(format!(
+            "{}-wal",
+            wal_sidecar.file_name().unwrap().to_string_lossy()
+        ));
         assert!(!wal_sidecar.exists());
         let _ = std::fs::remove_dir_all(wal_path.parent().unwrap());
         let _ = std::fs::remove_dir_all(delete_path.parent().unwrap());
@@ -1339,7 +1423,9 @@ mod tests {
             )
             .await
             .unwrap();
-        session.append("turn/start", serde_json::json!({"turn": 1}), None).unwrap();
+        session
+            .append("turn/start", serde_json::json!({"turn": 1}), None)
+            .unwrap();
         session
             .append(
                 "user/message",
@@ -1370,15 +1456,28 @@ mod tests {
             )
             .unwrap();
         session
-            .append("turn/end", serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}), None)
+            .append(
+                "turn/end",
+                serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+                None,
+            )
             .unwrap();
         assert!(store.flush(&session).await.unwrap());
 
-        let loaded = backend.load(&session_id("roundtrip-surface")).await.unwrap();
+        let loaded = backend
+            .load(&session_id("roundtrip-surface"))
+            .await
+            .unwrap();
         assert_eq!(loaded.events.len(), 4);
-        assert_eq!(loaded.events[1].surface_op, Some(dsh_session::SurfaceOp::Append));
+        assert_eq!(
+            loaded.events[1].surface_op,
+            Some(dsh_session::SurfaceOp::Append)
+        );
         assert_eq!(loaded.events[1].source_event_seqs, None);
-        assert_eq!(loaded.events[2].surface_op, Some(dsh_session::SurfaceOp::Append));
+        assert_eq!(
+            loaded.events[2].surface_op,
+            Some(dsh_session::SurfaceOp::Append)
+        );
         assert_eq!(loaded.events[2].source_event_seqs, Some(vec![1]));
     }
 
@@ -1406,12 +1505,14 @@ mod tests {
                 .unwrap();
             for event in one_turn_log() {
                 session
-                    .append(&event.type_, event.data, event.surface_op.as_ref().map(|op| {
-                        SurfaceIntent {
+                    .append(
+                        &event.type_,
+                        event.data,
+                        event.surface_op.as_ref().map(|op| SurfaceIntent {
                             surface_op: op.clone(),
                             source_event_seqs: event.source_event_seqs.clone(),
-                        }
-                    }))
+                        }),
+                    )
                     .unwrap();
             }
             assert!(store.flush(&session).await.unwrap());
@@ -1430,7 +1531,9 @@ mod tests {
             )
             .await
             .unwrap();
-        session.append("turn/start", serde_json::json!({"turn": 1}), None).unwrap();
+        session
+            .append("turn/start", serde_json::json!({"turn": 1}), None)
+            .unwrap();
         let _backend = SqliteSessionPersistence::install(
             &ctx,
             SqliteConfig {

@@ -138,7 +138,10 @@ fn coded(message: impl Into<String>, code: TerminalErrorCode) -> TerminalFailure
 }
 
 fn service_disposing() -> TerminalError {
-    TerminalError::new("PTY service is disposing", TerminalErrorCode::ServiceDisposing)
+    TerminalError::new(
+        "PTY service is disposing",
+        TerminalErrorCode::ServiceDisposing,
+    )
 }
 
 fn owner_not_live(owner: &Arc<dyn Agent>) -> TerminalError {
@@ -311,11 +314,7 @@ impl TerminalSessionService {
         pending
     }
 
-    fn release_spawn(
-        &self,
-        pending: &Arc<PendingSpawn>,
-        cleanup_failure: Option<TerminalFailure>,
-    ) {
+    fn release_spawn(&self, pending: &Arc<PendingSpawn>, cleanup_failure: Option<TerminalFailure>) {
         if let Some(failure) = cleanup_failure {
             *pending.cleanup_failure.lock() = Some(failure);
         } else {
@@ -343,7 +342,11 @@ impl TerminalSessionService {
             type_: record.type_.clone(),
             pid: record.session.pid(),
             status: record.session.status(),
-            motd: if motd { record.session.motd() } else { String::new() },
+            motd: if motd {
+                record.session.motd()
+            } else {
+                String::new()
+            },
         }
     }
 
@@ -386,7 +389,10 @@ impl TerminalSessionService {
             let backends = self.backends.lock();
             if backends.iter().any(|(type_, _)| type_ == &backend.type_()) {
                 return Err(coded(
-                    format!("a PTY backend named \"{}\" is already registered", backend.type_()),
+                    format!(
+                        "a PTY backend named \"{}\" is already registered",
+                        backend.type_()
+                    ),
                     TerminalErrorCode::DuplicateBackend,
                 ));
             }
@@ -394,7 +400,9 @@ impl TerminalSessionService {
         // The TS set rides the effect setup (observable immediately); the
         // Rust effect executes asynchronously, so publish here and let the
         // disposer remove exactly this contribution.
-        self.backends.lock().push((backend.type_(), backend.clone()));
+        self.backends
+            .lock()
+            .push((backend.type_(), backend.clone()));
         let backends = self.backends.clone();
         let disposer = self.ctx.effect(
             "pty.registerBackend()",
@@ -404,12 +412,9 @@ impl TerminalSessionService {
                     let backend = backend.clone();
                     Box::pin(async move {
                         let mut list = backends.lock();
-                        if let Some(index) = list
-                            .iter()
-                            .position(|(type_, registered)| {
-                                type_ == &backend.type_() && Arc::ptr_eq(registered, &backend)
-                            })
-                        {
+                        if let Some(index) = list.iter().position(|(type_, registered)| {
+                            type_ == &backend.type_() && Arc::ptr_eq(registered, &backend)
+                        }) {
                             list.remove(index);
                         }
                     })
@@ -422,7 +427,11 @@ impl TerminalSessionService {
     /// List registered backend types in registration order (TS
     /// `listBackends`).
     pub fn list_backends(&self) -> Vec<String> {
-        self.backends.lock().iter().map(|(type_, _)| type_.clone()).collect()
+        self.backends
+            .lock()
+            .iter()
+            .map(|(type_, _)| type_.clone())
+            .collect()
     }
 
     /// Create and publish one owner-scoped session after backend setup
@@ -453,14 +462,11 @@ impl TerminalSessionService {
             let caller = signal.clone();
             let reservation = reservation.clone();
             Arc::new(move || {
-                caller.as_ref().is_some_and(|abort| abort())
-                    || reservation.aborted.load(SeqCst)
+                caller.as_ref().is_some_and(|abort| abort()) || reservation.aborted.load(SeqCst)
             })
         };
-        let session_id = terminal_session_id(format!(
-            "pty-{}",
-            self.next_id.fetch_add(1, SeqCst) + 1
-        ));
+        let session_id =
+            terminal_session_id(format!("pty-{}", self.next_id.fetch_add(1, SeqCst) + 1));
         let service = self.clone();
         Ok(Box::pin(async move {
             let spec = TerminalBackendSpawnSpec {
@@ -504,7 +510,10 @@ impl TerminalSessionService {
                     closing: Mutex::new(None),
                     close_generation: AtomicU64::new(0),
                 });
-                service.sessions.lock().insert(session_id.clone(), record.clone());
+                service
+                    .sessions
+                    .lock()
+                    .insert(session_id.clone(), record.clone());
                 let result = service.snapshot(&record, true);
                 service.release_spawn(&reservation, None);
                 if let Some(release_name) = release_name {
@@ -533,16 +542,15 @@ impl TerminalSessionService {
                     failure = TerminalFailure::Coded(reason);
                 }
             }
-            let failure = if rollback_failure.is_some()
-                && !signal.as_ref().is_some_and(|signal| signal())
-            {
-                TerminalFailure::Aggregate {
-                    message: "PTY spawn and rollback both failed".to_string(),
-                    failures: vec![failure, rollback_failure.expect("rollback failure set")],
-                }
-            } else {
-                failure
-            };
+            let failure =
+                if rollback_failure.is_some() && !signal.as_ref().is_some_and(|signal| signal()) {
+                    TerminalFailure::Aggregate {
+                        message: "PTY spawn and rollback both failed".to_string(),
+                        failures: vec![failure, rollback_failure.expect("rollback failure set")],
+                    }
+                } else {
+                    failure
+                };
             // The release mirrors the TS `finally`: it must run on EVERY
             // failure path, including the aggregate (an early return here
             // would leave the reservation unsettled and hang disposal).
@@ -580,7 +588,9 @@ impl TerminalSessionService {
     ) -> Result<Arc<dyn TerminalSendOperation>, TerminalFailure> {
         let record = self.expect_owned(owner, id)?;
         if record.closing.lock().is_some() {
-            return Err(TerminalFailure::Plain(format!("PTY session {id} is closing")));
+            return Err(TerminalFailure::Plain(format!(
+                "PTY session {id} is closing"
+            )));
         }
         if record.active.lock().is_some() {
             return Err(coded(
@@ -624,10 +634,7 @@ impl TerminalSessionService {
     {
         let session = self.expect_owned(owner, id)?.session.clone();
         Ok(Box::pin(async move {
-            session
-                .signal(signal)
-                .await
-                .map_err(TerminalFailure::Plain)
+            session.signal(signal).await.map_err(TerminalFailure::Plain)
         }))
     }
 
@@ -843,25 +850,26 @@ impl TerminalSessionService {
         records: Vec<Arc<SessionRecord>>,
         reason: String,
     ) -> BoxFuture<'static, Result<(), TerminalFailure>> {
-        let installs: Vec<(Arc<SessionRecord>, Shared<BoxFuture<'static, Result<(), String>>>, u64)> =
-            records
-                .iter()
-                .map(|record| {
-                    // Take the fence OUTSIDE the match (guard-lifetime
-                    // deadlock on `install_closing`'s re-lock — see `kill`).
-                    let existing = { record.closing.lock().clone() };
-                    match existing {
-                        Some(fence) => {
-                            (record.clone(), fence, record.close_generation.load(SeqCst))
-                        }
-                        None => {
-                            let fence = record.session.close(&reason).boxed().shared();
-                            let generation = record.install_closing(fence.clone());
-                            (record.clone(), fence, generation)
-                        }
+        let installs: Vec<(
+            Arc<SessionRecord>,
+            Shared<BoxFuture<'static, Result<(), String>>>,
+            u64,
+        )> = records
+            .iter()
+            .map(|record| {
+                // Take the fence OUTSIDE the match (guard-lifetime
+                // deadlock on `install_closing`'s re-lock — see `kill`).
+                let existing = { record.closing.lock().clone() };
+                match existing {
+                    Some(fence) => (record.clone(), fence, record.close_generation.load(SeqCst)),
+                    None => {
+                        let fence = record.session.close(&reason).boxed().shared();
+                        let generation = record.install_closing(fence.clone());
+                        (record.clone(), fence, generation)
                     }
-                })
-                .collect();
+                }
+            })
+            .collect();
         let service = self.clone();
         Box::pin(async move {
             let futures: Vec<_> = installs
@@ -946,10 +954,10 @@ impl TerminalSessionService {
     #[doc(hidden)]
     pub fn pending_abort_error(&self, owner: &Arc<dyn Agent>) -> Option<TerminalError> {
         let key = owner_key(owner);
-        self.pending
-            .lock()
-            .get(&key)
-            .and_then(|list| list.iter().find_map(|pending| pending.abort_error.lock().clone()))
+        self.pending.lock().get(&key).and_then(|list| {
+            list.iter()
+                .find_map(|pending| pending.abort_error.lock().clone())
+        })
     }
 }
 

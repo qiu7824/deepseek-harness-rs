@@ -22,7 +22,11 @@ pub fn filter_session_results(
 ) -> Vec<SessionRecord> {
     records
         .iter()
-        .filter(|record| filters.iter().all(|filter| session_predicate(filter, record)))
+        .filter(|record| {
+            filters
+                .iter()
+                .all(|filter| session_predicate(filter, record))
+        })
         .cloned()
         .collect()
 }
@@ -35,7 +39,11 @@ pub fn filter_session_event_documents(
 ) -> Vec<SessionEventSearchDocument> {
     documents
         .iter()
-        .filter(|document| filters.iter().all(|filter| event_predicate(filter, document)))
+        .filter(|document| {
+            filters
+                .iter()
+                .all(|filter| event_predicate(filter, document))
+        })
         .cloned()
         .collect()
 }
@@ -54,12 +62,10 @@ pub fn materialize_session_result_filters(
             SessionResultFilter::Cwd { values } => Ok(SessionResultFilter::Cwd {
                 values: values.clone(),
             }),
-            SessionResultFilter::CreatedAt { from, to } => {
-                Ok(SessionResultFilter::CreatedAt {
-                    from: *from,
-                    to: *to,
-                })
-            }
+            SessionResultFilter::CreatedAt { from, to } => Ok(SessionResultFilter::CreatedAt {
+                from: *from,
+                to: *to,
+            }),
             SessionResultFilter::Parent { values } => Ok(SessionResultFilter::Parent {
                 values: values.clone(),
             }),
@@ -89,12 +95,12 @@ pub fn materialize_session_event_result_filters(
             SessionEventResultFilter::Type { values } => Ok(SessionEventResultFilter::Type {
                 values: values.clone(),
             }),
-            SessionEventResultFilter::Surface { values } => {
-                Ok(SessionEventResultFilter::Surface { values: values.clone() })
-            }
-            SessionEventResultFilter::Text { text } => Ok(SessionEventResultFilter::Text {
-                text: text.clone(),
+            SessionEventResultFilter::Surface { values } => Ok(SessionEventResultFilter::Surface {
+                values: values.clone(),
             }),
+            SessionEventResultFilter::Text { text } => {
+                Ok(SessionEventResultFilter::Text { text: text.clone() })
+            }
         })
         .collect()
 }
@@ -126,16 +132,17 @@ fn session_predicate(filter: &SessionResultFilter, record: &SessionRecord) -> bo
             matches_range(record.header.created_at as f64, *from, *to)
         }
         SessionResultFilter::Parent { values } => values.contains(&record.header.parent_session),
-        SessionResultFilter::Availability { values } => values
-            .iter()
-            .any(|value| match value {
-                crate::types::SessionAvailability::Live => record.live,
-                crate::types::SessionAvailability::Persisted => record.persisted,
-            }),
+        SessionResultFilter::Availability { values } => values.iter().any(|value| match value {
+            crate::types::SessionAvailability::Live => record.live,
+            crate::types::SessionAvailability::Persisted => record.persisted,
+        }),
     }
 }
 
-fn event_predicate(filter: &SessionEventResultFilter, document: &SessionEventSearchDocument) -> bool {
+fn event_predicate(
+    filter: &SessionEventResultFilter,
+    document: &SessionEventSearchDocument,
+) -> bool {
     match filter {
         SessionEventResultFilter::Seq { from, to } => {
             matches_range(document.seq as f64, *from, *to)
@@ -145,12 +152,10 @@ fn event_predicate(filter: &SessionEventResultFilter, document: &SessionEventSea
         }
         SessionEventResultFilter::Type { values } => values.contains(&document.type_),
         SessionEventResultFilter::Surface { values } => values.contains(&document.surface),
-        SessionEventResultFilter::Text { text } => {
-            match compile_session_text_filter(text) {
-                Ok(pattern) => pattern.is_match(&document.text),
-                Err(_) => false,
-            }
-        }
+        SessionEventResultFilter::Text { text } => match compile_session_text_filter(text) {
+            Ok(pattern) => pattern.is_match(&document.text),
+            Err(_) => false,
+        },
     }
 }
 
@@ -171,7 +176,9 @@ pub fn surface_from_str(value: &str) -> Option<SessionEventSurface> {
 /// Validate one raw range clause (TS `validateRange`).
 pub fn validate_range(name: &str, range: SessionResultRange) -> Result<(), SessionQueryError> {
     if range.from.is_some_and(|from| !from.is_finite()) {
-        return Err(invalid_filter(&format!("{name} filter from must be finite")));
+        return Err(invalid_filter(&format!(
+            "{name} filter from must be finite"
+        )));
     }
     if range.to.is_some_and(|to| !to.is_finite()) {
         return Err(invalid_filter(&format!("{name} filter to must be finite")));

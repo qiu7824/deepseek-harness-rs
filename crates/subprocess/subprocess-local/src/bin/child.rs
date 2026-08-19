@@ -29,7 +29,10 @@ fn main() {
             // `both <text> <count>`: write `<text>\n` `<count>` times to
             // BOTH stdout and stderr, flushing so pipes observe the bytes.
             let text = rest.first().map(String::as_str).unwrap_or("line");
-            let count: u64 = rest.get(1).and_then(|value| value.parse().ok()).unwrap_or(1);
+            let count: u64 = rest
+                .get(1)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(1);
             let stdout = std::io::stdout();
             let stderr = std::io::stderr();
             let mut out = stdout.lock();
@@ -44,11 +47,17 @@ fn main() {
             }
         }
         "exit" => {
-            let code: i32 = rest.first().and_then(|value| value.parse().ok()).unwrap_or(0);
+            let code: i32 = rest
+                .first()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
             exit(code);
         }
         "sleep" => {
-            let ms: u64 = rest.first().and_then(|value| value.parse().ok()).unwrap_or(100);
+            let ms: u64 = rest
+                .first()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(100);
             sleep(Duration::from_millis(ms));
         }
         "stdin-cat" => {
@@ -80,7 +89,10 @@ fn main() {
             // Spawn a sleeping grandchild and wait even longer: the grandchild
             // must survive the direct child's exit so tree-scoped teardown has
             // a survivor to kill.
-            let ms: u64 = rest.first().and_then(|value| value.parse().ok()).unwrap_or(500);
+            let ms: u64 = rest
+                .first()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(500);
             let helper = std::env::current_exe().expect("current_exe");
             let child = std::process::Command::new(helper)
                 .args(["--dsh-child", "sleep", &(ms * 10).to_string()])

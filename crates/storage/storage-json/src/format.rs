@@ -56,8 +56,10 @@ pub fn serialize(name: &str, state: &UnitState) -> String {
                 .collect(),
         ),
     );
-    format!("{}\n", serde_json::to_string_pretty(&JsonValue::Object(document))
-        .expect("unit state serializes"))
+    format!(
+        "{}\n",
+        serde_json::to_string_pretty(&JsonValue::Object(document)).expect("unit state serializes")
+    )
 }
 
 /// Parse file content into unit state, validating shape and version (TS
@@ -148,11 +150,18 @@ mod tests {
         let mut records = IndexMap::new();
         records.insert("k".to_string(), serde_json::json!({"hello": "world"}));
         tables.insert("t".to_string(), records);
-        let state = UnitState { version: 1, global: JsonValue::Null, tables };
+        let state = UnitState {
+            version: 1,
+            global: JsonValue::Null,
+            tables,
+        };
         let text = serialize("shape", &state);
         assert!(text.ends_with('\n'));
         let parsed = parse(&text, &descriptor()).expect("parse");
-        assert_eq!(parsed.tables["t"]["k"], serde_json::json!({"hello": "world"}));
+        assert_eq!(
+            parsed.tables["t"]["k"],
+            serde_json::json!({"hello": "world"})
+        );
         assert_eq!(parsed.global, JsonValue::Null);
         // The pretty-printed shape matches the TS expected string.
         let expected = "{\n  \"unit\": {\n    \"name\": \"shape\",\n    \"version\": 1\n  },\n  \"global\": null,\n  \"tables\": {\n    \"t\": {\n      \"k\": {\n        \"hello\": \"world\"\n      }\n    }\n  }\n}\n";
@@ -161,7 +170,9 @@ mod tests {
 
     #[test]
     fn parse_rejects_malformed_and_foreign_documents() {
-        let error = parse("not json at all", &descriptor()).err().expect("reject");
+        let error = parse("not json at all", &descriptor())
+            .err()
+            .expect("reject");
         assert_eq!(error.code, StorageErrorCode::MalformedMedium);
 
         let foreign = serde_json::json!({

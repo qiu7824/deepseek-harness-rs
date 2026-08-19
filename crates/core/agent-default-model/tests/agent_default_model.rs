@@ -42,7 +42,11 @@ impl cordis::Plugin for SettingsPlugin {
         Some("memory-settings")
     }
 
-    async fn apply(&self, ctx: &Context, _config: cordis::ArcValue) -> Result<(), cordis::PluginError> {
+    async fn apply(
+        &self,
+        ctx: &Context,
+        _config: cordis::ArcValue,
+    ) -> Result<(), cordis::PluginError> {
         let provider = SettingsProvider::install(ctx, self.storage.clone());
         let _ = provider;
         Ok(())
@@ -79,7 +83,9 @@ fn selection(service: &Arc<AgentDefaultModelConfigService>) -> (String, String, 
     (
         value.provider,
         value.model,
-        value.reasoning_effort.map(|effort| effort.as_str().to_string()),
+        value
+            .reasoning_effort
+            .map(|effort| effort.as_str().to_string()),
     )
 }
 
@@ -88,7 +94,11 @@ async fn resolves_the_user_layer_over_the_composition_entry() {
     let (ctx, _settings_fiber, default_model) = boot().await;
     assert_eq!(
         selection(&default_model),
-        ("deepseek-official".to_string(), "deepseek-v4-flash".to_string(), None)
+        (
+            "deepseek-official".to_string(),
+            "deepseek-v4-flash".to_string(),
+            None
+        )
     );
 
     let mut next = default_model.current_selection();
@@ -98,7 +108,11 @@ async fn resolves_the_user_layer_over_the_composition_entry() {
     default_model.save_selection(next).await.unwrap();
     assert_eq!(
         selection(&default_model),
-        ("acme-gateway".to_string(), "acme-large".to_string(), Some("high".to_string()))
+        (
+            "acme-gateway".to_string(),
+            "acme-large".to_string(),
+            Some("high".to_string())
+        )
     );
     let _ = ctx;
 }
@@ -138,7 +152,11 @@ async fn layers_a_hand_written_partial_section_over_the_entry() {
         .unwrap();
     assert_eq!(
         selection(&default_model),
-        ("deepseek-official".to_string(), "deepseek-reasoner".to_string(), None)
+        (
+            "deepseek-official".to_string(),
+            "deepseek-reasoner".to_string(),
+            None
+        )
     );
 }
 
@@ -156,7 +174,11 @@ async fn falls_back_to_the_entry_when_the_settings_provider_detaches() {
     settings_fiber.dispose().await;
     assert_eq!(
         selection(&default_model),
-        ("deepseek-official".to_string(), "deepseek-v4-flash".to_string(), None)
+        (
+            "deepseek-official".to_string(),
+            "deepseek-v4-flash".to_string(),
+            None
+        )
     );
     let _ = ctx;
 }

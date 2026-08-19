@@ -55,10 +55,7 @@ fn create_database_file(path: &Path) -> Result<(), String> {
 }
 
 /// Open, validate, and initialize persistent and connection-local schemas.
-pub fn open_search_database(
-    path: &str,
-    journal_mode: JournalMode,
-) -> Result<Connection, String> {
+pub fn open_search_database(path: &str, journal_mode: JournalMode) -> Result<Connection, String> {
     let actual: PathBuf = if path == ":memory:" {
         PathBuf::from(path)
     } else {
@@ -66,7 +63,9 @@ pub fn open_search_database(
         std::path::absolute(Path::new(path)).map_err(|error| error.to_string())?
     };
     if actual != Path::new(":memory:") {
-        let parent = actual.parent().ok_or_else(|| "database path has no parent directory".to_string())?;
+        let parent = actual
+            .parent()
+            .ok_or_else(|| "database path has no parent directory".to_string())?;
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         create_database_file(&actual)?;
     }
@@ -79,11 +78,11 @@ pub fn open_search_database(
                 JournalMode::Truncate => "TRUNCATE",
                 JournalMode::Persist => "PERSIST",
             };
-            if let Err(error) = db.query_row(
-                &format!("PRAGMA journal_mode = {journal}"),
-                [],
-                |row| row.get::<_, String>(0),
-            ) {
+            if let Err(error) =
+                db.query_row(&format!("PRAGMA journal_mode = {journal}"), [], |row| {
+                    row.get::<_, String>(0)
+                })
+            {
                 let _ = db.close();
                 return Err(error.to_string());
             }

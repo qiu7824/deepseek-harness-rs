@@ -13,9 +13,7 @@ use dsh_session_persistence::SessionPersistenceApi;
 use dsh_storage::Storage;
 use dsh_storage_domain::{DomainFacility, DomainFacilityConfig};
 use dsh_storage_test_support::{MemoryMediaPool, MemoryStorageBackend};
-use dsh_workspace::{
-    LiveSessionStore, SessionDeleteFn, WorkspaceRegistry,
-};
+use dsh_workspace::{LiveSessionStore, SessionDeleteFn, WorkspaceRegistry};
 use parking_lot::Mutex;
 
 static WS_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -73,11 +71,17 @@ impl SessionPersistenceApi for FakePersistence {
         Ok(())
     }
 
-    async fn load(&self, _id: &SessionId) -> Result<dsh_session_persistence::SessionInspection, String> {
+    async fn load(
+        &self,
+        _id: &SessionId,
+    ) -> Result<dsh_session_persistence::SessionInspection, String> {
         Err("event bodies must not be loaded".to_string())
     }
 
-    async fn inspect(&self, _id: &SessionId) -> Result<dsh_session_persistence::SessionInspection, String> {
+    async fn inspect(
+        &self,
+        _id: &SessionId,
+    ) -> Result<dsh_session_persistence::SessionInspection, String> {
         Err("event bodies must not be inspected".to_string())
     }
 
@@ -147,7 +151,11 @@ impl Harness {
             WS_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));
         std::fs::create_dir_all(&root).expect("temp root");
-        Self { _ctx: ctx, handler, root }
+        Self {
+            _ctx: ctx,
+            handler,
+            root,
+        }
     }
 
     async fn post(&self, method: &str, payload: serde_json::Value) -> serde_json::Value {
@@ -188,10 +196,7 @@ fn create_lists_and_renames_a_workspace() {
         let harness = Harness::new();
         let path = harness.root.to_string_lossy().into_owned();
         let created = harness
-            .post(
-                "workspace.create",
-                serde_json::json!({ "path": path }),
-            )
+            .post("workspace.create", serde_json::json!({ "path": path }))
             .await;
         assert_eq!(created["result"]["ok"], true, "{created}");
         let workspace = &created["result"]["value"]["workspace"];
@@ -208,17 +213,19 @@ fn create_lists_and_renames_a_workspace() {
 
         // A second create reuses the same workspace.
         let again = harness
-            .post(
-                "workspace.create",
-                serde_json::json!({ "path": path }),
-            )
+            .post("workspace.create", serde_json::json!({ "path": path }))
             .await;
         assert_eq!(again["result"]["ok"], true);
         assert_eq!(again["result"]["value"]["created"], false);
-        assert_eq!(again["result"]["value"]["workspace"]["workspaceId"], workspace_id);
+        assert_eq!(
+            again["result"]["value"]["workspace"]["workspaceId"],
+            workspace_id
+        );
 
         let listed = harness.post("workspace.list", serde_json::json!({})).await;
-        let items = listed["result"]["value"]["items"].as_array().expect("items");
+        let items = listed["result"]["value"]["items"]
+            .as_array()
+            .expect("items");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["workspaceId"], workspace_id);
 
@@ -229,7 +236,10 @@ fn create_lists_and_renames_a_workspace() {
             )
             .await;
         assert_eq!(renamed["result"]["ok"], true, "{renamed}");
-        assert_eq!(renamed["result"]["value"]["workspace"]["title"], "My Project");
+        assert_eq!(
+            renamed["result"]["value"]["workspace"]["title"],
+            "My Project"
+        );
     });
 }
 
@@ -239,10 +249,7 @@ fn delete_removes_the_registration_and_unknown_ids_are_workspace_not_found() {
         let harness = Harness::new();
         let path = harness.root.to_string_lossy().into_owned();
         let created = harness
-            .post(
-                "workspace.create",
-                serde_json::json!({ "path": path }),
-            )
+            .post("workspace.create", serde_json::json!({ "path": path }))
             .await;
         let workspace_id = created["result"]["value"]["workspace"]["workspaceId"]
             .as_str()
@@ -268,7 +275,10 @@ fn delete_removes_the_registration_and_unknown_ids_are_workspace_not_found() {
 
         let listed = harness.post("workspace.list", serde_json::json!({})).await;
         assert_eq!(
-            listed["result"]["value"]["items"].as_array().expect("items").len(),
+            listed["result"]["value"]["items"]
+                .as_array()
+                .expect("items")
+                .len(),
             0
         );
     });
@@ -284,13 +294,13 @@ fn create_rejects_a_missing_directory_with_workspace_invalid_path() {
             .to_string_lossy()
             .into_owned();
         let response = harness
-            .post(
-                "workspace.create",
-                serde_json::json!({ "path": missing }),
-            )
+            .post("workspace.create", serde_json::json!({ "path": missing }))
             .await;
         assert_eq!(response["result"]["ok"], false);
-        assert_eq!(response["result"]["error"]["code"], "workspace-invalid-path");
+        assert_eq!(
+            response["result"]["error"]["code"],
+            "workspace-invalid-path"
+        );
     });
 }
 

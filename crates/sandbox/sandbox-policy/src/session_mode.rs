@@ -39,11 +39,7 @@ pub fn effective_sandbox_mode(events: &[SessionEvent]) -> Option<SandboxMode> {
 /// `sandbox/mode` event — the switch IS its event; nothing mutates mode
 /// state out of band.
 pub fn set_sandbox_mode(session: &Session, mode: SandboxMode) -> Result<SessionEvent, String> {
-    session.append(
-        "sandbox/mode",
-        json!({ "mode": mode.as_str() }),
-        None,
-    )
+    session.append("sandbox/mode", json!({ "mode": mode.as_str() }), None)
 }
 
 #[cfg(test)]
@@ -67,7 +63,11 @@ mod tests {
     fn the_mode_vocabulary_lists_every_mode() {
         assert_eq!(
             SANDBOX_MODES,
-            &[SandboxMode::ReadOnly, SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess]
+            &[
+                SandboxMode::ReadOnly,
+                SandboxMode::WorkspaceWrite,
+                SandboxMode::DangerFullAccess
+            ]
         );
     }
 

@@ -37,7 +37,11 @@ pub struct DomainError {
 
 impl DomainError {
     pub fn new(code: DomainErrorCode, message: impl Into<String>) -> Self {
-        Self { code, message: message.into(), detail: None }
+        Self {
+            code,
+            message: message.into(),
+            detail: None,
+        }
     }
 
     pub fn invalid_record(message: impl Into<String>, table: &str, key: &str) -> Self {

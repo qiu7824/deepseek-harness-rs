@@ -136,7 +136,8 @@ pub fn parse_date(date: &str) -> DateTime<Utc> {
         return Utc::now() + chrono::Duration::milliseconds(parsed);
     }
     let time_only = Regex::new(r"^\d{1,2}(:\d{1,2}){1,2}$").expect("static regex");
-    let date_time_no_year = Regex::new(r"^\d{1,2}-\d{1,2}-\d{1,2}(:\d{1,2}){1,2}$").expect("static regex");
+    let date_time_no_year =
+        Regex::new(r"^\d{1,2}-\d{1,2}-\d{1,2}(:\d{1,2}){1,2}$").expect("static regex");
     if time_only.is_match(date) {
         let now = Local::now();
         let parts: Vec<u32> = date.split(':').map(|p| p.parse().unwrap_or(0)).collect();
@@ -206,7 +207,10 @@ mod tests {
     #[test]
     fn parse_durations() {
         assert_eq!(parse_time("10m"), 10 * MINUTE);
-        assert_eq!(parse_time("1w2d3h4m5s"), WEEK + 2 * DAY + 3 * HOUR + 4 * MINUTE + 5 * SECOND);
+        assert_eq!(
+            parse_time("1w2d3h4m5s"),
+            WEEK + 2 * DAY + 3 * HOUR + 4 * MINUTE + 5 * SECOND
+        );
         assert_eq!(parse_time("30s"), 30 * SECOND);
         assert_eq!(parse_time("1.5h"), (1.5 * HOUR as f64) as i64);
         assert_eq!(parse_time(""), 0);
@@ -241,7 +245,10 @@ mod tests {
     #[test]
     fn templates() {
         let time: DateTime<Local> = "2024-03-05T06:07:08.009+08:00".parse().unwrap();
-        assert_eq!(template("yyyy-MM-dd hh:mm:ss.SSS", &time), "2024-03-05 06:07:08.009");
+        assert_eq!(
+            template("yyyy-MM-dd hh:mm:ss.SSS", &time),
+            "2024-03-05 06:07:08.009"
+        );
         assert_eq!(template("yy", &time), "24");
     }
 
@@ -250,6 +257,9 @@ mod tests {
         let parsed = parse_date("2h");
         let lower = Utc::now() + chrono::Duration::hours(2) - chrono::Duration::minutes(1);
         let upper = Utc::now() + chrono::Duration::hours(2) + chrono::Duration::minutes(1);
-        assert!(parsed >= lower && parsed <= upper, "2h should land near now+2h");
+        assert!(
+            parsed >= lower && parsed <= upper,
+            "2h should land near now+2h"
+        );
     }
 }

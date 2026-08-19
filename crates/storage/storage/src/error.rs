@@ -38,7 +38,10 @@ pub struct StorageError {
 
 impl StorageError {
     pub fn new(code: StorageErrorCode, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self {
+            code,
+            message: message.into(),
+        }
     }
 }
 

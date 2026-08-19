@@ -144,7 +144,7 @@ pub trait PersistenceBackend<TornMarker: Clone + Send + Sync + 'static = ()>: Se
 
     /// Read a stored prefix by id, scanning every backend storage scope.
     async fn load_stored(&self, id: &SessionId)
-        -> Result<Option<StoredPrefix<TornMarker>>, String>;
+    -> Result<Option<StoredPrefix<TornMarker>>, String>;
 
     /// Read the current source-qualified revision for one stored session.
     async fn read_stored_revision(
@@ -232,7 +232,9 @@ struct PreparedSessionSource<TornMarker> {
     closers: Vec<SessionEvent>,
 }
 
-impl<TornMarker: Clone + Send + Sync + 'static> PreparedSource for PreparedSessionSource<TornMarker> {
+impl<TornMarker: Clone + Send + Sync + 'static> PreparedSource
+    for PreparedSessionSource<TornMarker>
+{
     fn session(&self) -> &Session {
         &self.session
     }
@@ -263,7 +265,10 @@ fn seed_covers_prefix(seed: &[SessionEvent], prefix: &[SessionEvent]) -> bool {
 /// Reject events from an obsolete v0 vocabulary that this build cannot
 /// replay.
 fn assert_supported_events(events: &[SessionEvent], id: &SessionId) -> Result<(), String> {
-    if let Some(legacy) = events.iter().find(|event| event.type_ == "request/header-delta") {
+    if let Some(legacy) = events
+        .iter()
+        .find(|event| event.type_ == "request/header-delta")
+    {
         return Err(format!(
             "session \"{}\" contains unsupported legacy request/header-delta event at seq {}",
             id.as_str(),
@@ -367,7 +372,10 @@ fn migrate_legacy_steering_event(
         }
         message.insert(key.clone(), value.clone());
     }
-    message.insert("id".to_string(), JsonValue::String(legacy_message_id(id, event.seq)));
+    message.insert(
+        "id".to_string(),
+        JsonValue::String(legacy_message_id(id, event.seq)),
+    );
     message.insert("role".to_string(), JsonValue::String("user".to_string()));
     let mut migrated = event.clone();
     migrated.type_ = "user/message".to_string();
@@ -552,7 +560,10 @@ fn migrate_legacy_message_event(
                 return migrated;
             }
             let mut record = data.clone();
-            record.insert("id".to_string(), JsonValue::String(legacy_message_id(id, event.seq)));
+            record.insert(
+                "id".to_string(),
+                JsonValue::String(legacy_message_id(id, event.seq)),
+            );
             record.insert("role".to_string(), JsonValue::String("user".to_string()));
             migrated.data = JsonValue::Object(record);
         }
@@ -978,7 +989,10 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 }
                 let events = snapshot_stored_events(&suffix.events, &id)?;
                 coordinator.assert_events_supported(&suffix.meta, &events)?;
-                return Ok(SessionReadFromResult { meta: suffix.meta, events });
+                return Ok(SessionReadFromResult {
+                    meta: suffix.meta,
+                    events,
+                });
             }
             let (meta, events) = coordinator.read_stored_prefix(&id).await?;
             Ok(SessionReadFromResult {
@@ -1247,11 +1261,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
 
     /// Build a format refusal that points at the raw artifact when the
     /// backend has one.
-    fn unsupported(
-        &self,
-        meta: &SessionHeader,
-        reason: String,
-    ) -> SessionFormatUnsupportedError {
+    fn unsupported(&self, meta: &SessionHeader, reason: String) -> SessionFormatUnsupportedError {
         let location = self.backend.locate(meta);
         SessionFormatUnsupportedError::new(
             match &location {
@@ -1298,10 +1308,10 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                             }
                         }
                         if !errors.is_empty() {
-                            coordinator.ctx.named_logger(Some(backend_name)).error(vec![arc(format!(
-                                "dispose failed: {}",
-                                errors.join("; ")
-                            ))]);
+                            coordinator
+                                .ctx
+                                .named_logger(Some(backend_name))
+                                .error(vec![arc(format!("dispose failed: {}", errors.join("; ")))]);
                         }
                         let _ = coordinator.backend.close().await;
                     })
@@ -1320,15 +1330,19 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 None
             })
         });
-        let _ = futures::executor::block_on(
-            ctx.on("session/created", created_listener, EventOptions::default()),
-        );
+        let _ = futures::executor::block_on(ctx.on(
+            "session/created",
+            created_listener,
+            EventOptions::default(),
+        ));
 
         // session/event: keep a persistence-owned copy of each frozen event.
         let event_coordinator = Arc::clone(&coordinator);
         let event_listener: Arc<Listener> = Arc::new(move |_ctx, args| {
             let session = downcast::<Session>(&args[0]).expect("session arg").clone();
-            let event = downcast::<SessionEvent>(&args[1]).expect("event arg").clone();
+            let event = downcast::<SessionEvent>(&args[1])
+                .expect("event arg")
+                .clone();
             let coordinator = Arc::clone(&event_coordinator);
             Box::pin(async move {
                 let live = coordinator.init_for(&session);
@@ -1336,9 +1350,11 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 None
             })
         });
-        let _ = futures::executor::block_on(
-            ctx.on("session/event", event_listener, EventOptions::default()),
-        );
+        let _ = futures::executor::block_on(ctx.on(
+            "session/event",
+            event_listener,
+            EventOptions::default(),
+        ));
 
         // session/flush: the immediate durability barrier for buffered
         // writes.
@@ -1353,9 +1369,11 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 None
             })
         });
-        let _ = futures::executor::block_on(
-            ctx.on("session/flush", flush_listener, EventOptions::default()),
-        );
+        let _ = futures::executor::block_on(ctx.on(
+            "session/flush",
+            flush_listener,
+            EventOptions::default(),
+        ));
 
         // session/disposed: retirement contains its own failure.
         let disposed_coordinator = Arc::clone(&coordinator);
@@ -1367,9 +1385,11 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 None
             })
         });
-        let _ = futures::executor::block_on(
-            ctx.on("session/disposed", disposed_listener, EventOptions::default()),
-        );
+        let _ = futures::executor::block_on(ctx.on(
+            "session/disposed",
+            disposed_listener,
+            EventOptions::default(),
+        ));
 
         // HMR: seed existing live sessions.
         if let Ok(sessions) = coordinator.sessions() {
@@ -1401,9 +1421,8 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         let coordinator = Arc::clone(self);
         let session = session.clone();
         let id = session.id().clone();
-        let retirement: BoxOpFuture<()> = Box::pin(async move {
-            coordinator.retire_core(&session).await
-        });
+        let retirement: BoxOpFuture<()> =
+            Box::pin(async move { coordinator.retire_core(&session).await });
         let shared = retirement.shared();
         self.retirements
             .lock()
@@ -1413,10 +1432,13 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             let result = shared.await;
             coordinator.retirements.lock().remove(id.as_str());
             if let Err(error) = result {
-                coordinator.ctx.named_logger(Some(coordinator.backend.name())).warn(vec![arc(format!(
-                    "session \"{}\" retirement failed: {error}",
-                    id.as_str()
-                ))]);
+                coordinator
+                    .ctx
+                    .named_logger(Some(coordinator.backend.name()))
+                    .warn(vec![arc(format!(
+                        "session \"{}\" retirement failed: {error}",
+                        id.as_str()
+                    ))]);
             }
         });
     }
@@ -1437,7 +1459,10 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                     .lock()
                     .get(id_for_block.as_str())
                     .is_some_and(|state| {
-                        state.owner.as_ref().is_some_and(|owner| owner.ptr_eq(&session))
+                        state
+                            .owner
+                            .as_ref()
+                            .is_some_and(|owner| owner.ptr_eq(&session))
                     });
                 if remove_state {
                     coordinator.states.lock().remove(id_for_block.as_str());
@@ -1451,32 +1476,31 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
     /// Return the one lifecycle controller for a live session, creating it
     /// if needed.
     fn init_for(self: &Arc<Self>, session: &Session) -> LiveSessionState {
-        if let Some(existing) = self.live.lock().get(&session_ptr(session)).cloned() {
+        // Close the check/create/publish window under one lifecycle lock. The
+        // session/created and first session/event listeners may run in
+        // parallel; publishing two controllers would let both materialize the
+        // same initial durable log.
+        let ptr = session_ptr(session);
+        let mut live_states = self.live.lock();
+        if let Some(existing) = live_states.get(&ptr).cloned() {
             return existing;
         }
-        let live = match self
-            .preparations
-            .reservation_for(session)
-            .unwrap_or(None)
-        {
+        let live = match self.preparations.reservation_for(session).unwrap_or(None) {
             Some(reservation) => self.attach_prepared(session, &reservation),
             None => {
                 let seed = session.events().as_ref().clone();
                 let writes = self.create_write_behind(session);
                 let coordinator = Arc::clone(self);
                 let session_for_init = session.clone();
-                let init: BoxOpFuture<()> = Box::pin(async move {
-                    coordinator.on_created(&session_for_init, &seed).await
-                });
+                let init: BoxOpFuture<()> =
+                    Box::pin(async move { coordinator.on_created(&session_for_init, &seed).await });
                 LiveSessionState {
                     init: Some(init.shared()),
                     writes,
                 }
             }
         };
-        self.live
-            .lock()
-            .insert(session_ptr(session), live.clone());
+        live_states.insert(ptr, live.clone());
         live
     }
 
@@ -1485,7 +1509,9 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
     fn attach_prepared(
         self: &Arc<Self>,
         session: &Session,
-        reservation: &Arc<SessionPreparationReservation<PreparedSessionSource<TornMarker>, SessionState>>,
+        reservation: &Arc<
+            SessionPreparationReservation<PreparedSessionSource<TornMarker>, SessionState>,
+        >,
     ) -> LiveSessionState {
         let source = reservation.source.clone();
         let state = reservation.state.clone();
@@ -1520,9 +1546,8 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         } else {
             let coordinator = Arc::clone(self);
             let id = session.id().clone();
-            let init: BoxOpFuture<()> = Box::pin(async move {
-                coordinator.append_core(id, suffix).await
-            });
+            let init: BoxOpFuture<()> =
+                Box::pin(async move { coordinator.append_core(id, suffix).await });
             Some(init.shared())
         };
         LiveSessionState { init, writes }
@@ -1544,8 +1569,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         };
         self.assert_stored_id(id, &stored.meta)?;
         let stored_events = snapshot_stored_events(&stored.events, id)?;
-        let prefix: Vec<SessionEvent> =
-            stored_events.into_iter().take(cursor as usize).collect();
+        let prefix: Vec<SessionEvent> = stored_events.into_iter().take(cursor as usize).collect();
         Ok(seed_covers_prefix(seed, &prefix))
     }
 
@@ -1654,7 +1678,11 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 "session \"{}\" is already persisted at a different cwd (persisted: {}, live: {}) (id collision)",
                 session.id().as_str(),
                 meta.cwd.clone().unwrap_or_else(|| "undefined".to_string()),
-                session.header().cwd.clone().unwrap_or_else(|| "undefined".to_string())
+                session
+                    .header()
+                    .cwd
+                    .clone()
+                    .unwrap_or_else(|| "undefined".to_string())
             ));
         }
         self.assert_version(&meta)?;
@@ -1767,7 +1795,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         dyn Fn(
                 Arc<PreparedSessionSource<TornMarker>>,
             )
-            -> BoxOpFuture<Option<(Arc<PreparedSessionSource<TornMarker>>, SessionState)>>
+                -> BoxOpFuture<Option<(Arc<PreparedSessionSource<TornMarker>>, SessionState)>>
             + Send
             + Sync,
     > {
@@ -1788,9 +1816,7 @@ mod tests {
     /// An in-memory backend for coordinator tests.
     struct MemoryBackend {
         name: &'static str,
-        sessions: parking_lot::Mutex<
-            HashMap<String, (SessionHeader, Vec<SessionEvent>, u64, u64)>,
-        >,
+        sessions: parking_lot::Mutex<HashMap<String, (SessionHeader, Vec<SessionEvent>, u64, u64)>>,
     }
 
     impl MemoryBackend {
@@ -1808,17 +1834,16 @@ mod tests {
             self.name
         }
 
-        async fn load_stored(
-            &self,
-            id: &SessionId,
-        ) -> Result<Option<StoredPrefix<()>>, String> {
+        async fn load_stored(&self, id: &SessionId) -> Result<Option<StoredPrefix<()>>, String> {
             let sessions = self.sessions.lock();
-            Ok(sessions.get(id.as_str()).map(|(meta, events, revision, _)| StoredPrefix {
-                meta: meta.clone(),
-                events: events.clone(),
-                revision: session_persistence_revision(format!("rev-{revision}")),
-                torn_marker: None,
-            }))
+            Ok(sessions
+                .get(id.as_str())
+                .map(|(meta, events, revision, _)| StoredPrefix {
+                    meta: meta.clone(),
+                    events: events.clone(),
+                    revision: session_persistence_revision(format!("rev-{revision}")),
+                    torn_marker: None,
+                }))
         }
 
         async fn read_stored_revision(
@@ -1930,7 +1955,10 @@ mod tests {
 
         // Lazy creation: no artifact until the first append.
         coordinator.create(header("s1", 1)).await.unwrap();
-        assert!(backend.sessions.lock().is_empty(), "lazy creation writes nothing");
+        assert!(
+            backend.sessions.lock().is_empty(),
+            "lazy creation writes nothing"
+        );
 
         // Contiguity contract.
         let error = coordinator
@@ -1975,14 +2003,22 @@ mod tests {
         // balanced inspection.
         let inspection = coordinator.load(&session_id("s1")).await.unwrap();
         assert_eq!(inspection.meta.id.as_str(), "s1");
-        assert_eq!(inspection.events.len(), 3, "balanced with synthetic turn/end");
+        assert_eq!(
+            inspection.events.len(),
+            3,
+            "balanced with synthetic turn/end"
+        );
         assert_eq!(inspection.events[2].type_, "turn/end");
         // The repair went durable.
         assert_eq!(backend.sessions.lock().get("s1").unwrap().1.len(), 3);
 
         // prepare returns an unpublished Session.
         let preparation = coordinator.prepare(&session_id("s1")).await.unwrap();
-        assert_eq!(preparation.session.events().len(), 4, "session + end-seed marker");
+        assert_eq!(
+            preparation.session.events().len(),
+            4,
+            "session + end-seed marker"
+        );
         assert_eq!(preparation.session.first_live_seq(), 3);
     }
 
@@ -2084,11 +2120,7 @@ mod tests {
 
         // Live append → session/event → write-behind queue → flush drains.
         session
-            .append(
-                "turn/start",
-                serde_json::json!({"turn": 1}),
-                None,
-            )
+            .append("turn/start", serde_json::json!({"turn": 1}), None)
             .unwrap();
         coordinator.flush(&session).await.unwrap();
         assert_eq!(backend.sessions.lock().get("live").unwrap().1.len(), 1);
@@ -2097,6 +2129,51 @@ mod tests {
         // The live view is inspectable without loading.
         let inspection = coordinator.inspect(&session_id("live")).await.unwrap();
         assert_eq!(inspection.events.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_live_initialization_reuses_one_write_controller() {
+        let ctx = Context::root();
+        let store = SessionStore::install(&ctx);
+        let backend = MemoryBackend::new("memory");
+        let coordinator =
+            PersistenceCoordinator::new(&ctx, backend, PersistenceCoordinatorOptions::default());
+        let session = store
+            .create(&ctx, Some(session_id("init-race")), None)
+            .await
+            .unwrap();
+        coordinator.live.lock().remove(&session_ptr(&session));
+
+        let gate = Arc::new(std::sync::Barrier::new(33));
+        let controllers = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let runtime = tokio::runtime::Handle::current();
+        std::thread::scope(|scope| {
+            for _ in 0..32 {
+                let coordinator = coordinator.clone();
+                let session = session.clone();
+                let gate = gate.clone();
+                let controllers = controllers.clone();
+                let runtime = runtime.clone();
+                scope.spawn(move || {
+                    gate.wait();
+                    let _runtime = runtime.enter();
+                    controllers
+                        .lock()
+                        .push(coordinator.init_for(&session).writes);
+                });
+            }
+            gate.wait();
+        });
+
+        let controllers = controllers.lock();
+        let first = controllers.first().expect("at least one controller");
+        assert!(
+            controllers
+                .iter()
+                .all(|controller| Arc::ptr_eq(first, controller)),
+            "concurrent init_for calls returned different controllers"
+        );
+        assert_eq!(coordinator.live.lock().len(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2131,7 +2208,11 @@ mod tests {
         // tests).
         coordinator.retire(&session);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert_eq!(coordinator.live.lock().len(), 0, "retirement released the controller");
+        assert_eq!(
+            coordinator.live.lock().len(),
+            0,
+            "retirement released the controller"
+        );
         assert!(coordinator.states.lock().get("r1").is_none());
     }
 }

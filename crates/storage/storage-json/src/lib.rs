@@ -8,6 +8,4 @@ pub mod invariant;
 pub mod unit;
 
 pub use format::{UnitState, parse, serialize};
-pub use index::{
-    INJECT, NAME, Config, JsonStorageBackend, JsonStoragePlugin, apply, root_of,
-};
+pub use index::{Config, INJECT, JsonStorageBackend, JsonStoragePlugin, NAME, apply, root_of};

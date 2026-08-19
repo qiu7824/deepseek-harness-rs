@@ -40,7 +40,11 @@ impl Options {
     pub fn with_path(&self, segment: PathSeg) -> Options {
         let mut path = self.path.clone();
         path.push(segment);
-        Options { autofix: self.autofix, ignore: self.ignore.clone(), path }
+        Options {
+            autofix: self.autofix,
+            ignore: self.ignore.clone(),
+            path,
+        }
     }
 }
 

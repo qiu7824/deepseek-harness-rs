@@ -123,9 +123,10 @@ pub struct ContinuableCreateSpec {
 
 /// Why a subagent run ended (the TS merge-extensible map; the Rust enum
 /// widens through future variants).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SubagentStopReason {
+    #[default]
     Completed,
     Aborted,
     Error,
@@ -197,7 +198,10 @@ pub trait SubagentProvider: Send + Sync + 'static {
     ) -> Result<ContinuableCreateSpec, crate::error::SubagentError> {
         Err(crate::error::SubagentError::new(
             "SUBAGENT_NOT_CONTINUABLE",
-            format!("provider \"{}\" does not support continuable children", self.name()),
+            format!(
+                "provider \"{}\" does not support continuable children",
+                self.name()
+            ),
         ))
     }
 }

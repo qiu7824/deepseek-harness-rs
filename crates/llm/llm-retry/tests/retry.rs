@@ -53,7 +53,12 @@ impl Agent for TestAgent {
         KEY.get_or_init(ScopeKey::new)
     }
 
-    fn cancel(&self, _cause: dsh_agent::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_agent::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -103,12 +108,20 @@ fn open_step(agent: &TestAgent) {
         .append("turn/start", serde_json::json!({"turn": 1}), None)
         .unwrap();
     session
-        .append("request/header", serde_json::json!({
-            "header": {"config": {"provider": "mock", "model": "mock"}}
-        }), None)
+        .append(
+            "request/header",
+            serde_json::json!({
+                "header": {"config": {"provider": "mock", "model": "mock"}}
+            }),
+            None,
+        )
         .unwrap();
     session
-        .append("step/start", serde_json::json!({"turn": 1, "step": 1}), None)
+        .append(
+            "step/start",
+            serde_json::json!({"turn": 1, "step": 1}),
+            None,
+        )
         .unwrap();
 }
 
@@ -147,7 +160,11 @@ fn retry_events(session: &Session) -> Vec<String> {
             format!(
                 "{}#{}",
                 event.type_,
-                event.data.get("retry").and_then(|value| value.as_u64()).unwrap_or(0)
+                event
+                    .data
+                    .get("retry")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0)
             )
         })
         .collect()
@@ -176,17 +193,55 @@ async fn records_the_scheduled_delay_before_retrying() {
     .unwrap();
 
     // The first round schedules the wait (the delay future pends).
-    let decision = tokio::spawn(drive(ctx.clone(), agent.clone(), Some(policy.clone()), failure("RATE_LIMIT")));
+    let decision = tokio::spawn(drive(
+        ctx.clone(),
+        agent.clone(),
+        Some(policy.clone()),
+        failure("RATE_LIMIT"),
+    ));
     tokio::time::advance(std::time::Duration::from_millis(1)).await;
     // The llm/retry event is durable BEFORE the wait completes.
     let events = agent.session().events();
     assert!(events.iter().any(|event| event.type_ == "llm/retry"));
-    let retry_event = events.iter().find(|event| event.type_ == "llm/retry").unwrap();
-    assert_eq!(retry_event.data.get("retry").and_then(|value| value.as_u64()), Some(1));
-    assert_eq!(retry_event.data.get("mode").and_then(|value| value.as_str()), Some("normal"));
-    assert_eq!(retry_event.data.get("maxRetries").and_then(|value| value.as_u64()), Some(2));
-    assert_eq!(retry_event.data.get("delayMs").and_then(|value| value.as_u64()), Some(500));
-    assert_eq!(retry_event.data.get("policyKey").and_then(|value| value.as_str()), Some("[\"normal\",2,[\"RATE_LIMIT\",\"SERVER\"],500,10000,0]"));
+    let retry_event = events
+        .iter()
+        .find(|event| event.type_ == "llm/retry")
+        .unwrap();
+    assert_eq!(
+        retry_event
+            .data
+            .get("retry")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        retry_event
+            .data
+            .get("mode")
+            .and_then(|value| value.as_str()),
+        Some("normal")
+    );
+    assert_eq!(
+        retry_event
+            .data
+            .get("maxRetries")
+            .and_then(|value| value.as_u64()),
+        Some(2)
+    );
+    assert_eq!(
+        retry_event
+            .data
+            .get("delayMs")
+            .and_then(|value| value.as_u64()),
+        Some(500)
+    );
+    assert_eq!(
+        retry_event
+            .data
+            .get("policyKey")
+            .and_then(|value| value.as_str()),
+        Some("[\"normal\",2,[\"RATE_LIMIT\",\"SERVER\"],500,10000,0]")
+    );
     assert_eq!(
         retry_event.data.get("failure"),
         Some(&serde_json::to_value(failure("RATE_LIMIT")).unwrap())
@@ -211,7 +266,13 @@ async fn passes_through_non_retryable_codes_and_unconfigured_providers() {
     // No policy: the downstream decision passes through untouched.
     let decision = drive(ctx.clone(), agent.clone(), None, failure("SERVER")).await;
     assert_eq!(decision, None, "no policy → downstream (dummy) decision");
-    assert!(!agent.session().events().iter().any(|event| event.type_ == "llm/retry"));
+    assert!(
+        !agent
+            .session()
+            .events()
+            .iter()
+            .any(|event| event.type_ == "llm/retry")
+    );
 
     // A non-retryable code under a normal policy passes through.
     let policy = resolve_retry_policy(
@@ -219,9 +280,21 @@ async fn passes_through_non_retryable_codes_and_unconfigured_providers() {
         "p",
     )
     .unwrap();
-    let decision = drive(ctx.clone(), agent.clone(), Some(policy), failure("INVALID_CREDENTIAL")).await;
+    let decision = drive(
+        ctx.clone(),
+        agent.clone(),
+        Some(policy),
+        failure("INVALID_CREDENTIAL"),
+    )
+    .await;
     assert_eq!(decision, None);
-    assert!(!agent.session().events().iter().any(|event| event.type_ == "llm/retry"));
+    assert!(
+        !agent
+            .session()
+            .events()
+            .iter()
+            .any(|event| event.type_ == "llm/retry")
+    );
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -246,7 +319,13 @@ async fn honors_max_retries_and_keeps_retry_id_across_the_chain() {
     )
     .unwrap();
 
-    let first = drive(ctx.clone(), agent.clone(), Some(policy.clone()), failure("SERVER")).await;
+    let first = drive(
+        ctx.clone(),
+        agent.clone(),
+        Some(policy.clone()),
+        failure("SERVER"),
+    )
+    .await;
     assert_eq!(first, Some(RequestErrorAction::Retry));
     let retry_id = agent
         .session()
@@ -261,8 +340,10 @@ async fn honors_max_retries_and_keeps_retry_id_across_the_chain() {
     let second = drive(ctx.clone(), agent.clone(), Some(policy), failure("SERVER")).await;
     assert_eq!(second, None, "maxRetries exhausted → downstream");
     let events = agent.session().events();
-    let retries: Vec<&dsh_session::SessionEvent> =
-        events.iter().filter(|event| event.type_ == "llm/retry").collect();
+    let retries: Vec<&dsh_session::SessionEvent> = events
+        .iter()
+        .filter(|event| event.type_ == "llm/retry")
+        .collect();
     assert_eq!(retries.len(), 1);
     assert_eq!(retries[0].data.get("retryId"), Some(&retry_id));
 }
@@ -295,7 +376,13 @@ async fn honors_provider_retry_after_ms_within_the_cap() {
         .find(|event| event.type_ == "llm/retry")
         .cloned()
         .expect("llm/retry");
-    assert_eq!(retry_event.data.get("delayMs").and_then(|value| value.as_u64()), Some(300));
+    assert_eq!(
+        retry_event
+            .data
+            .get("delayMs")
+            .and_then(|value| value.as_u64()),
+        Some(300)
+    );
     tokio::time::advance(std::time::Duration::from_millis(300)).await;
     assert_eq!(decision.await.unwrap(), Some(RequestErrorAction::Retry));
 }
@@ -317,21 +404,46 @@ async fn lifetime_cancellation_stops_a_pending_wait() {
         "p",
     )
     .unwrap();
-    let decision = tokio::spawn(drive(ctx.clone(), agent.clone(), Some(policy), failure("SERVER")));
+    let decision = tokio::spawn(drive(
+        ctx.clone(),
+        agent.clone(),
+        Some(policy),
+        failure("SERVER"),
+    ));
     tokio::time::advance(std::time::Duration::from_millis(1)).await;
-    assert!(agent.session().events().iter().any(|event| event.type_ == "llm/retry"));
+    assert!(
+        agent
+            .session()
+            .events()
+            .iter()
+            .any(|event| event.type_ == "llm/retry")
+    );
     // Dispose the plugin: the pending wait aborts and no transition lands.
     dispose().await;
     let outcome = decision.await.unwrap();
-    assert!(outcome.is_none(), "cancelled wait must not deliver a decision");
-    assert!(!agent.session().events().iter().any(|event| event.type_ == "llm/retry-started"));
+    assert!(
+        outcome.is_none(),
+        "cancelled wait must not deliver a decision"
+    );
+    assert!(
+        !agent
+            .session()
+            .events()
+            .iter()
+            .any(|event| event.type_ == "llm/retry-started")
+    );
 }
 
 #[test]
 fn executor_config_validation() {
     assert!(dsh_llm_retry::validate_executor_config(&serde_json::json!({})).is_ok());
-    let error = dsh_llm_retry::validate_executor_config(&serde_json::json!({"retryPolicy": {}})).unwrap_err();
-    assert!(error.contains("retryPolicy belongs under each provider"), "{error}");
-    let error = dsh_llm_retry::validate_executor_config(&serde_json::json!({"other": 1})).unwrap_err();
+    let error = dsh_llm_retry::validate_executor_config(&serde_json::json!({"retryPolicy": {}}))
+        .unwrap_err();
+    assert!(
+        error.contains("retryPolicy belongs under each provider"),
+        "{error}"
+    );
+    let error =
+        dsh_llm_retry::validate_executor_config(&serde_json::json!({"other": 1})).unwrap_err();
     assert!(error.contains("unknown key"), "{error}");
 }

@@ -108,7 +108,9 @@ pub struct JsonlTornMarker {
 }
 
 /// Build the source-qualified revision shared by full and lightweight reads.
-fn file_revision(metadata: &std::fs::Metadata) -> dsh_session_persistence::SessionPersistenceRevision {
+fn file_revision(
+    metadata: &std::fs::Metadata,
+) -> dsh_session_persistence::SessionPersistenceRevision {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -255,14 +257,14 @@ impl JsonlSessionPersistence {
     }
 
     async fn list_session_dirs(&self, project: &Path) -> Result<Vec<PathBuf>, String> {
-        let mut read = tokio::fs::read_dir(project).await.map_err(|e| e.to_string())?;
+        let mut read = tokio::fs::read_dir(project)
+            .await
+            .map_err(|e| e.to_string())?;
         let mut dirs = Vec::new();
         while let Some(entry) = read.next_entry().await.map_err(|e| e.to_string())? {
             let file_type = entry.file_type().await.map_err(|e| e.to_string())?;
             let name = entry.file_name().to_string_lossy().to_string();
-            if file_type.is_file()
-                && (name.ends_with(".jsonl") || name.ends_with(".jsonl.zstd"))
-            {
+            if file_type.is_file() && (name.ends_with(".jsonl") || name.ends_with(".jsonl.zstd")) {
                 return Err(self.legacy_layout(&entry.path()));
             }
             if file_type.is_dir() {
@@ -278,12 +280,15 @@ impl JsonlSessionPersistence {
         let mut matches = Vec::new();
         for project in self.list_project_dirs().await? {
             self.reject_legacy_flat_artifact(&project, id).await?;
-            let dir = project.join(
-                crate::format::encode_segment(id.as_str())
-                    .map_err(|error| format!("corrupt session log: header id cannot name a storage path ({error})"))?,
-            );
+            let dir =
+                project.join(crate::format::encode_segment(id.as_str()).map_err(|error| {
+                    format!("corrupt session log: header id cannot name a storage path ({error})")
+                })?);
             let path = dir.join(format!("session{}", log_suffix(self.compression)));
-            let opposite = dir.join(format!("session{}", log_suffix(self.opposite_compression())));
+            let opposite = dir.join(format!(
+                "session{}",
+                log_suffix(self.opposite_compression())
+            ));
             if self.exists(&opposite).await {
                 return Err(self.encoding_mismatch(&opposite));
             }
@@ -305,8 +310,8 @@ impl JsonlSessionPersistence {
         project: &Path,
         id: &SessionId,
     ) -> Result<(), String> {
-        let encoded = crate::format::encode_segment(id.as_str())
-            .map_err(|error| error.to_string())?;
+        let encoded =
+            crate::format::encode_segment(id.as_str()).map_err(|error| error.to_string())?;
         for compression in [JsonlCompression::Zstd, JsonlCompression::None] {
             let path = project.join(format!("{encoded}{}", log_suffix(compression)));
             if self.exists(&path).await {
@@ -350,9 +355,8 @@ impl JsonlSessionPersistence {
                 }
             })?
         } else {
-            let scan = scan_log(&buffer).map_err(|error| {
-                format!("{error} (raw log: {})", path.to_string_lossy())
-            })?;
+            let scan = scan_log(&buffer)
+                .map_err(|error| format!("{error} (raw log: {})", path.to_string_lossy()))?;
             StoredPrefix::<JsonlTornMarker> {
                 meta: scan.meta,
                 events: scan.events,
@@ -475,8 +479,12 @@ impl JsonlSessionPersistence {
     ) -> Result<(), String> {
         let project = project_dir(&self.root.to_string_lossy(), meta.cwd.as_deref());
         let dir = session_dir(&self.root.to_string_lossy(), meta.cwd.as_deref(), &meta.id);
-        let final_path =
-            log_path(&self.root.to_string_lossy(), meta.cwd.as_deref(), &meta.id, self.compression);
+        let final_path = log_path(
+            &self.root.to_string_lossy(),
+            meta.cwd.as_deref(),
+            &meta.id,
+            self.compression,
+        );
         let opposite = log_path(
             &self.root.to_string_lossy(),
             meta.cwd.as_deref(),
@@ -487,9 +495,15 @@ impl JsonlSessionPersistence {
             return Err(self.encoding_mismatch(&opposite));
         }
         let content = self.encode_materialization(meta, events)?;
-        tokio::fs::create_dir_all(&self.root).await.map_err(|e| e.to_string())?;
-        tokio::fs::create_dir_all(&project).await.map_err(|e| e.to_string())?;
-        tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(&self.root)
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(&project)
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| e.to_string())?;
         if self.exists(&final_path).await {
             return Err(format!(
                 "refusing to materialize \"{}\": a log already exists on disk (load/resume it instead)",
@@ -501,16 +515,19 @@ impl JsonlSessionPersistence {
         // path already exists, so concurrent materialization cannot clobber.
         let tmp_for_link = tmp.clone();
         let final_for_link = final_path.clone();
-        let linked = tokio::task::spawn_blocking(move || {
-            std::fs::hard_link(&tmp_for_link, &final_for_link)
-        })
-        .await
-        .map_err(|error| error.to_string())?;
+        let linked =
+            tokio::task::spawn_blocking(move || std::fs::hard_link(&tmp_for_link, &final_for_link))
+                .await
+                .map_err(|error| error.to_string())?;
         match linked {
             Ok(()) => {}
             Err(error) => {
                 let _ = tokio::fs::remove_file(&tmp).await;
-                return Err(error.to_string());
+                return Err(format!(
+                    "failed to publish materialized session \"{}\" at \"{}\": {error}",
+                    meta.id.as_str(),
+                    final_path.display()
+                ));
             }
         }
         let _ = tokio::fs::remove_file(&tmp).await;
@@ -574,7 +591,10 @@ impl JsonlSessionPersistence {
             &meta.id,
             self.compression,
         );
-        let before = tokio::fs::metadata(&path).await.map_err(|e| e.to_string())?.len();
+        let before = tokio::fs::metadata(&path)
+            .await
+            .map_err(|e| e.to_string())?
+            .len();
         let mut file = tokio::fs::OpenOptions::new()
             .append(true)
             .open(&path)
@@ -687,9 +707,7 @@ impl JsonlSessionPersistence {
         }
     }
 
-    async fn list_artifacts(
-        &self,
-    ) -> Result<Vec<(SessionHeader, PathBuf)>, String> {
+    async fn list_artifacts(&self) -> Result<Vec<(SessionHeader, PathBuf)>, String> {
         self.ensure_root_encoding().await?;
         let mut artifacts = Vec::new();
         let mut ids = std::collections::HashSet::new();
@@ -812,11 +830,17 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         self.coordinator().prepare(id).await
     }
 
-    async fn load(&self, id: &SessionId) -> Result<dsh_session_persistence::SessionInspection, String> {
+    async fn load(
+        &self,
+        id: &SessionId,
+    ) -> Result<dsh_session_persistence::SessionInspection, String> {
         self.coordinator().load(id).await
     }
 
-    async fn inspect(&self, id: &SessionId) -> Result<dsh_session_persistence::SessionInspection, String> {
+    async fn inspect(
+        &self,
+        id: &SessionId,
+    ) -> Result<dsh_session_persistence::SessionInspection, String> {
         self.coordinator().inspect(id).await
     }
 
@@ -843,10 +867,12 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let mut snapshots = Vec::new();
         for (header, path) in self.list_artifacts().await? {
             match tokio::fs::metadata(&path).await {
-                Ok(metadata) => snapshots.push(dsh_session_persistence::SessionPersistenceSnapshot {
-                    header,
-                    revision: file_revision(&metadata),
-                }),
+                Ok(metadata) => {
+                    snapshots.push(dsh_session_persistence::SessionPersistenceSnapshot {
+                        header,
+                        revision: file_revision(&metadata),
+                    })
+                }
                 Err(error) if is_not_found(&error) => {}
                 Err(error) => return Err(error.to_string()),
             }
@@ -955,7 +981,10 @@ mod tests {
 
     fn temp_root(tag: &str) -> PathBuf {
         let mut root = std::env::temp_dir();
-        root.push(format!("dsh-jsonl-test-{tag}-{}", uuid::Uuid::new_v4().simple()));
+        root.push(format!(
+            "dsh-jsonl-test-{tag}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
         root
     }
 
@@ -1015,7 +1044,8 @@ mod tests {
         let root = temp_root("zstd");
         let ctx = Context::root();
         let _store = SessionStore::install(&ctx);
-        let backend = JsonlSessionPersistence::install(&ctx, config(&root, JsonlCompression::Zstd)).unwrap();
+        let backend =
+            JsonlSessionPersistence::install(&ctx, config(&root, JsonlCompression::Zstd)).unwrap();
         assert!(backend.supports_raw_artifacts());
         assert!(SessionPersistenceApi::locate(backend.as_ref(), &header("s1", 1, None)).is_some());
 
@@ -1041,7 +1071,11 @@ mod tests {
 
         // Cold load balances the interrupted turn and commits the repair.
         let inspection = backend.load(&session_id("s1")).await.unwrap();
-        assert_eq!(inspection.events.len(), 3, "two events + synthetic turn/end");
+        assert_eq!(
+            inspection.events.len(),
+            3,
+            "two events + synthetic turn/end"
+        );
         assert_eq!(inspection.events[2].type_, "turn/end");
 
         // The repair went durable.
@@ -1063,19 +1097,24 @@ mod tests {
             .unwrap()
             .expect("artifact");
         assert_eq!(raw.filename, "session.jsonl");
-        assert!(raw.content.starts_with("{\"type\":\"session\""), "{}", raw.content);
+        assert!(
+            raw.content.starts_with("{\"type\":\"session\""),
+            "{}",
+            raw.content
+        );
         assert_eq!(raw.meta.id.as_str(), "s1");
 
         // prepare returns an unpublished Session (events + end-seed marker).
         let preparation = backend.prepare(&session_id("s1")).await.unwrap();
-        assert_eq!(preparation.session.events().len(), 4, "3 stored + end-seed marker");
+        assert_eq!(
+            preparation.session.events().len(),
+            4,
+            "3 stored + end-seed marker"
+        );
         assert_eq!(preparation.session.first_live_seq(), 3);
 
         // readFrom skips the committed prefix.
-        let suffix = backend
-            .read_from(&session_id("s1"), 2)
-            .await
-            .unwrap();
+        let suffix = backend.read_from(&session_id("s1"), 2).await.unwrap();
         assert_eq!(suffix.events.len(), 1);
         assert_eq!(suffix.events[0].seq, 2);
 
@@ -1089,7 +1128,10 @@ mod tests {
         let _store = SessionStore::install(&ctx);
         let backend =
             JsonlSessionPersistence::install(&ctx, config(&root, JsonlCompression::None)).unwrap();
-        backend.create(header("p1", 1, Some("C:\\work"))).await.unwrap();
+        backend
+            .create(header("p1", 1, Some("C:\\work")))
+            .await
+            .unwrap();
         backend
             .append(&session_id("p1"), &[turn_event(0, 1), user_event(1)])
             .await
@@ -1109,7 +1151,8 @@ mod tests {
         let root = temp_root("torn");
         let ctx = Context::root();
         let _store = SessionStore::install(&ctx);
-        let backend = JsonlSessionPersistence::install(&ctx, config(&root, JsonlCompression::Zstd)).unwrap();
+        let backend =
+            JsonlSessionPersistence::install(&ctx, config(&root, JsonlCompression::Zstd)).unwrap();
         backend.create(header("t1", 1, None)).await.unwrap();
         backend
             .append(&session_id("t1"), &[turn_event(0, 1), user_event(1)])
@@ -1122,7 +1165,11 @@ mod tests {
 
         let inspection = backend.load(&session_id("t1")).await.unwrap();
         // The committed prefix survives; the interrupted turn is closed.
-        assert_eq!(inspection.events.len(), 3, "recovered events + synthetic turn/end");
+        assert_eq!(
+            inspection.events.len(),
+            3,
+            "recovered events + synthetic turn/end"
+        );
         assert_eq!(inspection.events[0].type_, "turn/start");
         assert_eq!(inspection.events[2].type_, "turn/end");
         // The torn tail was truncated durably and the recovered events plus
@@ -1144,7 +1191,8 @@ mod tests {
         let root = temp_root("live");
         let ctx = Context::root();
         let store = SessionStore::install(&ctx);
-        let backend = JsonlSessionPersistence::install(&ctx, config(&root, JsonlCompression::Zstd)).unwrap();
+        let backend =
+            JsonlSessionPersistence::install(&ctx, config(&root, JsonlCompression::Zstd)).unwrap();
 
         let session = store
             .create(
@@ -1168,7 +1216,11 @@ mod tests {
         assert!(store.flush(&session).await.unwrap());
         let inspection = backend.inspect(&session_id("live")).await.unwrap();
         assert_eq!(inspection.events.len(), 2, "the live view is inspectable");
-        let path = backend.find_log(&session_id("live")).await.unwrap().unwrap();
+        let path = backend
+            .find_log(&session_id("live"))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(path.exists());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1178,7 +1230,8 @@ mod tests {
         let root = temp_root("collide");
         let ctx = Context::root();
         let _store = SessionStore::install(&ctx);
-        let backend = JsonlSessionPersistence::install(&ctx, config(&root, JsonlCompression::Zstd)).unwrap();
+        let backend =
+            JsonlSessionPersistence::install(&ctx, config(&root, JsonlCompression::Zstd)).unwrap();
         backend.create(header("c1", 1, None)).await.unwrap();
         // A second create of the same id rejects.
         let error = backend.create(header("c1", 2, None)).await.unwrap_err();

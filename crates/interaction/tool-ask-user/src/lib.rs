@@ -129,7 +129,10 @@ pub fn apply(ctx: &Context) -> Result<cordis::Disposer, String> {
                 for question in &raw_questions {
                     items.push(AskUserQuestionItem {
                         id: question["id"].as_str().unwrap_or_default().to_string(),
-                        question: question["question"].as_str().unwrap_or_default().to_string(),
+                        question: question["question"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
                         detail: None,
                         header: question
                             .get("header")
@@ -142,7 +145,10 @@ pub fn apply(ctx: &Context) -> Result<cordis::Disposer, String> {
                                 options
                                     .iter()
                                     .map(|option| AskUserQuestionOption {
-                                        label: option["label"].as_str().unwrap_or_default().to_string(),
+                                        label: option["label"]
+                                            .as_str()
+                                            .unwrap_or_default()
+                                            .to_string(),
                                         description: option
                                             .get("description")
                                             .and_then(|value| value.as_str())
@@ -161,10 +167,9 @@ pub fn apply(ctx: &Context) -> Result<cordis::Disposer, String> {
                     agent,
                     signal: Some(signal),
                 };
-                let answer = questions
-                    .ask(&request)
-                    .await
-                    .map_err(|error| ToolBodyError::coded(error.message, "UserQuestionError", &error.code))?;
+                let answer = questions.ask(&request).await.map_err(|error| {
+                    ToolBodyError::coded(error.message, "UserQuestionError", &error.code)
+                })?;
                 Ok(serde_json::json!({
                     "answers": answer.answers.iter().map(|item| {
                         let mut value = serde_json::json!({
@@ -200,12 +205,8 @@ impl Plugin for ToolAskUserPlugin {
     }
 
     async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
-        let disposer =
-            apply(ctx).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
-        let _ = ctx.effect(
-            "tool-ask-user",
-            Box::pin(async move { Some(disposer) }),
-        );
+        let disposer = apply(ctx).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
+        let _ = ctx.effect("tool-ask-user", Box::pin(async move { Some(disposer) }));
         Ok(())
     }
 }

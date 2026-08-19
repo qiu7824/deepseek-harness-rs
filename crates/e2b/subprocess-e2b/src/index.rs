@@ -13,9 +13,7 @@
 use std::sync::Arc;
 
 use cordis::Context;
-use dsh_e2b::{
-    E2bCommandOptions, E2bRuntime, E2bSandbox, quote_e2b_shell_arg,
-};
+use dsh_e2b::{E2bCommandOptions, E2bRuntime, E2bSandbox, quote_e2b_shell_arg};
 use dsh_subprocess::{
     SubprocessAbort, SubprocessHandle, SubprocessRuntime, SubprocessSpawnSpec,
     SubprocessTerminalHandle, SubprocessTerminalSpawnSpec,
@@ -217,10 +215,9 @@ impl SubprocessRuntime for E2bSubprocessRuntime {
         if *self.disposing.lock() {
             return Err("subprocess-e2b: service is disposing".to_string());
         }
-        let program = spec
-            .argv
-            .first()
-            .ok_or_else(|| "invalid argv: expected a non-empty program name at argv[0]".to_string())?;
+        let program = spec.argv.first().ok_or_else(|| {
+            "invalid argv: expected a non-empty program name at argv[0]".to_string()
+        })?;
         if program.is_empty() {
             return Err("invalid argv: expected a non-empty program name at argv[0]".to_string());
         }
@@ -266,7 +263,10 @@ pub async fn release_on_exit(
     handle: Arc<dyn SubprocessHandle>,
 ) {
     let _ = handle.done().await;
-    runtime.live.lock().retain(|live| !Arc::ptr_eq(live, &handle));
+    runtime
+        .live
+        .lock()
+        .retain(|live| !Arc::ptr_eq(live, &handle));
 }
 
 /// The shared sandbox handle (test seam; the runtime owns one).

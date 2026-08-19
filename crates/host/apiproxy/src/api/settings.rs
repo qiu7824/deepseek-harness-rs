@@ -54,8 +54,13 @@ pub struct SettingsNamespaceView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase", rename_all_fields = "camelCase")]
 pub enum SettingsPathOpView {
-    Set { path: Vec<String>, value: serde_json::Value },
-    Unset { path: Vec<String> },
+    Set {
+        path: Vec<String>,
+        value: serde_json::Value,
+    },
+    Unset {
+        path: Vec<String>,
+    },
 }
 
 /// `settings.describe` response value.

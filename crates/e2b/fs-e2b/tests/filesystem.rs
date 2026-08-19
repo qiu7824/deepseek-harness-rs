@@ -16,12 +16,12 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
-use cordis::{ArcValue, Context, Plugin, PluginError, arc};
 use base64::Engine;
+use cordis::{ArcValue, Context, Plugin, PluginError, arc};
 use dsh_e2b::{
     Config, E2bBackgroundOptions, E2bCommandHandle, E2bCommandOptions, E2bCommandResult,
-    E2bCreateOptions, E2bEntryInfo, E2bReadStream, E2bRuntime, E2bSandbox, E2bSdk,
-    E2bSdkError, E2bSdkErrorKind, FileType,
+    E2bCreateOptions, E2bEntryInfo, E2bReadStream, E2bRuntime, E2bSandbox, E2bSdk, E2bSdkError,
+    E2bSdkErrorKind, FileType,
 };
 use dsh_fs::{
     AbortPredicate, FileSystem, FsEditGuard, FsEditRequest, FsErrorCode, FsTarget, FsWriteIntent,
@@ -286,7 +286,9 @@ impl E2bSandbox for FakeRemote {
     }
 
     async fn read_bytes(&self, path: &str) -> Result<Vec<u8>, E2bSdkError> {
-        self.reads.lock().push((path.to_string(), "bytes".to_string()));
+        self.reads
+            .lock()
+            .push((path.to_string(), "bytes".to_string()));
         if let Some(error) = self.next_read_error.lock().pop_front() {
             return Err(error);
         }
@@ -294,7 +296,9 @@ impl E2bSandbox for FakeRemote {
     }
 
     async fn read_stream(&self, path: &str) -> Result<Box<dyn E2bReadStream>, E2bSdkError> {
-        self.reads.lock().push((path.to_string(), "stream".to_string()));
+        self.reads
+            .lock()
+            .push((path.to_string(), "stream".to_string()));
         if let Some(error) = self.next_read_error.lock().pop_front() {
             return Err(error);
         }
@@ -319,14 +323,14 @@ impl E2bSandbox for FakeRemote {
             let nodes = self.nodes.lock();
             nodes
                 .keys()
-                .filter(|candidate| {
-                    candidate.as_str() != path && posix_dirname(candidate) == path
-                })
+                .filter(|candidate| candidate.as_str() != path && posix_dirname(candidate) == path)
                 .cloned()
                 .collect()
         };
-        let mut entries: Vec<E2bEntryInfo> =
-            candidates.iter().map(|candidate| self.raw_info(candidate)).collect();
+        let mut entries: Vec<E2bEntryInfo> = candidates
+            .iter()
+            .map(|candidate| self.raw_info(candidate))
+            .collect();
         entries.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(entries)
     }
@@ -367,7 +371,9 @@ impl E2bSandbox for FakeRemote {
                 },
             );
         }
-        self.writes.lock().push((path.to_string(), content.to_vec(), metadata));
+        self.writes
+            .lock()
+            .push((path.to_string(), content.to_vec(), metadata));
         Ok(())
     }
 
@@ -410,7 +416,8 @@ impl E2bSandbox for FakeRemote {
             .and_then(|envs| envs.get("HOME"))
             .cloned();
         assert!(
-            home.as_deref().is_some_and(|home| home.starts_with("/.dsh-e2b-control-")),
+            home.as_deref()
+                .is_some_and(|home| home.starts_with("/.dsh-e2b-control-")),
             "{command}"
         );
         self.commands.lock().push(command.to_string());
@@ -424,13 +431,20 @@ impl E2bSandbox for FakeRemote {
             let input = quoted[1..quoted.len() - 1].replace("'\"'\"'", "'");
             let canonical = {
                 let node = self.nodes.lock().get(&input).cloned();
-                format!("{}\0", node.and_then(|node| node.symlink_target).unwrap_or(input))
+                format!(
+                    "{}\0",
+                    node.and_then(|node| node.symlink_target).unwrap_or(input)
+                )
             };
             let stdout = match self.canonical_output.lock().take() {
                 Some(output) => output,
                 None => base64::engine::general_purpose::STANDARD.encode(canonical.as_bytes()),
             };
-            return Ok(E2bCommandResult { exit_code: 0, stdout, stderr: String::new() });
+            return Ok(E2bCommandResult {
+                exit_code: 0,
+                stdout,
+                stderr: String::new(),
+            });
         }
         if let Some(rest) = command.strip_prefix("chmod ") {
             if let Some((mode, quoted)) = rest.split_once(" -- '") {
@@ -442,15 +456,17 @@ impl E2bSandbox for FakeRemote {
             }
         }
         if let Some(rest) = command.strip_prefix("if ln -T -- '") {
-            let (from, rest) = rest
-                .split_once("' '")
-                .expect("guarded link quote pair");
+            let (from, rest) = rest.split_once("' '").expect("guarded link quote pair");
             let to = rest
                 .split_once('\'')
                 .map(|(to, _)| to.to_string())
                 .unwrap_or_default();
             if let Some(output) = self.guarded_link_output.lock().take() {
-                return Ok(E2bCommandResult { exit_code: 0, stdout: output, stderr: String::new() });
+                return Ok(E2bCommandResult {
+                    exit_code: 0,
+                    stdout: output,
+                    stderr: String::new(),
+                });
             }
             if let Some(competitor) = self.competitor_before_link.lock().take() {
                 match competitor {
@@ -496,7 +512,11 @@ impl E2bSandbox for FakeRemote {
                 }
             }
         }
-        Ok(E2bCommandResult { exit_code: 0, stdout: String::new(), stderr: String::new() })
+        Ok(E2bCommandResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        })
     }
 
     async fn run_background(
@@ -504,7 +524,9 @@ impl E2bSandbox for FakeRemote {
         _command: &str,
         _options: &E2bBackgroundOptions,
     ) -> Result<Arc<dyn E2bCommandHandle>, E2bSdkError> {
-        Err(E2bSdkError::other("background commands are unsupported in this fake"))
+        Err(E2bSdkError::other(
+            "background commands are unsupported in this fake",
+        ))
     }
 
     async fn kill(&self) -> Result<(), E2bSdkError> {
@@ -529,11 +551,17 @@ impl E2bSdk for FakeSdk {
 
 async fn setup(remote: Arc<FakeRemote>) -> (Context, Arc<E2bFileSystem>) {
     let ctx = Context::root();
-    let sdk: Arc<dyn E2bSdk> = Arc::new(FakeSdk { remote: remote.clone() });
+    let sdk: Arc<dyn E2bSdk> = Arc::new(FakeSdk {
+        remote: remote.clone(),
+    });
     let runtime = E2bRuntime::install(
         &ctx,
         sdk,
-        Config { api_key: Some("test-key".to_string()), cwd: Some("/workspace".to_string()), timeout_ms: None },
+        Config {
+            api_key: Some("test-key".to_string()),
+            cwd: Some("/workspace".to_string()),
+            timeout_ms: None,
+        },
         Arc::new(|_: &str| None),
     )
     .expect("e2b runtime");
@@ -545,9 +573,15 @@ async fn setup(remote: Arc<FakeRemote>) -> (Context, Arc<E2bFileSystem>) {
 }
 
 async fn resolve(fs: &Arc<E2bFileSystem>, path: &str) -> FsTarget {
-    fs.resolve(path, Some(&ResolveOptions { cwd: None, signal: None }))
-        .await
-        .expect("resolve")
+    fs.resolve(
+        path,
+        Some(&ResolveOptions {
+            cwd: None,
+            signal: None,
+        }),
+    )
+    .await
+    .expect("resolve")
 }
 
 async fn expect_code<F, T>(future: F, code: FsErrorCode)
@@ -584,11 +618,7 @@ async fn resolves_remote_paths_reports_symlinks_and_lists_direct_children_in_sta
         .expect("present");
     assert_eq!(lstat.kind, dsh_fs::FsPathInfoType::Symlink);
     assert_eq!(lstat.size, Some(1));
-    let stat = fs
-        .stat(&link, None)
-        .await
-        .expect("stat")
-        .expect("present");
+    let stat = fs.stat(&link, None).await.expect("stat").expect("present");
     assert_eq!(stat.kind, dsh_fs::FsInfoType::File);
     assert_eq!(stat.size, Some(1));
 
@@ -599,10 +629,16 @@ async fn resolves_remote_paths_reports_symlinks_and_lists_direct_children_in_sta
     remote.nodes.lock().remove("/workspace/.dsh-e2b");
     let listed = fs.list_dir(&directory, None).await.expect("list");
     assert_eq!(
-        listed.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>(),
+        listed
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["a.txt", "dir", "link.txt", "z.txt"]
     );
-    let link_entry = listed.iter().find(|entry| entry.name == "link.txt").expect("link");
+    let link_entry = listed
+        .iter()
+        .find(|entry| entry.name == "link.txt")
+        .expect("link");
     assert_eq!(link_entry.kind, dsh_fs::FsInfoType::File);
     assert_eq!(link_entry.target.target_key.as_str(), "/workspace/a.txt");
     assert_eq!(link_entry.target.display_path, "/workspace/link.txt");
@@ -619,8 +655,14 @@ async fn projects_canonical_process_paths_file_urls_and_containment() {
     let nested = resolve(&fs, "/workspace/nested/multibyte # file.ts").await;
     let outside = resolve(&fs, "/outside.ts").await;
 
-    assert_eq!(fs.process_path(&nested), "/workspace/nested/multibyte # file.ts");
-    assert_eq!(fs.file_url(&nested), "file:///workspace/nested/multibyte%20%23%20file.ts");
+    assert_eq!(
+        fs.process_path(&nested),
+        "/workspace/nested/multibyte # file.ts"
+    );
+    assert_eq!(
+        fs.file_url(&nested),
+        "file:///workspace/nested/multibyte%20%23%20file.ts"
+    );
     assert!(fs.contains(&workspace, &workspace));
     assert!(fs.contains(&workspace, &nested));
     assert!(!fs.contains(&nested, &workspace));
@@ -651,8 +693,17 @@ async fn rejects_invalid_canonical_path_transport_frames() {
         let remote = FakeRemote::new();
         *remote.canonical_output.lock() = Some(output);
         let (_ctx, fs) = setup(remote.clone()).await;
-        expect_code(fs.resolve("file", Some(&ResolveOptions { cwd: None, signal: None })), FsErrorCode::FsIoError)
-            .await;
+        expect_code(
+            fs.resolve(
+                "file",
+                Some(&ResolveOptions {
+                    cwd: None,
+                    signal: None,
+                }),
+            ),
+            FsErrorCode::FsIoError,
+        )
+        .await;
     }
 }
 
@@ -757,7 +808,10 @@ async fn honors_aborts_before_remote_reads() {
     expect_code(
         fs.resolve(
             "a",
-            Some(&ResolveOptions { cwd: None, signal: Some(abort(&aborted)) }),
+            Some(&ResolveOptions {
+                cwd: None,
+                signal: Some(abort(&aborted)),
+            }),
         ),
         FsErrorCode::FsAborted,
     )
@@ -791,7 +845,12 @@ async fn creates_owner_only_files_with_metadata_after_the_committed_move() {
     assert_eq!(outcome.after, "one\ntwo\rthree");
     let node = remote.required("/workspace/new.txt");
     assert_eq!(node.mode, 0o600);
-    assert!(node.metadata.as_ref().and_then(|m| m.get("dsh-version")).is_some());
+    assert!(
+        node.metadata
+            .as_ref()
+            .and_then(|m| m.get("dsh-version"))
+            .is_some()
+    );
     assert_eq!(remote.links.lock().len(), 1);
     let staging = posix_dirname(&remote.writes.lock()[0].0);
     assert_eq!(posix_dirname(&staging), "/workspace");
@@ -804,7 +863,12 @@ async fn preserves_replacement_mode_normalizes_crlf_for_diffs_and_changes_versio
     remote.file("/workspace/file.txt", b"old\r\nline\rlone", 0o640);
     let (_ctx, fs) = setup(remote.clone()).await;
     let target = resolve(&fs, "file.txt").await;
-    let before = fs.stat(&target, None).await.expect("stat").expect("present").version;
+    let before = fs
+        .stat(&target, None)
+        .await
+        .expect("stat")
+        .expect("present")
+        .version;
     let outcome = fs
         .write_text(
             &target,
@@ -821,7 +885,12 @@ async fn preserves_replacement_mode_normalizes_crlf_for_diffs_and_changes_versio
     assert_eq!(remote.required("/workspace/file.txt").mode, 0o640);
     let committed = outcome.version;
     remote.mutate("/workspace/file.txt", b"external");
-    let version = fs.stat(&target, None).await.expect("stat").expect("present").version;
+    let version = fs
+        .stat(&target, None)
+        .await
+        .expect("stat")
+        .expect("present")
+        .version;
     assert_ne!(version, committed);
 }
 
@@ -832,9 +901,20 @@ async fn enforces_create_and_version_intents_before_publication() {
     remote.dir("/workspace/dir");
     let (_ctx, fs) = setup(remote.clone()).await;
     let target = resolve(&fs, "file.txt").await;
-    let version = fs.stat(&target, None).await.expect("stat").expect("present").version;
+    let version = fs
+        .stat(&target, None)
+        .await
+        .expect("stat")
+        .expect("present")
+        .version;
     expect_code(
-        fs.write_text(&target, "blind", Some(&FsWriteIntent::CreateIfAbsent), None, None),
+        fs.write_text(
+            &target,
+            "blind",
+            Some(&FsWriteIntent::CreateIfAbsent),
+            None,
+            None,
+        ),
         FsErrorCode::FsNotObserved,
     )
     .await;
@@ -843,7 +923,9 @@ async fn enforces_create_and_version_intents_before_publication() {
         fs.write_text(
             &target,
             "stale",
-            Some(&FsWriteIntent::ReplaceIfVersion { version: version.clone() }),
+            Some(&FsWriteIntent::ReplaceIfVersion {
+                version: version.clone(),
+            }),
             None,
             None,
         ),
@@ -899,7 +981,12 @@ async fn applies_literal_edits_atomically_and_restores_the_detected_crlf_style()
     remote.file("/workspace/file.txt", b"one\r\ntwo\r\nthree\n", 0o644);
     let (_ctx, fs) = setup(remote.clone()).await;
     let target = resolve(&fs, "file.txt").await;
-    let version = fs.stat(&target, None).await.expect("stat").expect("present").version;
+    let version = fs
+        .stat(&target, None)
+        .await
+        .expect("stat")
+        .expect("present")
+        .version;
     let outcome = fs
         .edit_text(
             &target,
@@ -930,8 +1017,16 @@ async fn reports_stale_and_literal_match_failures_with_stable_codes() {
     let (_ctx, fs) = setup(remote.clone()).await;
     let target = resolve(&fs, "file.txt").await;
     for request in [
-        FsEditRequest { old_string: String::new(), new_string: "x".to_string(), replace_all: false },
-        FsEditRequest { old_string: "z".to_string(), new_string: "x".to_string(), replace_all: false },
+        FsEditRequest {
+            old_string: String::new(),
+            new_string: "x".to_string(),
+            replace_all: false,
+        },
+        FsEditRequest {
+            old_string: "z".to_string(),
+            new_string: "x".to_string(),
+            replace_all: false,
+        },
     ] {
         expect_code(
             fs.edit_text(&target, &request, None, None, None),
@@ -942,7 +1037,11 @@ async fn reports_stale_and_literal_match_failures_with_stable_codes() {
     expect_code(
         fs.edit_text(
             &target,
-            &FsEditRequest { old_string: "a".to_string(), new_string: "x".to_string(), replace_all: false },
+            &FsEditRequest {
+                old_string: "a".to_string(),
+                new_string: "x".to_string(),
+                replace_all: false,
+            },
             None,
             None,
             None,
@@ -953,7 +1052,11 @@ async fn reports_stale_and_literal_match_failures_with_stable_codes() {
     let outcome = fs
         .edit_text(
             &target,
-            &FsEditRequest { old_string: "a".to_string(), new_string: "x".to_string(), replace_all: true },
+            &FsEditRequest {
+                old_string: "a".to_string(),
+                new_string: "x".to_string(),
+                replace_all: true,
+            },
             None,
             None,
             None,
@@ -964,8 +1067,14 @@ async fn reports_stale_and_literal_match_failures_with_stable_codes() {
     expect_code(
         fs.edit_text(
             &target,
-            &FsEditRequest { old_string: "x".to_string(), new_string: "y".to_string(), replace_all: false },
-            Some(&FsEditGuard { version: dsh_fs::fs_version("stale") }),
+            &FsEditRequest {
+                old_string: "x".to_string(),
+                new_string: "y".to_string(),
+                replace_all: false,
+            },
+            Some(&FsEditGuard {
+                version: dsh_fs::fs_version("stale"),
+            }),
             None,
             None,
         ),
@@ -975,7 +1084,11 @@ async fn reports_stale_and_literal_match_failures_with_stable_codes() {
     expect_code(
         fs.edit_text(
             &resolve(&fs, "missing").await,
-            &FsEditRequest { old_string: "x".to_string(), new_string: "y".to_string(), replace_all: false },
+            &FsEditRequest {
+                old_string: "x".to_string(),
+                new_string: "y".to_string(),
+                replace_all: false,
+            },
             None,
             None,
             None,
@@ -986,7 +1099,11 @@ async fn reports_stale_and_literal_match_failures_with_stable_codes() {
     expect_code(
         fs.edit_text(
             &resolve(&fs, "dir").await,
-            &FsEditRequest { old_string: "x".to_string(), new_string: "y".to_string(), replace_all: false },
+            &FsEditRequest {
+                old_string: "x".to_string(),
+                new_string: "y".to_string(),
+                replace_all: false,
+            },
             None,
             None,
             None,
@@ -1002,7 +1119,12 @@ async fn serializes_guarded_mutations_so_only_one_stale_version_can_win() {
     remote.file("/workspace/file.txt", b"base", 0o644);
     let (_ctx, fs) = setup(remote.clone()).await;
     let target = resolve(&fs, "file.txt").await;
-    let version = fs.stat(&target, None).await.expect("stat").expect("present").version;
+    let version = fs
+        .stat(&target, None)
+        .await
+        .expect("stat")
+        .expect("present")
+        .version;
     let (write_fs, edit_fs) = (fs.clone(), fs.clone());
     let (write_target, edit_target) = (target.clone(), target.clone());
     let write_version = version.clone();
@@ -1011,7 +1133,9 @@ async fn serializes_guarded_mutations_so_only_one_stale_version_can_win() {
             .write_text(
                 &write_target,
                 "one",
-                Some(&FsWriteIntent::ReplaceIfVersion { version: write_version }),
+                Some(&FsWriteIntent::ReplaceIfVersion {
+                    version: write_version,
+                }),
                 None,
                 None,
             )
@@ -1021,7 +1145,11 @@ async fn serializes_guarded_mutations_so_only_one_stale_version_can_win() {
         edit_fs
             .edit_text(
                 &edit_target,
-                &FsEditRequest { old_string: "base".to_string(), new_string: "two".to_string(), replace_all: false },
+                &FsEditRequest {
+                    old_string: "base".to_string(),
+                    new_string: "two".to_string(),
+                    replace_all: false,
+                },
                 Some(&FsEditGuard { version }),
                 None,
                 None,
@@ -1081,7 +1209,13 @@ async fn maps_canonicalization_and_provider_failures() {
         .lock()
         .push_back(E2bSdkError::command_exit(1, "not a directory"));
     expect_code(
-        fs.resolve("bad", Some(&ResolveOptions { cwd: None, signal: None })),
+        fs.resolve(
+            "bad",
+            Some(&ResolveOptions {
+                cwd: None,
+                signal: None,
+            }),
+        ),
         FsErrorCode::FsIoError,
     )
     .await;
@@ -1090,7 +1224,13 @@ async fn maps_canonicalization_and_provider_failures() {
         .lock()
         .push_back(E2bSdkError::other("canonical transport failed"));
     expect_code(
-        fs.resolve("bad-transport", Some(&ResolveOptions { cwd: None, signal: None })),
+        fs.resolve(
+            "bad-transport",
+            Some(&ResolveOptions {
+                cwd: None,
+                signal: None,
+            }),
+        ),
         FsErrorCode::FsIoError,
     )
     .await;
@@ -1116,7 +1256,10 @@ async fn uses_listing_metadata_directly_and_canonicalizes_only_symbolic_links() 
     remote.file("/workspace/gone", b"gone", 0o644);
     remote.symlink("/workspace/link", "/workspace/target");
     remote.symlink("/workspace/vanished-link", "/workspace/gone");
-    remote.disappear_on_info.lock().insert("/workspace/gone".to_string());
+    remote
+        .disappear_on_info
+        .lock()
+        .insert("/workspace/gone".to_string());
     let (_ctx, fs) = setup(remote.clone()).await;
     let directory = resolve(&fs, "/workspace").await;
 
@@ -1125,7 +1268,10 @@ async fn uses_listing_metadata_directly_and_canonicalizes_only_symbolic_links() 
     assert_eq!(a.kind, dsh_fs::FsInfoType::File);
     assert_eq!(a.target.target_key.as_str(), "/workspace/a");
     assert_eq!(a.size, Some(1));
-    let link = listed.iter().find(|entry| entry.name == "link").expect("link");
+    let link = listed
+        .iter()
+        .find(|entry| entry.name == "link")
+        .expect("link");
     assert_eq!(link.kind, dsh_fs::FsInfoType::File);
     assert_eq!(link.target.target_key.as_str(), "/workspace/target");
     assert_eq!(link.size, Some(6));

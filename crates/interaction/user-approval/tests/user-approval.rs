@@ -130,9 +130,7 @@ fn request_of(agent: Arc<dyn Agent>) -> ApprovalRequest {
 }
 
 fn grant_listener() -> Arc<Listener> {
-    Arc::new(|_ctx, _args| {
-        Box::pin(async move { Some(arc(ApprovalOutcome::AllowedOnce)) })
-    })
+    Arc::new(|_ctx, _args| Box::pin(async move { Some(arc(ApprovalOutcome::AllowedOnce)) }))
 }
 
 // ---- request() ----
@@ -192,7 +190,10 @@ async fn fails_closed_to_unavailable_auditing_the_asked_decided_pair() {
     assert_eq!(outcome, ApprovalOutcome::Unavailable);
     let events = agent.session().events();
     let types: Vec<&str> = events.iter().map(|event| event.type_.as_str()).collect();
-    assert_eq!(types, vec!["turn/start", "approval/asked", "approval/decided"]);
+    assert_eq!(
+        types,
+        vec!["turn/start", "approval/asked", "approval/decided"]
+    );
     let asked = &events[1];
     let decided = &events[2];
     assert_eq!(asked.data["toolName"], "echo");
@@ -208,7 +209,10 @@ async fn omits_absent_optional_fields_from_the_asked_audit_event() {
     let service = ApprovalService::install(&ctx, Config::default());
     let agent = ProbeAgent::new("omit", true);
 
-    let outcome = service.request(&request_of(agent.clone())).await.expect("request");
+    let outcome = service
+        .request(&request_of(agent.clone()))
+        .await
+        .expect("request");
 
     assert_eq!(outcome, ApprovalOutcome::Unavailable);
     let events = agent.session().events();
@@ -230,8 +234,12 @@ async fn grants_the_first_answering_listener_outcome() {
     let agent = ProbeAgent::new("first-wins", true);
     let second_ran = Arc::new(AtomicBool::new(false));
     let second_ran_for_listener = second_ran.clone();
-    ctx.on("approval/request", grant_listener(), EventOptions::default())
-        .await;
+    ctx.on(
+        "approval/request",
+        grant_listener(),
+        EventOptions::default(),
+    )
+    .await;
     ctx.on(
         "approval/request",
         Arc::new(move |_ctx, _args| {
@@ -245,7 +253,10 @@ async fn grants_the_first_answering_listener_outcome() {
     )
     .await;
 
-    let outcome = service.request(&request_of(agent.clone())).await.expect("request");
+    let outcome = service
+        .request(&request_of(agent.clone()))
+        .await
+        .expect("request");
 
     assert_eq!(outcome, ApprovalOutcome::AllowedOnce);
     assert!(!second_ran.load(Ordering::SeqCst));
@@ -260,8 +271,7 @@ async fn delegates_down_to_the_fail_closed_default() {
         "approval/request",
         Arc::new(|_ctx, args| {
             Box::pin(async move {
-                let Some(next) = args.last().and_then(|value| downcast_arc::<NextFn>(value))
-                else {
+                let Some(next) = args.last().and_then(|value| downcast_arc::<NextFn>(value)) else {
                     return None;
                 };
                 Some(next.call().await)
@@ -271,7 +281,10 @@ async fn delegates_down_to_the_fail_closed_default() {
     )
     .await;
 
-    let outcome = service.request(&request_of(agent.clone())).await.expect("request");
+    let outcome = service
+        .request(&request_of(agent.clone()))
+        .await
+        .expect("request");
 
     assert_eq!(outcome, ApprovalOutcome::Unavailable);
 }
@@ -315,7 +328,11 @@ async fn dispatches_to_global_and_matching_agent_scoped_listeners_never_a_foreig
 
     let register_scoped = |agent: &Arc<ProbeAgent>, label: &'static str| {
         let heard = heard.clone();
-        let scope = create_scope(&ctx, agent.scope_key.clone(), &CreateScopeOptions::default());
+        let scope = create_scope(
+            &ctx,
+            agent.scope_key.clone(),
+            &CreateScopeOptions::default(),
+        );
         let ctx = scope.ctx.clone();
         async move {
             ctx.on(
@@ -368,14 +385,19 @@ async fn contains_a_throwing_answerer_as_unavailable() {
     let agent = ProbeAgent::new("async-throw", true);
     ctx.on(
         "approval/request",
-        Arc::new(|_ctx, _args| -> cordis::BoxFuture<'static, Option<ArcValue>> {
-            Box::pin(async move { panic!("transport died") })
-        }),
+        Arc::new(
+            |_ctx, _args| -> cordis::BoxFuture<'static, Option<ArcValue>> {
+                Box::pin(async move { panic!("transport died") })
+            },
+        ),
         EventOptions::default(),
     )
     .await;
 
-    let outcome = service.request(&request_of(agent.clone())).await.expect("request");
+    let outcome = service
+        .request(&request_of(agent.clone()))
+        .await
+        .expect("request");
 
     assert_eq!(outcome, ApprovalOutcome::Unavailable);
     let events = agent.session().events();
@@ -389,14 +411,17 @@ async fn contains_a_synchronously_throwing_answerer_as_unavailable() {
     let agent = ProbeAgent::new("sync-throw", true);
     ctx.on(
         "approval/request",
-        Arc::new(|_ctx, _args| -> cordis::BoxFuture<'static, Option<ArcValue>> {
-            panic!("sync bug")
-        }),
+        Arc::new(
+            |_ctx, _args| -> cordis::BoxFuture<'static, Option<ArcValue>> { panic!("sync bug") },
+        ),
         EventOptions::default(),
     )
     .await;
 
-    let outcome = service.request(&request_of(agent.clone())).await.expect("request");
+    let outcome = service
+        .request(&request_of(agent.clone()))
+        .await
+        .expect("request");
 
     assert_eq!(outcome, ApprovalOutcome::Unavailable);
 }
@@ -408,14 +433,15 @@ async fn normalizes_a_rogue_non_vocabulary_answer_to_unavailable() {
     let agent = ProbeAgent::new("rogue", true);
     ctx.on(
         "approval/request",
-        Arc::new(|_ctx, _args| {
-            Box::pin(async move { Some(arc(String::from("yolo"))) })
-        }),
+        Arc::new(|_ctx, _args| Box::pin(async move { Some(arc(String::from("yolo"))) })),
         EventOptions::default(),
     )
     .await;
 
-    let outcome = service.request(&request_of(agent.clone())).await.expect("request");
+    let outcome = service
+        .request(&request_of(agent.clone()))
+        .await
+        .expect("request");
 
     assert_eq!(outcome, ApprovalOutcome::Unavailable);
 }
@@ -448,7 +474,10 @@ async fn settles_cancelled_immediately_on_an_already_aborted_signal() {
     assert!(!consulted.load(Ordering::SeqCst));
     let events = agent.session().events();
     let types: Vec<&str> = events.iter().map(|event| event.type_.as_str()).collect();
-    assert_eq!(types, vec!["turn/start", "approval/asked", "approval/decided"]);
+    assert_eq!(
+        types,
+        vec!["turn/start", "approval/asked", "approval/decided"]
+    );
     assert_eq!(events[2].data["outcome"], "cancelled");
 }
 
@@ -504,9 +533,7 @@ async fn resolves_the_answer_when_the_signal_never_aborts() {
     let agent = ProbeAgent::new("never-abort", true);
     ctx.on(
         "approval/request",
-        Arc::new(|_ctx, _args| {
-            Box::pin(async move { Some(arc(ApprovalOutcome::Rejected)) })
-        }),
+        Arc::new(|_ctx, _args| Box::pin(async move { Some(arc(ApprovalOutcome::Rejected)) })),
         EventOptions::default(),
     )
     .await;
@@ -591,7 +618,10 @@ async fn a_never_config_rejects_deterministically_without_consulting_any_answere
     )
     .await;
 
-    let outcome = service.request(&request_of(agent.clone())).await.expect("request");
+    let outcome = service
+        .request(&request_of(agent.clone()))
+        .await
+        .expect("request");
 
     assert_eq!(outcome, ApprovalOutcome::Rejected);
     assert!(!consulted.load(Ordering::SeqCst));
@@ -637,7 +667,10 @@ async fn the_gate_decides_first_even_against_an_answerer_registered_before_the_s
     );
     let agent = ProbeAgent::new("gate-first", true);
 
-    let outcome = service.request(&request_of(agent.clone())).await.expect("request");
+    let outcome = service
+        .request(&request_of(agent.clone()))
+        .await
+        .expect("request");
 
     assert_eq!(outcome, ApprovalOutcome::Rejected);
     assert!(!consulted.load(Ordering::SeqCst));
@@ -652,18 +685,28 @@ async fn a_session_override_outranks_the_configured_default_in_both_directions()
             policy: Some(ApprovalPolicy::Never),
         },
     );
-    ctx.on("approval/request", grant_listener(), EventOptions::default())
-        .await;
+    ctx.on(
+        "approval/request",
+        grant_listener(),
+        EventOptions::default(),
+    )
+    .await;
     let agent = ProbeAgent::new("override", true);
     let session = agent.session();
 
     assert_eq!(service.override_of(session), None);
     set_approval_policy(session, ApprovalPolicy::Ask).expect("ask");
     assert_eq!(service.override_of(session), Some(ApprovalPolicy::Ask));
-    let outcome = service.request(&request_of(agent.clone())).await.expect("request");
+    let outcome = service
+        .request(&request_of(agent.clone()))
+        .await
+        .expect("request");
     assert_eq!(outcome, ApprovalOutcome::AllowedOnce);
     set_approval_policy(session, ApprovalPolicy::Never).expect("never");
-    let outcome = service.request(&request_of(agent.clone())).await.expect("request");
+    let outcome = service
+        .request(&request_of(agent.clone()))
+        .await
+        .expect("request");
     assert_eq!(outcome, ApprovalOutcome::Rejected);
 }
 
@@ -674,8 +717,12 @@ async fn queues_a_live_policy_switch_for_the_next_model_step() {
     let agent = ProbeAgent::new("policy-notice", true);
     let live: Arc<dyn Agent> = agent.clone();
 
-    service.set_policy(&live, ApprovalPolicy::Never).expect("set");
-    service.set_policy(&live, ApprovalPolicy::Never).expect("set again");
+    service
+        .set_policy(&live, ApprovalPolicy::Never)
+        .expect("set");
+    service
+        .set_policy(&live, ApprovalPolicy::Never)
+        .expect("set again");
 
     assert_eq!(
         effective_approval_policy(&agent.session().events()),
@@ -748,10 +795,12 @@ async fn registers_the_policy_context_and_disposes_it_with_the_service() {
         .assemble(&ctx, &dsh_system_prompt::AssembleContext::default())
         .await
         .expect("assemble");
-    assert!(assembly
-        .contexts
-        .iter()
-        .all(|context| context.name != "approval:policy"));
+    assert!(
+        assembly
+            .contexts
+            .iter()
+            .all(|context| context.name != "approval:policy")
+    );
 }
 
 // ---- invariant companion ----
@@ -976,7 +1025,11 @@ async fn companion_adopts_a_bare_session_first_observed_through_publication() {
         "session/event",
         vec![
             arc(session.clone()),
-            arc(synthetic_event("turn/start", 0, serde_json::json!({ "turn": 1 }))),
+            arc(synthetic_event(
+                "turn/start",
+                0,
+                serde_json::json!({ "turn": 1 }),
+            )),
         ],
     );
     ctx.emit(

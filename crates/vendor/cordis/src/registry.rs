@@ -22,13 +22,18 @@ pub struct InjectSpec {
 
 impl InjectSpec {
     pub fn new(names: impl IntoIterator<Item = &'static str>) -> Self {
-        Self { deps: names.into_iter().map(|name| (name.to_string(), None)).collect() }
+        Self {
+            deps: names
+                .into_iter()
+                .map(|name| (name.to_string(), None))
+                .collect(),
+        }
     }
 
-    pub fn with_config(
-        names: impl IntoIterator<Item = (&'static str, Option<ArcValue>)>,
-    ) -> Self {
-        Self { deps: names.into_iter().map(|(n, c)| (n.to_string(), c)).collect() }
+    pub fn with_config(names: impl IntoIterator<Item = (&'static str, Option<ArcValue>)>) -> Self {
+        Self {
+            deps: names.into_iter().map(|(n, c)| (n.to_string(), c)).collect(),
+        }
     }
 
     pub fn as_map(&self) -> IndexMap<String, Option<ArcValue>> {
@@ -127,7 +132,10 @@ impl RegistryService {
 
     /// Iterate the registered plugin runtimes.
     pub fn values(&self) -> Vec<Arc<PluginRuntime>> {
-        self.internal.iter().map(|entry| entry.value().clone()).collect()
+        self.internal
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
     }
 
     /// Start a plugin in the current context and return its fiber.
@@ -166,12 +174,18 @@ impl RegistryService {
         &self,
         parent: &Context,
         deps: InjectSpec,
-        callback: Arc<dyn Fn(&Context, ArcValue) -> BoxFuture<'static, Result<(), PluginError>> + Send + Sync>,
+        callback: Arc<
+            dyn Fn(&Context, ArcValue) -> BoxFuture<'static, Result<(), PluginError>> + Send + Sync,
+        >,
     ) -> Arc<FiberCore> {
         struct CallbackPlugin {
             name: Option<&'static str>,
             deps: InjectSpec,
-            callback: Arc<dyn Fn(&Context, ArcValue) -> BoxFuture<'static, Result<(), PluginError>> + Send + Sync>,
+            callback: Arc<
+                dyn Fn(&Context, ArcValue) -> BoxFuture<'static, Result<(), PluginError>>
+                    + Send
+                    + Sync,
+            >,
         }
 
         #[async_trait::async_trait]
@@ -191,7 +205,11 @@ impl RegistryService {
 
         self.plugin(
             parent,
-            Arc::new(CallbackPlugin { name: None, deps, callback }),
+            Arc::new(CallbackPlugin {
+                name: None,
+                deps,
+                callback,
+            }),
             crate::util::arc(()),
         )
     }

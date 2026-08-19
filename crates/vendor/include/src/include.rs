@@ -55,9 +55,19 @@ fn file_type(filename: &str) -> Result<FileType, String> {
 /// Failure reading/parsing/validating the config file (TS `ConfigFileError`).
 #[derive(Debug, Clone)]
 pub enum ConfigFileError {
-    Read { path: String, message: String, not_found: bool },
-    Parse { path: String, message: String },
-    Validate { path: String, message: String },
+    Read {
+        path: String,
+        message: String,
+        not_found: bool,
+    },
+    Parse {
+        path: String,
+        message: String,
+    },
+    Validate {
+        path: String,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for ConfigFileError {
@@ -178,10 +188,7 @@ impl Include {
                 let flush = include.clone();
                 let handle = tokio::spawn(async move {
                     if let Err(error) = flush.flush_write().await {
-                        tracing::warn!(
-                            "failed to write config file {}: {error}",
-                            flush.filename
-                        );
+                        tracing::warn!("failed to write config file {}: {error}", flush.filename);
                     }
                 });
                 *include.write_task.lock() = Some(handle.abort_handle());
@@ -216,15 +223,16 @@ impl Include {
             return Ok(None);
         }
         let data = match self.file_type {
-            FileType::Yaml => parse_yaml(&content).map_err(|message| {
-                ConfigFileError::Parse { path: self.filename.clone(), message }
+            FileType::Yaml => parse_yaml(&content).map_err(|message| ConfigFileError::Parse {
+                path: self.filename.clone(),
+                message,
             })?,
-            FileType::Json => serde_json::from_str::<Value>(&content).map_err(|error| {
-                ConfigFileError::Parse {
+            FileType::Json => {
+                serde_json::from_str::<Value>(&content).map_err(|error| ConfigFileError::Parse {
                     path: self.filename.clone(),
                     message: error.to_string(),
-                }
-            })?,
+                })?
+            }
         };
         let Value::Array(list) = data else {
             return Err(ConfigFileError::Validate {
@@ -233,7 +241,10 @@ impl Include {
             }
             .into());
         };
-        Ok(Some(ReadCandidate { content, data: list }))
+        Ok(Some(ReadCandidate {
+            content,
+            data: list,
+        }))
     }
 
     fn warn(&self, message: &str) {
@@ -243,11 +254,10 @@ impl Include {
     /// Apply patches and commit the entry list to the tree.
     async fn apply_candidate(&self, candidate: ReadCandidate) -> Result<(), IncludeError> {
         let config = self.config.lock().clone();
-        let patched = apply_entry_patches(
-            &candidate.data,
-            config.patches.as_deref(),
-            &mut |message| self.warn(message),
-        );
+        let patched =
+            apply_entry_patches(&candidate.data, config.patches.as_deref(), &mut |message| {
+                self.warn(message)
+            });
         let entries: Vec<EntryOptions> = patched
             .iter()
             .map(|value| {
@@ -282,7 +292,9 @@ impl Include {
         let candidate = match self.read(true).await {
             Ok(Some(candidate)) => candidate,
             Ok(None) => return Ok(()),
-            Err(IncludeError::File(ConfigFileError::Read { not_found: true, .. })) => {
+            Err(IncludeError::File(ConfigFileError::Read {
+                not_found: true, ..
+            })) => {
                 let config = self.config.lock().clone();
                 let Some(initial) = &config.initial else {
                     return Err(IncludeError::Message(format!(
@@ -301,9 +313,13 @@ impl Include {
     }
 
     /// Apply a candidate through the serialized apply queue (TS `apply`).
-    pub(crate) async fn apply(self: &Arc<Self>, candidate: ReadCandidate) -> Result<(), IncludeError> {
+    pub(crate) async fn apply(
+        self: &Arc<Self>,
+        candidate: ReadCandidate,
+    ) -> Result<(), IncludeError> {
         let this = self.clone();
-        self.enqueue(async move { this.apply_candidate(candidate).await }).await
+        self.enqueue(async move { this.apply_candidate(candidate).await })
+            .await
     }
 
     /// Re-read the file and transactionally refresh child entries when the
@@ -312,7 +328,9 @@ impl Include {
         let this = self.clone();
         this.enqueue(async {
             let candidate = this.read(false).await?;
-            let Some(candidate) = candidate else { return Ok(()) };
+            let Some(candidate) = candidate else {
+                return Ok(());
+            };
             this.apply_candidate(candidate).await
         })
         .await
@@ -337,25 +355,23 @@ impl Include {
 
     async fn write_file_now(&self, config: Vec<EntryOptions>) -> Result<(), IncludeError> {
         if self.readonly.load(Ordering::SeqCst) {
-            return Err(IncludeError::Message("cannot overwrite readonly config".to_string()));
+            return Err(IncludeError::Message(
+                "cannot overwrite readonly config".to_string(),
+            ));
         }
         let value = serde_json::to_value(&config).map_err(|error| {
             IncludeError::Message(format!("cannot serialize entry list: {error}"))
         })?;
         let content = match self.file_type {
-            FileType::Yaml => {
-                serde_yaml::to_string(&json_to_yaml(&value)).map_err(|error| {
-                    IncludeError::Message(format!("cannot dump YAML: {error}"))
-                })?
-            }
-            FileType::Json => serde_json::to_string_pretty(&value).map_err(|error| {
-                IncludeError::Message(format!("cannot dump JSON: {error}"))
-            })?,
+            FileType::Yaml => serde_yaml::to_string(&json_to_yaml(&value))
+                .map_err(|error| IncludeError::Message(format!("cannot dump YAML: {error}")))?,
+            FileType::Json => serde_json::to_string_pretty(&value)
+                .map_err(|error| IncludeError::Message(format!("cannot dump JSON: {error}")))?,
         };
         let tmp = format!("{}.tmp", self.filename);
-        tokio::fs::write(&tmp, &content).await.map_err(|error| {
-            IncludeError::Message(format!("cannot write {tmp}: {error}"))
-        })?;
+        tokio::fs::write(&tmp, &content)
+            .await
+            .map_err(|error| IncludeError::Message(format!("cannot write {tmp}: {error}")))?;
         for retry in 0..=WRITE_RETRY_LIMIT {
             match tokio::fs::rename(&tmp, &self.filename).await {
                 Ok(()) => return Ok(()),
@@ -423,12 +439,10 @@ impl Plugin for IncludePlugin {
         let config_value = cordis::downcast::<Value>(&config)
             .cloned()
             .unwrap_or(Value::Null);
-        let config: IncludeConfig = serde_json::from_value(config_value).map_err(|error| {
-            PluginError::new(arc(format!("invalid include config: {error}")))
-        })?;
-        let include = Include::new(ctx.clone(), core.clone(), config.clone()).map_err(|error| {
-            PluginError::new(arc(error.to_string()))
-        })?;
+        let config: IncludeConfig = serde_json::from_value(config_value)
+            .map_err(|error| PluginError::new(arc(format!("invalid include config: {error}"))))?;
+        let include = Include::new(ctx.clone(), core.clone(), config.clone())
+            .map_err(|error| PluginError::new(arc(error.to_string())))?;
 
         // internal/update: re-apply when the include config changes
         // (TS ctor listener, index.ts:206-213 — a path change passes
@@ -463,7 +477,10 @@ impl Plugin for IncludePlugin {
                     if new_config.path != old_path {
                         return pass_through().await;
                     }
-                    match include.enqueue(include.apply_patches_with_config(new_config)).await {
+                    match include
+                        .enqueue(include.apply_patches_with_config(new_config))
+                        .await
+                    {
                         // TS consumes the event without calling next.
                         Ok(()) => None,
                         Err(error) => Some(arc(PluginError::new(arc(error.to_string())))),
@@ -490,7 +507,10 @@ impl Plugin for IncludePlugin {
             }),
         );
 
-        include.init().await.map_err(|error| PluginError::new(arc(error.to_string())))?;
+        include
+            .init()
+            .await
+            .map_err(|error| PluginError::new(arc(error.to_string())))?;
         Ok(())
     }
 }
@@ -503,11 +523,9 @@ impl Include {
         new_config: IncludeConfig,
     ) -> Result<(), IncludeError> {
         let data = self.data.lock().clone();
-        let patched = apply_entry_patches(
-            &data,
-            new_config.patches.as_deref(),
-            &mut |message| self.warn(message),
-        );
+        let patched = apply_entry_patches(&data, new_config.patches.as_deref(), &mut |message| {
+            self.warn(message)
+        });
         let entries: Vec<EntryOptions> = patched
             .iter()
             .map(|value| {

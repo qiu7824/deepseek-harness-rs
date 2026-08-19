@@ -47,7 +47,11 @@ struct MemorySettingsPlugin {
 
 #[async_trait::async_trait]
 impl Plugin for MemorySettingsPlugin {
-    async fn apply(&self, ctx: &Context, _config: cordis::ArcValue) -> Result<(), cordis::PluginError> {
+    async fn apply(
+        &self,
+        ctx: &Context,
+        _config: cordis::ArcValue,
+    ) -> Result<(), cordis::PluginError> {
         let provider = SettingsProvider::install(ctx, self.storage.clone());
         provider
             .ready()
@@ -68,7 +72,11 @@ struct BashPlugin {
 
 #[async_trait::async_trait]
 impl Plugin for BashPlugin {
-    async fn apply(&self, ctx: &Context, _config: cordis::ArcValue) -> Result<(), cordis::PluginError> {
+    async fn apply(
+        &self,
+        ctx: &Context,
+        _config: cordis::ArcValue,
+    ) -> Result<(), cordis::PluginError> {
         let executor = LocalBashExecutor::install(ctx, self.config.clone());
         executor.ready().await.map_err(|error| error)?;
         *self.slot.lock() = Some(executor);
@@ -93,10 +101,7 @@ async fn boot(config: Config, with_settings: bool) -> Bench {
             doc: Mutex::new(IndexMap::new()),
             writable_flag: true,
         });
-        let fiber = ctx.plugin(
-            Arc::new(MemorySettingsPlugin { storage }),
-            cordis::arc(()),
-        );
+        let fiber = ctx.plugin(Arc::new(MemorySettingsPlugin { storage }), cordis::arc(()));
         fiber.settle().await.expect("settings provider loads");
         provider = ctx
             .get_typed::<Arc<SettingsProvider>>("settings", false)

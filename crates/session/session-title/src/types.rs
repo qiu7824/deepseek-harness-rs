@@ -108,7 +108,9 @@ pub struct SessionTitleInvalidError {
 
 impl SessionTitleInvalidError {
     pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self {
+            message: message.into(),
+        }
     }
 }
 
@@ -172,7 +174,9 @@ struct SignalInner {
 
 impl Clone for SessionTitleSignal {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -222,7 +226,10 @@ impl SessionTitleSignal {
         if self.inner.aborted.load(Ordering::SeqCst) {
             return true;
         }
-        self.inner.sources.iter().any(SessionTitleSignal::is_aborted)
+        self.inner
+            .sources
+            .iter()
+            .any(SessionTitleSignal::is_aborted)
     }
 
     /// The first abort reason, when aborted (own reason first, then fused
@@ -287,7 +294,9 @@ pub struct SessionTitleError {
 
 impl SessionTitleError {
     pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self {
+            message: message.into(),
+        }
     }
 }
 

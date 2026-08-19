@@ -19,11 +19,11 @@ use dsh_agent::Agent;
 use dsh_llm::{ToolCallBlock, ToolResultMessageInput, create_tool_result_message};
 use dsh_session::{Session, SurfaceIntent, SurfaceOp};
 use dsh_tools::{
-    AbortPredicate, DispatchOutcome, Preparation, TOOL_ABORTED_BEFORE_DISPATCH,
-    ToolExecutionInput, ToolExecutionMode, ToolExecutionResult, ToolRunContext, ToolRuntime,
+    AbortPredicate, DispatchOutcome, Preparation, TOOL_ABORTED_BEFORE_DISPATCH, ToolExecutionInput,
+    ToolExecutionMode, ToolExecutionResult, ToolRunContext, ToolRuntime,
 };
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use serde_json::Value as JsonValue;
 
 /// One tool call after argument parsing, ready to schedule.
@@ -183,13 +183,30 @@ async fn run_group(
         let (index, exec, outcome) = state.in_flight.next().await.expect("in-flight pool");
         match outcome {
             DispatchOutcome::PostResult(result) => {
-                state.slots[index] = Some(Slot { exec, result, needs_post: true });
+                state.slots[index] = Some(Slot {
+                    exec,
+                    result,
+                    needs_post: true,
+                });
             }
             DispatchOutcome::FinalResult(result) => {
-                state.slots[index] = Some(Slot { exec, result, needs_post: false });
+                state.slots[index] = Some(Slot {
+                    exec,
+                    result,
+                    needs_post: false,
+                });
             }
         }
-        commit_ready(tools, session, turn, step, group, &accept_context, &mut state).await?;
+        commit_ready(
+            tools,
+            session,
+            turn,
+            step,
+            group,
+            &accept_context,
+            &mut state,
+        )
+        .await?;
         if signal() {
             state.aborted = true;
         }
@@ -266,8 +283,7 @@ async fn fill_pool(
         }
         if state.next_to_start > 0
             && mode == ToolExecutionMode::Parallel
-            && tools.execution_mode(&group[state.next_to_start].exec)
-                != ToolExecutionMode::Parallel
+            && tools.execution_mode(&group[state.next_to_start].exec) != ToolExecutionMode::Parallel
         {
             break;
         }
@@ -288,10 +304,18 @@ async fn fill_pool(
                 }));
             }
             Preparation::PostResult { run_ctx, result } => {
-                state.slots[index] = Some(Slot { exec: run_ctx, result, needs_post: true });
+                state.slots[index] = Some(Slot {
+                    exec: run_ctx,
+                    result,
+                    needs_post: true,
+                });
             }
             Preparation::FinalResult { run_ctx, result } => {
-                state.slots[index] = Some(Slot { exec: run_ctx, result, needs_post: false });
+                state.slots[index] = Some(Slot {
+                    exec: run_ctx,
+                    result,
+                    needs_post: false,
+                });
             }
         }
         commit_ready(tools, session, turn, step, group, accept_context, state).await?;

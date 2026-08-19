@@ -63,17 +63,15 @@ impl Config {
             .ok_or_else(|| "directory-picker-browse: config must be an object".to_string())?;
         let max_entries = match object.get("maxEntries") {
             None | Some(serde_json::Value::Null) => Config::default().max_entries,
-            Some(serde_json::Value::Number(number)) => number
-                .as_u64()
-                .filter(|value| *value >= 1)
-                .ok_or_else(|| {
+            Some(serde_json::Value::Number(number)) => {
+                number.as_u64().filter(|value| *value >= 1).ok_or_else(|| {
                     "directory-picker-browse: maxEntries must be a natural number >= 1".to_string()
-                })? as usize,
+                })? as usize
+            }
             Some(_) => {
                 return Err(
-                    "directory-picker-browse: maxEntries must be a natural number >= 1"
-                        .to_string(),
-                )
+                    "directory-picker-browse: maxEntries must be a natural number >= 1".to_string(),
+                );
             }
         };
         Ok(Self { max_entries })
@@ -144,10 +142,7 @@ fn win32_fully_qualified(path: &str) -> bool {
     }
     // Complete UNC: [\\/]{2} server [\\/]+ share — server and share are one
     // or more non-separator bytes each.
-    if bytes.len() >= 2
-        && (bytes[0] == b'\\' || bytes[0] == b'/')
-        && bytes[1] == bytes[0]
-    {
+    if bytes.len() >= 2 && (bytes[0] == b'\\' || bytes[0] == b'/') && bytes[1] == bytes[0] {
         let rest = &bytes[2..];
         let mut server = 0;
         while server < rest.len() && rest[server] != b'\\' && rest[server] != b'/' {
@@ -157,9 +152,7 @@ fn win32_fully_qualified(path: &str) -> bool {
             return false;
         }
         let mut separators = server;
-        while separators < rest.len()
-            && (rest[separators] == b'\\' || rest[separators] == b'/')
-        {
+        while separators < rest.len() && (rest[separators] == b'\\' || rest[separators] == b'/') {
             separators += 1;
         }
         if separators == server {
@@ -310,7 +303,8 @@ impl BrowseDirectoryPicker {
             dyn Fn(
                     Option<String>,
                     AbortSignal,
-                ) -> BoxFuture<'static, Result<DirectoryListing, DirectoryPickerListError>>
+                )
+                    -> BoxFuture<'static, Result<DirectoryListing, DirectoryPickerListError>>
                 + Send
                 + Sync,
         > = Arc::new({
@@ -507,17 +501,20 @@ pub async fn create_directory(path: &str, name: &str) -> Result<String, Director
     // a missing parent is a real failure, not a level to invent.
     match tokio::fs::create_dir(&target).await {
         Ok(()) => Ok(target.to_string_lossy().into_owned()),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(
-            DirectoryPickerError::new(
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(DirectoryPickerError::new(
                 DirectoryPickerErrorCode::DirectoryExists,
                 target.to_string_lossy().into_owned(),
                 format!("{} already exists", target.to_string_lossy().into_owned()),
-            ),
-        ),
+            ))
+        }
         Err(error) => Err(DirectoryPickerError::new(
             DirectoryPickerErrorCode::DirectoryCreateFailed,
             target.to_string_lossy().into_owned(),
-            format!("cannot create {}: {error}", target.to_string_lossy().into_owned()),
+            format!(
+                "cannot create {}: {error}",
+                target.to_string_lossy().into_owned()
+            ),
         )),
     }
 }

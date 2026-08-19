@@ -16,7 +16,14 @@ fn config() -> Config {
     }
 }
 
-async fn harness(with_title_service: bool) -> (Context, Arc<SessionStore>, Arc<SessionProjectionRegistry>, Option<Arc<SessionTitleService>>) {
+async fn harness(
+    with_title_service: bool,
+) -> (
+    Context,
+    Arc<SessionStore>,
+    Arc<SessionProjectionRegistry>,
+    Option<Arc<SessionTitleService>>,
+) {
     let ctx = Context::root();
     let store = SessionStore::install(&ctx);
     let registry = SessionProjectionRegistry::install(&ctx);
@@ -100,14 +107,25 @@ async fn serves_the_latest_title_last_wins_and_notifies_the_change_feed_with_the
     assert_eq!(
         *changes,
         vec![
-            ("title".to_string(), serde_json::json!("First title"), first_seq as i64),
-            ("title".to_string(), serde_json::json!("Second title"), second_seq as i64),
+            (
+                "title".to_string(),
+                serde_json::json!("First title"),
+                first_seq as i64
+            ),
+            (
+                "title".to_string(),
+                serde_json::json!("Second title"),
+                second_seq as i64
+            ),
         ]
     );
     drop(changes);
 
     let snapshot = registry.snapshot(&session);
-    assert_eq!(snapshot.values.get("title"), Some(&serde_json::json!("Second title")));
+    assert_eq!(
+        snapshot.values.get("title"),
+        Some(&serde_json::json!("Second title"))
+    );
     assert_eq!(snapshot.as_of_seq, session.seq() as i64 - 1);
 }
 

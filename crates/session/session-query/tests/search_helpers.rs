@@ -10,13 +10,13 @@ use dsh_session::{
     Session, SessionStore, SurfaceIntent, SurfaceOp, TodoItem, TodoStatus, session_id,
     todo_write_data, turn_end_data,
 };
-use dsh_session_query::{
-    SessionAvailability, SessionEventResultFilter, SessionEventSurface, SessionResultFilter,
-    SessionQueryEngine, compile_session_text_filter, extract_session_event_text,
-    filter_session_event_documents, filter_session_results,
-};
 use dsh_session_query::documents::{
     build_session_event_records, build_session_event_search_documents,
+};
+use dsh_session_query::{
+    SessionAvailability, SessionEventResultFilter, SessionEventSurface, SessionQueryEngine,
+    SessionResultFilter, compile_session_text_filter, extract_session_event_text,
+    filter_session_event_documents, filter_session_results,
 };
 
 fn message_event(session: &Session, text: &str) -> dsh_session::SessionEvent {
@@ -56,23 +56,24 @@ fn compiles_literal_case_insensitive_whitespace_flexible_text_filters() {
 
 #[test]
 fn filters_sessions_and_events_with_anded_clauses() {
-    let record = |id: &str, cwd: Option<&str>, live: bool, persisted: bool, parent: Option<&str>| {
-        dsh_session_query::SessionRecord {
-            header: dsh_session::SessionHeader {
-                version: 0,
-                id: session_id(id),
-                created_at: 100,
-                cwd: cwd.map(str::to_string),
-                parent_session: parent.map(session_id),
-                seed_length: None,
-                origin: None,
-                delegation_depth: None,
-                agent_preset: None,
-            },
-            live,
-            persisted,
-        }
-    };
+    let record =
+        |id: &str, cwd: Option<&str>, live: bool, persisted: bool, parent: Option<&str>| {
+            dsh_session_query::SessionRecord {
+                header: dsh_session::SessionHeader {
+                    version: 0,
+                    id: session_id(id),
+                    created_at: 100,
+                    cwd: cwd.map(str::to_string),
+                    parent_session: parent.map(session_id),
+                    seed_length: None,
+                    origin: None,
+                    delegation_depth: None,
+                    agent_preset: None,
+                },
+                live,
+                persisted,
+            }
+        };
     let records = vec![
         record("a", Some("/w"), true, true, None),
         record("b", None, false, true, Some("a")),
@@ -106,9 +107,7 @@ fn filters_sessions_and_events_with_anded_clauses() {
     assert_eq!(
         filter_session_results(
             &records,
-            &[SessionResultFilter::Parent {
-                values: vec![None]
-            }]
+            &[SessionResultFilter::Parent { values: vec![None] }]
         )
         .len(),
         2
@@ -125,9 +124,19 @@ fn filters_sessions_and_events_with_anded_clauses() {
         }
     };
     let documents = vec![
-        document(1, "user/message", SessionEventSurface::Current, "hello world"),
+        document(
+            1,
+            "user/message",
+            SessionEventSurface::Current,
+            "hello world",
+        ),
         document(2, "tool/call", SessionEventSurface::Current, "probe {}"),
-        document(3, "user/message", SessionEventSurface::LogOnly, "hello again"),
+        document(
+            3,
+            "user/message",
+            SessionEventSurface::LogOnly,
+            "hello again",
+        ),
     ];
     assert_eq!(
         filter_session_event_documents(
@@ -167,7 +176,11 @@ fn extracts_first_party_semantic_text_only() {
         .append("turn/start", serde_json::json!({ "turn": 1 }), None)
         .expect("turn/start");
     session
-        .append("tool/call", serde_json::json!({ "name": "probe", "arguments": "{}" }), None)
+        .append(
+            "tool/call",
+            serde_json::json!({ "name": "probe", "arguments": "{}" }),
+            None,
+        )
         .expect("tool/call");
     session
         .append(
@@ -190,8 +203,14 @@ fn extracts_first_party_semantic_text_only() {
         .append(
             "todo/write",
             todo_write_data(&[
-                TodoItem { content: "plan".to_string(), status: TodoStatus::InProgress },
-                TodoItem { content: "build".to_string(), status: TodoStatus::Pending },
+                TodoItem {
+                    content: "plan".to_string(),
+                    status: TodoStatus::InProgress,
+                },
+                TodoItem {
+                    content: "build".to_string(),
+                    status: TodoStatus::Pending,
+                },
             ]),
             None,
         )
@@ -199,15 +218,18 @@ fn extracts_first_party_semantic_text_only() {
     session
         .append(
             "turn/end",
-            turn_end_data(1, &dsh_session::TurnEndReason::Error {
-                error: dsh_llm::LlmFailure {
-                    message: "boom".to_string(),
-                    code: "X".to_string(),
-                    status: None,
-                    provider_retry_after_ms: None,
-                    request_id: None,
+            turn_end_data(
+                1,
+                &dsh_session::TurnEndReason::Error {
+                    error: dsh_llm::LlmFailure {
+                        message: "boom".to_string(),
+                        code: "X".to_string(),
+                        status: None,
+                        provider_retry_after_ms: None,
+                        request_id: None,
+                    },
                 },
-            }),
+            ),
             None,
         )
         .expect("turn/end");
@@ -239,10 +261,13 @@ fn classifies_surface_from_the_canonical_fold() {
     // pure fold already covers shadowed classification via build_records.)
     let records =
         build_session_event_records(&session_id("surface"), &session.events()).expect("records");
-    assert!(records.iter().all(|record| record.surface == SessionEventSurface::Current));
-    let documents =
-        build_session_event_search_documents(&session_id("surface"), &session.events())
-            .expect("documents");
+    assert!(
+        records
+            .iter()
+            .all(|record| record.surface == SessionEventSurface::Current)
+    );
+    let documents = build_session_event_search_documents(&session_id("surface"), &session.events())
+        .expect("documents");
     assert_eq!(documents.len(), 2);
     assert_eq!(documents[0].text, "original");
     assert_eq!(documents[1].text, "replacement");
@@ -277,7 +302,10 @@ async fn engine_reads_titles_surfaces_and_windows_through_the_corpus() {
     assert!(listed[0].live);
     assert!(!listed[0].persisted);
 
-    let events = engine.list_events(&session_id("query-session")).await.expect("events");
+    let events = engine
+        .list_events(&session_id("query-session"))
+        .await
+        .expect("events");
     assert_eq!(events.len(), 3);
 
     let title = engine
@@ -428,7 +456,10 @@ async fn engine_reads_persisted_sources_through_the_erased_binding() {
 
     #[async_trait::async_trait]
     impl SessionPersistenceApi for MemoryPersistence {
-        fn locate(&self, _meta: &dsh_session::SessionHeader) -> Option<dsh_session_persistence::SessionLocation> {
+        fn locate(
+            &self,
+            _meta: &dsh_session::SessionHeader,
+        ) -> Option<dsh_session_persistence::SessionLocation> {
             None
         }
         fn supports_raw_artifacts(&self) -> bool {
@@ -437,7 +468,11 @@ async fn engine_reads_persisted_sources_through_the_erased_binding() {
         async fn create(&self, _meta: dsh_session::SessionHeader) -> Result<(), String> {
             Ok(())
         }
-        async fn append(&self, _id: &dsh_session::SessionId, _events: &[dsh_session::SessionEvent]) -> Result<(), String> {
+        async fn append(
+            &self,
+            _id: &dsh_session::SessionId,
+            _events: &[dsh_session::SessionEvent],
+        ) -> Result<(), String> {
             Ok(())
         }
         async fn load(&self, id: &dsh_session::SessionId) -> Result<SessionInspection, String> {
@@ -450,7 +485,11 @@ async fn engine_reads_persisted_sources_through_the_erased_binding() {
         async fn inspect(&self, id: &dsh_session::SessionId) -> Result<SessionInspection, String> {
             self.load(id).await
         }
-        async fn read_from(&self, _id: &dsh_session::SessionId, _from_seq: u64) -> Result<dsh_session_persistence::SessionReadFromResult, String> {
+        async fn read_from(
+            &self,
+            _id: &dsh_session::SessionId,
+            _from_seq: u64,
+        ) -> Result<dsh_session_persistence::SessionReadFromResult, String> {
             Err("unused".to_string())
         }
         async fn list(&self) -> Result<Vec<dsh_session::SessionHeader>, String> {
@@ -461,7 +500,9 @@ async fn engine_reads_persisted_sources_through_the_erased_binding() {
                 .map(|inspection| inspection.meta.clone())
                 .collect())
         }
-        async fn list_snapshots(&self) -> Result<Vec<dsh_session_persistence::SessionPersistenceSnapshot>, String> {
+        async fn list_snapshots(
+            &self,
+        ) -> Result<Vec<dsh_session_persistence::SessionPersistenceSnapshot>, String> {
             Err("unused".to_string())
         }
         fn ctx(&self) -> &Context {
@@ -506,9 +547,11 @@ async fn engine_reads_persisted_sources_through_the_erased_binding() {
     // The live store still holds the session; the persisted path is verified
     // through the listing merge and read back.
     let listed = engine.list_sessions(None).await.expect("list");
-    assert!(listed.iter().any(|record| {
-        record.header.id == session_id("persisted-session") && record.persisted
-    }));
+    assert!(
+        listed.iter().any(|record| {
+            record.header.id == session_id("persisted-session") && record.persisted
+        })
+    );
     let snapshot = engine
         .read_session(&session_id("persisted-session"))
         .await

@@ -16,8 +16,7 @@ use futures::FutureExt;
 use parking_lot::Mutex;
 
 use dsh_code_runtime::{
-    CodeJsonValue, CodeRunFailure, CodeRunFailureKind, CodeRunRequest, CodeRunResult,
-    CodeRuntime,
+    CodeJsonValue, CodeRunFailure, CodeRunFailureKind, CodeRunRequest, CodeRunResult, CodeRuntime,
 };
 
 /// The TS `StubRuntime`: records requests, "executes" by invoking every
@@ -45,7 +44,10 @@ impl CodeRuntime for StubRuntime {
         "in-process-stub".to_string()
     }
 
-    fn run(&self, request: CodeRunRequest) -> futures::future::BoxFuture<'static, Result<CodeRunResult, String>> {
+    fn run(
+        &self,
+        request: CodeRunRequest,
+    ) -> futures::future::BoxFuture<'static, Result<CodeRunResult, String>> {
         let requests = self.requests.clone();
         let next_result = self.next_result.clone();
         Box::pin(async move {
@@ -78,7 +80,11 @@ struct StubRuntimePlugin {
 
 #[async_trait::async_trait]
 impl Plugin for StubRuntimePlugin {
-    async fn apply(&self, ctx: &Context, _config: cordis::ArcValue) -> Result<(), cordis::PluginError> {
+    async fn apply(
+        &self,
+        ctx: &Context,
+        _config: cordis::ArcValue,
+    ) -> Result<(), cordis::PluginError> {
         let runtime = Arc::new(StubRuntime::new());
         let erased: Arc<dyn CodeRuntime> = runtime.clone();
         ctx.register_service(erased);

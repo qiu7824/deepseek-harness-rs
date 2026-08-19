@@ -7,12 +7,8 @@ use std::sync::Arc;
 use dsh_host_apiproxy::{
     ApiProxyDefaults, ApiProxyService, Body, CarrierRequest, to_fetch_handler,
 };
-use dsh_session::{
-    CreateSessionMeta, CreateSessionOptions, SessionStore, session_id,
-};
-use dsh_skill::{
-    Config as SkillConfig, SkillInvocationPolicy, SkillRegistration, SkillRegistry,
-};
+use dsh_session::{CreateSessionMeta, CreateSessionOptions, SessionStore, session_id};
+use dsh_skill::{Config as SkillConfig, SkillInvocationPolicy, SkillRegistration, SkillRegistry};
 
 static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -35,7 +31,10 @@ fn cwd() -> String {
         .into_owned()
 }
 
-async fn post(handler: &dsh_host_apiproxy::FetchHandler, payload: serde_json::Value) -> serde_json::Value {
+async fn post(
+    handler: &dsh_host_apiproxy::FetchHandler,
+    payload: serde_json::Value,
+) -> serde_json::Value {
     let body = serde_json::to_string(&serde_json::json!({
         "type": "client-request",
         "rpcId": "r1",
@@ -80,42 +79,40 @@ fn lists_the_user_invocable_catalog_for_the_sessions_cwd() {
             .expect("session");
         let _ = session;
         let skills = SkillRegistry::install(&ctx, SkillConfig::default()).expect("registry");
-        skills
-            .register(
-                &ctx,
-                SkillRegistration {
-                    name: "deploy".to_string(),
-                    description: "Ship it".to_string(),
-                    when_to_use: Some("when ready".to_string()),
-                    source: "test".to_string(),
-                    resource_base: None,
-                    content: "body".to_string(),
-                    path: None,
-                    metadata: None,
-                    invocation: Some(SkillInvocationPolicy::BOTH),
-                    provider: None,
-                },
-            );
-        skills
-            .register(
-                &ctx,
-                SkillRegistration {
-                    name: "secret-op".to_string(),
-                    description: "user-only".to_string(),
-                    when_to_use: None,
-                    source: "test".to_string(),
-                    resource_base: None,
-                    content: "body".to_string(),
-                    path: None,
-                    metadata: None,
-                    // Model-only: filtered out of the user catalog.
-                    invocation: Some(SkillInvocationPolicy {
-                        model_invocable: true,
-                        user_invocable: false,
-                    }),
-                    provider: None,
-                },
-            );
+        skills.register(
+            &ctx,
+            SkillRegistration {
+                name: "deploy".to_string(),
+                description: "Ship it".to_string(),
+                when_to_use: Some("when ready".to_string()),
+                source: "test".to_string(),
+                resource_base: None,
+                content: "body".to_string(),
+                path: None,
+                metadata: None,
+                invocation: Some(SkillInvocationPolicy::BOTH),
+                provider: None,
+            },
+        );
+        skills.register(
+            &ctx,
+            SkillRegistration {
+                name: "secret-op".to_string(),
+                description: "user-only".to_string(),
+                when_to_use: None,
+                source: "test".to_string(),
+                resource_base: None,
+                content: "body".to_string(),
+                path: None,
+                metadata: None,
+                // Model-only: filtered out of the user catalog.
+                invocation: Some(SkillInvocationPolicy {
+                    model_invocable: true,
+                    user_invocable: false,
+                }),
+                provider: None,
+            },
+        );
         let service = ApiProxyService::install(&ctx, ApiProxyDefaults::default());
         let handler = to_fetch_handler(service);
 

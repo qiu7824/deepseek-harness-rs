@@ -1,0 +1,15 @@
+[package]
+name = "dsh-tool-terminal"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Model-facing persistent terminal tools"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-jobs = { path = "../../jobs/jobs" }
+dsh-llm = { path = "../../core/llm" }
+futures = { workspace = true }
+dsh-terminal = { path = "../terminal" }
+dsh-tools = { path = "../../core/tools" }
+serde_json = { workspace = true }

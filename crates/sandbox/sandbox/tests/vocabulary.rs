@@ -13,12 +13,12 @@
 
 use std::sync::Arc;
 
+use dsh_sandbox::{ConfinedSandboxMode, SANDBOX_UNAVAILABLE};
 use dsh_sandbox::{
     ESCALATION_TARGETS, EscalationApproval, EscalationApproveRequest, EscalationApprover,
     EscalationOutcome, SandboxMode, SandboxUnavailableError, WIDER_MODES, approve_escalation,
     escalation_hint_marker, sandbox_denial_marker, validate_escalation_args,
 };
-use dsh_sandbox::{SANDBOX_UNAVAILABLE, ConfinedSandboxMode};
 use futures::future::BoxFuture;
 
 // ---------------------------------------------------------------------------
@@ -28,7 +28,10 @@ use futures::future::BoxFuture;
 fn sandbox_unavailable_error_carries_the_structured_identity() {
     let error = SandboxUnavailableError::new(ConfinedSandboxMode::ReadOnly, None);
     assert_eq!(error.code(), SANDBOX_UNAVAILABLE);
-    assert_eq!(format!("{error:?}").contains("SandboxUnavailableError"), true);
+    assert_eq!(
+        format!("{error:?}").contains("SandboxUnavailableError"),
+        true
+    );
 }
 
 #[test]
@@ -73,7 +76,10 @@ fn the_ladder_read_only_escalates_to_either_wider_mode() {
 
 #[test]
 fn the_target_enum_is_the_closed_set_every_session_could_escalate_to() {
-    assert_eq!(ESCALATION_TARGETS, &[SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess]);
+    assert_eq!(
+        ESCALATION_TARGETS,
+        &[SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -83,8 +89,11 @@ fn the_target_enum_is_the_closed_set_every_session_could_escalate_to() {
 fn validate_escalation_args_accepts_neither_or_both_with_a_reason() {
     assert!(validate_escalation_args(None, None).is_ok());
     assert!(
-        validate_escalation_args(Some("workspace-write"), Some("because the workspace needs it"))
-            .is_ok()
+        validate_escalation_args(
+            Some("workspace-write"),
+            Some("because the workspace needs it")
+        )
+        .is_ok()
     );
 }
 
@@ -94,8 +103,13 @@ fn validate_escalation_args_rejects_mismatched_and_blank_shapes() {
         .err()
         .expect("rejects");
     assert!(error.contains("requires a justification"), "{error}");
-    let error = validate_escalation_args(None, Some("orphan reason")).err().expect("rejects");
-    assert!(error.contains("only valid together with sandbox_permissions"), "{error}");
+    let error = validate_escalation_args(None, Some("orphan reason"))
+        .err()
+        .expect("rejects");
+    assert!(
+        error.contains("only valid together with sandbox_permissions"),
+        "{error}"
+    );
     let error = validate_escalation_args(Some("workspace-write"), Some("   "))
         .err()
         .expect("rejects");
@@ -119,10 +133,14 @@ fn the_denial_marker_names_the_mode() {
 
 #[test]
 fn the_hint_marker_names_the_family_subject() {
-    assert!(escalation_hint_marker("command")
-        .contains("retry this exact command once with sandbox_permissions"));
-    assert!(escalation_hint_marker("operation")
-        .contains("retry this exact operation once with sandbox_permissions"));
+    assert!(
+        escalation_hint_marker("command")
+            .contains("retry this exact command once with sandbox_permissions")
+    );
+    assert!(
+        escalation_hint_marker("operation")
+            .contains("retry this exact operation once with sandbox_permissions")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +182,10 @@ fn request() -> dsh_sandbox::EscalationRequest {
 async fn grants_returning_the_requested_mode_through_the_approver_with_the_audit_reason() {
     let seen: Arc<parking_lot::Mutex<Vec<EscalationApproveRequest<Agent, CallId>>>> =
         Arc::new(parking_lot::Mutex::new(Vec::new()));
-    let approver = FixedApprover { outcome: EscalationOutcome::AllowedOnce, seen: seen.clone() };
+    let approver = FixedApprover {
+        outcome: EscalationOutcome::AllowedOnce,
+        seen: seen.clone(),
+    };
     let approval = EscalationApproval {
         approver: Some(&approver),
         agent: Some(serde_json::json!({})),
@@ -172,7 +193,9 @@ async fn grants_returning_the_requested_mode_through_the_approver_with_the_audit
         tool_name: "bash".to_string(),
         signal: None,
     };
-    let granted = approve_escalation(request(), approval).await.expect("grants");
+    let granted = approve_escalation(request(), approval)
+        .await
+        .expect("grants");
     assert_eq!(granted, SandboxMode::WorkspaceWrite);
     let seen = seen.lock();
     assert_eq!(
@@ -185,7 +208,10 @@ async fn grants_returning_the_requested_mode_through_the_approver_with_the_audit
 async fn a_non_widening_request_fails_closed_with_its_own_text_and_never_asks() {
     let seen: Arc<parking_lot::Mutex<Vec<EscalationApproveRequest<Agent, CallId>>>> =
         Arc::new(parking_lot::Mutex::new(Vec::new()));
-    let approver = FixedApprover { outcome: EscalationOutcome::AllowedOnce, seen: seen.clone() };
+    let approver = FixedApprover {
+        outcome: EscalationOutcome::AllowedOnce,
+        seen: seen.clone(),
+    };
     let mut narrower = request();
     narrower.requested_mode = "read-only".to_string();
     let approval = EscalationApproval {
@@ -195,7 +221,10 @@ async fn a_non_widening_request_fails_closed_with_its_own_text_and_never_asks() 
         tool_name: "bash".to_string(),
         signal: None,
     };
-    let error = approve_escalation(narrower, approval).await.err().expect("rejects");
+    let error = approve_escalation(narrower, approval)
+        .await
+        .err()
+        .expect("rejects");
     assert!(
         error.contains("not strictly wider than this call's current \"read-only\" mode"),
         "{error}"
@@ -211,7 +240,10 @@ async fn a_non_widening_request_fails_closed_with_its_own_text_and_never_asks() 
         tool_name: "bash".to_string(),
         signal: None,
     };
-    let error = approve_escalation(full, approval).await.err().expect("rejects");
+    let error = approve_escalation(full, approval)
+        .await
+        .err()
+        .expect("rejects");
     assert!(error.contains("not strictly wider"), "{error}");
     assert!(seen.lock().is_empty());
 }
@@ -225,7 +257,10 @@ async fn a_missing_approval_service_and_an_agent_less_call_each_fail_closed() {
         tool_name: "bash".to_string(),
         signal: None,
     };
-    let error = approve_escalation(request(), missing).await.err().expect("rejects");
+    let error = approve_escalation(request(), missing)
+        .await
+        .err()
+        .expect("rejects");
     assert!(error.contains("no approval service is composed"), "{error}");
 
     let approver = FixedApprover {
@@ -239,7 +274,10 @@ async fn a_missing_approval_service_and_an_agent_less_call_each_fail_closed() {
         tool_name: "bash".to_string(),
         signal: None,
     };
-    let error = approve_escalation(request(), agentless).await.err().expect("rejects");
+    let error = approve_escalation(request(), agentless)
+        .await
+        .err()
+        .expect("rejects");
     assert!(error.contains("no agent to route it through"), "{error}");
 }
 
@@ -276,7 +314,10 @@ async fn maps_each_non_grant_outcome_to_its_distinct_verbatim_text() {
             tool_name: "bash".to_string(),
             signal: None,
         };
-        let error = approve_escalation(request, approval).await.err().expect("rejects");
+        let error = approve_escalation(request, approval)
+            .await
+            .err()
+            .expect("rejects");
         assert!(error.contains(needle), "{error}");
     }
 }

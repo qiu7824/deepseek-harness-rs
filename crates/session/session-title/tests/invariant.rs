@@ -61,7 +61,9 @@ fn rejects_a_citation_free_automatic_title_and_a_user_rename_that_cites_messages
         .and_then(|payload| payload.downcast::<String>().ok())
         .expect("panic payload");
     assert!(
-        message.contains("session/title event 0 with source \"user\" must cite no message seqs; got 1"),
+        message.contains(
+            "session/title event 0 with source \"user\" must cite no message seqs; got 1"
+        ),
         "{message}"
     );
 }
@@ -70,11 +72,14 @@ fn rejects_a_citation_free_automatic_title_and_a_user_rename_that_cites_messages
 async fn companion_installs_and_valid_appends_commit() {
     let ctx = Context::root();
     let store = SessionStore::install(&ctx);
-    let _registry = InvariantRegistry::new(&ctx, InvariantConfig {
-        enabled: true,
-        package_allowlist: vec![],
-        package_blocklist: vec![],
-    });
+    let _registry = InvariantRegistry::new(
+        &ctx,
+        InvariantConfig {
+            enabled: true,
+            package_allowlist: vec![],
+            package_blocklist: vec![],
+        },
+    );
     let fiber = ctx.plugin(Arc::new(SessionTitleInvariantPlugin), cordis::arc(()));
     fiber.settle().await.expect("settle");
 
@@ -119,11 +124,14 @@ async fn violating_appends_are_contained_without_committing_the_rejected_shape_m
     // structurally valid either way.
     let ctx = Context::root();
     let store = SessionStore::install(&ctx);
-    let _registry = InvariantRegistry::new(&ctx, InvariantConfig {
-        enabled: true,
-        package_allowlist: vec![],
-        package_blocklist: vec![],
-    });
+    let _registry = InvariantRegistry::new(
+        &ctx,
+        InvariantConfig {
+            enabled: true,
+            package_allowlist: vec![],
+            package_blocklist: vec![],
+        },
+    );
     let fiber = ctx.plugin(Arc::new(SessionTitleInvariantPlugin), cordis::arc(()));
     fiber.settle().await.expect("settle");
 

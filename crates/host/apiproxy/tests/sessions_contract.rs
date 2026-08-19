@@ -16,7 +16,10 @@ fn prompt_content_parts_discriminate_on_type() {
         name: None,
     };
     let json = serde_json::to_string(&part).expect("serialize");
-    assert_eq!(json, r#"{"type":"image","mediaType":"image/png","data":"base64"}"#);
+    assert_eq!(
+        json,
+        r#"{"type":"image","mediaType":"image/png","data":"base64"}"#
+    );
     let back: PromptContentPart = serde_json::from_str(&json).expect("reparse");
     assert_eq!(back, part);
 
@@ -61,8 +64,7 @@ fn requests_roundtrip_with_optional_field_absence() {
     };
     let json = serde_json::to_string(&request).expect("serialize");
     assert_eq!(
-        json,
-        r#"{"cwd":"/proj","agentPreset":"default"}"#,
+        json, r#"{"cwd":"/proj","agentPreset":"default"}"#,
         "absent fields stay absent"
     );
     let back: SessionCreateRequest = serde_json::from_str(&json).expect("reparse");

@@ -22,8 +22,7 @@ fn next_uid() -> u64 {
 
 /// Callback used by `transform` nodes: converts a validated value
 /// (TS `Schema.transform(inner, callback, preserve)`).
-pub type TransformFn =
-    Arc<dyn Fn(&Data, &Options) -> Result<Data, ValidationError> + Send + Sync>;
+pub type TransformFn = Arc<dyn Fn(&Data, &Options) -> Result<Data, ValidationError> + Send + Sync>;
 
 /// Deferred recursive schema builder (TS `Schema.lazy(builder)`).
 pub type LazyFn = Arc<dyn Fn() -> Schema + Send + Sync>;
@@ -40,13 +39,23 @@ pub enum Node {
     Function,
     Is(String),
     Array(Box<Schema>),
-    Dict { inner: Box<Schema>, s_key: Box<Schema> },
+    Dict {
+        inner: Box<Schema>,
+        s_key: Box<Schema>,
+    },
     Tuple(Vec<Schema>),
     Object(IndexMap<String, Schema>),
     Union(Vec<Schema>),
     Intersect(Vec<Schema>),
-    Transform { inner: Box<Schema>, callback: TransformFn, preserve: bool },
-    Lazy { builder: LazyFn, cache: Mutex<Option<Box<Schema>>> },
+    Transform {
+        inner: Box<Schema>,
+        callback: TransformFn,
+        preserve: bool,
+    },
+    Lazy {
+        builder: LazyFn,
+        cache: Mutex<Option<Box<Schema>>>,
+    },
 }
 
 impl Clone for Node {
@@ -62,14 +71,19 @@ impl Clone for Node {
             Node::Function => Node::Function,
             Node::Is(name) => Node::Is(name.clone()),
             Node::Array(inner) => Node::Array(inner.clone()),
-            Node::Dict { inner, s_key } => {
-                Node::Dict { inner: inner.clone(), s_key: s_key.clone() }
-            }
+            Node::Dict { inner, s_key } => Node::Dict {
+                inner: inner.clone(),
+                s_key: s_key.clone(),
+            },
             Node::Tuple(list) => Node::Tuple(list.clone()),
             Node::Object(dict) => Node::Object(dict.clone()),
             Node::Union(list) => Node::Union(list.clone()),
             Node::Intersect(list) => Node::Intersect(list.clone()),
-            Node::Transform { inner, callback, preserve } => Node::Transform {
+            Node::Transform {
+                inner,
+                callback,
+                preserve,
+            } => Node::Transform {
                 inner: inner.clone(),
                 callback: callback.clone(),
                 preserve: *preserve,
@@ -77,9 +91,10 @@ impl Clone for Node {
             // A derived schema starts with an empty lazy cache; TS shallow
             // copies share the built inner, but rebuilding on demand is
             // equivalent and simpler to share safely.
-            Node::Lazy { builder, .. } => {
-                Node::Lazy { builder: builder.clone(), cache: Mutex::new(None) }
-            }
+            Node::Lazy { builder, .. } => Node::Lazy {
+                builder: builder.clone(),
+                cache: Mutex::new(None),
+            },
         }
     }
 }
@@ -102,7 +117,9 @@ impl fmt::Debug for Node {
             Node::Object(dict) => write!(f, "Object({dict:?})"),
             Node::Union(list) => write!(f, "Union({list:?})"),
             Node::Intersect(list) => write!(f, "Intersect({list:?})"),
-            Node::Transform { inner, preserve, .. } => {
+            Node::Transform {
+                inner, preserve, ..
+            } => {
                 write!(f, "Transform({inner:?}, preserve={preserve})")
             }
             Node::Lazy { .. } => write!(f, "Lazy(..)"),
@@ -127,13 +144,25 @@ pub struct Schema {
 
 impl fmt::Debug for Schema {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Schema#{} {} {:?}", self.inner.uid, self.type_name(), self.inner.meta)
+        write!(
+            f,
+            "Schema#{} {} {:?}",
+            self.inner.uid,
+            self.type_name(),
+            self.inner.meta
+        )
     }
 }
 
 impl Schema {
     fn from_node(node: Node) -> Schema {
-        Schema { inner: Arc::new(SchemaInner { uid: next_uid(), meta: Meta::default(), node }) }
+        Schema {
+            inner: Arc::new(SchemaInner {
+                uid: next_uid(),
+                meta: Meta::default(),
+                node,
+            }),
+        }
     }
 
     /// Shallow copy with a fresh uid (TS `Schema(this)`).
@@ -215,7 +244,11 @@ impl Schema {
 
     /// A number between 0 and 1 marked as a slider.
     pub fn percent() -> Schema {
-        Self::number().step(0.01).min(0.0).max(1.0).role("slider", None)
+        Self::number()
+            .step(0.01)
+            .min(0.0)
+            .max(1.0)
+            .role("slider", None)
     }
 
     pub fn boolean() -> Schema {
@@ -265,11 +298,18 @@ impl Schema {
     }
 
     pub fn transform(inner: Schema, callback: TransformFn, preserve: bool) -> Schema {
-        Self::from_node(Node::Transform { inner: Box::new(inner), callback, preserve })
+        Self::from_node(Node::Transform {
+            inner: Box::new(inner),
+            callback,
+            preserve,
+        })
     }
 
     pub fn lazy(builder: LazyFn) -> Schema {
-        Self::from_node(Node::Lazy { builder, cache: Mutex::new(None) })
+        Self::from_node(Node::Lazy {
+            builder,
+            cache: Mutex::new(None),
+        })
     }
 
     /// Accept `Date` instances or parse datetime strings into `Date` objects.
@@ -306,7 +346,10 @@ impl Schema {
                                 options,
                             ));
                         }
-                        Ok(Data::RegExp { source: source.clone(), flags: flag.clone() })
+                        Ok(Data::RegExp {
+                            source: source.clone(),
+                            flags: flag.clone(),
+                        })
                     }
                     _ => unreachable!("string schema"),
                 }),
@@ -438,13 +481,19 @@ impl Schema {
 
     pub fn deprecated(&self) -> Schema {
         self.with_meta(|meta| {
-            meta.badges.push(Badge { text: "deprecated".to_string(), r#type: "danger".to_string() });
+            meta.badges.push(Badge {
+                text: "deprecated".to_string(),
+                r#type: "danger".to_string(),
+            });
         })
     }
 
     pub fn experimental(&self) -> Schema {
         self.with_meta(|meta| {
-            meta.badges.push(Badge { text: "experimental".to_string(), r#type: "warning".to_string() });
+            meta.badges.push(Badge {
+                text: "experimental".to_string(),
+                r#type: "warning".to_string(),
+            });
         })
     }
 
@@ -508,9 +557,7 @@ impl Schema {
             let mut fallback = schema.inner.meta.default.clone();
             while let Some(schema) = current {
                 match &schema.inner.node {
-                    Node::Intersect(list)
-                        if fallback.as_ref().is_none_or(|f| f.is_nullish()) =>
-                    {
+                    Node::Intersect(list) if fallback.as_ref().is_none_or(|f| f.is_nullish()) => {
                         current = list.first();
                         fallback = current.and_then(|c| c.inner.meta.default.clone());
                     }
@@ -526,12 +573,7 @@ impl Schema {
             Ok(value) => Ok(value),
             Err(error) => {
                 if schema.inner.meta.loose {
-                    Ok(schema
-                        .inner
-                        .meta
-                        .default
-                        .clone()
-                        .unwrap_or(Data::Undefined))
+                    Ok(schema.inner.meta.default.clone().unwrap_or(Data::Undefined))
                 } else {
                     Err(error)
                 }
@@ -602,7 +644,9 @@ impl Schema {
                             Node::Tuple(list) => list.get(index).cloned(),
                             _ => unreachable!("matched array/tuple"),
                         };
-                        schema.map(|s| s.simplify(item)).unwrap_or_else(|| item.clone())
+                        schema
+                            .map(|s| s.simplify(item))
+                            .unwrap_or_else(|| item.clone())
                     })
                     .collect();
                 Data::Array(result)
@@ -647,7 +691,9 @@ impl Schema {
                         let sub = child_messages(messages, &|data| {
                             let inner = get_inner(data)?;
                             let map = inner_object(inner)?;
-                            map.get(key).cloned().or_else(|| inner_object(data)?.get(key).cloned())
+                            map.get(key)
+                                .cloned()
+                                .or_else(|| inner_object(data)?.get(key).cloned())
                         });
                         (key.clone(), child.i18n(&sub))
                     })
@@ -662,9 +708,10 @@ impl Schema {
                     .map(|(index, child)| {
                         let sub = child_messages(messages, &|data| {
                             let inner = get_inner(data)?;
-                            inner_array(inner)?.get(index).cloned().or_else(|| {
-                                inner_array(data)?.get(index).cloned()
-                            })
+                            inner_array(inner)?
+                                .get(index)
+                                .cloned()
+                                .or_else(|| inner_array(data)?.get(index).cloned())
                         });
                         child.i18n(&sub)
                     })
@@ -684,9 +731,7 @@ impl Schema {
             _ => {}
         }
         if let Node::Dict { s_key, .. } = &mut inner.node {
-            let sub = child_messages(messages, &|data| {
-                inner_object(data)?.get("$key").cloned()
-            });
+            let sub = child_messages(messages, &|data| inner_object(data)?.get("$key").cloned());
             *s_key = Box::new(s_key.i18n(&sub));
         }
         schema
@@ -710,7 +755,11 @@ impl Schema {
             Node::Is(name) => name.clone(),
             Node::Array(inner) => format!("{}[]", inner.type_string(true)),
             Node::Dict { inner, s_key } => {
-                format!("{{ [key: {}]: {} }}", s_key.type_string(false), inner.type_string(false))
+                format!(
+                    "{{ [key: {}]: {} }}",
+                    s_key.type_string(false),
+                    inner.type_string(false)
+                )
             }
             Node::Tuple(list) => format!(
                 "[{}]",
@@ -806,7 +855,11 @@ fn resolve_node(
                 Ok(value.clone())
             } else {
                 Err(ValidationError::new(
-                    format!("expected {} but got {}", value.to_js_string(), data.to_js_string()),
+                    format!(
+                        "expected {} but got {}",
+                        value.to_js_string(),
+                        data.to_js_string()
+                    ),
                     options,
                 ))
             }
@@ -830,7 +883,10 @@ fn resolve_node(
         },
         Node::Is(name) => {
             let matched = match data {
-                Data::Instance { name: instance_name, .. } => instance_name == name,
+                Data::Instance {
+                    name: instance_name,
+                    ..
+                } => instance_name == name,
                 Data::Date(_) => name == "Date",
                 Data::RegExp { .. } => name == "RegExp",
                 Data::Binary(_) => name == "ArrayBuffer" || name == "SharedArrayBuffer",
@@ -1019,7 +1075,11 @@ fn resolve_node(
             }
             Ok(result.unwrap_or_else(|| data.clone()))
         }
-        Node::Transform { inner, callback, preserve } => {
+        Node::Transform {
+            inner,
+            callback,
+            preserve,
+        } => {
             let result = Schema::resolve(data, inner, options, true)?;
             let adapted = data.clone();
             if *preserve {
@@ -1117,7 +1177,8 @@ fn resolve_string(
         ));
     };
     if let Some(pattern) = &schema.inner.meta.pattern {
-        let Some(regex) = build_regex(&pattern.source, pattern.flags.as_deref().unwrap_or("")) else {
+        let Some(regex) = build_regex(&pattern.source, pattern.flags.as_deref().unwrap_or(""))
+        else {
             return Err(ValidationError::new(
                 format!("invalid regexp \"{}\"", pattern.source),
                 options,
@@ -1156,7 +1217,11 @@ fn resolve_number(
     if let Some(step) = schema.inner.meta.step {
         if step != 0.0 && !is_multiple_of(value, schema.inner.meta.min.unwrap_or(0.0), step) {
             return Err(ValidationError::new(
-                format!("expected number multiple of {} but got {}", js_number_string(step), js_number_string(value)),
+                format!(
+                    "expected number multiple of {} but got {}",
+                    js_number_string(step),
+                    js_number_string(value)
+                ),
                 options,
             ));
         }
@@ -1275,21 +1340,18 @@ fn decimal_shift(data: f64, digits: usize) -> f64 {
 fn is_multiple_of(data: f64, min: f64, step: f64) -> bool {
     let step = step.abs();
     let step_text = format!("{step}");
-    let is_decimal = step_text
-        .split_once('.')
-        .is_some_and(|(integer, frac)| {
-            !integer.is_empty()
-                && !frac.is_empty()
-                && integer.chars().all(|c| c.is_ascii_digit())
-                && frac.chars().all(|c| c.is_ascii_digit())
-        });
+    let is_decimal = step_text.split_once('.').is_some_and(|(integer, frac)| {
+        !integer.is_empty()
+            && !frac.is_empty()
+            && integer.chars().all(|c| c.is_ascii_digit())
+            && frac.chars().all(|c| c.is_ascii_digit())
+    });
     if !is_decimal {
         return (data - min) % step == 0.0;
     }
     let index = step_text.find('.').unwrap();
     let digits = step_text[index + 1..].len();
-    (decimal_shift(data, digits) - decimal_shift(min, digits)).abs()
-        % decimal_shift(step, digits)
+    (decimal_shift(data, digits) - decimal_shift(min, digits)).abs() % decimal_shift(step, digits)
         == 0.0
 }
 
@@ -1314,18 +1376,11 @@ fn property(
         }
     };
     match result {
-        Ok(value) => {
-            Ok(value)
-        }
+        Ok(value) => Ok(value),
         Err(error) => {
             if options.autofix {
                 data.remove_member(key);
-                Ok(schema
-                    .inner
-                    .meta
-                    .default
-                    .clone()
-                    .unwrap_or(Data::Undefined))
+                Ok(schema.inner.meta.default.clone().unwrap_or(Data::Undefined))
             } else {
                 Err(error)
             }
@@ -1373,9 +1428,7 @@ pub(crate) fn build_regex(source: &str, flags: &str) -> Option<Regex> {
 
 fn get_inner(data: &Data) -> Option<&Data> {
     let object = inner_object(data)?;
-    object
-        .get("$value")
-        .or_else(|| object.get("$inner"))
+    object.get("$value").or_else(|| object.get("$inner"))
 }
 
 fn inner_object(data: &Data) -> Option<&IndexMap<String, Data>> {
@@ -1413,10 +1466,7 @@ fn child_messages(
         .collect()
 }
 
-fn merge_desc(
-    original: Option<&Desc>,
-    messages: &IndexMap<String, Data>,
-) -> Desc {
+fn merge_desc(original: Option<&Desc>, messages: &IndexMap<String, Data>) -> Desc {
     let mut result = match original {
         None => IndexMap::new(),
         Some(Desc::Plain(text)) => {
@@ -1453,7 +1503,12 @@ mod tests {
     }
 
     fn obj(pairs: &[(&str, Data)]) -> Data {
-        Data::Object(pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
+        Data::Object(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+        )
     }
 
     fn err_text(result: &Result<Data, ValidationError>) -> String {
@@ -1478,20 +1533,20 @@ mod tests {
             Data::Bool(true)
         );
         assert!(err_text(&Schema::validate(&Schema::string(), num(1))).contains("expected string"));
-        assert!(err_text(&Schema::validate(&Schema::boolean(), s("x"))).contains("expected boolean"));
+        assert!(
+            err_text(&Schema::validate(&Schema::boolean(), s("x"))).contains("expected boolean")
+        );
     }
 
     #[test]
     fn error_paths_format_nested_segments() {
-        let schema = Schema::object(IndexMap::from([
-            (
-                "a".to_string(),
-                Schema::object(IndexMap::from([(
-                    "b".to_string(),
-                    Schema::array(Schema::number()),
-                )])),
-            ),
-        ]));
+        let schema = Schema::object(IndexMap::from([(
+            "a".to_string(),
+            Schema::object(IndexMap::from([(
+                "b".to_string(),
+                Schema::array(Schema::number()),
+            )])),
+        )]));
         let input = obj(&[("a", obj(&[("b", Data::Array(vec![num(1), s("x")]))]))]);
         let error = err_text(&Schema::validate(&schema, input));
         assert!(error.starts_with("$.a.b[1] "), "got: {error}");
@@ -1506,10 +1561,7 @@ mod tests {
         let error = err_text(&Schema::validate(&schema, obj(&[])));
         assert!(error.contains("missing required value"));
         let value = Schema::validate(&schema, obj(&[("name", s("x"))])).unwrap();
-        assert_eq!(
-            value,
-            obj(&[("name", s("x")), ("count", num(3))])
-        );
+        assert_eq!(value, obj(&[("name", s("x")), ("count", num(3))]));
     }
 
     #[test]
@@ -1535,10 +1587,7 @@ mod tests {
 
     #[test]
     fn bitset_normalizes() {
-        let schema = Schema::bitset(IndexMap::from([
-            ("a".to_string(), 1),
-            ("b".to_string(), 2),
-        ]));
+        let schema = Schema::bitset(IndexMap::from([("a".to_string(), 1), ("b".to_string(), 2)]));
         assert_eq!(Schema::validate(&schema, num(3)).unwrap(), num(3));
         assert_eq!(
             Schema::validate(&schema, Data::Array(vec![s("a")])).unwrap(),
@@ -1549,10 +1598,7 @@ mod tests {
 
     #[test]
     fn union_tries_in_order() {
-        let schema = Schema::union(vec![
-            Schema::number(),
-            Schema::string(),
-        ]);
+        let schema = Schema::union(vec![Schema::number(), Schema::string()]);
         assert_eq!(Schema::validate(&schema, num(1)).unwrap(), num(1));
         assert_eq!(Schema::validate(&schema, s("x")).unwrap(), s("x"));
         let error = err_text(&Schema::validate(&schema, Data::Bool(true)));
@@ -1567,16 +1613,16 @@ mod tests {
         ]);
         let value = Schema::validate(&schema, obj(&[("a", num(1)), ("b", s("x"))])).unwrap();
         assert_eq!(value, obj(&[("a", num(1)), ("b", s("x"))]));
-        let error = err_text(&Schema::validate(&schema, obj(&[("a", s("nope")), ("b", s("x"))])));
+        let error = err_text(&Schema::validate(
+            &schema,
+            obj(&[("a", s("nope")), ("b", s("x"))]),
+        ));
         assert!(error.contains("expected"), "got: {error}");
     }
 
     #[test]
     fn object_keeps_unknown_keys_but_not_strict() {
-        let schema = Schema::object(IndexMap::from([(
-            "known".to_string(),
-            Schema::number(),
-        )]));
+        let schema = Schema::object(IndexMap::from([("known".to_string(), Schema::number())]));
         let value =
             Schema::validate(&schema, obj(&[("known", num(1)), ("extra", s("x"))])).unwrap();
         assert_eq!(value, obj(&[("known", num(1)), ("extra", s("x"))]));
@@ -1658,7 +1704,10 @@ mod tests {
             ("b".to_string(), Schema::string()),
         ]));
         let input = obj(&[("a", num(1)), ("b", num(2))]);
-        let options = Options { autofix: true, ..Options::default() };
+        let options = Options {
+            autofix: true,
+            ..Options::default()
+        };
         let mut data = input;
         let value = Schema::resolve(&mut data, &schema, &options, false).unwrap();
         assert_eq!(value, obj(&[("a", num(1))]));
@@ -1754,11 +1803,8 @@ mod tests {
             "{ x: number }"
         );
         assert_eq!(
-            Schema::object(IndexMap::from([(
-                "x".to_string(),
-                Schema::number(),
-            )]))
-            .type_string(false),
+            Schema::object(IndexMap::from([("x".to_string(), Schema::number(),)]))
+                .type_string(false),
             "{ x?: number }"
         );
     }
@@ -1766,15 +1812,9 @@ mod tests {
     #[test]
     fn tuple_validates_and_preserves_rest() {
         let schema = Schema::tuple(vec![Schema::number(), Schema::string()]);
-        let value = Schema::validate(
-            &schema,
-            Data::Array(vec![num(1), s("x"), Data::Bool(true)]),
-        )
-        .unwrap();
-        assert_eq!(
-            value,
-            Data::Array(vec![num(1), s("x"), Data::Bool(true)])
-        );
+        let value =
+            Schema::validate(&schema, Data::Array(vec![num(1), s("x"), Data::Bool(true)])).unwrap();
+        assert_eq!(value, Data::Array(vec![num(1), s("x"), Data::Bool(true)]));
         assert!(Schema::validate(&schema, Data::Array(vec![s("x"), num(1)])).is_err());
     }
 }

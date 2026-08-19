@@ -69,11 +69,8 @@ pub trait FileSystem: Send + Sync + 'static {
     /// backend only normalizes + realpaths.
     ///
     /// Relative paths resolve against `opts.cwd`.
-    async fn resolve(
-        &self,
-        path: &str,
-        opts: Option<&ResolveOptions>,
-    ) -> Result<FsTarget, FsError>;
+    async fn resolve(&self, path: &str, opts: Option<&ResolveOptions>)
+    -> Result<FsTarget, FsError>;
 
     /// Return the canonical absolute path a subprocess in this filesystem's
     /// execution world can open. The path is deliberately separate from

@@ -147,7 +147,9 @@ impl Harness {
             .expect("loader service")
             .as_ref()
             .clone();
-        loader.core.register("contribute", Arc::new(ContributePlugin));
+        loader
+            .core
+            .register("contribute", Arc::new(ContributePlugin));
         SessionStore::install(&ctx);
         let agents = AgentRegistry::install(&ctx);
         let system_root = temp_dir("system");
@@ -262,15 +264,30 @@ fn list_answers_an_empty_roster_without_the_service() {
         };
         let listed: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
         assert_eq!(listed["result"]["ok"], true, "{listed}");
-        assert_eq!(listed["result"]["value"]["presets"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            listed["result"]["value"]["presets"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
         assert_eq!(listed["result"]["value"]["authorable"], false);
         assert_eq!(listed["result"]["value"]["hasDocument"], false);
 
         // The authoring calls refuse the same deployment with one shared code.
         for (method, payload) in [
-            ("agentPreset.read", serde_json::json!({ "agentPreset": "x" })),
-            ("agentPreset.copy", serde_json::json!({ "from": "standard", "agentPreset": "x" })),
-            ("agentPreset.remove", serde_json::json!({ "agentPreset": "x" })),
+            (
+                "agentPreset.read",
+                serde_json::json!({ "agentPreset": "x" }),
+            ),
+            (
+                "agentPreset.copy",
+                serde_json::json!({ "from": "standard", "agentPreset": "x" }),
+            ),
+            (
+                "agentPreset.remove",
+                serde_json::json!({ "agentPreset": "x" }),
+            ),
             (
                 "agentPreset.openDocument",
                 serde_json::json!({ "agentPreset": "x" }),
@@ -298,8 +315,7 @@ fn list_answers_an_empty_roster_without_the_service() {
             let refused: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
             assert_eq!(refused["result"]["ok"], false, "{method}: {refused}");
             assert_eq!(
-                refused["result"]["error"]["code"],
-                "agent-preset-not-found",
+                refused["result"]["error"]["code"], "agent-preset-not-found",
                 "{method}: {refused}"
             );
             assert_eq!(
@@ -318,9 +334,13 @@ fn list_reports_the_roster_trust_default_and_authoring() {
             ..Default::default()
         })
         .await;
-        let listed = harness.post("agentPreset.list", serde_json::json!({})).await;
+        let listed = harness
+            .post("agentPreset.list", serde_json::json!({}))
+            .await;
         assert_eq!(listed["result"]["ok"], true, "{listed}");
-        let presets = listed["result"]["value"]["presets"].as_array().expect("presets");
+        let presets = listed["result"]["value"]["presets"]
+            .as_array()
+            .expect("presets");
         assert_eq!(presets.len(), 1, "{presets:?}");
         assert_eq!(presets[0]["id"], "standard");
         assert_eq!(presets[0]["trust"], "system");
@@ -345,14 +365,10 @@ fn select_switches_a_blank_session_and_logs_the_event() {
         assert_eq!(selected["result"]["ok"], true, "{selected}");
         assert_eq!(selected["result"]["value"]["agentPreset"], "standard");
         // The log states what the agent runs.
-        let logged = agent
-            .session()
-            .events()
-            .iter()
-            .any(|event| {
-                event.type_ == dsh_agent_presets::AGENT_PRESET_SELECTED
-                    && event.data["agentPreset"] == "standard"
-            });
+        let logged = agent.session().events().iter().any(|event| {
+            event.type_ == dsh_agent_presets::AGENT_PRESET_SELECTED
+                && event.data["agentPreset"] == "standard"
+        });
         assert!(logged, "selected event logged");
     });
 }
@@ -364,7 +380,11 @@ fn select_refuses_a_started_session_as_locked() {
         let agent = harness.blank_agent("started-1");
         agent
             .session()
-            .append("turn/start", serde_json::json!({ "turn": 1, "reason": "completed" }), None)
+            .append(
+                "turn/start",
+                serde_json::json!({ "turn": 1, "reason": "completed" }),
+                None,
+            )
             .expect("started event");
         register_agent(&harness.agents, &agent).await;
         let selected = harness
@@ -375,7 +395,10 @@ fn select_refuses_a_started_session_as_locked() {
             .await;
         assert_eq!(selected["result"]["ok"], false, "{selected}");
         assert_eq!(selected["result"]["error"]["code"], "agent-preset-locked");
-        assert_eq!(selected["result"]["error"]["details"]["sessionId"], "started-1");
+        assert_eq!(
+            selected["result"]["error"]["details"]["sessionId"],
+            "started-1"
+        );
     });
 }
 
@@ -395,11 +418,17 @@ fn read_serves_the_composition_and_unknown_ids_as_not_found() {
         assert_eq!(read["result"]["value"]["content"], VALID);
 
         let refused = harness
-            .post("agentPreset.read", serde_json::json!({ "agentPreset": "ghost" }))
+            .post(
+                "agentPreset.read",
+                serde_json::json!({ "agentPreset": "ghost" }),
+            )
             .await;
         assert_eq!(refused["result"]["ok"], false, "{refused}");
         assert_eq!(refused["result"]["error"]["code"], "agent-preset-not-found");
-        assert_eq!(refused["result"]["error"]["details"]["agentPreset"], "ghost");
+        assert_eq!(
+            refused["result"]["error"]["details"]["agentPreset"],
+            "ghost"
+        );
         assert_eq!(
             refused["result"]["error"]["details"]["available"]
                 .as_array()
@@ -425,7 +454,9 @@ fn copy_creates_a_user_preset_and_refuses_an_occupied_id() {
         assert_eq!(copied["result"]["value"]["agentPreset"], "mine");
 
         // The roster now carries the copy under the user root.
-        let listed = harness.post("agentPreset.list", serde_json::json!({})).await;
+        let listed = harness
+            .post("agentPreset.list", serde_json::json!({}))
+            .await;
         let ids: Vec<&str> = listed["result"]["value"]["presets"]
             .as_array()
             .unwrap()
@@ -469,7 +500,10 @@ fn remove_deletes_a_user_preset_and_refuses_a_shipped_one() {
         assert_eq!(copied["result"]["ok"], true, "{copied}");
 
         let removed = harness
-            .post("agentPreset.remove", serde_json::json!({ "agentPreset": "mine" }))
+            .post(
+                "agentPreset.remove",
+                serde_json::json!({ "agentPreset": "mine" }),
+            )
             .await;
         assert_eq!(removed["result"]["ok"], true, "{removed}");
 
@@ -482,7 +516,10 @@ fn remove_deletes_a_user_preset_and_refuses_a_shipped_one() {
             .await;
         assert_eq!(refused["result"]["ok"], false, "{refused}");
         assert_eq!(refused["result"]["error"]["code"], "agent-preset-read-only");
-        assert_eq!(refused["result"]["error"]["details"]["agentPreset"], "standard");
+        assert_eq!(
+            refused["result"]["error"]["details"]["agentPreset"],
+            "standard"
+        );
     });
 }
 
@@ -523,7 +560,11 @@ fn open_document_hands_a_user_directory_to_the_opener_and_refuses_shipped() {
         // The opener received the preset's DIRECTORY, Host-resolved.
         let calls = opened.lock().clone();
         assert_eq!(calls.len(), 1);
-        assert!(calls[0].ends_with("mine"), "directory not file: {}", calls[0]);
+        assert!(
+            calls[0].ends_with("mine"),
+            "directory not file: {}",
+            calls[0]
+        );
         assert!(!calls[0].ends_with(dsh_agent_presets::COMPOSITION_FILE));
 
         // Shipped presets are refused before any opener runs.

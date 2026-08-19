@@ -34,7 +34,10 @@ pub fn scan_zstd_frames(buffer: &[u8]) -> Result<ZstdFrameScan, String> {
     while offset < buffer.len() {
         let start = offset;
         if buffer.len() - offset < 4 {
-            return Ok(ZstdFrameScan { frames, torn_start: Some(start) });
+            return Ok(ZstdFrameScan {
+                frames,
+                torn_start: Some(start),
+            });
         }
         if u32::from_le_bytes(buffer[offset..offset + 4].try_into().unwrap()) != ZSTD_MAGIC {
             return Err(format!(
@@ -44,7 +47,10 @@ pub fn scan_zstd_frames(buffer: &[u8]) -> Result<ZstdFrameScan, String> {
         offset += 4;
 
         if offset == buffer.len() {
-            return Ok(ZstdFrameScan { frames, torn_start: Some(start) });
+            return Ok(ZstdFrameScan {
+                frames,
+                torn_start: Some(start),
+            });
         }
         let descriptor = buffer[offset];
         offset += 1;
@@ -59,7 +65,11 @@ pub fn scan_zstd_frames(buffer: &[u8]) -> Result<ZstdFrameScan, String> {
         let single_segment = (descriptor & 0x20) != 0;
         let checksum = (descriptor & 0x04) != 0;
         let dictionary_flag = (descriptor & 0x03) as usize;
-        let dictionary_bytes = if dictionary_flag == 3 { 4 } else { dictionary_flag };
+        let dictionary_bytes = if dictionary_flag == 3 {
+            4
+        } else {
+            dictionary_flag
+        };
         let content_size_bytes = if content_size_flag == 0 {
             if single_segment { 1 } else { 0 }
         } else {
@@ -68,13 +78,19 @@ pub fn scan_zstd_frames(buffer: &[u8]) -> Result<ZstdFrameScan, String> {
         let remaining_header_bytes =
             (if single_segment { 0 } else { 1 }) + dictionary_bytes + content_size_bytes;
         if buffer.len() - offset < remaining_header_bytes {
-            return Ok(ZstdFrameScan { frames, torn_start: Some(start) });
+            return Ok(ZstdFrameScan {
+                frames,
+                torn_start: Some(start),
+            });
         }
         offset += remaining_header_bytes;
 
         loop {
             if buffer.len() - offset < 3 {
-                return Ok(ZstdFrameScan { frames, torn_start: Some(start) });
+                return Ok(ZstdFrameScan {
+                    frames,
+                    torn_start: Some(start),
+                });
             }
             let block_header =
                 u32::from_le_bytes([buffer[offset], buffer[offset + 1], buffer[offset + 2], 0]);
@@ -90,7 +106,10 @@ pub fn scan_zstd_frames(buffer: &[u8]) -> Result<ZstdFrameScan, String> {
             }
             let payload_bytes = if block_type == 0x01 { 1 } else { block_size };
             if buffer.len() - offset < payload_bytes {
-                return Ok(ZstdFrameScan { frames, torn_start: Some(start) });
+                return Ok(ZstdFrameScan {
+                    frames,
+                    torn_start: Some(start),
+                });
             }
             offset += payload_bytes;
             if last_block {
@@ -100,13 +119,19 @@ pub fn scan_zstd_frames(buffer: &[u8]) -> Result<ZstdFrameScan, String> {
 
         if checksum {
             if buffer.len() - offset < 4 {
-                return Ok(ZstdFrameScan { frames, torn_start: Some(start) });
+                return Ok(ZstdFrameScan {
+                    frames,
+                    torn_start: Some(start),
+                });
             }
             offset += 4;
         }
         frames.push(ZstdFrameRange { start, end: offset });
     }
-    Ok(ZstdFrameScan { frames, torn_start: None })
+    Ok(ZstdFrameScan {
+        frames,
+        torn_start: None,
+    })
 }
 
 /// Compress one independently decodable, checksummed Zstandard frame
@@ -159,8 +184,7 @@ fn assert_zstd_header_frame(plaintext: &[u8]) -> Result<(), String> {
             .any(|byte| *byte == 0x0A)
     {
         return Err(
-            "corrupt Zstandard session log: first frame is not exactly one header line"
-                .to_string(),
+            "corrupt Zstandard session log: first frame is not exactly one header line".to_string(),
         );
     }
     Ok(())
@@ -203,10 +227,19 @@ mod tests {
         let payload = b"hello zstd world";
         let frame = compress_zstd_frame(payload).unwrap();
         // The magic is present.
-        assert_eq!(u32::from_le_bytes(frame[0..4].try_into().unwrap()), ZSTD_MAGIC);
+        assert_eq!(
+            u32::from_le_bytes(frame[0..4].try_into().unwrap()),
+            ZSTD_MAGIC
+        );
         // Structural scan sees exactly one complete frame.
         let scan = scan_zstd_frames(&frame).unwrap();
-        assert_eq!(scan.frames, vec![ZstdFrameRange { start: 0, end: frame.len() }]);
+        assert_eq!(
+            scan.frames,
+            vec![ZstdFrameRange {
+                start: 0,
+                end: frame.len()
+            }]
+        );
         assert_eq!(scan.torn_start, None);
         // Decompression restores the payload.
         assert_eq!(decompress_zstd_frame(&frame).unwrap(), payload);
@@ -220,10 +253,19 @@ mod tests {
         concat.extend_from_slice(&second);
         let scan = scan_zstd_frames(&concat).unwrap();
         assert_eq!(scan.frames.len(), 2);
-        assert_eq!(scan.frames[0], ZstdFrameRange { start: 0, end: first.len() });
+        assert_eq!(
+            scan.frames[0],
+            ZstdFrameRange {
+                start: 0,
+                end: first.len()
+            }
+        );
         assert_eq!(
             scan.frames[1],
-            ZstdFrameRange { start: first.len(), end: first.len() + second.len() }
+            ZstdFrameRange {
+                start: first.len(),
+                end: first.len() + second.len()
+            }
         );
         let plaintexts = decode_zstd_frames(&concat, &scan.frames).unwrap();
         assert_eq!(plaintexts[0], b"first");
@@ -237,7 +279,13 @@ mod tests {
         let mut concat = complete.clone();
         concat.extend_from_slice(&torn[..torn.len() / 2]);
         let scan = scan_zstd_frames(&concat).unwrap();
-        assert_eq!(scan.frames, vec![ZstdFrameRange { start: 0, end: complete.len() }]);
+        assert_eq!(
+            scan.frames,
+            vec![ZstdFrameRange {
+                start: 0,
+                end: complete.len()
+            }]
+        );
         assert_eq!(scan.torn_start, Some(complete.len()));
     }
 
@@ -271,7 +319,10 @@ mod tests {
         assert!(decode_zstd_header_line(&bad).is_err());
         // Parsing a decompressed plaintext works without re-decoding.
         let plaintext = decompress_zstd_frame(&frame).unwrap();
-        assert_eq!(parse_zstd_header_plaintext(&plaintext).unwrap(), "{\"type\":\"session\"}");
+        assert_eq!(
+            parse_zstd_header_plaintext(&plaintext).unwrap(),
+            "{\"type\":\"session\"}"
+        );
         // Plaintext is not a frame: decoding it as one must fail.
         assert!(decompress_zstd_frame(&plaintext).is_err());
     }

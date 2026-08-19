@@ -18,27 +18,19 @@ fn args(values: &[&str]) -> Vec<String> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn captures_utf8_stdout_and_stderr_on_exit_zero() {
-    let result = run_native_command(
-        &child_path(),
-        &args(&["echo-out", "out✓"]),
-        None,
-    )
-    .await
-    .expect("exit 0");
+    let result = run_native_command(&child_path(), &args(&["echo-out", "out✓"]), None)
+        .await
+        .expect("exit 0");
     assert_eq!(result.stdout, "out✓");
     assert_eq!(result.stderr, "");
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn rejects_a_nonzero_exit_with_code_and_stdio_attached() {
-    let failure = run_native_command(
-        &child_path(),
-        &args(&["exit", "3"]),
-        None,
-    )
-    .await
-    .err()
-    .expect("non-zero exit");
+    let failure = run_native_command(&child_path(), &args(&["exit", "3"]), None)
+        .await
+        .err()
+        .expect("non-zero exit");
     assert_eq!(failure.code.as_deref(), Some("3"));
     assert_eq!(failure.stdout, "");
     assert_eq!(failure.stderr, "");
@@ -63,9 +55,8 @@ async fn terminates_the_child_when_the_signal_aborts() {
     });
     let child = child_path();
     let sleep_args = args(&["sleep-forever"]);
-    let pending = tokio::spawn(async move {
-        run_native_command(&child, &sleep_args, Some(signal)).await
-    });
+    let pending =
+        tokio::spawn(async move { run_native_command(&child, &sleep_args, Some(signal)).await });
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     aborted.store(true, std::sync::atomic::Ordering::SeqCst);
     let failure = pending.await.expect("task").err().expect("aborted");

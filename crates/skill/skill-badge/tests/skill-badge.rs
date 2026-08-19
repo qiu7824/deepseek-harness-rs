@@ -43,7 +43,11 @@ async fn registers_and_disposes_the_bundled_badge_skill() {
         .await
         .expect("get");
     let loaded = loaded.expect("loaded");
-    assert!(loaded.content.contains("Preserve the badge's 121×20 dimensions"));
+    assert!(
+        loaded
+            .content
+            .contains("Preserve the badge's 121×20 dimensions")
+    );
     assert_eq!(loaded.resource_base, Some(resource_base()));
 
     fiber.dispose().await;

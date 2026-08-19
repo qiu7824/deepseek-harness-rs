@@ -106,10 +106,7 @@ pub trait StorageBackend: Send + Sync {
 
 /// Helper for backend implementers: the `closed` rejection.
 pub fn closed_error(subject: &str) -> StorageError {
-    StorageError::new(
-        StorageErrorCode::Closed,
-        format!("{subject} is closed"),
-    )
+    StorageError::new(StorageErrorCode::Closed, format!("{subject} is closed"))
 }
 
 /// Helper for backend implementers: the `version-mismatch` rejection.

@@ -14,9 +14,7 @@ use dsh_commands::{
     CommandDefinition, CommandInputDescriptor, CommandInvocation, CommandResult, CommandRuntime,
 };
 use dsh_session::Session;
-use dsh_session_telemetry::{
-    SessionTelemetryBackend, SessionTelemetrySharingStatus,
-};
+use dsh_session_telemetry::{SessionTelemetryBackend, SessionTelemetrySharingStatus};
 
 /// Cordis plugin name used by loader diagnostics.
 pub const NAME: &str = "command-feedback";
@@ -53,7 +51,11 @@ pub fn record_feedback(session: &Session, text: &str) -> Result<dsh_session::Ses
     if normalized.is_empty() {
         return Err("feedback text must not be empty".to_string());
     }
-    session.append("feedback/record", serde_json::json!({ "text": normalized }), None)
+    session.append(
+        "feedback/record",
+        serde_json::json!({ "text": normalized }),
+        None,
+    )
 }
 
 /// Validate, record, and acknowledge one feedback entry (TS
@@ -76,8 +78,7 @@ pub fn execute_feedback_command(
         Some(telemetry) => sharing_sentence(telemetry.sharing()),
         None => "Session sharing is not configured.",
     };
-    let anonymous_id =
-        get_or_create_anonymous_user_id(AnonymousUserIdOptions::default());
+    let anonymous_id = get_or_create_anonymous_user_id(AnonymousUserIdOptions::default());
     Ok(CommandResult::Success {
         text: Some(format!(
             "Feedback recorded for session {}\nAnonymous user: {anonymous_id}. {disclosure}",
@@ -128,12 +129,8 @@ impl Plugin for CommandFeedbackPlugin {
     }
 
     async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
-        let disposer =
-            apply(ctx).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
-        let _ = ctx.effect(
-            "command-feedback",
-            Box::pin(async move { Some(disposer) }),
-        );
+        let disposer = apply(ctx).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
+        let _ = ctx.effect("command-feedback", Box::pin(async move { Some(disposer) }));
         Ok(())
     }
 }

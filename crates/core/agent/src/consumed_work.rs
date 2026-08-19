@@ -60,10 +60,7 @@ pub fn fold_consumed_work(events: &[SessionEvent]) -> ConsumedWork {
                 let Some(_removed) = removed_count else {
                     continue;
                 };
-                let outcome = event
-                    .data
-                    .get("outcome")
-                    .and_then(|value| value.as_str());
+                let outcome = event.data.get("outcome").and_then(|value| value.as_str());
                 if outcome == Some("canceled") {
                     // A replacement keeps the work pending under a new
                     // identity, so only a cancellation that leaves nothing
@@ -75,13 +72,17 @@ pub fn fold_consumed_work(events: &[SessionEvent]) -> ConsumedWork {
             }
             "turn/end" => {
                 let turn = event.data.get("turn").and_then(|value| value.as_u64());
-                let reason: Option<TurnEndReason> =
-                    event.data.get("reason").and_then(|value| serde_json::from_value(value.clone()).ok());
+                let reason: Option<TurnEndReason> = event
+                    .data
+                    .get("reason")
+                    .and_then(|value| serde_json::from_value(value.clone()).ok());
                 open = None;
                 if let Some(turn) = turn {
                     let was_stepped = stepped.remove(&turn);
                     let was_claimed = claimed.remove(&turn);
-                    if was_stepped || (was_claimed && reason.as_ref().is_some_and(accounts_for_claim)) {
+                    if was_stepped
+                        || (was_claimed && reason.as_ref().is_some_and(accounts_for_claim))
+                    {
                         end = Some(event.clone());
                         // Anything dropped before this turn closed is what
                         // its own ending reports; only a later drop is still
@@ -159,7 +160,11 @@ mod tests {
     fn completed_noop_turn_accounts_for_nothing() {
         let events = vec![
             event("turn/start", 0, json!({"turn": 1})),
-            event("turn/end", 1, json!({"turn": 1, "reason": {"kind": "completed"}})),
+            event(
+                "turn/end",
+                1,
+                json!({"turn": 1, "reason": {"kind": "completed"}}),
+            ),
         ];
         let result = fold_consumed_work(&events);
         assert!(result.end.is_none());

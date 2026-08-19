@@ -33,7 +33,10 @@ impl CordisError {
         let message = match code {
             CordisErrorCode::InactiveEffect => "cannot create effect on inactive context",
         };
-        Self { code, message: message.to_string() }
+        Self {
+            code,
+            message: message.to_string(),
+        }
     }
 }
 
@@ -46,11 +49,17 @@ pub struct ValidationError {
 
 impl ValidationError {
     pub fn new(issues: impl IntoIterator<Item = String>) -> Self {
-        Self { issues: issues.into_iter().collect() }
+        Self {
+            issues: issues.into_iter().collect(),
+        }
     }
 
     fn fmt_issues(&self) -> String {
-        self.issues.iter().map(|i| format!("  - {i}")).collect::<Vec<_>>().join("\n")
+        self.issues
+            .iter()
+            .map(|i| format!("  - {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -73,7 +82,10 @@ pub struct AggregateError {
 
 impl AggregateError {
     pub fn new(reasons: Vec<ArcValue>) -> Self {
-        Self { count: reasons.len(), reasons }
+        Self {
+            count: reasons.len(),
+            reasons,
+        }
     }
 }
 

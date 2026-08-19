@@ -112,12 +112,15 @@ pub async fn run_native_command(
         });
     }
 
-    let output = child.wait_with_output().await.map_err(|error| NativeCommandFailure {
-        message: error.to_string(),
-        code: None,
-        stdout: String::new(),
-        stderr: String::new(),
-    })?;
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|error| NativeCommandFailure {
+            message: error.to_string(),
+            code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+        })?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     match output.status.code() {

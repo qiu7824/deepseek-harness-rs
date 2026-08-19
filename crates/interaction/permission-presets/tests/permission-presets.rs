@@ -16,7 +16,7 @@ use dsh_permission_presets::{
 use dsh_sandbox::SandboxMode;
 use dsh_session::{CreateSessionOptions, Session, SessionEvent, SessionStore, session_id};
 use dsh_settings::{SettingsNamespace, SettingsProvider, SettingsStorage};
-use dsh_shell::{ShellExecutor, ShellExecRequest, ShellExecSpec, ShellProcess, ShellRunResult};
+use dsh_shell::{ShellExecRequest, ShellExecSpec, ShellExecutor, ShellProcess, ShellRunResult};
 use dsh_user_approval::{ApprovalPolicy, ApprovalService, Config as ApprovalConfig};
 use indexmap::IndexMap;
 use schemastery::Data;
@@ -179,7 +179,10 @@ fn folds_to_the_last_event_or_none_without_one() {
 #[tokio::test(flavor = "current_thread")]
 async fn advertises_the_preset_table_in_declaration_order_and_resolves_bundles() {
     let (_ctx, service) = mounted(None, Some(SandboxMode::WorkspaceWrite), None).expect("install");
-    assert_eq!(service.names(), vec!["workspace-write", "danger-full-access"]);
+    assert_eq!(
+        service.names(),
+        vec!["workspace-write", "danger-full-access"]
+    );
     let spec = service.resolve("danger-full-access").expect("resolve");
     assert_eq!(spec.sandbox, SandboxMode::DangerFullAccess);
     assert_eq!(spec.approval, ApprovalPolicy::Never);
@@ -192,9 +195,7 @@ async fn current_derives_from_the_effective_knobs() {
     let (_ctx, service) = mounted(None, Some(SandboxMode::WorkspaceWrite), None).expect("install");
     let session = fresh_session("sess-current");
     assert_eq!(service.current(&session.events()), "workspace-write");
-    service
-        .set(&session, "danger-full-access")
-        .expect("set");
+    service.set(&session, "danger-full-access").expect("set");
     assert_eq!(service.current(&session.events()), "danger-full-access");
 }
 
@@ -210,9 +211,7 @@ async fn a_knob_state_matching_no_table_entry_derives_custom() {
         )
         .expect("mode");
     assert_eq!(service.current(&session.events()), CUSTOM_PRESET);
-    service
-        .set(&session, "danger-full-access")
-        .expect("set");
+    service.set(&session, "danger-full-access").expect("set");
     assert_eq!(service.current(&session.events()), "danger-full-access");
     let error = service.resolve(CUSTOM_PRESET).expect_err("custom reserved");
     assert!(error.contains("unknown preset"), "{error}");
@@ -268,8 +267,8 @@ async fn the_fold_breaks_bundle_ties_and_a_stale_fold_falls_back_to_table_order(
         presets: Some(presets),
         default_preset: None,
     };
-    let (_ctx, service) = mounted(Some(config), Some(SandboxMode::WorkspaceWrite), None)
-        .expect("install");
+    let (_ctx, service) =
+        mounted(Some(config), Some(SandboxMode::WorkspaceWrite), None).expect("install");
     let session = fresh_session("sess-tie");
     service.set(&session, "agentish").expect("set");
     assert_eq!(service.current(&session.events()), "agentish");
@@ -294,9 +293,7 @@ async fn the_fold_breaks_bundle_ties_and_a_stale_fold_falls_back_to_table_order(
 async fn set_writes_through_one_preset_event_plus_both_knob_events() {
     let (_ctx, service) = mounted(None, Some(SandboxMode::WorkspaceWrite), None).expect("install");
     let session = fresh_session("sess-set");
-    service
-        .set(&session, "danger-full-access")
-        .expect("set");
+    service.set(&session, "danger-full-access").expect("set");
     let events = session.events();
     let shapes: Vec<(String, serde_json::Value)> = events
         .iter()
@@ -333,9 +330,7 @@ async fn set_to_the_current_preset_is_a_no_op_when_the_knobs_already_match() {
 async fn reasserting_a_preset_from_a_drifted_state_re_records_and_repairs() {
     let (_ctx, service) = mounted(None, Some(SandboxMode::WorkspaceWrite), None).expect("install");
     let session = fresh_session("sess-drift");
-    service
-        .set(&session, "danger-full-access")
-        .expect("set");
+    service.set(&session, "danger-full-access").expect("set");
     // Re-selecting from a drifted state records the choice and repairs only
     // the changed knob.
     session
@@ -345,9 +340,7 @@ async fn reasserting_a_preset_from_a_drifted_state_re_records_and_repairs() {
             None,
         )
         .expect("mode");
-    service
-        .set(&session, "danger-full-access")
-        .expect("set");
+    service.set(&session, "danger-full-access").expect("set");
     let events = session.events();
     let tail: Vec<(String, serde_json::Value)> = events[4..]
         .iter()
@@ -450,15 +443,25 @@ async fn rejects_a_table_entry_named_custom() {
     )
     .err()
     .expect("must reject");
-    assert!(error.contains("reserved for the derived not-a-preset state"), "{error}");
+    assert!(
+        error.contains("reserved for the derived not-a-preset state"),
+        "{error}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn requires_an_explicit_default_when_composition_defaults_match_no_preset() {
-    let error = mounted(None, Some(SandboxMode::WorkspaceWrite), Some(ApprovalPolicy::Never))
-        .err()
-        .expect("must reject");
-    assert!(error.contains("configure defaultPreset explicitly"), "{error}");
+    let error = mounted(
+        None,
+        Some(SandboxMode::WorkspaceWrite),
+        Some(ApprovalPolicy::Never),
+    )
+    .err()
+    .expect("must reject");
+    assert!(
+        error.contains("configure defaultPreset explicitly"),
+        "{error}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -522,7 +525,10 @@ async fn pins_the_current_setting_into_each_new_session_without_changing_earlier
         .iter()
         .map(|event| event.type_.as_str())
         .collect();
-    assert_eq!(types, vec!["permission/preset", "sandbox/mode", "approval/policy"]);
+    assert_eq!(
+        types,
+        vec!["permission/preset", "sandbox/mode", "approval/policy"]
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -564,7 +570,10 @@ async fn preserves_a_seeded_legacy_session_instead_of_applying_the_latest_user_d
         .iter()
         .map(|event| event.type_.as_str())
         .collect();
-    assert_eq!(tail, vec!["permission/preset", "sandbox/mode", "approval/policy"]);
+    assert_eq!(
+        tail,
+        vec!["permission/preset", "sandbox/mode", "approval/policy"]
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -627,7 +636,10 @@ async fn pins_sessions_that_already_exist_when_the_service_remounts() {
         .iter()
         .map(|event| event.type_.as_str())
         .collect();
-    assert_eq!(types, vec!["permission/preset", "sandbox/mode", "approval/policy"]);
+    assert_eq!(
+        types,
+        vec!["permission/preset", "sandbox/mode", "approval/policy"]
+    );
     assert_eq!(service.current(&existing.events()), "workspace-write");
 }
 
@@ -775,8 +787,10 @@ async fn checker_rejects_unknown_preset_payloads_with_the_ts_messages() {
         invariant::validate_event(&service, &unknown).expect_err("unknown"),
         "permission/preset names unknown preset \"yolo\""
     );
-    let known =
-        synthetic_event("permission/preset", serde_json::json!({ "preset": "workspace-write" }));
+    let known = synthetic_event(
+        "permission/preset",
+        serde_json::json!({ "preset": "workspace-write" }),
+    );
     invariant::validate_event(&service, &known).expect("known");
     let unrelated = synthetic_event("turn/start", serde_json::json!({ "turn": 1 }));
     invariant::validate_event(&service, &unrelated).expect("unrelated");

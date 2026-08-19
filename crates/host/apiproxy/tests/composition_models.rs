@@ -209,7 +209,10 @@ fn models_reports_the_default_selection_and_catalog() {
         let harness = Harness::new();
         harness.register_owner().await;
         let response = harness
-            .post("session.models", serde_json::json!({ "sessionId": "owner" }))
+            .post(
+                "session.models",
+                serde_json::json!({ "sessionId": "owner" }),
+            )
             .await;
         assert_eq!(response["result"]["ok"], true, "{response}");
         let value = &response["result"]["value"];
@@ -233,7 +236,10 @@ fn select_model_validates_and_records_the_selection() {
             )
             .await;
         assert_eq!(selected["result"]["ok"], true, "{selected}");
-        assert_eq!(selected["result"]["value"]["selected"]["provider"], "openai");
+        assert_eq!(
+            selected["result"]["value"]["selected"]["provider"],
+            "openai"
+        );
         assert_eq!(selected["result"]["value"]["selected"]["model"], "gpt-x");
 
         // An unknown provider is model-unavailable.
@@ -254,7 +260,10 @@ fn models_for_an_unknown_session_reports_the_resolver_failure() {
         let harness = Harness::new();
         harness.register_owner().await;
         let response = harness
-            .post("session.models", serde_json::json!({ "sessionId": "ghost" }))
+            .post(
+                "session.models",
+                serde_json::json!({ "sessionId": "ghost" }),
+            )
             .await;
         assert_eq!(response["result"]["ok"], false);
         // No persistence backend in this harness: the resolver's cold

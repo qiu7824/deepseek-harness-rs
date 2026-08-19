@@ -176,15 +176,19 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
     }
 
     /// Consume a reservation after its exact Session has attached.
-    pub fn attach(&self, reservation: &Arc<SessionPreparationReservation<S, C>>) -> Result<(), String> {
+    pub fn attach(
+        &self,
+        reservation: &Arc<SessionPreparationReservation<S, C>>,
+    ) -> Result<(), String> {
         let entry = &reservation.entry;
         let current = self
             .entries
             .lock()
             .get(entry.id.as_str())
             .is_some_and(|live| Arc::ptr_eq(live, entry));
-        if !current || entry.state.lock().reservation.as_ref().map(Arc::as_ptr)
-            != Some(Arc::as_ptr(reservation))
+        if !current
+            || entry.state.lock().reservation.as_ref().map(Arc::as_ptr)
+                != Some(Arc::as_ptr(reservation))
         {
             return Err(format!(
                 "session \"{}\" preparation is no longer reserved",
@@ -275,7 +279,10 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
             .lock()
             .get(id.as_str())
             .map(|entry| entry.state.lock().phase);
-        if matches!(phase, Some(PreparationPhase::Committing | PreparationPhase::Reserved)) {
+        if matches!(
+            phase,
+            Some(PreparationPhase::Committing | PreparationPhase::Reserved)
+        ) {
             return Err(format!(
                 "cannot append session \"{}\" while its persisted preparation is reserved",
                 id.as_str()
@@ -309,7 +316,9 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
                 reservation: None,
             }),
         });
-        self.entries.lock().insert(id.as_str().to_string(), entry.clone());
+        self.entries
+            .lock()
+            .insert(id.as_str().to_string(), entry.clone());
         // Start immediately (the TS `entryFor` starts the load synchronously),
         // settling the shared result after the entry becomes ready.
         let entries = Arc::clone(&self.entries);
@@ -438,7 +447,10 @@ mod tests {
 
     fn make_source(id: &str, label: &'static str) -> Arc<TestSource> {
         let session = Session::create(session_id(id), None, None).unwrap();
-        Arc::new(TestSource { session: Arc::new(session), label })
+        Arc::new(TestSource {
+            session: Arc::new(session),
+            label,
+        })
     }
 
     fn header(id: &str) -> SessionHeader {
@@ -515,16 +527,16 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn reserve_commit_attach_lifecycle() {
         let pool: SessionPreparations<TestSource, ()> = SessionPreparations::new(2);
-        let load: LoadFn<TestSource> = Arc::new(move || {
-            Box::pin(async move { Ok(make_source("s1", "cold")) })
-        });
+        let load: LoadFn<TestSource> =
+            Arc::new(move || Box::pin(async move { Ok(make_source("s1", "cold")) }));
         let commit: Arc<
-            dyn Fn(Arc<TestSource>) -> crate::coordinator::BoxOpFuture<Option<(Arc<TestSource>, ())>>
+            dyn Fn(
+                    Arc<TestSource>,
+                )
+                    -> crate::coordinator::BoxOpFuture<Option<(Arc<TestSource>, ())>>
                 + Send
                 + Sync,
-        > = Arc::new(move |source| {
-            Box::pin(async move { Ok(Some((source, ()))) })
-        });
+        > = Arc::new(move |source| Box::pin(async move { Ok(Some((source, ()))) }));
 
         let reservation = pool
             .reserve(&session_id("s1"), load, commit)
@@ -547,11 +559,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn release_reusable_returns_to_ready_lru() {
         let pool: SessionPreparations<TestSource, ()> = SessionPreparations::new(2);
-        let load: LoadFn<TestSource> = Arc::new(move || {
-            Box::pin(async move { Ok(make_source("s1", "cold")) })
-        });
+        let load: LoadFn<TestSource> =
+            Arc::new(move || Box::pin(async move { Ok(make_source("s1", "cold")) }));
         let commit: Arc<
-            dyn Fn(Arc<TestSource>) -> crate::coordinator::BoxOpFuture<Option<(Arc<TestSource>, ())>>
+            dyn Fn(
+                    Arc<TestSource>,
+                )
+                    -> crate::coordinator::BoxOpFuture<Option<(Arc<TestSource>, ())>>
                 + Send
                 + Sync,
         > = Arc::new(move |source| Box::pin(async move { Ok(Some((source, ()))) }));
@@ -582,9 +596,7 @@ mod tests {
     async fn lru_evicts_oldest_ready_entry() {
         let pool: SessionPreparations<TestSource, ()> = SessionPreparations::new(1);
         let load = |id: &'static str| -> LoadFn<TestSource> {
-            Arc::new(move || {
-                Box::pin(async move { Ok(make_source(id, id)) })
-            })
+            Arc::new(move || Box::pin(async move { Ok(make_source(id, id)) }))
         };
         let id_a = session_id("a");
         let id_b = session_id("b");

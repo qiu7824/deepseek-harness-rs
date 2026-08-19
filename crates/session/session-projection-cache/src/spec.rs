@@ -56,7 +56,9 @@ pub fn checkpoint_record_schema() -> dsh_storage_domain::RecordSchema {
         let created_at = identity
             .get("createdAt")
             .and_then(|created_at| created_at.as_u64())
-            .ok_or_else(|| "checkpoint identity createdAt must be a non-negative integer".to_string())?;
+            .ok_or_else(|| {
+                "checkpoint identity createdAt must be a non-negative integer".to_string()
+            })?;
         let _ = created_at;
         if let Some(cwd) = identity.get("cwd")
             && !cwd.is_string()
@@ -95,7 +97,10 @@ pub fn projection_cache_domain_spec() -> DomainSpec {
         "session_projcache",
         3,
         None,
-        IndexMap::from([("sessions".to_string(), domain_table(checkpoint_record_schema()))]),
+        IndexMap::from([(
+            "sessions".to_string(),
+            domain_table(checkpoint_record_schema()),
+        )]),
     )
     .expect("session_projcache spec is valid")
 }

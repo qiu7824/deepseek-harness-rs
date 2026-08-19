@@ -18,8 +18,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cordis::{ArcValue, Context, InjectSpec, Plugin, PluginError, arc};
 use dsh_host_directory_picker::{
-    AbortSignal, DirectoryPicker, DirectoryPickerCapability,
-    DirectoryPickerNativeCapability, register,
+    AbortSignal, DirectoryPicker, DirectoryPickerCapability, DirectoryPickerNativeCapability,
+    register,
 };
 use futures::future::BoxFuture;
 
@@ -29,8 +29,7 @@ pub const NAME: &str = "host-directory-picker-native";
 /// Open the macOS chooser through `osascript` (the TS native-picker path).
 async fn pick_macos(signal: &AbortSignal) -> Option<String> {
     let abort = signal.clone();
-    let signal_flag: dsh_native_command::NativeCommandAbort =
-        Arc::new(move || abort.aborted());
+    let signal_flag: dsh_native_command::NativeCommandAbort = Arc::new(move || abort.aborted());
     let script = "POSIX path of (choose folder with prompt \"Select workspace directory\")";
     match dsh_native_command::run_native_command(
         "osascript",
@@ -58,8 +57,7 @@ async fn pick_macos(signal: &AbortSignal) -> Option<String> {
 async fn pick_linux(signal: &AbortSignal) -> Option<String> {
     for binary in ["zenity", "kdialog"] {
         let abort = signal.clone();
-        let signal_flag: dsh_native_command::NativeCommandAbort =
-            Arc::new(move || abort.aborted());
+        let signal_flag: dsh_native_command::NativeCommandAbort = Arc::new(move || abort.aborted());
         let args: Vec<String> = match binary {
             "zenity" => vec![
                 "--file-selection".to_string(),
@@ -103,24 +101,25 @@ impl NativeDirectoryPicker {
     /// Construct an unregistered backend; `install` registers it as
     /// `ctx.directoryPicker`.
     pub fn new() -> Arc<Self> {
-        let pick: Arc<
-            dyn Fn(AbortSignal) -> BoxFuture<'static, Option<String>> + Send + Sync,
-        > = Arc::new(move |signal: AbortSignal| {
-            Box::pin(async move {
-                if cfg!(target_os = "macos") {
-                    pick_macos(&signal).await
-                } else if cfg!(target_os = "linux") {
-                    pick_linux(&signal).await
-                } else {
-                    // Windows: the IFileOpenDialog COM dialog arrives with
-                    // the win32-dialog milestone; picking is unavailable
-                    // until then.
-                    None
-                }
-            })
-        });
+        let pick: Arc<dyn Fn(AbortSignal) -> BoxFuture<'static, Option<String>> + Send + Sync> =
+            Arc::new(move |signal: AbortSignal| {
+                Box::pin(async move {
+                    if cfg!(target_os = "macos") {
+                        pick_macos(&signal).await
+                    } else if cfg!(target_os = "linux") {
+                        pick_linux(&signal).await
+                    } else {
+                        // Windows: the IFileOpenDialog COM dialog arrives with
+                        // the win32-dialog milestone; picking is unavailable
+                        // until then.
+                        None
+                    }
+                })
+            });
         Arc::new(Self {
-            capability: DirectoryPickerCapability::Native(DirectoryPickerNativeCapability::new(pick)),
+            capability: DirectoryPickerCapability::Native(DirectoryPickerNativeCapability::new(
+                pick,
+            )),
         })
     }
 

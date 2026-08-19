@@ -141,9 +141,13 @@ async fn rejects_titles_that_normalize_to_empty_and_dead_sessions() {
     assert!(error.to_string().contains("visible characters"), "{error}");
     assert!(error.is_invalid());
 
-    let detached = dsh_session::Session::create(session_id("detached"), None, None).expect("create");
+    let detached =
+        dsh_session::Session::create(session_id("detached"), None, None).expect("create");
     let error = service.rename(&detached, "name").err().expect("reject");
-    assert!(error.to_string().contains("not live in this store"), "{error}");
+    assert!(
+        error.to_string().contains("not live in this store"),
+        "{error}"
+    );
     assert!(!error.is_invalid());
 }
 
@@ -185,13 +189,19 @@ async fn pins_the_title_later_user_messages_schedule_no_automatic_revision_refre
         .expect("append");
     settle().await;
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert_eq!(service.get(&session).expect("title").title, "Pinned by hand");
+    assert_eq!(
+        service.get(&session).expect("title").title,
+        "Pinned by hand"
+    );
 
     // Explicit refresh remains the deliberate unpin.
     let refreshed = service.refresh(&session, None).await.expect("refresh");
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(refreshed.expect("title").title, "Provider title");
-    assert_eq!(service.get(&session).expect("title").source.kind(), "provider");
+    assert_eq!(
+        service.get(&session).expect("title").source.kind(),
+        "provider"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -200,14 +210,19 @@ async fn fallback_only_refresh_also_unpins_the_user_title_yields_to_a_re_derived
     let session = start_session(&store, &_ctx, "rename-unpin-fallback").await;
     append_human(&session, "u1", "Derivable prompt words");
     settle().await;
-    service.rename(&session, "Pinned without provider").expect("rename");
+    service
+        .rename(&session, "Pinned without provider")
+        .expect("rename");
     assert_eq!(service.get(&session).expect("title").source.kind(), "user");
 
     let refreshed = service.refresh(&session, None).await.expect("refresh");
     let refreshed = refreshed.expect("title");
     assert_eq!(refreshed.title, "Derivable prompt words");
     assert!(matches!(refreshed.source, SessionTitleSource::Fallback));
-    assert_eq!(service.get(&session).expect("title").source.kind(), "fallback");
+    assert_eq!(
+        service.get(&session).expect("title").source.kind(),
+        "fallback"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -300,7 +315,9 @@ async fn fallback_only_refresh_keeps_the_user_title_when_no_fallback_is_derivabl
     let session = start_session(&store, &ctx, "rename-unpin-empty").await;
     append_human(&session, "e1", "😀😀");
     settle().await;
-    service.rename(&session, "Sticky emoji pin").expect("rename");
+    service
+        .rename(&session, "Sticky emoji pin")
+        .expect("rename");
 
     let refreshed = service.refresh(&session, None).await.expect("refresh");
     assert_eq!(refreshed.expect("title").title, "Sticky emoji pin");

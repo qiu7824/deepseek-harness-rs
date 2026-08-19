@@ -17,14 +17,15 @@ impl AssistantOutputFold {
     /// candidate final answer, and a `text-delta` chunk extends the streamed
     /// fallback; every other event contributes nothing.
     pub fn push(&mut self, event: &SessionEvent) {
-        if event.type_ == "assistant/message" {
-            if let Some(content) = event.data.get("message").and_then(|message| message.get("content")) {
-                if let Some(blocks) = content.as_array() {
-                    if !blocks.is_empty() {
-                        self.message = serde_json::from_value::<Vec<ContentBlock>>(content.clone()).ok();
-                    }
-                }
-            }
+        if event.type_ == "assistant/message"
+            && let Some(content) = event
+                .data
+                .get("message")
+                .and_then(|message| message.get("content"))
+            && let Some(blocks) = content.as_array()
+            && !blocks.is_empty()
+        {
+            self.message = serde_json::from_value::<Vec<ContentBlock>>(content.clone()).ok();
         } else if event.type_ == "assistant/chunk"
             && event
                 .data
@@ -32,15 +33,13 @@ impl AssistantOutputFold {
                 .and_then(|chunk| chunk.get("type"))
                 .and_then(|kind| kind.as_str())
                 == Some("text-delta")
-        {
-            if let Some(text) = event
+            && let Some(text) = event
                 .data
                 .get("chunk")
                 .and_then(|chunk| chunk.get("text"))
                 .and_then(|text| text.as_str())
-            {
-                self.push_text(text);
-            }
+        {
+            self.push_text(text);
         }
     }
 

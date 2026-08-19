@@ -12,7 +12,8 @@ use serde_json::Value;
 pub mod binary {
     /// Encode bytes as base64 (standard alphabet with padding).
     pub fn to_base64(bytes: &[u8]) -> String {
-        const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
         for chunk in bytes.chunks(3) {
             let b0 = chunk[0] as u32;
@@ -21,8 +22,16 @@ pub mod binary {
             let n = (b0 << 16) | (b1 << 8) | b2;
             out.push(ALPHABET[(n >> 18) as usize & 63] as char);
             out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-            out.push(if chunk.len() > 1 { ALPHABET[(n >> 6) as usize & 63] as char } else { '=' });
-            out.push(if chunk.len() > 2 { ALPHABET[n as usize & 63] as char } else { '=' });
+            out.push(if chunk.len() > 1 {
+                ALPHABET[(n >> 6) as usize & 63] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                ALPHABET[n as usize & 63] as char
+            } else {
+                '='
+            });
         }
         out
     }
@@ -103,10 +112,10 @@ pub use binary::{from_base64, from_hex, to_base64, to_hex};
 
 /// Decode a base64 string into binary data (TS `Binary.fromBase64`).
 pub use from_base64 as base64_to_array_buffer;
-/// Encode binary data as base64 (TS `Binary.toBase64`).
-pub use to_base64 as array_buffer_to_base64;
 /// Decode a hex string into binary data (TS `Binary.fromHex`).
 pub use from_hex as hex_to_array_buffer;
+/// Encode binary data as base64 (TS `Binary.toBase64`).
+pub use to_base64 as array_buffer_to_base64;
 /// Encode binary data as hex (TS `Binary.toHex`).
 pub use to_hex as array_buffer_to_hex;
 
@@ -179,7 +188,11 @@ mod tests {
         assert!(deep_equal(&json!([1, 2]), &json!([1, 2]), true));
         assert!(!deep_equal(&json!([1, 2]), &json!([1]), true));
         assert!(deep_equal(&json!({"a": 1}), &json!({"a": 1}), true));
-        assert!(deep_equal(&json!({"a": {"b": [1]}}), &json!({"a": {"b": [1]}}), false));
+        assert!(deep_equal(
+            &json!({"a": {"b": [1]}}),
+            &json!({"a": {"b": [1]}}),
+            false
+        ));
         assert!(!deep_equal(&json!({"a": 1}), &json!({"a": 2}), true));
         assert!(!deep_equal(&json!({"a": 1}), &json!({}), true));
         assert!(!deep_equal(&json!({}), &json!({"b": 1}), true));

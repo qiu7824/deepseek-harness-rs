@@ -34,16 +34,28 @@ pub enum SubagentDescriptorData {
         /// enumeration.
         label: String,
         /// Resolved child `agentOptions.provider`, when one was declared.
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "agentProvider")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "agentProvider"
+        )]
         agent_provider: Option<String>,
         /// Resolved child `agentOptions.model`, when one was declared.
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "agentModel")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "agentModel"
+        )]
         agent_model: Option<String>,
         /// Per-child persona that shadows the deployment persona on resume.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         persona: Option<String>,
         /// Child tool scoping reapplied on resume.
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "toolFilter")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "toolFilter"
+        )]
         tool_filter: Option<ToolRestriction>,
     },
 }
@@ -81,11 +93,16 @@ fn assert_known_keys(
 }
 
 /// Read one optional string field from a persisted descriptor record.
-fn optional_string(map: &serde_json::Map<String, Value>, key: &str) -> Result<Option<String>, String> {
+fn optional_string(
+    map: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, String> {
     match map.get(key) {
         None => Ok(None),
         Some(Value::String(text)) => Ok(Some(text.clone())),
-        Some(_) => Err(format!("persisted subagent descriptor {key} must be a string")),
+        Some(_) => Err(format!(
+            "persisted subagent descriptor {key} must be a string"
+        )),
     }
 }
 
@@ -131,9 +148,7 @@ fn parse_tool_filter(value: &Value) -> Result<ToolRestriction, String> {
 }
 
 /// Validate one persisted descriptor payload for the current runtime.
-fn parse_subagent_descriptor(
-    value: &Value,
-) -> Result<Option<SubagentDescriptorData>, String> {
+fn parse_subagent_descriptor(value: &Value) -> Result<Option<SubagentDescriptorData>, String> {
     let Some(map) = value.as_object() else {
         return Err("persisted subagent descriptor payload must be an object".to_string());
     };
@@ -145,7 +160,10 @@ fn parse_subagent_descriptor(
     }
     let mode = map.get("mode").and_then(Value::as_str).unwrap_or("");
     if mode != "one-shot" && mode != "continuable" {
-        return Err("persisted subagent descriptor mode must be \"one-shot\" or \"continuable\"".to_string());
+        return Err(
+            "persisted subagent descriptor mode must be \"one-shot\" or \"continuable\""
+                .to_string(),
+        );
     }
     if mode == "one-shot" {
         assert_known_keys(map, &DESCRIPTOR_BASE_KEYS, "payload")?;

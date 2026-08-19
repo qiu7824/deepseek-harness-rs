@@ -8,9 +8,7 @@ use cordis::Context;
 use dsh_host_apiproxy::{
     ApiProxyDefaults, ApiProxyService, Body, CarrierRequest, to_fetch_handler,
 };
-use dsh_settings::{
-    SettingsNamespace, SettingsProvider, SettingsRegisterOptions, SettingsStorage,
-};
+use dsh_settings::{SettingsNamespace, SettingsProvider, SettingsRegisterOptions, SettingsStorage};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use schemastery::{Data, Schema};
@@ -136,7 +134,9 @@ impl Harness {
 fn describe_reports_registered_namespaces_with_revisions() {
     run(async {
         let harness = Harness::new();
-        let response = harness.post("settings.describe", serde_json::json!({})).await;
+        let response = harness
+            .post("settings.describe", serde_json::json!({}))
+            .await;
         assert_eq!(response["result"]["ok"], true);
         let value = &response["result"]["value"];
         assert_eq!(value["writable"], true);

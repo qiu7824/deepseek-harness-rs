@@ -1,0 +1,24 @@
+[package]
+name = "dsh-tool-pwsh"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Model-facing PowerShell tool with real background jobs"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-jobs = { path = "../../jobs/jobs" }
+dsh-llm = { path = "../../core/llm" }
+dsh-sandbox-policy = { path = "../../sandbox/sandbox-policy" }
+dsh-shell = { path = "../shell" }
+dsh-tools = { path = "../../core/tools" }
+serde_json = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+dsh-jobs-local = { path = "../../jobs/jobs-local" }
+dsh-pwsh-local = { path = "../pwsh-local" }
+dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-tool-jobs = { path = "../../jobs/tool-jobs" }
+tokio = { workspace = true }

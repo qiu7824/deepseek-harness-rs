@@ -8,11 +8,11 @@ pub mod roots;
 
 pub use escalation::{
     ESCALATION_TARGETS, EscalationApproval, EscalationApproveRequest, EscalationApprover,
-    EscalationOutcome, EscalationRequest, WIDER_MODES, approve_escalation,
-    escalation_hint_marker, sandbox_denial_marker, validate_escalation_args,
+    EscalationOutcome, EscalationRequest, WIDER_MODES, approve_escalation, escalation_hint_marker,
+    sandbox_denial_marker, validate_escalation_args,
 };
 pub use index::{
-    SANDBOX_UNAVAILABLE, ConfinedArgv, ConfinedSandboxMode, RunnerFailureRule, SandboxEnforcement,
+    ConfinedArgv, ConfinedSandboxMode, RunnerFailureRule, SANDBOX_UNAVAILABLE, SandboxEnforcement,
     SandboxExecutionPolicy, SandboxMode, SandboxPolicy, SandboxProvider, SandboxProviderRef,
     SandboxUnavailableError,
 };

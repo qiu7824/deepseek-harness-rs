@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use cordis::Context;
 use dsh_agent::{Agent, AgentRegistry, AgentStatus};
-use dsh_goal::{GoalService, GoalView};
+use dsh_goal::{GoalService, GoalView, fold_goal};
 use dsh_session::SessionEvent;
 use dsh_tools::{ToolBodyError, ToolRunContext};
 
@@ -117,6 +117,9 @@ fn has_direct_human_input(ctx: &Context, execution: &GoalToolExecution) -> bool 
 
 /// Whether this turn carries the current goal's exact admitted round source.
 fn is_matching_goal_round(execution: &GoalToolExecution, goal: &GoalView) -> bool {
+    if goal.rounds_started == 0 {
+        return false;
+    }
     execution.events.iter().any(|event| {
         if event.type_ != "user/message" {
             return false;
@@ -167,10 +170,17 @@ pub(crate) fn completion_authority(
             )
         })?;
     let goal = goals.get(&execution.agent).map_err(domain_error)?;
-    if let Some(goal) = goal
-        && is_matching_goal_round(execution, &goal)
-    {
-        return Ok(GoalToolAuthority::GoalRound(goal));
+    if let Some(goal) = goal {
+        let folded = fold_goal(&execution.agent.session().events()).ok();
+        let replay_matches = folded.as_ref().is_some_and(|folded| {
+            folded.rounds_started == goal.rounds_started
+                && folded.goal.as_ref().is_some_and(|snapshot| {
+                    snapshot.id == goal.id && snapshot.revision == goal.revision
+                })
+        });
+        if replay_matches && is_matching_goal_round(execution, &goal) {
+            return Ok(GoalToolAuthority::GoalRound(goal));
+        }
     }
     reject(
         "complete and blocked require a direct human turn or the current goal round",

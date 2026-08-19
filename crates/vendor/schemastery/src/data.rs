@@ -19,20 +19,26 @@ pub enum Data {
     Array(Vec<Data>),
     Object(IndexMap<String, Data>),
     Date(DateTime<Utc>),
-    RegExp { source: String, flags: String },
+    RegExp {
+        source: String,
+        flags: String,
+    },
     Binary(Vec<u8>),
     /// Class/function instance carrying its constructor name
     /// (TS `instanceof`/prototype-chain checks are reduced to name checks).
-    Instance { name: &'static str, value: Arc<dyn std::any::Any + Send + Sync> },
+    Instance {
+        name: &'static str,
+        value: Arc<dyn std::any::Any + Send + Sync>,
+    },
 }
 
 impl Data {
     /// Build a named instance value (`Schema.is(name)` checks this name).
-    pub fn instance<T: std::any::Any + Send + Sync>(
-        name: &'static str,
-        value: T,
-    ) -> Self {
-        Data::Instance { name, value: Arc::new(value) }
+    pub fn instance<T: std::any::Any + Send + Sync>(name: &'static str, value: T) -> Self {
+        Data::Instance {
+            name,
+            value: Arc::new(value),
+        }
     }
 
     /// Constructor name of an instance value, if any.
@@ -132,7 +138,9 @@ impl Data {
             Data::Number(value) => serde_json::Number::from_f64(*value)?.into(),
             Data::String(value) => serde_json::Value::String(value.clone()),
             Data::Array(list) => serde_json::Value::Array(
-                list.iter().map(|item| item.to_json()).collect::<Option<_>>()?,
+                list.iter()
+                    .map(|item| item.to_json())
+                    .collect::<Option<_>>()?,
             ),
             Data::Object(map) => {
                 let mut object = serde_json::Map::new();
@@ -142,7 +150,7 @@ impl Data {
                 serde_json::Value::Object(object)
             }
             Data::Date(_) | Data::RegExp { .. } | Data::Binary(_) | Data::Instance { .. } => {
-                return None
+                return None;
             }
         })
     }
@@ -201,24 +209,27 @@ impl Data {
                         .all(|(item_a, item_b)| Data::deep_equal(item_a, item_b, strict))
             }
             (Data::Object(x), Data::Object(y)) => {
-                let keys: std::collections::HashSet<&String> =
-                    x.keys().chain(y.keys()).collect();
+                let keys: std::collections::HashSet<&String> = x.keys().chain(y.keys()).collect();
                 keys.into_iter().all(|key| match (x.get(key), y.get(key)) {
-                    (Some(value_a), Some(value_b)) => {
-                        Data::deep_equal(value_a, value_b, strict)
-                    }
+                    (Some(value_a), Some(value_b)) => Data::deep_equal(value_a, value_b, strict),
                     _ => false,
                 })
             }
             (Data::Date(x), Data::Date(y)) => x == y,
-            (Data::RegExp { source: sx, flags: fx }, Data::RegExp { source: sy, flags: fy }) => {
-                sx == sy && fx == fy
-            }
-            (Data::Binary(x), Data::Binary(y)) => x == y,
             (
-                Data::Instance { name: nx, value: x },
-                Data::Instance { name: ny, value: y },
-            ) => nx == ny && Arc::ptr_eq(x, y),
+                Data::RegExp {
+                    source: sx,
+                    flags: fx,
+                },
+                Data::RegExp {
+                    source: sy,
+                    flags: fy,
+                },
+            ) => sx == sy && fx == fy,
+            (Data::Binary(x), Data::Binary(y)) => x == y,
+            (Data::Instance { name: nx, value: x }, Data::Instance { name: ny, value: y }) => {
+                nx == ny && Arc::ptr_eq(x, y)
+            }
             _ => false,
         }
     }
@@ -235,13 +246,25 @@ impl PartialEq for Data {
             (Data::Object(a), Data::Object(b)) => a == b,
             (Data::Date(a), Data::Date(b)) => a == b,
             (
-                Data::RegExp { source: sa, flags: fa },
-                Data::RegExp { source: sb, flags: fb },
+                Data::RegExp {
+                    source: sa,
+                    flags: fa,
+                },
+                Data::RegExp {
+                    source: sb,
+                    flags: fb,
+                },
             ) => sa == sb && fa == fb,
             (Data::Binary(a), Data::Binary(b)) => a == b,
             (
-                Data::Instance { name: na, value: va },
-                Data::Instance { name: nb, value: vb },
+                Data::Instance {
+                    name: na,
+                    value: va,
+                },
+                Data::Instance {
+                    name: nb,
+                    value: vb,
+                },
             ) => na == nb && Arc::ptr_eq(va, vb),
             _ => false,
         }
@@ -254,7 +277,11 @@ pub fn js_number_string(value: f64) -> String {
         return "NaN".to_string();
     }
     if value.is_infinite() {
-        return if value > 0.0 { "Infinity".to_string() } else { "-Infinity".to_string() };
+        return if value > 0.0 {
+            "Infinity".to_string()
+        } else {
+            "-Infinity".to_string()
+        };
     }
     if value == 0.0 {
         return "0".to_string();

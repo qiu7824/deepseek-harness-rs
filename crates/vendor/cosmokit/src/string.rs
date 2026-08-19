@@ -98,16 +98,13 @@ pub use param_case as hyphenate;
 /// Format a property key as a JavaScript member access suffix.
 pub fn format_property(key: &str) -> String {
     let is_ident = !key.is_empty()
-        && key
-            .chars()
-            .enumerate()
-            .all(|(i, ch)| {
-                if i == 0 {
-                    ch.is_ascii_alphabetic() || ch == '_' || ch == '$'
-                } else {
-                    ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
-                }
-            });
+        && key.chars().enumerate().all(|(i, ch)| {
+            if i == 0 {
+                ch.is_ascii_alphabetic() || ch == '_' || ch == '$'
+            } else {
+                ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
+            }
+        });
     if is_ident {
         format!(".{key}")
     } else {
@@ -117,7 +114,10 @@ pub fn format_property(key: &str) -> String {
 
 /// Remove one trailing slash from a path string.
 pub fn trim_slash(source: &str) -> String {
-    source.strip_suffix('/').map(|s| s.to_string()).unwrap_or_else(|| source.to_string())
+    source
+        .strip_suffix('/')
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| source.to_string())
 }
 
 /// Ensure a path starts with `/` and has no trailing slash.

@@ -21,8 +21,8 @@ use std::sync::Arc;
 use cordis::Context;
 
 use dsh_fs::{
-    AbortPredicate, FsEditOutcome, FsEditRequest, FsEditGuard, FsError, FsErrorCode, FsTarget,
-    FsWriteIntent, FsWriteOutcome, FileSystem, ResolveOptions,
+    AbortPredicate, FileSystem, FsEditGuard, FsEditOutcome, FsEditRequest, FsError, FsErrorCode,
+    FsTarget, FsWriteIntent, FsWriteOutcome, ResolveOptions,
 };
 use dsh_fs_local::{Config as LocalConfig, LocalFileSystem};
 use dsh_sandbox::{SandboxExecutionPolicy, SandboxMode, writable_roots};
@@ -85,7 +85,9 @@ impl SandboxedFileSystem {
     ) -> Result<FsTarget, FsError> {
         let policy = match sandbox_policy {
             Some(policy) => policy.clone(),
-            None => self.policy.resolve(&dsh_sandbox_policy::SandboxPolicyRequest::default()),
+            None => self
+                .policy
+                .resolve(&dsh_sandbox_policy::SandboxPolicyRequest::default()),
         };
         match policy.mode {
             SandboxMode::DangerFullAccess => return Ok(target.clone()),
@@ -96,7 +98,7 @@ impl SandboxedFileSystem {
                         target.display_path
                     ),
                     FsErrorCode::FsSandboxDenied,
-                ))
+                ));
             }
             SandboxMode::WorkspaceWrite => {}
         }
@@ -134,7 +136,11 @@ impl FileSystem for SandboxedFileSystem {
         Some(self.default_mode)
     }
 
-    async fn resolve(&self, path: &str, opts: Option<&ResolveOptions>) -> Result<FsTarget, FsError> {
+    async fn resolve(
+        &self,
+        path: &str,
+        opts: Option<&ResolveOptions>,
+    ) -> Result<FsTarget, FsError> {
         self.local.resolve(path, opts).await
     }
 
@@ -150,7 +156,11 @@ impl FileSystem for SandboxedFileSystem {
         self.local.contains(parent, child)
     }
 
-    async fn stat(&self, target: &FsTarget, signal: Option<AbortPredicate>) -> Result<Option<dsh_fs::FsInfo>, FsError> {
+    async fn stat(
+        &self,
+        target: &FsTarget,
+        signal: Option<AbortPredicate>,
+    ) -> Result<Option<dsh_fs::FsInfo>, FsError> {
         self.local.stat(target, signal).await
     }
 
@@ -163,7 +173,11 @@ impl FileSystem for SandboxedFileSystem {
         self.local.lstat(path, opts, signal).await
     }
 
-    async fn read_text(&self, target: &FsTarget, signal: Option<AbortPredicate>) -> Result<String, FsError> {
+    async fn read_text(
+        &self,
+        target: &FsTarget,
+        signal: Option<AbortPredicate>,
+    ) -> Result<String, FsError> {
         self.local.read_text(target, signal).await
     }
 
@@ -184,7 +198,11 @@ impl FileSystem for SandboxedFileSystem {
         self.local.read_bytes(target, signal, max_bytes).await
     }
 
-    async fn list_dir(&self, target: &FsTarget, signal: Option<AbortPredicate>) -> Result<Vec<dsh_fs::FsDirEntry>, FsError> {
+    async fn list_dir(
+        &self,
+        target: &FsTarget,
+        signal: Option<AbortPredicate>,
+    ) -> Result<Vec<dsh_fs::FsDirEntry>, FsError> {
         self.local.list_dir(target, signal).await
     }
 
@@ -197,7 +215,9 @@ impl FileSystem for SandboxedFileSystem {
         sandbox_policy: Option<&SandboxExecutionPolicy>,
     ) -> Result<FsWriteOutcome, FsError> {
         let checked = self.checked_target(target, sandbox_policy).await?;
-        self.local.write_text(&checked, content, expected, signal, None).await
+        self.local
+            .write_text(&checked, content, expected, signal, None)
+            .await
     }
 
     async fn edit_text(
@@ -209,6 +229,8 @@ impl FileSystem for SandboxedFileSystem {
         sandbox_policy: Option<&SandboxExecutionPolicy>,
     ) -> Result<FsEditOutcome, FsError> {
         let checked = self.checked_target(target, sandbox_policy).await?;
-        self.local.edit_text(&checked, edit, expected, signal, None).await
+        self.local
+            .edit_text(&checked, edit, expected, signal, None)
+            .await
     }
 }

@@ -202,7 +202,8 @@ impl SkillWatcher {
     }
 
     async fn dispose(&self) {
-        self.closing.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.closing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let watchers = {
             let mut guard = self.watchers.lock();
             std::mem::take(&mut *guard)
@@ -274,11 +275,7 @@ pub struct FileSystemSkillProvider {
 }
 
 impl FileSystemSkillProvider {
-    fn new(
-        ctx: &Context,
-        invalidate: Arc<dyn Fn() + Send + Sync>,
-        config: &Config,
-    ) -> Self {
+    fn new(ctx: &Context, invalidate: Arc<dyn Fn() + Send + Sync>, config: &Config) -> Self {
         let name = config
             .provider_name
             .clone()
@@ -314,7 +311,9 @@ impl FileSystemSkillProvider {
             Some(dir) => Some(absolute(dir)),
             None => {
                 if include_default_roots {
-                    std::env::var("DSH_BUNDLED_SKILL_DIR").ok().map(|dir| absolute(&dir))
+                    std::env::var("DSH_BUNDLED_SKILL_DIR")
+                        .ok()
+                        .map(|dir| absolute(&dir))
                 } else {
                     None
                 }
@@ -324,7 +323,9 @@ impl FileSystemSkillProvider {
         let threshold_ms = config
             .watch_stability_threshold_ms
             .unwrap_or(DEFAULT_WATCH_STABILITY_THRESHOLD_MS);
-        let _ = config.watch_poll_interval_ms.unwrap_or(DEFAULT_WATCH_POLL_INTERVAL_MS);
+        let _ = config
+            .watch_poll_interval_ms
+            .unwrap_or(DEFAULT_WATCH_POLL_INTERVAL_MS);
         let (disposal_tx, _disposal_rx) = tokio::sync::oneshot::channel();
         let watcher = Arc::new(SkillWatcher::new(
             invalidate.clone(),
@@ -349,11 +350,7 @@ impl FileSystemSkillProvider {
         let mut roots: Vec<SkillRoot> = Vec::new();
         if self.include_default_roots {
             if let Some(cwd) = cwd {
-                let project_root = find_project_root(
-                    &absolute(cwd),
-                    self.optional_fs(),
-                )
-                .await;
+                let project_root = find_project_root(&absolute(cwd), self.optional_fs()).await;
                 roots.push(SkillRoot {
                     path: join_path(&project_root, ".dsh/skills"),
                     source: "project-dsh".to_string(),
@@ -422,14 +419,17 @@ impl FileSystemSkillProvider {
     pub fn observe_host_mutation(&self, path: &str) {
         let normalized = absolute(path);
         let relevant = self.watched_roots().iter().any(|root| {
-            is_potential_skill_path(&SkillRoot {
-                path: root.clone(),
-                source: String::new(),
-                rank: 0,
-                skip_system: false,
-                project_root: None,
-                trusted_host: false,
-            }, &normalized)
+            is_potential_skill_path(
+                &SkillRoot {
+                    path: root.clone(),
+                    source: String::new(),
+                    rank: 0,
+                    skip_system: false,
+                    project_root: None,
+                    trusted_host: false,
+                },
+                &normalized,
+            )
         });
         if relevant {
             (self.invalidate)();
@@ -582,7 +582,10 @@ async fn list_entries_from_fs(
     let target = match fs.resolve(path, None).await {
         Ok(target) => target,
         Err(error)
-            if matches!(error.code, FsErrorCode::FsNotFound | FsErrorCode::FsNotDirectory) =>
+            if matches!(
+                error.code,
+                FsErrorCode::FsNotFound | FsErrorCode::FsNotDirectory
+            ) =>
         {
             return Ok(Vec::new());
         }
@@ -591,7 +594,10 @@ async fn list_entries_from_fs(
     let entries = match fs.list_dir(&target, None).await {
         Ok(entries) => entries,
         Err(error)
-            if matches!(error.code, FsErrorCode::FsNotFound | FsErrorCode::FsNotDirectory) =>
+            if matches!(
+                error.code,
+                FsErrorCode::FsNotFound | FsErrorCode::FsNotDirectory
+            ) =>
         {
             return Ok(Vec::new());
         }
@@ -685,7 +691,11 @@ pub async fn parse_skill_file(
     let invocation = match parse_invocation_policy(&data) {
         Ok(policy) => policy,
         Err(error) => {
-            warn_skill(ctx, path, &format!("invalid invocation frontmatter: {error}"));
+            warn_skill(
+                ctx,
+                path,
+                &format!("invalid invocation frontmatter: {error}"),
+            );
             return Ok(None);
         }
     };
@@ -695,7 +705,10 @@ pub async fn parse_skill_file(
         when_to_use: optional_string(&data, "whenToUse"),
         invocation,
         metadata: optional_metadata(&data),
-        content: frontmatter_body(&raw).unwrap_or_default().trim().to_string(),
+        content: frontmatter_body(&raw)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
     }))
 }
 
@@ -747,7 +760,10 @@ async fn read_skill_text_from_fs(
     let target = match fs.resolve(path, None).await {
         Ok(target) => target,
         Err(error)
-            if matches!(error.code, FsErrorCode::FsNotFound | FsErrorCode::FsNotDirectory) =>
+            if matches!(
+                error.code,
+                FsErrorCode::FsNotFound | FsErrorCode::FsNotDirectory
+            ) =>
         {
             return Ok(None);
         }
@@ -762,13 +778,19 @@ async fn read_skill_text_from_fs(
             if signal.as_ref().is_some_and(|signal| signal()) {
                 return Err(dsh_skill::SKILL_ABORTED_MESSAGE.to_string());
             }
-            if matches!(error.code, FsErrorCode::FsNotFound | FsErrorCode::FsNotDirectory) {
+            if matches!(
+                error.code,
+                FsErrorCode::FsNotFound | FsErrorCode::FsNotDirectory
+            ) {
                 return Ok(None);
             }
             return Err(error.to_string());
         }
     };
-    if info.as_ref().is_none_or(|info| info.kind != FsInfoType::File) {
+    if info
+        .as_ref()
+        .is_none_or(|info| info.kind != FsInfoType::File)
+    {
         return Ok(None);
     }
     match fs.read_text(&target, signal.clone()).await {
@@ -777,7 +799,10 @@ async fn read_skill_text_from_fs(
             if signal.as_ref().is_some_and(|signal| signal()) {
                 return Err(dsh_skill::SKILL_ABORTED_MESSAGE.to_string());
             }
-            if matches!(error.code, FsErrorCode::FsNotFound | FsErrorCode::FsNotDirectory) {
+            if matches!(
+                error.code,
+                FsErrorCode::FsNotFound | FsErrorCode::FsNotDirectory
+            ) {
                 return Ok(None);
             }
             if !matches!(error.code, FsErrorCode::FsNotText) {
@@ -786,7 +811,10 @@ async fn read_skill_text_from_fs(
             warn_skill(
                 ctx,
                 path,
-                &format!("failed to read text file at {}: {}", target.display_path, error),
+                &format!(
+                    "failed to read text file at {}: {}",
+                    target.display_path, error
+                ),
             );
             Ok(None)
         }
@@ -807,16 +835,13 @@ fn optional_string(data: &serde_yaml::Mapping, key: &str) -> Option<String> {
 fn optional_metadata(data: &serde_yaml::Mapping) -> Option<serde_json::Value> {
     match data.get(serde_yaml::Value::String("metadata".to_string())) {
         Some(serde_yaml::Value::Mapping(_)) => {
-            serde_json::to_value(data.get(serde_yaml::Value::String("metadata".to_string())))
-                .ok()
+            serde_json::to_value(data.get(serde_yaml::Value::String("metadata".to_string()))).ok()
         }
         _ => None,
     }
 }
 
-fn parse_invocation_policy(
-    data: &serde_yaml::Mapping,
-) -> Result<SkillInvocationPolicy, String> {
+fn parse_invocation_policy(data: &serde_yaml::Mapping) -> Result<SkillInvocationPolicy, String> {
     let legacy = [
         ("disableModelInvocation", "disable-model-invocation"),
         ("modelInvocable", "disable-model-invocation"),
@@ -837,10 +862,7 @@ fn parse_invocation_policy(
     })
 }
 
-fn frontmatter_bool(
-    data: &serde_yaml::Mapping,
-    key: &str,
-) -> Result<Option<bool>, String> {
+fn frontmatter_bool(data: &serde_yaml::Mapping, key: &str) -> Result<Option<bool>, String> {
     match data.get(serde_yaml::Value::String(key.to_string())) {
         None => Ok(None),
         Some(serde_yaml::Value::Bool(value)) => Ok(Some(*value)),
@@ -871,7 +893,9 @@ fn parse_frontmatter(raw: &str) -> Option<serde_yaml::Value> {
 fn find_closing_frontmatter(raw: &str, start: usize) -> Option<(usize, usize)> {
     let mut line_start = start;
     while line_start <= raw.len() {
-        let next_newline = raw[line_start..].find('\n').map(|offset| line_start + offset);
+        let next_newline = raw[line_start..]
+            .find('\n')
+            .map(|offset| line_start + offset);
         let line_end = next_newline.unwrap_or(raw.len());
         let line = raw[line_start..line_end].trim_end_matches('\r');
         if line == "---" {
@@ -919,7 +943,9 @@ async fn path_exists_in_fs(fs: &Arc<dyn FileSystem>, path: &str) -> bool {
     let Ok(target) = fs.resolve(path, None).await else {
         return false;
     };
-    fs.stat(&target, None).await.is_ok_and(|info| info.is_some())
+    fs.stat(&target, None)
+        .await
+        .is_ok_and(|info| info.is_some())
 }
 
 fn is_potential_skill_path(root: &SkillRoot, path: &str) -> bool {

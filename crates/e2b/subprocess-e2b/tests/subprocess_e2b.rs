@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use cordis::Context;
 use dsh_e2b::{
-    Config, E2bBackgroundOptions, E2bCommandHandle, E2bCommandResult, E2bCreateOptions,
-    E2bRuntime, E2bSandbox, E2bSdk, E2bSdkError, E2bSdkErrorKind,
+    Config, E2bBackgroundOptions, E2bCommandHandle, E2bCommandResult, E2bCreateOptions, E2bRuntime,
+    E2bSandbox, E2bSdk, E2bSdkError, E2bSdkErrorKind,
 };
 use dsh_subprocess::{
     SubprocessCollect, SubprocessOutcome, SubprocessOutputMode, SubprocessRuntime,
@@ -148,11 +148,14 @@ impl E2bSandbox for FakeSandbox {
                 stderr: String::new(),
             });
         }
-        self.run_results.lock().pop_front().unwrap_or(Ok(E2bCommandResult {
-            exit_code: 0,
-            stdout: String::new(),
-            stderr: String::new(),
-        }))
+        self.run_results
+            .lock()
+            .pop_front()
+            .unwrap_or(Ok(E2bCommandResult {
+                exit_code: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+            }))
     }
 
     async fn run_background(
@@ -255,11 +258,8 @@ fn harness() -> (Context, Arc<E2bSubprocessRuntime>, Arc<FakeSandbox>) {
         Arc::new(|_| None),
     )
     .expect("e2b runtime");
-    let runtime = E2bSubprocessRuntime::install(
-        &ctx,
-        AdapterConfig { poll_ms: 5 },
-    )
-    .expect("subprocess runtime");
+    let runtime = E2bSubprocessRuntime::install(&ctx, AdapterConfig { poll_ms: 5 })
+        .expect("subprocess runtime");
     (ctx, runtime, sandbox)
 }
 
@@ -299,7 +299,10 @@ fn resolve_executable_verifies_an_absolute_program() {
             .expect("resolve");
         assert_eq!(resolved, "/usr/bin/echo");
         let runs = sandbox.recorded_runs();
-        assert!(runs.iter().any(|run| run.starts_with("test -f ")), "{runs:?}");
+        assert!(
+            runs.iter().any(|run| run.starts_with("test -f ")),
+            "{runs:?}"
+        );
 
         // A failed verification fails the resolution.
         sandbox.run_results.lock().push_back(Err(E2bSdkError {
@@ -307,10 +310,12 @@ fn resolve_executable_verifies_an_absolute_program() {
             message: "missing".to_string(),
             stderr: Some(String::new()),
         }));
-        assert!(runtime
-            .resolve_executable("/usr/bin/ghost", None, None)
-            .await
-            .is_err());
+        assert!(
+            runtime
+                .resolve_executable("/usr/bin/ghost", None, None)
+                .await
+                .is_err()
+        );
     });
 }
 
@@ -335,10 +340,12 @@ fn resolve_executable_resolves_a_bare_path_name() {
             stdout: "/a\n/b\n".to_string(),
             stderr: String::new(),
         }));
-        assert!(runtime
-            .resolve_executable("multi", None, None)
-            .await
-            .is_err());
+        assert!(
+            runtime
+                .resolve_executable("multi", None, None)
+                .await
+                .is_err()
+        );
     });
 }
 
@@ -376,11 +383,10 @@ fn spawn_settles_from_the_remote_exit_code_file() {
 
 async fn wait_state_prefix(sandbox: &Arc<FakeSandbox>) -> String {
     for _ in 0..2000 {
-        let prefix = sandbox
-            .files
-            .lock()
-            .keys()
-            .find_map(|key| key.strip_suffix("/environment").map(|prefix| prefix.to_string()));
+        let prefix = sandbox.files.lock().keys().find_map(|key| {
+            key.strip_suffix("/environment")
+                .map(|prefix| prefix.to_string())
+        });
         if let Some(prefix) = prefix {
             return prefix;
         }
@@ -435,12 +441,14 @@ fn scrub_and_serialize_environment_apply_the_seam_vocabulary() {
     assert!(!scrubbed.contains_key("API_TOKEN"));
     assert_eq!(scrubbed.get("KEEP").map(String::as_str), Some("1"));
 
-    let serialized =
-        dsh_subprocess_e2b::environment::serialize_remote_environment(raw, Some(&[
+    let serialized = dsh_subprocess_e2b::environment::serialize_remote_environment(
+        raw,
+        Some(&[
             ("OVERRIDE".to_string(), Some("v".to_string())),
             ("PATH".to_string(), None),
-        ]))
-        .expect("serialize");
+        ]),
+    )
+    .expect("serialize");
     assert!(serialized.contains("OVERRIDE=v\0"), "{serialized}");
     assert!(!serialized.contains("PATH="), "{serialized}");
     assert!(!serialized.contains("API_TOKEN"), "{serialized}");

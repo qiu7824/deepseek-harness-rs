@@ -122,13 +122,18 @@ pub fn parse_proc_stat(text: &str) -> Option<ProcStat> {
     let session: u32 = rest.get(3)?.parse().ok()?;
     let tpgid: i64 = rest.get(5)?.parse().ok()?;
     let started = (*rest.get(19)?).to_string();
-    Some(ProcStat { pid, parent_pid, pgrp, session, state, tpgid, started })
+    Some(ProcStat {
+        pid,
+        parent_pid,
+        pgrp,
+        session,
+        state,
+        tpgid,
+        started,
+    })
 }
 
-fn read_linux_stat(
-    internals: &dyn ProcessInspectorInternals,
-    pid: u32,
-) -> Option<ProcStat> {
+fn read_linux_stat(internals: &dyn ProcessInspectorInternals, pid: u32) -> Option<ProcStat> {
     parse_proc_stat(&internals.read_file(&format!("/proc/{pid}/stat")).ok()?)
 }
 
@@ -144,8 +149,12 @@ pub fn linux_process_group_has_live_members(
         if !entry.chars().all(|c| c.is_ascii_digit()) {
             continue;
         }
-        let Ok(pid) = entry.parse::<u32>() else { continue };
-        let Some(stat) = read_linux_stat(internals, pid) else { continue };
+        let Ok(pid) = entry.parse::<u32>() else {
+            continue;
+        };
+        let Some(stat) = read_linux_stat(internals, pid) else {
+            continue;
+        };
         if stat.pgrp != process_group_id {
             continue;
         }
@@ -154,11 +163,7 @@ pub fn linux_process_group_has_live_members(
             return Some(true);
         }
     }
-    if matched {
-        Some(false)
-    } else {
-        None
-    }
+    if matched { Some(false) } else { None }
 }
 
 fn numeric_entries(internals: &dyn ProcessInspectorInternals, path: &str) -> Vec<u32> {
@@ -214,11 +219,7 @@ fn read_memory(
     result
 }
 
-fn fd_set_has_stdin(
-    internals: &dyn ProcessInspectorInternals,
-    pid: u32,
-    address: u32,
-) -> bool {
+fn fd_set_has_stdin(internals: &dyn ProcessInspectorInternals, pid: u32, address: u32) -> bool {
     if address == 0 {
         return false;
     }
@@ -242,7 +243,8 @@ fn poll_has_stdin(
     let mut offset = 0;
     while offset + 8 <= memory.len() {
         let events = i32::from_le_bytes(memory[offset..offset + 4].try_into().expect("4 bytes"));
-        let revents = i16::from_le_bytes(memory[offset + 4..offset + 6].try_into().expect("2 bytes"));
+        let revents =
+            i16::from_le_bytes(memory[offset + 4..offset + 6].try_into().expect("2 bytes"));
         if events == 0 && (revents & 0x001) != 0 {
             return true;
         }
@@ -254,10 +256,7 @@ fn poll_has_stdin(
 fn epoll_has_stdin(internals: &dyn ProcessInspectorInternals, pid: u32, epfd: u32) -> bool {
     internals
         .read_file(&format!("/proc/{pid}/fdinfo/{epfd}"))
-        .map(|text| {
-            text.split('\n')
-                .any(|line| line.trim().starts_with("tfd:"))
-        })
+        .map(|text| text.split('\n').any(|line| line.trim().starts_with("tfd:")))
         .unwrap_or(false)
 }
 
@@ -374,7 +373,10 @@ pub struct LinuxProcessInspector {
 
 impl LinuxProcessInspector {
     pub fn new(arch: &str, internals: Arc<dyn ProcessInspectorInternals>) -> Self {
-        Self { arch: arch.to_string(), internals }
+        Self {
+            arch: arch.to_string(),
+            internals,
+        }
     }
 }
 
@@ -464,7 +466,11 @@ fn mac_process_table(internals: &dyn ProcessInspectorInternals) -> Vec<ProcessTr
             if started.is_empty() {
                 return None;
             }
-            Some(ProcessTreeEntry { pid, parent_pid, started })
+            Some(ProcessTreeEntry {
+                pid,
+                parent_pid,
+                started,
+            })
         })
         .collect()
 }

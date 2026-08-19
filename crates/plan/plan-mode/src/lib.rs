@@ -34,8 +34,8 @@ use dsh_session_projection::{ProjectionDefinition, SessionProjectionRegistry};
 use dsh_system_prompt::{PromptSection, PromptText, SystemPrompt};
 use dsh_tools::{ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition, ToolRuntime};
 use dsh_user_questions::{
-    AskUserQuestionIntent, AskUserQuestionItem, AskUserQuestionOption,
-    AskUserQuestionRequest, UserQuestionService,
+    AskUserQuestionIntent, AskUserQuestionItem, AskUserQuestionOption, AskUserQuestionRequest,
+    UserQuestionService,
 };
 
 pub const NAME: &str = "plan-mode";
@@ -66,8 +66,9 @@ pub struct PlanModeConfig {
 /// The plan's first markdown heading (any level), or `None` when it has
 /// none.
 pub fn first_heading(plan: &str) -> Option<String> {
-    static HEADING: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"^#{1,6}\s+(.+?)\s*$").expect("static pattern"));
+    static HEADING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^#{1,6}\s+(.+?)\s*$").expect("static pattern")
+    });
     for line in plan.split('\n') {
         if let Some(captures) = HEADING.captures(line) {
             return captures.get(1).map(|m| m.as_str().to_string());
@@ -184,51 +185,53 @@ impl PlanModeController {
         // in-turn steps (the step is outside Session.append publication, so
         // appending a log-only event cannot re-enter the session).
         let service_for_step = service.clone();
-        let step_listener: Arc<Listener> = Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
-            let service = service_for_step.clone();
-            Box::pin(async move {
-                let payload = args
-                    .first()
-                    .and_then(|value| downcast::<AgentPreStepPayload>(value))
-                    .cloned()
-                    .expect("agent/pre-step payload");
-                let next = downcast_arc::<NextFn>(args.last().expect("agent/pre-step next"))
-                    .expect("agent/pre-step next");
-                let decision_value = next.call().await;
-                let decision = downcast_arc::<PreStepDecision>(&decision_value)
-                    .expect("agent/pre-step decision")
-                    .as_ref()
-                    .clone();
-                let pending = service
-                    .pending_intents
-                    .lock()
-                    .get(&payload.agent.session().identity())
-                    .copied();
-                if matches!(decision, PreStepDecision::Reject) || pending.is_none() {
-                    return Some(decision_value);
-                }
-                let pending = pending.expect("checked");
-                let narration = service.narration(payload.agent.session(), pending.active);
-                if let Err(error) = service.on_boundary(payload.agent.session()) {
-                    service
+        let step_listener: Arc<Listener> = Arc::new(
+            move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+                let service = service_for_step.clone();
+                Box::pin(async move {
+                    let payload = args
+                        .first()
+                        .and_then(|value| downcast::<AgentPreStepPayload>(value))
+                        .cloned()
+                        .expect("agent/pre-step payload");
+                    let next = downcast_arc::<NextFn>(args.last().expect("agent/pre-step next"))
+                        .expect("agent/pre-step next");
+                    let decision_value = next.call().await;
+                    let decision = downcast_arc::<PreStepDecision>(&decision_value)
+                        .expect("agent/pre-step decision")
+                        .as_ref()
+                        .clone();
+                    let pending = service
+                        .pending_intents
+                        .lock()
+                        .get(&payload.agent.session().identity())
+                        .copied();
+                    if matches!(decision, PreStepDecision::Reject) || pending.is_none() {
+                        return Some(decision_value);
+                    }
+                    let pending = pending.expect("checked");
+                    let narration = service.narration(payload.agent.session(), pending.active);
+                    if let Err(error) = service.on_boundary(payload.agent.session()) {
+                        service
                         .ctx
                         .named_logger(None)
                         .warn(vec![arc(format!(
                             "dsh-plan-mode: failed to append selected plan mode at step start: {error}"
                         ))]);
-                    return Some(decision_value);
-                }
-                if !pending.narrate || narration.is_none() {
-                    return Some(decision_value);
-                }
-                let PreStepDecision::Enter { messages } = decision else {
-                    unreachable!("reject returned above");
-                };
-                let mut merged = messages;
-                merged.push(narration.expect("checked"));
-                Some(arc(PreStepDecision::Enter { messages: merged }))
-            })
-        });
+                        return Some(decision_value);
+                    }
+                    if !pending.narrate || narration.is_none() {
+                        return Some(decision_value);
+                    }
+                    let PreStepDecision::Enter { messages } = decision else {
+                        unreachable!("reject returned above");
+                    };
+                    let mut merged = messages;
+                    merged.push(narration.expect("checked"));
+                    Some(arc(PreStepDecision::Enter { messages: merged }))
+                })
+            },
+        );
         let _step_disposer = futures::executor::block_on(ctx.on(
             "agent/pre-step",
             step_listener,
@@ -277,20 +280,23 @@ impl PlanModeController {
                         };
                         let definition = ProjectionDefinition {
                             key: "plan".to_string(),
-                            schema: Arc::new(|value: &ArcValue| -> Result<serde_json::Value, String> {
-                                let json = downcast::<serde_json::Value>(value).ok_or_else(
-                                    || "plan projection view must be JSON".to_string(),
-                                )?;
-                                let active = json.get("active").and_then(|v| v.as_bool());
-                                let pending = json.get("pending").and_then(|v| v.as_bool());
-                                if active.is_none() || pending.is_none() {
-                                    return Err(
+                            schema: Arc::new(
+                                |value: &ArcValue| -> Result<serde_json::Value, String> {
+                                    let json =
+                                        downcast::<serde_json::Value>(value).ok_or_else(|| {
+                                            "plan projection view must be JSON".to_string()
+                                        })?;
+                                    let active = json.get("active").and_then(|v| v.as_bool());
+                                    let pending = json.get("pending").and_then(|v| v.as_bool());
+                                    if active.is_none() || pending.is_none() {
+                                        return Err(
                                         "plan projection must carry active and pending booleans"
                                             .to_string(),
                                     );
-                                }
-                                Ok(json.clone())
-                            }),
+                                    }
+                                    Ok(json.clone())
+                                },
+                            ),
                             init: Arc::new(|| {
                                 arc(serde_json::json!({ "active": false, "wanted": null }))
                             }),
@@ -301,7 +307,8 @@ impl PlanModeController {
                                     if event.type_ == "command/run"
                                         && event.data["name"].as_str() == Some("plan")
                                     {
-                                        let Some(args) = event.data.get("args").and_then(|v| v.as_str())
+                                        let Some(args) =
+                                            event.data.get("args").and_then(|v| v.as_str())
                                         else {
                                             return state.clone();
                                         };
@@ -463,36 +470,43 @@ impl PlanModeController {
             },
             timeout_ms: None,
             is_concurrency_safe: None,
-            execute: Arc::new(move |args: &serde_json::Value, exec: &dsh_tools::ToolRunContext| {
-                let args = args.clone();
-                let agent = exec.agent.clone();
-                let signal = exec.signal.lock().clone();
-                let service = service_for_tool.clone();
-                let ctx = ctx_for_tool.clone();
-                Box::pin(async move {
-                    let agent = agent
-                        .ok_or_else(|| dsh_tools::ToolBodyError::plain(format!("{EXIT_PLAN_MODE} requires a calling agent (no session to switch)")))?;
-                    let events = agent.session().events();
-                    if !fold_plan_mode(&events, events.len()) {
-                        return Err(dsh_tools::ToolBodyError::plain(format!(
-                            "{EXIT_PLAN_MODE} is only available in plan mode"
-                        )));
-                    }
-                    let plan = args["plan"].as_str().unwrap_or_default().trim();
-                    if !regex::Regex::new(r"^#\s+\S").expect("static pattern").is_match(plan) {
-                        return Err(dsh_tools::ToolBodyError::plain(format!(
-                            "{EXIT_PLAN_MODE} requires a non-empty markdown plan starting with a # heading"
-                        )));
-                    }
-                    let interaction = ctx
-                        .get_typed::<Arc<UserQuestionService>>("userQuestions", false)
-                        .map(|slot| slot.as_ref().clone());
-                    let Some(interaction) = interaction else {
-                        return Err(dsh_tools::ToolBodyError::plain(
-                            "no user-questions channel is available to review the plan; ask the user to switch the session mode instead",
-                        ));
-                    };
-                    let answer = interaction
+            execute: Arc::new(
+                move |args: &serde_json::Value, exec: &dsh_tools::ToolRunContext| {
+                    let args = args.clone();
+                    let agent = exec.agent.clone();
+                    let signal = exec.signal.lock().clone();
+                    let service = service_for_tool.clone();
+                    let ctx = ctx_for_tool.clone();
+                    Box::pin(async move {
+                        let agent = agent.ok_or_else(|| {
+                            dsh_tools::ToolBodyError::plain(format!(
+                                "{EXIT_PLAN_MODE} requires a calling agent (no session to switch)"
+                            ))
+                        })?;
+                        let events = agent.session().events();
+                        if !fold_plan_mode(&events, events.len()) {
+                            return Err(dsh_tools::ToolBodyError::plain(format!(
+                                "{EXIT_PLAN_MODE} is only available in plan mode"
+                            )));
+                        }
+                        let plan = args["plan"].as_str().unwrap_or_default().trim();
+                        if !regex::Regex::new(r"^#\s+\S")
+                            .expect("static pattern")
+                            .is_match(plan)
+                        {
+                            return Err(dsh_tools::ToolBodyError::plain(format!(
+                                "{EXIT_PLAN_MODE} requires a non-empty markdown plan starting with a # heading"
+                            )));
+                        }
+                        let interaction = ctx
+                            .get_typed::<Arc<UserQuestionService>>("userQuestions", false)
+                            .map(|slot| slot.as_ref().clone());
+                        let Some(interaction) = interaction else {
+                            return Err(dsh_tools::ToolBodyError::plain(
+                                "no user-questions channel is available to review the plan; ask the user to switch the session mode instead",
+                            ));
+                        };
+                        let answer = interaction
                         .ask(&AskUserQuestionRequest {
                             questions: vec![AskUserQuestionItem {
                                 id: REVIEW_ID.to_string(),
@@ -525,59 +539,68 @@ impl PlanModeController {
                             signal: Some(signal),
                         })
                         .await;
-                    let answer = match answer {
-                        Ok(answer) => answer,
-                        Err(error) => {
-                            // A dismissed review is not a failed one (the Rust
-                            // questions service collapses the TS taxonomy to
-                            // ASK_ABORTED).
-                            if error.code == "ASK_ABORTED" {
+                        let answer = match answer {
+                            Ok(answer) => answer,
+                            Err(error) => {
+                                // A dismissed review is not a failed one (the Rust
+                                // questions service collapses the TS taxonomy to
+                                // ASK_ABORTED).
+                                if error.code == "ASK_ABORTED" {
+                                    return Err(dsh_tools::ToolBodyError::plain(
+                                        "The user dismissed the plan review to speak instead; stay in plan mode, stop here, and wait for their message.",
+                                    ));
+                                }
+                                return Err(dsh_tools::ToolBodyError::plain(error.message));
+                            }
+                        };
+                        // A review may outlive this plugin fiber.
+                        if service.disposed.load(Ordering::SeqCst) {
+                            return Err(dsh_tools::ToolBodyError::plain(
+                                "the plan-mode service was reloaded while the plan was under review; present the plan again",
+                            ));
+                        }
+                        let review_items: Vec<&dsh_user_questions::AskUserQuestionAnswerItem> =
+                            answer
+                                .answers
+                                .iter()
+                                .filter(|entry| entry.id == REVIEW_ID)
+                                .collect();
+                        let item = match review_items.as_slice() {
+                            [item] => *item,
+                            _ => {
                                 return Err(dsh_tools::ToolBodyError::plain(
-                                    "The user dismissed the plan review to speak instead; stay in plan mode, stop here, and wait for their message.",
+                                    "The user chose to keep planning; revise the plan and present it again.",
                                 ));
                             }
-                            return Err(dsh_tools::ToolBodyError::plain(error.message));
-                        }
-                    };
-                    // A review may outlive this plugin fiber.
-                    if service.disposed.load(Ordering::SeqCst) {
-                        return Err(dsh_tools::ToolBodyError::plain(
-                            "the plan-mode service was reloaded while the plan was under review; present the plan again",
-                        ));
-                    }
-                    let review_items: Vec<&dsh_user_questions::AskUserQuestionAnswerItem> = answer
-                        .answers
-                        .iter()
-                        .filter(|entry| entry.id == REVIEW_ID)
-                        .collect();
-                    let item = match review_items.as_slice() {
-                        [item] => *item,
-                        _ => return Err(dsh_tools::ToolBodyError::plain(
-                            "The user chose to keep planning; revise the plan and present it again.",
-                        )),
-                    };
-                    if item.selected.len() != 1
-                        || item.selected[0] != APPROVE_LABEL
-                        || item.custom.is_some()
-                    {
-                        let feedback = item.custom.clone().unwrap_or_default();
-                        return Err(dsh_tools::ToolBodyError::plain(if feedback.is_empty() {
-                            "The user chose to keep planning; revise the plan and present it again."
+                        };
+                        if item.selected.len() != 1
+                            || item.selected[0] != APPROVE_LABEL
+                            || item.custom.is_some()
+                        {
+                            let feedback = item.custom.clone().unwrap_or_default();
+                            return Err(dsh_tools::ToolBodyError::plain(if feedback.is_empty() {
+                                "The user chose to keep planning; revise the plan and present it again."
                                 .to_string()
-                        } else {
-                            format!("The user chose to keep planning; their feedback: {feedback}")
-                        }));
-                    }
-                    // Keep plan guidance for the rest of this assistant tool
-                    // batch; the silent selection is appended at the next
-                    // accepted in-turn pre-step.
-                    service
-                        .pending_intents
-                        .lock()
-                        .insert(agent.session().identity(), PendingIntent { active: false, narrate: false });
-                    Ok(serde_json::json!({ "approved": true }))
-                })
-            }),
+                            } else {
+                                format!(
+                                    "The user chose to keep planning; their feedback: {feedback}"
+                                )
+                            }));
+                        }
+                        // Keep plan guidance for the rest of this assistant tool
+                        // batch; the silent selection is appended at the next
+                        // accepted in-turn pre-step.
+                        service.pending_intents.lock().insert(
+                            agent.session().identity(),
+                            PendingIntent {
+                                active: false,
+                                narrate: false,
+                            },
+                        );
+                        Ok(serde_json::json!({ "approved": true }))
+                    })
+                },
+            ),
             finalize_content: None,
             present_call: Some(Arc::new(|args: &serde_json::Value| {
                 let plan = args["plan"].as_str().unwrap_or_default();
@@ -616,8 +639,14 @@ impl PlanModeController {
             .get(&agent.session().identity())
             .copied();
         match pending {
-            None => PlanRead { active, pending: None },
-            Some(pending) => PlanRead { active, pending: Some(pending.active) },
+            None => PlanRead {
+                active,
+                pending: None,
+            },
+            Some(pending) => PlanRead {
+                active,
+                pending: Some(pending.active),
+            },
         }
     }
 
@@ -630,14 +659,20 @@ impl PlanModeController {
             .lock()
             .get(&session.identity())
             .copied();
-        let target = pending.map(|pending| pending.active).unwrap_or_else(|| fold_plan_mode(&events, events.len()));
+        let target = pending
+            .map(|pending| pending.active)
+            .unwrap_or_else(|| fold_plan_mode(&events, events.len()));
         if active == target {
             return SetOutcome::Noop;
         }
         if has_open_turn(&events) {
-            self.pending_intents
-                .lock()
-                .insert(session.identity(), PendingIntent { active, narrate: true });
+            self.pending_intents.lock().insert(
+                session.identity(),
+                PendingIntent {
+                    active,
+                    narrate: true,
+                },
+            );
             return if fold_plan_mode(&events, events.len()) == active {
                 SetOutcome::Cancelled
             } else {
@@ -676,7 +711,11 @@ impl PlanModeController {
             self.pending_intents.lock().remove(&session.identity());
             return Ok(());
         }
-        session.append("plan/mode", serde_json::json!({ "active": pending.active }), None)?;
+        session.append(
+            "plan/mode",
+            serde_json::json!({ "active": pending.active }),
+            None,
+        )?;
         // Delete only after append succeeds so a later accepted in-turn
         // pre-step can retry a failed durable write.
         self.pending_intents.lock().remove(&session.identity());
@@ -696,7 +735,9 @@ impl PlanModeController {
             "The user switched this session back to the default mode."
         };
         Some(create_user_message(
-            vec![ContentBlock::Text { text: text.to_string() }],
+            vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
             MessageSource::Plugin {
                 plugin: "plan-mode".to_string(),
                 form: Some(ContextForm::Notice),

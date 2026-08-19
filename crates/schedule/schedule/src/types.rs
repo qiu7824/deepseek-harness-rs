@@ -119,7 +119,11 @@ pub enum ScheduleChange {
         version: u32,
         id: ScheduleId,
         /// Wall-clock decision time used to select the latest due occurrence.
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "acceptedAt")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "acceptedAt"
+        )]
         accepted_at: Option<String>,
     },
 }
@@ -176,21 +180,39 @@ impl SchedulePersistenceOperation {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum ScheduleToolError {
-    InvalidPrompt { message: String },
-    InvalidSelector { message: String },
-    InvalidRule { message: String },
-    InvalidTimeZone { message: String },
-    NotFuture { message: String },
-    TimeOutOfRange { message: String },
-    FrequencyTooHigh { message: String },
-    CorruptScheduleLog { message: String },
+    InvalidPrompt {
+        message: String,
+    },
+    InvalidSelector {
+        message: String,
+    },
+    InvalidRule {
+        message: String,
+    },
+    InvalidTimeZone {
+        message: String,
+    },
+    NotFuture {
+        message: String,
+    },
+    TimeOutOfRange {
+        message: String,
+    },
+    FrequencyTooHigh {
+        message: String,
+    },
+    CorruptScheduleLog {
+        message: String,
+    },
     PersistenceUncertain {
         message: String,
         operation: SchedulePersistenceOperation,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<ScheduleId>,
     },
-    InternalError { message: String },
+    InternalError {
+        message: String,
+    },
 }
 
 impl ScheduleToolError {

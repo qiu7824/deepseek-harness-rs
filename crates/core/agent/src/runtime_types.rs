@@ -372,7 +372,9 @@ mod tests {
     fn pre_step_decision_variants() {
         let reject = PreStepDecision::Reject;
         assert_eq!(reject, PreStepDecision::Reject);
-        let enter = PreStepDecision::Enter { messages: Vec::new() };
+        let enter = PreStepDecision::Enter {
+            messages: Vec::new(),
+        };
         assert!(matches!(enter, PreStepDecision::Enter { .. }));
     }
 

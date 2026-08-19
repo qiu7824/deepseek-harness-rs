@@ -8,7 +8,7 @@ pub mod types;
 
 pub use index::{
     SETTINGS_DOCUMENT_UPDATED, SETTINGS_UPDATED, SettingsApplies, SettingsConflictError,
-    SettingsDescriptor, SettingsDescribeOptions, SettingsNamespace, SettingsPathOp,
+    SettingsDescribeOptions, SettingsDescriptor, SettingsNamespace, SettingsPathOp,
     SettingsProvider, SettingsRegisterOptions, SettingsScope, SettingsSectionHooks,
     SettingsStorage, deep_equal_json, install_settings_section, settings_namespace,
 };

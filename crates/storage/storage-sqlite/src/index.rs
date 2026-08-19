@@ -27,8 +27,8 @@ use tokio::sync::{OnceCell, oneshot};
 
 use cordis::{ArcValue, Context, InjectSpec, Plugin, PluginError, Service, arc, downcast};
 use dsh_storage::{
-    KvFacet, KvUnit, KvUnitDescriptor, Storage, StorageBackend, StorageError,
-    StorageErrorCode, closed_error, storage_backend_service_key, unit_name_matches,
+    KvFacet, KvUnit, KvUnitDescriptor, Storage, StorageBackend, StorageError, StorageErrorCode,
+    closed_error, storage_backend_service_key, unit_name_matches,
 };
 
 use crate::schema::{JournalMode, open_database, record_table_name};
@@ -86,7 +86,9 @@ impl SqliteStorageBackend {
             config,
             units: Arc::new(Mutex::new(HashMap::new())),
             closing: AtomicBool::new(false),
-            kv_facet: Arc::new(SqliteKvFacet { backend: weak.clone() }),
+            kv_facet: Arc::new(SqliteKvFacet {
+                backend: weak.clone(),
+            }),
         })
     }
 
@@ -245,7 +247,10 @@ impl KvFacet for SqliteKvFacet {
         if !unit_name_matches(&descriptor.name) {
             return Err(StorageError::new(
                 StorageErrorCode::MalformedMedium,
-                format!("kv unit name '{}' violates ^[a-z][a-z0-9_]*$", descriptor.name),
+                format!(
+                    "kv unit name '{}' violates ^[a-z][a-z0-9_]*$",
+                    descriptor.name
+                ),
             ));
         }
         for table in &descriptor.tables {
@@ -295,14 +300,12 @@ impl KvFacet for SqliteKvFacet {
             let _ = done_tx.send(result.clone());
             result
         });
-        handle
-            .await
-            .map_err(|join| {
-                StorageError::new(
-                    StorageErrorCode::MalformedMedium,
-                    format!("sqlite backend: open task failed: {join}"),
-                )
-            })?
+        handle.await.map_err(|join| {
+            StorageError::new(
+                StorageErrorCode::MalformedMedium,
+                format!("sqlite backend: open task failed: {join}"),
+            )
+        })?
     }
 }
 
@@ -313,7 +316,8 @@ impl StorageBackend for SqliteStorageBackend {
     }
 
     async fn close(&self) -> Result<(), StorageError> {
-        self.closing.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.closing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let slots: Vec<Slot> = {
             let mut units = self.units.lock();
             units.drain().map(|(_, slot)| slot).collect()
@@ -388,8 +392,12 @@ impl Plugin for SqliteStoragePlugin {
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
         let config = downcast::<Config>(&config)
             .cloned()
-            .or_else(|| serde_json::from_value(downcast::<serde_json::Value>(&config)?.clone()).ok())
+            .or_else(|| {
+                serde_json::from_value(downcast::<serde_json::Value>(&config)?.clone()).ok()
+            })
             .unwrap_or_else(|| self.config.clone());
-        apply(ctx, config).map(|_| ()).map_err(|error| PluginError::new(arc(error)))
+        apply(ctx, config)
+            .map(|_| ())
+            .map_err(|error| PluginError::new(arc(error)))
     }
 }

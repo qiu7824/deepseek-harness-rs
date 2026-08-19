@@ -15,17 +15,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use cordis::{
-    ArcValue, Context, Disposer, DispatchMode, EventOptions, FiberState, InjectSpec, Listener,
+    ArcValue, Context, DispatchMode, Disposer, EventOptions, FiberState, InjectSpec, Listener,
     Service, arc, make_disposer,
 };
-use dsh_scope::{ScopeCarrier, scope_target};
+use dsh_scope::{ScopeCarrier, scope_chain_of, scope_of, scope_target};
 use dsh_session::{SessionId, session_id};
 use dsh_typert_protocol::{TypertLookup, TypertService};
 use parking_lot::Mutex;
 
 use crate::runtime_types::{
-    Agent, AgentFactory, AgentHandle, AgentLifecyclePayload, CreateAgentOptions,
-    ResumeAgentOptions,
+    Agent, AgentFactory, AgentHandle, AgentLifecyclePayload, CreateAgentOptions, ResumeAgentOptions,
 };
 
 const NO_FACTORY_MESSAGE: &str = "no agent factory registered (load an agent-loop plugin)";
@@ -149,7 +148,8 @@ impl AgentRegistry {
                 let registry = Arc::clone(&registry_for_inject);
                 let type_ctx = type_ctx.clone();
                 Box::pin(async move {
-                    if let Some(typert) = type_ctx.get_typed::<Arc<TypertService>>("typert", false) {
+                    if let Some(typert) = type_ctx.get_typed::<Arc<TypertService>>("typert", false)
+                    {
                         let lookup_registry = Arc::clone(&registry);
                         let lookup_disposer = typert.lookups.register(
                             "agent",
@@ -158,11 +158,10 @@ impl AgentRegistry {
                                 parameter: "agent".to_string(),
                                 wire: "agentId".to_string(),
                                 host_type_symbol: "@deepseek-ai/dsh-agent#Agent".to_string(),
-                                wire_type_symbol: "@deepseek-ai/dsh-session/types#SessionId".to_string(),
+                                wire_type_symbol: "@deepseek-ai/dsh-session/types#SessionId"
+                                    .to_string(),
                                 resolve: Arc::new(move |id| {
-                                    lookup_registry
-                                        .get(&session_id(id))
-                                        .map(|agent| arc(agent))
+                                    lookup_registry.get(&session_id(id)).map(|agent| arc(agent))
                                 }),
                             },
                         );
@@ -174,7 +173,8 @@ impl AgentRegistry {
                                 parameter: "agent".to_string(),
                                 wire: "agentId".to_string(),
                                 host_type_symbol: "@deepseek-ai/dsh-agent#Agent".to_string(),
-                                wire_type_symbol: "@deepseek-ai/dsh-session/types#SessionId".to_string(),
+                                wire_type_symbol: "@deepseek-ai/dsh-session/types#SessionId"
+                                    .to_string(),
                                 resolve: Arc::new(move |id| {
                                     host_registry
                                         .get(&session_id(id))
@@ -201,11 +201,25 @@ impl AgentRegistry {
             }),
         );
 
-        // The `ctx.agent` DX accessor: default undefined on every context.
+        // The `ctx.agent` DX accessor resolves the nearest live Agent whose
+        // scope encloses the calling context. Root contexts remain undefined.
+        let accessor_registry = Arc::clone(&registry);
         let _ = ctx.accessor(
             "agent",
             Arc::new(cordis::Accessor {
-                get: Arc::new(|_ctx| arc(())),
+                get: Arc::new(move |caller| {
+                    let chain = scope_chain_of(scope_of(caller).as_ref());
+                    let store = accessor_registry.store.lock();
+                    chain
+                        .iter()
+                        .find_map(|scope| {
+                            store
+                                .values()
+                                .find(|entry| entry.agent.scope_key() == scope)
+                                .map(|entry| arc(entry.agent.clone()))
+                        })
+                        .unwrap_or_else(|| arc(()))
+                }),
                 set: None,
             }),
         );
@@ -299,14 +313,13 @@ impl AgentRegistry {
         }
         let run = Arc::new(InitiatorRun {
             active: std::sync::atomic::AtomicBool::new(true),
-            parent: AMBIENT_INITIATOR_RUN.try_with(|slot| slot.clone()).unwrap_or(None),
+            parent: AMBIENT_INITIATOR_RUN
+                .try_with(|slot| slot.clone())
+                .unwrap_or(None),
         });
         self.active_initiator_runs.fetch_add(1, Ordering::SeqCst);
         let result = AMBIENT_INITIATOR_RUN
-            .scope(
-                Some(run.clone()),
-                AMBIENT_INITIATOR.scope(agent, operation),
-            )
+            .scope(Some(run.clone()), AMBIENT_INITIATOR.scope(agent, operation))
             .await;
         self.release_initiator_run(&run);
         Ok(result)
@@ -411,24 +424,23 @@ impl AgentRegistry {
         }
 
         let store_map = self.store.clone();
-        let detach_fn: Arc<dyn Fn(&Arc<AgentEntry>) + Send + Sync> =
-            Arc::new(move |entry| {
-                entry.set_detach_requested(false);
-                {
-                    let mut store = store_map.lock();
-                    let is_current = store
-                        .get(entry.id.as_str())
-                        .is_some_and(|live| Arc::ptr_eq(live, entry));
-                    if !is_current {
-                        return;
-                    }
-                    store.remove(entry.id.as_str());
-                }
-                if !entry.is_announced() {
+        let detach_fn: Arc<dyn Fn(&Arc<AgentEntry>) + Send + Sync> = Arc::new(move |entry| {
+            entry.set_detach_requested(false);
+            {
+                let mut store = store_map.lock();
+                let is_current = store
+                    .get(entry.id.as_str())
+                    .is_some_and(|live| Arc::ptr_eq(live, entry));
+                if !is_current {
                     return;
                 }
-                emit_disposed(entry);
-            });
+                store.remove(entry.id.as_str());
+            }
+            if !entry.is_announced() {
+                return;
+            }
+            emit_disposed(entry);
+        });
 
         let entry = Arc::new(AgentEntry {
             id: id.clone(),
@@ -439,7 +451,9 @@ impl AgentRegistry {
             flags: Mutex::new(EntryFlags::default()),
             detach: detach_fn,
         });
-        self.store.lock().insert(id.as_str().to_string(), Arc::clone(&entry));
+        self.store
+            .lock()
+            .insert(id.as_str().to_string(), Arc::clone(&entry));
 
         let entered = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let detach: Disposer = make_disposer(move || {
@@ -464,7 +478,10 @@ impl AgentRegistry {
     pub async fn announce(&self, agent: &Arc<dyn Agent>) -> Result<(), String> {
         let entry = self.live_entry_for(agent)?;
         if entry.is_announced() || entry.is_announcing() {
-            return Err(format!("agent \"{}\" was already announced", entry.id.as_str()));
+            return Err(format!(
+                "agent \"{}\" was already announced",
+                entry.id.as_str()
+            ));
         }
         // Mark before dispatch so a listener cannot recursively create a
         // second lifecycle edge; detach still pairs a partially delivered
@@ -472,10 +489,15 @@ impl AgentRegistry {
         entry.set_announcing(true);
         entry.set_announced(true);
         let dispatch_ctx = self.ctx.with_filter(entry.carrier.filter.clone());
-        let payload = arc(AgentLifecyclePayload { agent: entry.agent.clone() });
-        let listeners = dispatch_ctx
-            .events
-            .collect(DispatchMode::Emit, Some(&dispatch_ctx), "agent/created", &[payload.clone()]);
+        let payload = arc(AgentLifecyclePayload {
+            agent: entry.agent.clone(),
+        });
+        let listeners = dispatch_ctx.events.collect(
+            DispatchMode::Emit,
+            Some(&dispatch_ctx),
+            "agent/created",
+            &[payload.clone()],
+        );
         let mut veto: Option<String> = None;
         for (listener_ctx, callback) in &listeners {
             let future = callback(listener_ctx, vec![payload.clone()]);
@@ -506,16 +528,27 @@ impl AgentRegistry {
             .lock()
             .get(agent.id().as_str())
             .cloned()
-            .ok_or_else(|| format!("agent \"{}\" is not live in this registry", agent.id().as_str()))?;
+            .ok_or_else(|| {
+                format!(
+                    "agent \"{}\" is not live in this registry",
+                    agent.id().as_str()
+                )
+            })?;
         if !Arc::ptr_eq(&entry.agent, agent) {
-            return Err(format!("agent \"{}\" is not live in this registry", agent.id().as_str()));
+            return Err(format!(
+                "agent \"{}\" is not live in this registry",
+                agent.id().as_str()
+            ));
         }
         Ok(entry)
     }
 
     /// Look up a live agent.
     pub fn get(&self, id: &SessionId) -> Option<Arc<dyn Agent>> {
-        self.store.lock().get(id.as_str()).map(|entry| entry.agent.clone())
+        self.store
+            .lock()
+            .get(id.as_str())
+            .map(|entry| entry.agent.clone())
     }
 
     /// Test whether a live agent was created through one exact parent
@@ -574,7 +607,9 @@ impl AgentRegistry {
     }
 
     fn release_reentrant_initiator_runs(&self) {
-        let mut run = AMBIENT_INITIATOR_RUN.try_with(|slot| slot.clone()).unwrap_or(None);
+        let mut run = AMBIENT_INITIATOR_RUN
+            .try_with(|slot| slot.clone())
+            .unwrap_or(None);
         while let Some(current) = run {
             self.release_initiator_run(&current);
             run = current.parent.clone();
@@ -630,10 +665,15 @@ fn emit_disposed(entry: &Arc<AgentEntry>) {
     // Run inline via the containing task (emit_disposed is invoked from the
     // detach disposer future, so an ambient runtime exists).
     let dispatch_ctx = entry.emit_ctx.with_filter(entry.carrier.filter.clone());
-    let payload = arc(AgentLifecyclePayload { agent: entry.agent.clone() });
-    let listeners = dispatch_ctx
-        .events
-        .collect(DispatchMode::Emit, Some(&dispatch_ctx), "agent/disposed", &[payload.clone()]);
+    let payload = arc(AgentLifecyclePayload {
+        agent: entry.agent.clone(),
+    });
+    let listeners = dispatch_ctx.events.collect(
+        DispatchMode::Emit,
+        Some(&dispatch_ctx),
+        "agent/disposed",
+        &[payload.clone()],
+    );
     let logger = entry.emit_ctx.named_logger(Some("agents"));
     for (listener_ctx, callback) in &listeners {
         let future = callback(listener_ctx, vec![payload.clone()]);
@@ -770,8 +810,13 @@ mod tests {
         dsh_llm::Message {
             id: dsh_llm::message_id(id),
             role: Role::User,
-            content: vec![ContentBlock::Text { text: id.to_string() }],
-            source: MessageSource::User { rpc_id: None, client_time_zone: None },
+            content: vec![ContentBlock::Text {
+                text: id.to_string(),
+            }],
+            source: MessageSource::User {
+                rpc_id: None,
+                client_time_zone: None,
+            },
         }
     }
 
@@ -785,7 +830,8 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
 
         // typert lookups registered (inject fiber settles after typert).
-        let typert: Arc<Arc<dsh_typert_protocol::TypertService>> = ctx.get_typed("typert", false).unwrap();
+        let typert: Arc<Arc<dsh_typert_protocol::TypertService>> =
+            ctx.get_typed("typert", false).unwrap();
         assert_eq!(typert.lookups.keys(), vec!["agent"]);
         assert_eq!(typert.host_contexts.keys(), vec!["agent"]);
 
@@ -843,7 +889,13 @@ mod tests {
         registry.announce(&agent).await.unwrap();
         assert_eq!(created.load(MemOrder::SeqCst), 1);
         // Re-announcing rejects.
-        assert!(registry.announce(&agent).await.unwrap_err().contains("already announced"));
+        assert!(
+            registry
+                .announce(&agent)
+                .await
+                .unwrap_err()
+                .contains("already announced")
+        );
 
         detach().await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -871,9 +923,11 @@ mod tests {
         .await;
         ctx.on(
             "agent/created",
-            Arc::new(|_ctx, _args| Box::pin(async move {
-                panic!("veto");
-            })),
+            Arc::new(|_ctx, _args| {
+                Box::pin(async move {
+                    panic!("veto");
+                })
+            }),
             EventOptions::default(),
         )
         .await;
@@ -899,7 +953,10 @@ mod tests {
         let agent = test_agent(&ctx, "a1");
         let detach = registry.enter(agent, None).unwrap();
         let other = test_agent(&ctx, "a1");
-        let error = registry.enter(other, None).err().expect("duplicate rejects");
+        let error = registry
+            .enter(other, None)
+            .err()
+            .expect("duplicate rejects");
         assert!(error.contains("already registered"), "{error}");
         detach().await;
 
@@ -917,7 +974,10 @@ mod tests {
             cancels: parking_lot::Mutex::new(Vec::new()),
             sends: parking_lot::Mutex::new(Vec::new()),
         });
-        let error = registry.enter(mismatched, None).err().expect("mismatch rejects");
+        let error = registry
+            .enter(mismatched, None)
+            .err()
+            .expect("mismatch rejects");
         assert!(error.contains("does not match session id"), "{error}");
     }
 
@@ -948,12 +1008,18 @@ mod tests {
         let fiber = ctx.plugin(Arc::new(Registrar), cordis::arc(()));
         fiber.settle().await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert!(registry.get(&dsh_session::session_id("fiber-agent")).is_some());
+        assert!(
+            registry
+                .get(&dsh_session::session_id("fiber-agent"))
+                .is_some()
+        );
 
         fiber.dispose().await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(
-            registry.get(&dsh_session::session_id("fiber-agent")).is_none(),
+            registry
+                .get(&dsh_session::session_id("fiber-agent"))
+                .is_none(),
             "fiber disposal unregisters the agent"
         );
     }
@@ -1011,9 +1077,15 @@ mod tests {
         let ctx = Context::root();
         let registry = AgentRegistry::install(&ctx);
         // Without a factory, both reject.
-        let error = registry.create(crate::CreateAgentOptions::default()).await.unwrap_err();
+        let error = registry
+            .create(crate::CreateAgentOptions::default())
+            .await
+            .unwrap_err();
         assert_eq!(error, NO_FACTORY_MESSAGE);
-        let error = registry.resume(crate::ResumeAgentOptions::default()).await.unwrap_err();
+        let error = registry
+            .resume(crate::ResumeAgentOptions::default())
+            .await
+            .unwrap_err();
         assert_eq!(error, NO_FACTORY_MESSAGE);
 
         let created = Arc::new(AtomicU32::new(0));
@@ -1022,16 +1094,20 @@ mod tests {
             created: created.clone(),
             resumed: resumed.clone(),
         }));
-        assert!(registry
-            .create(crate::CreateAgentOptions::default())
-            .await
-            .unwrap_err()
-            .contains("not implemented"));
-        assert!(registry
-            .resume(crate::ResumeAgentOptions::default())
-            .await
-            .unwrap_err()
-            .contains("not implemented"));
+        assert!(
+            registry
+                .create(crate::CreateAgentOptions::default())
+                .await
+                .unwrap_err()
+                .contains("not implemented")
+        );
+        assert!(
+            registry
+                .resume(crate::ResumeAgentOptions::default())
+                .await
+                .unwrap_err()
+                .contains("not implemented")
+        );
         assert_eq!(created.load(MemOrder::SeqCst), 1);
         assert_eq!(resumed.load(MemOrder::SeqCst), 1);
 
@@ -1045,7 +1121,10 @@ mod tests {
         assert!(duplicate.is_err());
 
         dispose().await;
-        let error = registry.create(crate::CreateAgentOptions::default()).await.unwrap_err();
+        let error = registry
+            .create(crate::CreateAgentOptions::default())
+            .await
+            .unwrap_err();
         assert_eq!(error, NO_FACTORY_MESSAGE, "factory slot cleared on dispose");
     }
 
@@ -1056,15 +1135,20 @@ mod tests {
         let agent = test_agent(&ctx, "a1");
 
         assert!(registry.current_initiator().unwrap().is_none());
-        assert!(registry
-            .require_initiator()
-            .err()
-            .expect("no initiator boundary")
-            .contains("no initiating agent"));
+        assert!(
+            registry
+                .require_initiator()
+                .err()
+                .expect("no initiator boundary")
+                .contains("no initiating agent")
+        );
 
         let seen = registry
             .with_initiator(agent.clone(), async {
-                registry.current_initiator().unwrap().map(|a| a.id().clone())
+                registry
+                    .current_initiator()
+                    .unwrap()
+                    .map(|a| a.id().clone())
             })
             .await
             .unwrap();
@@ -1082,7 +1166,10 @@ mod tests {
             .unwrap();
         assert!(hidden.is_none());
 
-        assert!(registry.current_initiator().unwrap().is_none(), "boundary unwinds");
+        assert!(
+            registry.current_initiator().unwrap().is_none(),
+            "boundary unwinds"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1105,6 +1192,184 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn agent_emit_contains_synchronous_callback_panics_and_continues() {
+        use crate::dispatch::AgentEventDispatch;
+
+        let ctx = Context::root();
+        let agent = test_agent(&ctx, "sync-panic");
+        let seen = Arc::new(AtomicU32::new(0));
+        let seen_listener = seen.clone();
+        ctx.on(
+            "agent/sync-panic",
+            Arc::new(move |_ctx, _args| {
+                let seen = seen_listener.clone();
+                Box::pin(async move {
+                    seen.fetch_add(1, MemOrder::SeqCst);
+                    None
+                })
+            }),
+            EventOptions::default(),
+        )
+        .await;
+        ctx.on(
+            "agent/sync-panic",
+            Arc::new(
+                |_ctx, _args| -> cordis::BoxFuture<'static, Option<ArcValue>> {
+                    panic!("sync agent listener panic")
+                },
+            ),
+            EventOptions::default().prepend(true),
+        )
+        .await;
+
+        AgentEventDispatch::new(&ctx, agent).emit("agent/sync-panic", |_| arc(()));
+        assert_eq!(
+            seen.load(MemOrder::SeqCst),
+            1,
+            "a synchronous callback panic must not skip later listeners"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn agent_emit_finishes_all_listener_prefixes_before_pending_tails() {
+        use crate::dispatch::AgentEventDispatch;
+
+        let ctx = Context::root();
+        let agent = test_agent(&ctx, "pending-order");
+        let order = Arc::new(parking_lot::Mutex::new(Vec::<&'static str>::new()));
+        let first_order = order.clone();
+        ctx.on(
+            "agent/pending-order",
+            Arc::new(move |_ctx, _args| {
+                let order = first_order.clone();
+                Box::pin(async move {
+                    order.lock().push("prefix-1");
+                    tokio::task::yield_now().await;
+                    order.lock().push("tail-1");
+                    None
+                })
+            }),
+            EventOptions::default(),
+        )
+        .await;
+        let second_order = order.clone();
+        ctx.on(
+            "agent/pending-order",
+            Arc::new(move |_ctx, _args| {
+                let order = second_order.clone();
+                Box::pin(async move {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    order.lock().push("prefix-2");
+                    None
+                })
+            }),
+            EventOptions::default(),
+        )
+        .await;
+
+        AgentEventDispatch::new(&ctx, agent).emit("agent/pending-order", |_| arc(()));
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while order.lock().len() < 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("pending tail must settle");
+        assert_eq!(
+            &*order.lock(),
+            &["prefix-1", "prefix-2", "tail-1"],
+            "all synchronous listener prefixes must finish before any pending tail"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_emit_runs_pending_listener_prefix_and_tail_exactly_once() {
+        use crate::dispatch::AgentEventDispatch;
+
+        let ctx = Context::root();
+        let agent = test_agent(&ctx, "pending-tail");
+        let prefix = Arc::new(AtomicU32::new(0));
+        let suffix = Arc::new(AtomicU32::new(0));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let prefix_listener = prefix.clone();
+        let suffix_listener = suffix.clone();
+        let release_listener = release.clone();
+        ctx.on(
+            "agent/pending-tail",
+            Arc::new(move |_ctx, _args| {
+                let prefix = prefix_listener.clone();
+                let suffix = suffix_listener.clone();
+                let release = release_listener.clone();
+                Box::pin(async move {
+                    prefix.fetch_add(1, MemOrder::SeqCst);
+                    release.notified().await;
+                    suffix.fetch_add(1, MemOrder::SeqCst);
+                    None
+                })
+            }),
+            EventOptions::default(),
+        )
+        .await;
+
+        AgentEventDispatch::new(&ctx, agent).emit("agent/pending-tail", |_| arc(()));
+        assert_eq!(prefix.load(MemOrder::SeqCst), 1);
+        assert_eq!(suffix.load(MemOrder::SeqCst), 0);
+        release.notify_waiters();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while suffix.load(MemOrder::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("pending listener tail must resume");
+        assert_eq!(prefix.load(MemOrder::SeqCst), 1);
+        assert_eq!(suffix.load(MemOrder::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_emit_delivers_reentrant_synchronous_notifications_inline() {
+        use crate::dispatch::AgentEventDispatch;
+
+        let ctx = Context::root();
+        let agent = test_agent(&ctx, "reentrant");
+        let inner_seen = Arc::new(AtomicU32::new(0));
+        let inner_seen_listener = inner_seen.clone();
+        ctx.on(
+            "agent/reentrant-inner",
+            Arc::new(move |_ctx, _args| {
+                let inner_seen = inner_seen_listener.clone();
+                Box::pin(async move {
+                    inner_seen.fetch_add(1, MemOrder::SeqCst);
+                    None
+                })
+            }),
+            EventOptions::default(),
+        )
+        .await;
+
+        let nested = AgentEventDispatch::new(&ctx, agent.clone());
+        ctx.on(
+            "agent/reentrant-outer",
+            Arc::new(move |_ctx, _args| {
+                let nested = nested.clone();
+                Box::pin(async move {
+                    nested.emit("agent/reentrant-inner", |_| arc(()));
+                    None
+                })
+            }),
+            EventOptions::default(),
+        )
+        .await;
+
+        AgentEventDispatch::new(&ctx, agent).emit("agent/reentrant-outer", |_| arc(()));
+        assert_eq!(
+            inner_seen.load(MemOrder::SeqCst),
+            1,
+            "the nested notification's synchronous prefix must not be lost"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn status_events_reach_scoped_listeners() {
         use crate::dispatch::AgentEventDispatch;
         let ctx = Context::root();
@@ -1118,7 +1383,11 @@ mod tests {
                 let seen = seen_listener.clone();
                 Box::pin(async move {
                     let payload = downcast::<AgentStatusPayload>(&args[0]).expect("payload");
-                    seen.lock().push(format!("{}:{}", payload.agent.id().as_str(), payload.status.as_str()));
+                    seen.lock().push(format!(
+                        "{}:{}",
+                        payload.agent.id().as_str(),
+                        payload.status.as_str()
+                    ));
                     None
                 })
             }),
@@ -1126,7 +1395,10 @@ mod tests {
         )
         .await;
         dispatch.emit("agent/status", |agent| {
-            arc(AgentStatusPayload { agent: agent.clone(), status: crate::AgentStatus::Running })
+            arc(AgentStatusPayload {
+                agent: agent.clone(),
+                status: crate::AgentStatus::Running,
+            })
         });
         assert_eq!(&*seen.lock(), &["a1:running"]);
     }

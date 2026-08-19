@@ -32,11 +32,10 @@ pub const NAME: &str = "tool-schedule-invariant";
 pub const INJECT: [&str; 1] = ["invariants"];
 
 /// Validate a complete exact-session stream under its fork suffix policy.
-pub fn validate(
-    events: &[SessionEvent],
-    seed_length: usize,
-) -> Result<(), String> {
-    fold_schedule_events(events, seed_length).map(|_| ()).map_err(|error| error.message)
+pub fn validate(events: &[SessionEvent], seed_length: usize) -> Result<(), String> {
+    fold_schedule_events(events, seed_length)
+        .map(|_| ())
+        .map_err(|error| error.message)
 }
 
 /// Build the installer registered under [`PACKAGE_NAME`] (TS `install`).
@@ -115,8 +114,7 @@ pub fn installer() -> InvariantInstaller {
                         let folded = traces.entry(session.identity()).or_insert_with(|| {
                             // A session created without a prior `session/created`
                             // seed folds from its current log (candidate-excluded).
-                            fold_schedule_events(&[], seed_length)
-                                .unwrap_or_default()
+                            fold_schedule_events(&[], seed_length).unwrap_or_default()
                         });
                         // The trace reflects committed events only; events at
                         // or below the seed boundary stay outside ownership.

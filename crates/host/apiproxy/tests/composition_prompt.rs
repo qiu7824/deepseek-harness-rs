@@ -94,7 +94,9 @@ impl Agent for StubAgent {
     fn send(&self, _message: UserMessage, _target: InboxTarget, _wakeup: bool) {}
 
     fn followup(&self, message: UserMessage) {
-        self.delivered.lock().push(("followup".to_string(), message));
+        self.delivered
+            .lock()
+            .push(("followup".to_string(), message));
     }
 
     fn steer(&self, message: UserMessage) {

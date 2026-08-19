@@ -31,7 +31,10 @@ pub fn check_change(
     fail: &dyn Fn(&str),
 ) {
     match change {
-        DomainChanged::Put { domain, table, key, .. } | DomainChanged::Deleted { domain, table, key } => {
+        DomainChanged::Put {
+            domain, table, key, ..
+        }
+        | DomainChanged::Deleted { domain, table, key } => {
             if domain != "workspace" || table != "workspaces" {
                 return;
             }
@@ -69,25 +72,26 @@ pub fn installer() -> dsh_invariants::InvariantInstaller {
                     .get_typed::<Arc<crate::index::WorkspaceRegistry>>("workspaceRegistry", false)
                     .expect("workspaceRegistry service required");
                 let listener_fail = fail.clone();
-                let listener: Arc<Listener> = Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
-                    let change = args
-                        .first()
-                        .and_then(|value| downcast::<DomainChanged>(value))
-                        .cloned();
-                    let registry = registry.clone();
-                    let fail = listener_fail.clone();
-                    Box::pin(async move {
-                        let Some(change) = change else {
-                            return None;
-                        };
-                        check_change(
-                            &change,
-                            &|key| registry.get(&workspace_id(key)).is_some(),
-                            &|message| fail(message),
-                        );
-                        None
-                    })
-                });
+                let listener: Arc<Listener> =
+                    Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
+                        let change = args
+                            .first()
+                            .and_then(|value| downcast::<DomainChanged>(value))
+                            .cloned();
+                        let registry = registry.clone();
+                        let fail = listener_fail.clone();
+                        Box::pin(async move {
+                            let Some(change) = change else {
+                                return None;
+                            };
+                            check_change(
+                                &change,
+                                &|key| registry.get(&workspace_id(key)).is_some(),
+                                &|message| fail(message),
+                            );
+                            None
+                        })
+                    });
                 ctx.on(
                     "domain/changed",
                     listener,

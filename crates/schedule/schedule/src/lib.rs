@@ -71,9 +71,12 @@ pub fn apply(ctx: &Context) {
                 let registry = ctx
                     .get_typed::<Arc<AgentRegistry>>("agents", false)
                     .map(|slot| slot.as_ref().clone());
-                let is_root = registry
-                    .as_ref()
-                    .is_some_and(|registry| registry.roots().iter().any(|root| Arc::ptr_eq(root, &agent)));
+                let is_root = registry.as_ref().is_some_and(|registry| {
+                    registry
+                        .roots()
+                        .iter()
+                        .any(|root| Arc::ptr_eq(root, &agent))
+                });
                 let key = Arc::as_ptr(&agent).cast::<()>() as usize;
                 if stopping.load(std::sync::atomic::Ordering::SeqCst)
                     || runtimes.lock().contains_key(&key)
@@ -114,7 +117,9 @@ pub fn apply(ctx: &Context) {
                                             Box::pin(async move {
                                                 let Some(payload) = args
                                                     .first()
-                                                    .and_then(|value| downcast::<AgentStatusPayload>(value))
+                                                    .and_then(|value| {
+                                                        downcast::<AgentStatusPayload>(value)
+                                                    })
                                                     .cloned()
                                                 else {
                                                     return None;
@@ -123,9 +128,9 @@ pub fn apply(ctx: &Context) {
                                                     return None;
                                                 }
                                                 if payload.status == AgentStatus::Idle
-                                                    && agent.session().events().iter().any(|event| {
-                                                        event.type_ == "schedule/change"
-                                                    })
+                                                    && agent.session().events().iter().any(
+                                                        |event| event.type_ == "schedule/change",
+                                                    )
                                                 {
                                                     runtime.request_drive();
                                                 }
@@ -176,13 +181,17 @@ pub fn apply(ctx: &Context) {
         Box::pin(async move {
             stopping.store(true, std::sync::atomic::Ordering::SeqCst);
             stop_created().await;
-            let cleanups: Vec<cordis::Disposer> = runtimes.lock().drain().map(|(_, value)| value).collect();
+            let cleanups: Vec<cordis::Disposer> =
+                runtimes.lock().drain().map(|(_, value)| value).collect();
             for cleanup in cleanups {
                 cleanup().await;
             }
         })
     });
-    ctx.effect("schedule.lifecycle()", Box::pin(async move { Some(disposer) }));
+    ctx.effect(
+        "schedule.lifecycle()",
+        Box::pin(async move { Some(disposer) }),
+    );
 }
 
 /// The Cordis plugin form of the schedule service.

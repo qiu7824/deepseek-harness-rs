@@ -35,13 +35,19 @@ pub fn fold_surface_projection(
         let shadowed_range = event.data.get("shadowedRange");
         let shadowed_tokens = event.data.get("shadowedTokenCount");
         let (Some(range), Some(tokens)) = (shadowed_range, shadowed_tokens) else {
-            return Ok(SurfaceTokensFold { delta_tokens: 0, claim: None });
+            return Ok(SurfaceTokensFold {
+                delta_tokens: 0,
+                claim: None,
+            });
         };
         let start = range.get("start").and_then(|value| value.as_u64());
         let end = range.get("end").and_then(|value| value.as_u64());
         let tokens = tokens.as_u64();
         let (Some(start), Some(end), Some(tokens)) = (start, end, tokens) else {
-            return Ok(SurfaceTokensFold { delta_tokens: 0, claim: None });
+            return Ok(SurfaceTokensFold {
+                delta_tokens: 0,
+                claim: None,
+            });
         };
         return Ok(SurfaceTokensFold {
             delta_tokens: 0,
@@ -49,7 +55,10 @@ pub fn fold_surface_projection(
         });
     }
     if !is_surface_event(event) {
-        return Ok(SurfaceTokensFold { delta_tokens: 0, claim: None });
+        return Ok(SurfaceTokensFold {
+            delta_tokens: 0,
+            claim: None,
+        });
     }
     let message = derive_event_message(event);
     let tokens = match message {
@@ -65,7 +74,10 @@ pub fn fold_surface_projection(
             // Sessions recorded before the shadow-price protocol log
             // replacements with no adjacent metering event; fold neutrally.
             let Some(claim) = claim else {
-                return Ok(SurfaceTokensFold { delta_tokens: 0, claim: None });
+                return Ok(SurfaceTokensFold {
+                    delta_tokens: 0,
+                    claim: None,
+                });
             };
             if claim.start != *start || claim.end != *end {
                 return Err(format!(
@@ -78,6 +90,9 @@ pub fn fold_surface_projection(
                 claim: None,
             })
         }
-        None => Ok(SurfaceTokensFold { delta_tokens: 0, claim: None }),
+        None => Ok(SurfaceTokensFold {
+            delta_tokens: 0,
+            claim: None,
+        }),
     }
 }

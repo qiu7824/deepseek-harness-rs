@@ -1,0 +1,38 @@
+[package]
+name = "dsh-lsp-stdio"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Generic stdio LSP client and provider for DeepSeek Harness"
+autotests = false
+
+[dependencies]
+dsh-lsp = { path = "../lsp" }
+dsh-subprocess = { path = "../../subprocess/subprocess" }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }
+
+[[bin]]
+name = "lsp-fixture"
+path = "tests/fixture_server.rs"
+test = false
+bench = false
+doc = false
+
+[[test]]
+name = "framing"
+path = "tests/framing.rs"
+
+[[test]]
+name = "stdio_tracer"
+path = "tests/stdio_tracer.rs"
+
+[[test]]
+name = "provider_tracer"
+path = "tests/provider_tracer.rs"

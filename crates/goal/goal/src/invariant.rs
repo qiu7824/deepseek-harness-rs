@@ -24,7 +24,11 @@ fn session_key(session: &Session) -> usize {
 }
 
 /// Apply one event through the strict goal decoder and attribute failures.
-fn apply_checked(state: &mut GoalFoldState, event: &SessionEvent, fail: &Arc<dyn Fn(&str) + Send + Sync>) {
+fn apply_checked(
+    state: &mut GoalFoldState,
+    event: &SessionEvent,
+    fail: &Arc<dyn Fn(&str) + Send + Sync>,
+) {
     if let Err(error) = apply_goal_event(state, event) {
         fail(&format!(
             "session event {} violates the durable goal stream: {error}",
@@ -43,10 +47,12 @@ pub fn installer() -> InvariantInstaller {
             Box::pin(async move {
                 let states: Arc<parking_lot::Mutex<HashMap<usize, GoalFoldState>>> =
                     Arc::new(parking_lot::Mutex::new(HashMap::new()));
-                let staged: Arc<parking_lot::Mutex<HashMap<u64, (usize, GoalFoldState)>>> =
+                let staged: Arc<parking_lot::Mutex<HashMap<(usize, u64), GoalFoldState>>> =
                     Arc::new(parking_lot::Mutex::new(HashMap::new()));
 
-                let seed = |session: &Session, states: &parking_lot::Mutex<HashMap<usize, GoalFoldState>>, fail: &Arc<dyn Fn(&str) + Send + Sync>| {
+                let seed = |session: &Session,
+                            states: &parking_lot::Mutex<HashMap<usize, GoalFoldState>>,
+                            fail: &Arc<dyn Fn(&str) + Send + Sync>| {
                     let mut state = empty_goal_fold_state();
                     for event in session.events().iter() {
                         apply_checked(&mut state, event, fail);
@@ -66,21 +72,19 @@ pub fn installer() -> InvariantInstaller {
                 // Seed sessions created later.
                 let states_for_created = states.clone();
                 let fail_for_created = fail.clone();
-                let created_listener: Arc<cordis::Listener> = Arc::new(
-                    move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+                let created_listener: Arc<cordis::Listener> =
+                    Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
                         let states = states_for_created.clone();
                         let fail = fail_for_created.clone();
                         Box::pin(async move {
-                            if let Some(session) = args
-                                .first()
-                                .and_then(|value| downcast::<Session>(value))
+                            if let Some(session) =
+                                args.first().and_then(|value| downcast::<Session>(value))
                             {
                                 seed(session, &states, &fail);
                             }
                             None
                         })
-                    },
-                );
+                    });
                 ctx.on(
                     "session/created",
                     created_listener,
@@ -90,36 +94,59 @@ pub fn installer() -> InvariantInstaller {
 
                 // Validate each event before publication, staging the
                 // candidate fold.
-                let states_for_dispatch = states.clone();
                 let staged_for_dispatch = staged.clone();
                 let fail_for_dispatch = fail.clone();
-                let dispatch_listener: Arc<cordis::Listener> = Arc::new(
-                    move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
-                        let event_name = args.first().and_then(|value| value.downcast_ref::<String>());
-                        let is_goal = event_name.map(String::as_str) == Some("session/event");
-                        let states = states_for_dispatch.clone();
+                let dispatch_listener: Arc<cordis::Listener> =
+                    Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+                        let event_name = args
+                            .get(1)
+                            .and_then(|value| value.downcast_ref::<String>())
+                            .cloned();
+                        let event_args = args
+                            .get(2)
+                            .and_then(|value| downcast::<Vec<ArcValue>>(value))
+                            .cloned();
                         let staged = staged_for_dispatch.clone();
                         let fail = fail_for_dispatch.clone();
                         Box::pin(async move {
-                            if !is_goal {
+                            if event_name.as_deref() != Some("session/event") {
                                 return None;
                             }
-                            let session = args.get(1).and_then(|value| downcast::<Session>(value)).cloned();
-                            let event = args.get(2).and_then(|value| downcast::<SessionEvent>(value)).cloned();
-                            let (Some(session), Some(event)) = (session, event) else {
+                            let Some(event_args) = event_args else {
                                 return None;
                             };
-                            let mut state = states
-                                .lock()
-                                .get(&session_key(&session))
-                                .cloned()
-                                .unwrap_or_else(empty_goal_fold_state);
+                            let session = event_args
+                                .first()
+                                .and_then(|value| downcast::<Session>(value))
+                                .cloned();
+                            let event = event_args
+                                .get(1)
+                                .and_then(|value| downcast::<SessionEvent>(value))
+                                .cloned();
+                            let prefix = event_args
+                                .get(2)
+                                .and_then(|value| downcast::<Arc<Vec<SessionEvent>>>(value))
+                                .cloned();
+                            let (Some(session), Some(event), Some(prefix)) =
+                                (session, event, prefix)
+                            else {
+                                return None;
+                            };
+                            let key = session_key(&session);
+                            // `internal/dispatch` runs inside the Session
+                            // append lock. The third event argument is the
+                            // exact immutable prefix before this candidate;
+                            // replay it directly instead of relying on the
+                            // async session/created cache.
+                            let mut state = empty_goal_fold_state();
+                            for prior in prefix.iter() {
+                                apply_checked(&mut state, prior, &fail);
+                            }
                             apply_checked(&mut state, &event, &fail);
-                            staged.lock().insert(event.seq, (session_key(&session), state));
+                            staged.lock().insert((key, event.seq), state);
                             None
                         })
-                    },
-                );
+                    });
                 ctx.on(
                     "internal/dispatch",
                     dispatch_listener,
@@ -137,20 +164,25 @@ pub fn installer() -> InvariantInstaller {
                         let staged = staged_for_commit.clone();
                         let fail = fail_for_commit.clone();
                         Box::pin(async move {
-                            let session = args.first().and_then(|value| downcast::<Session>(value)).cloned();
-                            let event = args.get(1).and_then(|value| downcast::<SessionEvent>(value)).cloned();
+                            let session = args
+                                .first()
+                                .and_then(|value| downcast::<Session>(value))
+                                .cloned();
+                            let event = args
+                                .get(1)
+                                .and_then(|value| downcast::<SessionEvent>(value))
+                                .cloned();
                             let (Some(session), Some(event)) = (session, event) else {
                                 return None;
                             };
-                            let candidate = staged.lock().remove(&event.seq);
-                            let Some((key, state)) = candidate else {
-                                fail("session/event reached publication without matching goal-fold validation");
+                            let key = session_key(&session);
+                            let candidate = staged.lock().remove(&(key, event.seq));
+                            let Some(state) = candidate else {
+                                fail(
+                                    "session/event reached publication without matching goal-fold validation",
+                                );
                                 return None;
                             };
-                            if key != session_key(&session) {
-                                fail("session/event reached publication without matching goal-fold validation");
-                                return None;
-                            }
                             states.lock().insert(key, state);
                             None
                         })

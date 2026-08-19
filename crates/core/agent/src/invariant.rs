@@ -71,7 +71,10 @@ async fn install_inner(ctx: &Context, fail: Arc<dyn Fn(&str) + Send + Sync>) {
                 None => false,
             };
             if repeated {
-                fail(&format!("agent/status repeated {} (no-op transition)", payload.status.as_str()));
+                fail(&format!(
+                    "agent/status repeated {} (no-op transition)",
+                    payload.status.as_str()
+                ));
             }
             let weak: Weak<dyn Agent> = Arc::downgrade(&payload.agent);
             table.insert(identity, (weak, payload.status));
@@ -79,6 +82,10 @@ async fn install_inner(ctx: &Context, fail: Arc<dyn Fn(&str) + Send + Sync>) {
             None
         })
     });
-    ctx.on("agent/status", listener, EventOptions::default().global(true))
-        .await;
+    ctx.on(
+        "agent/status",
+        listener,
+        EventOptions::default().global(true),
+    )
+    .await;
 }

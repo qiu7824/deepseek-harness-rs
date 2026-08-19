@@ -21,7 +21,11 @@ pub struct LlmFailure {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<u64>,
     /// Provider-requested delay in milliseconds, when valid and available.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "providerRetryAfterMs")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "providerRetryAfterMs"
+    )]
     pub provider_retry_after_ms: Option<u64>,
     /// Opaque provider-issued request identifier for diagnostics.
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "requestId")]
@@ -90,16 +94,22 @@ impl ContentBlock {
 
     pub fn as_tool_call(&self) -> Option<(&CallId, &str, &str)> {
         match self {
-            ContentBlock::ToolCall { id, name, arguments } => Some((id, name, arguments)),
+            ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+            } => Some((id, name, arguments)),
             _ => None,
         }
     }
 
     pub fn as_tool_result(&self) -> Option<(&CallId, &[ContentBlock], Option<bool>)> {
         match self {
-            ContentBlock::ToolResult { tool_call_id, content, is_error } => {
-                Some((tool_call_id, content, *is_error))
-            }
+            ContentBlock::ToolResult {
+                tool_call_id,
+                content,
+                is_error,
+            } => Some((tool_call_id, content, *is_error)),
             _ => None,
         }
     }
@@ -136,11 +146,23 @@ pub struct TokenUsage {
     pub input_tokens: u64,
     #[serde(rename = "outputTokens")]
     pub output_tokens: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "cacheReadTokens")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "cacheReadTokens"
+    )]
     pub cache_read_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "cacheWriteTokens")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "cacheWriteTokens"
+    )]
     pub cache_write_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "reasoningTokens")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "reasoningTokens"
+    )]
     pub reasoning_tokens: Option<u64>,
 }
 
@@ -165,8 +187,14 @@ pub enum StreamChunk {
         #[serde(rename = "blockType")]
         block_type: String,
     },
-    TextDelta { index: u64, text: String },
-    ReasoningDelta { index: u64, text: String },
+    TextDelta {
+        index: u64,
+        text: String,
+    },
+    ReasoningDelta {
+        index: u64,
+        text: String,
+    },
     ToolCallDelta {
         index: u64,
         id: CallId,
@@ -175,13 +203,22 @@ pub enum StreamChunk {
         #[serde(rename = "argumentsDelta")]
         arguments_delta: String,
     },
-    BlockEnd { index: u64, block: ContentBlock },
-    Usage { usage: TokenUsage },
+    BlockEnd {
+        index: u64,
+        block: ContentBlock,
+    },
+    Usage {
+        usage: TokenUsage,
+    },
     Finish {
         reason: FinishReason,
         /// Adapter-private lossless-JSON state for replaying a successful
         /// response.
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "replayState")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "replayState"
+        )]
         replay_state: Option<JsonValue>,
     },
 }
@@ -215,7 +252,11 @@ pub struct ToolSchema {
 pub struct LlmCallConfig {
     pub provider: String,
     pub model: String,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "reasoningEffort")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "reasoningEffort"
+    )]
     pub reasoning_effort: Option<ReasoningEffortId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
@@ -230,7 +271,11 @@ pub struct LlmCallConfig {
 /// field must be `true`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LlmCallConfigAdapterDefaults {
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "reasoningEffort")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "reasoningEffort"
+    )]
     pub reasoning_effort: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "maxTokens")]
     pub max_tokens: Option<bool>,
@@ -415,7 +460,11 @@ pub struct LlmModelInfo {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "inputModalities")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "inputModalities"
+    )]
     pub input_modalities: Option<Vec<ModelModality>>,
 }
 
@@ -441,7 +490,11 @@ pub struct LlmReasoningEffortInfo {
 #[serde(rename_all = "camelCase")]
 pub struct LlmModelReasoningInfo {
     pub efforts: Vec<LlmReasoningEffortInfo>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "defaultEffort")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "defaultEffort"
+    )]
     pub default_effort: Option<ReasoningEffortId>,
 }
 
@@ -454,11 +507,19 @@ pub struct LlmResolvedModelInfo {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "inputModalities")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "inputModalities"
+    )]
     pub input_modalities: Option<Vec<ModelModality>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<LlmModelContext>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "defaultMaxTokens")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "defaultMaxTokens"
+    )]
     pub default_max_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<LlmModelReasoningInfo>,

@@ -47,8 +47,10 @@ fn content_tool(
     name: &str,
     timeout_ms: Option<u64>,
     execute: Arc<
-        dyn Fn(&serde_json::Value, &ToolRunContext)
-            -> cordis::BoxFuture<'static, Result<serde_json::Value, ToolBodyError>>
+        dyn Fn(
+                &serde_json::Value,
+                &ToolRunContext,
+            ) -> cordis::BoxFuture<'static, Result<serde_json::Value, ToolBodyError>>
             + Send
             + Sync,
     >,
@@ -100,17 +102,20 @@ fn exposes_the_owned_contract() {
 async fn delegates_an_unbudgeted_tool_without_touching_the_signal() {
     let ctx = setup().await;
     let upstream_flag = Arc::new(AtomicBool::new(false));
-    let seen: Arc<std::sync::Mutex<Option<AbortPredicate>>> =
-        Arc::new(std::sync::Mutex::new(None));
+    let seen: Arc<std::sync::Mutex<Option<AbortPredicate>>> = Arc::new(std::sync::Mutex::new(None));
     let seen_for_body = seen.clone();
-    let tool = content_tool("probe", None, Arc::new(move |_args, run_ctx| {
-        let seen = seen_for_body.clone();
-        let predicate = run_ctx.execution.signal.lock().clone();
-        Box::pin(async move {
-            *seen.lock().expect("seen") = Some(predicate);
-            Ok(serde_json::json!("ok"))
-        })
-    }));
+    let tool = content_tool(
+        "probe",
+        None,
+        Arc::new(move |_args, run_ctx| {
+            let seen = seen_for_body.clone();
+            let predicate = run_ctx.execution.signal.lock().clone();
+            Box::pin(async move {
+                *seen.lock().expect("seen") = Some(predicate);
+                Ok(serde_json::json!("ok"))
+            })
+        }),
+    );
     let tools = ctx
         .get_typed::<Arc<ToolRuntime>>("tools", false)
         .map(|slot| slot.as_ref().clone())
@@ -119,7 +124,10 @@ async fn delegates_an_unbudgeted_tool_without_touching_the_signal() {
     let upstream = abort_flag(upstream_flag.clone());
     let result = tools.execute(input("probe", upstream)).await;
     assert!(!result.is_error);
-    assert_eq!(result.content, vec![ContentBlock::Text { text: "ok".into() }]);
+    assert_eq!(
+        result.content,
+        vec![ContentBlock::Text { text: "ok".into() }]
+    );
     // No policy swap for an unbudgeted tool: the body's signal still tracks
     // the upstream abort (the Rust runtime derives the body signal by fusing
     // wrapper and caller predicates — the identity differs from the TS
@@ -133,17 +141,20 @@ async fn delegates_an_unbudgeted_tool_without_touching_the_signal() {
 #[tokio::test(flavor = "current_thread")]
 async fn a_budgeted_tool_keeps_its_own_result_and_sees_a_derived_signal() {
     let ctx = setup().await;
-    let seen: Arc<std::sync::Mutex<Option<AbortPredicate>>> =
-        Arc::new(std::sync::Mutex::new(None));
+    let seen: Arc<std::sync::Mutex<Option<AbortPredicate>>> = Arc::new(std::sync::Mutex::new(None));
     let seen_for_body = seen.clone();
-    let tool = content_tool("fast", Some(10_000), Arc::new(move |_args, run_ctx| {
-        let seen = seen_for_body.clone();
-        let predicate = run_ctx.execution.signal.lock().clone();
-        Box::pin(async move {
-            *seen.lock().expect("seen") = Some(predicate);
-            Ok(serde_json::json!("ok"))
-        })
-    }));
+    let tool = content_tool(
+        "fast",
+        Some(10_000),
+        Arc::new(move |_args, run_ctx| {
+            let seen = seen_for_body.clone();
+            let predicate = run_ctx.execution.signal.lock().clone();
+            Box::pin(async move {
+                *seen.lock().expect("seen") = Some(predicate);
+                Ok(serde_json::json!("ok"))
+            })
+        }),
+    );
     let tools = ctx
         .get_typed::<Arc<ToolRuntime>>("tools", false)
         .map(|slot| slot.as_ref().clone())
@@ -152,7 +163,10 @@ async fn a_budgeted_tool_keeps_its_own_result_and_sees_a_derived_signal() {
     let upstream = never_abort();
     let result = tools.execute(input("fast", upstream.clone())).await;
     assert!(!result.is_error);
-    assert_eq!(result.content, vec![ContentBlock::Text { text: "ok".into() }]);
+    assert_eq!(
+        result.content,
+        vec![ContentBlock::Text { text: "ok".into() }]
+    );
     let seen = seen.lock().expect("seen").clone().expect("seen");
     assert!(
         !Arc::ptr_eq(&seen, &upstream),
@@ -163,9 +177,11 @@ async fn a_budgeted_tool_keeps_its_own_result_and_sees_a_derived_signal() {
 #[tokio::test(flavor = "current_thread")]
 async fn restores_the_caller_signal_for_post_execute() {
     let ctx = setup().await;
-    let tool = content_tool("fast", Some(10_000), Arc::new(|_args, _run_ctx| {
-        Box::pin(async { Ok(serde_json::json!("ok")) })
-    }));
+    let tool = content_tool(
+        "fast",
+        Some(10_000),
+        Arc::new(|_args, _run_ctx| Box::pin(async { Ok(serde_json::json!("ok")) })),
+    );
     let tools = ctx
         .get_typed::<Arc<ToolRuntime>>("tools", false)
         .map(|slot| slot.as_ref().clone())
@@ -182,15 +198,16 @@ async fn restores_the_caller_signal_for_post_execute() {
             .and_then(|value| value.downcast_ref::<Arc<dsh_tools::ToolExecution>>())
             .cloned()
             .expect("exec");
-        let next = cordis::downcast_arc::<cordis::NextFn>(args.last().expect("next"))
-            .expect("next");
+        let next =
+            cordis::downcast_arc::<cordis::NextFn>(args.last().expect("next")).expect("next");
         let post_seen = post_seen_for_listener.clone();
         Box::pin(async move {
             *post_seen.lock().expect("post") = Some(exec.signal.lock().clone());
             Some(next.call().await)
         })
     });
-    ctx.on("tools/post-execute", listener, Default::default()).await;
+    ctx.on("tools/post-execute", listener, Default::default())
+        .await;
 
     let result = tools.execute(input("fast", upstream.clone())).await;
     assert!(!result.is_error);
@@ -204,21 +221,25 @@ async fn restores_the_caller_signal_for_post_execute() {
 #[tokio::test(flavor = "current_thread")]
 async fn replaces_a_cooperative_result_with_tool_timeout_when_the_deadline_wins() {
     let ctx = setup().await;
-    let tool = content_tool("slow", Some(100), Arc::new(|_args, run_ctx| {
-        let predicate = run_ctx.execution.signal.lock().clone();
-        Box::pin(async move {
-            let mut spins = 0;
-            loop {
-                if predicate() {
-                    break;
+    let tool = content_tool(
+        "slow",
+        Some(100),
+        Arc::new(|_args, run_ctx| {
+            let predicate = run_ctx.execution.signal.lock().clone();
+            Box::pin(async move {
+                let mut spins = 0;
+                loop {
+                    if predicate() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    spins += 1;
+                    assert!(spins < 1000, "deadline never fired");
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                spins += 1;
-                assert!(spins < 1000, "deadline never fired");
-            }
-            Ok(serde_json::json!("stopped cooperatively"))
-        })
-    }));
+                Ok(serde_json::json!("stopped cooperatively"))
+            })
+        }),
+    );
     let tools = ctx
         .get_typed::<Arc<ToolRuntime>>("tools", false)
         .map(|slot| slot.as_ref().clone())
@@ -242,25 +263,29 @@ async fn replaces_a_cooperative_result_with_tool_timeout_when_the_deadline_wins(
 #[tokio::test(flavor = "current_thread")]
 async fn replaces_a_provider_abort_error_when_the_deadline_wins() {
     let ctx = setup().await;
-    let tool = content_tool("aborter", Some(100), Arc::new(|_args, run_ctx| {
-        let predicate = run_ctx.execution.signal.lock().clone();
-        Box::pin(async move {
-            let mut spins = 0;
-            loop {
-                if predicate() {
-                    break;
+    let tool = content_tool(
+        "aborter",
+        Some(100),
+        Arc::new(|_args, run_ctx| {
+            let predicate = run_ctx.execution.signal.lock().clone();
+            Box::pin(async move {
+                let mut spins = 0;
+                loop {
+                    if predicate() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    spins += 1;
+                    assert!(spins < 1000, "deadline never fired");
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                spins += 1;
-                assert!(spins < 1000, "deadline never fired");
-            }
-            Err(ToolBodyError::coded(
-                "web fetch aborted",
-                "HarnessError",
-                "WEB_ABORTED",
-            ))
-        })
-    }));
+                Err(ToolBodyError::coded(
+                    "web fetch aborted",
+                    "HarnessError",
+                    "WEB_ABORTED",
+                ))
+            })
+        }),
+    );
     let tools = ctx
         .get_typed::<Arc<ToolRuntime>>("tools", false)
         .map(|slot| slot.as_ref().clone())
@@ -281,23 +306,27 @@ async fn preserves_the_registry_aborted_result_when_the_caller_aborts_first() {
     let upstream_flag = Arc::new(AtomicBool::new(false));
     let entered = Arc::new(AtomicBool::new(false));
     let entered_for_body = entered.clone();
-    let tool = content_tool("slow", Some(100), Arc::new(move |_args, run_ctx| {
-        let predicate = run_ctx.execution.signal.lock().clone();
-        let entered = entered_for_body.clone();
-        Box::pin(async move {
-            entered.store(true, Ordering::SeqCst);
-            let mut spins = 0;
-            loop {
-                if predicate() {
-                    break;
+    let tool = content_tool(
+        "slow",
+        Some(100),
+        Arc::new(move |_args, run_ctx| {
+            let predicate = run_ctx.execution.signal.lock().clone();
+            let entered = entered_for_body.clone();
+            Box::pin(async move {
+                entered.store(true, Ordering::SeqCst);
+                let mut spins = 0;
+                loop {
+                    if predicate() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    spins += 1;
+                    assert!(spins < 1000, "abort never arrived");
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                spins += 1;
-                assert!(spins < 1000, "abort never arrived");
-            }
-            Ok(serde_json::json!("stopped cooperatively"))
-        })
-    }));
+                Ok(serde_json::json!("stopped cooperatively"))
+            })
+        }),
+    );
     let tools = ctx
         .get_typed::<Arc<ToolRuntime>>("tools", false)
         .map(|slot| slot.as_ref().clone())
@@ -334,30 +363,34 @@ async fn preserves_tool_timeout_when_the_deadline_wins_before_a_later_caller_abo
     let saw_abort_for_body = saw_abort.clone();
     let release = Arc::new(AtomicBool::new(false));
     let release_for_body = release.clone();
-    let tool = content_tool("slow-cleanup", Some(100), Arc::new(move |_args, run_ctx| {
-        let predicate = run_ctx.execution.signal.lock().clone();
-        let saw_abort = saw_abort_for_body.clone();
-        let release = release_for_body.clone();
-        Box::pin(async move {
-            let mut spins = 0;
-            loop {
-                if predicate() {
-                    break;
+    let tool = content_tool(
+        "slow-cleanup",
+        Some(100),
+        Arc::new(move |_args, run_ctx| {
+            let predicate = run_ctx.execution.signal.lock().clone();
+            let saw_abort = saw_abort_for_body.clone();
+            let release = release_for_body.clone();
+            Box::pin(async move {
+                let mut spins = 0;
+                loop {
+                    if predicate() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    spins += 1;
+                    assert!(spins < 1000, "deadline never fired");
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                spins += 1;
-                assert!(spins < 1000, "deadline never fired");
-            }
-            saw_abort.store(true, Ordering::SeqCst);
-            let mut spins = 0;
-            while !release.load(Ordering::SeqCst) {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                spins += 1;
-                assert!(spins < 1000, "release never arrived");
-            }
-            Ok(serde_json::json!("cleanup complete"))
-        })
-    }));
+                saw_abort.store(true, Ordering::SeqCst);
+                let mut spins = 0;
+                while !release.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    spins += 1;
+                    assert!(spins < 1000, "release never arrived");
+                }
+                Ok(serde_json::json!("cleanup complete"))
+            })
+        }),
+    );
     let tools = ctx
         .get_typed::<Arc<ToolRuntime>>("tools", false)
         .map(|slot| slot.as_ref().clone())
@@ -406,18 +439,22 @@ async fn fiber_disposal_removes_the_listener() {
     // The body reports whether its dispatch signal ever aborted within a
     // bounded window — the only stable observable of the wrapper's derived
     // deadline (the Rust runtime derives the body signal either way).
-    let tool = content_tool("probe", Some(80), Arc::new(|_args, run_ctx| {
-        let predicate = run_ctx.execution.signal.lock().clone();
-        Box::pin(async move {
-            for _ in 0..40 {
-                if predicate() {
-                    return Ok(serde_json::json!("aborted:true"));
+    let tool = content_tool(
+        "probe",
+        Some(80),
+        Arc::new(|_args, run_ctx| {
+            let predicate = run_ctx.execution.signal.lock().clone();
+            Box::pin(async move {
+                for _ in 0..40 {
+                    if predicate() {
+                        return Ok(serde_json::json!("aborted:true"));
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-            Ok(serde_json::json!("aborted:false"))
-        })
-    }));
+                Ok(serde_json::json!("aborted:false"))
+            })
+        }),
+    );
     tools.register(&ctx, tool).expect("register");
 
     let fiber = ctx.plugin(Arc::new(TimeoutPolicyPlugin), arc(()));

@@ -1,0 +1,26 @@
+[package]
+name = "dsh-tool-ralph"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Model-facing fresh-agent Ralph loop over the workflow and subagent seams — Rust port of @deepseek-ai/dsh-tool-ralph"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-llm = { path = "../../core/llm" }
+dsh-scope = { path = "../../core/scope" }
+dsh-subagent = { path = "../../subagent/subagent" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-tools = { path = "../../core/tools" }
+dsh-workflow = { path = "../workflow" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+dsh-session = { path = "../../core/session" }
+parking_lot = { workspace = true }
+tokio = { workspace = true }

@@ -24,9 +24,9 @@ pub const INJECT: [&str; 1] = ["invariants"];
 pub fn installer() -> InvariantInstaller {
     InvariantInstaller {
         inject: None,
-        install: Arc::new(
-            |_ctx: &Context, _fail: Arc<dyn Fn(&str) + Send + Sync>| Box::pin(async {}),
-        ),
+        install: Arc::new(|_ctx: &Context, _fail: Arc<dyn Fn(&str) + Send + Sync>| {
+            Box::pin(async {})
+        }),
     }
 }
 

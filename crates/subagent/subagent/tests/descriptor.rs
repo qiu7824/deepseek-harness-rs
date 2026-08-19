@@ -71,8 +71,12 @@ fn snapshots_validate_and_round_trip_both_descriptor_modes() {
 
 #[test]
 fn folds_the_first_descriptor_event_with_version_and_schema_authority() {
-    let events = vec![descriptor_event(serde_json::to_value(&continuable()).expect("json"))];
-    let folded = fold_subagent_descriptor(&events).expect("fold").expect("present");
+    let events = vec![descriptor_event(
+        serde_json::to_value(continuable()).expect("json"),
+    )];
+    let folded = fold_subagent_descriptor(&events)
+        .expect("fold")
+        .expect("present");
     assert!(folded.is_continuable());
     assert_eq!(folded.provider(), "fork");
 
@@ -130,12 +134,7 @@ fn rejects_malformed_current_version_payloads() {
 
 #[test]
 fn stages_the_child_seed_with_one_model_hidden_descriptor_event() {
-    let seed = seed_descriptor_turn(
-        &session_id("child"),
-        None,
-        &continuable(),
-    )
-    .expect("seed");
+    let seed = seed_descriptor_turn(&session_id("child"), None, &continuable()).expect("seed");
     // The auto end-seed event plus the descriptor event.
     let descriptor_events: Vec<&SessionEvent> = seed
         .iter()
@@ -144,7 +143,9 @@ fn stages_the_child_seed_with_one_model_hidden_descriptor_event() {
     assert_eq!(descriptor_events.len(), 1);
     assert_eq!(descriptor_events[0].seq, 0);
     assert!(descriptor_events[0].surface_op.is_none());
-    let folded = fold_subagent_descriptor(&seed).expect("fold").expect("present");
+    let folded = fold_subagent_descriptor(&seed)
+        .expect("fold")
+        .expect("present");
     assert!(folded.is_continuable());
 }
 
@@ -158,14 +159,13 @@ fn run_ids_are_branded_transparent_strings() {
 
 #[test]
 fn depth_reads_the_monotone_header_floor() {
+    fn floor(header: Option<u64>, runtime: Option<u64>) -> u64 {
+        header.unwrap_or(0).max(runtime.unwrap_or(0))
+    }
+
     // Depth accounting needs an Agent; the pure floor rule is exercised
     // through the header-only helper path.
-    let header_depth = Some(3u64);
-    let runtime_depth = Some(1u64);
-    assert_eq!(
-        header_depth.unwrap_or(0).max(runtime_depth.unwrap_or(0)),
-        3
-    );
-    assert_eq!(None::<u64>.unwrap_or(0).max(None::<u64>.unwrap_or(0)), 0);
+    assert_eq!(floor(Some(3), Some(1)), 3);
+    assert_eq!(floor(None, None), 0);
     dsh_subagent::assert_subagent_max_depth(Some(4)).expect("max depth");
 }

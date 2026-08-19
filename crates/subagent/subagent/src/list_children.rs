@@ -18,7 +18,7 @@ use dsh_session_projection::{ProjectionCheckpoint, SessionProjectionRegistry};
 use dsh_session_projection_cache::SessionProjectionCache;
 
 use crate::error::SubagentError;
-use crate::projection::{same_lifecycle, SubagentIdentityProjection};
+use crate::projection::{SubagentIdentityProjection, same_lifecycle};
 
 /// Concurrent cold inspections per listing.
 const COLD_READ_CONCURRENCY: usize = 4;
@@ -101,7 +101,7 @@ pub async fn list_descendants(
     )
     .await?;
     let mut entries = Vec::new();
-    for (position, row) in positioned.iter().zip(rows.into_iter()) {
+    for (position, row) in positioned.iter().zip(rows) {
         if let Some(row) = row {
             entries.push(SubagentDescendantListEntry {
                 entry: row,
@@ -148,7 +148,10 @@ async fn prepare_listing(
         match persistence.list().await {
             Ok(headers) => {
                 for header in headers {
-                    corpus.insert(header.id.as_str().to_string(), CorpusRecord { header, live: None });
+                    corpus.insert(
+                        header.id.as_str().to_string(),
+                        CorpusRecord { header, live: None },
+                    );
                 }
             }
             Err(error) => {
@@ -169,10 +172,10 @@ async fn prepare_listing(
     }
     let mut subagent_parents: HashSet<String> = HashSet::new();
     for record in corpus.values() {
-        if record.header.origin.as_deref() == Some("subagent") {
-            if let Some(parent) = &record.header.parent_session {
-                subagent_parents.insert(parent.as_str().to_string());
-            }
+        if record.header.origin.as_deref() == Some("subagent")
+            && let Some(parent) = &record.header.parent_session
+        {
+            subagent_parents.insert(parent.as_str().to_string());
         }
     }
     Ok(ListingRuntime {
@@ -211,7 +214,9 @@ async fn resolve_candidate_rows(
                     child_id,
                     identity,
                     "running",
-                    listing.subagent_parents.contains(candidate.header.id.as_str()),
+                    listing
+                        .subagent_parents
+                        .contains(candidate.header.id.as_str()),
                 )));
             }
             Ok(None) => rows.push(None),
@@ -290,7 +295,7 @@ fn descendant_candidates(
             .push(record);
     }
     for siblings in children.values_mut() {
-        siblings.sort_by(|a, b| compare_corpus_records(*a, *b));
+        siblings.sort_by(|a, b| compare_corpus_records(a, b));
     }
     let mut positioned: Vec<PositionedCandidate> = Vec::new();
     let mut stack: Vec<PositionedCandidate> = children
@@ -355,19 +360,19 @@ async fn resolve_cold_identity(
     signal: Option<&Arc<dyn Fn() -> bool + Send + Sync>>,
 ) -> SubagentListEntry {
     let child_id = header.id.clone();
-    if let Some(cache) = cache {
-        if let Ok(Some(snapshot)) =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cache.cached_snapshot(header)))
+    if let Some(cache) = cache
+        && let Ok(Some(snapshot)) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cache.cached_snapshot(header)
+        }))
+    {
+        let cached: Option<SubagentIdentityProjection> = snapshot
+            .values
+            .get("subagent")
+            .and_then(|value| serde_json::from_value(value.clone()).ok());
+        if let Some(cached) = cached
+            && cached_seq(&cached) >= header.seed_length.unwrap_or(0)
         {
-            let cached: Option<SubagentIdentityProjection> = snapshot
-                .values
-                .get("subagent")
-                .and_then(|value| serde_json::from_value(value.clone()).ok());
-            if let Some(cached) = cached {
-                if cached_seq(&cached) >= header.seed_length.unwrap_or(0) {
-                    return child_row(child_id, cached, "inactive", has_children);
-                }
-            }
+            return child_row(child_id, cached, "inactive", has_children);
         }
     }
     if let Err(error) = assert_listing_not_cancelled(signal) {

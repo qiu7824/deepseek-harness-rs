@@ -4,8 +4,8 @@
 use dsh_session::SessionId;
 use dsh_session_query::filters::validate_range;
 use dsh_session_query::{
-    SessionEventResultFilter, SessionEventSearchRequest, SessionResultFilter, SessionResultRange,
-    SessionSearchCursor, SessionSearchRequest, SessionQueryError, SessionQueryErrorCode,
+    SessionEventResultFilter, SessionEventSearchRequest, SessionQueryError, SessionQueryErrorCode,
+    SessionResultFilter, SessionResultRange, SessionSearchCursor, SessionSearchRequest,
     materialize_session_event_result_filters, materialize_session_result_filters,
     session_search_cursor,
 };
@@ -122,7 +122,8 @@ pub fn normalize_session_request(
             )?;
         }
     }
-    let event_filters = materialize_metadata_filters(request.event_filters.as_deref().unwrap_or(&[]))?;
+    let event_filters =
+        materialize_metadata_filters(request.event_filters.as_deref().unwrap_or(&[]))?;
     let cursor = materialize_cursor(request.cursor.clone());
     Ok(NormalizedSessionRequest {
         query: normalize_query(&request.query)?,
@@ -153,9 +154,7 @@ pub fn normalize_event_request(
 }
 
 /// Compile logical-session predicates against selected-document columns.
-pub fn build_session_where(
-    filters: &[SessionResultFilter],
-) -> Result<SqlWhere, SessionQueryError> {
+pub fn build_session_where(filters: &[SessionResultFilter]) -> Result<SqlWhere, SessionQueryError> {
     let mut clauses: Vec<String> = Vec::new();
     let mut params: Vec<Binding> = Vec::new();
     for filter in filters {
@@ -165,7 +164,10 @@ pub fn build_session_where(
                     &mut clauses,
                     &mut params,
                     "session_id",
-                    &values.iter().map(|id| Binding::Text(id.as_str().to_string())).collect::<Vec<_>>(),
+                    &values
+                        .iter()
+                        .map(|id| Binding::Text(id.as_str().to_string()))
+                        .collect::<Vec<_>>(),
                 )?;
             }
             SessionResultFilter::Cwd { values } => {
@@ -173,7 +175,10 @@ pub fn build_session_where(
                     &mut clauses,
                     &mut params,
                     "cwd",
-                    &values.iter().map(|value| value.clone().map(Binding::Text)).collect::<Vec<_>>(),
+                    &values
+                        .iter()
+                        .map(|value| value.clone().map(Binding::Text))
+                        .collect::<Vec<_>>(),
                 )?;
             }
             SessionResultFilter::CreatedAt { from, to } => {
@@ -186,7 +191,11 @@ pub fn build_session_where(
                     "parent_session",
                     &values
                         .iter()
-                        .map(|value| value.as_ref().map(|id| Binding::Text(id.as_str().to_string())))
+                        .map(|value| {
+                            value
+                                .as_ref()
+                                .map(|id| Binding::Text(id.as_str().to_string()))
+                        })
                         .collect::<Vec<_>>(),
                 )?;
             }
@@ -239,7 +248,10 @@ pub fn build_event_where(
                     &mut clauses,
                     &mut params,
                     "type",
-                    &values.iter().map(|value| Binding::Text(value.clone())).collect::<Vec<_>>(),
+                    &values
+                        .iter()
+                        .map(|value| Binding::Text(value.clone()))
+                        .collect::<Vec<_>>(),
                 )?;
             }
             SessionEventResultFilter::Surface { values } => {
@@ -423,24 +435,30 @@ pub fn decode_cursor(
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(cursor.as_str())
         .map_err(|_| invalid_cursor())?;
-    let json: serde_json::Value =
-        serde_json::from_slice(&decoded).map_err(|_| invalid_cursor())?;
+    let json: serde_json::Value = serde_json::from_slice(&decoded).map_err(|_| invalid_cursor())?;
     let valid = json.get("version").and_then(serde_json::Value::as_u64) == Some(1)
         && json.get("instance").and_then(serde_json::Value::as_str) == Some(instance)
         && json.get("scope").and_then(serde_json::Value::as_str) == Some(scope)
         && json.get("fingerprint").and_then(serde_json::Value::as_str) == Some(fingerprint)
-        && json.get("offset").and_then(serde_json::Value::as_u64).is_some();
+        && json
+            .get("offset")
+            .and_then(serde_json::Value::as_u64)
+            .is_some();
     if !valid {
         return Err(invalid_cursor());
     }
-    let generation_matches = json.get("generation").and_then(serde_json::Value::as_str) == Some(generation);
+    let generation_matches =
+        json.get("generation").and_then(serde_json::Value::as_str) == Some(generation);
     if !generation_matches {
         return Err(SessionQueryError::new(
             SessionQueryErrorCode::SessionQueryStaleCursor,
             "session-search cursor is stale because its relevant corpus changed",
         ));
     }
-    Ok(json.get("offset").and_then(serde_json::Value::as_u64).expect("checked"))
+    Ok(json
+        .get("offset")
+        .and_then(serde_json::Value::as_u64)
+        .expect("checked"))
 }
 
 fn invalid_cursor() -> SessionQueryError {
@@ -451,7 +469,11 @@ fn invalid_cursor() -> SessionQueryError {
 }
 
 fn normalize_query(value: &str) -> Result<String, SessionQueryError> {
-    let query = value.trim().split_whitespace().collect::<Vec<_>>().join(" ");
+    let query = value
+        .trim()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if query.is_empty() {
         return Err(SessionQueryError::new(
             SessionQueryErrorCode::SessionQueryInvalidQuery,
@@ -477,12 +499,20 @@ fn materialize_metadata_filters(
 ) -> Result<Vec<SessionEventResultFilter>, SessionQueryError> {
     for filter in filters {
         match filter {
-            SessionEventResultFilter::Seq { from, to } => {
-                validate_range("seq", SessionResultRange { from: *from, to: *to })?
-            }
-            SessionEventResultFilter::Time { from, to } => {
-                validate_range("time", SessionResultRange { from: *from, to: *to })?
-            }
+            SessionEventResultFilter::Seq { from, to } => validate_range(
+                "seq",
+                SessionResultRange {
+                    from: *from,
+                    to: *to,
+                },
+            )?,
+            SessionEventResultFilter::Time { from, to } => validate_range(
+                "time",
+                SessionResultRange {
+                    from: *from,
+                    to: *to,
+                },
+            )?,
             SessionEventResultFilter::Type { .. } => {}
             SessionEventResultFilter::Surface { .. } => {}
             SessionEventResultFilter::Text { .. } => {
@@ -495,10 +525,7 @@ fn materialize_metadata_filters(
     materialize_session_event_result_filters(filters)
 }
 
-fn normalize_limit(
-    value: Option<u64>,
-    config: &ResolvedConfig,
-) -> Result<u64, SessionQueryError> {
+fn normalize_limit(value: Option<u64>, config: &ResolvedConfig) -> Result<u64, SessionQueryError> {
     let limit = value.unwrap_or(config.default_limit);
     let max_limit = config.max_limit.min(SQLITE_MAX_PAGE_LIMIT);
     if limit < 1 || limit > max_limit {
@@ -520,7 +547,10 @@ fn add_list(
         clauses.push("0".to_string());
         return Ok(());
     }
-    clauses.push(format!("{column} IN ({})", append_list_bindings(params, values)?));
+    clauses.push(format!(
+        "{column} IN ({})",
+        append_list_bindings(params, values)?
+    ));
     Ok(())
 }
 
@@ -534,10 +564,16 @@ fn add_nullable_list(
         clauses.push("0".to_string());
         return Ok(());
     }
-    let concrete: Vec<Binding> = values.iter().filter_map(|value| value.as_ref().cloned()).collect();
+    let concrete: Vec<Binding> = values
+        .iter()
+        .filter_map(|value| value.as_ref().cloned())
+        .collect();
     let mut parts: Vec<String> = Vec::new();
     if !concrete.is_empty() {
-        parts.push(format!("{column} IN ({})", append_list_bindings(params, &concrete)?));
+        parts.push(format!(
+            "{column} IN ({})",
+            append_list_bindings(params, &concrete)?
+        ));
     }
     if values.iter().any(Option::is_none) {
         parts.push(format!("{column} IS NULL"));
@@ -575,9 +611,7 @@ fn append_list_bindings(
     Ok(values.iter().map(|_| "?").collect::<Vec<_>>().join(", "))
 }
 
-fn canonical_filters(
-    filters: &[SessionResultFilter],
-) -> Vec<serde_json::Value> {
+fn canonical_filters(filters: &[SessionResultFilter]) -> Vec<serde_json::Value> {
     filters.iter().map(canonical_session_filter).collect()
 }
 

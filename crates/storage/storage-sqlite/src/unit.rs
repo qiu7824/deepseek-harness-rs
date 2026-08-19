@@ -75,7 +75,12 @@ impl SqliteKvUnit {
     }
 
     fn check_table(&self, table: &str) -> Result<(), StorageError> {
-        if !self.descriptor.tables.iter().any(|declared| declared == table) {
+        if !self
+            .descriptor
+            .tables
+            .iter()
+            .any(|declared| declared == table)
+        {
             return Err(StorageError::new(
                 StorageErrorCode::Closed,
                 format!(
@@ -122,8 +127,7 @@ impl KvUnit for SqliteKvUnit {
                         format!("kv unit '{}': {error}", self.descriptor.name),
                     )
                 })?;
-                let parsed =
-                    self.parse_value(&value, &format!("table '{table}' key '{key}'"))?;
+                let parsed = self.parse_value(&value, &format!("table '{table}' key '{key}'"))?;
                 records.insert(key, parsed);
             }
             tables.insert(table.clone(), records);
@@ -162,7 +166,10 @@ impl KvUnit for SqliteKvUnit {
         let text = serde_json::to_string(&value).map_err(|error| {
             StorageError::new(
                 StorageErrorCode::MalformedMedium,
-                format!("kv unit '{}': value is not serializable: {error}", self.descriptor.name),
+                format!(
+                    "kv unit '{}': value is not serializable: {error}",
+                    self.descriptor.name
+                ),
             )
         })?;
         self.db
@@ -212,7 +219,10 @@ impl KvUnit for SqliteKvUnit {
         let text = serde_json::to_string(&value).map_err(|error| {
             StorageError::new(
                 StorageErrorCode::MalformedMedium,
-                format!("kv unit '{}': value is not serializable: {error}", self.descriptor.name),
+                format!(
+                    "kv unit '{}': value is not serializable: {error}",
+                    self.descriptor.name
+                ),
             )
         })?;
         self.db

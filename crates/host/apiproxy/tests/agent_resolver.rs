@@ -8,9 +8,7 @@ use dsh_agent::{
     Agent, AgentCancelCause, AgentOptions, AgentRegistry, AgentStatus, CancelOptions, Inbox,
     InboxTarget,
 };
-use dsh_host_apiproxy::{
-    AgentResolver, ApiRemoteAgentOptions, ApiRemoteAgentResult,
-};
+use dsh_host_apiproxy::{AgentResolver, ApiRemoteAgentOptions, ApiRemoteAgentResult};
 use dsh_llm::message_id;
 use dsh_scope::ScopeKey;
 use dsh_session::{Session, SessionHeader, SessionId, UserMessage, session_id};

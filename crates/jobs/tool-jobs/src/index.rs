@@ -30,12 +30,12 @@ use dsh_llm::{
     ContentBlock, ContextForm, MessageSource, bound_context_summary, create_user_message,
 };
 use dsh_output_retention::{TextRetainer, TextRetentionStrategy};
+use dsh_schemastery::{Data, Schema};
 use dsh_system_prompt::{PromptSection, PromptText, SystemPrompt};
 use dsh_tools::{
     ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolExecution, ToolExecutionResult,
     ToolOutputDefinition, ToolRunContext, ToolRuntime,
 };
-use dsh_schemastery::{Data, Schema};
 
 /// Cordis plugin name (TS `name`).
 pub const NAME: &str = "tool-jobs";
@@ -180,12 +180,7 @@ fn retain_head(text: &str, max_bytes: u64) -> String {
     retainer.finish().text
 }
 
-fn fit_with_suffix(
-    content: &str,
-    suffix: &str,
-    max_bytes: Option<u64>,
-    omitted: &str,
-) -> String {
+fn fit_with_suffix(content: &str, suffix: &str, max_bytes: Option<u64>, omitted: &str) -> String {
     let complete = format!("{content}{suffix}");
     if max_bytes.is_none_or(|max| complete.as_bytes().len() as u64 <= max) {
         return complete;
@@ -266,10 +261,7 @@ fn raw_single_text(content: &[ContentBlock]) -> Option<&str> {
     }
 }
 
-fn bound_single_text(
-    content: &[ContentBlock],
-    max_bytes: u64,
-) -> Option<Vec<ContentBlock>> {
+fn bound_single_text(content: &[ContentBlock], max_bytes: u64) -> Option<Vec<ContentBlock>> {
     let text = raw_single_text(content)?;
     Some(vec![ContentBlock::Text {
         text: fit_with_suffix(text, "", Some(max_bytes), "\n[result truncated]"),
@@ -361,7 +353,8 @@ impl ToolJobsService {
                     None
                 })
             });
-            ctx.on("agent/inbox/claimed", claimed, Default::default()).await;
+            ctx.on("agent/inbox/claimed", claimed, Default::default())
+                .await;
         }
 
         // Capture the producer output cap before policy runs, so every
@@ -379,10 +372,7 @@ impl ToolJobsService {
                         service.output_limits.lock().insert(exec.token, max_bytes);
                     }
                 }
-                let Some(next) = args
-                    .last()
-                    .and_then(|value| downcast_arc::<NextFn>(value))
-                else {
+                let Some(next) = args.last().and_then(|value| downcast_arc::<NextFn>(value)) else {
                     return Some(arc(()));
                 };
                 let value = next.call().await;
@@ -505,12 +495,21 @@ impl ToolJobsService {
             let value = result.value.as_ref()?;
             let text = value.get("text")?.as_str()?;
             let job = &value["job"];
-            let body = if text.is_empty() { "(no new output)" } else { text };
+            let body = if text.is_empty() {
+                "(no new output)"
+            } else {
+                text
+            };
             let content = body.strip_suffix('\n').unwrap_or(body);
             let suffix = format!("\n{}", status_line_json(job));
             if raw_single_text(&result.content) == Some(format!("{content}{suffix}").as_str()) {
                 return Some(vec![ContentBlock::Text {
-                    text: fit_with_suffix(content, &suffix, Some(max_bytes), "\n[output truncated]"),
+                    text: fit_with_suffix(
+                        content,
+                        &suffix,
+                        Some(max_bytes),
+                        "\n[output truncated]",
+                    ),
                 }]);
             }
         }
@@ -844,8 +843,9 @@ fn config_from_value(config: &ArcValue) -> Result<Config, String> {
     let max_consecutive_wakes = value
         .get("maxConsecutiveWakes")
         .map(|v| {
-            whole_number(v)
-                .ok_or_else(|| "tool-jobs: maxConsecutiveWakes must be a whole number of turns".to_string())
+            whole_number(v).ok_or_else(|| {
+                "tool-jobs: maxConsecutiveWakes must be a whole number of turns".to_string()
+            })
         })
         .transpose()?;
     Ok(Config {
@@ -886,13 +886,9 @@ fn data_from_json(value: &serde_json::Value) -> Data {
     match value {
         serde_json::Value::Null => Data::Null,
         serde_json::Value::Bool(value) => Data::Bool(*value),
-        serde_json::Value::Number(value) => {
-            Data::Number(value.as_f64().unwrap_or(f64::NAN))
-        }
+        serde_json::Value::Number(value) => Data::Number(value.as_f64().unwrap_or(f64::NAN)),
         serde_json::Value::String(value) => Data::String(value.clone()),
-        serde_json::Value::Array(items) => {
-            Data::Array(items.iter().map(data_from_json).collect())
-        }
+        serde_json::Value::Array(items) => Data::Array(items.iter().map(data_from_json).collect()),
         serde_json::Value::Object(map) => Data::Object(
             map.iter()
                 .map(|(key, value)| (key.clone(), data_from_json(value)))
@@ -925,7 +921,8 @@ impl Plugin for ToolJobsPlugin {
     }
 
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
-        let config = config_from_value(&config).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
+        let config = config_from_value(&config)
+            .map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
         apply(ctx, config)
             .await
             .map_err(|message| PluginError::from(anyhow::anyhow!(message)))

@@ -32,7 +32,9 @@ pub fn installer() -> InvariantInstaller {
 pub fn apply(ctx: &Context) -> cordis::Disposer {
     let registry = ctx
         .get_typed::<Arc<InvariantRegistry>>("invariants", false)
-        .expect("the session-checkpoint-policy invariant companion requires the invariants service");
+        .expect(
+            "the session-checkpoint-policy invariant companion requires the invariants service",
+        );
     registry.register(ctx, PACKAGE_NAME, installer())
 }
 

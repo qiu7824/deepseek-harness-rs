@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -209,7 +210,7 @@ pub struct WebServer {
     upgrades: Arc<Mutex<HashMap<String, WebUpgradeRoute>>>,
     fallback: Arc<Mutex<Option<WebRouteHandler>>>,
     index_taps: Arc<Mutex<Vec<WebIndexTap>>>,
-    port: Mutex<Option<u16>>,
+    bound_addr: Mutex<Option<SocketAddr>>,
     accept_task: Mutex<Option<JoinHandle<()>>>,
     connections: Arc<Mutex<Vec<JoinHandle<()>>>>,
     upgrade_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
@@ -234,7 +235,7 @@ impl WebServer {
             upgrades: Arc::new(Mutex::new(HashMap::new())),
             fallback: Arc::new(Mutex::new(None)),
             index_taps: Arc::new(Mutex::new(Vec::new())),
-            port: Mutex::new(None),
+            bound_addr: Mutex::new(None),
             accept_task: Mutex::new(None),
             connections: Arc::new(Mutex::new(Vec::new())),
             upgrade_tasks: Arc::new(Mutex::new(Vec::new())),
@@ -271,7 +272,16 @@ impl WebServer {
 
     /// The listening port (the OS-assigned value when `config.port` is 0).
     pub fn port(&self) -> u16 {
-        self.port
+        self.bound_addr
+            .lock()
+            .map(|address| address.port())
+            .expect("webServer: not listening (bind the service first)")
+    }
+
+    /// The address reported by the bound listener, including an OS-selected
+    /// port when configuration requested port zero.
+    pub fn bound_addr(&self) -> SocketAddr {
+        self.bound_addr
             .lock()
             .expect("webServer: not listening (bind the service first)")
     }
@@ -367,7 +377,7 @@ impl WebServer {
     }
 
     async fn listen(self: &Arc<Self>) -> Result<u16, String> {
-        if self.port.lock().is_some() {
+        if self.bound_addr.lock().is_some() {
             return Err("webServer: already listening".to_string());
         }
         let address = (self.config.host.as_str(), self.config.port);
@@ -377,11 +387,10 @@ impl WebServer {
                 address.0, address.1
             )
         })?;
-        let port = listener
+        let bound_addr = listener
             .local_addr()
-            .map_err(|error| format!("webServer: failed to read local address: {error}"))?
-            .port();
-        *self.port.lock() = Some(port);
+            .map_err(|error| format!("webServer: failed to read local address: {error}"))?;
+        *self.bound_addr.lock() = Some(bound_addr);
 
         let weak = Arc::downgrade(self);
         let accept = tokio::spawn(async move {
@@ -416,8 +425,10 @@ impl WebServer {
                         });
                         let weak_track = weak.clone();
                         let connection = tokio::spawn(async move {
-                            if let Err(error) =
-                                http1::Builder::new().serve_connection(io, service).await
+                            if let Err(error) = http1::Builder::new()
+                                .serve_connection(io, service)
+                                .with_upgrades()
+                                .await
                             {
                                 if let Some(server) = weak_track.upgrade() {
                                     server.logger.warn(vec![arc(format!(
@@ -448,7 +459,7 @@ impl WebServer {
             }
         });
         *self.accept_task.lock() = Some(accept);
-        Ok(port)
+        Ok(bound_addr.port())
     }
 
     async fn dispatch(self: &Arc<Self>, request: WebRequest) -> WebResponse {
@@ -499,6 +510,11 @@ impl WebServer {
         let handler = route.handler.clone();
         let logger = self.logger.clone();
         let upgrade_value = request.headers().get(header::UPGRADE).cloned();
+        let websocket_accept = request
+            .headers()
+            .get("sec-websocket-key")
+            .and_then(|value| value.to_str().ok())
+            .map(|key| tungstenite::handshake::derive_accept_key(key.as_bytes()));
         let weak = Arc::downgrade(self);
         let task = tokio::spawn(async move {
             match on_upgrade.await {
@@ -542,6 +558,9 @@ impl WebServer {
         if let Some(value) = upgrade_value {
             builder = builder.header(header::UPGRADE, value);
         }
+        if let Some(accept) = websocket_accept {
+            builder = builder.header("sec-websocket-accept", accept);
+        }
         builder.body(Body::empty()).expect("static response")
     }
 
@@ -566,10 +585,29 @@ impl WebServer {
         best
     }
 
-    async fn shutdown(&self) {
+    /// Synchronously request stop without waiting for task cancellation. This
+    /// is the only safe work performed by owners that are dropped without an
+    /// explicit async shutdown.
+    pub fn request_shutdown(&self) {
         self.stopping.store(true, Ordering::SeqCst);
-        if let Some(task) = self.accept_task.lock().take() {
+        if let Some(task) = self.accept_task.lock().as_ref() {
             task.abort();
+        }
+        for task in self.connections.lock().iter() {
+            task.abort();
+        }
+        for task in self.upgrade_tasks.lock().iter() {
+            task.abort();
+        }
+    }
+
+    /// Stop accepting, abort active transports, and await every owned server
+    /// task. Repeated calls are idempotent.
+    pub async fn shutdown(&self) {
+        self.request_shutdown();
+        let accept_task = { self.accept_task.lock().take() };
+        if let Some(task) = accept_task {
+            let _ = task.await;
         }
         let mut tasks: Vec<JoinHandle<()>> = Vec::new();
         tasks.extend(self.connections.lock().drain(..));
@@ -581,7 +619,7 @@ impl WebServer {
             let _ = task.await;
         }))
         .await;
-        *self.port.lock() = None;
+        *self.bound_addr.lock() = None;
     }
 
     fn bad_request(&self) -> WebResponse {

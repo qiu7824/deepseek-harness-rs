@@ -25,7 +25,7 @@ use dsh_llm::{
     create_user_message,
 };
 use dsh_output_retention::{Omitted, TextRetainer, TextRetentionStrategy};
-use dsh_session::{SessionId};
+use dsh_session::SessionId;
 use dsh_session_query::{
     SessionQueryEngine, SessionSurfaceSnapshot, SessionTitleObservationResult,
 };
@@ -248,8 +248,7 @@ pub fn decode_session_reference_uri(uri: &str) -> Result<SessionId, SessionRefer
         .decode(payload)
         .map_err(|_| invalid_uri(uri))?;
     let text = std::str::from_utf8(&decoded).map_err(|_| invalid_uri(uri))?;
-    let parsed: serde_json::Value =
-        serde_json::from_str(text).map_err(|_| invalid_uri(uri))?;
+    let parsed: serde_json::Value = serde_json::from_str(text).map_err(|_| invalid_uri(uri))?;
     let Some(parsed) = parsed.as_str() else {
         return Err(invalid_uri(uri));
     };
@@ -274,7 +273,12 @@ fn unescape_label(label: &str) -> String {
 /// Render a host-neutral Markdown mention carrying the canonical URI (TS
 /// `formatSessionReferenceMention`).
 pub fn format_session_reference_mention(reference: &SessionReferenceInput) -> String {
-    let label = escape_label(reference.label.as_deref().unwrap_or(reference.session_id.as_str()));
+    let label = escape_label(
+        reference
+            .label
+            .as_deref()
+            .unwrap_or(reference.session_id.as_str()),
+    );
     format!(
         "@[{label}]({})",
         encode_session_reference_uri(&reference.session_id)
@@ -355,8 +359,8 @@ fn project_session_conversation(snapshot: &SessionSurfaceSnapshot) -> Vec<Projec
     for surface in &snapshot.events {
         match surface.event.type_.as_str() {
             "user/message" => {
-                let message: UserMessage = serde_json::from_value(surface.event.data.clone())
-                    .expect("user/message data");
+                let message: UserMessage =
+                    serde_json::from_value(surface.event.data.clone()).expect("user/message data");
                 let checkpoint = matches!(
                     &message.source,
                     MessageSource::Plugin { plugin, .. } if plugin == "compact"
@@ -452,8 +456,8 @@ pub fn retain_referenced_session(
 
     while size(&retained) > max_bytes {
         let newest_index = retained.len().saturating_sub(1);
-        let drop_index = (0..retained.len())
-            .find(|&index| !retained[index].checkpoint && index != newest_index);
+        let drop_index =
+            (0..retained.len()).find(|&index| !retained[index].checkpoint && index != newest_index);
         let Some(drop_index) = drop_index else {
             break;
         };
@@ -635,12 +639,16 @@ impl SessionReferenceResolver {
             .iter()
             .map(|(record, _)| record.header.id.clone())
             .collect();
-        let observations = self.query.read_title_snapshots(&ids, signal).await.map_err(|error| {
-            SessionReferenceError::new(
-                SessionReferenceErrorCode::SessionReferenceReadFailed,
-                error.message,
-            )
-        })?;
+        let observations = self
+            .query
+            .read_title_snapshots(&ids, signal)
+            .await
+            .map_err(|error| {
+                SessionReferenceError::new(
+                    SessionReferenceErrorCode::SessionReferenceReadFailed,
+                    error.message,
+                )
+            })?;
         let labeled: Vec<(dsh_session_query::SessionRecord, usize, String)> = inspected
             .into_iter()
             .enumerate()
@@ -703,36 +711,38 @@ impl SessionReferenceResolver {
         }
         let mut prepared: Vec<(SessionReferenceInput, SessionSurfaceSnapshot)> = Vec::new();
         for input in inputs {
-            let snapshot = self.query.read_surface(&input.session_id).await.map_err(|error| {
-                SessionReferenceError::new(
-                    SessionReferenceErrorCode::SessionReferenceReadFailed,
-                    format!("failed to read referenced session: {}", error.message),
-                )
-            })?;
+            let snapshot = self
+                .query
+                .read_surface(&input.session_id)
+                .await
+                .map_err(|error| {
+                    SessionReferenceError::new(
+                        SessionReferenceErrorCode::SessionReferenceReadFailed,
+                        format!("failed to read referenced session: {}", error.message),
+                    )
+                })?;
             prepared.push((input, snapshot));
         }
         let mut rendered: Vec<(ReferencedSessionData, ReferenceRetentionStats)> = Vec::new();
         for (input, snapshot) in prepared {
-            let label = input.label.clone().unwrap_or_else(|| input.session_id.as_str().to_string());
+            let label = input
+                .label
+                .clone()
+                .unwrap_or_else(|| input.session_id.as_str().to_string());
             let retained = retain_referenced_session(&snapshot, &label, self.max_reference_bytes)
                 .ok_or_else(|| {
-                    SessionReferenceError::new(
-                        SessionReferenceErrorCode::SessionReferenceBudgetExceeded,
-                        "referenced session snapshot cannot fit the configured byte budget",
-                    )
-                })?;
+                SessionReferenceError::new(
+                    SessionReferenceErrorCode::SessionReferenceBudgetExceeded,
+                    "referenced session snapshot cannot fit the configured byte budget",
+                )
+            })?;
             rendered.push(retained);
         }
         let prompt = format!(
             "{PROMPT_PREFIX}{}{PROMPT_SUFFIX}",
             stringify_tag_safe_json(
-                &serde_json::to_value(
-                    rendered
-                        .iter()
-                        .map(|(data, _)| data)
-                        .collect::<Vec<_>>()
-                )
-                .expect("data")
+                &serde_json::to_value(rendered.iter().map(|(data, _)| data).collect::<Vec<_>>())
+                    .expect("data")
             )
         );
         let reference_values: Vec<serde_json::Value> = rendered
@@ -765,8 +775,8 @@ impl SessionReferenceResolver {
             },
         );
         let _ = reference_values; // The structured source rides the durable
-                                  // message source; the Rust `MessageSource`
-                                  // models the core kinds (documented).
+        // message source; the Rust `MessageSource`
+        // models the core kinds (documented).
         Ok(PreparedReferencedMessage {
             content: accepted_content,
             additional_context: Some(additional_context),

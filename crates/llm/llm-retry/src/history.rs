@@ -5,19 +5,16 @@ use dsh_session::SessionEvent;
 
 /// Find the provider in force for one currently open step (TS
 /// `providerForOpenStep`).
-pub fn provider_for_open_step(
-    events: &[SessionEvent],
-    turn: u64,
-    step: u64,
-) -> Option<String> {
+pub fn provider_for_open_step(events: &[SessionEvent], turn: u64, step: u64) -> Option<String> {
     let step_start_index = events.iter().rposition(|event| {
         event.type_ == "step/start"
             && event.data.get("turn").and_then(|value| value.as_u64()) == Some(turn)
             && event.data.get("step").and_then(|value| value.as_u64()) == Some(step)
     })?;
-    if events[step_start_index + 1..].iter().any(|event| {
-        event.type_ == "step/end" || event.type_ == "turn/end"
-    }) {
+    if events[step_start_index + 1..]
+        .iter()
+        .any(|event| event.type_ == "step/end" || event.type_ == "turn/end")
+    {
         return None;
     }
     for event in events.iter().rev() {
@@ -53,19 +50,34 @@ mod tests {
     #[test]
     fn finds_the_provider_in_force_for_an_open_step() {
         let events = vec![
-            event("request/header", 0, serde_json::json!({
-                "header": {"config": {"provider": "first"}}
-            })),
+            event(
+                "request/header",
+                0,
+                serde_json::json!({
+                    "header": {"config": {"provider": "first"}}
+                }),
+            ),
             event("turn/start", 1, serde_json::json!({"turn": 1})),
             event("step/start", 2, serde_json::json!({"turn": 1, "step": 1})),
-            event("request/header", 3, serde_json::json!({
-                "header": {"config": {"provider": "second"}}
-            })),
+            event(
+                "request/header",
+                3,
+                serde_json::json!({
+                    "header": {"config": {"provider": "second"}}
+                }),
+            ),
         ];
-        assert_eq!(provider_for_open_step(&events, 1, 1), Some("second".to_string()));
+        assert_eq!(
+            provider_for_open_step(&events, 1, 1),
+            Some("second".to_string())
+        );
         // A closed step has no provider in force.
         let mut closed = events.clone();
-        closed.push(event("step/end", 4, serde_json::json!({"turn": 1, "step": 1})));
+        closed.push(event(
+            "step/end",
+            4,
+            serde_json::json!({"turn": 1, "step": 1}),
+        ));
         assert_eq!(provider_for_open_step(&closed, 1, 1), None);
         // An unknown step is undefined.
         assert_eq!(provider_for_open_step(&events, 2, 9), None);

@@ -175,27 +175,25 @@ fn classify(event: &JsonValue) -> Option<DeltaKind> {
     }
     match chunk.get("type")?.as_str()? {
         "text-delta" | "reasoning-delta" => {
-            if has_exact_keys(chunk, &["type", "index", "text"])
-                && chunk.get("text")?.is_string()
-            {
-                Some(if chunk.get("type").and_then(|v| v.as_str()) == Some("text-delta") {
-                    DeltaKind::TextDelta
-                } else {
-                    DeltaKind::ReasoningDelta
-                })
+            if has_exact_keys(chunk, &["type", "index", "text"]) && chunk.get("text")?.is_string() {
+                Some(
+                    if chunk.get("type").and_then(|v| v.as_str()) == Some("text-delta") {
+                        DeltaKind::TextDelta
+                    } else {
+                        DeltaKind::ReasoningDelta
+                    },
+                )
             } else {
                 None
             }
         }
         "tool-call-delta" => {
-            let with_name = has_exact_keys(chunk, &["type", "index", "id", "name", "argumentsDelta"])
-                && chunk.get("name")?.is_string();
-            let without_name =
-                has_exact_keys(chunk, &["type", "index", "id", "argumentsDelta"]);
+            let with_name =
+                has_exact_keys(chunk, &["type", "index", "id", "name", "argumentsDelta"])
+                    && chunk.get("name")?.is_string();
+            let without_name = has_exact_keys(chunk, &["type", "index", "id", "argumentsDelta"]);
             let shape_ok = with_name || without_name;
-            if shape_ok
-                && chunk.get("id")?.is_string()
-                && chunk.get("argumentsDelta")?.is_string()
+            if shape_ok && chunk.get("id")?.is_string() && chunk.get("argumentsDelta")?.is_string()
             {
                 Some(DeltaKind::ToolCallDelta)
             } else {
@@ -214,11 +212,7 @@ fn is_integer_number(value: &JsonValue) -> bool {
 
 /// The block index of a whitelisted delta chunk.
 fn index_of(event: &JsonValue) -> Option<u64> {
-    event
-        .get("data")?
-        .get("chunk")?
-        .get("index")?
-        .as_u64()
+    event.get("data")?.get("chunk")?.get("index")?.as_u64()
 }
 
 /// The tool-call fields of a whitelisted delta chunk.
@@ -226,7 +220,9 @@ fn tool_call_of(event: &JsonValue) -> Option<(String, Option<String>)> {
     let chunk = event.get("data")?.get("chunk")?;
     Some((
         chunk.get("id")?.as_str()?.to_string(),
-        chunk.get("name").and_then(|name| name.as_str().map(str::to_string)),
+        chunk
+            .get("name")
+            .and_then(|name| name.as_str().map(str::to_string)),
     ))
 }
 
@@ -252,8 +248,10 @@ fn continues(prev: &JsonValue, next: &JsonValue, kind: DeltaKind) -> bool {
     }
     let prev_data = prev.get("data");
     let next_data = next.get("data");
-    let turn_matches = prev_data.and_then(|d| d.get("turn")) == next_data.and_then(|d| d.get("turn"));
-    let step_matches = prev_data.and_then(|d| d.get("step")) == next_data.and_then(|d| d.get("step"));
+    let turn_matches =
+        prev_data.and_then(|d| d.get("turn")) == next_data.and_then(|d| d.get("turn"));
+    let step_matches =
+        prev_data.and_then(|d| d.get("step")) == next_data.and_then(|d| d.get("step"));
     if !turn_matches || !step_matches {
         return false;
     }
@@ -266,26 +264,46 @@ fn continues(prev: &JsonValue, next: &JsonValue, kind: DeltaKind) -> bool {
     let (Some(prev_call), Some(next_call)) = (tool_call_of(prev), tool_call_of(next)) else {
         return false;
     };
-    prev_call.0 == next_call.0 && prev_call.1.is_some() == next_call.1.is_some() && prev_call.1 == next_call.1
+    prev_call.0 == next_call.0
+        && prev_call.1.is_some() == next_call.1.is_some()
+        && prev_call.1 == next_call.1
 }
 
 /// Build the row for a completed run.
 fn build_row(kind: DeltaKind, run: &[JsonValue]) -> ChunkRow {
     let first = &run[0];
     let first_data = first.get("data").expect("whitelisted event carries data");
-    let turn = first_data.get("turn").and_then(|value| value.as_u64()).unwrap_or(0);
-    let step = first_data.get("step").and_then(|value| value.as_u64()).unwrap_or(0);
+    let turn = first_data
+        .get("turn")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let step = first_data
+        .get("step")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
     let index = index_of(first).unwrap_or(0);
     let dt: Vec<i64> = run
         .windows(2)
         .map(|pair| {
-            let prev_time = pair[0].get("time").and_then(|value| value.as_i64()).unwrap_or(0);
-            let next_time = pair[1].get("time").and_then(|value| value.as_i64()).unwrap_or(0);
+            let prev_time = pair[0]
+                .get("time")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0);
+            let next_time = pair[1]
+                .get("time")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0);
             next_time - prev_time
         })
         .collect();
-    let seq0 = first.get("seq").and_then(|value| value.as_u64()).unwrap_or(0);
-    let time0 = first.get("time").and_then(|value| value.as_i64()).unwrap_or(0);
+    let seq0 = first
+        .get("seq")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let time0 = first
+        .get("time")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
     match kind {
         DeltaKind::ToolCallDelta => {
             let (id, name) = tool_call_of(first).expect("whitelisted tool-call chunk");
@@ -304,7 +322,15 @@ fn build_row(kind: DeltaKind, run: &[JsonValue]) -> ChunkRow {
             ChunkRow::ToolCallChunks {
                 seq0,
                 time0,
-                data: ToolCallRunData { turn, step, index, dt, id, name, args },
+                data: ToolCallRunData {
+                    turn,
+                    step,
+                    index,
+                    dt,
+                    id,
+                    name,
+                    args,
+                },
             }
         }
         DeltaKind::TextDelta | DeltaKind::ReasoningDelta => {
@@ -320,7 +346,13 @@ fn build_row(kind: DeltaKind, run: &[JsonValue]) -> ChunkRow {
                         .unwrap_or_default()
                 })
                 .collect();
-            let data = TextRunData { turn, step, index, dt, texts };
+            let data = TextRunData {
+                turn,
+                step,
+                index,
+                dt,
+                texts,
+            };
             if kind == DeltaKind::TextDelta {
                 ChunkRow::TextChunks { seq0, time0, data }
             } else {
@@ -340,19 +372,20 @@ pub fn pack_chunk_runs(events: &[SessionEvent]) -> Vec<StorageRecord> {
     let mut kind: Option<DeltaKind> = None;
     let mut run: Vec<JsonValue> = Vec::new();
 
-    let flush = |kind: &mut Option<DeltaKind>, run: &mut Vec<JsonValue>, out: &mut Vec<StorageRecord>| {
-        if let Some(kind) = *kind {
-            if run.len() >= MIN_RUN {
-                out.push(StorageRecord::Row(build_row(kind, run)));
+    let flush =
+        |kind: &mut Option<DeltaKind>, run: &mut Vec<JsonValue>, out: &mut Vec<StorageRecord>| {
+            if let Some(kind) = *kind {
+                if run.len() >= MIN_RUN {
+                    out.push(StorageRecord::Row(build_row(kind, run)));
+                } else {
+                    out.extend(run.drain(..).map(StorageRecord::Event));
+                }
             } else {
                 out.extend(run.drain(..).map(StorageRecord::Event));
             }
-        } else {
-            out.extend(run.drain(..).map(StorageRecord::Event));
-        }
-        *kind = None;
-        run.clear();
-    };
+            *kind = None;
+            run.clear();
+        };
 
     for event in &raw {
         let Some(k) = classify(event) else {
@@ -360,9 +393,7 @@ pub fn pack_chunk_runs(events: &[SessionEvent]) -> Vec<StorageRecord> {
             out.push(StorageRecord::Event(event.clone()));
             continue;
         };
-        if Some(k) == kind
-            && run.last().is_some_and(|last| continues(last, event, k))
-        {
+        if Some(k) == kind && run.last().is_some_and(|last| continues(last, event, k)) {
             run.push(event.clone());
             continue;
         }
@@ -403,10 +434,14 @@ fn validate_row_value(tag: &str, value: &JsonValue) -> Result<(), String> {
         unreachable!();
     };
     let payload: Vec<String> = if tag == "tool-call-chunks" {
-        let with_name = has_exact_keys(data, &["turn", "step", "index", "id", "name", "dt", "args"]);
+        let with_name =
+            has_exact_keys(data, &["turn", "step", "index", "id", "name", "dt", "args"]);
         let without_name = has_exact_keys(data, &["turn", "step", "index", "id", "dt", "args"]);
         if !with_name && !without_name {
-            malformed(tag, "data must be exactly {turn, step, index, id, name?, dt, args}")?;
+            malformed(
+                tag,
+                "data must be exactly {turn, step, index, id, name?, dt, args}",
+            )?;
         }
         if data.get("id").and_then(|id| id.as_str()).is_none()
             || (with_name && data.get("name").and_then(|name| name.as_str()).is_none())
@@ -437,7 +472,11 @@ fn validate_row_value(tag: &str, value: &JsonValue) -> Result<(), String> {
     if gaps.len() != payload.len() - 1 {
         return malformed(
             tag,
-            &format!("dt length {} does not match {} members", gaps.len(), payload.len()),
+            &format!(
+                "dt length {} does not match {} members",
+                gaps.len(),
+                payload.len()
+            ),
         );
     }
     // Reconstruction bounds: member seqs and times must stay exact integers.
@@ -478,13 +517,29 @@ fn validate_payload(
 fn expand_row(row: &ChunkRow) -> Vec<SessionEvent> {
     let (seq0, time0, data) = match row {
         ChunkRow::TextChunks { seq0, time0, data }
-        | ChunkRow::ReasoningChunks { seq0, time0, data } => {
-            (*seq0, *time0, (data.turn, data.step, data.index, &data.dt, &data.texts, None))
-        }
+        | ChunkRow::ReasoningChunks { seq0, time0, data } => (
+            *seq0,
+            *time0,
+            (
+                data.turn,
+                data.step,
+                data.index,
+                &data.dt,
+                &data.texts,
+                None,
+            ),
+        ),
         ChunkRow::ToolCallChunks { seq0, time0, data } => (
             *seq0,
             *time0,
-            (data.turn, data.step, data.index, &data.dt, &data.args, Some((data.id.as_str(), data.name.as_deref()))),
+            (
+                data.turn,
+                data.step,
+                data.index,
+                &data.dt,
+                &data.args,
+                Some((data.id.as_str(), data.name.as_deref())),
+            ),
         ),
     };
     let (turn, step, index, dt, members, tool_call) = data;
@@ -619,7 +674,14 @@ mod tests {
     fn long_run_packs_and_round_trips() {
         let events: Vec<SessionEvent> = (0..5)
             .map(|index| {
-                chunk_event(index, 1000 + index as i64 * 3, 1, 1, 0, &format!("t{index}"))
+                chunk_event(
+                    index,
+                    1000 + index as i64 * 3,
+                    1,
+                    1,
+                    0,
+                    &format!("t{index}"),
+                )
             })
             .collect();
         let records = pack_chunk_runs(&events);
@@ -755,7 +817,11 @@ mod tests {
         ];
         let records = pack_chunk_runs(&events);
         assert_eq!(records.len(), 2, "block boundaries and usage stay verbatim");
-        assert!(records.iter().all(|record| matches!(record, StorageRecord::Event(_))));
+        assert!(
+            records
+                .iter()
+                .all(|record| matches!(record, StorageRecord::Event(_)))
+        );
     }
 
     #[test]
@@ -787,7 +853,11 @@ mod tests {
         });
         let result = decode_storage_record(&bad);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("malformed text-chunks storage row"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("malformed text-chunks storage row")
+        );
 
         let bad_arity = serde_json::json!({
             "type": "text-chunks",

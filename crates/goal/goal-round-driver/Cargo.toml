@@ -1,0 +1,24 @@
+[package]
+name = "dsh-goal-round-driver"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Race-fenced same-session goal-round driver — Rust port of @deepseek-ai/dsh-goal-round-driver"
+
+[dependencies]
+async-trait = { workspace = true }
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-goal = { path = "../goal" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-agent-loop = { path = "../../core/agent-loop" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-tools = { path = "../../core/tools" }

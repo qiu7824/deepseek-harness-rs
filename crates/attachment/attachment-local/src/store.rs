@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dsh_attachment::{
-    AttachmentAbort, AttachmentError, ImageAttachmentLimits, ImageAttachmentRef,
-    ImageMediaType, SaveImageAttachment, StoredImageAttachment, attachment_id,
+    AttachmentAbort, AttachmentError, ImageAttachmentLimits, ImageAttachmentRef, ImageMediaType,
+    SaveImageAttachment, StoredImageAttachment, attachment_id,
 };
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
@@ -25,8 +25,7 @@ use crate::image::{detect_image, probe_image};
 
 const ID_PATTERN: &str = r"^sha256:([a-f0-9]{64})$";
 
-static DURABLE_HOMES: std::sync::OnceLock<Mutex<HashSet<PathBuf>>> =
-    std::sync::OnceLock::new();
+static DURABLE_HOMES: std::sync::OnceLock<Mutex<HashSet<PathBuf>>> = std::sync::OnceLock::new();
 
 fn durable_homes() -> &'static Mutex<HashSet<PathBuf>> {
     DURABLE_HOMES.get_or_init(|| Mutex::new(HashSet::new()))
@@ -96,7 +95,12 @@ async fn inspect_metadata(
             "Declared image type does not match its bytes.",
         ));
     }
-    Ok((detected.media_type, data.len() as u64, detected.width, detected.height))
+    Ok((
+        detected.media_type,
+        data.len() as u64,
+        detected.width,
+        detected.height,
+    ))
 }
 
 /// Run the full admission policy for one image without touching storage (TS
@@ -142,7 +146,10 @@ fn ensure_durable_directory(path: &Path, boundary: &Path) -> Result<(), Attachme
     }
     let mut level = path.to_path_buf();
     while level != boundary {
-        let parent = level.parent().map(Path::to_path_buf).unwrap_or_else(|| level.clone());
+        let parent = level
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| level.clone());
         let _ = sync_directory(&parent);
         if parent == level {
             return Ok(());
@@ -190,10 +197,9 @@ pub async fn save_image_file(
     let bucket = root.join("objects").join(&sha256[..2]);
     let staging = root.join("tmp");
     // Establish DSH_HOME itself against the filesystem root once per process.
-    let home = root
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| AttachmentError::new("ATTACHMENT_WRITE_FAILED", "invalid attachment root"))?;
+    let home = root.parent().and_then(Path::parent).ok_or_else(|| {
+        AttachmentError::new("ATTACHMENT_WRITE_FAILED", "invalid attachment root")
+    })?;
     let boundary = ensure_durable_home(home)?;
     ensure_durable_directory(&bucket, &boundary)?;
     ensure_durable_directory(&staging, &boundary)?;
@@ -206,9 +212,9 @@ pub async fn save_image_file(
             .write(true)
             .open(&temporary)
             .map_err(|error| AttachmentError::new("ATTACHMENT_WRITE_FAILED", error.to_string()))?;
-        handle.write_all(&input.data).map_err(|error| {
-            AttachmentError::new("ATTACHMENT_WRITE_FAILED", error.to_string())
-        })?;
+        handle
+            .write_all(&input.data)
+            .map_err(|error| AttachmentError::new("ATTACHMENT_WRITE_FAILED", error.to_string()))?;
         handle
             .sync_all()
             .map_err(|error| AttachmentError::new("ATTACHMENT_WRITE_FAILED", error.to_string()))?;

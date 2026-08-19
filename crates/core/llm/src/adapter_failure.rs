@@ -13,7 +13,11 @@ use crate::types::LlmFailure;
 /// `normalizeLlmFailure`).
 pub fn normalize_llm_failure(value: &str) -> LlmFailure {
     LlmFailure {
-        message: if value.is_empty() { "LLM adapter failed".to_string() } else { value.to_string() },
+        message: if value.is_empty() {
+            "LLM adapter failed".to_string()
+        } else {
+            value.to_string()
+        },
         code: "UNKNOWN".to_string(),
         status: None,
         provider_retry_after_ms: None,
@@ -75,7 +79,11 @@ mod tests {
         )
         .expect("valid");
         assert_eq!(snapshot.status, Some(429));
-        assert!(failure_snapshot("".to_string(), "RATE_LIMIT".to_string(), None, None, None).is_none());
-        assert!(failure_snapshot("busy".to_string(), "X".to_string(), Some(99), None, None).is_none());
+        assert!(
+            failure_snapshot("".to_string(), "RATE_LIMIT".to_string(), None, None, None).is_none()
+        );
+        assert!(
+            failure_snapshot("busy".to_string(), "X".to_string(), Some(99), None, None).is_none()
+        );
     }
 }

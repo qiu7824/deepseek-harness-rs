@@ -40,7 +40,12 @@ fn append_human(session: &Session, id: &str, text: &str) {
         .expect("append");
 }
 
-async fn append_persisted_title(ctx: &Context, store: &SessionStore, service: &Arc<SessionTitleService>, id: &str) {
+async fn append_persisted_title(
+    ctx: &Context,
+    store: &SessionStore,
+    service: &Arc<SessionTitleService>,
+    id: &str,
+) {
     let session = store
         .create(
             ctx,
@@ -70,21 +75,24 @@ fn expect_persisted_title(inspection: SessionInspection) {
     let folded = fold_session_title(&inspection.events).expect("title");
     assert_eq!(folded.title, "Persist this session title");
     assert_eq!(folded.message_seqs, vec![1]);
-    assert!(matches!(folded.source, dsh_session_title::SessionTitleSource::Fallback));
+    assert!(matches!(
+        folded.source,
+        dsh_session_title::SessionTitleSource::Fallback
+    ));
     assert_eq!(folded.event_seq, 3);
     let event_types: Vec<&str> = inspection
         .events
         .iter()
         .map(|event| event.type_.as_str())
         .collect();
-    assert_eq!(event_types, vec!["turn/start", "user/message", "turn/end", "session/title"]);
+    assert_eq!(
+        event_types,
+        vec!["turn/start", "user/message", "turn/end", "session/title"]
+    );
 }
 
 fn temp_root(tag: &str) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "dsh-title-{tag}-{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("dsh-title-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("mkdir");
     root

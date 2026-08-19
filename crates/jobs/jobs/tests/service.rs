@@ -120,7 +120,11 @@ struct StubJobRegistryPlugin;
 
 #[async_trait::async_trait]
 impl Plugin for StubJobRegistryPlugin {
-    async fn apply(&self, ctx: &Context, _config: cordis::ArcValue) -> Result<(), cordis::PluginError> {
+    async fn apply(
+        &self,
+        ctx: &Context,
+        _config: cordis::ArcValue,
+    ) -> Result<(), cordis::PluginError> {
         let erased: Arc<dyn JobRegistry> = Arc::new(StubJobRegistry);
         ctx.register_service(erased);
         Ok(())
@@ -154,7 +158,10 @@ async fn a_concrete_subclass_registers_as_ctx_jobs_and_serves_the_abstract_api()
         .expect("start");
     assert_eq!(id.as_str(), "bash-1");
     assert_eq!(registry.list(None).len(), 1);
-    assert_eq!(registry.get(&id, None).expect("get").status, JobStatus::Running);
+    assert_eq!(
+        registry.get(&id, None).expect("get").status,
+        JobStatus::Running
+    );
     assert_eq!(registry.read(&id, None).expect("read").text, "");
     assert_eq!(
         registry.kill(&id, None, None).expect("kill"),

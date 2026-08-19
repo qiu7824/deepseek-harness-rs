@@ -18,9 +18,18 @@ impl LlmAdapter for RecordingAdapter {
     fn stream(&self, options: &GenerateOptions) -> ChunkStream {
         self.requests.lock().push(options.clone());
         Box::pin(futures::stream::iter(vec![
-            StreamChunk::BlockStart { index: 0, block_type: "text".to_string() },
-            StreamChunk::TextDelta { index: 0, text: "All messages model title".to_string() },
-            StreamChunk::Finish { reason: dsh_llm::FinishReason::Stop, replay_state: None },
+            StreamChunk::BlockStart {
+                index: 0,
+                block_type: "text".to_string(),
+            },
+            StreamChunk::TextDelta {
+                index: 0,
+                text: "All messages model title".to_string(),
+            },
+            StreamChunk::Finish {
+                reason: dsh_llm::FinishReason::Stop,
+                replay_state: None,
+            },
         ]))
     }
 }
@@ -94,9 +103,13 @@ async fn includes_seeded_history_and_the_latest_prompt_while_inheriting_the_logg
     });
     llm.register_adapter(&ctx, vec!["current-route".to_string()], adapter.clone())
         .expect("adapter");
-    let llm_config: LlmConfig = resolve_session_title_llm_config(&serde_json::from_str(LLM_CONFIG).unwrap())
-        .expect("llm config");
-    let fiber = ctx.plugin(Arc::new(SessionTitleAllPromptsLlmPlugin), cordis::arc(llm_config));
+    let llm_config: LlmConfig =
+        resolve_session_title_llm_config(&serde_json::from_str(LLM_CONFIG).unwrap())
+            .expect("llm config");
+    let fiber = ctx.plugin(
+        Arc::new(SessionTitleAllPromptsLlmPlugin),
+        cordis::arc(llm_config),
+    );
     fiber.settle().await.expect("settle");
 
     let seed_events = seeded.events().as_ref().clone();

@@ -4,10 +4,6 @@
 //! session, own system prompt, zero parent context). Rust port of
 //! `packages/subagent/subagent-spawn-in-process/src/index.ts`.
 //!
-//! # Deviations
-//!
-//! - Structured output is not ported: the provider advertises
-//!   `output_schema: false` (the capture-tool runtime arrives later).
 
 pub mod invariant;
 
@@ -15,9 +11,9 @@ use std::sync::Arc;
 
 use cordis::{ArcValue, Context, InjectSpec, Plugin, PluginError};
 use dsh_subagent::{
-    ContinuableCreateRequest, ContinuableCreateSpec, InProcessRunOptions, ResolvedSubagentStartRequest,
-    SubagentCapabilities, SubagentError, SubagentProvider, SubagentRun,
-    start_in_process_run,
+    ContinuableCreateRequest, ContinuableCreateSpec, InProcessRunOptions,
+    ResolvedSubagentStartRequest, SubagentCapabilities, SubagentError, SubagentProvider,
+    SubagentRun, start_in_process_run,
 };
 
 /// Cordis plugin name.
@@ -47,7 +43,7 @@ impl SubagentProvider for SpawnInProcessProvider {
 
     fn capabilities(&self) -> SubagentCapabilities {
         SubagentCapabilities {
-            output_schema: false, // structured capture not ported yet
+            output_schema: true,
             depth_limit: true,
             tool_filter: true,
             persona: true,
@@ -88,9 +84,7 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<(), SubagentError> {
     let provider: Arc<dyn SubagentProvider> = Arc::new(SpawnInProcessProvider {
         name: provider_name,
     });
-    runtime
-        .register_provider(ctx, provider)
-        .map(|_| ())
+    runtime.register_provider(ctx, provider).map(|_| ())
 }
 
 /// The Cordis plugin form.

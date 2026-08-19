@@ -7,7 +7,9 @@
 
 use std::sync::Arc;
 
-use cordis::{ArcValue, Context, EventOptions, InjectSpec, Listener, Plugin, PluginError, downcast};
+use cordis::{
+    ArcValue, Context, EventOptions, InjectSpec, Listener, Plugin, PluginError, downcast,
+};
 
 use dsh_invariants::{InvariantInstaller, InvariantRegistry};
 
@@ -31,24 +33,28 @@ pub fn installer() -> InvariantInstaller {
             Box::pin(async move {
                 let fail_for_listener = fail.clone();
                 let ctx_for_listener = ctx.clone();
-                let listener: Arc<Listener> = Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
-                    let reference = args
-                        .first()
-                        .and_then(|value| downcast::<CredentialRef>(value))
-                        .cloned();
-                    let fail = fail_for_listener.clone();
-                    let ctx = ctx_for_listener.clone();
-                    Box::pin(async move {
-                        let reference = reference.expect("credentials/updated reference argument");
-                        if ctx.get("credentials", false).is_none() {
-                            fail(&format!(
-                                "credentials/updated for \"{reference}\" emitted without a live credentials service"
-                            ));
-                        }
-                        None
-                    })
-                });
-                ctx.on("credentials/updated", listener, EventOptions::default()).await;
+                let listener: Arc<Listener> = Arc::new(
+                    move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+                        let reference = args
+                            .first()
+                            .and_then(|value| downcast::<CredentialRef>(value))
+                            .cloned();
+                        let fail = fail_for_listener.clone();
+                        let ctx = ctx_for_listener.clone();
+                        Box::pin(async move {
+                            let reference =
+                                reference.expect("credentials/updated reference argument");
+                            if ctx.get("credentials", false).is_none() {
+                                fail(&format!(
+                                    "credentials/updated for \"{reference}\" emitted without a live credentials service"
+                                ));
+                            }
+                            None
+                        })
+                    },
+                );
+                ctx.on("credentials/updated", listener, EventOptions::default())
+                    .await;
             })
         }),
     }

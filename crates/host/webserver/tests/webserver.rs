@@ -89,7 +89,8 @@ fn decode_pathname(path: &str) -> Result<String, WebHandlerError> {
             return Err(WebHandlerError::new("malformed percent escape"));
         }
         let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-        let value = u8::from_str_radix(hex, 16).map_err(|_| WebHandlerError::new("malformed percent escape"))?;
+        let value = u8::from_str_radix(hex, 16)
+            .map_err(|_| WebHandlerError::new("malformed percent escape"))?;
         out.push(value);
         i += 3;
     }
@@ -136,16 +137,12 @@ async fn routes_fallback_taps_and_upgrades() {
     let _dispose_api = server.register(WebRoute {
         kind: WebRouteKind::Prefix,
         path: "/api".to_string(),
-        handler: Arc::new(|_request| {
-            Box::pin(async { Ok(text_response(StatusCode::OK, "API")) })
-        }),
+        handler: Arc::new(|_request| Box::pin(async { Ok(text_response(StatusCode::OK, "API")) })),
     });
     let _dispose_deep = server.register(WebRoute {
         kind: WebRouteKind::Prefix,
         path: "/api/deep".to_string(),
-        handler: Arc::new(|_request| {
-            Box::pin(async { Ok(text_response(StatusCode::OK, "DEEP")) })
-        }),
+        handler: Arc::new(|_request| Box::pin(async { Ok(text_response(StatusCode::OK, "DEEP")) })),
     });
     assert_eq!(get(port, "/probe").await, (200, "EXACT".to_string()));
     assert_eq!(get(port, "/api/anything").await, (200, "API".to_string()));
@@ -211,26 +208,30 @@ async fn routes_fallback_taps_and_upgrades() {
     assert!(duplicate_route.is_err());
     dispose_exact();
     assert_eq!(get(port, "/probe").await.0, 200); // now answered by fallback
-    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = server.register(WebRoute {
-            kind: WebRouteKind::Exact,
-            path: "/probe".to_string(),
-            handler: Arc::new(|_request| {
-                Box::pin(async { Ok(text_response(StatusCode::OK, "EXACT")) })
-            }),
-        });
-    }))
-    .is_ok());
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = server.register(WebRoute {
+                kind: WebRouteKind::Exact,
+                path: "/probe".to_string(),
+                handler: Arc::new(|_request| {
+                    Box::pin(async { Ok(text_response(StatusCode::OK, "EXACT")) })
+                }),
+            });
+        }))
+        .is_ok()
+    );
 
     // Releasing the fallback restores unclaimed 404 and registrability.
     release_fallback();
     assert_eq!(get(port, "/no/such/route").await.0, 404);
-    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = server.register_fallback(Arc::new(|_request| {
-            Box::pin(async { Ok(text_response(StatusCode::OK, "SECOND")) })
-        }));
-    }))
-    .is_ok());
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = server.register_fallback(Arc::new(|_request| {
+                Box::pin(async { Ok(text_response(StatusCode::OK, "SECOND")) })
+            }));
+        }))
+        .is_ok()
+    );
 
     // Upgrade routes match exact pathnames and reject duplicate ownership.
     let dispose_upgrade = server.register_upgrade(WebUpgradeRoute {
@@ -252,21 +253,21 @@ async fn routes_fallback_taps_and_upgrades() {
     assert!(duplicate_upgrade.is_err());
     let mut upgraded = open_upgrade(port, "/events?stream=mux").await;
     dispose_upgrade();
-    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = server.register_upgrade(WebUpgradeRoute {
-            path: "/events".to_string(),
-            handler: Arc::new(|_request, _socket| Box::pin(async { Ok(()) })),
-        });
-    }))
-    .is_ok());
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = server.register_upgrade(WebUpgradeRoute {
+                path: "/events".to_string(),
+                handler: Arc::new(|_request, _socket| Box::pin(async { Ok(()) })),
+            });
+        }))
+        .is_ok()
+    );
 
     // A failing upgrade handler must not take the server down.
     let _ = server.register_upgrade(WebUpgradeRoute {
         path: "/upgrade-error".to_string(),
         handler: Arc::new(|_request, _socket| {
-            Box::pin(async {
-                Err(WebHandlerError::new("test upgrade transport failure"))
-            })
+            Box::pin(async { Err(WebHandlerError::new("test upgrade transport failure")) })
         }),
     });
     {
@@ -283,11 +284,8 @@ async fn routes_fallback_taps_and_upgrades() {
             .await
             .expect("upgrade-error request written");
         let mut buffer = Vec::new();
-        let read_to_end = tokio::time::timeout(
-            Duration::from_secs(3),
-            stream.read_to_end(&mut buffer),
-        )
-        .await;
+        let read_to_end =
+            tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut buffer)).await;
         assert!(read_to_end.is_ok(), "upgrade-error socket closes");
         assert!(String::from_utf8_lossy(&buffer).contains("101 Switching Protocols"));
     }

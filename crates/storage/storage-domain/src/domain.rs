@@ -296,7 +296,12 @@ impl Domain {
             host: host.clone(),
             value: RwLock::new(value),
         });
-        Arc::new(Self { name, host, tables, global })
+        Arc::new(Self {
+            name,
+            host,
+            tables,
+            global,
+        })
     }
 
     /// Domain name from the spec.

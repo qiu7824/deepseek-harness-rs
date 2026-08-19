@@ -91,7 +91,11 @@ struct NoopPlugin;
 
 #[async_trait::async_trait]
 impl Plugin for NoopPlugin {
-    async fn apply(&self, _ctx: &Context, _config: cordis::ArcValue) -> Result<(), cordis::PluginError> {
+    async fn apply(
+        &self,
+        _ctx: &Context,
+        _config: cordis::ArcValue,
+    ) -> Result<(), cordis::PluginError> {
         Ok(())
     }
 }
@@ -152,7 +156,12 @@ impl Agent for StubAgent {
         &self.scope_key
     }
 
-    fn cancel(&self, _cause: dsh_agent::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_agent::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -165,7 +174,13 @@ impl Agent for StubAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 
@@ -184,7 +199,11 @@ async fn setup(config: dsh_jobs_local::Config) -> Harness {
     let ctx = Context::root();
     let agents = AgentRegistry::install(&ctx);
     let registry = LocalJobRegistry::install(&ctx, config);
-    Harness { ctx, registry, agents }
+    Harness {
+        ctx,
+        registry,
+        agents,
+    }
 }
 
 async fn register_agent(harness: &Harness, agent: &Arc<dyn Agent>) {
@@ -256,9 +275,18 @@ async fn mints_sequential_ids_per_kind() {
     let (a, _rx_a) = TestHooks::new();
     let (b, _rx_b) = TestHooks::new();
     let (c, _rx_c) = TestHooks::new();
-    let id_a = harness.registry.start(start_spec("bash", "a", a)).expect("a");
-    let id_b = harness.registry.start(start_spec("subagent", "b", b)).expect("b");
-    let id_c = harness.registry.start(start_spec("bash", "c", c)).expect("c");
+    let id_a = harness
+        .registry
+        .start(start_spec("bash", "a", a))
+        .expect("a");
+    let id_b = harness
+        .registry
+        .start(start_spec("subagent", "b", b))
+        .expect("b");
+    let id_c = harness
+        .registry
+        .start(start_spec("bash", "c", c))
+        .expect("c");
     assert_eq!(id_a.as_str(), "bash-1");
     assert_eq!(id_b.as_str(), "subagent-1");
     assert_eq!(id_c.as_str(), "bash-2");
@@ -337,7 +365,10 @@ async fn reads_stream_output_and_marks_reported() {
     let (hooks, mut rx) = TestHooks::new();
     hooks.stream.lock().push_back("chunk-a\n".to_string());
     hooks.stream.lock().push_back("chunk-b\n".to_string());
-    let id = harness.registry.start(start_spec("bash", "stream", hooks.clone())).expect("start");
+    let id = harness
+        .registry
+        .start(start_spec("bash", "stream", hooks.clone()))
+        .expect("start");
 
     let first = harness.registry.read(&id, None).expect("read");
     assert_eq!(first.text, "chunk-a\n");
@@ -354,7 +385,9 @@ async fn reads_stream_output_and_marks_reported() {
         detail: None,
         output: None,
     }));
-    rx.wait_for(|outcome| outcome.is_some()).await.expect("settled");
+    rx.wait_for(|outcome| outcome.is_some())
+        .await
+        .expect("settled");
     tokio::task::yield_now().await;
     let final_read = harness.registry.read(&id, None).expect("read");
     assert!(final_read.snapshot.reported);
@@ -367,13 +400,18 @@ async fn reads_final_output_after_settlement_idempotently() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
     harness.registry.attach_controller(&harness.ctx, "test");
     let (hooks, mut rx) = TestHooks::new();
-    let id = harness.registry.start(start_spec("bash", "final", hooks.clone())).expect("start");
+    let id = harness
+        .registry
+        .start(start_spec("bash", "final", hooks.clone()))
+        .expect("start");
     let _ = hooks.outcome.send(Some(JobOutcome {
         status: JobOutcomeStatus::Completed,
         detail: Some("exit code: 3".to_string()),
         output: Some("final-body".to_string()),
     }));
-    rx.wait_for(|outcome| outcome.is_some()).await.expect("settled");
+    rx.wait_for(|outcome| outcome.is_some())
+        .await
+        .expect("settled");
     tokio::task::yield_now().await;
     let first = harness.registry.read(&id, None).expect("read");
     assert_eq!(first.text, "final-body");
@@ -388,14 +426,20 @@ async fn kill_requests_then_marks_stopping_and_reported() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
     harness.registry.attach_controller(&harness.ctx, "test");
     let (hooks, mut _rx) = TestHooks::new();
-    let id = harness.registry.start(start_spec("bash", "kill me", hooks.clone())).expect("start");
+    let id = harness
+        .registry
+        .start(start_spec("bash", "kill me", hooks.clone()))
+        .expect("start");
 
     let outcome = harness
         .registry
         .kill(&id, None, Some("user asked".to_string()))
         .expect("kill");
     assert_eq!(outcome, KillOutcome::Requested);
-    assert_eq!(*hooks.cancel_log.lock(), vec![Some("user asked".to_string())]);
+    assert_eq!(
+        *hooks.cancel_log.lock(),
+        vec![Some("user asked".to_string())]
+    );
     let snapshot = harness.registry.get(&id, None).expect("get");
     assert_eq!(snapshot.status, JobStatus::Stopping);
     assert!(snapshot.reported);
@@ -406,13 +450,18 @@ async fn kill_returns_already_finished_after_settlement() {
     let harness = setup(dsh_jobs_local::Config::default()).await;
     harness.registry.attach_controller(&harness.ctx, "test");
     let (hooks, mut rx) = TestHooks::new();
-    let id = harness.registry.start(start_spec("bash", "done soon", hooks.clone())).expect("start");
+    let id = harness
+        .registry
+        .start(start_spec("bash", "done soon", hooks.clone()))
+        .expect("start");
     let _ = hooks.outcome.send(Some(JobOutcome {
         status: JobOutcomeStatus::Completed,
         detail: None,
         output: None,
     }));
-    rx.wait_for(|outcome| outcome.is_some()).await.expect("settled");
+    rx.wait_for(|outcome| outcome.is_some())
+        .await
+        .expect("settled");
     tokio::task::yield_now().await;
     let outcome = harness.registry.kill(&id, None, None).expect("kill");
     assert_eq!(outcome, KillOutcome::AlreadyFinished);
@@ -425,18 +474,28 @@ async fn settlement_is_first_wins_and_notifies_listeners() {
     let done_events: Arc<Mutex<Vec<(String, Option<String>)>>> = Arc::new(Mutex::new(Vec::new()));
     let changed_events: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
     let listener_events = done_events.clone();
-    harness.registry.on_job_done(&harness.ctx, Arc::new(move |snapshot, owner| {
-        listener_events
-            .lock()
-            .push((snapshot.status.as_str().to_string(), owner.map(|o| o.id().as_str().to_string())));
-    }));
+    harness.registry.on_job_done(
+        &harness.ctx,
+        Arc::new(move |snapshot, owner| {
+            listener_events.lock().push((
+                snapshot.status.as_str().to_string(),
+                owner.map(|o| o.id().as_str().to_string()),
+            ));
+        }),
+    );
     let changed_events_for_listener = changed_events.clone();
-    harness.registry.on_jobs_changed(&harness.ctx, Arc::new(move |_owner| {
-        *changed_events_for_listener.lock() += 1;
-    }));
+    harness.registry.on_jobs_changed(
+        &harness.ctx,
+        Arc::new(move |_owner| {
+            *changed_events_for_listener.lock() += 1;
+        }),
+    );
 
     let (hooks, mut rx) = TestHooks::new();
-    let id = harness.registry.start(start_spec("bash", "settle me", hooks.clone())).expect("start");
+    let id = harness
+        .registry
+        .start(start_spec("bash", "settle me", hooks.clone()))
+        .expect("start");
     // Registration itself notifies the visible-set observer.
     assert!(*changed_events.lock() >= 1);
 
@@ -445,7 +504,9 @@ async fn settlement_is_first_wins_and_notifies_listeners() {
         detail: None,
         output: None,
     }));
-    rx.wait_for(|outcome| outcome.is_some()).await.expect("settled");
+    rx.wait_for(|outcome| outcome.is_some())
+        .await
+        .expect("settled");
     tokio::task::yield_now().await;
     let snapshot = harness.registry.get(&id, None).expect("get");
     assert_eq!(snapshot.status, JobStatus::Completed);
@@ -471,7 +532,10 @@ async fn wait_resolves_on_terminal_timeout_and_abort() {
 
     // A live job waits until settlement.
     let (hooks, mut rx) = TestHooks::new();
-    let id = harness.registry.start(start_spec("bash", "waiter", hooks.clone())).expect("start");
+    let id = harness
+        .registry
+        .start(start_spec("bash", "waiter", hooks.clone()))
+        .expect("start");
     let waiting = harness.registry.wait(&id, 5_000, None, None);
     let waiting = tokio::spawn(waiting);
     let _ = hooks.outcome.send(Some(JobOutcome {
@@ -479,10 +543,15 @@ async fn wait_resolves_on_terminal_timeout_and_abort() {
         detail: None,
         output: None,
     }));
-    rx.wait_for(|outcome| outcome.is_some()).await.expect("settled");
+    rx.wait_for(|outcome| outcome.is_some())
+        .await
+        .expect("settled");
     let snapshot = waiting.await.expect("task").expect("wait settles");
     assert_eq!(snapshot.status, JobStatus::Killed);
-    assert!(snapshot.reported, "a live waiter marks the settlement reported");
+    assert!(
+        snapshot.reported,
+        "a live waiter marks the settlement reported"
+    );
 
     // A terminal job returns immediately.
     let immediate = harness.registry.wait(&id, 5_000, None, None);
@@ -499,7 +568,6 @@ async fn wait_resolves_on_terminal_timeout_and_abort() {
     let snapshot = harness
         .registry
         .wait(&pending, 50, None, None)
-        
         .await
         .expect("timeout resolves with the snapshot");
     assert!(started.elapsed() < Duration::from_secs(5));
@@ -556,17 +624,24 @@ async fn a_throwing_teardown_cancel_force_fails_the_record() {
 
     let done_events: Arc<Mutex<Vec<dsh_jobs::JobSnapshot>>> = Arc::new(Mutex::new(Vec::new()));
     let listener_events = done_events.clone();
-    harness.registry.on_job_done(&harness.ctx, Arc::new(move |snapshot, _owner| {
-        listener_events.lock().push(snapshot);
-    // Let the owner-cleanup effect body run (its disposer registers     // asynchronously) BEFORE the fiber starts draining.
-    }));
+    harness.registry.on_job_done(
+        &harness.ctx,
+        Arc::new(move |snapshot, _owner| {
+            listener_events.lock().push(snapshot);
+            // Let the owner-cleanup effect body run (its disposer registers     // asynchronously) BEFORE the fiber starts draining.
+        }),
+    );
 
     owner_fiber.dispose().await;
     let events = done_events.lock().clone();
     let snapshot = events.last().expect("force-failed settlement announced");
     assert_eq!(snapshot.status, JobStatus::Failed);
     assert!(
-        snapshot.detail.as_deref().unwrap_or("").contains("cancel threw"),
+        snapshot
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("cancel threw"),
         "{}",
         snapshot.detail.clone().unwrap_or_default()
     );
@@ -609,9 +684,15 @@ async fn owner_disposal_cancels_owned_work() {
         detail: None,
         output: None,
     }));
-    rx.wait_for(|outcome| outcome.is_some()).await.expect("producer settles");
+    rx.wait_for(|outcome| outcome.is_some())
+        .await
+        .expect("producer settles");
     disposal.await.expect("owner disposal settles");
     // The record was dropped with the owner.
-    let error = harness.registry.get(&id, Some(&owner)).err().expect("dropped");
+    let error = harness
+        .registry
+        .get(&id, Some(&owner))
+        .err()
+        .expect("dropped");
     assert!(error.contains("unknown job"), "{error}");
 }

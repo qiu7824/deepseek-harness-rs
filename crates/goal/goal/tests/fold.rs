@@ -91,7 +91,13 @@ fn rejects_incoherent_transitions() {
     let mut state = empty_goal_fold_state();
     apply_goal_change(
         &mut state,
-        &snapshot_change(GoalOperation::Create, active_goal("goal-1", 1, 8), 0, 10, 10),
+        &snapshot_change(
+            GoalOperation::Create,
+            active_goal("goal-1", 1, 8),
+            0,
+            10,
+            10,
+        ),
     )
     .expect("create");
 
@@ -147,7 +153,10 @@ fn rejects_incoherent_transitions() {
     )
     .err()
     .expect("skipped revision");
-    assert!(error.contains("advance the current goal by one revision"), "{error}");
+    assert!(
+        error.contains("advance the current goal by one revision"),
+        "{error}"
+    );
 
     // A snapshot change that mutates the definition outside edit.
     let error = apply_goal_change(
@@ -223,9 +232,11 @@ fn rejects_incoherent_transitions() {
 
 #[test]
 fn decoder_rejects_malformed_and_ignores_unrelated_values() {
-    assert!(decode_goal_change(&json!({ "kind": "other" }))
-        .expect("unrelated")
-        .is_none());
+    assert!(
+        decode_goal_change(&json!({ "kind": "other" }))
+            .expect("unrelated")
+            .is_none()
+    );
     let error = decode_goal_change(&json!({
         "kind": "goal/change",
         "version": 2,
@@ -254,7 +265,13 @@ fn admits_only_the_next_round_of_the_active_goal() {
     let mut state = empty_goal_fold_state();
     apply_goal_change(
         &mut state,
-        &snapshot_change(GoalOperation::Create, active_goal("goal-1", 1, 8), 0, 10, 10),
+        &snapshot_change(
+            GoalOperation::Create,
+            active_goal("goal-1", 1, 8),
+            0,
+            10,
+            10,
+        ),
     )
     .expect("create");
 
@@ -284,7 +301,9 @@ fn admits_only_the_next_round_of_the_active_goal() {
             "source": { "kind": "goal", "goalId": "goal-1", "revision": 1, "round": 3 }
         }),
     };
-    let error = dsh_goal::apply_goal_event(&mut state, &skipped).err().expect("skipped round");
+    let error = dsh_goal::apply_goal_event(&mut state, &skipped)
+        .err()
+        .expect("skipped round");
     assert!(error.contains("next admitted round"), "{error}");
 
     // Over the cap is refused.
@@ -301,7 +320,9 @@ fn admits_only_the_next_round_of_the_active_goal() {
     };
     let mut other = state.clone();
     other.rounds_started = 8;
-    let error = dsh_goal::apply_goal_event(&mut other, &over).err().expect("over cap");
+    let error = dsh_goal::apply_goal_event(&mut other, &over)
+        .err()
+        .expect("over cap");
     assert!(error.contains("next admitted round"), "{error}");
 }
 

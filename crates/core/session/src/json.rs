@@ -99,8 +99,14 @@ mod tests {
 
     #[test]
     fn deep_equality() {
-        assert!(is_deep_equal_json(&json!({"a": [1, 2]}), &json!({"a": [1, 2]})));
-        assert!(!is_deep_equal_json(&json!({"a": [1, 2]}), &json!({"a": [2, 1]})));
+        assert!(is_deep_equal_json(
+            &json!({"a": [1, 2]}),
+            &json!({"a": [1, 2]})
+        ));
+        assert!(!is_deep_equal_json(
+            &json!({"a": [1, 2]}),
+            &json!({"a": [2, 1]})
+        ));
         assert!(is_deep_equal_json(&json!(1), &json!(1.0)));
     }
 
@@ -112,6 +118,9 @@ mod tests {
             .clone();
         assert!(has_exact_keys(&record, &["type", "seq", "time", "data"]));
         assert!(!has_exact_keys(&record, &["type", "seq"]));
-        assert!(!has_exact_keys(&record, &["type", "seq", "time", "data", "extra"]));
+        assert!(!has_exact_keys(
+            &record,
+            &["type", "seq", "time", "data", "extra"]
+        ));
     }
 }

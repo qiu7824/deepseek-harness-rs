@@ -14,8 +14,8 @@ use dsh_session::{
 };
 use dsh_session_query::{
     Config as QueryConfig, SessionEventSearchHit, SessionEventSearchPage, SessionEventSurface,
-    SessionQueryEngine, SessionQueryError, SessionQuerySearch, SessionSearchHit,
-    SessionSearchPage, SessionSearchRequest, SessionSearchExecContext,
+    SessionQueryEngine, SessionQueryError, SessionQuerySearch, SessionSearchExecContext,
+    SessionSearchHit, SessionSearchPage, SessionSearchRequest,
 };
 
 fn run<F: std::future::Future>(future: F) -> F::Output {
@@ -107,12 +107,8 @@ impl Harness {
     fn new() -> Self {
         let ctx = Context::root();
         let sessions = SessionStore::install(&ctx);
-        SessionQueryEngine::install(
-            &ctx,
-            &QueryConfig::default(),
-            Some(Arc::new(StubSearch)),
-        )
-        .expect("query engine");
+        SessionQueryEngine::install(&ctx, &QueryConfig::default(), Some(Arc::new(StubSearch)))
+            .expect("query engine");
         let service = ApiProxyService::install(&ctx, ApiProxyDefaults::default());
         let handler = to_fetch_handler(service);
         Self {
@@ -173,18 +169,22 @@ fn search_emits_only_hits_naming_visible_sessions() {
         let harness = Harness::new();
         // The stub hit names hit-1, which is NOT attached: the visible set
         // is empty, so nothing is emitted.
-        let empty = harness
-            .post(serde_json::json!({ "query": "x" }))
-            .await;
+        let empty = harness.post(serde_json::json!({ "query": "x" })).await;
         assert_eq!(empty["result"]["ok"], true, "{empty}");
-        assert_eq!(empty["result"]["value"]["items"].as_array().expect("items").len(), 0);
+        assert_eq!(
+            empty["result"]["value"]["items"]
+                .as_array()
+                .expect("items")
+                .len(),
+            0
+        );
         assert_eq!(empty["result"]["value"]["hasMore"], false);
 
         // Attach hit-1: the stub hit now passes the authorization boundary.
-        harness.seed("hit-1", vec![text_event(0, "matching text")]).await;
-        let found = harness
-            .post(serde_json::json!({ "query": "x" }))
+        harness
+            .seed("hit-1", vec![text_event(0, "matching text")])
             .await;
+        let found = harness.post(serde_json::json!({ "query": "x" })).await;
         assert_eq!(found["result"]["ok"], true, "{found}");
         let items = found["result"]["value"]["items"].as_array().expect("items");
         assert_eq!(items.len(), 1);

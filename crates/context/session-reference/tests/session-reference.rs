@@ -8,7 +8,7 @@ use cordis::Context;
 use dsh_session::{Session, SessionStore, SurfaceIntent, SurfaceOp, session_id};
 use dsh_session_query::{SessionQueryEngine, SessionSurfaceSnapshot, SurfaceEvent};
 use dsh_session_reference::{
-    DEFAULT_CANDIDATE_LIMIT, DEFAULT_MAX_REFERENCE_BYTES, MAX_REFERENCES, Config,
+    Config, DEFAULT_CANDIDATE_LIMIT, DEFAULT_MAX_REFERENCE_BYTES, MAX_REFERENCES,
     SessionReferenceInput, SessionReferenceResolver, decode_session_reference_uri,
     encode_session_reference_uri, format_session_reference_mention, parse_session_reference_text,
     retain_referenced_session, stringify_tag_safe_json,
@@ -103,12 +103,15 @@ fn snapshot(session: &Session) -> SessionSurfaceSnapshot {
 fn retention_drops_oldest_noncheckpoint_messages_and_truncates_longest() {
     let session = Session::create(session_id("budget"), None, None).expect("session");
     user_message(&session, "short one");
-    user_message(&session, "a much longer second message that will need truncation eventually");
+    user_message(
+        &session,
+        "a much longer second message that will need truncation eventually",
+    );
     user_message(&session, "final newest message kept");
     let snap = snapshot(&session);
 
-    let (data, stats) = retain_referenced_session(&snap, "labeled", 150)
-        .expect("fits after retention");
+    let (data, stats) =
+        retain_referenced_session(&snap, "labeled", 150).expect("fits after retention");
     assert_eq!(stats.original_messages, 3);
     assert!(stats.retained_messages < 3, "{stats:?}");
     assert!(stats.omitted_messages > 0 || stats.omitted_bytes > 0);
@@ -189,7 +192,12 @@ impl dsh_agent::Agent for ProbeAgent {
         KEY.get_or_init(dsh_scope::ScopeKey::new)
     }
 
-    fn cancel(&self, _cause: dsh_session::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_session::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -202,7 +210,13 @@ impl dsh_agent::Agent for ProbeAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 
@@ -315,8 +329,8 @@ async fn lists_ranked_candidates_excluding_self() {
     let ctx = Context::root();
     let store = SessionStore::install(&ctx);
     let engine = SessionQueryEngine::install(&ctx, &Default::default(), None).expect("engine");
-    let resolver = SessionReferenceResolver::install(&ctx, engine, &Default::default())
-        .expect("resolver");
+    let resolver =
+        SessionReferenceResolver::install(&ctx, engine, &Default::default()).expect("resolver");
 
     let same_cwd = store
         .create(

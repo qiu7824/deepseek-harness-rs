@@ -4,7 +4,5 @@
 pub mod index;
 pub mod invariant;
 
-pub use index::{
-    INJECT, NAME, SessionTitleAllPromptsLlmPlugin, apply,
-};
 pub use dsh_session_title_llm::SessionTitleLlmConfig as Config;
+pub use index::{INJECT, NAME, SessionTitleAllPromptsLlmPlugin, apply};

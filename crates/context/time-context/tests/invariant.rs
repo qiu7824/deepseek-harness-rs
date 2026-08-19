@@ -7,12 +7,13 @@ use std::sync::Arc;
 
 use cordis::{Context, arc};
 use dsh_invariants::{InvariantConfig, InvariantRegistry};
-use dsh_llm::{ContentBlock, ContextForm, ContextSnapshotSection, MessageSource, UserMessage, create_user_message};
+use dsh_llm::{
+    ContentBlock, ContextForm, ContextSnapshotSection, MessageSource, UserMessage,
+    create_user_message,
+};
 use dsh_session::{Session, SessionEvent, SessionStore, session_id};
 use dsh_time_context::invariant::{self, TimeContextInvariantPlugin};
-use dsh_time_context::request_zone::{
-    BrowserTimeZoneContext, render_browser_time_zone_context,
-};
+use dsh_time_context::request_zone::{BrowserTimeZoneContext, render_browser_time_zone_context};
 use dsh_time_context::timestamp::{TimestampFormatter, format_timestamp};
 
 fn event(session: &Session, type_: &str, data: serde_json::Value) -> SessionEvent {
@@ -62,9 +63,7 @@ fn reading(now: i64, zone: &str) -> UserMessage {
         }),
     );
     create_user_message(
-        vec![ContentBlock::Text {
-            text: text.clone(),
-        }],
+        vec![ContentBlock::Text { text: text.clone() }],
         MessageSource::Plugin {
             plugin: "time-context".to_string(),
             form: Some(ContextForm::Snapshot),
@@ -118,7 +117,11 @@ fn preparation_position_tracks_the_open_step_boundary() {
         invariant::preparation_position(&session_events(&session)).unwrap_err(),
         "time-context reading must precede request/header"
     );
-    event(&session, "step/end", serde_json::json!({ "turn": 1, "step": 2 }));
+    event(
+        &session,
+        "step/end",
+        serde_json::json!({ "turn": 1, "step": 2 }),
+    );
     event(&session, "turn/end", serde_json::json!({ "turn": 1 }));
     assert_eq!(
         invariant::preparation_position(&session_events(&session)).unwrap_err(),
@@ -180,7 +183,11 @@ fn malformed_readings_fail_with_the_ts_messages() {
         vec![ContentBlock::Text {
             text: format!(
                 "Time sampled while preparing turn 2, step 1: {}\n{}\nElapsed since the preceding model-visible message: unavailable.",
-                format_timestamp(now, &TimestampFormatter::create(Some("UTC")).unwrap(), "UTC"),
+                format_timestamp(
+                    now,
+                    &TimestampFormatter::create(Some("UTC")).unwrap(),
+                    "UTC"
+                ),
                 render_browser_time_zone_context(&BrowserTimeZoneContext::Missing),
             ),
         }],
@@ -231,7 +238,11 @@ fn malformed_readings_fail_with_the_ts_messages() {
     // Browser-zone text that disagrees with the turn's user messages.
     let wrong_browser_text = format!(
         "Time sampled while preparing turn 1, step 1: {}\n{}\nElapsed since the preceding model-visible message: unavailable.",
-        format_timestamp(now, &TimestampFormatter::create(Some("Asia/Shanghai")).unwrap(), "Asia/Shanghai"),
+        format_timestamp(
+            now,
+            &TimestampFormatter::create(Some("Asia/Shanghai")).unwrap(),
+            "Asia/Shanghai"
+        ),
         render_browser_time_zone_context(&BrowserTimeZoneContext::Resolved {
             time_zone: "America/New_York".to_string()
         }),
@@ -277,18 +288,24 @@ fn reading_text(now: i64, zone: &str) -> String {
 
 fn assert_fail(prefix: &[SessionEvent], event: &SessionEvent, expected: &str) {
     let message = invariant::validate_reading(prefix, event).expect_err("must fail");
-    assert!(message.contains(expected), "expected {expected:?}, got {message:?}");
+    assert!(
+        message.contains(expected),
+        "expected {expected:?}, got {message:?}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn companion_installs_and_valid_publications_commit() {
     let ctx = Context::root();
     let store = SessionStore::install(&ctx);
-    let _registry = InvariantRegistry::new(&ctx, InvariantConfig {
-        enabled: true,
-        package_allowlist: vec![],
-        package_blocklist: vec![],
-    });
+    let _registry = InvariantRegistry::new(
+        &ctx,
+        InvariantConfig {
+            enabled: true,
+            package_allowlist: vec![],
+            package_blocklist: vec![],
+        },
+    );
     let fiber = ctx.plugin(Arc::new(TimeContextInvariantPlugin), arc(()));
     fiber.settle().await.expect("settle");
 
@@ -308,7 +325,11 @@ async fn companion_installs_and_valid_publications_commit() {
         message_data(&rpc_message("Asia/Shanghai")),
     );
     let now = chrono::Utc::now().timestamp_millis();
-    event(&session, "user/message", message_data(&reading(now, "Asia/Shanghai")));
+    event(
+        &session,
+        "user/message",
+        message_data(&reading(now, "Asia/Shanghai")),
+    );
     assert_eq!(session.seq(), 4);
     fiber.dispose().await;
 }
@@ -321,11 +342,14 @@ async fn violating_readings_are_contained_without_vetoing_the_append() {
     // structurally valid either way.
     let ctx = Context::root();
     let store = SessionStore::install(&ctx);
-    let _registry = InvariantRegistry::new(&ctx, InvariantConfig {
-        enabled: true,
-        package_allowlist: vec![],
-        package_blocklist: vec![],
-    });
+    let _registry = InvariantRegistry::new(
+        &ctx,
+        InvariantConfig {
+            enabled: true,
+            package_allowlist: vec![],
+            package_blocklist: vec![],
+        },
+    );
     let fiber = ctx.plugin(Arc::new(TimeContextInvariantPlugin), arc(()));
     fiber.settle().await.expect("settle");
 

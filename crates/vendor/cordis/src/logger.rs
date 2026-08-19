@@ -159,7 +159,9 @@ impl LoggerService {
             sn_exporter: AtomicU64::new(0),
             sn: AtomicU64::new(0),
         });
-        let buffer_exporter = BufferExporter { service: Arc::downgrade(&service) };
+        let buffer_exporter = BufferExporter {
+            service: Arc::downgrade(&service),
+        };
         service.add_exporter(Arc::new(buffer_exporter));
         service
     }
@@ -212,7 +214,11 @@ impl LoggerService {
             .or(config.name.as_deref())
             .unwrap_or(fiber_name.as_str())
             .to_string();
-        Logger { name, level: config.level.map(LoggerLevel::from_usize), service: self.arc_self() }
+        Logger {
+            name,
+            level: config.level.map(LoggerLevel::from_usize),
+            service: self.arc_self(),
+        }
     }
 
     /// Log directly under the calling fiber's derived name.
@@ -240,9 +246,7 @@ impl LoggerService {
         let value = root.get("logger", true).unwrap_or_else(|| arc(()));
         crate::util::downcast_arc::<Arc<Self>>(&value)
             .map(|arc_ref| arc_ref.as_ref().clone())
-            .unwrap_or_else(|| {
-                unreachable!("logger service must be reachable through ctx")
-            })
+            .unwrap_or_else(|| unreachable!("logger service must be reachable through ctx"))
     }
 }
 

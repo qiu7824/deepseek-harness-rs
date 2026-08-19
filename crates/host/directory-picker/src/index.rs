@@ -89,16 +89,12 @@ pub struct DirectoryPickerNativeCapability {
     /// Open the chooser and wait for the operator. `signal` is the
     /// caller/connection lifetime; abort terminates the chooser. Resolves to
     /// the chosen absolute path, or `None` when the operator cancels.
-    pub pick: Arc<
-        dyn Fn(AbortSignal) -> BoxFuture<'static, Option<String>> + Send + Sync,
-    >,
+    pub pick: Arc<dyn Fn(AbortSignal) -> BoxFuture<'static, Option<String>> + Send + Sync>,
 }
 
 impl DirectoryPickerNativeCapability {
     pub fn new(
-        pick: Arc<
-            dyn Fn(AbortSignal) -> BoxFuture<'static, Option<String>> + Send + Sync,
-        >,
+        pick: Arc<dyn Fn(AbortSignal) -> BoxFuture<'static, Option<String>> + Send + Sync>,
     ) -> Self {
         Self { pick }
     }
@@ -171,7 +167,11 @@ pub struct DirectoryPickerBrowseCapability {
     /// directory must not outlive a disconnected caller) and resolves with
     /// [`DirectoryPickerListError::Aborted`].
     pub list: Arc<
-        dyn Fn(Option<String>, AbortSignal) -> BoxFuture<'static, Result<DirectoryListing, DirectoryPickerListError>>
+        dyn Fn(
+                Option<String>,
+                AbortSignal,
+            )
+                -> BoxFuture<'static, Result<DirectoryListing, DirectoryPickerListError>>
             + Send
             + Sync,
     >,
@@ -266,7 +266,11 @@ pub struct DirectoryPickerError {
 }
 
 impl DirectoryPickerError {
-    pub fn new(code: DirectoryPickerErrorCode, path: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn new(
+        code: DirectoryPickerErrorCode,
+        path: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             code,
             path: path.into(),

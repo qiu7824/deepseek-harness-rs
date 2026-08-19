@@ -19,9 +19,9 @@ use std::sync::Arc;
 
 use common::MemoryCredentials;
 use cordis::{Context, DispatchMode, arc};
+use dsh_credentials::invariant as credentials_invariant;
 use dsh_credentials::{CredentialInfo, CredentialProvider, credential_ref};
 use dsh_invariants::{InvariantConfig, InvariantRegistry};
-use dsh_credentials::invariant as credentials_invariant;
 
 fn reference() -> dsh_credentials::CredentialRef {
     credential_ref("DEEPSEEK_API_KEY")
@@ -29,7 +29,10 @@ fn reference() -> dsh_credentials::CredentialRef {
 
 #[test]
 fn credential_ref_brands_posix_shell_identifiers() {
-    assert_eq!(credential_ref("DEEPSEEK_API_KEY").to_string(), "DEEPSEEK_API_KEY");
+    assert_eq!(
+        credential_ref("DEEPSEEK_API_KEY").to_string(),
+        "DEEPSEEK_API_KEY"
+    );
     assert_eq!(credential_ref("_private").to_string(), "_private");
     assert_eq!(credential_ref("lower_case9").to_string(), "lower_case9");
 }
@@ -37,9 +40,8 @@ fn credential_ref_brands_posix_shell_identifiers() {
 #[test]
 fn credential_ref_rejects_every_other_shape() {
     for invalid in ["", "9LEADING", "WITH-DASH", "WITH SPACE", "ns:key"] {
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            credential_ref(invalid)
-        }));
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| credential_ref(invalid)));
         assert!(outcome.is_err(), "{invalid:?} must reject");
     }
 }
@@ -80,7 +82,11 @@ async fn treats_an_empty_stored_value_as_absent_everywhere() {
     assert_eq!(provider.resolve(&reference).await, None);
     assert_eq!(
         provider.describe(&reference).await,
-        CredentialInfo { configured: false, source: None, writable: true }
+        CredentialInfo {
+            configured: false,
+            source: None,
+            writable: true
+        }
     );
 }
 
@@ -121,7 +127,10 @@ async fn stores_through_set_removes_through_unset_and_emits_the_committed_change
     );
     provider.unset(&reference).await.expect("unset");
     assert_eq!(provider.resolve(&reference).await, None);
-    assert_eq!(events.lock().clone(), vec![reference.clone(), reference.clone()]);
+    assert_eq!(
+        events.lock().clone(),
+        vec![reference.clone(), reference.clone()]
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -151,9 +160,16 @@ async fn rejects_an_empty_set_and_keeps_an_absent_unset_silent() {
         cordis::EventOptions::default(),
     ));
 
-    let error = provider.set(&reference, "").await.err().expect("empty set rejects");
+    let error = provider
+        .set(&reference, "")
+        .await
+        .err()
+        .expect("empty set rejects");
     assert!(error.contains("empty value"), "{error}");
-    provider.unset(&reference).await.expect("absent unset is a no-op");
+    provider
+        .unset(&reference)
+        .await
+        .expect("absent unset is a no-op");
     assert!(events.lock().is_empty());
 }
 
@@ -170,7 +186,10 @@ async fn accepts_a_committed_change_emitted_by_a_live_service() {
         .get_typed::<Arc<dyn CredentialProvider>>("credentials", false)
         .expect("service");
     let reference = reference();
-    provider.set(&reference, "sk-live").await.expect("set resolves");
+    provider
+        .set(&reference, "sk-live")
+        .await
+        .expect("set resolves");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -195,11 +214,15 @@ async fn fails_an_update_event_emitted_without_a_live_service() {
     let listeners = ctx.collect(DispatchMode::Emit, "credentials/updated", &args);
     assert_eq!(listeners.len(), 1);
     for (listener_ctx, callback) in listeners {
-        let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
-            callback(&listener_ctx, args.clone()),
-        ))
+        let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(callback(
+            &listener_ctx,
+            args.clone(),
+        )))
         .await;
-        assert!(outcome.is_ok(), "the collector fail channel records, not throws");
+        assert!(
+            outcome.is_ok(),
+            "the collector fail channel records, not throws"
+        );
     }
     let failures = failures.lock();
     assert_eq!(failures.len(), 1);

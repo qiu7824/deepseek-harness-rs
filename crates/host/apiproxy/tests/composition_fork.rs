@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use cordis::Context;
 use dsh_agent::{
-    Agent, AgentCancelCause, AgentFactory, AgentHandle, AgentOptions, AgentRegistry,
-    AgentStatus, CancelOptions, CreateAgentOptions, Inbox, InboxTarget, ResumeAgentOptions,
+    Agent, AgentCancelCause, AgentFactory, AgentHandle, AgentOptions, AgentRegistry, AgentStatus,
+    CancelOptions, CreateAgentOptions, Inbox, InboxTarget, ResumeAgentOptions,
 };
 use dsh_host_apiproxy::{
     ApiProxyDefaults, ApiProxyService, Body, CarrierRequest, to_fetch_handler,
@@ -110,12 +110,8 @@ impl AgentFactory for RecordingFactory {
             meta: options.meta.clone(),
         });
         let session_id = options.session_id.clone().expect("session id");
-        let session = Session::create(
-            session_id.clone(),
-            options.seed.clone(),
-            None,
-        )
-        .map_err(|error| error.to_string())?;
+        let session = Session::create(session_id.clone(), options.seed.clone(), None)
+            .map_err(|error| error.to_string())?;
         let inbox = Inbox::new(&session, Default::default()).map_err(|error| error.to_string())?;
         let agent: Arc<dyn Agent> = Arc::new(StubAgent {
             id: session_id,
@@ -255,12 +251,18 @@ fn fork_anchors_the_last_completed_turn_and_inherits_the_lineage() {
         let created = harness.factory.created.lock();
         assert_eq!(created.len(), 1);
         let options = &created[0];
-        assert_eq!(options.session_id.as_ref().map(|id| id.as_str()), Some(child_id));
+        assert_eq!(
+            options.session_id.as_ref().map(|id| id.as_str()),
+            Some(child_id)
+        );
         // The seed carries both completed turns plus the source's automatic
         // session event (seed events are renumbered by the store).
         assert_eq!(options.seed.as_ref().map(Vec::len), Some(5));
         let meta = options.meta.as_ref().expect("meta");
-        assert_eq!(meta.parent_session.as_ref().map(|id| id.as_str()), Some("fork-src"));
+        assert_eq!(
+            meta.parent_session.as_ref().map(|id| id.as_str()),
+            Some("fork-src")
+        );
         assert_eq!(meta.seed_length, Some(5));
         assert_eq!(meta.cwd.as_deref(), Some("D:\\proj"));
     });
@@ -301,10 +303,7 @@ fn a_turnless_session_is_fork_unavailable() {
     run(async {
         let harness = Harness::new();
         harness
-            .seed(
-                "empty-src",
-                vec![turn_event("session/created", 0, 0)],
-            )
+            .seed("empty-src", vec![turn_event("session/created", 0, 0)])
             .await;
         let forked = harness
             .post(serde_json::json!({ "sessionId": "empty-src" }))

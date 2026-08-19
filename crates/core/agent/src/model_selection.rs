@@ -70,7 +70,9 @@ pub fn install_model_selection(
         Box::pin(async move {
             let next = downcast::<NextFn>(&args[2]).expect("request next continuation");
             let value = next.call().await;
-            let resolved = downcast::<LlmCallConfig>(&value).cloned().unwrap_or_default();
+            let resolved = downcast::<LlmCallConfig>(&value)
+                .cloned()
+                .unwrap_or_default();
             let selected = selection.lock().assembled.clone();
             let Some(selected) = selected else {
                 return Some(value);

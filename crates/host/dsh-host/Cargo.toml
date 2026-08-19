@@ -12,11 +12,15 @@ path = "src/main.rs"
 [dependencies]
 cordis = { path = "../../vendor/cordis" }
 dsh-agent = { path = "../../core/agent" }
+dsh-agent-loop = { path = "../../core/agent-loop" }
+dsh-agent-tool-presentation = { path = "../../core/agent-tool-presentation" }
 dsh-agent-presets = { path = "../../preset/agent-presets" }
+dsh-code-runtime-node = { path = "../../code-runtime/code-runtime-node" }
 dsh-commands = { path = "../../interaction/commands" }
 dsh-cordis-loader = { path = "../../vendor/loader" }
 dsh-command-goal = { path = "../../goal/command-goal" }
 dsh-goal = { path = "../../goal/goal" }
+dsh-goal-round-driver = { path = "../../goal/goal-round-driver" }
 dsh-tool-goal = { path = "../../goal/tool-goal" }
 dsh-host-apiproxy = { path = "../apiproxy" }
 dsh-host-directory-picker-browse = { path = "../directory-picker-browse" }
@@ -25,14 +29,36 @@ dsh-host-plugin-inventory = { path = "../plugin-inventory" }
 dsh-host-webserver = { path = "../webserver" }
 dsh-invariants = { path = "../../util/invariants" }
 dsh-llm = { path = "../../core/llm" }
+dsh-llm-deepseek = { path = "../../llm/llm-deepseek" }
 dsh-schedule = { path = "../../schedule/schedule" }
+dsh-jobs = { path = "../../jobs/jobs" }
+dsh-jobs-local = { path = "../../jobs/jobs-local" }
+dsh-sandbox = { path = "../../sandbox/sandbox" }
+dsh-sandbox-local = { path = "../../sandbox/sandbox-local" }
+dsh-sandbox-policy = { path = "../../sandbox/sandbox-policy" }
+dsh-pwsh-local = { path = "../../shell/pwsh-local" }
+dsh-shell = { path = "../../shell/shell" }
 dsh-session = { path = "../../core/session" }
 dsh-session-persistence = { path = "../../session/session-persistence" }
 dsh-session-persistence-jsonl = { path = "../../session/session-persistence-jsonl" }
 dsh-session-query = { path = "../../session/session-query" }
 dsh-session-query-sqlite = { path = "../../session/session-query-sqlite" }
 dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-subprocess = { path = "../../subprocess/subprocess" }
+dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }
+dsh-subagent = { path = "../../subagent/subagent" }
+dsh-subagent-spawn-in-process = { path = "../../subagent/subagent-spawn" }
+dsh-tool-subagent = { path = "../../subagent/tool-subagent" }
+dsh-terminal = { path = "../../terminal/terminal" }
+dsh-terminal-bash = { path = "../../terminal/terminal-bash" }
+dsh-tool-jobs = { path = "../../jobs/tool-jobs" }
+dsh-tool-pwsh = { path = "../../shell/tool-pwsh" }
+dsh-tool-terminal = { path = "../../terminal/tool-terminal" }
+dsh-tool-workflow = { path = "../../workflow/tool-workflow" }
+dsh-tool-ralph = { path = "../../workflow/tool-ralph" }
 dsh-tools = { path = "../../core/tools" }
+dsh-workflow = { path = "../../workflow/workflow" }
+dsh-workflow-node = { path = "../../workflow/workflow-node" }
 dsh-user-approval = { path = "../../interaction/user-approval" }
 dsh-user-questions = { path = "../../interaction/user-questions" }
 axum = { workspace = true }
@@ -45,6 +71,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 http = { workspace = true }
+tokio-tungstenite = "0.29"
 
 [dev-dependencies]
 dsh-agent-presets = { path = "../../preset/agent-presets" }

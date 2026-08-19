@@ -241,8 +241,9 @@ impl Service for InvariantRegistry {
 }
 
 struct InstallerPlugin {
-    install:
-        Arc<dyn Fn(&Context, Arc<dyn Fn(&str) + Send + Sync>) -> BoxFuture<'static, ()> + Send + Sync>,
+    install: Arc<
+        dyn Fn(&Context, Arc<dyn Fn(&str) + Send + Sync>) -> BoxFuture<'static, ()> + Send + Sync,
+    >,
     package_name: String,
     inject: Option<InjectSpec>,
 }
@@ -260,7 +261,10 @@ impl Plugin for InstallerPlugin {
     async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
         let package_name = self.package_name.clone();
         let fail: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |message: &str| {
-            panic!("{}", InvariantError::new(package_name.clone(), message.to_string()));
+            panic!(
+                "{}",
+                InvariantError::new(package_name.clone(), message.to_string())
+            );
         });
         (self.install)(ctx, fail).await;
         Ok(())
@@ -276,30 +280,35 @@ mod tests {
     fn error_format() {
         let error = InvariantError::new("@deepseek-ai/x", "contract broken");
         assert_eq!(error.code, "INVARIANT");
-        assert_eq!(error.to_string(), "invariant violated by \"@deepseek-ai/x\": contract broken");
+        assert_eq!(
+            error.to_string(),
+            "invariant violated by \"@deepseek-ai/x\": contract broken"
+        );
     }
 
     #[test]
     fn pattern_validation() {
         assert!(compile_patterns("x", &["^ok$".to_string()]).len() == 1);
-        assert!(std::panic::catch_unwind(|| {
-            compile_patterns("x", &[" has spaces ".to_string()])
-        })
-        .is_err());
-        assert!(std::panic::catch_unwind(|| {
-            compile_patterns("x", &["(".to_string()])
-        })
-        .is_err());
+        assert!(
+            std::panic::catch_unwind(|| { compile_patterns("x", &[" has spaces ".to_string()]) })
+                .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(|| { compile_patterns("x", &["(".to_string()]) }).is_err()
+        );
     }
 
     #[tokio::test]
     async fn register_runs_and_filters_installers() {
         let ctx = Context::root();
-        let registry = InvariantRegistry::new(&ctx, InvariantConfig {
-            enabled: true,
-            package_allowlist: vec!["^@ok/".to_string()],
-            package_blocklist: vec![],
-        });
+        let registry = InvariantRegistry::new(
+            &ctx,
+            InvariantConfig {
+                enabled: true,
+                package_allowlist: vec!["^@ok/".to_string()],
+                package_blocklist: vec![],
+            },
+        );
 
         let runs = Arc::new(AtomicU32::new(0));
         let runs2 = runs.clone();
@@ -333,13 +342,19 @@ mod tests {
         assert_eq!(skipped.load(Ordering::SeqCst), 0);
 
         // duplicate registration panics
-        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            registry.register(&ctx, "@ok/pkg", InvariantInstaller {
-                install: Arc::new(|_ctx, _fail| Box::pin(async {})),
-                inject: None,
-            });
-        }))
-        .is_err());
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                registry.register(
+                    &ctx,
+                    "@ok/pkg",
+                    InvariantInstaller {
+                        install: Arc::new(|_ctx, _fail| Box::pin(async {})),
+                        inject: None,
+                    },
+                );
+            }))
+            .is_err()
+        );
 
         dispose().await;
         dispose2().await;

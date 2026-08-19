@@ -66,7 +66,11 @@ pub struct WorkspaceSessionNotArchivedError {
 
 impl std::fmt::Display for WorkspaceSessionNotArchivedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "cannot permanently delete session '{}': it is not archived", self.session_id)
+        write!(
+            f,
+            "cannot permanently delete session '{}': it is not archived",
+            self.session_id
+        )
     }
 }
 
@@ -84,9 +88,7 @@ impl WorkspaceSessionLiveError {
     fn new(session_id: &SessionId) -> Self {
         Self {
             session_id: session_id.clone(),
-            message: format!(
-                "cannot permanently delete session '{session_id}' while it is live"
-            ),
+            message: format!("cannot permanently delete session '{session_id}' while it is live"),
         }
     }
 
@@ -117,7 +119,11 @@ pub struct WorkspaceOrderInvalidError {
 
 impl std::fmt::Display for WorkspaceOrderInvalidError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "cannot reorder unknown workspace '{}'", self.workspace_id)
+        write!(
+            f,
+            "cannot reorder unknown workspace '{}'",
+            self.workspace_id
+        )
     }
 }
 
@@ -131,7 +137,9 @@ pub struct WorkspaceAggregateError {
 
 impl WorkspaceAggregateError {
     fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self {
+            message: message.into(),
+        }
     }
 }
 
@@ -159,14 +167,19 @@ impl LiveSessionStore for StoreLiveSessions {
     }
 
     fn list(&self) -> Vec<SessionHeader> {
-        self.0.list().iter().map(|session| session.header().clone()).collect()
+        self.0
+            .list()
+            .iter()
+            .map(|session| session.header().clone())
+            .collect()
     }
 }
 
 /// The persistent-session deletion closure (the unported
 /// `sessionPersistence.delete` seam; production wires the backend once the
 /// persistence delete lands).
-pub type SessionDeleteFn = Arc<dyn Fn(&SessionId) -> BoxFuture<'static, Result<bool, String>> + Send + Sync>;
+pub type SessionDeleteFn =
+    Arc<dyn Fn(&SessionId) -> BoxFuture<'static, Result<bool, String>> + Send + Sync>;
 
 fn box_future<T: Send + 'static>(
     future: impl futures::Future<Output = T> + Send + 'static,
@@ -219,7 +232,9 @@ impl RegistryHostIndexer {
     }
 
     async fn index_header(&self, header: &SessionHeader) {
-        self.headers.lock().insert(header.id.clone(), header.clone());
+        self.headers
+            .lock()
+            .insert(header.id.clone(), header.clone());
         self.session_paths.lock().remove(&header.id);
         let Some(cwd) = header.cwd.as_deref() else {
             self.invalid_session_paths
@@ -229,14 +244,16 @@ impl RegistryHostIndexer {
         };
         match realpath_normalize(cwd).await {
             Ok(path) => {
-                if tokio::fs::metadata(&path).await.is_ok_and(|meta| meta.is_dir()) {
+                if tokio::fs::metadata(&path)
+                    .await
+                    .is_ok_and(|meta| meta.is_dir())
+                {
                     self.session_paths.lock().insert(header.id.clone(), path);
                     self.invalid_session_paths.lock().remove(&header.id);
                 } else {
-                    self.invalid_session_paths.lock().insert(
-                        header.id.clone(),
-                        format!("cwd '{cwd}' is not a directory"),
-                    );
+                    self.invalid_session_paths
+                        .lock()
+                        .insert(header.id.clone(), format!("cwd '{cwd}' is not a directory"));
                 }
             }
             Err(_) => {
@@ -292,9 +309,7 @@ impl WorkspaceEntityHost for RegistryHost {
             let listed = persistence.list().await?;
             indexer.index_headers(&listed).await;
             indexer.headers.lock().get(&id).cloned().ok_or_else(|| {
-                format!(
-                    "cannot validate session '{id}': session persistence holds no such session"
-                )
+                format!("cannot validate session '{id}': session persistence holds no such session")
             })
         })
     }
@@ -418,7 +433,11 @@ impl WorkspaceRegistry {
             let canonical = canonical.clone();
             let title = title.clone();
             let registry = registry.clone();
-            box_future(async move { registry.create_canonical(&canonical, title.as_deref()).await })
+            box_future(async move {
+                registry
+                    .create_canonical(&canonical, title.as_deref())
+                    .await
+            })
         })
         .await
     }
@@ -477,9 +496,10 @@ impl WorkspaceRegistry {
                 }
                 if let Some(before) = &before_id {
                     if !state.workspace_ids.contains(before) {
-                        return Err(
-                            WorkspaceOrderInvalidError { workspace_id: before.clone() }.to_string()
-                        );
+                        return Err(WorkspaceOrderInvalidError {
+                            workspace_id: before.clone(),
+                        }
+                        .to_string());
                     }
                 }
                 if before_id.as_ref() == Some(&id) {
@@ -518,16 +538,17 @@ impl WorkspaceRegistry {
     }
 
     /// Archive one session durably (TS `archiveSession`).
-    pub async fn archive_session(
-        self: &Arc<Self>,
-        session_id: &SessionId,
-    ) -> Result<(), String> {
+    pub async fn archive_session(self: &Arc<Self>, session_id: &SessionId) -> Result<(), String> {
         let session_id = session_id.clone();
         let registry = Arc::clone(self);
         self.enqueue_operation(move || {
             let registry = registry.clone();
             box_future(async move {
-                if registry.require_state().archived_session_ids.contains(&session_id) {
+                if registry
+                    .require_state()
+                    .archived_session_ids
+                    .contains(&session_id)
+                {
                     return Ok(());
                 }
                 if !(registry.session_known(&session_id).await?) {
@@ -542,10 +563,7 @@ impl WorkspaceRegistry {
     }
 
     /// Remove one session from the archive set (TS `unarchiveSession`).
-    pub async fn unarchive_session(
-        self: &Arc<Self>,
-        session_id: &SessionId,
-    ) -> Result<(), String> {
+    pub async fn unarchive_session(self: &Arc<Self>, session_id: &SessionId) -> Result<(), String> {
         let session_id = session_id.clone();
         let registry = Arc::clone(self);
         self.enqueue_operation(move || {
@@ -595,17 +613,34 @@ impl WorkspaceRegistry {
                     }
                 }
                 let deleted = (registry.session_delete)(&session_id).await?;
-                let entities = registry.entities.lock().values().cloned().collect::<Vec<_>>();
+                let entities = registry
+                    .entities
+                    .lock()
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>();
                 for entity in entities {
                     let _ = entity.detach_session(&session_id).await;
                 }
                 registry.host.indexer.headers.lock().remove(&session_id);
-                registry.host.indexer.session_paths.lock().remove(&session_id);
-                registry.host.indexer.invalid_session_paths.lock().remove(&session_id);
+                registry
+                    .host
+                    .indexer
+                    .session_paths
+                    .lock()
+                    .remove(&session_id);
+                registry
+                    .host
+                    .indexer
+                    .invalid_session_paths
+                    .lock()
+                    .remove(&session_id);
                 let mut next = registry.require_state();
                 next.archived_session_ids.retain(|id| *id != session_id);
                 registry.set_state(&next).await?;
-                registry.ctx.emit("workspace/session-deleted", vec![arc(session_id)]);
+                registry
+                    .ctx
+                    .emit("workspace/session-deleted", vec![arc(session_id)]);
                 Ok(deleted)
             })
         })
@@ -665,8 +700,14 @@ impl WorkspaceRegistry {
             created_at: now.clone(),
             updated_at: now,
         };
-        let entity = Arc::new(WorkspaceEntity::new(self.host.clone(), id.clone(), record.clone()));
-        self.entities.lock().insert(id.as_str().to_string(), entity.clone());
+        let entity = Arc::new(WorkspaceEntity::new(
+            self.host.clone(),
+            id.clone(),
+            record.clone(),
+        ));
+        self.entities
+            .lock()
+            .insert(id.as_str().to_string(), entity.clone());
         let pending_state = WorkspaceDomainState {
             pending_mutation: Some(WorkspacePendingMutation::Create {
                 workspace_id: id.clone(),
@@ -677,7 +718,9 @@ impl WorkspaceRegistry {
             self.entities.lock().remove(id.as_str());
             return Err(error);
         }
-        if let Err(error) = self.table.put(id.as_str(), serde_json::to_value(&record).expect("record"))
+        if let Err(error) = self
+            .table
+            .put(id.as_str(), serde_json::to_value(&record).expect("record"))
             .await
         {
             self.entities.lock().remove(id.as_str());
@@ -735,13 +778,17 @@ impl WorkspaceRegistry {
             pending_mutation: None,
         };
         let pending_state = WorkspaceDomainState {
-            pending_mutation: Some(WorkspacePendingMutation::Delete { workspace_id: id.clone() }),
+            pending_mutation: Some(WorkspacePendingMutation::Delete {
+                workspace_id: id.clone(),
+            }),
             ..next_state.clone()
         };
         self.set_state(&pending_state).await?;
         self.entities.lock().remove(id.as_str());
         if let Err(error) = self.table.delete(id.as_str()).await {
-            self.entities.lock().insert(id.as_str().to_string(), entity.clone());
+            self.entities
+                .lock()
+                .insert(id.as_str().to_string(), entity.clone());
             if let Err(rollback_error) = self.set_state(&state).await {
                 self.entities.lock().remove(id.as_str());
                 return Err(WorkspaceAggregateError::new(format!(
@@ -791,7 +838,14 @@ impl WorkspaceRegistry {
         let state = self.require_state();
         let mut groups_by_path: HashMap<String, Vec<SessionHeader>> = HashMap::new();
         for header in headers {
-            let Some(path) = self.host.indexer.session_paths.lock().get(&header.id).cloned() else {
+            let Some(path) = self
+                .host
+                .indexer
+                .session_paths
+                .lock()
+                .get(&header.id)
+                .cloned()
+            else {
                 continue;
             };
             groups_by_path.entry(path).or_default().push(header.clone());
@@ -806,7 +860,11 @@ impl WorkspaceRegistry {
                         .then_with(|| left.id.to_string().cmp(&right.id.to_string()))
                 });
                 let newest_at = group_headers[0].created_at;
-                BootstrapGroup { path, headers: group_headers, newest_at }
+                BootstrapGroup {
+                    path,
+                    headers: group_headers,
+                    newest_at,
+                }
             })
             .collect();
         groups.sort_by(|left, right| {
@@ -869,11 +927,7 @@ impl WorkspaceRegistry {
                 .headers
                 .iter()
                 .map(|header| header.id.clone())
-                .filter(|session_id| {
-                    accounted
-                        .get(session_id)
-                        .is_none_or(|holder| *holder == id)
-                })
+                .filter(|session_id| accounted.get(session_id).is_none_or(|holder| *holder == id))
                 .collect();
             let historical_set: HashSet<SessionId> = historical.iter().cloned().collect();
             let mut session_ids = historical.clone();
@@ -1021,7 +1075,13 @@ impl WorkspaceRegistry {
         for entity in self.entities.lock().values() {
             let record = entity.record();
             for session_id in &record.session_ids {
-                let path = self.host.indexer.session_paths.lock().get(session_id).cloned();
+                let path = self
+                    .host
+                    .indexer
+                    .session_paths
+                    .lock()
+                    .get(session_id)
+                    .cloned();
                 if path.as_deref() == Some(record.path.as_str()) {
                     continue;
                 }
@@ -1043,10 +1103,12 @@ impl WorkspaceRegistry {
                             "session header is missing".to_string()
                         }
                     });
-                self.ctx.named_logger(Some("workspace")).warn(vec![arc(format!(
-                    "workspace '{}' filtered session '{session_id}' from membership: {reason}",
-                    entity.id
-                ))]);
+                self.ctx
+                    .named_logger(Some("workspace"))
+                    .warn(vec![arc(format!(
+                        "workspace '{}' filtered session '{session_id}' from membership: {reason}",
+                        entity.id
+                    ))]);
             }
         }
     }

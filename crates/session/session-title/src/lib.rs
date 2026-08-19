@@ -15,13 +15,11 @@ pub use index::{
     collect_session_title_messages, fold_session_title, title_event_data,
     title_projection_definition,
 };
-pub use normalize::{
-    fallback_session_title, normalize_session_title, truncate_title_utf8,
-};
+pub use normalize::{fallback_session_title, normalize_session_title, truncate_title_utf8};
 pub use types::{
     Config, SessionTitleAutomaticMode, SessionTitleError, SessionTitleInvalidError,
     SessionTitleModelProvenance, SessionTitleProvider, SessionTitleProviderId,
-    SessionTitleProviderRequest, SessionTitleProviderResult, SessionTitleSignal,
-    SessionTitleSnapshot, SessionTitleSource, SessionTitleUserMessage,
-    SessionTitleProviderIdTag, session_title_provider_id,
+    SessionTitleProviderIdTag, SessionTitleProviderRequest, SessionTitleProviderResult,
+    SessionTitleSignal, SessionTitleSnapshot, SessionTitleSource, SessionTitleUserMessage,
+    session_title_provider_id,
 };

@@ -19,8 +19,8 @@ use dsh_agent::Agent;
 use futures::future::BoxFuture;
 
 pub use crate::types::{
-    JobAbort, JobDoneListener, JobHooks, JobId, JobOutcome, JobOutcomeStatus, JobRead,
-    JobSnapshot, JobStart, JobStatus, JobsChangedListener, job_id,
+    JobAbort, JobDoneListener, JobHooks, JobId, JobOutcome, JobOutcomeStatus, JobRead, JobSnapshot,
+    JobStart, JobStatus, JobsChangedListener, job_id,
 };
 
 /// The outcome of a kill request (TS `'requested' | 'already-finished'`).

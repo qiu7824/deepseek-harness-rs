@@ -5,14 +5,14 @@
 use dsh_session::session_id;
 use dsh_session_query::{
     SessionAvailability, SessionEventResultFilter, SessionEventSearchRequest, SessionEventSurface,
-    SessionResultFilter, SessionQueryErrorCode, SessionSearchRequest, session_search_cursor,
+    SessionQueryErrorCode, SessionResultFilter, SessionSearchRequest, session_search_cursor,
 };
 use dsh_session_query_sqlite::Config;
 use dsh_session_query_sqlite::query::{
-    Binding, RequestFingerprint, SQLITE_FTS5_OUTER_PREDICATE_LIMIT, SQLITE_MAX_PAGE_LIMIT,
-    build_event_where, build_session_where, make_snippet, normalize_event_request,
-    normalize_session_request, quote_fts_data, request_fingerprint, FTS_HIGHLIGHT_END,
-    FTS_HIGHLIGHT_START,
+    Binding, FTS_HIGHLIGHT_END, FTS_HIGHLIGHT_START, RequestFingerprint,
+    SQLITE_FTS5_OUTER_PREDICATE_LIMIT, SQLITE_MAX_PAGE_LIMIT, build_event_where,
+    build_session_where, make_snippet, normalize_event_request, normalize_session_request,
+    quote_fts_data, request_fingerprint,
 };
 
 fn limits() -> Config {
@@ -106,7 +106,10 @@ fn rejects_blank_nul_and_malformed_requests() {
     )
     .err()
     .expect("blank query rejected");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidQuery);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQueryInvalidQuery
+    );
 
     let error = normalize_session_request(
         &SessionSearchRequest {
@@ -117,7 +120,10 @@ fn rejects_blank_nul_and_malformed_requests() {
     )
     .err()
     .expect("NUL query rejected");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidQuery);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQueryInvalidQuery
+    );
 
     let error = normalize_event_request(
         &SessionEventSearchRequest {
@@ -129,7 +135,10 @@ fn rejects_blank_nul_and_malformed_requests() {
     )
     .err()
     .expect("missing session id rejected");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidFilter);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQueryInvalidFilter
+    );
 
     let error = normalize_event_request(
         &SessionEventSearchRequest {
@@ -145,7 +154,10 @@ fn rejects_blank_nul_and_malformed_requests() {
     )
     .err()
     .expect("inverted range rejected");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidFilter);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQueryInvalidFilter
+    );
 
     let error = normalize_session_request(
         &SessionSearchRequest {
@@ -159,7 +171,10 @@ fn rejects_blank_nul_and_malformed_requests() {
     )
     .err()
     .expect("text metadata clause rejected");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidFilter);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQueryInvalidFilter
+    );
 
     for limit in [0, 4] {
         let error = normalize_event_request(
@@ -173,7 +188,10 @@ fn rejects_blank_nul_and_malformed_requests() {
         )
         .err()
         .expect("bad limit rejected");
-        assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidLimit);
+        assert_eq!(
+            code(&error),
+            SessionQueryErrorCode::SessionQueryInvalidLimit
+        );
     }
 
     let error = normalize_event_request(
@@ -196,7 +214,10 @@ fn rejects_blank_nul_and_malformed_requests() {
     )
     .err()
     .expect("oversized limit rejected");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidLimit);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQueryInvalidLimit
+    );
 }
 
 #[test]
@@ -222,10 +243,8 @@ fn compiles_all_session_clauses_including_empty_and_nullable() {
         vec![Binding::Text("a".into()), Binding::Text("b".into())]
     );
 
-    let null_cwd = build_session_where(&[SessionResultFilter::Cwd {
-        values: vec![None],
-    }])
-    .expect("null cwd");
+    let null_cwd =
+        build_session_where(&[SessionResultFilter::Cwd { values: vec![None] }]).expect("null cwd");
     assert_eq!(null_cwd.sql, "(cwd IS NULL)");
 
     let cwd = build_session_where(&[SessionResultFilter::Cwd {
@@ -239,7 +258,10 @@ fn compiles_all_session_clauses_including_empty_and_nullable() {
         values: vec![Some(session_id("p")), None],
     }])
     .expect("parent");
-    assert_eq!(parent.sql, "(parent_session IN (?) OR parent_session IS NULL)");
+    assert_eq!(
+        parent.sql,
+        "(parent_session IN (?) OR parent_session IS NULL)"
+    );
 
     let combined = build_session_where(&[
         SessionResultFilter::CreatedAt {
@@ -313,7 +335,9 @@ fn rejects_predicate_builders_above_the_fts5_outer_budget() {
         })
         .collect();
     assert_eq!(
-        build_session_where(&filters).expect("boundary").predicate_count,
+        build_session_where(&filters)
+            .expect("boundary")
+            .predicate_count,
         SQLITE_FTS5_OUTER_PREDICATE_LIMIT
     );
     let mut over = filters;
@@ -321,21 +345,29 @@ fn rejects_predicate_builders_above_the_fts5_outer_budget() {
         values: vec![session_id("over")],
     });
     let error = build_session_where(&over).err().expect("rejected");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidFilter);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQueryInvalidFilter
+    );
 
-    let event_filters: Vec<SessionEventResultFilter> =
-        (0..SQLITE_FTS5_OUTER_PREDICATE_LIMIT + 1)
-            .map(|_| SessionEventResultFilter::Type {
-                values: vec!["user/message".to_string()],
-            })
-            .collect();
+    let event_filters: Vec<SessionEventResultFilter> = (0..SQLITE_FTS5_OUTER_PREDICATE_LIMIT + 1)
+        .map(|_| SessionEventResultFilter::Type {
+            values: vec!["user/message".to_string()],
+        })
+        .collect();
     let error = build_event_where(&event_filters).err().expect("rejected");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidFilter);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQueryInvalidFilter
+    );
 }
 
 #[test]
 fn quotes_all_caller_match_syntax_as_data() {
-    assert_eq!(quote_fts_data("say \"needle\" OR *"), "\"say \"\"needle\"\" OR *\"");
+    assert_eq!(
+        quote_fts_data("say \"needle\" OR *"),
+        "\"say \"\"needle\"\" OR *\""
+    );
 }
 
 #[test]
@@ -430,24 +462,39 @@ fn canonicalizes_request_and_filter_ordering_in_both_scopes() {
 fn normalizes_bounds_and_positions_snippets_by_unicode_code_point() {
     assert_eq!(make_snippet("  short\ntext  ", 20), "short text");
     assert_eq!(
-        make_snippet(&format!("abcde{FTS_HIGHLIGHT_START}f{FTS_HIGHLIGHT_END}"), 1),
+        make_snippet(
+            &format!("abcde{FTS_HIGHLIGHT_START}f{FTS_HIGHLIGHT_END}"),
+            1
+        ),
         "…"
     );
     assert_eq!(make_snippet("abcdefghij", 5), "abcd…");
     assert_eq!(
-        make_snippet(&format!("ab{FTS_HIGHLIGHT_START}c{FTS_HIGHLIGHT_END}defghij"), 5),
+        make_snippet(
+            &format!("ab{FTS_HIGHLIGHT_START}c{FTS_HIGHLIGHT_END}defghij"),
+            5
+        ),
         "…bcd…"
     );
     assert_eq!(
-        make_snippet(&format!("ab{FTS_HIGHLIGHT_START}c{FTS_HIGHLIGHT_END}defghij"), 3),
+        make_snippet(
+            &format!("ab{FTS_HIGHLIGHT_START}c{FTS_HIGHLIGHT_END}defghij"),
+            3
+        ),
         "…c…"
     );
     assert_eq!(
-        make_snippet(&format!("abcde{FTS_HIGHLIGHT_START}f{FTS_HIGHLIGHT_END}"), 2),
+        make_snippet(
+            &format!("abcde{FTS_HIGHLIGHT_START}f{FTS_HIGHLIGHT_END}"),
+            2
+        ),
         "…f"
     );
     assert_eq!(
-        make_snippet(&format!("abcde{FTS_HIGHLIGHT_START}f{FTS_HIGHLIGHT_END}"), 5),
+        make_snippet(
+            &format!("abcde{FTS_HIGHLIGHT_START}f{FTS_HIGHLIGHT_END}"),
+            5
+        ),
         "…cdef"
     );
     assert_eq!(

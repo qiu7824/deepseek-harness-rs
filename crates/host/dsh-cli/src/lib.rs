@@ -3,7 +3,15 @@
 //! patch overlays to apply, and the config dumps; everything after its own
 //! flags belongs to the booted tree verbatim).
 
+pub mod acp_stdio;
 pub mod profile_boot;
+pub mod run_profile;
+pub mod sdk_stdio;
+
+pub use run_profile::{
+    ProfileInterrupt, ProfileInterruptLatch, ProfileSurface, RunProfileHandle, RunProfileRequest,
+    resolve_profile_surface, run_profile, run_profile_with_interrupt,
+};
 
 /// Boot a named profile and hand it the invocation's inner arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +42,43 @@ pub struct PluginInvocation {
     pub profile: String,
     /// Raw pnpm arguments, verbatim.
     pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginCommandSpec {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: std::path::PathBuf,
+}
+
+pub fn plugin_command_spec(
+    invocation: &PluginInvocation,
+    home: &std::path::Path,
+) -> Result<PluginCommandSpec, String> {
+    let cwd = dsh_app_boot::resolve_profile_dir(&invocation.profile, home)?;
+    if !cwd.join("package.json").exists() {
+        return Err(format!(
+            "dsh: profile {:?} is not initialized",
+            invocation.profile
+        ));
+    }
+    Ok(PluginCommandSpec {
+        program: std::env::var("DSH_PNPM_BIN").unwrap_or_else(|_| "pnpm".to_string()),
+        args: invocation.args.clone(),
+        cwd,
+    })
+}
+
+pub fn run_plugin_command(
+    invocation: &PluginInvocation,
+    home: &std::path::Path,
+) -> Result<std::process::ExitStatus, String> {
+    let spec = plugin_command_spec(invocation, home)?;
+    std::process::Command::new(&spec.program)
+        .args(&spec.args)
+        .current_dir(&spec.cwd)
+        .status()
+        .map_err(|error| format!("dsh: failed to run {}: {error}", spec.program))
 }
 
 /// The resolved `dsh` invocation.
@@ -146,14 +191,18 @@ fn parse_options(
         match args[i].as_str() {
             "--profile" => {
                 let Some(value) = args.get(i + 1) else {
-                    return Err(DshArgsError::error("option '--profile <name>' argument missing"));
+                    return Err(DshArgsError::error(
+                        "option '--profile <name>' argument missing",
+                    ));
                 };
                 profile = Some(value.clone());
                 i += 2;
             }
             "--patch" => {
                 let Some(value) = args.get(i + 1) else {
-                    return Err(DshArgsError::error("option '--patch <path>' argument missing"));
+                    return Err(DshArgsError::error(
+                        "option '--patch <path>' argument missing",
+                    ));
                 };
                 options.patch.push(value.clone());
                 i += 2;
@@ -181,7 +230,10 @@ fn parse_options(
     let profile = match profile.or_else(|| default_profile.map(str::to_string)) {
         Some(profile) => profile,
         None => {
-            if inner.iter().any(|argument| argument == "-h" || argument == "--help") {
+            if inner
+                .iter()
+                .any(|argument| argument == "-h" || argument == "--help")
+            {
                 return Err(DshArgsError {
                     message: HELP_TEXT.to_string(),
                     exit_code: 0,
@@ -198,10 +250,7 @@ fn parse_options(
 
 /// Resolve argv into one invocation, or an error for help (exit 0),
 /// version (exit 0), or a parse failure (exit 1).
-pub fn parse_dsh_args(
-    argv: &[String],
-    version: &str,
-) -> Result<DshInvocation, DshArgsError> {
+pub fn parse_dsh_args(argv: &[String], version: &str) -> Result<DshInvocation, DshArgsError> {
     if argv.len() == 1 && (argv[0] == "-V" || argv[0] == "--version") {
         return Err(DshArgsError {
             message: version.to_string(),
@@ -240,11 +289,8 @@ mod tests {
 
     #[test]
     fn boot_resolution_stops_at_the_first_inner_argument() {
-        let parsed = parse_dsh_args(
-            &argv(&["--profile", "tui", "--resume", "abc"]),
-            "0.0.1",
-        )
-        .expect("parsed");
+        let parsed = parse_dsh_args(&argv(&["--profile", "tui", "--resume", "abc"]), "0.0.1")
+            .expect("parsed");
         assert_eq!(
             parsed,
             DshInvocation::Profile(ProfileInvocation {
@@ -277,7 +323,10 @@ mod tests {
         .expect("parsed");
         match parsed {
             DshInvocation::Profile(invocation) => {
-                assert_eq!(invocation.patches, vec!["a.yml".to_string(), "b.yml".to_string()]);
+                assert_eq!(
+                    invocation.patches,
+                    vec!["a.yml".to_string(), "b.yml".to_string()]
+                );
             }
             other => panic!("expected profile, got {other:?}"),
         }
@@ -314,6 +363,24 @@ mod tests {
                 args: vec!["add".to_string(), "some-pkg".to_string()],
             })
         );
+    }
+
+    #[test]
+    fn plugin_command_uses_direct_argv_and_the_profile_directory() {
+        let home =
+            std::env::temp_dir().join(format!("dsh-plugin-command-spec-{}", std::process::id()));
+        let profile_dir = home.join("profiles").join("web");
+        std::fs::create_dir_all(&profile_dir).expect("profile dir");
+        std::fs::write(profile_dir.join("package.json"), "{}\n").expect("profile manifest");
+        let invocation = PluginInvocation {
+            profile: "web".to_string(),
+            args: vec!["add".to_string(), "pkg;not-shell".to_string()],
+        };
+        let spec = plugin_command_spec(&invocation, &home).expect("command spec");
+        assert_eq!(spec.program, "pnpm");
+        assert_eq!(spec.args, invocation.args);
+        assert_eq!(spec.cwd, profile_dir);
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]

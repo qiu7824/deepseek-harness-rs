@@ -14,9 +14,9 @@ use cordis::Context;
 use dsh_llm::ContentBlock;
 use dsh_session::{Session, SessionEvent, SessionId, session_id};
 use dsh_subagent::{
-    AssistantOutputFold, SubagentCapabilities, SubagentError, SubagentProvider, SubagentResult,
-    SubagentRun, SubagentRuntime, SubagentStartRequest, SubagentStopReason, ResolvedSubagentStartRequest,
-    final_assistant_output, settle_run,
+    AssistantOutputFold, ResolvedSubagentStartRequest, SubagentCapabilities, SubagentError,
+    SubagentProvider, SubagentResult, SubagentRun, SubagentRuntime, SubagentStartRequest,
+    SubagentStopReason, final_assistant_output, settle_run,
 };
 
 /// A probe provider that returns scripted runs.
@@ -163,7 +163,12 @@ impl dsh_agent::Agent for ProbeAgent {
         &self.scope_key
     }
 
-    fn cancel(&self, _cause: dsh_session::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_session::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -176,7 +181,13 @@ impl dsh_agent::Agent for ProbeAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 
@@ -224,7 +235,11 @@ async fn registers_providers_and_rejects_duplicates() {
     // Disposing removes the provider and blocks new starts.
     disposer().await;
     assert!(runtime.get_provider("fork").is_none());
-    let error = runtime.start("fork", start_request()).await.err().expect("no provider");
+    let error = runtime
+        .start("fork", start_request())
+        .await
+        .err()
+        .expect("no provider");
     assert_eq!(error.code, "NO_PROVIDER");
 }
 
@@ -247,13 +262,21 @@ async fn validates_capabilities_before_delegation() {
 
     let mut request = start_request();
     request.max_depth = Some(2);
-    let error = runtime.start("spawn", request).await.err().expect("capability");
+    let error = runtime
+        .start("spawn", request)
+        .await
+        .err()
+        .expect("capability");
     assert_eq!(error.code, "UNSUPPORTED_CAPABILITY");
     assert!(provider.starts().is_empty());
 
     let mut request = start_request();
     request.persona = Some("strict".to_string());
-    let error = runtime.start("spawn", request).await.err().expect("capability");
+    let error = runtime
+        .start("spawn", request)
+        .await
+        .err()
+        .expect("capability");
     assert_eq!(error.code, "UNSUPPORTED_CAPABILITY");
     assert!(provider.starts().is_empty());
 }
@@ -276,22 +299,32 @@ async fn starts_a_published_run_and_emits_the_lifecycle_pair() {
         .expect("register");
 
     // Observe start/end on the parent-scoped carrier.
-    let started: Arc<parking_lot::Mutex<Vec<String>>> = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let started: Arc<parking_lot::Mutex<Vec<String>>> =
+        Arc::new(parking_lot::Mutex::new(Vec::new()));
     let started_for_listener = started.clone();
     let listener: Arc<cordis::Listener> = Arc::new(move |_ctx, args| {
         let started = started_for_listener.clone();
         Box::pin(async move {
-            if let Some(info) = args.first().and_then(|value| cordis::downcast::<dsh_subagent::SubagentRunInfo>(value)) {
-                started.lock().push(format!("start:{}:{}", info.provider, info.id.as_str()));
+            if let Some(info) = args
+                .first()
+                .and_then(|value| cordis::downcast::<dsh_subagent::SubagentRunInfo>(value))
+            {
+                started
+                    .lock()
+                    .push(format!("start:{}:{}", info.provider, info.id.as_str()));
             }
-            if let Some(info) = args.first().and_then(|value| cordis::downcast::<dsh_subagent::SubagentRunEndInfo>(value)) {
+            if let Some(info) = args
+                .first()
+                .and_then(|value| cordis::downcast::<dsh_subagent::SubagentRunEndInfo>(value))
+            {
                 let mut started = started.lock();
                 started.push(format!("end:{:?}", info.stop_reason));
             }
             None
         })
     });
-    ctx.on("subagent/start", listener.clone(), Default::default()).await;
+    ctx.on("subagent/start", listener.clone(), Default::default())
+        .await;
     ctx.on("subagent/end", listener, Default::default()).await;
 
     let run = runtime.start("fork", start_request()).await.expect("start");
@@ -303,12 +336,19 @@ async fn starts_a_published_run_and_emits_the_lifecycle_pair() {
     // The descriptor was resolved and snapshotted for the provider.
     let result = run.result().await.expect("result");
     assert_eq!(result.stop_reason, SubagentStopReason::Completed);
+    let replay = run
+        .result()
+        .await
+        .expect("lifecycle observation must not consume the business result");
+    assert_eq!(replay.stop_reason, SubagentStopReason::Completed);
 
     // Let the terminal observer publish the end edge.
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     let events = started.lock().clone();
     assert!(
-        events.iter().any(|event| event.starts_with("start:fork:child")),
+        events
+            .iter()
+            .any(|event| event.starts_with("start:fork:child")),
         "{events:?}"
     );
     assert!(

@@ -21,8 +21,8 @@ use std::sync::Arc;
 use cordis::{ArcValue, Context, Disposer, Plugin, PluginError};
 use dsh_session::{TodoItem, TodoStatus, todo_write_data};
 use dsh_tools::{
-    ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition, ToolRunContext,
-    ToolRuntime, validate_json_schema_value,
+    ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition,
+    ToolRunContext, ToolRuntime, validate_json_schema_value,
 };
 
 pub use dsh_session::TodoItem as TodoItemType;
@@ -272,32 +272,31 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
     let allow_parallel = config.allow_parallel_in_progress;
 
     // The unit child activates only when a projection registry is composed.
-    let projection_fiber = ctx.inject(
-        cordis::InjectSpec::new(["sessionProjections"]),
-        Arc::new(move |type_ctx: &Context, _config: ArcValue| {
-            let type_ctx = type_ctx.clone();
-            Box::pin(async move {
-                if let Some(registry) = type_ctx
-                    .get_typed::<Arc<dsh_session_projection::SessionProjectionRegistry>>(
-                        "sessionProjections",
-                        false,
-                    )
-                    .map(|slot| slot.as_ref().clone())
-                {
-                    let disposer = registry
-                        .register(&type_ctx, todos_projection())
-                        .map_err(|message| {
-                            PluginError::from(anyhow::anyhow!("tool-todo: {message}"))
-                        })?;
-                    let _ = type_ctx.effect(
-                        "tool-todo projection",
-                        Box::pin(async move { Some(disposer) }),
-                    );
-                }
-                Ok(())
-            })
-        }),
-    );
+    let projection_fiber =
+        ctx.inject(
+            cordis::InjectSpec::new(["sessionProjections"]),
+            Arc::new(move |type_ctx: &Context, _config: ArcValue| {
+                let type_ctx = type_ctx.clone();
+                Box::pin(async move {
+                    if let Some(registry) = type_ctx
+                        .get_typed::<Arc<dsh_session_projection::SessionProjectionRegistry>>(
+                            "sessionProjections",
+                            false,
+                        )
+                        .map(|slot| slot.as_ref().clone())
+                    {
+                        let disposer = registry.register(&type_ctx, todos_projection()).map_err(
+                            |message| PluginError::from(anyhow::anyhow!("tool-todo: {message}")),
+                        )?;
+                        let _ = type_ctx.effect(
+                            "tool-todo projection",
+                            Box::pin(async move { Some(disposer) }),
+                        );
+                    }
+                    Ok(())
+                })
+            }),
+        );
 
     let description = describe(allow_parallel);
     let definition = ToolDefinition {
@@ -334,22 +333,18 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
                 if !violations.is_empty() {
                     return Err(ToolBodyError::plain(violations.join("; ")));
                 }
-                let raw: Vec<serde_json::Value> = args["todos"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
+                let raw: Vec<serde_json::Value> =
+                    args["todos"].as_array().cloned().unwrap_or_default();
                 let todos = to_todo_list(&raw, allow_parallel).map_err(ToolBodyError::plain)?;
-                let agent = agent
-                    .ok_or_else(|| ToolBodyError::plain("todo_write requires an owning agent session"))?;
+                let agent = agent.ok_or_else(|| {
+                    ToolBodyError::plain("todo_write requires an owning agent session")
+                })?;
                 agent
                     .session()
                     .append("todo/write", todo_write_data(&todos), None)
                     .map_err(|message| ToolBodyError::plain(message))?;
                 let count = |status: TodoStatus| -> i64 {
-                    todos
-                        .iter()
-                        .filter(|todo| todo.status == status)
-                        .count() as i64
+                    todos.iter().filter(|todo| todo.status == status).count() as i64
                 };
                 Ok(serde_json::json!({
                     "todos": todos.iter().map(|todo| serde_json::json!({
@@ -369,7 +364,11 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
             Some(ToolCallView::Generic {
                 title: "Update todo list".to_string(),
                 kind: Some(ToolCallKind::Other),
-                raw_input: Some(args.get("todos").cloned().unwrap_or(serde_json::Value::Null)),
+                raw_input: Some(
+                    args.get("todos")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                ),
                 content: None,
                 locations: None,
             })
@@ -414,8 +413,8 @@ impl Plugin for ToolTodoPlugin {
             .downcast_ref::<Config>()
             .cloned()
             .ok_or_else(|| PluginError::from(anyhow::anyhow!("tool-todo requires config")))?;
-        let disposer = apply(ctx, &config)
-            .map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
+        let disposer =
+            apply(ctx, &config).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
         let _ = ctx.effect("tool-todo", Box::pin(async move { Some(disposer) }));
         Ok(())
     }

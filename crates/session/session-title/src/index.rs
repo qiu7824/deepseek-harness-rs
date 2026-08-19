@@ -111,7 +111,10 @@ struct Inflight {
 
 impl Inflight {
     fn new() -> Self {
-        Self { count: AtomicUsize::new(0), notify: tokio::sync::Notify::new() }
+        Self {
+            count: AtomicUsize::new(0),
+            notify: tokio::sync::Notify::new(),
+        }
     }
 
     fn increment(&self) {
@@ -164,7 +167,8 @@ struct ActiveProviderWork {
 #[derive(Default)]
 struct WorkState {
     revision: u64,
-    fallback: Option<futures::future::Shared<Tracked<Result<Option<SessionTitleSnapshot>, String>>>>,
+    fallback:
+        Option<futures::future::Shared<Tracked<Result<Option<SessionTitleSnapshot>, String>>>>,
     pending: Option<PendingAutomaticWork>,
     active: Option<Arc<ActiveProviderWork>>,
 }
@@ -256,7 +260,10 @@ pub fn collect_session_title_messages(
         if normalize_session_title(&text, u64::MAX).is_empty() {
             continue;
         }
-        messages.push(SessionTitleUserMessage { seq: event.seq, text });
+        messages.push(SessionTitleUserMessage {
+            seq: event.seq,
+            text,
+        });
     }
     messages
 }
@@ -264,7 +271,10 @@ pub fn collect_session_title_messages(
 /// Fold the latest logged title without consulting mutable metadata (TS
 /// `foldSessionTitle`).
 pub fn fold_session_title(events: &[SessionEvent]) -> Option<SessionTitleSnapshot> {
-    let event = events.iter().rev().find(|event| event.type_ == "session/title")?;
+    let event = events
+        .iter()
+        .rev()
+        .find(|event| event.type_ == "session/title")?;
     let title = event.data.get("title")?.as_str()?.to_string();
     let message_seqs = event
         .data
@@ -302,9 +312,7 @@ pub fn title_projection_definition() -> ProjectionDefinition {
             let json: &JsonValue = downcast(value).expect("title projection state must be JSON");
             match json {
                 JsonValue::Null => Ok(JsonValue::Null),
-                JsonValue::String(text) if !text.is_empty() => {
-                    Ok(JsonValue::String(text.clone()))
-                }
+                JsonValue::String(text) if !text.is_empty() => Ok(JsonValue::String(text.clone())),
                 other => Err(format!(
                     "title projection view must be a non-empty string or null, got {other}"
                 )),
@@ -347,7 +355,9 @@ impl SessionTitleService {
         assert_positive_integer("fallbackMaxBytes", config.fallback_max_bytes)?;
         assert_positive_integer("maxTitleBytes", config.max_title_bytes)?;
         if config.fallback_max_bytes > config.max_title_bytes {
-            return Err("session-title: fallbackMaxBytes must not exceed maxTitleBytes".to_string());
+            return Err(
+                "session-title: fallbackMaxBytes must not exceed maxTitleBytes".to_string(),
+            );
         }
 
         let service = Arc::new(Self {
@@ -383,13 +393,10 @@ impl SessionTitleService {
                 let projection_ctx = projection_ctx.clone();
                 Box::pin(async move {
                     let registry: Arc<Arc<SessionProjectionRegistry>> = projection_ctx
-                        .get_typed::<Arc<SessionProjectionRegistry>>(
-                            "sessionProjections",
-                            false,
-                        )
+                        .get_typed::<Arc<SessionProjectionRegistry>>("sessionProjections", false)
                         .ok_or_else(|| {
                             PluginError::new(arc(
-                                "sessionProjections service is not configured".to_string(),
+                                "sessionProjections service is not configured".to_string()
                             ))
                         })?;
                     registry
@@ -405,7 +412,9 @@ impl SessionTitleService {
         let event_service = service.clone();
         let event_listener: Arc<Listener> = Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
             let session = downcast::<Session>(&args[0]).expect("session arg").clone();
-            let event = downcast::<SessionEvent>(&args[1]).expect("event arg").clone();
+            let event = downcast::<SessionEvent>(&args[1])
+                .expect("event arg")
+                .clone();
             let service = event_service.clone();
             Box::pin(async move {
                 match event.type_.as_str() {
@@ -416,56 +425,64 @@ impl SessionTitleService {
                 None
             })
         });
-        let _ = futures::executor::block_on(
-            ctx.on("session/event", event_listener, EventOptions::default()),
-        );
+        let _ = futures::executor::block_on(ctx.on(
+            "session/event",
+            event_listener,
+            EventOptions::default(),
+        ));
 
         // llm/stream (global, prepend): start pending work when the marked
         // loop request reuses the logged route unchanged.
         let stream_service = service.clone();
-        let stream_listener: Arc<Listener> = Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
-            let options = args
-                .first()
-                .and_then(|value| downcast_arc::<Arc<Mutex<GenerateOptions>>>(value))
-                .map(|cell| cell.as_ref().clone());
-            let next = args.get(1).and_then(|value| downcast_arc::<NextFn>(value));
-            let service = stream_service.clone();
-            Box::pin(async move {
-                if let Some(options) = options {
-                    let snapshot = options.lock().clone();
-                    service.on_main_request(&snapshot);
-                }
-                match next {
-                    Some(next) => Some(next.call().await),
-                    None => None,
-                }
-            })
-        });
-        let _ = futures::executor::block_on(
-            ctx.on("llm/stream", stream_listener, EventOptions::default().global(true).prepend(true)),
-        );
+        let stream_listener: Arc<Listener> =
+            Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
+                let options = args
+                    .first()
+                    .and_then(|value| downcast_arc::<Arc<Mutex<GenerateOptions>>>(value))
+                    .map(|cell| cell.as_ref().clone());
+                let next = args.get(1).and_then(|value| downcast_arc::<NextFn>(value));
+                let service = stream_service.clone();
+                Box::pin(async move {
+                    if let Some(options) = options {
+                        let snapshot = options.lock().clone();
+                        service.on_main_request(&snapshot);
+                    }
+                    match next {
+                        Some(next) => Some(next.call().await),
+                        None => None,
+                    }
+                })
+            });
+        let _ = futures::executor::block_on(ctx.on(
+            "llm/stream",
+            stream_listener,
+            EventOptions::default().global(true).prepend(true),
+        ));
 
         // session/disposed: abort active work and forget the session state.
         let disposed_service = service.clone();
-        let disposed_listener: Arc<Listener> = Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
-            let session = downcast::<Session>(&args[0]).expect("session arg").clone();
-            let service = disposed_service.clone();
-            Box::pin(async move {
-                let state = service.work.lock().remove(&session.identity());
-                if let Some(state) = state {
-                    let guard = state.lock();
-                    if let Some(active) = &guard.active {
-                        active
-                            .controller
-                            .abort("session disposed during title generation");
+        let disposed_listener: Arc<Listener> =
+            Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
+                let session = downcast::<Session>(&args[0]).expect("session arg").clone();
+                let service = disposed_service.clone();
+                Box::pin(async move {
+                    let state = service.work.lock().remove(&session.identity());
+                    if let Some(state) = state {
+                        let guard = state.lock();
+                        if let Some(active) = &guard.active {
+                            active
+                                .controller
+                                .abort("session disposed during title generation");
+                        }
                     }
-                }
-                None
-            })
-        });
-        let _ = futures::executor::block_on(
-            ctx.on("session/disposed", disposed_listener, EventOptions::default()),
-        );
+                    None
+                })
+            });
+        let _ = futures::executor::block_on(ctx.on(
+            "session/disposed",
+            disposed_listener,
+            EventOptions::default(),
+        ));
 
         Ok(service)
     }
@@ -491,9 +508,9 @@ impl SessionTitleService {
         title: &str,
     ) -> Result<SessionTitleSnapshot, RenameFailure> {
         self.assert_service_active().map_err(RenameFailure::Error)?;
-        let store = self
-            .sessions_store()
-            .ok_or_else(|| RenameFailure::Error("sessions service is not configured".to_string()))?;
+        let store = self.sessions_store().ok_or_else(|| {
+            RenameFailure::Error("sessions service is not configured".to_string())
+        })?;
         if store
             .get(session.id())
             .is_none_or(|live| !live.ptr_eq(session))
@@ -517,10 +534,11 @@ impl SessionTitleService {
                 title_event_data(&normalized, Vec::new(), &SessionTitleSource::User),
                 None,
             )
-            .map_err(|error| RenameFailure::Error(format!("session title append failed: {error}")))?;
-        self.get(session).ok_or_else(|| {
-            RenameFailure::Error("renamed title failed to fold".to_string())
-        })
+            .map_err(|error| {
+                RenameFailure::Error(format!("session title append failed: {error}"))
+            })?;
+        self.get(session)
+            .ok_or_else(|| RenameFailure::Error("renamed title failed to fold".to_string()))
     }
 
     /// Explicitly retry the registered provider, or materialize the built-in
@@ -536,12 +554,17 @@ impl SessionTitleService {
             }
         }
         self.assert_service_active()?;
-        let store = self.sessions_store().ok_or("sessions service is not configured")?;
+        let store = self
+            .sessions_store()
+            .ok_or("sessions service is not configured")?;
         if store
             .get(session.id())
             .is_none_or(|live| !live.ptr_eq(session))
         {
-            return Err(format!("session \"{}\" is not live in this store", session.id()));
+            return Err(format!(
+                "session \"{}\" is not live in this store",
+                session.id()
+            ));
         }
         let registration = self.registration.lock().clone();
         let messages = collect_session_title_messages(&session.events(), None);
@@ -583,10 +606,12 @@ impl SessionTitleService {
             through_seq: latest.unwrap().seq,
         };
         let work = self.activate(pending, &state, signal);
-        let route = session.request_header().map(|header| SessionTitleModelProvenance {
-            provider: header.config.provider,
-            model: header.config.model,
-        });
+        let route = session
+            .request_header()
+            .map(|header| SessionTitleModelProvenance {
+                provider: header.config.provider,
+                model: header.config.model,
+            });
         self.start_provider(session, work, route).await
     }
 
@@ -687,10 +712,13 @@ impl SessionTitleService {
                     if !service.service_active() {
                         return;
                     }
-                    service.ctx.named_logger(Some("session-title")).warn(vec![arc(format!(
-                        "session \"{}\": fallback title update failed: {error}",
-                        session.id()
-                    ))]);
+                    service
+                        .ctx
+                        .named_logger(Some("session-title"))
+                        .warn(vec![arc(format!(
+                            "session \"{}\": fallback title update failed: {error}",
+                            session.id()
+                        ))]);
                 }
             }
         });
@@ -711,7 +739,8 @@ impl SessionTitleService {
         if pending.through_seq >= event.seq {
             return;
         }
-        let Some(provider) = event.data
+        let Some(provider) = event
+            .data
             .get("header")
             .and_then(|header| header.get("config"))
             .and_then(|config| config.get("provider"))
@@ -719,7 +748,8 @@ impl SessionTitleService {
         else {
             return;
         };
-        let Some(model) = event.data
+        let Some(model) = event
+            .data
             .get("header")
             .and_then(|header| header.get("config"))
             .and_then(|config| config.get("model"))
@@ -727,8 +757,10 @@ impl SessionTitleService {
         else {
             return;
         };
-        let route =
-            SessionTitleModelProvenance { provider: provider.to_string(), model: model.to_string() };
+        let route = SessionTitleModelProvenance {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        };
         self.start_pending(session, &state, pending, route);
     }
 
@@ -821,10 +853,13 @@ impl SessionTitleService {
                     if work.signal.is_aborted() || !run_service.service_active() {
                         return;
                     }
-                    run_service.ctx.named_logger(Some("session-title")).warn(vec![arc(format!(
-                        "session \"{}\": automatic title generation failed: {error}",
-                        session.id()
-                    ))]);
+                    run_service
+                        .ctx
+                        .named_logger(Some("session-title"))
+                        .warn(vec![arc(format!(
+                            "session \"{}\": automatic title generation failed: {error}",
+                            session.id()
+                        ))]);
                 }
             }
         });
@@ -887,7 +922,11 @@ impl SessionTitleService {
         .await;
         if let Some(state) = self.work.lock().get(&session.identity()).cloned() {
             let mut guard = state.lock();
-            if guard.active.as_ref().is_some_and(|active| Arc::ptr_eq(active, work)) {
+            if guard
+                .active
+                .as_ref()
+                .is_some_and(|active| Arc::ptr_eq(active, work))
+            {
                 guard.active = None;
             }
         }
@@ -939,7 +978,11 @@ impl SessionTitleService {
                 Some(model.clone())
             }
         };
-        Ok(AcceptedTitle { title, message_seqs: result.message_seqs, model })
+        Ok(AcceptedTitle {
+            title,
+            message_seqs: result.message_seqs,
+            model,
+        })
     }
 
     /// Fail a completion whose provider, revision, session, or signal is
@@ -963,15 +1006,16 @@ impl SessionTitleService {
             .lock()
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, &work.registration));
-        let revision_matches =
-            state.as_ref().is_some_and(|state| state.lock().revision == work.revision);
-        let live = self
-            .sessions_store()
-            .is_some_and(|store| store.get(session.id()).is_some_and(|live| live.ptr_eq(session)));
+        let revision_matches = state
+            .as_ref()
+            .is_some_and(|state| state.lock().revision == work.revision);
+        let live = self.sessions_store().is_some_and(|store| {
+            store
+                .get(session.id())
+                .is_some_and(|live| live.ptr_eq(session))
+        });
         if !registration_matches || !active_matches || !revision_matches || !live {
-            return Err(
-                "session title generation state changed without cancellation".to_string()
-            );
+            return Err("session title generation state changed without cancellation".to_string());
         }
         Ok(())
     }
@@ -1118,7 +1162,10 @@ impl SessionTitleService {
         }
         registration.active.drain().await;
         let mut slot = self.registration.lock();
-        if slot.as_ref().is_some_and(|current| Arc::ptr_eq(current, registration)) {
+        if slot
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, registration))
+        {
             *slot = None;
         }
     }

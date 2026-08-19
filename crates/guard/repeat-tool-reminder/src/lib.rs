@@ -17,13 +17,9 @@ pub mod invariant;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use cordis::{
-    ArcValue, Context, Disposer, Listener, Plugin, PluginError, arc, downcast_arc,
-};
+use cordis::{ArcValue, Context, Disposer, Listener, Plugin, PluginError, arc, downcast_arc};
 use dsh_agent::AgentPreStepPayload;
-use dsh_llm::{
-    ContentBlock, ContextForm, MessageSource, UserMessage, create_user_message,
-};
+use dsh_llm::{ContentBlock, ContextForm, MessageSource, UserMessage, create_user_message};
 use dsh_tools::{PostToolDecision, ToolExecution};
 use parking_lot::Mutex;
 
@@ -272,11 +268,18 @@ struct ObserveState {
 /// Whether a tool participates in the chain (untracked calls are
 /// transparent: they neither count nor reset).
 fn tracked(state: &ObserveState, tool_name: &str) -> bool {
-    if !state.include.is_empty() && !state.include.iter().any(|pattern| pattern.is_match(tool_name))
+    if !state.include.is_empty()
+        && !state
+            .include
+            .iter()
+            .any(|pattern| pattern.is_match(tool_name))
     {
         return false;
     }
-    !state.exclude.iter().any(|pattern| pattern.is_match(tool_name))
+    !state
+        .exclude
+        .iter()
+        .any(|pattern| pattern.is_match(tool_name))
 }
 
 /// Advance the calling agent's chain for one attempt and return the reminder
@@ -328,9 +331,12 @@ fn observe(state: &ObserveState, exec: &ToolExecution) -> Option<UserMessage> {
 /// Install the guard's listeners (TS `apply`). The returned disposer
 /// registers both listeners on its first run.
 pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
-    let thresholds = validate_thresholds(config.thresholds.clone().unwrap_or_else(|| {
-        vec![3.0, 5.0, 8.0]
-    }))?;
+    let thresholds = validate_thresholds(
+        config
+            .thresholds
+            .clone()
+            .unwrap_or_else(|| vec![3.0, 5.0, 8.0]),
+    )?;
     let threshold_set: HashSet<i64> = thresholds.iter().copied().collect();
     let first_threshold = thresholds[0];
     let include: Vec<regex::Regex> = config
@@ -370,73 +376,74 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
     // of the downstream outcome), DELEGATE so a later listener can still
     // block or replace, then fold the reminder onto whatever came back.
     let state_for_post = state.clone();
-    let post_listener: Arc<Listener> = Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
-        let state = state_for_post.clone();
-        Box::pin(async move {
-            let exec = args
-                .first()
-                .and_then(|value| value.downcast_ref::<Arc<ToolExecution>>())
-                .cloned()
-                .expect("tools/post-execute exec");
-            let next = downcast_arc::<cordis::NextFn>(args.last().expect("tools/post-execute next"))
-                .expect("tools/post-execute next");
-            let reminder = observe(&state, &exec);
-            let downstream_value = next.call().await;
-            let Some(reminder) = reminder else {
-                return Some(downstream_value);
-            };
-            let downstream = downcast_arc::<PostToolDecision>(&downstream_value)
-                .expect("tools/post-execute decision")
-                .as_ref()
-                .clone();
-            let merged = match downstream {
-                PostToolDecision::Block {
-                    feedback,
-                    additional_contexts,
-                } => PostToolDecision::Block {
-                    feedback,
-                    additional_contexts: Some(prepend_context(reminder, additional_contexts)),
-                },
-                PostToolDecision::Accept {
-                    content,
-                    value,
-                    additional_contexts,
-                } => PostToolDecision::Accept {
-                    content,
-                    value,
-                    additional_contexts: Some(prepend_context(reminder, additional_contexts)),
-                },
-            };
-            Some(arc(merged))
-        })
-    });
+    let post_listener: Arc<Listener> =
+        Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+            let state = state_for_post.clone();
+            Box::pin(async move {
+                let exec = args
+                    .first()
+                    .and_then(|value| value.downcast_ref::<Arc<ToolExecution>>())
+                    .cloned()
+                    .expect("tools/post-execute exec");
+                let next =
+                    downcast_arc::<cordis::NextFn>(args.last().expect("tools/post-execute next"))
+                        .expect("tools/post-execute next");
+                let reminder = observe(&state, &exec);
+                let downstream_value = next.call().await;
+                let Some(reminder) = reminder else {
+                    return Some(downstream_value);
+                };
+                let downstream = downcast_arc::<PostToolDecision>(&downstream_value)
+                    .expect("tools/post-execute decision")
+                    .as_ref()
+                    .clone();
+                let merged = match downstream {
+                    PostToolDecision::Block {
+                        feedback,
+                        additional_contexts,
+                    } => PostToolDecision::Block {
+                        feedback,
+                        additional_contexts: Some(prepend_context(reminder, additional_contexts)),
+                    },
+                    PostToolDecision::Accept {
+                        content,
+                        value,
+                        additional_contexts,
+                    } => PostToolDecision::Accept {
+                        content,
+                        value,
+                        additional_contexts: Some(prepend_context(reminder, additional_contexts)),
+                    },
+                };
+                Some(arc(merged))
+            })
+        });
 
     // A user interjection changes the context; repetition across it is not a
     // loop. Pure reset hook: always delegates.
     let state_for_step = state.clone();
-    let pre_step_listener: Arc<Listener> = Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
-        let state = state_for_step.clone();
-        Box::pin(async move {
-            let payload = args
-                .first()
-                .and_then(|value| value.downcast_ref::<AgentPreStepPayload>())
-                .cloned()
-                .expect("agent/pre-step payload");
-            let next = downcast_arc::<cordis::NextFn>(args.last().expect("agent/pre-step next"))
-                .expect("agent/pre-step next");
-            if payload
-                .messages
-                .iter()
-                .any(|message| matches!(message.source, MessageSource::User { .. }))
-            {
-                state
-                    .chains
-                    .lock()
-                    .remove(payload.agent.id().as_str());
-            }
-            Some(next.call().await)
-        })
-    });
+    let pre_step_listener: Arc<Listener> =
+        Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+            let state = state_for_step.clone();
+            Box::pin(async move {
+                let payload = args
+                    .first()
+                    .and_then(|value| value.downcast_ref::<AgentPreStepPayload>())
+                    .cloned()
+                    .expect("agent/pre-step payload");
+                let next =
+                    downcast_arc::<cordis::NextFn>(args.last().expect("agent/pre-step next"))
+                        .expect("agent/pre-step next");
+                if payload
+                    .messages
+                    .iter()
+                    .any(|message| matches!(message.source, MessageSource::User { .. }))
+                {
+                    state.chains.lock().remove(payload.agent.id().as_str());
+                }
+                Some(next.call().await)
+            })
+        });
 
     let ctx_for_post = ctx.clone();
     let ctx_for_step = ctx.clone();
@@ -471,8 +478,8 @@ impl Plugin for RepeatToolReminderPlugin {
 
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
         let config = config.downcast_ref::<Config>().cloned().unwrap_or_default();
-        let disposer = apply(ctx, &config)
-            .map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
+        let disposer =
+            apply(ctx, &config).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
         (disposer)().await;
         Ok(())
     }

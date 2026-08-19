@@ -147,15 +147,13 @@ fn is_enoent(error: &std::io::Error) -> bool {
 
 /// The durable-document writer seam (default: `dsh-atomic-write`'s
 /// `write_file_atomic` at `0600`).
-pub type DocumentWriter = Arc<
-    dyn Fn(&Path, &[u8]) -> BoxFuture<'static, Result<(), String>> + Send + Sync,
->;
+pub type DocumentWriter =
+    Arc<dyn Fn(&Path, &[u8]) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 /// The document reader seam (default: `tokio::fs::read_to_string`); tests
 /// inject read failures after the permission check.
-pub type DocumentReader = Arc<
-    dyn Fn(&Path) -> BoxFuture<'static, std::io::Result<String>> + Send + Sync,
->;
+pub type DocumentReader =
+    Arc<dyn Fn(&Path) -> BoxFuture<'static, std::io::Result<String>> + Send + Sync>;
 
 fn default_reader() -> DocumentReader {
     Arc::new(|path: &Path| {
@@ -172,7 +170,10 @@ fn default_writer() -> DocumentWriter {
             dsh_atomic_write::write_file_atomic(
                 &path,
                 &content,
-                dsh_atomic_write::WriteFileAtomicOptions { mode: 0o600, dir_mode: Some(0o700) },
+                dsh_atomic_write::WriteFileAtomicOptions {
+                    mode: 0o600,
+                    dir_mode: Some(0o700),
+                },
             )
             .await
             .map_err(|error| error.to_string())
@@ -230,7 +231,10 @@ impl LocalCredentialProvider {
         let provider = Arc::new(Self {
             ctx: ctx.clone(),
             spec: spec.clone(),
-            state: Mutex::new(ProviderState { text: None, values: IndexMap::new() }),
+            state: Mutex::new(ProviderState {
+                text: None,
+                values: IndexMap::new(),
+            }),
             operation_tail: Arc::new(tokio::sync::Mutex::new(())),
             closed: AtomicBool::new(false),
             writer,
@@ -244,10 +248,11 @@ impl LocalCredentialProvider {
         ctx.register_service(erased);
 
         if spec.watch {
-            let target = futures::executor::block_on(canonicalize_watch_path(Path::new(&spec.filename)))
-                .map_err(|error| error.to_string())?
-                .to_string_lossy()
-                .into_owned();
+            let target =
+                futures::executor::block_on(canonicalize_watch_path(Path::new(&spec.filename)))
+                    .map_err(|error| error.to_string())?
+                    .to_string_lossy()
+                    .into_owned();
             let factory = watcher_factory.unwrap_or_else(notify_watcher_factory);
             let control = futures::executor::block_on(factory(
                 target,
@@ -305,21 +310,26 @@ impl LocalCredentialProvider {
     /// or unset.
     fn inherited(&self, reference: &CredentialRef) -> Option<String> {
         let snapshot = launch_environment_of(&self.ctx);
-        let entry = snapshot.get_from(
-            reference.as_str(),
-            &[LaunchEnvironmentSource::Process],
-        );
-        entry.filter(|entry| !entry.value.is_empty()).map(|entry| entry.value.clone())
+        let entry = snapshot.get_from(reference.as_str(), &[LaunchEnvironmentSource::Process]);
+        entry
+            .filter(|entry| !entry.value.is_empty())
+            .map(|entry| entry.value.clone())
     }
 
     /// The `.env` fallback for a reference — below the managed store, never
     /// above it. The invoking project ranks over the user's home file,
     /// matching the environment layering: the more specific location wins.
-    fn dotenv_fallback(&self, reference: &CredentialRef) -> Option<(String, LaunchEnvironmentSource)> {
+    fn dotenv_fallback(
+        &self,
+        reference: &CredentialRef,
+    ) -> Option<(String, LaunchEnvironmentSource)> {
         let snapshot = launch_environment_of(&self.ctx);
         let entry = snapshot.get_from(
             reference.as_str(),
-            &[LaunchEnvironmentSource::ProjectEnv, LaunchEnvironmentSource::UserEnv],
+            &[
+                LaunchEnvironmentSource::ProjectEnv,
+                LaunchEnvironmentSource::UserEnv,
+            ],
         );
         entry
             .filter(|entry| !entry.value.is_empty())
@@ -349,7 +359,10 @@ impl LocalCredentialProvider {
             Err(error) => return Err(error.to_string()),
         };
         let values = parse_credentials_document(&text, &self.spec.filename)?;
-        *self.state.lock() = ProviderState { text: Some(text), values };
+        *self.state.lock() = ProviderState {
+            text: Some(text),
+            values,
+        };
         Ok(())
     }
 
@@ -371,10 +384,13 @@ impl LocalCredentialProvider {
                     // A reload failure keeps the queue alive and surfaces as
                     // an error so one poisoned commit cannot silently end
                     // hot reloading forever.
-                    provider_for_log.ctx.named_logger(None).error(vec![cordis::arc(format!(
-                        "credentials-local: reload commit failed at {}: {error}",
-                        provider_for_log.spec.filename
-                    ))]);
+                    provider_for_log
+                        .ctx
+                        .named_logger(None)
+                        .error(vec![cordis::arc(format!(
+                            "credentials-local: reload commit failed at {}: {error}",
+                            provider_for_log.spec.filename
+                        ))]);
                 }
             });
         } else {
@@ -443,7 +459,9 @@ impl LocalCredentialProvider {
     async fn write(&self, reference: &CredentialRef, value: Option<&str>) -> Result<(), String> {
         let verb = if value.is_some() { "set" } else { "unset" };
         if self.is_closed() {
-            return Err(format!("credentials-local is disposed: cannot {verb} \"{reference}\""));
+            return Err(format!(
+                "credentials-local is disposed: cannot {verb} \"{reference}\""
+            ));
         }
         self.assert_unshadowed(reference, verb)?;
         let _guard = self.operation_tail.lock().await;
@@ -462,7 +480,9 @@ impl LocalCredentialProvider {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
         if !parent.as_os_str().is_empty() {
-            tokio::fs::create_dir_all(&parent).await.map_err(|error| error.to_string())?;
+            tokio::fs::create_dir_all(&parent)
+                .await
+                .map_err(|error| error.to_string())?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::DirBuilderExt;
@@ -496,7 +516,9 @@ impl LocalCredentialProvider {
                 let mut state = self.state.lock();
                 state.text = Some(next_text);
                 if let Some(value) = value {
-                    state.values.insert(reference.as_str().to_string(), value.to_string());
+                    state
+                        .values
+                        .insert(reference.as_str().to_string(), value.to_string());
                 } else {
                     state.values.shift_remove(reference.as_str());
                 }
@@ -532,13 +554,22 @@ fn changed_refs(
 
 #[async_trait::async_trait]
 impl CredentialProvider for LocalCredentialProvider {
-    async fn resolve(&self, reference: &CredentialRef) -> Option<dsh_credentials::ResolvedCredential> {
+    async fn resolve(
+        &self,
+        reference: &CredentialRef,
+    ) -> Option<dsh_credentials::ResolvedCredential> {
         if let Some(inherited) = self.inherited(reference) {
-            return Some(dsh_credentials::ResolvedCredential { value: inherited, source: "env".to_string() });
+            return Some(dsh_credentials::ResolvedCredential {
+                value: inherited,
+                source: "env".to_string(),
+            });
         }
         let stored = self.state.lock().values.get(reference.as_str()).cloned();
         if let Some(stored) = stored {
-            return Some(dsh_credentials::ResolvedCredential { value: stored, source: "file".to_string() });
+            return Some(dsh_credentials::ResolvedCredential {
+                value: stored,
+                source: "file".to_string(),
+            });
         }
         let fallback = self.dotenv_fallback(reference);
         fallback.map(|(value, source)| dsh_credentials::ResolvedCredential {
@@ -575,7 +606,11 @@ impl CredentialProvider for LocalCredentialProvider {
                 writable: true,
             };
         }
-        dsh_credentials::CredentialInfo { configured: false, source: None, writable: true }
+        dsh_credentials::CredentialInfo {
+            configured: false,
+            source: None,
+            writable: true,
+        }
     }
 
     async fn set(&self, reference: &CredentialRef, value: &str) -> Result<(), String> {
@@ -650,7 +685,7 @@ pub type WatcherFactory = Arc<
 pub fn notify_watcher_factory() -> WatcherFactory {
     Arc::new(|target: String, sink: Arc<dyn WatchSink>, debounce: u64| {
         Box::pin(async move {
-            use notify::{RecommendedWatcher, Watcher as _, RecursiveMode};
+            use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<WatchSignal>();
             let target_for_watch = target.clone();
             let watcher = tokio::task::spawn_blocking(move || {

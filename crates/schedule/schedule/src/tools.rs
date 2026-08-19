@@ -17,8 +17,7 @@ use dsh_tools::{ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition
 
 use crate::domain::{
     MIN_EVERY_INTERVAL_SECONDS, allocate_schedule_id, create_after_schedule_record,
-    create_at_schedule_record, create_every_schedule_record, fold_schedule_events,
-    schedule_view,
+    create_at_schedule_record, create_every_schedule_record, fold_schedule_events, schedule_view,
 };
 use crate::persistence::flush_schedule_persistence;
 use crate::transaction::run_schedule_transaction;
@@ -130,7 +129,10 @@ fn validate_create_args(args: &serde_json::Value) -> Option<ScheduleToolError> {
                 .to_string(),
         });
     }
-    let prompt = args.get("prompt").and_then(|value| value.as_str()).unwrap_or("");
+    let prompt = args
+        .get("prompt")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
     if prompt.trim().is_empty() {
         return Some(ScheduleToolError::InvalidPrompt {
             message: "prompt must be non-empty after trimming.".to_string(),
@@ -178,17 +180,16 @@ const LIST_DESCRIPTION: &str = "List every active reminder in the current sessio
 const DELETE_DESCRIPTION: &str = "Delete one active reminder in the current session by the exact id returned by schedule_create or schedule_list. Unknown or already-finished ids return deleted false.";
 
 /// Deterministic model content for every canonical Schedule value.
-fn render_value(_args: &serde_json::Value, value: &serde_json::Value) -> Result<Vec<ContentBlock>, String> {
+fn render_value(
+    _args: &serde_json::Value,
+    value: &serde_json::Value,
+) -> Result<Vec<ContentBlock>, String> {
     Ok(vec![ContentBlock::Text {
         text: serde_json::to_string(value).expect("lossless JSON"),
     }])
 }
 
-fn present(
-    title: &str,
-    kind: ToolCallKind,
-    raw_input: Option<&serde_json::Value>,
-) -> ToolCallView {
+fn present(title: &str, kind: ToolCallKind, raw_input: Option<&serde_json::Value>) -> ToolCallView {
     ToolCallView::Generic {
         title: title.to_string(),
         kind: Some(kind),
@@ -221,7 +222,9 @@ pub fn register_schedule_tools(
                 .map_err(|_| {
                     root_ctx.logger.warn(
                         &root_ctx,
-                        vec![cordis::arc("schedule: durable-change observer failed".to_string())],
+                        vec![cordis::arc(
+                            "schedule: durable-change observer failed".to_string(),
+                        )],
                     )
                 });
         }
@@ -285,7 +288,10 @@ pub fn register_schedule_tools(
                 let caller_agent = exec.agent.clone();
                 let signal = exec.signal.lock().clone();
                 Box::pin(async move {
-                    if !caller_agent.as_ref().is_some_and(|caller| Arc::ptr_eq(caller, &agent)) {
+                    if !caller_agent
+                        .as_ref()
+                        .is_some_and(|caller| Arc::ptr_eq(caller, &agent))
+                    {
                         return Ok(json(&internal_error()));
                     }
                     if let Some(invalid) = validate_create_args(&args) {
@@ -320,14 +326,20 @@ pub fn register_schedule_tools(
                             let record = if let Some(at) = args.get("at").and_then(parse_at_input) {
                                 create_at_schedule_record(
                                     id.clone(),
-                                    args.get("prompt").and_then(|value| value.as_str()).unwrap_or(""),
+                                    args.get("prompt")
+                                        .and_then(|value| value.as_str())
+                                        .unwrap_or(""),
                                     &at,
                                     chrono::Utc::now().timestamp_millis(),
                                 )
-                            } else if let Some(seconds) = args.get("after_seconds").and_then(|value| value.as_i64()) {
+                            } else if let Some(seconds) =
+                                args.get("after_seconds").and_then(|value| value.as_i64())
+                            {
                                 create_after_schedule_record(
                                     id.clone(),
-                                    args.get("prompt").and_then(|value| value.as_str()).unwrap_or(""),
+                                    args.get("prompt")
+                                        .and_then(|value| value.as_str())
+                                        .unwrap_or(""),
                                     seconds,
                                     chrono::Utc::now().timestamp_millis(),
                                 )
@@ -338,7 +350,9 @@ pub fn register_schedule_tools(
                                     .unwrap_or(0);
                                 create_every_schedule_record(
                                     id.clone(),
-                                    args.get("prompt").and_then(|value| value.as_str()).unwrap_or(""),
+                                    args.get("prompt")
+                                        .and_then(|value| value.as_str())
+                                        .unwrap_or(""),
                                     seconds,
                                     chrono::Utc::now().timestamp_millis(),
                                 )
@@ -372,7 +386,10 @@ pub fn register_schedule_tools(
                                 return json(&barrier);
                             }
                             notify();
-                            json(&schedule_view(&record, chrono::Utc::now().timestamp_millis()))
+                            json(&schedule_view(
+                                &record,
+                                chrono::Utc::now().timestamp_millis(),
+                            ))
                         }
                     })
                     .await)
@@ -420,7 +437,10 @@ pub fn register_schedule_tools(
                 let caller_agent = exec.agent.clone();
                 let signal = exec.signal.lock().clone();
                 Box::pin(async move {
-                    if !caller_agent.as_ref().is_some_and(|caller| Arc::ptr_eq(caller, &agent)) {
+                    if !caller_agent
+                        .as_ref()
+                        .is_some_and(|caller| Arc::ptr_eq(caller, &agent))
+                    {
                         return Ok(json(&internal_error()));
                     }
                     Ok(run_schedule_transaction(agent.as_ref(), || {
@@ -522,7 +542,10 @@ pub fn register_schedule_tools(
                         }));
                     }
                     let id = crate::types::schedule_id(raw_id);
-                    if !caller_agent.as_ref().is_some_and(|caller| Arc::ptr_eq(caller, &agent)) {
+                    if !caller_agent
+                        .as_ref()
+                        .is_some_and(|caller| Arc::ptr_eq(caller, &agent))
+                    {
                         return Ok(json(&internal_error()));
                     }
                     Ok(run_schedule_transaction(agent.as_ref(), || {
@@ -562,7 +585,10 @@ pub fn register_schedule_tools(
                             }
                             let appended = agent.session().append(
                                 "schedule/change",
-                                json(&crate::types::ScheduleChange::Delete { version: 1, id: id.clone() }),
+                                json(&crate::types::ScheduleChange::Delete {
+                                    version: 1,
+                                    id: id.clone(),
+                                }),
                                 None,
                             );
                             if appended.is_err() {
@@ -635,7 +661,9 @@ fn rollback(root_ctx: &Context, disposers: &mut Vec<cordis::Disposer>, error: &s
     }
     root_ctx.logger.warn(
         root_ctx,
-        vec![cordis::arc(format!("schedule: tool registration failed: {error}"))],
+        vec![cordis::arc(format!(
+            "schedule: tool registration failed: {error}"
+        ))],
     );
 }
 
@@ -652,7 +680,10 @@ fn view_schema() -> serde_json::Value {
         ];
         properties.insert("id".into(), serde_json::json!({ "type": "string" }));
         properties.insert("prompt".into(), serde_json::json!({ "type": "string" }));
-        properties.insert("scheduledAt".into(), serde_json::json!({ "type": "string" }));
+        properties.insert(
+            "scheduledAt".into(),
+            serde_json::json!({ "type": "string" }),
+        );
         properties.insert(
             "state".into(),
             serde_json::json!({ "type": "string", "enum": ["scheduled", "overdue"] }),
@@ -661,7 +692,10 @@ fn view_schema() -> serde_json::Value {
             "deliveryMode".into(),
             serde_json::json!({ "type": "string", "const": "session-local" }),
         );
-        properties.insert("kind".into(), serde_json::json!({ "type": "string", "const": kind_value }));
+        properties.insert(
+            "kind".into(),
+            serde_json::json!({ "type": "string", "const": kind_value }),
+        );
         if let Some((name, schema)) = extra {
             properties.insert(name.into(), schema);
         }

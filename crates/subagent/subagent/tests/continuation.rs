@@ -37,8 +37,7 @@ use dsh_subagent::{
     ContinuableCreateRequest, ContinuableCreateSpec, ContinuableStartSpec, ContinuationHost,
     ResolvedSubagentStartRequest, SubagentCapabilities, SubagentContinuationManager, SubagentError,
     SubagentFollowupOptions, SubagentInterruptAuthority, SubagentProvider, SubagentReportDelivery,
-    SubagentReportOptions, SubagentRun, SubagentRuntime, SubagentStartRequest,
-    SubagentStopReason,
+    SubagentReportOptions, SubagentRun, SubagentRuntime, SubagentStartRequest, SubagentStopReason,
 };
 
 fn never_signal() -> Arc<dyn Fn() -> bool + Send + Sync> {
@@ -256,7 +255,9 @@ impl AgentFactory for ProbeFactory {
         let detach = registry.enter(agent.clone(), None)?;
         let agent_for_announce: Arc<dyn Agent> = agent.clone();
         registry.announce(&agent_for_announce).await?;
-        self.created.lock().insert(id.as_str().to_string(), agent.clone());
+        self.created
+            .lock()
+            .insert(id.as_str().to_string(), agent.clone());
         let detach_for_dispose = detach.clone();
         Ok(AgentHandle {
             agent,
@@ -335,11 +336,7 @@ impl SessionPersistenceApi for ColdPersistence {
         Ok(())
     }
 
-    async fn append(
-        &self,
-        _id: &SessionId,
-        _events: &[SessionEvent],
-    ) -> Result<(), String> {
+    async fn append(&self, _id: &SessionId, _events: &[SessionEvent]) -> Result<(), String> {
         Ok(())
     }
 
@@ -374,7 +371,11 @@ impl SessionPersistenceApi for ColdPersistence {
     }
 
     async fn list(&self) -> Result<Vec<SessionHeader>, String> {
-        Ok(self.entries.values().map(|(meta, _)| meta.clone()).collect())
+        Ok(self
+            .entries
+            .values()
+            .map(|(meta, _)| meta.clone())
+            .collect())
     }
 
     async fn list_snapshots(&self) -> Result<Vec<SessionPersistenceSnapshot>, String> {
@@ -443,7 +444,9 @@ async fn setup_with(persistence: bool) -> TestWorld {
     let manager = SubagentContinuationManager::new(&ctx, host.clone());
     let parent = ProbeAgent::top("parent");
     let parent_agent: Arc<dyn Agent> = parent.clone();
-    registry.enter(parent_agent.clone(), None).expect("enter parent");
+    registry
+        .enter(parent_agent.clone(), None)
+        .expect("enter parent");
     registry
         .announce(&parent_agent)
         .await
@@ -508,8 +511,7 @@ async fn start_continuable_requires_persistence() {
         .manager
         .start_continuable(start_spec(world.parent_agent()))
         .await
-        .err()
-        .expect("persistence");
+        .expect_err("persistence");
     assert_eq!(error.code, "PERSISTENCE_UNAVAILABLE");
     assert!(world.factory.created.lock().is_empty());
 }
@@ -525,8 +527,7 @@ async fn start_continuable_propagates_a_non_continuable_provider_rejection() {
         .manager
         .start_continuable(start_spec(world.parent_agent()))
         .await
-        .err()
-        .expect("capability");
+        .expect_err("capability");
     assert_eq!(error.code, "SUBAGENT_NOT_CONTINUABLE");
     assert!(world.factory.created.lock().is_empty());
 }
@@ -546,8 +547,7 @@ async fn start_continuable_rolls_back_when_the_signal_aborts_during_preparation(
         .manager
         .start_continuable(spec)
         .await
-        .err()
-        .expect("aborted");
+        .expect_err("aborted");
     assert_eq!(error.code, "CANCELLED");
     // Preparation ran, but no child was materialized.
     assert_eq!(world.host.prepares.lock().len(), 1);
@@ -563,8 +563,7 @@ async fn start_continuable_rejects_an_excessive_depth() {
         .manager
         .start_continuable(spec)
         .await
-        .err()
-        .expect("depth");
+        .expect_err("depth");
     assert_eq!(error.code, "DEPTH_EXCEEDED");
     assert!(world.factory.created.lock().is_empty());
 }
@@ -598,8 +597,7 @@ async fn start_continuable_rejects_a_failing_factory_create() {
         .manager
         .start_continuable(start_spec(world.parent_agent()))
         .await
-        .err()
-        .expect("create");
+        .expect_err("create");
     assert_eq!(error.code, "CHILD_CREATE_FAILED");
     // No Activation was installed, so a followup reports the child as
     // non-resident.
@@ -612,8 +610,7 @@ async fn start_continuable_rejects_a_failing_factory_create() {
             &followup_options(),
         )
         .await
-        .err()
-        .expect("resumable");
+        .expect_err("resumable");
     assert_eq!(error.code, "NOT_RESUMABLE");
 }
 
@@ -671,8 +668,7 @@ async fn followup_rejects_an_unknown_child() {
             &followup_options(),
         )
         .await
-        .err()
-        .expect("resumable");
+        .expect_err("resumable");
     assert_eq!(error.code, "NOT_RESUMABLE");
 }
 
@@ -691,13 +687,10 @@ async fn followup_rejects_a_parent_that_is_not_the_durable_direct_parent() {
             &followup_options(),
         )
         .await
-        .err()
-        .expect("unauthorized");
+        .expect_err("unauthorized");
     assert_eq!(error.code, "UNAUTHORIZED");
     assert!(
-        error
-            .message
-            .contains("belongs to another parent session"),
+        error.message.contains("belongs to another parent session"),
         "{}",
         error.message
     );
@@ -721,8 +714,7 @@ async fn followup_rejects_a_parent_that_was_replaced_by_a_same_id_agent() {
             &followup_options(),
         )
         .await
-        .err()
-        .expect("unauthorized");
+        .expect_err("unauthorized");
     assert_eq!(error.code, "UNAUTHORIZED");
 }
 
@@ -783,8 +775,7 @@ async fn settlement_notifies_the_idle_parent() {
             &followup_options(),
         )
         .await
-        .err()
-        .expect("closed");
+        .expect_err("closed");
     assert_eq!(error.code, "DRAINING");
 }
 
@@ -808,8 +799,7 @@ async fn drain_closes_admission_and_removes_every_activation() {
                 &followup_options(),
             )
             .await
-            .err()
-            .expect("closed");
+            .expect_err("closed");
         assert_eq!(error.code, "DRAINING");
     }
     // New materialization and delivery are rejected while draining.
@@ -817,8 +807,7 @@ async fn drain_closes_admission_and_removes_every_activation() {
         .manager
         .start_continuable(start_spec(world.parent_agent()))
         .await
-        .err()
-        .expect("draining");
+        .expect_err("draining");
     assert_eq!(error.code, "DRAINING");
     let error = world
         .manager
@@ -829,8 +818,7 @@ async fn drain_closes_admission_and_removes_every_activation() {
             &followup_options(),
         )
         .await
-        .err()
-        .expect("draining");
+        .expect_err("draining");
     assert_eq!(error.code, "DRAINING");
 }
 
@@ -868,8 +856,7 @@ async fn drain_descendants_stops_only_the_selected_forest() {
             &followup_options(),
         )
         .await
-        .err()
-        .expect("resumable");
+        .expect_err("resumable");
     assert_eq!(error.code, "NOT_RESUMABLE");
     let error = world
         .manager
@@ -880,8 +867,7 @@ async fn drain_descendants_stops_only_the_selected_forest() {
             &followup_options(),
         )
         .await
-        .err()
-        .expect("resumable");
+        .expect_err("resumable");
     assert_eq!(error.code, "NOT_RESUMABLE");
     let child_a_probe = world.factory.agent(&child_a.child_id);
     assert!(!child_a_probe.cancels.lock().is_empty());
@@ -920,7 +906,12 @@ async fn interrupt_enforces_user_and_ancestor_authority() {
         )
         .expect("interrupt");
     assert_eq!(
-        world.factory.agent(&started.child_id).cancels.lock().clone(),
+        world
+            .factory
+            .agent(&started.child_id)
+            .cancels
+            .lock()
+            .clone(),
         vec!["User".to_string()]
     );
 
@@ -933,8 +924,7 @@ async fn interrupt_enforces_user_and_ancestor_authority() {
                 parent_session_id: session_id("stranger"),
             },
         )
-        .err()
-        .expect("unauthorized");
+        .expect_err("unauthorized");
     assert_eq!(error.code, "UNAUTHORIZED");
 
     // An ancestor may interrupt a live descendant, a non-ancestor may not.
@@ -959,8 +949,7 @@ async fn interrupt_enforces_user_and_ancestor_authority() {
             &grandchild.child_id,
             &SubagentInterruptAuthority::Ancestor { agent: stranger },
         )
-        .err()
-        .expect("unauthorized");
+        .expect_err("unauthorized");
     assert_eq!(error.code, "UNAUTHORIZED");
 
     // An unknown child is a silent no-op.
@@ -1018,9 +1007,11 @@ async fn report_from_delivers_selected_content_to_the_parent() {
     let followups = world.parent.followups.lock().clone();
     assert_eq!(followups.len(), 1);
     assert_eq!(followups[0].id, wakeup);
-    assert!(texts(std::slice::from_ref(&followups[0]))
-        .join(" ")
-        .contains("waking you"));
+    assert!(
+        texts(std::slice::from_ref(&followups[0]))
+            .join(" ")
+            .contains("waking you")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1038,8 +1029,7 @@ async fn report_from_rejects_an_unregistered_child() {
             },
         )
         .await
-        .err()
-        .expect("unauthorized");
+        .expect_err("unauthorized");
     assert_eq!(error.code, "UNAUTHORIZED");
 }
 
@@ -1103,11 +1093,19 @@ async fn runtime_forwards_continuable_operations_through_the_installed_host() {
     ctx.register_service(erased);
     let runtime = SubagentRuntime::install(&ctx);
     runtime
-        .register_provider(&ctx, Arc::new(ProbeProvider { name: "spawn", continuable: true }))
+        .register_provider(
+            &ctx,
+            Arc::new(ProbeProvider {
+                name: "spawn",
+                continuable: true,
+            }),
+        )
         .expect("provider");
     let parent = ProbeAgent::top("parent");
     let parent_agent: Arc<dyn Agent> = parent.clone();
-    registry.enter(parent_agent.clone(), None).expect("enter parent");
+    registry
+        .enter(parent_agent.clone(), None)
+        .expect("enter parent");
     registry
         .announce(&parent_agent)
         .await
@@ -1118,12 +1116,21 @@ async fn runtime_forwards_continuable_operations_through_the_installed_host() {
         .await
         .expect("start");
     let child = factory.agent(&started.child_id);
-    assert_eq!(texts(&child.followups.lock().clone()), vec!["child task".to_string()]);
+    assert_eq!(
+        texts(&child.followups.lock().clone()),
+        vec!["child task".to_string()]
+    );
 
     // A provider without the continuable capability is rejected by the
     // runtime host seam.
     runtime
-        .register_provider(&ctx, Arc::new(ProbeProvider { name: "one-shot", continuable: false }))
+        .register_provider(
+            &ctx,
+            Arc::new(ProbeProvider {
+                name: "one-shot",
+                continuable: false,
+            }),
+        )
         .expect("provider");
     let error = runtime
         .start_continuable(ContinuableStartSpec {
@@ -1131,13 +1138,13 @@ async fn runtime_forwards_continuable_operations_through_the_installed_host() {
             ..start_spec(parent.clone())
         })
         .await
-        .err()
-        .expect("capability");
+        .expect_err("capability");
     assert_eq!(error.code, "SUBAGENT_NOT_CONTINUABLE");
 
     // Scoped teardown flows through the runtime to the manager.
+    let parent_agent: Arc<dyn Agent> = parent.clone();
     runtime
-        .drain_continuable_descendants(&[parent.clone()])
+        .drain_continuable_descendants(std::slice::from_ref(&parent_agent))
         .await
         .expect("drain");
     let error = runtime
@@ -1154,7 +1161,6 @@ async fn runtime_forwards_continuable_operations_through_the_installed_host() {
             },
         )
         .await
-        .err()
-        .expect("resumable");
+        .expect_err("resumable");
     assert_eq!(error.code, "NOT_RESUMABLE");
 }

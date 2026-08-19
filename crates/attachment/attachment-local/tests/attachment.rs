@@ -10,12 +10,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use dsh_attachment::{
-    AttachmentError, AttachmentStore, ImageAttachmentLimits, ImageMediaType,
-    SaveImageAttachment, attachment_id,
+    AttachmentError, AttachmentStore, ImageAttachmentLimits, ImageMediaType, SaveImageAttachment,
+    attachment_id,
 };
 use dsh_attachment_local::{
-    DEFAULT_MAX_IMAGE_BYTES, DEFAULT_MAX_IMAGE_PIXELS, DEFAULT_MAX_IMAGES_PER_MESSAGE,
-    DEFAULT_MAX_MESSAGE_IMAGE_BYTES, Config, LocalAttachmentStore, detect_image, probe_image,
+    Config, DEFAULT_MAX_IMAGE_BYTES, DEFAULT_MAX_IMAGE_PIXELS, DEFAULT_MAX_IMAGES_PER_MESSAGE,
+    DEFAULT_MAX_MESSAGE_IMAGE_BYTES, LocalAttachmentStore, detect_image, probe_image,
     read_image_file, save_image_file, validate_image_file,
 };
 use image::{Rgba, RgbaImage};
@@ -91,7 +91,10 @@ fn decodes_every_supported_format_with_intrinsic_dimensions() {
 #[test]
 fn rejects_excess_pixels_before_decoding_and_malformed_bytes() {
     let outcome = detect_image(&raster(image::ImageFormat::Png), Some(5));
-    assert_eq!(code(&outcome.expect_err("pixel limit")), "IMAGE_TOO_MANY_PIXELS");
+    assert_eq!(
+        code(&outcome.expect_err("pixel limit")),
+        "IMAGE_TOO_MANY_PIXELS"
+    );
     let outcome = detect_image(&[1, 2, 3], None);
     assert_eq!(code(&outcome.expect_err("malformed")), "INVALID_IMAGE");
     let tiff = raster_tiff();
@@ -101,19 +104,30 @@ fn rejects_excess_pixels_before_decoding_and_malformed_bytes() {
     // fails.
     let complete = raster(image::ImageFormat::Png);
     let truncated = &complete[..62];
-    assert_eq!(probe_image(truncated).expect("header").media_type, ImageMediaType::Png);
+    assert_eq!(
+        probe_image(truncated).expect("header").media_type,
+        ImageMediaType::Png
+    );
     let outcome = detect_image(truncated, None);
     assert_eq!(code(&outcome.expect_err("truncated")), "INVALID_IMAGE");
     let outcome = probe_image(&[1, 2, 3]);
-    assert_eq!(code(&outcome.expect_err("probe malformed")), "INVALID_IMAGE");
+    assert_eq!(
+        code(&outcome.expect_err("probe malformed")),
+        "INVALID_IMAGE"
+    );
     let outcome = probe_image(&tiff);
-    assert_eq!(code(&outcome.expect_err("probe unsupported")), "INVALID_IMAGE");
+    assert_eq!(
+        code(&outcome.expect_err("probe unsupported")),
+        "INVALID_IMAGE"
+    );
 }
 
 fn raster_tiff() -> Vec<u8> {
     let image = RgbaImage::from_pixel(1, 1, Rgba([0, 0, 0, 255]));
     let mut cursor = Cursor::new(Vec::new());
-    image.write_to(&mut cursor, image::ImageFormat::Tiff).expect("encode tiff");
+    image
+        .write_to(&mut cursor, image::ImageFormat::Tiff)
+        .expect("encode tiff");
     cursor.into_inner()
 }
 
@@ -146,7 +160,10 @@ async fn publishes_dedupes_and_reads_content_addressed_objects() {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
     };
-    assert_eq!(first.attachment_id, attachment_id(format!("sha256:{sha256}")));
+    assert_eq!(
+        first.attachment_id,
+        attachment_id(format!("sha256:{sha256}"))
+    );
     assert_eq!(first.media_type, ImageMediaType::Png);
     assert_eq!(first.bytes, png.len() as u64);
     assert_eq!((first.width, first.height), (1, 1));
@@ -170,7 +187,9 @@ async fn creates_a_missing_nested_home() {
     let reference = save_image_file(&root, &input(png.clone(), ImageMediaType::Png), &limits())
         .await
         .expect("save");
-    let read = read_image_file(&root, &reference, None).await.expect("read");
+    let read = read_image_file(&root, &reference, None)
+        .await
+        .expect("read");
     assert_eq!(read.data, png);
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -202,7 +221,10 @@ async fn rejects_malformed_mismatched_and_oversized_inputs() {
         (
             "too large",
             input(png.clone(), ImageMediaType::Png),
-            ImageAttachmentLimits { max_image_bytes: 1, ..limits() },
+            ImageAttachmentLimits {
+                max_image_bytes: 1,
+                ..limits()
+            },
             "IMAGE_TOO_LARGE",
         ),
     ];
@@ -233,7 +255,9 @@ async fn rejects_malformed_mismatched_and_oversized_inputs() {
 fn raster_at(width: u32, height: u32) -> Vec<u8> {
     let image = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 255]));
     let mut cursor = Cursor::new(Vec::new());
-    image.write_to(&mut cursor, image::ImageFormat::Png).expect("encode");
+    image
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .expect("encode");
     cursor.into_inner()
 }
 
@@ -260,7 +284,10 @@ async fn fails_closed_on_missing_corrupted_and_invalid_references() {
     let mut invalid = reference.clone();
     invalid.attachment_id = attachment_id("bad");
     let outcome = read_image_file(&root, &invalid, None).await;
-    assert_eq!(code(&outcome.expect_err("invalid ref")), "INVALID_ATTACHMENT_REF");
+    assert_eq!(
+        code(&outcome.expect_err("invalid ref")),
+        "INVALID_ATTACHMENT_REF"
+    );
 
     let missing_home = temp_home();
     let missing_root = missing_home.join("attachments").join("v1");
@@ -271,10 +298,16 @@ async fn fails_closed_on_missing_corrupted_and_invalid_references() {
     // A directory where the object file belongs reads as a storage failure.
     let unreadable_home = temp_home();
     let unreadable_root = unreadable_home.join("attachments").join("v1");
-    let target = unreadable_root.join("objects").join(&sha256[..2]).join(&sha256);
+    let target = unreadable_root
+        .join("objects")
+        .join(&sha256[..2])
+        .join(&sha256);
     std::fs::create_dir_all(&target).expect("directory target");
     let outcome = read_image_file(&unreadable_root, &reference, None).await;
-    assert_eq!(code(&outcome.expect_err("unreadable")), "ATTACHMENT_READ_FAILED");
+    assert_eq!(
+        code(&outcome.expect_err("unreadable")),
+        "ATTACHMENT_READ_FAILED"
+    );
 
     // A conflicting pre-existing object is rejected at publish time.
     let conflicting_home = temp_home();
@@ -285,8 +318,12 @@ async fn fails_closed_on_missing_corrupted_and_invalid_references() {
         .join(&sha256);
     std::fs::create_dir_all(conflicting_object.parent().expect("bucket")).expect("bucket");
     std::fs::write(&conflicting_object, vec![1, 2, 3]).expect("conflicting bytes");
-    let outcome =
-        save_image_file(&conflicting_root, &input(png.clone(), ImageMediaType::Png), &limits()).await;
+    let outcome = save_image_file(
+        &conflicting_root,
+        &input(png.clone(), ImageMediaType::Png),
+        &limits(),
+    )
+    .await;
     assert_eq!(code(&outcome.expect_err("conflict")), "ATTACHMENT_CORRUPT");
 
     // Reference metadata mismatch after bytes verified.
@@ -299,11 +336,16 @@ async fn fails_closed_on_missing_corrupted_and_invalid_references() {
     // An unexpected publication failure maps to the stable write error.
     let blocked_home = temp_home();
     let blocked_root = blocked_home.join("attachments").join("v1");
-    let blocked_target = blocked_root.join("objects").join(&sha256[..2]).join(&sha256);
+    let blocked_target = blocked_root
+        .join("objects")
+        .join(&sha256[..2])
+        .join(&sha256);
     std::fs::create_dir_all(&blocked_target).expect("directory target");
-    let outcome =
-        save_image_file(&blocked_root, &input(png, ImageMediaType::Png), &limits()).await;
-    assert_eq!(code(&outcome.expect_err("blocked")), "ATTACHMENT_WRITE_FAILED");
+    let outcome = save_image_file(&blocked_root, &input(png, ImageMediaType::Png), &limits()).await;
+    assert_eq!(
+        code(&outcome.expect_err("blocked")),
+        "ATTACHMENT_WRITE_FAILED"
+    );
 
     let _ = std::fs::remove_dir_all(&home);
     let _ = std::fs::remove_dir_all(&missing_home);
@@ -350,8 +392,14 @@ async fn service_boundary_resolves_defaults_and_validates_without_persisting() {
     );
     let limits = service.image_limits();
     assert_eq!(limits.max_image_bytes, DEFAULT_MAX_IMAGE_BYTES);
-    assert_eq!(limits.max_images_per_message, DEFAULT_MAX_IMAGES_PER_MESSAGE);
-    assert_eq!(limits.max_message_image_bytes, DEFAULT_MAX_MESSAGE_IMAGE_BYTES);
+    assert_eq!(
+        limits.max_images_per_message,
+        DEFAULT_MAX_IMAGES_PER_MESSAGE
+    );
+    assert_eq!(
+        limits.max_message_image_bytes,
+        DEFAULT_MAX_MESSAGE_IMAGE_BYTES
+    );
     assert_eq!(limits.max_image_pixels, DEFAULT_MAX_IMAGE_PIXELS);
     assert_eq!(
         limits.media_types,
@@ -362,7 +410,11 @@ async fn service_boundary_resolves_defaults_and_validates_without_persisting() {
             ImageMediaType::Gif
         ]
     );
-    assert!(service.root.ends_with(["attachments", "v1"].iter().collect::<PathBuf>()));
+    assert!(
+        service
+            .root
+            .ends_with(["attachments", "v1"].iter().collect::<PathBuf>())
+    );
 
     let png = png_1x1();
     let reference = service
@@ -403,8 +455,14 @@ async fn service_boundary_resolves_defaults_and_validates_without_persisting() {
     let outcome = limited
         .validate_image(&input(png.clone(), ImageMediaType::Png))
         .await;
-    assert_eq!(code(&outcome.expect_err("validate limited")), "IMAGE_TOO_LARGE");
-    clean.validate_image(&input(png, ImageMediaType::Png)).await.expect("valid passes");
+    assert_eq!(
+        code(&outcome.expect_err("validate limited")),
+        "IMAGE_TOO_LARGE"
+    );
+    clean
+        .validate_image(&input(png, ImageMediaType::Png))
+        .await
+        .expect("valid passes");
     assert!(!clean.root.exists(), "validation never persists");
 
     let _ = std::fs::remove_dir_all(&home);

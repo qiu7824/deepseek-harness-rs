@@ -38,13 +38,22 @@ async fn adapters_updated_fires_at_both_commit_points_with_readable_registry() {
         let runtime = Arc::clone(&listener_runtime);
         let observed = Arc::clone(&listener_observed);
         Box::pin(async move {
-            observed
-                .lock()
-                .push(runtime.list_providers().iter().map(|p| p.id.clone()).collect());
+            observed.lock().push(
+                runtime
+                    .list_providers()
+                    .iter()
+                    .map(|p| p.id.clone())
+                    .collect(),
+            );
             None
         })
     });
-    ctx.on("llm/adapters-updated", listener, cordis::EventOptions::default()).await;
+    ctx.on(
+        "llm/adapters-updated",
+        listener,
+        cordis::EventOptions::default(),
+    )
+    .await;
 
     let dispose = runtime
         .register_adapter(
@@ -53,7 +62,10 @@ async fn adapters_updated_fires_at_both_commit_points_with_readable_registry() {
             Arc::new(NoopAdapter),
         )
         .expect("register");
-    assert_eq!(*observed.lock(), vec![vec!["a".to_string(), "b".to_string()]]);
+    assert_eq!(
+        *observed.lock(),
+        vec![vec!["a".to_string(), "b".to_string()]]
+    );
     (dispose.dispose)().await;
     assert_eq!(
         *observed.lock(),
@@ -66,9 +78,8 @@ async fn contains_throwing_listener_without_vetoing_registration() {
     let ctx = Context::root();
     let runtime = LlmRuntime::install(&ctx);
     let later = Arc::new(AtomicU32::new(0));
-    let throwing: Arc<cordis::Listener> = Arc::new(|_ctx, _args| {
-        Box::pin(async { panic!("broken observer") })
-    });
+    let throwing: Arc<cordis::Listener> =
+        Arc::new(|_ctx, _args| Box::pin(async { panic!("broken observer") }));
     let later_runs = Arc::clone(&later);
     let observing: Arc<cordis::Listener> = Arc::new(move |_ctx, _args| {
         let later = Arc::clone(&later_runs);
@@ -77,13 +88,28 @@ async fn contains_throwing_listener_without_vetoing_registration() {
             None
         })
     });
-    ctx.on("llm/adapters-updated", throwing, cordis::EventOptions::default()).await;
-    ctx.on("llm/adapters-updated", observing, cordis::EventOptions::default()).await;
+    ctx.on(
+        "llm/adapters-updated",
+        throwing,
+        cordis::EventOptions::default(),
+    )
+    .await;
+    ctx.on(
+        "llm/adapters-updated",
+        observing,
+        cordis::EventOptions::default(),
+    )
+    .await;
 
-    runtime.register_adapter(&ctx, vec!["a".to_string()], Arc::new(NoopAdapter)).expect("register");
+    runtime
+        .register_adapter(&ctx, vec!["a".to_string()], Arc::new(NoopAdapter))
+        .expect("register");
     assert_eq!(
         runtime.list_providers(),
-        vec![LlmProviderInfo { id: "a".to_string(), name: "a".to_string() }]
+        vec![LlmProviderInfo {
+            id: "a".to_string(),
+            name: "a".to_string()
+        }]
     );
     assert_eq!(later.load(Ordering::SeqCst), 1);
 }
@@ -109,8 +135,18 @@ async fn rethrows_first_invariant_listener_failure_after_notifying_rest() {
             None
         })
     });
-    ctx.on("llm/adapters-updated", failing, cordis::EventOptions::default()).await;
-    ctx.on("llm/adapters-updated", observing, cordis::EventOptions::default()).await;
+    ctx.on(
+        "llm/adapters-updated",
+        failing,
+        cordis::EventOptions::default(),
+    )
+    .await;
+    ctx.on(
+        "llm/adapters-updated",
+        observing,
+        cordis::EventOptions::default(),
+    )
+    .await;
 
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         runtime
@@ -139,7 +175,12 @@ async fn directory_registers_lists_and_disposes() {
             None
         })
     });
-    ctx.on("llm/adapters-updated", listener, cordis::EventOptions::default()).await;
+    ctx.on(
+        "llm/adapters-updated",
+        listener,
+        cordis::EventOptions::default(),
+    )
+    .await;
 
     let handle = runtime
         .register_configurable_providers(&ctx, vec![entry()])
@@ -163,9 +204,18 @@ async fn directory_rejects_invalid_entries_all_or_nothing() {
     assert_eq!(error.code, "INVALID_DIRECTORY");
 
     for invalid in [
-        LlmConfigurableProvider { provider: String::new(), ..entry() },
-        LlmConfigurableProvider { display_name: String::new(), ..entry() },
-        LlmConfigurableProvider { settings_ns: String::new(), ..entry() },
+        LlmConfigurableProvider {
+            provider: String::new(),
+            ..entry()
+        },
+        LlmConfigurableProvider {
+            display_name: String::new(),
+            ..entry()
+        },
+        LlmConfigurableProvider {
+            settings_ns: String::new(),
+            ..entry()
+        },
         LlmConfigurableProvider {
             settings_path: vec!["providers".to_string(), String::new()],
             ..entry()
@@ -233,7 +283,9 @@ async fn directory_replaces_atomically_and_guards_disposed_handle() {
     assert_eq!(providers, vec!["owned-elsewhere".to_string()]);
 
     (handle.dispose)().await;
-    let error = (handle.replace)(vec![entry()]).err().expect("disposed replace must refuse");
+    let error = (handle.replace)(vec![entry()])
+        .err()
+        .expect("disposed replace must refuse");
     assert_eq!(error.code, "REGISTRATION_DISPOSED");
 }
 
@@ -253,7 +305,8 @@ impl Plugin for DirectoryPlugin {
         let llm = ctx
             .get_typed::<Arc<LlmRuntime>>("llm", false)
             .expect("llm service");
-        llm.register_configurable_providers(ctx, vec![entry()]).expect("register");
+        llm.register_configurable_providers(ctx, vec![entry()])
+            .expect("register");
         Ok(())
     }
 }
@@ -277,8 +330,9 @@ async fn discovery_registers_serves_dedupes_and_disposes() {
         Arc::new(parking_lot::Mutex::new(None));
     let seen_for_closure = Arc::clone(&seen_request);
     let discover: Arc<
-        dyn Fn(&LlmModelDiscoveryRequest)
-            -> cordis::BoxFuture<'static, Result<Vec<LlmDiscoveredModel>, String>>
+        dyn Fn(
+                &LlmModelDiscoveryRequest,
+            ) -> cordis::BoxFuture<'static, Result<Vec<LlmDiscoveredModel>, String>>
             + Send
             + Sync,
     > = Arc::new(move |request: &LlmModelDiscoveryRequest| {
@@ -315,12 +369,17 @@ async fn discovery_registers_serves_dedupes_and_disposes() {
         })
     });
 
-    let dispose = runtime.register_model_discovery(&ctx, "llm-example", discover).expect("register");
+    let dispose = runtime
+        .register_model_discovery(&ctx, "llm-example", discover)
+        .expect("register");
     let request = LlmModelDiscoveryRequest {
         base_url: Some("https://gateway.example/v1".to_string()),
         ..LlmModelDiscoveryRequest::default()
     };
-    let models = runtime.discover_models("llm-example", &request).await.expect("discover");
+    let models = runtime
+        .discover_models("llm-example", &request)
+        .await
+        .expect("discover");
     assert_eq!(
         models,
         vec![
@@ -338,7 +397,10 @@ async fn discovery_registers_serves_dedupes_and_disposes() {
             },
         ]
     );
-    assert_eq!(seen_request.lock().as_ref().expect("seen").base_url, request.base_url);
+    assert_eq!(
+        seen_request.lock().as_ref().expect("seen").base_url,
+        request.base_url
+    );
 
     dispose().await;
     let error = runtime
@@ -353,8 +415,9 @@ async fn discovery_rejects_unnamed_namespace_duplicates_and_endpointless_drafts(
     let ctx = Context::root();
     let runtime = LlmRuntime::install(&ctx);
     let discover: Arc<
-        dyn Fn(&LlmModelDiscoveryRequest)
-            -> cordis::BoxFuture<'static, Result<Vec<LlmDiscoveredModel>, String>>
+        dyn Fn(
+                &LlmModelDiscoveryRequest,
+            ) -> cordis::BoxFuture<'static, Result<Vec<LlmDiscoveredModel>, String>>
             + Send
             + Sync,
     > = Arc::new(|_request| Box::pin(async { Ok(Vec::new()) }));
@@ -369,8 +432,9 @@ async fn discovery_rejects_unnamed_namespace_duplicates_and_endpointless_drafts(
         .register_model_discovery(&ctx, "llm-example", discover)
         .expect("register");
     let duplicate: Arc<
-        dyn Fn(&LlmModelDiscoveryRequest)
-            -> cordis::BoxFuture<'static, Result<Vec<LlmDiscoveredModel>, String>>
+        dyn Fn(
+                &LlmModelDiscoveryRequest,
+            ) -> cordis::BoxFuture<'static, Result<Vec<LlmDiscoveredModel>, String>>
             + Send
             + Sync,
     > = Arc::new(|_request| Box::pin(async { Ok(Vec::new()) }));
@@ -401,5 +465,11 @@ async fn discovery_rejects_unnamed_namespace_duplicates_and_endpointless_drafts(
         provider: Some("known-route".to_string()),
         ..LlmModelDiscoveryRequest::default()
     };
-    assert!(runtime.discover_models("llm-example", &route_only).await.expect("discover").is_empty());
+    assert!(
+        runtime
+            .discover_models("llm-example", &route_only)
+            .await
+            .expect("discover")
+            .is_empty()
+    );
 }

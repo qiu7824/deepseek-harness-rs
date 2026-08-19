@@ -25,7 +25,9 @@ impl Default for BackendRegistry {
 
 impl BackendRegistry {
     pub fn new() -> Self {
-        Self { backends: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            backends: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// Register a named backend. The returned disposer removes the name
@@ -56,7 +58,10 @@ impl BackendRegistry {
             let backend = backend.clone();
             Box::pin(async move {
                 let mut backends = backends.lock();
-                if backends.get(&name).is_some_and(|current| Arc::ptr_eq(current, &backend)) {
+                if backends
+                    .get(&name)
+                    .is_some_and(|current| Arc::ptr_eq(current, &backend))
+                {
                     backends.remove(&name);
                 }
             })
@@ -74,7 +79,11 @@ impl BackendRegistry {
                     StorageErrorCode::BackendNotFound,
                     format!(
                         "storage backend '{name}' is not registered (registered: {} )",
-                        if names.is_empty() { "none".to_string() } else { names.join(", ") }
+                        if names.is_empty() {
+                            "none".to_string()
+                        } else {
+                            names.join(", ")
+                        }
                     ),
                 ))
             }

@@ -6,8 +6,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cordis::Context;
 use dsh_storage::{
-    BackendRegistry, KvFacet, KvUnit, KvUnitDescriptor, KvUnitSnapshot, Storage,
-    StorageBackend, StorageError, StorageErrorCode, storage_backend_service_key,
+    BackendRegistry, KvFacet, KvUnit, KvUnitDescriptor, KvUnitSnapshot, Storage, StorageBackend,
+    StorageError, StorageErrorCode, storage_backend_service_key,
 };
 use serde_json::Value as JsonValue;
 
@@ -32,8 +32,13 @@ fn fake_backend() -> Arc<dyn StorageBackend> {
 fn registry_registers_resolves_and_disposes_names() {
     let registry = BackendRegistry::new();
     let backend = fake_backend();
-    let dispose = registry.register("json", backend.clone()).expect("register");
-    assert!(std::sync::Arc::ptr_eq(&registry.get("json").expect("get"), &backend));
+    let dispose = registry
+        .register("json", backend.clone())
+        .expect("register");
+    assert!(std::sync::Arc::ptr_eq(
+        &registry.get("json").expect("get"),
+        &backend
+    ));
     assert_eq!(registry.names(), vec!["json".to_string()]);
     let _ = futures::executor::block_on(dispose());
     assert_eq!(registry.names(), Vec::<String>::new());
@@ -45,14 +50,20 @@ fn registry_registers_resolves_and_disposes_names() {
 fn registry_rejects_duplicate_names() {
     let registry = BackendRegistry::new();
     registry.register("json", fake_backend()).expect("register");
-    let error = registry.register("json", fake_backend()).err().expect("duplicate");
+    let error = registry
+        .register("json", fake_backend())
+        .err()
+        .expect("duplicate");
     assert_eq!(error.code, StorageErrorCode::DuplicateBackend);
 }
 
 #[test]
 fn derives_stable_lifecycle_service_keys_for_named_backends() {
     assert_eq!(storage_backend_service_key("json"), "storage.backend.json");
-    assert_eq!(storage_backend_service_key("tenant-a"), "storage.backend.tenant-a");
+    assert_eq!(
+        storage_backend_service_key("tenant-a"),
+        "storage.backend.tenant-a"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -70,7 +81,10 @@ async fn hub_mounts_on_the_context_and_exposes_registry_plus_form_mounting() {
     let dispose = hub.mount("domain", facility.clone()).expect("mount");
     let form = hub.form("domain").expect("form");
     assert!(std::sync::Arc::ptr_eq(&form, &facility));
-    let duplicate = hub.mount("domain", facility.clone()).err().expect("duplicate-mount");
+    let duplicate = hub
+        .mount("domain", facility.clone())
+        .err()
+        .expect("duplicate-mount");
     assert_eq!(duplicate.code, StorageErrorCode::DuplicateMount);
     let _ = futures::executor::block_on(dispose());
     let missing = hub.form("domain").err().expect("form-not-mounted");
@@ -94,7 +108,9 @@ async fn ignores_a_stale_disposer_after_dispose_and_remount_or_reregister() {
     let backend_b = fake_backend();
     let stale_register = hub.backend.register("json", backend_a).expect("register");
     let _ = futures::executor::block_on(stale_register());
-    hub.backend.register("json", backend_b.clone()).expect("reregister");
+    hub.backend
+        .register("json", backend_b.clone())
+        .expect("reregister");
     let _ = futures::executor::block_on(stale_register());
     let current = hub.backend.get("json").expect("get");
     assert!(std::sync::Arc::ptr_eq(&current, &backend_b));
@@ -170,7 +186,9 @@ impl KvUnit for KvFakeUnit {
 async fn backend_without_a_kv_facet_fails_domain_open_loud() {
     let ctx = Context::root();
     let hub = Storage::install(&ctx);
-    hub.backend.register("bare", fake_backend()).expect("register");
+    hub.backend
+        .register("bare", fake_backend())
+        .expect("register");
     let facility = dsh_storage_domain::DomainFacility::install(
         &ctx,
         dsh_storage_domain::DomainFacilityConfig {
@@ -179,13 +197,8 @@ async fn backend_without_a_kv_facet_fails_domain_open_loud() {
         },
     )
     .expect("facility");
-    let spec = dsh_storage_domain::define_domain(
-        "needs_kv",
-        1,
-        None,
-        indexmap::IndexMap::new(),
-    )
-    .expect("spec");
+    let spec = dsh_storage_domain::define_domain("needs_kv", 1, None, indexmap::IndexMap::new())
+        .expect("spec");
     let error = facility.open(&spec).await.err().expect("facet-unsupported");
     assert!(error.contains("has no kv facet"), "{error}");
 }

@@ -139,8 +139,10 @@ pub trait AttachmentStore: Send + Sync + 'static {
 
     /// Validate and durably commit one image before its owning session event
     /// is appended.
-    async fn save_image(&self, input: &SaveImageAttachment)
-        -> Result<ImageAttachmentRef, AttachmentError>;
+    async fn save_image(
+        &self,
+        input: &SaveImageAttachment,
+    ) -> Result<ImageAttachmentRef, AttachmentError>;
 
     /// Read one image and verify that bytes still match the recorded
     /// reference.

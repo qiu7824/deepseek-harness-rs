@@ -16,15 +16,22 @@ use dsh_fs::{FsErrorCode, FsObservation, FsTarget, FsWriteIntent, fs_target_key,
 use dsh_fs_observation_policy::{FsObservationActorHandle, apply};
 
 fn target(path: &str) -> FsTarget {
-    FsTarget { target_key: fs_target_key(path), display_path: path.to_string() }
+    FsTarget {
+        target_key: fs_target_key(path),
+        display_path: path.to_string(),
+    }
 }
 
 fn owner_exec(session: usize) -> FsObservationActorHandle {
-    FsObservationActorHandle { session_key: Some(session) }
+    FsObservationActorHandle {
+        session_key: Some(session),
+    }
 }
 
 fn present(version: &str) -> FsObservation {
-    FsObservation::Present { version: fs_version(version) }
+    FsObservation::Present {
+        version: fs_version(version),
+    }
 }
 
 fn absent() -> FsObservation {
@@ -83,7 +90,12 @@ async fn edit_intent(
     }
 }
 
-fn emit_observed(ctx: &Context, target: &FsTarget, observation: FsObservation, actor: Option<&FsObservationActorHandle>) {
+fn emit_observed(
+    ctx: &Context,
+    target: &FsTarget,
+    observation: FsObservation,
+    actor: Option<&FsObservationActorHandle>,
+) {
     ctx.emit(
         "fs/observed",
         vec![
@@ -115,7 +127,9 @@ async fn an_unobserved_target_decides_create_if_absent() {
     let (ctx, _disposer) = setup();
     let exec = owner_exec(1);
     assert_eq!(
-        write_intent(&ctx, &target("a.txt"), Some(&exec)).await.expect("intent"),
+        write_intent(&ctx, &target("a.txt"), Some(&exec))
+            .await
+            .expect("intent"),
         Some(FsWriteIntent::CreateIfAbsent)
     );
 }
@@ -124,12 +138,16 @@ async fn an_unobserved_target_decides_create_if_absent() {
 async fn a_no_owner_actor_decides_create_if_absent() {
     let (ctx, _disposer) = setup();
     assert_eq!(
-        write_intent(&ctx, &target("a.txt"), None).await.expect("intent"),
+        write_intent(&ctx, &target("a.txt"), None)
+            .await
+            .expect("intent"),
         Some(FsWriteIntent::CreateIfAbsent)
     );
     let no_session = FsObservationActorHandle { session_key: None };
     assert_eq!(
-        write_intent(&ctx, &target("a.txt"), Some(&no_session)).await.expect("intent"),
+        write_intent(&ctx, &target("a.txt"), Some(&no_session))
+            .await
+            .expect("intent"),
         Some(FsWriteIntent::CreateIfAbsent)
     );
 }
@@ -141,8 +159,12 @@ async fn an_observed_target_decides_replace_if_version_at_the_observed_version()
     emit_observed(&ctx, &target("a.txt"), present("v7"), Some(&exec));
     settle().await;
     assert_eq!(
-        write_intent(&ctx, &target("a.txt"), Some(&exec)).await.expect("intent"),
-        Some(FsWriteIntent::ReplaceIfVersion { version: fs_version("v7") })
+        write_intent(&ctx, &target("a.txt"), Some(&exec))
+            .await
+            .expect("intent"),
+        Some(FsWriteIntent::ReplaceIfVersion {
+            version: fs_version("v7")
+        })
     );
 }
 
@@ -153,7 +175,9 @@ async fn a_target_observed_absent_decides_create_if_absent() {
     emit_observed(&ctx, &target("a.txt"), absent(), Some(&exec));
     settle().await;
     assert_eq!(
-        write_intent(&ctx, &target("a.txt"), Some(&exec)).await.expect("intent"),
+        write_intent(&ctx, &target("a.txt"), Some(&exec))
+            .await
+            .expect("intent"),
         Some(FsWriteIntent::CreateIfAbsent)
     );
 }
@@ -165,17 +189,26 @@ async fn a_target_observed_absent_decides_create_if_absent() {
 async fn rejects_an_unread_edit_with_fs_not_observed() {
     let exec = owner_exec(1);
     let gate = dsh_fs_observation_policy::ObservedStateGate::new();
-    let error = gate.edit_intent(&target("a.txt"), Some(&exec)).err().expect("rejects");
+    let error = gate
+        .edit_intent(&target("a.txt"), Some(&exec))
+        .err()
+        .expect("rejects");
     assert_eq!(error.code, FsErrorCode::FsNotObserved);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn rejects_an_edit_with_no_owner() {
     let gate = dsh_fs_observation_policy::ObservedStateGate::new();
-    let error = gate.edit_intent(&target("a.txt"), None).err().expect("rejects");
+    let error = gate
+        .edit_intent(&target("a.txt"), None)
+        .err()
+        .expect("rejects");
     assert_eq!(error.code, FsErrorCode::FsNotObserved);
     let no_session = FsObservationActorHandle { session_key: None };
-    let error = gate.edit_intent(&target("a.txt"), Some(&no_session)).err().expect("rejects");
+    let error = gate
+        .edit_intent(&target("a.txt"), Some(&no_session))
+        .err()
+        .expect("rejects");
     assert_eq!(error.code, FsErrorCode::FsNotObserved);
 }
 
@@ -203,7 +236,10 @@ async fn rejects_editing_a_target_observed_absent_with_fs_not_found() {
     let gate = dsh_fs_observation_policy::ObservedStateGate::new();
     let exec = owner_exec(1);
     gate.observe(&target("a.txt"), absent(), Some(&exec));
-    let error = gate.edit_intent(&target("a.txt"), Some(&exec)).err().expect("rejects");
+    let error = gate
+        .edit_intent(&target("a.txt"), Some(&exec))
+        .err()
+        .expect("rejects");
     assert_eq!(error.code, FsErrorCode::FsNotFound);
 }
 
@@ -225,7 +261,9 @@ async fn a_write_observation_refreshes_the_basis_so_the_next_edit_needs_no_re_re
         )
         .await;
     assert_eq!(
-        cordis::downcast::<dsh_fs::FsEditGuard>(&value).expect("guard").version,
+        cordis::downcast::<dsh_fs::FsEditGuard>(&value)
+            .expect("guard")
+            .version,
         fs_version("v1")
     );
     emit_observed(&ctx, &target("a.txt"), present("v2"), Some(&exec));
@@ -238,7 +276,9 @@ async fn a_write_observation_refreshes_the_basis_so_the_next_edit_needs_no_re_re
         )
         .await;
     assert_eq!(
-        cordis::downcast::<dsh_fs::FsEditGuard>(&value).expect("guard").version,
+        cordis::downcast::<dsh_fs::FsEditGuard>(&value)
+            .expect("guard")
+            .version,
         fs_version("v2")
     );
 }
@@ -252,13 +292,11 @@ async fn a_no_owner_observation_records_nothing() {
     // The live listener rejects for this owner (the panic carries the
     // structured FsError).
     let args = vec![arc(target("a.txt")), arc(exec)];
-    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
-        ctx.waterfall(
-            "fs/edit-intent",
-            args,
-            Box::pin(async { arc(FsObservationActorHandle { session_key: None }) }),
-        ),
-    ))
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(ctx.waterfall(
+        "fs/edit-intent",
+        args,
+        Box::pin(async { arc(FsObservationActorHandle { session_key: None }) }),
+    )))
     .await;
     let payload = outcome.err().expect("the listener rejects");
     let message = payload
@@ -277,7 +315,9 @@ async fn supports_present_absent_present_transitions_for_one_owner() {
     settle().await;
     assert_eq!(
         write_intent(&ctx, &a, Some(&exec)).await.expect("intent"),
-        Some(FsWriteIntent::ReplaceIfVersion { version: fs_version("v1") })
+        Some(FsWriteIntent::ReplaceIfVersion {
+            version: fs_version("v1")
+        })
     );
     emit_observed(&ctx, &a, absent(), Some(&exec));
     settle().await;
@@ -303,7 +343,9 @@ async fn supports_present_absent_present_transitions_for_one_owner() {
         )
         .await;
     assert_eq!(
-        cordis::downcast::<dsh_fs::FsEditGuard>(&value).expect("guard").version,
+        cordis::downcast::<dsh_fs::FsEditGuard>(&value)
+            .expect("guard")
+            .version,
         fs_version("v2")
     );
 }
@@ -321,9 +363,14 @@ async fn owner_a_observing_does_not_grant_owner_b_edit_authority() {
     // Drive the same gate semantics directly for the error identity.
     let gate = dsh_fs_observation_policy::ObservedStateGate::new();
     gate.observe(&target("a.txt"), present("v0"), Some(&a));
-    let b_error = gate.edit_intent(&target("a.txt"), Some(&b)).err().expect("b rejects");
+    let b_error = gate
+        .edit_intent(&target("a.txt"), Some(&b))
+        .err()
+        .expect("b rejects");
     assert_eq!(b_error.code, FsErrorCode::FsNotObserved);
-    let a_guard = gate.edit_intent(&target("a.txt"), Some(&a)).expect("a observes");
+    let a_guard = gate
+        .edit_intent(&target("a.txt"), Some(&a))
+        .expect("a observes");
     assert_eq!(a_guard.version, fs_version("v0"));
 }
 
@@ -335,12 +382,18 @@ async fn each_owner_records_its_own_observed_version_independently() {
     emit_observed(&ctx, &target("a.txt"), present("v0"), Some(&a));
     settle().await;
     assert_eq!(
-        write_intent(&ctx, &target("a.txt"), Some(&b)).await.expect("intent"),
+        write_intent(&ctx, &target("a.txt"), Some(&b))
+            .await
+            .expect("intent"),
         Some(FsWriteIntent::CreateIfAbsent)
     );
     assert_eq!(
-        write_intent(&ctx, &target("a.txt"), Some(&a)).await.expect("intent"),
-        Some(FsWriteIntent::ReplaceIfVersion { version: fs_version("v0") })
+        write_intent(&ctx, &target("a.txt"), Some(&a))
+            .await
+            .expect("intent"),
+        Some(FsWriteIntent::ReplaceIfVersion {
+            version: fs_version("v0")
+        })
     );
 }
 
@@ -362,7 +415,9 @@ async fn fully_decides_the_slot_without_calling_next() {
     // The bare default is the no-guard marker; the policy replaced it with
     // the intent (fallback never reached because next() is not called).
     assert_eq!(
-        cordis::downcast::<FsWriteIntent>(&value).expect("intent").clone(),
+        cordis::downcast::<FsWriteIntent>(&value)
+            .expect("intent")
+            .clone(),
         FsWriteIntent::CreateIfAbsent
     );
 }
@@ -454,13 +509,11 @@ async fn a_fresh_plugin_after_disposal_starts_with_no_inherited_state() {
     // Same owner identity, but state was released on disposal: the fresh
     // gate rejects with FS_NOT_OBSERVED (the TS `rejects.toMatchObject`).
     let args = vec![arc(target("a.txt")), arc(exec)];
-    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
-        ctx.waterfall(
-            "fs/edit-intent",
-            args,
-            Box::pin(async { arc(FsObservationActorHandle { session_key: None }) }),
-        ),
-    ))
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(ctx.waterfall(
+        "fs/edit-intent",
+        args,
+        Box::pin(async { arc(FsObservationActorHandle { session_key: None }) }),
+    )))
     .await;
     let payload = outcome.err().expect("the fresh gate rejects");
     let code = payload

@@ -5,6 +5,5 @@ pub mod index;
 pub mod invariant;
 
 pub use index::{
-    Config, FrontendStaticPlugin, NAME, apply, decode_uri_path, resolve_static_target,
-    serve_static,
+    Config, FrontendStaticPlugin, NAME, apply, decode_uri_path, resolve_static_target, serve_static,
 };

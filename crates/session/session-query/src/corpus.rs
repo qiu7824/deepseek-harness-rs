@@ -331,9 +331,12 @@ impl SessionCorpus {
                         None => {
                             let attached = sessions.get(&session_id);
                             match attached {
-                                Some(attached) => {
-                                    project_source(&session_id, &attached, &project, signal.as_ref())
-                                }
+                                Some(attached) => project_source(
+                                    &session_id,
+                                    &attached,
+                                    &project,
+                                    signal.as_ref(),
+                                ),
                                 None => LogicalProjectionResult::Rejected {
                                     session_id: session_id.clone(),
                                     reason: not_found(&session_id).message,
@@ -411,7 +414,10 @@ impl SessionCorpus {
             })?
             .into_inner()
             .expect("unlocked");
-        Ok(ordered_results(&ids, &Arc::new(std::sync::Mutex::new(resolved))))
+        Ok(ordered_results(
+            &ids,
+            &Arc::new(std::sync::Mutex::new(resolved)),
+        ))
     }
 }
 

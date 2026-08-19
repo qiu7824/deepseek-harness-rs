@@ -138,9 +138,8 @@ impl AgentDefaultModelConfigService {
                     // settings document changes. The seam hands out `Data`;
                     // adapt it back into the typed settings shape.
                     *source_for_hook.lock() = Arc::new(move || {
-                        AgentDefaultModelSettings::from_data(&source()).expect(
-                            "agent-default-model section must resolve to {provider, model}",
-                        )
+                        AgentDefaultModelSettings::from_data(&source())
+                            .expect("agent-default-model section must resolve to {provider, model}")
                     });
                 }),
                 on_change: Arc::new(|| {}),
@@ -161,10 +160,7 @@ impl AgentDefaultModelConfigService {
             .as_ref()
             .expect("wiring installed")
             .clone();
-        wiring
-            .settle()
-            .await
-            .map_err(|error| error.message())
+        wiring.settle().await.map_err(|error| error.message())
     }
 
     /// Read the current default model selection (detached).
@@ -185,7 +181,10 @@ impl AgentDefaultModelConfigService {
         section.insert("provider".to_string(), serde_json::json!(next.provider));
         section.insert("model".to_string(), serde_json::json!(next.model));
         if let Some(effort) = &next.reasoning_effort {
-            section.insert("reasoningEffort".to_string(), serde_json::json!(effort.as_str()));
+            section.insert(
+                "reasoningEffort".to_string(),
+                serde_json::json!(effort.as_str()),
+            );
         }
         settings
             .replace(

@@ -79,10 +79,7 @@ pub fn expand_home_path(path: &str) -> PathBuf {
 ///
 /// Precedence, highest first: an explicit configured path, `$DSH_HOME`, then
 /// `~/.dsh`. A blank `$DSH_HOME` is treated as unset.
-pub fn resolve_dsh_home(
-    configured: Option<&str>,
-    env: &dyn Fn(&str) -> Option<String>,
-) -> PathBuf {
+pub fn resolve_dsh_home(configured: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
     let from_env = env(DSH_HOME_ENV);
     let selected = match configured {
         Some(configured) => configured.to_string(),
@@ -134,7 +131,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dsh-home-{}", std::process::id()));
         let nested = dir.join("a").join("b");
         std::fs::create_dir_all(&nested).unwrap();
-        let canonical = canonicalize_watch_path(&nested.join("missing.txt")).await.unwrap();
+        let canonical = canonicalize_watch_path(&nested.join("missing.txt"))
+            .await
+            .unwrap();
         let expected = std::fs::canonicalize(&nested).unwrap().join("missing.txt");
         assert_eq!(canonical, expected);
         let _ = std::fs::remove_dir_all(&dir);
@@ -159,7 +158,8 @@ mod tests {
         assert!(configured.ends_with(Path::new("cfg")), "got {configured:?}");
         let env_home = resolve_dsh_home(None, &env);
         assert!(
-            env_home.ends_with(Path::new("env").join("home")) || env_home == PathBuf::from("/env/home"),
+            env_home.ends_with(Path::new("env").join("home"))
+                || env_home == PathBuf::from("/env/home"),
             "got {env_home:?}"
         );
         let empty_env = |_name: &str| Some("   ".to_string());

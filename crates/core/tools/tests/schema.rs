@@ -4,11 +4,11 @@
 //! realm-boundary cases collapse with the type system).
 
 use dsh_tools::{
-    JsonSchemaError, assert_object_json_schema, assert_supported_json_schema,
-    parameter_schema_spec_to_json_schema, validate_args, validate_json_schema_value,
-    value_schema_spec_to_json_schema, ArrayValueSchemaSpec, IntegerValueSchemaSpec,
-    JsonValueSchemaSpec, ObjectValueSchemaSpec, OneOfValueSchemaSpec, ParameterPropertySpec,
-    ParameterSchemaSpec, StringValueSchemaSpec, ValueSchemaAnnotations, ValueSchemaSpec,
+    ArrayValueSchemaSpec, IntegerValueSchemaSpec, JsonSchemaError, JsonValueSchemaSpec,
+    ObjectValueSchemaSpec, OneOfValueSchemaSpec, ParameterPropertySpec, ParameterSchemaSpec,
+    StringValueSchemaSpec, ValueSchemaAnnotations, ValueSchemaSpec, assert_object_json_schema,
+    assert_supported_json_schema, parameter_schema_spec_to_json_schema, validate_args,
+    validate_json_schema_value, value_schema_spec_to_json_schema,
 };
 use serde_json::{Value as JsonValue, json};
 
@@ -58,7 +58,7 @@ fn accepts_every_json_root_and_supported_node() {
         json!({ "oneOf": [{ "type": "string" }, { "type": "number" }] }),
         json!({ "description": "any JSON", "title": "JSON", "default": null, "examples": [1, "x"] }),
     ] {
-        assert_supported_json_schema(&schema).expect(&schema.to_string());
+        assert_supported_json_schema(&schema).unwrap_or_else(|_| panic!("{}", schema));
     }
 }
 
@@ -80,11 +80,23 @@ fn retains_an_object_root_guard_only_at_consumers_that_need_it() {
 
 #[test]
 fn rejects_non_schema_nodes_unknown_types_and_type_arrays() {
-    assert_eq!(violations_of(&JsonValue::Null, false), vec!["schema must be a schema object"]);
-    assert_eq!(violations_of(&json!([]), false), vec!["schema must be a schema object"]);
-    assert_eq!(violations_of(&json!("no"), false), vec!["schema must be a schema object"]);
+    assert_eq!(
+        violations_of(&JsonValue::Null, false),
+        vec!["schema must be a schema object"]
+    );
+    assert_eq!(
+        violations_of(&json!([]), false),
+        vec!["schema must be a schema object"]
+    );
+    assert_eq!(
+        violations_of(&json!("no"), false),
+        vec!["schema must be a schema object"]
+    );
     let unknown = violations_of(&json!({ "type": "tuple" }), false);
-    assert!(unknown[0].starts_with("schema.type must be one of"), "got {unknown:?}");
+    assert!(
+        unknown[0].starts_with("schema.type must be one of"),
+        "got {unknown:?}"
+    );
     assert_eq!(
         violations_of(&json!({ "type": ["string", "null"] }), false),
         vec!["schema.type must be a single type string (type arrays are not supported)"]
@@ -110,16 +122,33 @@ fn enforces_one_of_vocabulary_and_minimum_branch_count() {
         vec!["schema cannot declare both type and oneOf"]
     );
     assert_eq!(
-        violations_of(&json!({ "oneOf": [{ "type": "string" }, { "type": "number" }], "items": {} }), false),
+        violations_of(
+            &json!({ "oneOf": [{ "type": "string" }, { "type": "number" }], "items": {} }),
+            false
+        ),
         vec!["schema.items is not supported beside oneOf"]
     );
-    let bad_branch = violations_of(&json!({ "oneOf": [{ "type": "string" }, { "type": "weird" }] }), false);
-    assert!(bad_branch[0].contains("schema.oneOf[1].type"), "got {bad_branch:?}");
+    let bad_branch = violations_of(
+        &json!({ "oneOf": [{ "type": "string" }, { "type": "weird" }] }),
+        false,
+    );
+    assert!(
+        bad_branch[0].contains("schema.oneOf[1].type"),
+        "got {bad_branch:?}"
+    );
 }
 
 #[test]
 fn rejects_unknown_and_misplaced_keywords() {
-    for keyword in ["anyOf", "allOf", "not", "pattern", "minimum", "maxLength", "$ref"] {
+    for keyword in [
+        "anyOf",
+        "allOf",
+        "not",
+        "pattern",
+        "minimum",
+        "maxLength",
+        "$ref",
+    ] {
         let schema = json!({ "type": "object", keyword: [] });
         let violations = violations_of(&schema, false);
         assert!(
@@ -179,7 +208,10 @@ fn validates_object_properties_required_names_and_openness() {
         vec!["schema.properties must be an object of schemas"]
     );
     assert_eq!(
-        violations_of(&json!({ "type": "object", "properties": { "a": "x" } }), false),
+        violations_of(
+            &json!({ "type": "object", "properties": { "a": "x" } }),
+            false
+        ),
         vec!["schema.properties.a must be a schema object"]
     );
     assert_eq!(
@@ -191,11 +223,17 @@ fn validates_object_properties_required_names_and_openness() {
         vec!["schema.required must be an array of strings"]
     );
     assert_eq!(
-        violations_of(&json!({ "type": "object", "properties": {}, "required": ["missing"] }), false),
+        violations_of(
+            &json!({ "type": "object", "properties": {}, "required": ["missing"] }),
+            false
+        ),
         vec!["schema.required names \"missing\" which is not in properties"]
     );
     assert_eq!(
-        violations_of(&json!({ "type": "object", "additionalProperties": "yes" }), false),
+        violations_of(
+            &json!({ "type": "object", "additionalProperties": "yes" }),
+            false
+        ),
         vec!["schema.additionalProperties must be a boolean"]
     );
     // TS's explicit-undefined case projects to JSON null on the wire.
@@ -204,7 +242,10 @@ fn validates_object_properties_required_names_and_openness() {
         vec!["schema.properties must be an object of schemas"]
     );
     assert_eq!(
-        violations_of(&json!({ "type": "object", "properties": null, "required": ["missing"] }), false),
+        violations_of(
+            &json!({ "type": "object", "properties": null, "required": ["missing"] }),
+            false
+        ),
         vec![
             "schema.properties must be an object of schemas",
             "schema.required names \"missing\" which is not in properties",
@@ -221,7 +262,7 @@ fn requires_type_correct_scalar_enum_and_const_values() {
         json!({ "type": "boolean", "enum": [true], "const": true }),
         json!({ "type": "null", "enum": [null], "const": null }),
     ] {
-        assert_supported_json_schema(&schema).expect(&schema.to_string());
+        assert_supported_json_schema(&schema).unwrap_or_else(|_| panic!("{}", schema));
     }
 
     assert_eq!(
@@ -245,7 +286,10 @@ fn requires_type_correct_scalar_enum_and_const_values() {
         vec!["schema.enum must be a non-empty array of string values"]
     );
     assert_eq!(
-        violations_of(&json!({ "type": "string", "enum": ["a"], "const": "b" }), false),
+        violations_of(
+            &json!({ "type": "string", "enum": ["a"], "const": "b" }),
+            false
+        ),
         vec!["schema.const must be one of schema.enum when both are declared"]
     );
 }
@@ -264,17 +308,48 @@ fn validates_annotation_types() {
 
 #[test]
 fn validates_scalar_array_object_and_null_roots() {
-    assert_eq!(validate_json_schema_value(&asserted(json!({ "type": "string" })), &json!("x"), "value"), Vec::<String>::new());
-    assert_eq!(validate_json_schema_value(&asserted(json!({ "type": "number" })), &json!(1.5), "value"), Vec::<String>::new());
-    assert_eq!(validate_json_schema_value(&asserted(json!({ "type": "integer" })), &json!(2), "value"), Vec::<String>::new());
-    assert_eq!(validate_json_schema_value(&asserted(json!({ "type": "boolean" })), &json!(true), "value"), Vec::<String>::new());
-    assert_eq!(validate_json_schema_value(&asserted(json!({ "type": "null" })), &JsonValue::Null, "value"), Vec::<String>::new());
     assert_eq!(
-        validate_json_schema_value(&asserted(json!({ "type": "array", "items": { "type": "string" } })), &json!(["x"]), "value"),
+        validate_json_schema_value(&asserted(json!({ "type": "string" })), &json!("x"), "value"),
         Vec::<String>::new()
     );
     assert_eq!(
-        validate_json_schema_value(&asserted(json!({ "type": "object" })), &json!({ "x": 1 }), "value"),
+        validate_json_schema_value(&asserted(json!({ "type": "number" })), &json!(1.5), "value"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        validate_json_schema_value(&asserted(json!({ "type": "integer" })), &json!(2), "value"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        validate_json_schema_value(
+            &asserted(json!({ "type": "boolean" })),
+            &json!(true),
+            "value"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        validate_json_schema_value(
+            &asserted(json!({ "type": "null" })),
+            &JsonValue::Null,
+            "value"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        validate_json_schema_value(
+            &asserted(json!({ "type": "array", "items": { "type": "string" } })),
+            &json!(["x"]),
+            "value"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        validate_json_schema_value(
+            &asserted(json!({ "type": "object" })),
+            &json!({ "x": 1 }),
+            "value"
+        ),
         Vec::<String>::new()
     );
 }
@@ -299,11 +374,19 @@ fn rejects_wrong_scalar_types_and_negative_zero() {
         vec!["\"value\" must be a finite JSON number"]
     );
     assert_eq!(
-        validate_json_schema_value(&asserted(json!({ "type": "integer" })), &json!(1.5), "value"),
+        validate_json_schema_value(
+            &asserted(json!({ "type": "integer" })),
+            &json!(1.5),
+            "value"
+        ),
         vec!["\"value\" must be an integer"]
     );
     assert_eq!(
-        validate_json_schema_value(&asserted(json!({ "type": "boolean" })), &json!("true"), "value"),
+        validate_json_schema_value(
+            &asserted(json!({ "type": "boolean" })),
+            &json!("true"),
+            "value"
+        ),
         vec!["\"value\" must be a boolean"]
     );
     assert_eq!(
@@ -315,7 +398,10 @@ fn rejects_wrong_scalar_types_and_negative_zero() {
 #[test]
 fn enforces_scalar_enum_and_const_together() {
     let schema = asserted(json!({ "type": "string", "enum": ["a", "b"], "const": "a" }));
-    assert_eq!(validate_json_schema_value(&schema, &json!("a"), "value"), Vec::<String>::new());
+    assert_eq!(
+        validate_json_schema_value(&schema, &json!("a"), "value"),
+        Vec::<String>::new()
+    );
     assert_eq!(
         validate_json_schema_value(&schema, &json!("c"), "value"),
         vec!["\"value\" must be one of [\"a\",\"b\"]"]
@@ -342,7 +428,11 @@ fn validates_object_requiredness_nested_values_and_open_defaults() {
         "required": ["file"],
     }));
     assert_eq!(
-        validate_json_schema_value(&open, &json!({ "file": "a", "extra": [1], "nested": { "line": 2 } }), "value"),
+        validate_json_schema_value(
+            &open,
+            &json!({ "file": "a", "extra": [1], "nested": { "line": 2 } }),
+            "value"
+        ),
         Vec::<String>::new()
     );
     assert_eq!(
@@ -357,7 +447,11 @@ fn validates_object_requiredness_nested_values_and_open_defaults() {
         ]
     );
     assert_eq!(
-        validate_json_schema_value(&open, &json!({ "file": "a", "nested": { "line": 1, "extra": true } }), "value"),
+        validate_json_schema_value(
+            &open,
+            &json!({ "file": "a", "nested": { "line": 1, "extra": true } }),
+            "value"
+        ),
         vec!["\"value.nested.extra\" is not a declared property (additionalProperties: false)"]
     );
     assert_eq!(
@@ -369,7 +463,10 @@ fn validates_object_requiredness_nested_values_and_open_defaults() {
 #[test]
 fn validates_dense_arrays_per_index() {
     let schema = asserted(json!({ "type": "array", "items": { "type": "integer" } }));
-    assert_eq!(validate_json_schema_value(&schema, &json!([1, 2]), "value"), Vec::<String>::new());
+    assert_eq!(
+        validate_json_schema_value(&schema, &json!([1, 2]), "value"),
+        Vec::<String>::new()
+    );
     assert_eq!(
         validate_json_schema_value(&schema, &json!([1, 1.5]), "value"),
         vec!["\"value[1]\" must be an integer"]
@@ -383,7 +480,10 @@ fn validates_dense_arrays_per_index() {
 #[test]
 fn validates_exact_one_one_of_semantics_including_overlap() {
     let disjoint = asserted(json!({ "oneOf": [{ "type": "string" }, { "type": "number" }] }));
-    assert_eq!(validate_json_schema_value(&disjoint, &json!("x"), "value"), Vec::<String>::new());
+    assert_eq!(
+        validate_json_schema_value(&disjoint, &json!("x"), "value"),
+        Vec::<String>::new()
+    );
     assert_eq!(
         validate_json_schema_value(&disjoint, &JsonValue::Null, "value"),
         vec!["\"value\" must match exactly one oneOf branch (matched 0)"]
@@ -393,14 +493,27 @@ fn validates_exact_one_one_of_semantics_including_overlap() {
         validate_json_schema_value(&overlap, &json!(1), "value"),
         vec!["\"value\" must match exactly one oneOf branch (matched 2)"]
     );
-    assert_eq!(validate_json_schema_value(&overlap, &json!(1.5), "value"), Vec::<String>::new());
+    assert_eq!(
+        validate_json_schema_value(&overlap, &json!(1.5), "value"),
+        Vec::<String>::new()
+    );
 }
 
 #[test]
 fn unconstrained_schema_accepts_any_lossless_json() {
     let any_json = asserted(json!({}));
-    for value in [JsonValue::Null, json!(true), json!(1), json!("x"), json!([1]), json!({ "x": null })] {
-        assert_eq!(validate_json_schema_value(&any_json, &value, "value"), Vec::<String>::new());
+    for value in [
+        JsonValue::Null,
+        json!(true),
+        json!(1),
+        json!("x"),
+        json!([1]),
+        json!({ "x": null }),
+    ] {
+        assert_eq!(
+            validate_json_schema_value(&any_json, &value, "value"),
+            Vec::<String>::new()
+        );
     }
 }
 
@@ -552,11 +665,17 @@ fn rejects_undersized_one_of_and_empty_enums_at_compile_time() {
         branches: vec![string_spec(None, None)],
     }))
     .expect_err("single-branch oneOf must reject");
-    assert_eq!(error.violations[0], "schema.oneOf must be an array of at least two value schemas");
+    assert_eq!(
+        error.violations[0],
+        "schema.oneOf must be an array of at least two value schemas"
+    );
 
     let error = value_schema_spec_to_json_schema(&string_spec(Some(Vec::new()), None))
         .expect_err("empty enum must reject");
-    assert_eq!(error.violations[0], "schema.enum must be a non-empty array of string values");
+    assert_eq!(
+        error.violations[0],
+        "schema.enum must be a non-empty array of string values"
+    );
 }
 
 #[test]
@@ -569,7 +688,10 @@ fn const_outside_enum_rejects_through_the_asserted_projection() {
         Some("b".to_string()),
     ))
     .expect_err("const outside enum must reject");
-    assert_eq!(error.violations, vec!["schema.const must be one of schema.enum when both are declared"]);
+    assert_eq!(
+        error.violations,
+        vec!["schema.const must be one of schema.enum when both are declared"]
+    );
 }
 
 #[test]
@@ -577,10 +699,16 @@ fn preserves_property_names_literally_named_proto() {
     let mut properties = ParameterSchemaSpec::new();
     properties.insert(
         "__proto__".to_string(),
-        ParameterPropertySpec { schema: string_spec(None, None), required: true },
+        ParameterPropertySpec {
+            schema: string_spec(None, None),
+            required: true,
+        },
     );
     let schema = parameter_schema_spec_to_json_schema(&properties).expect("compile");
-    assert_eq!(schema["properties"]["__proto__"], json!({ "type": "string" }));
+    assert_eq!(
+        schema["properties"]["__proto__"],
+        json!({ "type": "string" })
+    );
     assert_eq!(schema["required"], json!(["__proto__"]));
 }
 
@@ -589,7 +717,10 @@ fn validate_args_returns_path_qualified_violations_with_arguments_root() {
     let mut properties = ParameterSchemaSpec::new();
     properties.insert(
         "path".to_string(),
-        ParameterPropertySpec { schema: string_spec(None, None), required: true },
+        ParameterPropertySpec {
+            schema: string_spec(None, None),
+            required: true,
+        },
     );
     properties.insert(
         "offset".to_string(),
@@ -628,5 +759,8 @@ fn json_schema_error_carries_code_and_violations() {
     let error: JsonSchemaError = assert_supported_json_schema(&json!({ "type": "tuple" }))
         .expect_err("forged type must reject");
     assert_eq!(error.code, "UNSUPPORTED_SCHEMA");
-    assert_eq!(error.to_string(), "unsupported JSON schema: schema.type must be one of object/array/string/number/integer/boolean/null");
+    assert_eq!(
+        error.to_string(),
+        "unsupported JSON schema: schema.type must be one of object/array/string/number/integer/boolean/null"
+    );
 }

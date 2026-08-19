@@ -6,9 +6,8 @@ use std::sync::Arc;
 
 use cordis::Context;
 use dsh_host_directory_picker::{
-    AbortSignal, DirectoryPicker, DirectoryPickerCapability,
-    DirectoryPickerError, DirectoryPickerErrorCode, DirectoryPickerNativeCapability,
-    register,
+    AbortSignal, DirectoryPicker, DirectoryPickerCapability, DirectoryPickerError,
+    DirectoryPickerErrorCode, DirectoryPickerNativeCapability, register,
 };
 
 /// Minimal concrete backend: all a subclass owes the abstract class is
@@ -20,9 +19,9 @@ struct StubPicker {
 impl StubPicker {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            stub: DirectoryPickerCapability::Native(DirectoryPickerNativeCapability::new(Arc::new(
-                |_signal: AbortSignal| Box::pin(async { None }),
-            ))),
+            stub: DirectoryPickerCapability::Native(DirectoryPickerNativeCapability::new(
+                Arc::new(|_signal: AbortSignal| Box::pin(async { None })),
+            )),
         })
     }
 }
@@ -43,8 +42,7 @@ fn registers_as_ctx_directory_picker_and_leaves_with_its_fiber() {
         let ctx = Context::root();
         let disposer = register(&ctx, StubPicker::new());
 
-        let slot =
-            ctx.get_typed::<Arc<dyn DirectoryPicker>>("directoryPicker", false);
+        let slot = ctx.get_typed::<Arc<dyn DirectoryPicker>>("directoryPicker", false);
         let slot = slot.expect("service visible after registration");
         assert_eq!(slot.capability().kind(), "native");
 

@@ -14,7 +14,7 @@ pub mod tool_calls;
 pub use agent::{LoopCancelled, ReactLoopAgent};
 pub use constants::DEFAULT_MAX_PARALLEL_TOOL_CALLS;
 pub use index::{
-    CONFIGURED_AGENT_IDENTITIES_KEY, AgentLoop, Config, ConfiguredAgent,
+    AgentLoop, CONFIGURED_AGENT_IDENTITIES_KEY, Config, ConfiguredAgent,
     agent_loop_settings_namespace, agent_loop_settings_schema,
 };
 pub use invariant::{

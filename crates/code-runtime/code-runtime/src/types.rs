@@ -26,9 +26,8 @@ pub type CodeJsonValue = serde_json::Value;
 /// lossless JSON. A rejection of this function surfaces inside the program
 /// as a rejection of the corresponding call. The Rust collapse: the future
 /// panics (the repo-wide rejection channel).
-pub type CodeBindingFunction = Arc<
-    dyn Fn(CodeJsonValue) -> BoxFuture<'static, CodeJsonValue> + Send + Sync,
->;
+pub type CodeBindingFunction =
+    Arc<dyn Fn(CodeJsonValue) -> BoxFuture<'static, CodeJsonValue> + Send + Sync>;
 
 /// Program-visible typed rejection for one binding namespace (TS
 /// `CodeBindingErrorClass`).

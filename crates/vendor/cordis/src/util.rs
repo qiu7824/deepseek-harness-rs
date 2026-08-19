@@ -154,11 +154,17 @@ pub struct OverlayMap<V: Clone> {
 
 impl<V: Clone> OverlayMap<V> {
     pub fn new() -> Self {
-        Self { parent: None, entries: parking_lot::Mutex::new(HashMap::new()) }
+        Self {
+            parent: None,
+            entries: parking_lot::Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn child(parent: &Arc<OverlayMap<V>>) -> Self {
-        Self { parent: Some(parent.clone()), entries: parking_lot::Mutex::new(HashMap::new()) }
+        Self {
+            parent: Some(parent.clone()),
+            entries: parking_lot::Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn insert(&self, key: String, value: V) {
@@ -243,6 +249,9 @@ mod tests {
         assert_eq!(child.get("x"), Some("child".to_string()));
         let grandchild = Arc::new(OverlayMap::child(&child));
         assert_eq!(grandchild.get("x"), Some("child".to_string()));
-        assert_eq!(grandchild.chain("x"), vec!["root".to_string(), "child".to_string()]);
+        assert_eq!(
+            grandchild.chain("x"),
+            vec!["root".to_string(), "child".to_string()]
+        );
     }
 }

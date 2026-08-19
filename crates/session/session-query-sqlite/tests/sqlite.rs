@@ -244,9 +244,7 @@ impl SessionPersistenceApi for TestPersistence {
         entry_events.extend(events.iter().cloned());
         state.next_revision += 1;
         let revision = state.next_revision;
-        state
-            .revisions
-            .insert(id.as_str().to_string(), revision);
+        state.revisions.insert(id.as_str().to_string(), revision);
         Ok(())
     }
 
@@ -256,7 +254,10 @@ impl SessionPersistenceApi for TestPersistence {
             return Err(failure);
         }
         let mut state = self.state.lock().expect("state");
-        *state.inspections.entry(id.as_str().to_string()).or_insert(0) += 1;
+        *state
+            .inspections
+            .entry(id.as_str().to_string())
+            .or_insert(0) += 1;
         let Some((meta, events)) = state.entries.get(id.as_str()) else {
             return Err("missing test session".to_string());
         };
@@ -516,7 +517,12 @@ async fn searches_all_surfaces_and_applies_metadata_before_ranking() {
         assistant_chunk_event(1, 11, "needle raw"),
         SessionEvent {
             source_event_seqs: Some(vec![0]),
-            ..user_event("needle summary", 2, 12, SurfaceOp::Replace { start: 0, end: 0 })
+            ..user_event(
+                "needle summary",
+                2,
+                12,
+                SurfaceOp::Replace { start: 0, end: 0 },
+            )
         },
         turn_end_event(3, 13, "needle failure"),
     ];
@@ -677,10 +683,12 @@ async fn uses_literal_phrase_tokens_stable_ties_and_bounded_snippets() {
         .map(|item| item.record.header.id.as_str().to_string())
         .collect();
     assert_eq!(ids, vec!["b", "d", "a"]);
-    assert!(phrase
-        .items
-        .iter()
-        .all(|item| item.best_match.snippet.chars().count() <= 5));
+    assert!(
+        phrase
+            .items
+            .iter()
+            .all(|item| item.best_match.snippet.chars().count() <= 5)
+    );
 
     let absent = engine
         .search_sessions(
@@ -840,7 +848,10 @@ async fn binds_cursors_to_requests_and_invalidates_within_scope() {
         .await
         .err()
         .expect("invalid");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidCursor);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQueryInvalidCursor
+    );
 
     // Walk the event cursor to the end.
     let mut keys: Vec<String> = event_page
@@ -960,7 +971,10 @@ async fn binds_cursors_to_requests_and_invalidates_within_scope() {
         .await
         .err()
         .expect("invalid");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidCursor);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQueryInvalidCursor
+    );
 
     // Appending to the target invalidates its event page.
     target
@@ -1335,7 +1349,10 @@ async fn rejects_immutable_header_conflicts_between_live_and_persisted_sources()
         .await
         .err()
         .expect("conflict");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQuerySourceConflict);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQuerySourceConflict
+    );
 }
 
 #[tokio::test]
@@ -1475,7 +1492,10 @@ async fn searches_at_the_fts5_outer_predicate_boundary_and_rejects_above_it() {
         .await
         .err()
         .expect("rejected");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidFilter);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQueryInvalidFilter
+    );
 }
 
 #[tokio::test]
@@ -1517,7 +1537,10 @@ async fn rejects_aggregate_filter_bindings_above_sqlites_portable_variable_limit
         .await
         .err()
         .expect("rejected");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidFilter);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQueryInvalidFilter
+    );
 
     let error = engine
         .search_events(
@@ -1535,7 +1558,10 @@ async fn rejects_aggregate_filter_bindings_above_sqlites_portable_variable_limit
         .await
         .err()
         .expect("rejected");
-    assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidFilter);
+    assert_eq!(
+        code(&error),
+        SessionQueryErrorCode::SessionQueryInvalidFilter
+    );
 }
 
 #[tokio::test]
@@ -1652,7 +1678,10 @@ async fn validates_configuration_and_rejects_invalid_values() {
         let error = dsh_session_query_sqlite::resolve_config(&config)
             .err()
             .expect("invalid config");
-        assert_eq!(code(&error), SessionQueryErrorCode::SessionQueryInvalidConfig);
+        assert_eq!(
+            code(&error),
+            SessionQueryErrorCode::SessionQueryInvalidConfig
+        );
     }
     let resolved = dsh_session_query_sqlite::resolve_config(&Config {
         path: ":memory:".to_string(),

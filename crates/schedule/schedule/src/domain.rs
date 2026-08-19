@@ -125,7 +125,8 @@ fn offset_instant_regex() -> &'static regex::Regex {
 
 fn local_date_regex() -> &'static regex::Regex {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})$").expect("static pattern")
+        regex::Regex::new(r"^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})$")
+            .expect("static pattern")
     });
     &RE
 }
@@ -142,7 +143,8 @@ fn local_time_regex() -> &'static regex::Regex {
 
 fn iana_zone_regex() -> &'static regex::Regex {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"^[A-Za-z][A-Za-z0-9_+.-]*(?:/[A-Za-z0-9_+.-]+)+$").expect("static pattern")
+        regex::Regex::new(r"^[A-Za-z][A-Za-z0-9_+.-]*(?:/[A-Za-z0-9_+.-]+)+$")
+            .expect("static pattern")
     });
     &RE
 }
@@ -251,7 +253,11 @@ fn milliseconds(value: Option<&str>) -> u32 {
 
 /// Require a representable, strictly future UTC target.
 fn future_instant(epoch: i64, now: i64) -> Result<String, ScheduleInputError> {
-    if now < MIN_FOUR_DIGIT_YEAR_MS || now > MAX_FOUR_DIGIT_YEAR_MS || epoch < MIN_FOUR_DIGIT_YEAR_MS || epoch > MAX_FOUR_DIGIT_YEAR_MS {
+    if now < MIN_FOUR_DIGIT_YEAR_MS
+        || now > MAX_FOUR_DIGIT_YEAR_MS
+        || epoch < MIN_FOUR_DIGIT_YEAR_MS
+        || epoch > MAX_FOUR_DIGIT_YEAR_MS
+    {
         return Err(ScheduleInputError::new(
             "time_out_of_range",
             "The scheduled time must be representable as a four-digit-year RFC 3339 UTC instant.",
@@ -280,7 +286,12 @@ fn parse_offset_instant(value: &str) -> Result<i64, ScheduleInputError> {
             "at must use YYYY-MM-DDTHH:mm:ss with optional 1-3 digit fractional seconds and an explicit Z or numeric offset.",
         ));
     };
-    let number = |name: &str| captures.name(name).and_then(|m| m.as_str().parse::<i64>().ok()).unwrap_or(0);
+    let number = |name: &str| {
+        captures
+            .name(name)
+            .and_then(|m| m.as_str().parse::<i64>().ok())
+            .unwrap_or(0)
+    };
     let parts = CalendarParts {
         year: number("year") as i32,
         month: number("month") as u32,
@@ -410,7 +421,10 @@ pub fn canonicalize_time_zone(value: &str) -> Result<String, ScheduleInputError>
             "time_zone must be UTC or a valid IANA Area/Location name.",
         )
     };
-    if value.is_empty() || value.trim() != value || (value != "UTC" && !iana_zone_regex().is_match(value)) {
+    if value.is_empty()
+        || value.trim() != value
+        || (value != "UTC" && !iana_zone_regex().is_match(value))
+    {
         return Err(invalid());
     }
     let canonical_input = backward_alias(value).unwrap_or(value);
@@ -472,10 +486,7 @@ fn parse_local_at(value: &LocalAtInput) -> Result<CalendarParts, ScheduleInputEr
 
 /// Resolve a local wall-clock value, choosing the first instant in an
 /// overlap and rejecting a gap.
-fn resolve_local_instant(
-    parts: CalendarParts,
-    time_zone: &str,
-) -> Result<i64, ScheduleInputError> {
+fn resolve_local_instant(parts: CalendarParts, time_zone: &str) -> Result<i64, ScheduleInputError> {
     let tz: chrono_tz::Tz = time_zone.parse().map_err(|_| {
         ScheduleInputError::new(
             "invalid_time_zone",
@@ -489,7 +500,12 @@ fn resolve_local_instant(
             .saturating_add(delta)
             .clamp(MIN_FOUR_DIGIT_YEAR_MS, MAX_FOUR_DIGIT_YEAR_MS);
         let offset = match Utc.timestamp_millis_opt(sample).single() {
-            Some(datetime) => tz.offset_from_utc_datetime(&datetime.naive_utc()).fix().local_minus_utc() as i64 * 1_000,
+            Some(datetime) => {
+                tz.offset_from_utc_datetime(&datetime.naive_utc())
+                    .fix()
+                    .local_minus_utc() as i64
+                    * 1_000
+            }
             None => continue,
         };
         if !offsets.contains(&offset) {
@@ -574,7 +590,10 @@ fn decode_schedule_record(value: &Value) -> Result<ScheduleRecord, ScheduleLogEr
     };
     match value.get("kind").and_then(Value::as_str) {
         Some("after") => {
-            if !has_exact_keys(value, &["id", "kind", "prompt", "afterSeconds", "scheduledAt"]) {
+            if !has_exact_keys(
+                value,
+                &["id", "kind", "prompt", "afterSeconds", "scheduledAt"],
+            ) {
                 return Err(ScheduleLogError::new(
                     "after schedule must contain exactly id, kind, prompt, afterSeconds, and scheduledAt",
                 ));
@@ -608,7 +627,10 @@ fn decode_schedule_record(value: &Value) -> Result<ScheduleRecord, ScheduleLogEr
             })
         }
         Some("every") => {
-            if !has_exact_keys(value, &["id", "kind", "prompt", "everySeconds", "scheduledAt"]) {
+            if !has_exact_keys(
+                value,
+                &["id", "kind", "prompt", "everySeconds", "scheduledAt"],
+            ) {
                 return Err(ScheduleLogError::new(
                     "every schedule must contain exactly id, kind, prompt, everySeconds, and scheduledAt",
                 ));
@@ -623,7 +645,11 @@ fn decode_schedule_record(value: &Value) -> Result<ScheduleRecord, ScheduleLogEr
                         "everySeconds must be a safe integer of at least {MIN_EVERY_INTERVAL_SECONDS}"
                     ))
                 })?;
-            if every_seconds.checked_mul(1_000).filter(|interval| *interval <= 9_007_199_254_740_991).is_none() {
+            if every_seconds
+                .checked_mul(1_000)
+                .filter(|interval| *interval <= 9_007_199_254_740_991)
+                .is_none()
+            {
                 return Err(ScheduleLogError::new(format!(
                     "everySeconds must be a safe integer of at least {MIN_EVERY_INTERVAL_SECONDS}"
                 )));
@@ -710,14 +736,18 @@ pub fn resolve_every_occurrence(
         ..
     } = record
     else {
-        return Err(ScheduleLogError::new("every occurrence requires an every record"));
+        return Err(ScheduleLogError::new(
+            "every occurrence requires an every record",
+        ));
     };
     let target = parse_canonical_instant(scheduled_at)
         .map_err(|_| ScheduleLogError::new("every scheduledAt is not a canonical instant"))?;
     let interval = every_seconds
         .checked_mul(1_000)
         .filter(|interval| *interval <= 9_007_199_254_740_991)
-        .ok_or_else(|| ScheduleLogError::new("every interval milliseconds must be a positive safe integer"))?;
+        .ok_or_else(|| {
+            ScheduleLogError::new("every interval milliseconds must be a positive safe integer")
+        })?;
     if !(MIN_FOUR_DIGIT_YEAR_MS..=MAX_FOUR_DIGIT_YEAR_MS).contains(&accepted_at) {
         return Err(ScheduleLogError::new(
             "every acceptedAt must be a representable four-digit-year instant",
@@ -776,11 +806,15 @@ fn dispatched_record(
         return Ok(None);
     }
     let Some(accepted_at) = accepted_at else {
-        return Err(ScheduleLogError::new("every dispatch must contain acceptedAt"));
+        return Err(ScheduleLogError::new(
+            "every dispatch must contain acceptedAt",
+        ));
     };
-    let occurrence = resolve_every_occurrence(record, parse_canonical_instant(accepted_at).map_err(|_| {
-        ScheduleLogError::new("every acceptedAt is not a canonical instant")
-    })?)?;
+    let occurrence = resolve_every_occurrence(
+        record,
+        parse_canonical_instant(accepted_at)
+            .map_err(|_| ScheduleLogError::new("every acceptedAt is not a canonical instant"))?,
+    )?;
     match occurrence.next_scheduled_at {
         None => Ok(None),
         Some(next) => {
@@ -999,9 +1033,7 @@ pub fn render_reminder_framing(record: &ScheduleRecord) -> String {
 
 /// Render one injection-resistant fixed-rate batch in target and create
 /// order.
-pub fn render_every_reminder_batch_framing(
-    reminders: &[(ScheduleRecord, String)],
-) -> String {
+pub fn render_every_reminder_batch_framing(reminders: &[(ScheduleRecord, String)]) -> String {
     let payload: Vec<serde_json::Value> = reminders
         .iter()
         .map(|(record, occurrence_at)| {

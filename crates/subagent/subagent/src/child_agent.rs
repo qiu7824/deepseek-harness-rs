@@ -61,10 +61,10 @@ pub fn resolve_child_depth(
             max_depth.unwrap_or(u64::MAX),
         ));
     }
-    if let Some(max_depth) = max_depth {
-        if child_depth > max_depth {
-            return Err(SubagentDepthError::new(child_depth, max_depth));
-        }
+    if let Some(max_depth) = max_depth
+        && child_depth > max_depth
+    {
+        return Err(SubagentDepthError::new(child_depth, max_depth));
     }
     Ok(child_depth)
 }
@@ -145,7 +145,9 @@ pub fn apply_child_composition(
             dsh_system_prompt::PromptContext {
                 name: "subagent:delegation".to_string(),
                 order: 120.0,
-                text: dsh_system_prompt::PromptText::Static(SUBAGENT_DELEGATION_CONTEXT.to_string()),
+                text: dsh_system_prompt::PromptText::Static(
+                    SUBAGENT_DELEGATION_CONTEXT.to_string(),
+                ),
             },
         );
         if let Some(persona) = &composition.persona {
@@ -160,13 +162,12 @@ pub fn apply_child_composition(
             );
         }
     }
-    if let Some(tool_filter) = &composition.tool_filter {
-        if let Some(tools) = child_ctx
+    if let Some(tool_filter) = &composition.tool_filter
+        && let Some(tools) = child_ctx
             .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
             .map(|slot| slot.as_ref().clone())
-        {
-            let _ = tools.restrict(child_ctx, tool_filter.clone());
-        }
+    {
+        let _ = tools.restrict(child_ctx, tool_filter.clone());
     }
 }
 
@@ -188,11 +189,7 @@ pub fn capture_delegated_policy_overrides(parent: &dyn Agent) -> DelegatedPolicy
         .get_typed::<Arc<dsh_sandbox_policy::SandboxPolicyService>>("sandboxPolicy", false)
         .map(|slot| slot.as_ref().clone())
         .and_then(|policy| policy.override_of(parent.session()));
-    let approval_policy = if parent
-        .ctx()
-        .get("approval", false)
-        .is_some()
-    {
+    let approval_policy = if parent.ctx().get("approval", false).is_some() {
         Some("never".to_string())
     } else {
         None

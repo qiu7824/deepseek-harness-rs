@@ -28,7 +28,12 @@ pub struct RedactedValue {
     pub secrets: Vec<RedactedSecret>,
 }
 
-fn walk(node: Option<&Schema>, value: &Data, path: &[String], secrets: &mut Vec<RedactedSecret>) -> Data {
+fn walk(
+    node: Option<&Schema>,
+    value: &Data,
+    path: &[String],
+    secrets: &mut Vec<RedactedSecret>,
+) -> Data {
     let Some(node) = node else {
         return value.clone();
     };
@@ -55,7 +60,10 @@ fn walk(node: Option<&Schema>, value: &Data, path: &[String], secrets: &mut Vec<
                 }
             }
             for (key, child) in properties {
-                let child_value = source.and_then(|source| source.get(key)).cloned().unwrap_or(Data::Undefined);
+                let child_value = source
+                    .and_then(|source| source.get(key))
+                    .cloned()
+                    .unwrap_or(Data::Undefined);
                 let mut path = path.to_vec();
                 path.push(key.clone());
                 let stripped = walk(Some(child), &child_value, &path, secrets);
@@ -108,5 +116,8 @@ fn walk(node: Option<&Schema>, value: &Data, path: &[String], secrets: &mut Vec<
 pub fn redact_secrets(schema: &Schema, value: &Data) -> RedactedValue {
     let mut secrets = Vec::new();
     let stripped = walk(Some(schema), value, &[], &mut secrets);
-    RedactedValue { value: stripped, secrets }
+    RedactedValue {
+        value: stripped,
+        secrets,
+    }
 }

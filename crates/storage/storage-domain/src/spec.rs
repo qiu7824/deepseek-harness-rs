@@ -56,7 +56,9 @@ pub struct DomainSpec {
 
 /// Declare one table (TS `domainTable`).
 pub fn domain_table(schema: RecordSchema) -> DomainTableSpec {
-    DomainTableSpec { value_schema: schema }
+    DomainTableSpec {
+        value_schema: schema,
+    }
 }
 
 /// Declare a global singleton slot (the TS `global: { schema, initial }`
@@ -76,9 +78,7 @@ pub fn define_domain(
 ) -> Result<DomainSpec, String> {
     let name = name.into();
     if !unit_name_matches(&name) {
-        return Err(format!(
-            "domain name '{name}' must match ^[a-z][a-z0-9_]*$"
-        ));
+        return Err(format!("domain name '{name}' must match ^[a-z][a-z0-9_]*$"));
     }
     for table in tables.keys() {
         if !unit_name_matches(table) {
@@ -95,7 +95,12 @@ pub fn define_domain(
             ));
         }
     }
-    Ok(DomainSpec { name, version, global, tables })
+    Ok(DomainSpec {
+        name,
+        version,
+        global,
+        tables,
+    })
 }
 
 /// Project a spec onto the backend-facing unit descriptor (TS

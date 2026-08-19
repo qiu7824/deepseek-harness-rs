@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use cordis::{ArcValue, Context, Plugin, PluginError};
 use dsh_attachment::{
-    AttachmentAbort, AttachmentError, AttachmentStore, ImageAttachmentLimits,
-    ImageAttachmentRef, ImageMediaType, SaveImageAttachment, StoredImageAttachment,
+    AttachmentAbort, AttachmentError, AttachmentStore, ImageAttachmentLimits, ImageAttachmentRef,
+    ImageMediaType, SaveImageAttachment, StoredImageAttachment,
 };
 use dsh_home_paths::resolve_dsh_home;
 
@@ -46,7 +46,10 @@ pub fn config_schema() -> dsh_schemastery::Schema {
     Schema::object(IndexMap::from([
         (
             "maxImageBytes".to_string(),
-            Schema::number().step(1.0).min(1.0).default(Data::Number(DEFAULT_MAX_IMAGE_BYTES as f64)),
+            Schema::number()
+                .step(1.0)
+                .min(1.0)
+                .default(Data::Number(DEFAULT_MAX_IMAGE_BYTES as f64)),
         ),
         (
             "maxImagesPerMessage".to_string(),

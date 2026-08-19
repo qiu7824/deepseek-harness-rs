@@ -19,22 +19,22 @@ pub mod types;
 use std::sync::Arc;
 
 use cordis::{ArcValue, Context, Plugin, PluginError};
-use dsh_session::{SessionId};
+use dsh_session::SessionId;
 use dsh_session_title::fold_session_title;
 
 pub use crate::config::{
-    SESSION_QUERY_DEFAULT_PERSISTED_INSPECT_CONCURRENCY, SESSION_QUERY_READ_WINDOW_MAX, Config,
+    Config, SESSION_QUERY_DEFAULT_PERSISTED_INSPECT_CONCURRENCY, SESSION_QUERY_READ_WINDOW_MAX,
     SessionQueryError, SessionQueryErrorCode,
 };
 pub use crate::corpus::SessionCorpus;
+pub use crate::cursor::{SessionSearchCursor, session_search_cursor};
 pub use crate::documents::{build_session_event_records, build_session_event_search_documents};
+pub use crate::extraction::extract_session_event_text;
 pub use crate::filters::{
     compile_session_text_filter, filter_session_event_documents, filter_session_results,
     materialize_session_event_result_filters, materialize_session_result_filters,
 };
 pub use crate::sources::assert_session_headers_compatible;
-pub use crate::cursor::{SessionSearchCursor, session_search_cursor};
-pub use crate::extraction::extract_session_event_text;
 pub use crate::types::*;
 
 /// The provider-side full-text search face (the TS abstract members).
@@ -150,13 +150,17 @@ impl SessionQueryEngine {
         session_id: &SessionId,
     ) -> Result<SessionLogSnapshot, SessionQueryError> {
         let loaded = self.corpus.load(session_id, None).await?;
-        dsh_session::Session::create(session_id.clone(), Some(loaded.events.clone()), Some(&loaded.header))
-            .map_err(|error| {
-                SessionQueryError::new(
-                    SessionQueryErrorCode::SessionQueryCorruptSession,
-                    format!("stored session \"{session_id}\" is corrupt: {error}"),
-                )
-            })?;
+        dsh_session::Session::create(
+            session_id.clone(),
+            Some(loaded.events.clone()),
+            Some(&loaded.header),
+        )
+        .map_err(|error| {
+            SessionQueryError::new(
+                SessionQueryErrorCode::SessionQueryCorruptSession,
+                format!("stored session \"{session_id}\" is corrupt: {error}"),
+            )
+        })?;
         Ok(SessionLogSnapshot {
             session: loaded.header,
             events: loaded.events.iter().cloned().collect(),
@@ -338,7 +342,10 @@ impl SessionQueryEngine {
             .ok_or_else(|| {
                 SessionQueryError::new(
                     SessionQueryErrorCode::SessionQueryEventNotFound,
-                    format!("session \"{}\" has no event at seq {seq}", request.session_id),
+                    format!(
+                        "session \"{}\" has no event at seq {seq}",
+                        request.session_id
+                    ),
                 )
             })?;
         let start_seq = seq.saturating_sub(before).max(0);
@@ -346,7 +353,8 @@ impl SessionQueryEngine {
             .saturating_add(after)
             .min(loaded.events.len().saturating_sub(1) as u64);
         let target_snapshot = target.clone();
-        let events: Vec<dsh_session::SessionEvent> = loaded.events[start_seq as usize..=end_seq as usize]
+        let events: Vec<dsh_session::SessionEvent> = loaded.events
+            [start_seq as usize..=end_seq as usize]
             .iter()
             .map(|event| {
                 if event.seq == seq {
@@ -366,11 +374,7 @@ impl SessionQueryEngine {
     }
 }
 
-fn read_window(
-    name: &str,
-    value: Option<u64>,
-    max: u64,
-) -> Result<u64, SessionQueryError> {
+fn read_window(name: &str, value: Option<u64>, max: u64) -> Result<u64, SessionQueryError> {
     let value = value.unwrap_or(0);
     if value > max {
         return Err(SessionQueryError::new(

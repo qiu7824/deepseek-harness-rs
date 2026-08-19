@@ -34,7 +34,9 @@ pub struct WorkspaceMoveInvalidError {
 
 impl WorkspaceMoveInvalidError {
     pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self {
+            message: message.into(),
+        }
     }
 }
 
@@ -89,7 +91,11 @@ impl WorkspaceEntity {
         id: WorkspaceId,
         record: WorkspaceRecord,
     ) -> Self {
-        Self { id, record: Mutex::new(record), host }
+        Self {
+            id,
+            record: Mutex::new(record),
+            host,
+        }
     }
 
     pub fn path(&self) -> String {
@@ -163,7 +169,10 @@ impl WorkspaceEntity {
                     self.record.lock().path
                 )
             })?;
-            if !tokio::fs::metadata(&cwd).await.is_ok_and(|meta| meta.is_dir()) {
+            if !tokio::fs::metadata(&cwd)
+                .await
+                .is_ok_and(|meta| meta.is_dir())
+            {
                 return Err(format!(
                     "cannot attach session '{session_id}' to workspace '{}': \
                      its cwd '{header_cwd}' is not a directory",
@@ -278,8 +287,8 @@ impl WorkspaceEntity {
         let id = self.id.clone();
         let closure: Arc<dyn Fn(serde_json::Value) -> serde_json::Value + Send + Sync> =
             Arc::new(move |current_value| {
-                let current = record_from_value(&current_value)
-                    .expect("stored workspace record parses");
+                let current =
+                    record_from_value(&current_value).expect("stored workspace record parses");
                 let changed = match f(current.clone()) {
                     Ok(Some(changed)) => changed,
                     Ok(None) => current.clone(),
@@ -372,7 +381,10 @@ mod tests {
         let mut status = Box::pin(entity.status());
         let mut task_context = TaskContext::from_waker(noop_waker_ref());
 
-        assert!(matches!(status.as_mut().poll(&mut task_context), Poll::Pending));
+        assert!(matches!(
+            status.as_mut().poll(&mut task_context),
+            Poll::Pending
+        ));
         assert!(
             entity.record.try_lock().is_some(),
             "status must release the record lock before awaiting filesystem I/O"

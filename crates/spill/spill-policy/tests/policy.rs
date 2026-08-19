@@ -109,7 +109,12 @@ impl dsh_agent::Agent for TestAgent {
         &self.scope_key
     }
 
-    fn cancel(&self, _cause: dsh_session::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_session::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -159,13 +164,11 @@ fn test_agent(ctx: &Context, id: &str) -> Arc<TestAgent> {
 fn text_tool(name: &str, text: &str) -> ToolDefinition {
     let text = text.to_string();
     let output = dsh_tools::schema::value_schema_spec_to_json_schema(
-        &dsh_tools::schema::ValueSchemaSpec::String(
-            dsh_tools::schema::StringValueSchemaSpec {
-                annotations: dsh_tools::schema::ValueSchemaAnnotations::default(),
-                enum_: None,
-                const_: None,
-            },
-        ),
+        &dsh_tools::schema::ValueSchemaSpec::String(dsh_tools::schema::StringValueSchemaSpec {
+            annotations: dsh_tools::schema::ValueSchemaAnnotations::default(),
+            enum_: None,
+            const_: None,
+        }),
     )
     .expect("output schema");
     ToolDefinition {
@@ -196,13 +199,11 @@ fn text_tool(name: &str, text: &str) -> ToolDefinition {
 /// A tool returning a mixed text + reasoning content (flatten declines).
 fn mixed_tool() -> ToolDefinition {
     let output = dsh_tools::schema::value_schema_spec_to_json_schema(
-        &dsh_tools::schema::ValueSchemaSpec::String(
-            dsh_tools::schema::StringValueSchemaSpec {
-                annotations: dsh_tools::schema::ValueSchemaAnnotations::default(),
-                enum_: None,
-                const_: None,
-            },
-        ),
+        &dsh_tools::schema::ValueSchemaSpec::String(dsh_tools::schema::StringValueSchemaSpec {
+            annotations: dsh_tools::schema::ValueSchemaAnnotations::default(),
+            enum_: None,
+            const_: None,
+        }),
     )
     .expect("output schema");
     ToolDefinition {
@@ -213,15 +214,21 @@ fn mixed_tool() -> ToolDefinition {
             schema: output,
             render: Arc::new(|_args, _value| {
                 Ok(vec![
-                    ContentBlock::Text { text: "x".repeat(100) },
-                    ContentBlock::Reasoning { text: "why".to_string() },
+                    ContentBlock::Text {
+                        text: "x".repeat(100),
+                    },
+                    ContentBlock::Reasoning {
+                        text: "why".to_string(),
+                    },
                 ])
             }),
             presentation_meta: None,
         },
         timeout_ms: None,
         is_concurrency_safe: None,
-        execute: Arc::new(|_args, _run_ctx| Box::pin(async move { Ok(JsonValue::String("x".to_string())) })),
+        execute: Arc::new(|_args, _run_ctx| {
+            Box::pin(async move { Ok(JsonValue::String("x".to_string())) })
+        }),
         finalize_content: None,
         present_call: None,
         present_result: None,
@@ -265,14 +272,26 @@ async fn setup(config: Config, with_spill: bool) -> Setup {
     let _ = dsh_system_prompt::SystemPrompt::install(&ctx, dsh_system_prompt::Config::default())
         .expect("systemPrompt");
     let _ = ToolRuntime::install(&ctx, dsh_tools::Config::default()).expect("tools");
-    let spill = if with_spill { Some(StubStore::install(&ctx)) } else { None };
+    let spill = if with_spill {
+        Some(StubStore::install(&ctx))
+    } else {
+        None
+    };
     let disposer = apply(&ctx, config).expect("policy");
-    Setup { ctx, spill, disposer }
+    Setup {
+        ctx,
+        spill,
+        disposer,
+    }
 }
 
 /// Run one tool through the real pipeline with a session owner (the TS
 /// `exec(name)` default); no-owner cases drive `runtime.execute` directly.
-async fn execute(setup: &Setup, name: &str, tool: ToolDefinition) -> Arc<dsh_tools::ToolExecutionResult> {
+async fn execute(
+    setup: &Setup,
+    name: &str,
+    tool: ToolDefinition,
+) -> Arc<dsh_tools::ToolExecutionResult> {
     let agent = test_agent(&setup.ctx, "s1");
     let runtime: Arc<Arc<ToolRuntime>> =
         setup.ctx.get_typed("tools", false).expect("tools service");
@@ -297,7 +316,13 @@ async fn disabled_mode_registers_no_post_execute_listener() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn spills_the_full_text_and_replaces_the_result_with_a_preview_and_locator_within_the_cap() {
-    let setup = setup(Config { max_inline_bytes: Some(200) }, true).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(200),
+        },
+        true,
+    )
+    .await;
     let body = format!("{}{}", "HEAD".repeat(200), "TAIL".repeat(200)); // 1600 bytes > 200
     let result = execute(&setup, "big", text_tool("big", &body)).await;
 
@@ -315,7 +340,11 @@ async fn spills_the_full_text_and_replaces_the_result_with_a_preview_and_locator
     assert!(text.contains("Full formatted result stored at: /spill/big.txt"));
     assert!(text.contains("Use the stub retrieval path."));
     assert!(text.contains("Omitted"));
-    assert!(text.len() <= 200, "replacement {} bytes over cap", text.len());
+    assert!(
+        text.len() <= 200,
+        "replacement {} bytes over cap",
+        text.len()
+    );
     assert!(text.len() < body.len());
 }
 
@@ -324,7 +353,13 @@ async fn keeps_the_inline_result_when_the_notice_only_replacement_would_exceed_t
     // A body just over a tiny cap: the notice alone is larger than the cap,
     // so there is no within-cap replacement — the policy keeps the inline
     // result.
-    let setup = setup(Config { max_inline_bytes: Some(4) }, true).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(4),
+        },
+        true,
+    )
+    .await;
     let body = "xxxxx"; // 5 bytes > 4, but far shorter than the notice
     let result = execute(&setup, "big", text_tool("big", body)).await;
     assert_eq!(text_of(&result.content), body);
@@ -332,7 +367,13 @@ async fn keeps_the_inline_result_when_the_notice_only_replacement_would_exceed_t
 
 #[tokio::test(flavor = "current_thread")]
 async fn leaves_a_small_plain_text_result_unchanged() {
-    let setup = setup(Config { max_inline_bytes: Some(1000) }, true).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(1000),
+        },
+        true,
+    )
+    .await;
     let result = execute(&setup, "small", text_tool("small", "tiny")).await;
     assert_eq!(text_of(&result.content), "tiny");
     assert_eq!(setup.spill.expect("stub").saves.lock().len(), 0);
@@ -340,7 +381,13 @@ async fn leaves_a_small_plain_text_result_unchanged() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn leaves_a_result_with_a_non_text_block_unchanged() {
-    let setup = setup(Config { max_inline_bytes: Some(5) }, true).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(5),
+        },
+        true,
+    )
+    .await;
     let result = execute(&setup, "mixed", mixed_tool()).await;
     assert_eq!(setup.spill.expect("stub").saves.lock().len(), 0);
     assert_eq!(result.content.len(), 2);
@@ -351,7 +398,13 @@ async fn leaves_a_result_with_a_non_text_block_unchanged() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn never_spills_the_read_tool_result() {
-    let setup = setup(Config { max_inline_bytes: Some(10) }, true).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(10),
+        },
+        true,
+    )
+    .await;
     let result = execute(&setup, "read", text_tool("read", &"x".repeat(1000))).await;
     assert_eq!(text_of(&result.content), "x".repeat(1000));
     assert_eq!(setup.spill.expect("stub").saves.lock().len(), 0);
@@ -362,7 +415,13 @@ async fn never_spills_the_read_tool_result() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn leaves_nested_composite_results_complete() {
-    let setup = setup(Config { max_inline_bytes: Some(10) }, true).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(10),
+        },
+        true,
+    )
+    .await;
     let body = "x".repeat(1000);
     let runtime: Arc<Arc<ToolRuntime>> = setup.ctx.get_typed("tools", false).expect("tools");
     runtime
@@ -380,8 +439,19 @@ async fn leaves_nested_composite_results_complete() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn keeps_the_original_result_when_save_text_fails() {
-    let setup = setup(Config { max_inline_bytes: Some(10) }, true).await;
-    setup.spill.as_ref().expect("stub").fail.store(true, Ordering::SeqCst);
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(10),
+        },
+        true,
+    )
+    .await;
+    setup
+        .spill
+        .as_ref()
+        .expect("stub")
+        .fail
+        .store(true, Ordering::SeqCst);
     let result = execute(&setup, "big", text_tool("big", &"x".repeat(1000))).await;
     assert_eq!(text_of(&result.content), "x".repeat(1000));
     assert!(!result.is_error);
@@ -389,14 +459,26 @@ async fn keeps_the_original_result_when_save_text_fails() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn keeps_the_original_result_when_no_spill_backend_is_loaded() {
-    let setup = setup(Config { max_inline_bytes: Some(10) }, false).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(10),
+        },
+        false,
+    )
+    .await;
     let result = execute(&setup, "big", text_tool("big", &"x".repeat(1000))).await;
     assert_eq!(text_of(&result.content), "x".repeat(1000));
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn keeps_the_original_result_when_the_call_has_no_session_owner() {
-    let setup = setup(Config { max_inline_bytes: Some(10) }, true).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(10),
+        },
+        true,
+    )
+    .await;
     let runtime: Arc<Arc<ToolRuntime>> = setup.ctx.get_typed("tools", false).expect("tools");
     runtime
         .register(&setup.ctx, text_tool("big", &"x".repeat(1000)))
@@ -409,10 +491,19 @@ async fn keeps_the_original_result_when_the_call_has_no_session_owner() {
 #[tokio::test(flavor = "current_thread")]
 async fn spills_for_a_call_with_a_session_owner() {
     // cap 200: the notice fits the cap, so an owned oversized result spills.
-    let setup = setup(Config { max_inline_bytes: Some(200) }, true).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(200),
+        },
+        true,
+    )
+    .await;
     let result = execute(&setup, "big", text_tool("big", &"x".repeat(1000))).await;
     let text = text_of(&result.content);
-    assert!(text.contains("Full formatted result stored at: /spill/big.txt"), "{text}");
+    assert!(
+        text.contains("Full formatted result stored at: /spill/big.txt"),
+        "{text}"
+    );
     let saves = setup.spill.expect("stub").saves.lock().clone();
     assert_eq!(saves.len(), 1);
     assert_eq!(saves[0].owner.session_id.to_string(), "s1");
@@ -423,7 +514,13 @@ async fn spills_for_a_call_with_a_session_owner() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn bounds_content_a_downstream_post_execute_listener_replaced() {
-    let setup = setup(Config { max_inline_bytes: Some(200) }, true).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(200),
+        },
+        true,
+    )
+    .await;
     // A later-registered listener replaces the (small) tool result with a
     // big one; the policy delegated via next(), so it bounds the
     // replacement.
@@ -432,7 +529,9 @@ async fn bounds_content_a_downstream_post_execute_listener_replaced() {
         Box::pin(async move {
             let _downstream = next.call().await;
             Some(arc(PostToolDecision::Accept {
-                content: Some(vec![ContentBlock::Text { text: "z".repeat(500) }]),
+                content: Some(vec![ContentBlock::Text {
+                    text: "z".repeat(500),
+                }]),
                 value: None,
                 additional_contexts: None,
             }))
@@ -452,11 +551,19 @@ async fn bounds_content_a_downstream_post_execute_listener_replaced() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn preserves_downstream_accept_decision_contexts_when_spilling() {
-    let setup = setup(Config { max_inline_bytes: Some(200) }, true).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(200),
+        },
+        true,
+    )
+    .await;
     let context = Message {
         id: dsh_llm::message_id("note"),
         role: Role::User,
-        content: vec![ContentBlock::Text { text: "note".to_string() }],
+        content: vec![ContentBlock::Text {
+            text: "note".to_string(),
+        }],
         source: MessageSource::Plugin {
             plugin: "test".to_string(),
             form: None,
@@ -492,7 +599,13 @@ async fn preserves_downstream_accept_decision_contexts_when_spilling() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn passes_a_downstream_value_replacement_through_for_registry_rendering() {
-    let setup = setup(Config { max_inline_bytes: Some(10) }, true).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(10),
+        },
+        true,
+    )
+    .await;
     // The Rust decision carries the lossless value (the text tool's output
     // schema is a string), not rendered blocks; the registry revalidates and
     // renders it.
@@ -529,7 +642,13 @@ async fn keeps_the_inline_result_when_the_notice_alone_exceeds_the_cap_even_for_
     // A large body (so it is well over the cap) but a cap smaller than the
     // notice itself: there is no within-cap replacement, so the policy must
     // keep the inline result rather than emit content over maxInlineBytes.
-    let setup = setup(Config { max_inline_bytes: Some(8) }, true).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(8),
+        },
+        true,
+    )
+    .await;
     let body = "x".repeat(5000);
     let result = execute(&setup, "big", text_tool("big", &body)).await;
     assert_eq!(text_of(&result.content), body);
@@ -540,7 +659,13 @@ async fn keeps_the_inline_result_when_the_notice_alone_exceeds_the_cap_even_for_
 
 #[tokio::test(flavor = "current_thread")]
 async fn stops_transforming_oversized_results_after_the_plugin_disposer_runs() {
-    let setup = setup(Config { max_inline_bytes: Some(200) }, true).await;
+    let setup = setup(
+        Config {
+            max_inline_bytes: Some(200),
+        },
+        true,
+    )
+    .await;
     let body = format!("{}{}", "HEAD".repeat(200), "TAIL".repeat(200));
 
     // Live: the listener spills and replaces.
@@ -561,5 +686,7 @@ async fn stops_transforming_oversized_results_after_the_plugin_disposer_runs() {
 // The SpillOwner import keeps the request-shape documentation honest.
 #[allow(dead_code)]
 fn _spill_owner_shape() -> SpillOwner {
-    SpillOwner { session_id: session_id("s") }
+    SpillOwner {
+        session_id: session_id("s"),
+    }
 }

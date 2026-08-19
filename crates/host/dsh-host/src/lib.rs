@@ -11,32 +11,42 @@
 use std::sync::Arc;
 
 use axum::body::Body as WebBody;
-use cordis::{Context, arc};
+use cordis::{ArcValue, Context, Plugin, PluginError, arc, make_disposer};
 use dsh_agent::AgentRegistry;
+use dsh_agent_loop::AgentLoop;
 use dsh_commands::CommandRuntime;
 use dsh_goal::GoalService;
 use dsh_host_apiproxy::{
-    ApiProxyDefaults, ApiProxyService, Body as CarrierBody, CarrierRequest, FetchHandler,
-    to_fetch_handler,
+    AbortSignal, ApiProxyCarrier, ApiProxyDefaults, ApiProxyService, Body as CarrierBody,
+    CarrierRequest, FetchHandler, FrameRequest, rpc_id, to_fetch_handler,
 };
 use dsh_host_directory_picker_browse::{BrowseDirectoryPicker, Config as PickerConfig};
 use dsh_host_frontend_static::Config as FrontendConfig;
 use dsh_host_frontend_static::apply as apply_frontend_static;
 use dsh_host_plugin_inventory::PluginInventoryGateway;
 use dsh_host_webserver::{
-    Config as WebConfig, Host as BindHost, RouteDisposer, WebRequest, WebResponse, WebRoute,
-    WebRouteKind, WebServer,
+    Config as WebConfig, Host as BindHost, RouteDisposer, WebHandlerError, WebRequest, WebResponse,
+    WebRoute, WebRouteKind, WebServer, WebUpgradeRoute, WebUpgraded,
 };
 use dsh_invariants::{InvariantConfig, InvariantRegistry};
+use dsh_jobs_local::LocalJobRegistry;
+use dsh_llm::LlmRuntime;
+use dsh_pwsh_local::LocalPwshExecutor;
+use dsh_sandbox_local::LocalSandboxProvider;
+use dsh_sandbox_policy::SandboxPolicyService;
 use dsh_session::{SessionStore, session_id};
 use dsh_session_persistence::SessionPersistenceApi;
 use dsh_session_persistence_jsonl::{JsonlCompression, JsonlConfig, JsonlSessionPersistence};
 use dsh_session_query::{SessionQueryEngine, SessionSearchRequest};
 use dsh_session_query_sqlite::{Config as SqliteSearchConfig, SqliteSearch};
+use dsh_subprocess_local::LocalSubprocessRuntime;
 use dsh_system_prompt::SystemPrompt;
+use dsh_terminal::TerminalSessionService;
 use dsh_tools::ToolRuntime;
 use dsh_user_approval::ApprovalService;
 use dsh_user_questions::UserQuestionService;
+use futures::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::Message;
 
 const MAX_API_REQUEST_BODY_BYTES: usize = 160 * 1024 * 1024;
 
@@ -147,6 +157,82 @@ fn origin_matches_host(origin: &str, host: &str) -> bool {
         == canonical_authority(host, Some(80))
 }
 
+fn trusted_web_request(request: &WebRequest) -> bool {
+    let host = request
+        .headers()
+        .get(http::header::HOST)
+        .and_then(|value| value.to_str().ok());
+    host.is_some_and(is_loopback_authority)
+        && !request
+            .headers()
+            .get("sec-fetch-site")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|site| site == "cross-site")
+        && !request
+            .headers()
+            .get(http::header::ORIGIN)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|origin| !host.is_some_and(|host| origin_matches_host(origin, host)))
+}
+
+async fn pump_websocket_downlink(
+    request: WebRequest,
+    socket: WebUpgraded,
+    api: Arc<ApiProxyService>,
+    host_stream: bool,
+) -> Result<(), WebHandlerError> {
+    if !trusted_web_request(&request) {
+        return Err(WebHandlerError::new("forbidden"));
+    }
+    let mut websocket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+        socket,
+        tokio_tungstenite::tungstenite::protocol::Role::Server,
+        None,
+    )
+    .await;
+    let signal = AbortSignal::new();
+    let frame_request = FrameRequest {
+        rpc_id: rpc_id(uuid::Uuid::new_v4().to_string()),
+        payload: serde_json::json!({}),
+    };
+    let mut frames = if host_stream {
+        api.events_host(frame_request, signal.clone())
+    } else {
+        api.events_mux(frame_request, signal.clone())
+    };
+    loop {
+        tokio::select! {
+            frame = frames.next() => {
+                let Some(frame) = frame else { break; };
+                let method = frame.payload.get("type").and_then(serde_json::Value::as_str).unwrap_or("stream/error");
+                let wire = serde_json::json!({
+                    "type": "server-request",
+                    "rpcId": frame.rpc_id,
+                    "method": method,
+                    "payload": frame.payload,
+                });
+                websocket.send(Message::Text(serde_json::to_string(&wire).map_err(|error| WebHandlerError::new(error.to_string()))?.into())).await.map_err(|error| WebHandlerError::new(error.to_string()))?;
+            }
+            incoming = websocket.next() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(payload))) => {
+                        websocket.send(Message::Pong(payload)).await.map_err(|error| WebHandlerError::new(error.to_string()))?;
+                    }
+                    Some(Ok(Message::Pong(_))) | Some(Ok(Message::Text(_))) | Some(Ok(Message::Binary(_))) | Some(Ok(Message::Frame(_))) => {
+                        // Browser clients are downlink-only; ignore incidental
+                        // carrier frames rather than tearing down a healthy
+                        // subscription before its first host event.
+                    }
+                    Some(Err(_)) => break,
+                }
+            }
+        }
+    }
+    signal.abort();
+    Ok(())
+}
+
 async fn bridge_api_request(request: WebRequest, handler: Arc<FetchHandler>) -> WebResponse {
     let (parts, incoming) = request.into_parts();
     let host = parts
@@ -217,7 +303,7 @@ async fn bridge_api_request(request: WebRequest, handler: Arc<FetchHandler>) -> 
         CarrierBody::Bytes(bytes) => WebBody::from(bytes),
         CarrierBody::Stream(stream) => {
             use futures::StreamExt;
-            let stream = stream.map(|chunk| Ok::<Vec<u8>, std::convert::Infallible>(chunk));
+            let stream = stream.map(Ok::<Vec<u8>, std::convert::Infallible>);
             WebBody::from_stream(stream)
         }
     };
@@ -230,6 +316,8 @@ pub struct HostSpine {
     pub ctx: Context,
     pub sessions: Arc<SessionStore>,
     pub agents: Arc<AgentRegistry>,
+    pub llm: Arc<LlmRuntime>,
+    pub agent_loop: Arc<AgentLoop>,
     pub tools: Arc<ToolRuntime>,
     pub system_prompt: Arc<SystemPrompt>,
     pub commands: Arc<CommandRuntime>,
@@ -244,18 +332,181 @@ pub struct HostSpine {
     pub agent_presets: Arc<dsh_agent_presets::AgentPresets>,
     api_route: RouteDisposer,
     data_root: std::path::PathBuf,
+    companion_fiber: parking_lot::Mutex<Option<Arc<cordis::FiberCore>>>,
+    lifecycle_fiber: parking_lot::Mutex<Option<Arc<cordis::FiberCore>>>,
+    shutdown_result: tokio::sync::OnceCell<Result<(), String>>,
+    shutdown_requested: std::sync::atomic::AtomicBool,
+    shutdown_failures: Arc<parking_lot::Mutex<Vec<String>>>,
+}
+
+/// The network coordinates published only after the host has bound its
+/// listener. `bound_addr` contains the OS-selected port when port zero was
+/// requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostReadiness {
+    pub bound_addr: std::net::SocketAddr,
+}
+
+/// Cloneable application-facing owner used by CLI and desktop launchers.
+/// Clones join the same idempotent shutdown barrier.
+#[derive(Clone)]
+pub struct HostHandle {
+    spine: Arc<HostSpine>,
+}
+
+impl HostHandle {
+    pub fn spine(&self) -> &HostSpine {
+        &self.spine
+    }
+
+    pub fn readiness(&self) -> HostReadiness {
+        self.spine.readiness()
+    }
+
+    pub async fn shutdown(&self) -> Result<(), String> {
+        self.spine.shutdown().await
+    }
+}
+
+impl std::ops::Deref for HostHandle {
+    type Target = HostSpine;
+
+    fn deref(&self) -> &Self::Target {
+        &self.spine
+    }
+}
+
+impl HostSpine {
+    pub fn readiness(&self) -> HostReadiness {
+        HostReadiness {
+            bound_addr: self.web_server.bound_addr(),
+        }
+    }
+
+    pub fn data_root(&self) -> &std::path::Path {
+        &self.data_root
+    }
+
+    /// Stop ingress, dispose the host-owned fiber tree, drain persistence, and
+    /// only then remove the temporary data root. Concurrent/repeated callers
+    /// join the same result.
+    pub async fn shutdown(&self) -> Result<(), String> {
+        self.shutdown_requested
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.shutdown_result
+            .get_or_init(|| async {
+                self.web_server.shutdown().await;
+                (self.api_route)();
+
+                let companion_fiber = self.companion_fiber.lock().clone();
+                if let Some(fiber) = companion_fiber {
+                    fiber.dispose().await;
+                }
+
+                let lifecycle_fiber = self.lifecycle_fiber.lock().clone();
+                match lifecycle_fiber {
+                    Some(fiber) => fiber.dispose().await,
+                    None => self
+                        .shutdown_failures
+                        .lock()
+                        .push("host lifecycle fiber is missing".to_string()),
+                }
+
+                let failures = self.shutdown_failures.lock().clone();
+                if !failures.is_empty() {
+                    return Err(format!(
+                        "host shutdown did not drain safely: {}",
+                        failures.join("; ")
+                    ));
+                }
+                match tokio::fs::remove_dir_all(&self.data_root).await {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(error) => Err(format!(
+                        "host shutdown could not remove data root {}: {error}",
+                        self.data_root.display()
+                    )),
+                }
+            })
+            .await
+            .clone()
+    }
 }
 
 impl Drop for HostSpine {
     fn drop(&mut self) {
-        (self.api_route)();
-        let _ = std::fs::remove_dir_all(&self.data_root);
+        if !self
+            .shutdown_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.web_server.request_shutdown();
+            (self.api_route)();
+            eprintln!(
+                "dsh-host dropped without shutdown().await; stop requested and data root preserved at {}",
+                self.data_root.display()
+            );
+        }
+    }
+}
+
+struct HostCompositionPlugin {
+    output: Arc<parking_lot::Mutex<Option<Result<HostSpine, String>>>>,
+}
+
+#[async_trait::async_trait]
+impl Plugin for HostCompositionPlugin {
+    fn name(&self) -> Option<&'static str> {
+        Some("dsh-host-composition")
+    }
+
+    async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
+        *self.output.lock() = Some(compose_host_in_fiber(ctx));
+        Ok(())
     }
 }
 
 /// Compose the M6 host spine synchronously (the async service bindings
 /// settle through their own fibers).
 pub fn compose_host(ctx: &Context) -> Result<HostSpine, String> {
+    let output = Arc::new(parking_lot::Mutex::new(None));
+    let fiber = ctx.plugin(
+        Arc::new(HostCompositionPlugin {
+            output: Arc::clone(&output),
+        }),
+        arc(()),
+    );
+    if let Err(error) = futures::executor::block_on(fiber.settle()) {
+        futures::executor::block_on(fiber.dispose());
+        return Err(format!("host composition: {}", error.message()));
+    }
+    let result = output
+        .lock()
+        .take()
+        .ok_or_else(|| "host composition produced no result".to_string())?;
+    match result {
+        Ok(spine) => {
+            *spine.lifecycle_fiber.lock() = Some(fiber);
+            Ok(spine)
+        }
+        Err(error) => {
+            futures::executor::block_on(fiber.dispose());
+            Err(error)
+        }
+    }
+}
+
+/// Compose a cloneable host owner for long-running application entrypoints.
+pub fn compose_host_handle(ctx: &Context) -> Result<HostHandle, String> {
+    Ok(HostHandle {
+        spine: Arc::new(compose_host(ctx)?),
+    })
+}
+
+// DeepSeek's resolver seam intentionally preserves the core LlmError shape;
+// boxing it here would make the Host adapter closure incompatible with the
+// shared runtime contract.
+#[allow(clippy::result_large_err)]
+fn compose_host_in_fiber(ctx: &Context) -> Result<HostSpine, String> {
     // Package-owned invariant companions run first so every later append is
     // validated.
     let _invariants = InvariantRegistry::new(
@@ -268,29 +519,43 @@ pub fn compose_host(ctx: &Context) -> Result<HostSpine, String> {
     );
     let data_root = std::env::temp_dir().join(format!("dsh-host-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&data_root).map_err(|error| format!("data root: {error}"))?;
+    // Own the temporary root immediately. This is the first composition
+    // effect, so reverse teardown closes every subsequently installed service
+    // before attempting removal. A completed HostSpine takes ownership and
+    // removes the root from its explicit shutdown barrier instead.
+    let data_root_transferred = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let root_for_cleanup = data_root.clone();
+    let transferred_for_cleanup = Arc::clone(&data_root_transferred);
+    let cleanup_logger = ctx.named_logger(Some("dsh-host"));
+    let _ = ctx.effect(
+        "host.data-root",
+        Box::pin(async move {
+            Some(make_disposer(move || {
+                let root = root_for_cleanup.clone();
+                let transferred = Arc::clone(&transferred_for_cleanup);
+                let logger = cleanup_logger.clone();
+                Box::pin(async move {
+                    if !transferred.load(std::sync::atomic::Ordering::SeqCst) {
+                        match tokio::fs::remove_dir_all(&root).await {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => logger.error(vec![arc(format!(
+                                "failed host composition could not remove data root {}: {error}",
+                                root.display()
+                            ))]),
+                        }
+                    }
+                })
+            }))
+        }),
+    );
     let sessions_root = data_root.join("sessions");
     let search_path = data_root.join("search.db");
 
     let sessions = SessionStore::install(ctx);
-    let agents = AgentRegistry::install(ctx);
-    let system_prompt = SystemPrompt::install(ctx, dsh_system_prompt::Config::default())
-        .map_err(|error| format!("systemPrompt: {error}"))?;
-    let tools = ToolRuntime::install(
-        ctx,
-        dsh_tools::Config {
-            mode: None,
-            max_parallel_sub_calls: None,
-        },
-    )
-    .map_err(|error| format!("tools: {error}"))?;
-    let commands = CommandRuntime::install(ctx);
-    let goals = GoalService::install(ctx, dsh_goal::Config::default());
-    let _goal_command =
-        dsh_command_goal::apply(ctx).map_err(|error| format!("command-goal: {error}"))?;
-    let _goal_tools = dsh_tool_goal::apply(ctx, &dsh_tool_goal::Config::default())
-        .map_err(|error| format!("tool-goal: {error}"))?;
-    let questions = UserQuestionService::install(ctx);
-    let approval = ApprovalService::install(ctx, dsh_user_approval::Config::default());
+    // Persistence and the derived search index are installed before active
+    // agent fibers. Cordis disposes effects in reverse order, so agent work is
+    // quiescent before the durability barrier and backend close run.
     let persistence = JsonlSessionPersistence::install(
         ctx,
         JsonlConfig {
@@ -314,6 +579,133 @@ pub fn compose_host(ctx: &Context) -> Result<HostSpine, String> {
         .get_typed::<Arc<SessionQueryEngine>>("sessionQuery", false)
         .map(|slot| slot.as_ref().clone())
         .ok_or_else(|| "sessionQuery service missing".to_string())?;
+    let shutdown_failures = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let sessions_for_shutdown = Arc::clone(&sessions);
+    let failures_for_shutdown = Arc::clone(&shutdown_failures);
+    let _ = ctx.effect(
+        "host.persistence-drain-barrier",
+        Box::pin(async move {
+            Some(make_disposer(move || {
+                let sessions = Arc::clone(&sessions_for_shutdown);
+                let failures = Arc::clone(&failures_for_shutdown);
+                Box::pin(async move {
+                    for session in sessions.list() {
+                        if let Err(error) = sessions.flush(&session).await {
+                            failures.lock().push(format!(
+                                "session {} flush failed: {error}",
+                                session.id().as_str()
+                            ));
+                        }
+                    }
+                })
+            }))
+        }),
+    );
+
+    let agents = AgentRegistry::install(ctx);
+    // Execution resources are owner-fiber services. Install the process root
+    // first; reverse Cordis teardown then closes terminals/jobs before the
+    // subprocess provider drains any remaining trees. The model-code runtime
+    // is installed only after its fail-closed OS sandbox is available.
+    let _subprocess = LocalSubprocessRuntime::install(ctx);
+    let _sandbox = LocalSandboxProvider::install(ctx, Default::default());
+    let _sandbox_policy = SandboxPolicyService::install(
+        ctx,
+        dsh_sandbox_policy::Config {
+            mode: Some(dsh_sandbox::SandboxMode::WorkspaceWrite),
+            workspace_root: None,
+        },
+    );
+    let _code_runtime = dsh_code_runtime_node::NodeCodeRuntime::install(
+        ctx,
+        dsh_code_runtime_node::Config {
+            require_os_sandbox: true,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| format!("code-runtime-node: {error}"))?;
+    let _jobs = LocalJobRegistry::install(ctx, Default::default());
+    let _terminals = TerminalSessionService::install(ctx);
+    let _terminal_shell = dsh_terminal_bash::ShellTerminalBackend::install(ctx, Default::default())
+        .map_err(|error| format!("terminal-bash: {error}"))?;
+    let _shell = LocalPwshExecutor::install(ctx, Default::default());
+    let llm = LlmRuntime::install(ctx);
+    let deepseek_options =
+        dsh_llm_deepseek::resolve_adapter_options(&dsh_llm_deepseek::DeepSeekConfig {
+            base_url: std::env::var("DSH_DEEPSEEK_BASE_URL").ok(),
+            ..Default::default()
+        })
+        .map_err(|error| format!("llm-deepseek: {}", error.failure.message))?;
+    let deepseek_key = std::env::var(dsh_llm_deepseek::DEFAULT_API_KEY_ENV).ok();
+    let deepseek_adapter = Arc::new(dsh_llm_deepseek::DeepSeekAdapter::new(
+        dsh_llm_deepseek::DeepSeekAdapterOptions {
+            options: Arc::new(move || Ok(deepseek_options.clone())),
+            resolve_api_key: Arc::new(move |_snapshot| {
+                let key = deepseek_key.clone();
+                Box::pin(async move { Ok(key) })
+            }),
+        },
+    ));
+    let _deepseek_registration = dsh_llm_deepseek::apply(ctx, &llm, deepseek_adapter)
+        .map_err(|error| format!("llm-deepseek: {}", error.failure.message))?;
+    let system_prompt = SystemPrompt::install(ctx, dsh_system_prompt::Config::default())
+        .map_err(|error| format!("systemPrompt: {error}"))?;
+    let tools = ToolRuntime::install(
+        ctx,
+        dsh_tools::Config {
+            mode: None,
+            max_parallel_sub_calls: None,
+        },
+    )
+    .map_err(|error| format!("tools: {error}"))?;
+    futures::executor::block_on(dsh_tool_jobs::ToolJobsService::install(
+        ctx,
+        Default::default(),
+    ))
+    .map_err(|error| format!("tool-jobs: {error}"))?;
+    dsh_tool_pwsh::ToolPwshService::install(ctx).map_err(|error| format!("tool-pwsh: {error}"))?;
+    dsh_tool_terminal::ToolTerminalService::install(ctx)
+        .map_err(|error| format!("tool-terminal: {error}"))?;
+    let _subagents = dsh_subagent::SubagentRuntime::install(ctx);
+    dsh_subagent_spawn_in_process::apply(ctx, &Default::default())
+        .map_err(|error| format!("subagent-spawn: {}", error.message))?;
+    dsh_tool_subagent::apply(
+        ctx,
+        &dsh_tool_subagent::Config {
+            provider: "spawn".to_string(),
+            ..Default::default()
+        },
+    )
+    .map_err(|error| format!("tool-subagent: {error}"))?;
+    let workflow = dsh_workflow_node::NodeWorkflowEngine::install(ctx, Default::default())
+        .map_err(|error| format!("workflow-node: {error}"))?;
+    let workflow_service: Arc<dyn dsh_workflow::WorkflowEngine> = workflow.clone();
+    ctx.register_service(workflow_service);
+    let workflow_teardown = workflow.clone();
+    let _ = ctx.effect(
+        "workflow node teardown",
+        Box::pin(async move {
+            Some(make_disposer(move || {
+                let workflow = workflow_teardown.clone();
+                Box::pin(async move { workflow.dispose().await })
+            }))
+        }),
+    );
+    dsh_tool_workflow::apply(ctx).map_err(|error| format!("tool-workflow: {error}"))?;
+    dsh_tool_ralph::apply(ctx, &Default::default())
+        .map_err(|error| format!("tool-ralph: {error}"))?;
+    let agent_loop = AgentLoop::install(ctx, dsh_agent_loop::Config::default())
+        .map_err(|error| format!("agentLoop: {error}"))?;
+    let commands = CommandRuntime::install(ctx);
+    let goals = GoalService::install(ctx, dsh_goal::Config::default());
+    let _goal_round_driver =
+        dsh_goal_round_driver::apply(ctx).map_err(|error| format!("goal-round-driver: {error}"))?;
+    let _goal_command =
+        dsh_command_goal::apply(ctx).map_err(|error| format!("command-goal: {error}"))?;
+    let _goal_tools = dsh_tool_goal::apply(ctx, &dsh_tool_goal::Config::default())
+        .map_err(|error| format!("tool-goal: {error}"))?;
+    let questions = UserQuestionService::install(ctx);
+    let approval = ApprovalService::install(ctx, dsh_user_approval::Config::default());
     dsh_schedule::apply(ctx);
     // ---- M6 shell: the web face over the spine ----
     // The loader service anchors the plugin inventory and profile
@@ -352,11 +744,31 @@ pub fn compose_host(ctx: &Context) -> Result<HostSpine, String> {
     ))
     .map_err(|error| format!("webserver: {error}"))?;
     // The SPA dist server claims the fallback seat.
-    let dist_index = std::path::absolute("web/dist/index.html")
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "web/dist/index.html".to_string());
+    let dist_index = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../web/dist/index.html")
+        .to_string_lossy()
+        .into_owned();
     let _ = apply_frontend_static(ctx, FrontendConfig { dist_index })
         .map_err(|error| format!("frontend-static: {error}"))?;
+    let mut boot_payload: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../web/dist/plugins/manifest.json"))
+            .expect("web plugin manifest");
+    let object = boot_payload
+        .as_object_mut()
+        .expect("web plugin manifest object");
+    object.insert("apiBase".to_string(), serde_json::json!("/api"));
+    object.insert(
+        "provider".to_string(),
+        serde_json::json!("deepseek-official"),
+    );
+    object.insert("model".to_string(), serde_json::json!("deepseek-chat"));
+    let boot_script = format!(
+        "<script>window.__DSH_BOOT__={};</script>",
+        serde_json::to_string(&boot_payload).expect("web boot payload")
+    );
+    let _ = web_server.tap_index(Arc::new(move |html| {
+        html.replacen("</head>", &format!("{boot_script}</head>"), 1)
+    }));
     // The directory-picker seam serves the browse interaction.
     BrowseDirectoryPicker::install(ctx, PickerConfig::default());
     // The plugin inventory projects the loader tree (no loader composed in
@@ -383,10 +795,29 @@ pub fn compose_host(ctx: &Context) -> Result<HostSpine, String> {
             Box::pin(async move { Ok(bridge_api_request(request, fetch_handler).await) })
         }),
     });
+    let mux_api = api_proxy.clone();
+    let _ = web_server.register_upgrade(WebUpgradeRoute {
+        path: "/api/events.mux".to_string(),
+        handler: Arc::new(move |request, socket| {
+            let api = mux_api.clone();
+            Box::pin(async move { pump_websocket_downlink(request, socket, api, false).await })
+        }),
+    });
+    let host_api = api_proxy.clone();
+    let _ = web_server.register_upgrade(WebUpgradeRoute {
+        path: "/api/events.host".to_string(),
+        handler: Arc::new(move |request, socket| {
+            let api = host_api.clone();
+            Box::pin(async move { pump_websocket_downlink(request, socket, api, true).await })
+        }),
+    });
+    data_root_transferred.store(true, std::sync::atomic::Ordering::SeqCst);
     Ok(HostSpine {
         ctx: ctx.clone(),
         sessions,
         agents,
+        llm,
+        agent_loop,
         tools,
         system_prompt,
         commands,
@@ -401,6 +832,11 @@ pub fn compose_host(ctx: &Context) -> Result<HostSpine, String> {
         agent_presets,
         api_route,
         data_root,
+        companion_fiber: parking_lot::Mutex::new(None),
+        lifecycle_fiber: parking_lot::Mutex::new(None),
+        shutdown_result: tokio::sync::OnceCell::new(),
+        shutdown_requested: std::sync::atomic::AtomicBool::new(false),
+        shutdown_failures,
     })
 }
 
@@ -460,7 +896,7 @@ pub async fn boot_report(spine: &HostSpine) -> Result<serde_json::Value, String>
         type_: "user/message".to_string(),
         seq: 0,
         time: 1,
-        data: serde_json::to_value(&dsh_llm::create_user_message(
+        data: serde_json::to_value(dsh_llm::create_user_message(
             vec![dsh_llm::ContentBlock::Text {
                 text: "host persisted needle".to_string(),
             }],
@@ -527,8 +963,10 @@ pub async fn boot_report(spine: &HostSpine) -> Result<serde_json::Value, String>
             "invariants",
             "sessions",
             "agents",
+            "llm",
             "systemPrompt",
             "tools",
+            "agentLoop",
             "commands",
             "goals",
             "userQuestions",
@@ -537,6 +975,15 @@ pub async fn boot_report(spine: &HostSpine) -> Result<serde_json::Value, String>
             "sessionQuery",
             "schedule",
             "agentPresets",
+            "subprocess",
+            "sandbox",
+            "sandboxPolicy",
+            "jobs",
+            "terminals",
+            "shell",
+            "subagents",
+            "codeRuntime",
+            "workflowEngine",
         ],
         "session": {
             "id": session.id().as_str(),
@@ -553,17 +1000,44 @@ pub async fn boot_report(spine: &HostSpine) -> Result<serde_json::Value, String>
     }))
 }
 
-/// Mount the package-owned invariant companions onto a composed spine.
-pub fn mount_companions(spine: &HostSpine) {
-    let _ = futures::executor::block_on(dsh_session::invariant::apply(&spine.ctx));
-    let _goal = dsh_goal::invariant::apply(&spine.ctx);
-    let _command_goal = dsh_command_goal::invariant::apply(&spine.ctx);
-    let _tool_goal = dsh_tool_goal::invariant::apply(&spine.ctx);
-    let _schedule = dsh_schedule::invariant::apply(&spine.ctx);
-    let _query_sqlite = dsh_session_query_sqlite::invariant::apply(&spine.ctx);
-    let _ = spine
-        .ctx
-        .plugin(Arc::new(dsh_llm::LlmInvariantPlugin), arc(()));
+struct HostCompanionsPlugin;
+
+#[async_trait::async_trait]
+impl Plugin for HostCompanionsPlugin {
+    fn name(&self) -> Option<&'static str> {
+        Some("dsh-host-companions")
+    }
+
+    async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
+        let _ = dsh_session::invariant::apply(ctx).await;
+        let _goal = dsh_goal::invariant::apply(ctx);
+        let _goal_round_driver = dsh_goal_round_driver::invariant::apply(ctx);
+        let _command_goal = dsh_command_goal::invariant::apply(ctx);
+        let _tool_goal = dsh_tool_goal::invariant::apply(ctx);
+        let _agent_loop = dsh_agent_loop::apply_agent_loop_invariant(ctx);
+        let _schedule = dsh_schedule::invariant::apply(ctx);
+        let _query_sqlite = dsh_session_query_sqlite::invariant::apply(ctx);
+        let _ = ctx.plugin(Arc::new(dsh_llm::LlmInvariantPlugin), arc(()));
+        Ok(())
+    }
+}
+
+/// Mount package-owned invariant companions in an independently disposable
+/// child fiber. Repeated calls join the same settled fiber.
+pub fn mount_companions(spine: &HostSpine) -> Result<(), String> {
+    if spine
+        .shutdown_requested
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Err("cannot mount host companions after shutdown has started".to_string());
+    }
+    let fiber = {
+        let mut slot = spine.companion_fiber.lock();
+        slot.get_or_insert_with(|| spine.ctx.plugin(Arc::new(HostCompanionsPlugin), arc(())))
+            .clone()
+    };
+    futures::executor::block_on(fiber.settle())
+        .map_err(|error| format!("host companions: {}", error.message()))
 }
 
 // Re-exported anchors for compositions.

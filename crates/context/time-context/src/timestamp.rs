@@ -148,7 +148,10 @@ mod tests {
     #[test]
     fn canonicalization_matches_the_icu_formatter() {
         assert_eq!(canonical_time_zone("UTC").unwrap(), "UTC");
-        assert_eq!(canonical_time_zone("Asia/Shanghai").unwrap(), "Asia/Shanghai");
+        assert_eq!(
+            canonical_time_zone("Asia/Shanghai").unwrap(),
+            "Asia/Shanghai"
+        );
         assert_eq!(
             canonical_time_zone("America/New_York").unwrap(),
             "America/New_York"

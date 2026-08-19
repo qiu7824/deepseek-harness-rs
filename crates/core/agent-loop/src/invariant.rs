@@ -10,7 +10,9 @@
 
 use std::sync::Arc;
 
-use cordis::{ArcValue, Context, EventOptions, InjectSpec, NextFn, Plugin, PluginError, downcast_arc};
+use cordis::{
+    ArcValue, Context, EventOptions, InjectSpec, NextFn, Plugin, PluginError, downcast_arc,
+};
 use dsh_invariants::{InvariantInstaller, InvariantRegistry};
 use dsh_llm::{GenerateOptions, is_agent_loop_request};
 use dsh_session::{SessionStore, fold_request_header, session_id};
@@ -36,12 +38,14 @@ pub fn installer() -> InvariantInstaller {
                 // silencing the check.
                 let listener_fail = fail.clone();
                 let listener: Arc<cordis::Listener> = Arc::new(move |listener_ctx, args| {
-                    let Some(next) = args.last().and_then(|value| downcast_arc::<NextFn>(value)) else {
+                    let Some(next) = args.last().and_then(|value| downcast_arc::<NextFn>(value))
+                    else {
                         return Box::pin(async { None });
                     };
-                    let Some(cell) = args.first().and_then(|value| {
-                        downcast_arc::<Arc<Mutex<GenerateOptions>>>(value)
-                    }) else {
+                    let Some(cell) = args
+                        .first()
+                        .and_then(|value| downcast_arc::<Arc<Mutex<GenerateOptions>>>(value))
+                    else {
                         return Box::pin(async { None });
                     };
                     let cell = cell.as_ref().clone();
@@ -56,7 +60,9 @@ pub fn installer() -> InvariantInstaller {
                                 }
                                 let session_id = session_id(options.session_id.expect("checked"));
                                 let Some(sessions) = &sessions else {
-                                    (fail)("a loop-built request must carry a live session id, got \"<no sessions service>\"");
+                                    (fail)(
+                                        "a loop-built request must carry a live session id, got \"<no sessions service>\"",
+                                    );
                                     unreachable!()
                                 };
                                 let Some(session) = sessions.get(&session_id) else {
@@ -68,10 +74,14 @@ pub fn installer() -> InvariantInstaller {
                                 };
                                 let events = session.events();
                                 if !events.iter().any(|event| event.type_ == "step/start") {
-                                    (fail)("a loop-built request with no step/start in its session log");
+                                    (fail)(
+                                        "a loop-built request with no step/start in its session log",
+                                    );
                                 }
                                 let Some(header) = fold_request_header(&events, None) else {
-                                    (fail)("a loop-built request with no request/header event in its session log");
+                                    (fail)(
+                                        "a loop-built request with no request/header event in its session log",
+                                    );
                                     unreachable!()
                                 };
                                 let expected = session.derive_messages().expect("deriveMessages");
@@ -89,10 +99,14 @@ pub fn installer() -> InvariantInstaller {
                                     && options.max_tokens == header.config.max_tokens
                                     && serde_json::to_value(&options.stop).expect("stop")
                                         == serde_json::to_value(&header.config.stop).expect("stop")
-                                    && serde_json::to_value(&options.tools.clone().unwrap_or_default())
-                                        .expect("tools")
-                                        == serde_json::to_value(&header.tools.clone().unwrap_or_default())
-                                            .expect("header tools");
+                                    && serde_json::to_value(
+                                        &options.tools.clone().unwrap_or_default(),
+                                    )
+                                    .expect("tools")
+                                        == serde_json::to_value(
+                                            &header.tools.clone().unwrap_or_default(),
+                                        )
+                                        .expect("header tools");
                                 if !header_matches {
                                     (fail)(&format!(
                                         "llm request for session \"{}\" diverges from the folded request header",

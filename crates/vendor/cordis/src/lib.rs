@@ -26,15 +26,19 @@ pub mod util;
 pub use context::{Context, allocate_isolation_label};
 pub use error::{AggregateError, CordisError, CordisErrorCode, PluginError, ValidationError};
 pub use events::{
-    DispatchMode, Disposer, EventOptions, EventsService, Hook, Listener,
-    ListenerOutcome, ListenerWrap, NextFn, make_disposer,
+    DispatchMode, Disposer, EventOptions, EventsService, Hook, Listener, ListenerOutcome,
+    ListenerWrap, NextFn, make_disposer,
 };
 pub use fiber::{EffectMeta, FiberCore, FiberState};
-pub use logger::{Exporter, Logger, LoggerIntercept, LoggerLevel, LoggerService, LoggerType, Message};
+pub use logger::{
+    Exporter, Logger, LoggerIntercept, LoggerLevel, LoggerService, LoggerType, Message,
+};
 pub use reflect::{Accessor, Impl, Property, ReflectService};
 pub use registry::{InjectSpec, Plugin, PluginRuntime, RegistryService};
 pub use service::{CheckFn, Service};
-pub use util::{ArcValue, BoxFuture, DisposableList, OverlayMap, arc, downcast, downcast_arc, symbols};
+pub use util::{
+    ArcValue, BoxFuture, DisposableList, OverlayMap, arc, downcast, downcast_arc, symbols,
+};
 
 #[cfg(test)]
 mod tests {
@@ -93,8 +97,27 @@ mod tests {
     async fn root_exposes_logger_service() {
         let ctx = test_ctx();
         assert!(ctx.get("logger", true).is_some());
-        assert!(ctx.get_typed::<Arc<LoggerService>>("logger", true).is_some());
+        assert!(
+            ctx.get_typed::<Arc<LoggerService>>("logger", true)
+                .is_some()
+        );
         assert!(ctx.get("missing", true).is_none());
+    }
+
+    #[tokio::test]
+    async fn typed_get_executes_registered_accessors() {
+        let ctx = test_ctx();
+        ctx.accessor(
+            "computed",
+            Arc::new(Accessor {
+                get: Arc::new(|_caller| arc(42i32)),
+                set: None,
+            }),
+        );
+        assert_eq!(
+            *ctx.get_typed::<i32>("computed", true).expect("computed"),
+            42
+        );
     }
 
     #[tokio::test]

@@ -133,8 +133,8 @@ pub fn apply(ctx: &Context) -> Disposer {
                     return Some(next.call().await);
                 };
                 let fallback_value = next.call().await;
-                let Some(factory) = downcast_arc::<StreamFactory>(&fallback_value)
-                    .map(|arc| arc.as_ref().clone())
+                let Some(factory) =
+                    downcast_arc::<StreamFactory>(&fallback_value).map(|arc| arc.as_ref().clone())
                 else {
                     return None;
                 };

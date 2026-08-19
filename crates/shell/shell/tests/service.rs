@@ -123,7 +123,11 @@ struct StubExecutorPlugin;
 
 #[async_trait::async_trait]
 impl Plugin for StubExecutorPlugin {
-    async fn apply(&self, ctx: &Context, _config: cordis::ArcValue) -> Result<(), cordis::PluginError> {
+    async fn apply(
+        &self,
+        ctx: &Context,
+        _config: cordis::ArcValue,
+    ) -> Result<(), cordis::PluginError> {
         let erased: Arc<dyn ShellExecutor> = Arc::new(StubExecutor);
         ctx.register_service(erased);
         Ok(())

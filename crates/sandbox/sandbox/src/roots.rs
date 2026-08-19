@@ -57,7 +57,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dsh-roots-rs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create");
         let resolved = canonical_path(&dir.to_string_lossy());
-        assert_eq!(resolved, std::fs::canonicalize(&dir).expect("canonical").to_string_lossy());
+        assert_eq!(
+            resolved,
+            std::fs::canonicalize(&dir)
+                .expect("canonical")
+                .to_string_lossy()
+        );
         assert_eq!(
             canonical_path("/does/not/exist/anywhere-xyz"),
             "/does/not/exist/anywhere-xyz"
@@ -69,7 +74,10 @@ mod tests {
     fn writable_roots_follow_the_mode() {
         let read_only = SandboxExecutionPolicy {
             mode: SandboxMode::ReadOnly,
-            workspace_root: std::env::current_dir().expect("cwd").to_string_lossy().into_owned(),
+            workspace_root: std::env::current_dir()
+                .expect("cwd")
+                .to_string_lossy()
+                .into_owned(),
             session_id: None,
         };
         assert!(writable_roots(&read_only).is_empty());
@@ -82,14 +90,23 @@ mod tests {
             session_id: None,
         };
         let roots = writable_roots(&workspace_write);
-        assert!(roots.contains(&std::fs::canonicalize(&ws).expect("canonical").to_string_lossy().into_owned()));
+        assert!(
+            roots.contains(
+                &std::fs::canonicalize(&ws)
+                    .expect("canonical")
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
         assert!(roots.contains(&canonical_path("/tmp")));
-        assert!(roots.contains(
-            &std::fs::canonicalize(std::env::temp_dir())
-                .expect("canonical")
-                .to_string_lossy()
-                .into_owned()
-        ));
+        assert!(
+            roots.contains(
+                &std::fs::canonicalize(std::env::temp_dir())
+                    .expect("canonical")
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
         // Deduplicated after canonicalization (/tmp and the platform temp
         // dir may coincide).
         let unique: std::collections::HashSet<&String> = roots.iter().collect();

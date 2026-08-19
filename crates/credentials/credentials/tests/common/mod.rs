@@ -24,7 +24,10 @@ impl MemoryCredentials {
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect();
-        let provider = Arc::new(Self { ctx: ctx.clone(), store: Mutex::new(store) });
+        let provider = Arc::new(Self {
+            ctx: ctx.clone(),
+            store: Mutex::new(store),
+        });
         let erased: Arc<dyn CredentialProvider> = provider.clone();
         ctx.register_service(erased);
         provider
@@ -36,9 +39,10 @@ impl CredentialProvider for MemoryCredentials {
     async fn resolve(&self, reference: &CredentialRef) -> Option<ResolvedCredential> {
         let value = self.store.lock().get(reference.as_str()).cloned();
         match value {
-            Some(value) if !value.is_empty() => {
-                Some(ResolvedCredential { value, source: "memory".to_string() })
-            }
+            Some(value) if !value.is_empty() => Some(ResolvedCredential {
+                value,
+                source: "memory".to_string(),
+            }),
             _ => None,
         }
     }
@@ -59,10 +63,12 @@ impl CredentialProvider for MemoryCredentials {
     async fn set(&self, reference: &CredentialRef, value: &str) -> Result<(), String> {
         if value.is_empty() {
             return Err(
-                "memory credentials: an empty value cannot be stored; use unset".to_string()
+                "memory credentials: an empty value cannot be stored; use unset".to_string(),
             );
         }
-        self.store.lock().insert(reference.as_str().to_string(), value.to_string());
+        self.store
+            .lock()
+            .insert(reference.as_str().to_string(), value.to_string());
         self.notify_updated(&self.ctx, reference).await
     }
 

@@ -21,7 +21,7 @@ use std::sync::Arc;
 use cordis::{ArcValue, Context, Disposer, InjectSpec, Plugin, PluginError};
 use dsh_agent::Agent;
 
-use crate::descriptor::{snapshot_subagent_descriptor, SubagentDescriptorData};
+use crate::descriptor::{SubagentDescriptorData, snapshot_subagent_descriptor};
 use crate::error::SubagentError;
 use crate::lifecycle::{LifecycleEdge, emit_lifecycle_edge, observe_run};
 use crate::types::{
@@ -34,7 +34,8 @@ use crate::types::{
 pub struct SubagentRuntime {
     pub ctx: Context,
     providers: Arc<parking_lot::Mutex<HashMap<String, Arc<dyn SubagentProvider>>>>,
-    continuations: Arc<std::sync::OnceLock<std::sync::Weak<crate::continuation::SubagentContinuationManager>>>,
+    continuations:
+        Arc<std::sync::OnceLock<std::sync::Weak<crate::continuation::SubagentContinuationManager>>>,
 }
 
 /// The runtime's continuation host hooks (TS `ContinuationHost`).
@@ -59,7 +60,12 @@ impl crate::continuation::ContinuationHost for RuntimeContinuationHost {
         child_id: &dsh_session::SessionId,
         parent: &Arc<dyn Agent>,
     ) -> crate::lifecycle::ActivationObserver {
-        crate::lifecycle::create_activation_observer(&self.runtime.ctx, provider, child_id, parent.clone())
+        crate::lifecycle::create_activation_observer(
+            &self.runtime.ctx,
+            provider,
+            child_id,
+            parent.clone(),
+        )
     }
 }
 
@@ -145,8 +151,10 @@ impl SubagentRuntime {
             }
             providers.insert(name.clone(), provider.clone());
         }
-        self.ctx
-            .emit("subagent/provider-added", vec![cordis::arc(provider.clone())]);
+        self.ctx.emit(
+            "subagent/provider-added",
+            vec![cordis::arc(provider.clone())],
+        );
         let disposer: Disposer = cordis::events::make_disposer({
             let runtime = self.clone();
             let name_for_dispose = name.clone();
@@ -155,10 +163,7 @@ impl SubagentRuntime {
                 let name = name_for_dispose.clone();
                 Box::pin(async move {
                     if runtime.providers.lock().remove(&name).is_some() {
-                        emit_lifecycle_edge(
-                            &runtime.ctx,
-                            LifecycleEdge::ProviderRemoved(name),
-                        );
+                        emit_lifecycle_edge(&runtime.ctx, LifecycleEdge::ProviderRemoved(name));
                     }
                 })
             }
@@ -185,7 +190,10 @@ impl SubagentRuntime {
     /// Look up a provider for dispatch or fail loud.
     fn expect_provider(&self, name: &str) -> Result<Arc<dyn SubagentProvider>, SubagentError> {
         self.get_provider(name).ok_or_else(|| {
-            SubagentError::new("NO_PROVIDER", format!("no subagent provider registered for \"{name}\""))
+            SubagentError::new(
+                "NO_PROVIDER",
+                format!("no subagent provider registered for \"{name}\""),
+            )
         })
     }
 
@@ -233,13 +241,13 @@ impl SubagentRuntime {
         self.assert_capabilities(provider.as_ref(), &request)?;
         crate::depth::assert_subagent_max_depth(request.max_depth)
             .map_err(|message| SubagentError::new("INVALID_MAX_DEPTH", message))?;
-        if let Some(schema) = &request.output_schema {
-            if !schema.is_object() {
-                return Err(SubagentError::new(
-                    "INVALID_OUTPUT_SCHEMA",
-                    "subagent outputSchema must be an object-rooted JSON Schema",
-                ));
-            }
+        if let Some(schema) = &request.output_schema
+            && !schema.is_object()
+        {
+            return Err(SubagentError::new(
+                "INVALID_OUTPUT_SCHEMA",
+                "subagent outputSchema must be an object-rooted JSON Schema",
+            ));
         }
         let descriptor = snapshot_subagent_descriptor(&SubagentDescriptorData::OneShot {
             version: crate::descriptor::SUBAGENT_DESCRIPTOR_VERSION,
@@ -304,9 +312,7 @@ impl SubagentRuntime {
         content: &[dsh_llm::ContentBlock],
         options: crate::continuation::SubagentReportOptions,
     ) -> Result<dsh_llm::MessageId, SubagentError> {
-        self.manager()
-            .report_from(&child, content, &options)
-            .await
+        self.manager().report_from(&child, content, &options).await
     }
 
     /// Close admission below exact live parent Agents (TS

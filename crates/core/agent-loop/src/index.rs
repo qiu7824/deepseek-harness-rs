@@ -19,14 +19,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use cordis::{ArcValue, BoxFuture, Context, DispatchMode, InjectSpec, Service, arc};
+use cordis::{ArcValue, BoxFuture, Context, DispatchMode, Disposer, InjectSpec, Service, arc};
 use dsh_agent::{
     Agent, AgentFactory, AgentHandle, AgentOptions, AgentSessionStartPayload, AgentSetup,
     CreateAgentOptions, ResumeAgentOptions, SessionStartSource, emit_agent_event,
 };
-use dsh_session::{
-    Session, SessionId, SessionPreparation, SessionPreparationOptions, session_id,
-};
+use dsh_session::{Session, SessionId, SessionPreparation, SessionPreparationOptions, session_id};
 use dsh_settings::{install_settings_section, settings_namespace};
 use indexmap::IndexMap;
 use schemastery::{Data, Schema};
@@ -165,7 +163,8 @@ impl FactoryOwnership {
 
     async fn dispose(&self) {
         self.accepting.store(false, Ordering::SeqCst);
-        self.teardown.abort_with(dsh_agent::AgentCancelCause::Disposed);
+        self.teardown
+            .abort_with(dsh_agent::AgentCancelCause::Disposed);
         let live = std::mem::take(&mut *self.live_agents.lock());
         let startup = std::mem::take(&mut *self.startup_tasks.lock());
         for dispose in live {
@@ -183,7 +182,26 @@ struct PreparedAgent {
     session: Session,
     loop_ctx: Context,
     owner_agent: Option<Arc<dyn Agent>>,
-    disposing: parking_lot::Mutex<Option<BoxFuture<'static, ()>>>,
+    lifecycle: parking_lot::Mutex<PreparedLifecycle>,
+    dispose_started: AtomicBool,
+    dispose_done: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Default)]
+struct PreparedLifecycle {
+    closing: bool,
+    detach_agent: Option<Disposer>,
+    detach_session: Option<Disposer>,
+}
+
+struct DisposeCompletion {
+    done: tokio::sync::watch::Sender<bool>,
+}
+
+impl Drop for DisposeCompletion {
+    fn drop(&mut self) {
+        self.done.send_replace(true);
+    }
 }
 
 impl PreparedAgent {
@@ -192,19 +210,41 @@ impl PreparedAgent {
     fn dispose(self: &Arc<Self>) -> BoxFuture<'static, ()> {
         let prepared = Arc::clone(self);
         Box::pin(async move {
-            if prepared.disposing.lock().is_some() {
-                return;
+            let mut done = prepared.dispose_done.subscribe();
+            if !prepared.dispose_started.swap(true, Ordering::SeqCst) {
+                let task = Arc::clone(&prepared);
+                tokio::spawn(async move {
+                    let _completion = DisposeCompletion {
+                        done: task.dispose_done.clone(),
+                    };
+                    let agent = Arc::clone(&task.agent);
+                    let (detach_agent, detach_session) = {
+                        let mut lifecycle = task.lifecycle.lock();
+                        lifecycle.closing = true;
+                        (
+                            lifecycle.detach_agent.take(),
+                            lifecycle.detach_session.take(),
+                        )
+                    };
+                    agent.cancel(
+                        dsh_agent::AgentCancelCause::Disposed,
+                        Some(&dsh_agent::CancelOptions { keep_inbox: false }),
+                    );
+                    agent.when_idle().await;
+                    (agent.scope().dispose)().await;
+                    if let Some(detach_agent) = detach_agent {
+                        detach_agent().await;
+                    }
+                    if let Some(detach_session) = detach_session {
+                        detach_session().await;
+                    }
+                });
             }
-            let agent = Arc::clone(&prepared.agent);
-            let done: BoxFuture<'static, ()> = Box::pin(async move {
-                agent.cancel(
-                    dsh_agent::AgentCancelCause::Disposed,
-                    Some(&dsh_agent::CancelOptions { keep_inbox: false }),
-                );
-                agent.when_idle().await;
-                (agent.scope().dispose)().await;
-            });
-            *prepared.disposing.lock() = Some(done);
+            while !*done.borrow() {
+                if done.changed().await.is_err() {
+                    break;
+                }
+            }
         })
     }
 }
@@ -376,9 +416,11 @@ impl AgentLoop {
             "sessionId": session_id,
             "error": error,
         }));
-        let listeners = self
-            .ctx
-            .collect(DispatchMode::Emit, "agent-loop/config-start-failed", &[payload.clone()]);
+        let listeners = self.ctx.collect(
+            DispatchMode::Emit,
+            "agent-loop/config-start-failed",
+            &[payload.clone()],
+        );
         for (listener_ctx, listener) in listeners {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 futures::executor::block_on(listener(&listener_ctx, vec![payload.clone()]));
@@ -458,6 +500,7 @@ impl AgentLoop {
             return Err("agent loop is not active".to_string());
         }
         let agent = ReactLoopAgent::new(&self.ctx, id.clone(), options.clone(), session.clone())?;
+        let (dispose_done, _) = tokio::sync::watch::channel(false);
         let prepared = Arc::new(PreparedAgent {
             agent,
             session,
@@ -465,7 +508,9 @@ impl AgentLoop {
             owner_agent: owner_ctx
                 .get_typed::<Arc<dyn Agent>>("agent", false)
                 .map(|arc| arc.as_ref().clone()),
-            disposing: parking_lot::Mutex::new(None),
+            lifecycle: parking_lot::Mutex::new(PreparedLifecycle::default()),
+            dispose_started: AtomicBool::new(false),
+            dispose_done,
         });
         let dispose_future = prepared.dispose();
         self.ownership.track(dispose_future);
@@ -488,8 +533,21 @@ impl PreparedAgent {
             .map(|arc| arc.as_ref().clone())
             .ok_or_else(|| "agent loop requires the agents service".to_string())?;
         let agent_dyn: Arc<dyn Agent> = self.agent.clone();
-        let _detach_session = sessions.enter(&self.session)?;
-        let _detach_agent = agents.enter(Arc::clone(&agent_dyn), self.owner_agent.clone())?;
+        let mut lifecycle = self.lifecycle.lock();
+        if lifecycle.closing {
+            return Err("agent loop disposed while publishing an agent".to_string());
+        }
+        let detach_session = sessions.enter(&self.session)?;
+        let detach_agent = match agents.enter(Arc::clone(&agent_dyn), self.owner_agent.clone()) {
+            Ok(detach) => detach,
+            Err(error) => {
+                futures::executor::block_on(detach_session());
+                return Err(error);
+            }
+        };
+        lifecycle.detach_session = Some(detach_session);
+        lifecycle.detach_agent = Some(detach_agent);
+        drop(lifecycle);
         emit_agent_event(&self.loop_ctx, &agent_dyn, "agent/session-start", |agent| {
             arc(AgentSessionStartPayload {
                 agent: Arc::clone(agent),
@@ -550,14 +608,21 @@ impl AgentFactory for AgentLoop {
     ) -> Result<AgentHandle, String> {
         let persistence = self
             .ctx
-            .get_typed::<Arc<dsh_session_persistence::SessionPersistence>>("sessionPersistence", false);
+            .get_typed::<Arc<dsh_session_persistence::SessionPersistence>>(
+                "sessionPersistence",
+                false,
+            );
         if persistence.is_none() {
             return Err("cannot resume: session persistence is not configured (load a dsh-session-persistence backend)".to_string());
         }
         let Some(id) = options.resume_session_id.clone() else {
             return Err("cannot resume: resumeSessionId is required".to_string());
         };
-        self.resume_with(owner_ctx, &id, &options.agent_options.clone().unwrap_or_default())
-            .await
+        self.resume_with(
+            owner_ctx,
+            &id,
+            &options.agent_options.clone().unwrap_or_default(),
+        )
+        .await
     }
 }

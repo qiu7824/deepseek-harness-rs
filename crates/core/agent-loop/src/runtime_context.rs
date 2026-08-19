@@ -10,12 +10,15 @@
 use std::sync::Arc;
 
 use cordis::{Context, EventOptions, downcast_arc};
-use dsh_llm::{ContextForm, ContextSnapshotSection, ContentBlock, MessageSource, create_user_message};
+use dsh_llm::{
+    ContentBlock, ContextForm, ContextSnapshotSection, MessageSource, create_user_message,
+};
 use dsh_session::{Session, SessionEvent, is_replacement_surface_event};
 use parking_lot::Mutex;
 
 const SOURCE: &str = "@deepseek-ai/dsh-system-prompt";
-const CLEARED: &str = "Current runtime context: none. Earlier runtime-context snapshots no longer apply.";
+const CLEARED: &str =
+    "Current runtime context: none. Earlier runtime-context snapshots no longer apply.";
 
 fn is_owned(message: &dsh_llm::UserMessage) -> bool {
     matches!(&message.source, MessageSource::Plugin { plugin, .. } if plugin == SOURCE)
@@ -62,7 +65,9 @@ impl RuntimeContextProjection {
                 if event.type_ != "user/message" {
                     continue;
                 }
-                let Ok(message) = serde_json::from_value::<dsh_llm::UserMessage>(event.data.clone()) else {
+                let Ok(message) =
+                    serde_json::from_value::<dsh_llm::UserMessage>(event.data.clone())
+                else {
                     continue;
                 };
                 if !is_owned(&message) {
@@ -72,13 +77,18 @@ impl RuntimeContextProjection {
                     retained = Some(None);
                 }
                 if surface_nodes.contains(&event.seq) {
-                    retained = Some(Some(Retained { seq: event.seq, text: text_of(&message) }));
+                    retained = Some(Some(Retained {
+                        seq: event.seq,
+                        text: text_of(&message),
+                    }));
                     break;
                 }
             }
             retained
         };
-        let projection = Self { retained: Arc::new(Mutex::new(initial)) };
+        let projection = Self {
+            retained: Arc::new(Mutex::new(initial)),
+        };
         let session_identity = session.identity();
         let retained_cell = Arc::clone(&projection.retained);
         let listener: Arc<cordis::Listener> = Arc::new(move |_listener_ctx, args| {
@@ -93,9 +103,14 @@ impl RuntimeContextProjection {
                     return None;
                 }
                 if event.type_ == "user/message" {
-                    if let Ok(message) = serde_json::from_value::<dsh_llm::UserMessage>(event.data.clone()) {
+                    if let Ok(message) =
+                        serde_json::from_value::<dsh_llm::UserMessage>(event.data.clone())
+                    {
                         if is_owned(&message) {
-                            *retained.lock() = Some(Some(Retained { seq: event.seq, text: text_of(&message) }));
+                            *retained.lock() = Some(Some(Retained {
+                                seq: event.seq,
+                                text: text_of(&message),
+                            }));
                         }
                     }
                 } else if is_replacement_surface_event(&event)
@@ -137,7 +152,11 @@ impl RuntimeContextProjection {
         if retained.as_ref().is_none() && current.is_empty() {
             return None;
         }
-        let snapshot = if current.is_empty() { CLEARED.to_string() } else { current.to_string() };
+        let snapshot = if current.is_empty() {
+            CLEARED.to_string()
+        } else {
+            current.to_string()
+        };
         if retained
             .as_ref()
             .and_then(|retained| retained.as_ref())

@@ -20,7 +20,11 @@ pub struct ModelMessageSource {
     /// Provider model id that produced the message.
     pub model: String,
     /// Lossless-JSON adapter state needed to replay the provider response.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "replayState")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "replayState"
+    )]
     pub replay_state: Option<JsonValue>,
 }
 
@@ -74,7 +78,11 @@ pub enum MessageSource {
         #[serde(default, skip_serializing_if = "Option::is_none", rename = "rpcId")]
         rpc_id: Option<String>,
         /// Host-canonicalized browser IANA zone of the producing request.
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "clientTimeZone")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "clientTimeZone"
+        )]
         client_time_zone: Option<String>,
     },
     Plugin {
@@ -87,11 +95,19 @@ pub enum MessageSource {
         summary: Option<String>,
         /// Compaction transaction identity (the TS compaction checkpoint
         /// augmentation on the `plugin` source kind).
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "compactionId")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "compactionId"
+        )]
         compaction_id: Option<String>,
         /// Initiating manual command identity (the TS compaction checkpoint
         /// augmentation).
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "sourceCommandId")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "sourceCommandId"
+        )]
         source_command_id: Option<String>,
     },
     Model {
@@ -100,12 +116,25 @@ pub enum MessageSource {
         /// Provider model id that produced the message.
         model: String,
         /// Lossless-JSON adapter state needed to replay the provider response.
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "replayState")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "replayState"
+        )]
         replay_state: Option<JsonValue>,
     },
     Tool {
         #[serde(rename = "callId")]
         call_id: CallId,
+    },
+    /// Automatic same-session goal continuation attribution. Goal-id
+    /// branding and positive-number validation belong to dsh-goal, avoiding
+    /// a reverse dependency from the core message vocabulary.
+    Goal {
+        #[serde(rename = "goalId")]
+        goal_id: String,
+        revision: u64,
+        round: u64,
     },
     /// Durable record of a published session skill catalog (TS
     /// `skill-catalog` source augmentation on the model-facing `skill`
@@ -159,6 +188,7 @@ impl MessageSource {
             MessageSource::Plugin { .. } => "plugin",
             MessageSource::Model { .. } => "model",
             MessageSource::Tool { .. } => "tool",
+            MessageSource::Goal { .. } => "goal",
             MessageSource::SkillCatalog { .. } => "skill-catalog",
             MessageSource::SkillInvocation { .. } => "skill-invocation",
             MessageSource::Coordinator { .. } => "coordinator",
@@ -233,11 +263,7 @@ pub fn freeze_message<T>(message: T) -> T {
 }
 
 /// Create one identified message and freeze it before publication.
-pub fn create_message(
-    role: Role,
-    content: Vec<ContentBlock>,
-    source: MessageSource,
-) -> Message {
+pub fn create_message(role: Role, content: Vec<ContentBlock>, source: MessageSource) -> Message {
     Message {
         id: crate::brand::message_id(uuid_v4()),
         role,
@@ -284,7 +310,9 @@ pub fn create_tool_result_message(input: ToolResultMessageInput) -> ToolResultMe
             content: input.content,
             is_error: Some(input.is_error),
         }],
-        MessageSource::Tool { call_id: input.call_id },
+        MessageSource::Tool {
+            call_id: input.call_id,
+        },
     )
 }
 
@@ -294,9 +322,11 @@ pub fn is_token_delta(chunk: &crate::types::StreamChunk) -> bool {
     match chunk {
         crate::types::StreamChunk::TextDelta { text, .. }
         | crate::types::StreamChunk::ReasoningDelta { text, .. } => !text.is_empty(),
-        crate::types::StreamChunk::ToolCallDelta { arguments_delta, name, .. } => {
-            !arguments_delta.is_empty() || name.is_some()
-        }
+        crate::types::StreamChunk::ToolCallDelta {
+            arguments_delta,
+            name,
+            ..
+        } => !arguments_delta.is_empty() || name.is_some(),
         _ => false,
     }
 }
@@ -315,7 +345,9 @@ mod tests {
     #[test]
     fn user_message_wire_shape() {
         let message = create_user_message(
-            vec![ContentBlock::Text { text: "hi".to_string() }],
+            vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
             MessageSource::User {
                 rpc_id: None,
                 client_time_zone: None,
@@ -324,10 +356,35 @@ mod tests {
         let json = serde_json::to_value(&message).unwrap();
         assert_eq!(json["role"], "user");
         assert_eq!(json["source"], serde_json::json!({"kind": "user"}));
-        assert_eq!(json["content"], serde_json::json!([{"type": "text", "text": "hi"}]));
+        assert_eq!(
+            json["content"],
+            serde_json::json!([{"type": "text", "text": "hi"}])
+        );
         assert!(json["id"].as_str().is_some_and(|s| !s.is_empty()));
         let back: Message = serde_json::from_value(json).unwrap();
         assert_eq!(back, message);
+    }
+
+    #[test]
+    fn goal_round_source_wire_shape() {
+        let source = MessageSource::Goal {
+            goal_id: "goal-1".to_string(),
+            revision: 2,
+            round: 3,
+        };
+        let json = serde_json::to_value(&source).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "goal",
+                "goalId": "goal-1",
+                "revision": 2,
+                "round": 3,
+            })
+        );
+        let back: MessageSource = serde_json::from_value(json).unwrap();
+        assert_eq!(back, source);
+        assert_eq!(back.kind(), "goal");
     }
 
     #[test]
@@ -353,7 +410,9 @@ mod tests {
 
         let result = create_tool_result_message(ToolResultMessageInput {
             call_id: crate::brand::call_id("c1"),
-            content: vec![ContentBlock::Text { text: "ok".to_string() }],
+            content: vec![ContentBlock::Text {
+                text: "ok".to_string(),
+            }],
             is_error: false,
         });
         let json = serde_json::to_value(&result).unwrap();
@@ -413,9 +472,15 @@ mod tests {
     #[test]
     fn token_delta_boundary() {
         use crate::types::StreamChunk;
-        let chunk = StreamChunk::TextDelta { index: 0, text: String::new() };
+        let chunk = StreamChunk::TextDelta {
+            index: 0,
+            text: String::new(),
+        };
         assert!(!is_token_delta(&chunk));
-        let chunk = StreamChunk::TextDelta { index: 0, text: "a".to_string() };
+        let chunk = StreamChunk::TextDelta {
+            index: 0,
+            text: "a".to_string(),
+        };
         assert!(is_token_delta(&chunk));
         let chunk = StreamChunk::Usage {
             usage: crate::types::TokenUsage::default(),

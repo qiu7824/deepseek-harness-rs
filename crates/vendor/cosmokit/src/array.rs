@@ -38,7 +38,12 @@ pub fn union<T: Eq + Hash + Clone>(array1: &[T], array2: &[T]) -> Vec<T> {
 
 /// Remove duplicate values while preserving first occurrence order.
 pub fn deduplicate<T: Eq + Hash + Clone>(array: &[T]) -> Vec<T> {
-    array.iter().cloned().collect::<IndexSet<T>>().into_iter().collect()
+    array
+        .iter()
+        .cloned()
+        .collect::<IndexSet<T>>()
+        .into_iter()
+        .collect()
 }
 
 /// Remove one item from a list and report whether it was found.

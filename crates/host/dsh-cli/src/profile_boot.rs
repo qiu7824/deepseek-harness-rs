@@ -11,17 +11,14 @@
 //!   `dsh-agent-presets` crate exists yet).
 //! - `DSH_TELEMETRY_DISABLED` is passed in by the caller instead of read
 //!   from the process environment (test isolation).
-//! - `healProfilesModuleFallback` (Node module-resolution healing) has no
-//!   Rust counterpart yet; `prepare_profile` skips it.
-//! - `runProfile` (signal wiring, launch-environment snapshot, cmdline
-//!   injection, HMR fallback mounting, and the boot call) belongs to the
-//!   profile-boot milestone once those services land.
+//! - Dynamic JavaScript loader plugins and the concrete HMR filesystem
+//!   provider remain outside the static Rust profile surface.
 
 use std::path::{Path, PathBuf};
 
 use dsh_app_boot::{
-    PROFILE_PATCH_FILENAME, PatchOptions, Profile, compose_entries, load_optional_patches,
-    load_overlay_patches,
+    PROFILE_PATCH_FILENAME, PatchOptions, Profile, compose_entries, init_profile,
+    load_optional_patches, load_overlay_patches, profile_templates, resolve_profile_dir,
 };
 use indexmap::IndexMap;
 use serde_json::Value;
@@ -92,16 +89,16 @@ pub fn home_patch_path(home: &Path) -> PathBuf {
 /// disables — a privacy switch prefers off-by-mistake. A composition without
 /// the telemetry row exports nothing, so the switch is then trivially
 /// satisfied.
-pub fn resolve_telemetry_patch(
-    disabled_env: Option<&str>,
-    has_row: bool,
-) -> Option<PatchOptions> {
+pub fn resolve_telemetry_patch(disabled_env: Option<&str>, has_row: bool) -> Option<PatchOptions> {
     let disabled = disabled_env.unwrap_or_default();
     if disabled.is_empty() || !has_row {
         return None;
     }
     let mut patch = IndexMap::new();
-    patch.insert("id".to_string(), Value::String(TELEMETRY_ROW_ID.to_string()));
+    patch.insert(
+        "id".to_string(),
+        Value::String(TELEMETRY_ROW_ID.to_string()),
+    );
     patch.insert("disabled".to_string(), Value::Bool(true));
     Some(patch)
 }
@@ -116,18 +113,62 @@ pub fn prepare_profile(name: &str, home: &Path) -> Result<Profile, String> {
     prepare_profile_with_user_layer(name, home, true)
 }
 
+/// Full Node-compatible profile preparation used by launchers that carry the
+/// installed app package.json anchor. It heals the shared module fallback
+/// before applying installation-first/profile-second bundle resolution.
+pub fn prepare_profile_with_install_anchor(
+    name: &str,
+    home: &Path,
+    user_layer: bool,
+    install_anchor: &Path,
+) -> Result<Profile, String> {
+    dsh_app_boot::heal_profiles_module_fallback(install_anchor, home)?;
+    let dir = resolve_profile_dir(name, home)?;
+    if !dir.join("package.json").exists() {
+        let template = profile_templates()
+            .get(name)
+            .ok_or_else(|| format!("{NAME}: profile {name:?} is not initialized"))?;
+        init_profile(
+            &dir,
+            &template
+                .iter()
+                .map(|bundle| (*bundle).to_string())
+                .collect::<Vec<_>>(),
+        )?;
+    }
+    let profile = dsh_app_boot::load_profile_with_anchors(
+        name,
+        home,
+        user_layer,
+        Some(install_anchor),
+        NAME,
+    )?;
+    std::fs::write(profile.dir.join(PROFILE_ROOT_FILENAME), PROFILE_ROOT_CONFIG)
+        .map_err(|error| format!("{NAME}: cannot write profile root config: {error}"))?;
+    Ok(profile)
+}
+
 /// [`prepare_profile`] with the TS `userLayer` switch.
 pub fn prepare_profile_with_user_layer(
     name: &str,
     home: &Path,
     user_layer: bool,
 ) -> Result<Profile, String> {
+    let dir = resolve_profile_dir(name, home)?;
+    if !dir.join("package.json").exists() {
+        let template = profile_templates()
+            .get(name)
+            .ok_or_else(|| format!("{NAME}: profile {name:?} is not initialized"))?;
+        let bundles = template
+            .iter()
+            .map(|bundle| (*bundle).to_string())
+            .collect::<Vec<_>>();
+        init_profile(&dir, &bundles)
+            .map_err(|error| format!("{NAME}: cannot initialize profile {name:?}: {error}"))?;
+    }
     let profile = dsh_app_boot::load_profile_with_user_layer(name, home, user_layer)?;
-    std::fs::write(
-        profile.dir.join(PROFILE_ROOT_FILENAME),
-        PROFILE_ROOT_CONFIG,
-    )
-    .map_err(|error| format!("{NAME}: cannot write profile root config: {error}"))?;
+    std::fs::write(profile.dir.join(PROFILE_ROOT_FILENAME), PROFILE_ROOT_CONFIG)
+        .map_err(|error| format!("{NAME}: cannot write profile root config: {error}"))?;
     Ok(profile)
 }
 
@@ -163,15 +204,10 @@ pub fn all_patches(composed: &ComposedProfile) -> Vec<PatchOptions> {
 /// above, so a user edit can never displace them. Both user files are
 /// re-read per generation (TS `composeLive`); Rust `IndexMap` clones are
 /// deep, so the TS insert-aliasing concern does not apply.
-pub fn compose_live(
-    composed: &ComposedProfile,
-    home: &Path,
-) -> Result<Vec<PatchOptions>, String> {
+pub fn compose_live(composed: &ComposedProfile, home: &Path) -> Result<Vec<PatchOptions>, String> {
     let mut patches = Vec::new();
     patches.extend(composed.bundle_patches.iter().cloned());
-    patches.extend(
-        load_optional_patches(NAME, &composed.profile.patch_path)?.unwrap_or_default(),
-    );
+    patches.extend(load_optional_patches(NAME, &composed.profile.patch_path)?.unwrap_or_default());
     patches.extend(load_optional_patches(NAME, &home_patch_path(home))?.unwrap_or_default());
     patches.extend(composed.overlays.iter().cloned());
     Ok(patches)
@@ -187,9 +223,36 @@ pub fn compose_profile(
     home: &Path,
     telemetry_env: Option<&str>,
 ) -> Result<ComposedProfile, String> {
-    let profile = prepare_profile(name, home)?;
-    let home_patches =
-        load_optional_patches(NAME, &home_patch_path(home))?.unwrap_or_default();
+    compose_profile_from_prepared(
+        prepare_profile(name, home)?,
+        patch_files,
+        home,
+        telemetry_env,
+    )
+}
+
+pub fn compose_profile_with_install_anchor(
+    name: &str,
+    patch_files: &[String],
+    home: &Path,
+    telemetry_env: Option<&str>,
+    install_anchor: &Path,
+) -> Result<ComposedProfile, String> {
+    compose_profile_from_prepared(
+        prepare_profile_with_install_anchor(name, home, true, install_anchor)?,
+        patch_files,
+        home,
+        telemetry_env,
+    )
+}
+
+fn compose_profile_from_prepared(
+    profile: Profile,
+    patch_files: &[String],
+    home: &Path,
+    telemetry_env: Option<&str>,
+) -> Result<ComposedProfile, String> {
+    let home_patches = load_optional_patches(NAME, &home_patch_path(home))?.unwrap_or_default();
     let mut overlays: Vec<PatchOptions> = Vec::new();
     for file in patch_files {
         let absolute = std::path::absolute(Path::new(file))
@@ -292,8 +355,7 @@ mod tests {
     use dsh_app_boot::{PROFILES_DIR, init_profile, resolve_profile_dir};
 
     fn temp_home(tag: &str) -> PathBuf {
-        static COUNTER: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let home = std::env::temp_dir().join(format!(
             "dsh-profile-boot-{tag}-{}-{}",
             std::process::id(),
@@ -306,10 +368,7 @@ mod tests {
     #[test]
     fn home_patch_path_sits_at_the_home_root() {
         let home = PathBuf::from("/home/me/.dsh");
-        assert_eq!(
-            home_patch_path(&home),
-            home.join(PROFILE_PATCH_FILENAME)
-        );
+        assert_eq!(home_patch_path(&home), home.join(PROFILE_PATCH_FILENAME));
     }
 
     #[test]
@@ -319,7 +378,10 @@ mod tests {
         assert_eq!(resolve_telemetry_patch(Some("1"), false), None);
         for value in ["1", "0", "false", "yes"] {
             let patch = resolve_telemetry_patch(Some(value), true).expect("patch");
-            assert_eq!(patch.get("id").and_then(Value::as_str), Some(TELEMETRY_ROW_ID));
+            assert_eq!(
+                patch.get("id").and_then(Value::as_str),
+                Some(TELEMETRY_ROW_ID)
+            );
             assert_eq!(patch.get("disabled"), Some(&Value::Bool(true)));
         }
     }
@@ -370,15 +432,30 @@ mod tests {
         let all = all_patches(&composed);
         assert_eq!(all.len(), 4);
         assert_eq!(
-            all[0].get("insert").and_then(Value::as_array).and_then(|rows| rows.first()).and_then(|row| row.get("id")).and_then(Value::as_str),
+            all[0]
+                .get("insert")
+                .and_then(Value::as_array)
+                .and_then(|rows| rows.first())
+                .and_then(|row| row.get("id"))
+                .and_then(Value::as_str),
             Some("probe-row")
         );
         assert_eq!(
-            all[1].get("insert").and_then(Value::as_array).and_then(|rows| rows.first()).and_then(|row| row.get("id")).and_then(Value::as_str),
+            all[1]
+                .get("insert")
+                .and_then(Value::as_array)
+                .and_then(|rows| rows.first())
+                .and_then(|row| row.get("id"))
+                .and_then(Value::as_str),
             Some("home-row")
         );
         assert_eq!(
-            all[2].get("insert").and_then(Value::as_array).and_then(|rows| rows.first()).and_then(|row| row.get("id")).and_then(Value::as_str),
+            all[2]
+                .get("insert")
+                .and_then(Value::as_array)
+                .and_then(|rows| rows.first())
+                .and_then(|row| row.get("id"))
+                .and_then(Value::as_str),
             Some("overlay-row")
         );
         assert_eq!(
@@ -390,9 +467,36 @@ mod tests {
         let live = compose_live(&composed, &home).expect("live");
         assert_eq!(live.len(), 4);
         assert_eq!(
-            live[1].get("insert").and_then(Value::as_array).and_then(|rows| rows.first()).and_then(|row| row.get("id")).and_then(Value::as_str),
+            live[1]
+                .get("insert")
+                .and_then(Value::as_array)
+                .and_then(|rows| rows.first())
+                .and_then(|row| row.get("id"))
+                .and_then(Value::as_str),
             Some("home-row")
         );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn prepare_profile_auto_initializes_a_shipped_profile() {
+        let home = temp_home("auto-init");
+
+        let profile = prepare_profile("web", &home).expect("prepared");
+
+        assert_eq!(profile.name, "web");
+        assert_eq!(
+            profile
+                .layers
+                .iter()
+                .map(|layer| layer.package_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]
+        );
+        assert!(profile.dir.join("package.json").exists());
+        assert!(profile.dir.join(PROFILE_PATCH_FILENAME).exists());
+        assert!(profile.dir.join(PROFILE_ROOT_FILENAME).exists());
 
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -409,10 +513,7 @@ mod tests {
         let content = std::fs::read_to_string(&root).expect("read");
         assert_eq!(content, PROFILE_ROOT_CONFIG);
         assert_eq!(profile.name, "web");
-        assert_eq!(
-            profile.dir,
-            home.join(PROFILES_DIR).join("web")
-        );
+        assert_eq!(profile.dir, home.join(PROFILES_DIR).join("web"));
 
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -454,11 +555,8 @@ mod tests {
         assert!(dump.contains("# =="), "{dump}");
 
         // defaultOnly skips the broken user layer entirely (recovery).
-        std::fs::write(
-            dir.join(PROFILE_PATCH_FILENAME),
-            "not: [valid\n",
-        )
-        .expect("broken user layer");
+        std::fs::write(dir.join(PROFILE_PATCH_FILENAME), "not: [valid\n")
+            .expect("broken user layer");
         let (dump, _) = run_dump_config("web", true, &[], &home).expect("recovery dump");
         assert!(!dump.contains("user-row"), "{dump}");
         assert!(!dump.contains("home-row"), "{dump}");

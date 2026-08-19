@@ -37,25 +37,47 @@ pub struct JsonSchemaError {
 
 impl JsonSchemaError {
     pub fn new(violations: Vec<String>) -> Self {
-        Self { code: "UNSUPPORTED_SCHEMA", violations }
+        Self {
+            code: "UNSUPPORTED_SCHEMA",
+            violations,
+        }
     }
 }
 
 impl std::fmt::Display for JsonSchemaError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "unsupported JSON schema: {}", self.violations.join("; "))
+        write!(
+            formatter,
+            "unsupported JSON schema: {}",
+            self.violations.join("; ")
+        )
     }
 }
 
 impl std::error::Error for JsonSchemaError {}
 
 const CONSTRAINT_KEYWORDS: [&str; 8] = [
-    "type", "oneOf", "properties", "required", "additionalProperties", "items", "enum", "const",
+    "type",
+    "oneOf",
+    "properties",
+    "required",
+    "additionalProperties",
+    "items",
+    "enum",
+    "const",
 ];
 const ANNOTATION_KEYWORDS: [&str; 4] = ["description", "title", "default", "examples"];
-const SCHEMA_TYPES: [&str; 7] = ["object", "array", "string", "number", "integer", "boolean", "null"];
-const ONE_OF_SIBLING_KEYWORDS: [&str; 6] =
-    ["properties", "required", "additionalProperties", "items", "enum", "const"];
+const SCHEMA_TYPES: [&str; 7] = [
+    "object", "array", "string", "number", "integer", "boolean", "null",
+];
+const ONE_OF_SIBLING_KEYWORDS: [&str; 6] = [
+    "properties",
+    "required",
+    "additionalProperties",
+    "items",
+    "enum",
+    "const",
+];
 
 fn is_schema_record(value: &JsonValue) -> bool {
     value.is_object()
@@ -104,9 +126,19 @@ fn has_own(node: &JsonValue, key: &str) -> bool {
 
 /// Deferred work for the stack-safe raw-schema walk.
 enum SchemaTask<'a> {
-    Enter { node: &'a JsonValue, path: String },
-    OneOfTail { node: &'a JsonValue, path: String },
-    ObjectTail { node: &'a JsonValue, path: String, properties: Option<&'a JsonValue> },
+    Enter {
+        node: &'a JsonValue,
+        path: String,
+    },
+    OneOfTail {
+        node: &'a JsonValue,
+        path: String,
+    },
+    ObjectTail {
+        node: &'a JsonValue,
+        path: String,
+        properties: Option<&'a JsonValue>,
+    },
 }
 
 /// Validate object-only fields after its property schemas have been visited.
@@ -149,8 +181,10 @@ fn check_object_schema_tail(
 /// Collect every violation for one raw schema tree without using the
 /// recursive call stack.
 fn check_schema_node(root: &JsonValue, root_path: &str, violations: &mut Vec<String>) {
-    let mut tasks: Vec<SchemaTask<'_>> =
-        vec![SchemaTask::Enter { node: root, path: root_path.to_string() }];
+    let mut tasks: Vec<SchemaTask<'_>> = vec![SchemaTask::Enter {
+        node: root,
+        path: root_path.to_string(),
+    }];
     while let Some(task) = tasks.pop() {
         match task {
             SchemaTask::OneOfTail { node, path } => {
@@ -160,7 +194,11 @@ fn check_schema_node(root: &JsonValue, root_path: &str, violations: &mut Vec<Str
                     }
                 }
             }
-            SchemaTask::ObjectTail { node, path, properties } => {
+            SchemaTask::ObjectTail {
+                node,
+                path,
+                properties,
+            } => {
                 check_object_schema_tail(node, &path, properties, violations);
             }
             SchemaTask::Enter { node, path } => {
@@ -205,9 +243,14 @@ fn check_schema_node(root: &JsonValue, root_path: &str, violations: &mut Vec<Str
 
                 if has_one_of {
                     let one_of = &node["oneOf"];
-                    tasks.push(SchemaTask::OneOfTail { node, path: path.clone() });
+                    tasks.push(SchemaTask::OneOfTail {
+                        node,
+                        path: path.clone(),
+                    });
                     let valid = is_plain_json_array(one_of)
-                        && one_of.as_array().is_some_and(|branches| branches.len() >= 2);
+                        && one_of
+                            .as_array()
+                            .is_some_and(|branches| branches.len() >= 2);
                     if !valid {
                         violations.push(format!(
                             "{path}.oneOf must be an array of at least two schemas"
@@ -226,7 +269,9 @@ fn check_schema_node(root: &JsonValue, root_path: &str, violations: &mut Vec<Str
 
                 let type_value = &node["type"];
                 let schema_type = match type_value {
-                    JsonValue::String(schema_type) if SCHEMA_TYPES.contains(&schema_type.as_str()) => {
+                    JsonValue::String(schema_type)
+                        if SCHEMA_TYPES.contains(&schema_type.as_str()) =>
+                    {
                         schema_type.clone()
                     }
                     JsonValue::Array(_) => {
@@ -270,7 +315,9 @@ fn check_schema_node(root: &JsonValue, root_path: &str, violations: &mut Vec<Str
                         });
                         if has_own(node, "properties") {
                             if !is_schema_record(properties.expect("present")) {
-                                violations.push(format!("{path}.properties must be an object of schemas"));
+                                violations.push(format!(
+                                    "{path}.properties must be an object of schemas"
+                                ));
                             } else {
                                 let entries: Vec<(String, &JsonValue)> = properties
                                     .expect("present")
@@ -303,14 +350,12 @@ fn check_schema_node(root: &JsonValue, root_path: &str, violations: &mut Vec<Str
                         let enum_valid = has_enum
                             && allowed.is_some_and(|allowed| {
                                 is_plain_json_array(allowed)
-                                    && allowed
-                                        .as_array()
-                                        .is_some_and(|entries| {
-                                            !entries.is_empty()
-                                                && entries
-                                                    .iter()
-                                                    .all(|entry| scalar_matches(&schema_type, entry))
-                                        })
+                                    && allowed.as_array().is_some_and(|entries| {
+                                        !entries.is_empty()
+                                            && entries
+                                                .iter()
+                                                .all(|entry| scalar_matches(&schema_type, entry))
+                                    })
                             });
                         if has_enum && !enum_valid {
                             violations.push(format!(
@@ -320,12 +365,15 @@ fn check_schema_node(root: &JsonValue, root_path: &str, violations: &mut Vec<Str
                         let has_const = has_own(node, "const");
                         let declared_const = node.get("const");
                         let const_valid = has_const
-                            && declared_const.is_some_and(|value| scalar_matches(&schema_type, value));
+                            && declared_const
+                                .is_some_and(|value| scalar_matches(&schema_type, value));
                         if has_const {
                             if !const_valid {
-                                violations.push(format!("{path}.const must be a {schema_type} value"));
+                                violations
+                                    .push(format!("{path}.const must be a {schema_type} value"));
                             } else if enum_valid {
-                                let entries = allowed.expect("present").as_array().expect("validated");
+                                let entries =
+                                    allowed.expect("present").as_array().expect("validated");
                                 let const_value = declared_const.expect("present");
                                 if !entries.iter().any(|entry| entry == const_value) {
                                     violations.push(format!(
@@ -438,14 +486,14 @@ fn check_scalar_value(node: &JsonValue, value: &JsonValue, path: &str) -> Vec<St
             )];
         }
     }
-    if let Some(const_value) = node.get("const") {
-        if value != const_value {
-            return vec![format!(
-                "\"{}\" must be {}",
-                diagnostic_path(path),
-                serde_json::to_string(const_value).expect("lossless JSON")
-            )];
-        }
+    if let Some(const_value) = node.get("const")
+        && value != const_value
+    {
+        return vec![format!(
+            "\"{}\" must be {}",
+            diagnostic_path(path),
+            serde_json::to_string(const_value).expect("lossless JSON")
+        )];
     }
     Vec::new()
 }
@@ -486,10 +534,7 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
     }];
     let mut root_result: Option<Vec<String>> = None;
 
-    loop {
-        let Some(frame) = frames.last_mut() else {
-            break;
-        };
+    while let Some(frame) = frames.last_mut() {
         if frame.phase == FramePhase::Children {
             if frame.child_index < frame.children.len() {
                 let (child_node, child_value, child_path) = {
@@ -532,7 +577,11 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
             continue;
         }
 
-        let node_type = frame.node.get("type").and_then(JsonValue::as_str).map(str::to_string);
+        let node_type = frame
+            .node
+            .get("type")
+            .and_then(JsonValue::as_str)
+            .map(str::to_string);
         let one_of = frame.node.get("oneOf");
         if let Some(one_of) = one_of {
             frame.kind = Some(FrameKind::OneOf);
@@ -540,7 +589,11 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
                 .as_array()
                 .expect("asserted oneOf")
                 .iter()
-                .map(|branch| ValueChild { node: branch, value: frame.value, path: frame.path.clone() })
+                .map(|branch| ValueChild {
+                    node: branch,
+                    value: frame.value,
+                    path: frame.path.clone(),
+                })
                 .collect();
             frame.child_index = 0;
             frame.matches = 0;
@@ -591,10 +644,9 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
                         .collect(),
                     None => Vec::new(),
                 };
-                let tail_violations: Vec<String> = if frame.node.get("additionalProperties")
-                    == Some(&JsonValue::Bool(false))
-                {
-                    frame
+                let tail_violations: Vec<String> =
+                    if frame.node.get("additionalProperties") == Some(&JsonValue::Bool(false)) {
+                        frame
                         .value
                         .as_object()
                         .expect("checked")
@@ -609,9 +661,9 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
                             )
                         })
                         .collect()
-                } else {
-                    Vec::new()
-                };
+                    } else {
+                        Vec::new()
+                    };
                 frame.kind = Some(FrameKind::Object);
                 frame.children = children;
                 frame.child_index = 0;
@@ -651,13 +703,19 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
                 let result = if frame.value.is_string() {
                     check_scalar_value(frame.node, frame.value, &frame.path)
                 } else {
-                    vec![format!("\"{}\" must be a string", diagnostic_path(&frame.path))]
+                    vec![format!(
+                        "\"{}\" must be a string",
+                        diagnostic_path(&frame.path)
+                    )]
                 };
                 finish_frame(&mut frames, &mut root_result, result);
             }
             "number" => {
                 let result = if !frame.value.is_number() {
-                    vec![format!("\"{}\" must be a number", diagnostic_path(&frame.path))]
+                    vec![format!(
+                        "\"{}\" must be a number",
+                        diagnostic_path(&frame.path)
+                    )]
                 } else if !is_json_number(frame.value) {
                     vec![format!(
                         "\"{}\" must be a finite JSON number",
@@ -670,7 +728,10 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
             }
             "integer" => {
                 let result = if !is_integer(frame.value) {
-                    vec![format!("\"{}\" must be an integer", diagnostic_path(&frame.path))]
+                    vec![format!(
+                        "\"{}\" must be an integer",
+                        diagnostic_path(&frame.path)
+                    )]
                 } else {
                     check_scalar_value(frame.node, frame.value, &frame.path)
                 };
@@ -680,7 +741,10 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
                 let result = if frame.value.is_boolean() {
                     check_scalar_value(frame.node, frame.value, &frame.path)
                 } else {
-                    vec![format!("\"{}\" must be a boolean", diagnostic_path(&frame.path))]
+                    vec![format!(
+                        "\"{}\" must be a boolean",
+                        diagnostic_path(&frame.path)
+                    )]
                 };
                 finish_frame(&mut frames, &mut root_result, result);
             }

@@ -110,8 +110,7 @@ pub trait ApiProxyCarrier: Send + Sync {
     async fn respond(&self, response: ClientResponse) -> RpcReceipt;
 
     /// The host-only session download (GET/HEAD /api/session.export).
-    async fn session_log(&self, query: SessionLogQuery, signal: AbortSignal)
-        -> DownloadResponse;
+    async fn session_log(&self, query: SessionLogQuery, signal: AbortSignal) -> DownloadResponse;
 }
 
 /// Clonable, abortable cancellation flag standing in for the TS
@@ -149,9 +148,7 @@ impl AbortSignal {
     }
 
     pub fn aborted(&self) -> bool {
-        self.inner
-            .aborted
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.inner.aborted.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Resolve once the signal aborts (immediately when already aborted).
@@ -175,10 +172,7 @@ pub const INVALID_REQUEST_RPC_ID: &str = "invalid-request";
 fn error_response(rpc_id: RpcId, error: RpcError) -> CarrierResponse {
     json_message(RpcMessage::ServerResponse {
         rpc_id,
-        result: WireRpcResult::Err {
-            ok: False,
-            error,
-        },
+        result: WireRpcResult::Err { ok: False, error },
     })
 }
 
@@ -409,9 +403,14 @@ impl FetchHandler {
         // Cross-site write fence: only the JSON media type is accepted;
         // anything else is forced into a preflight this server never
         // answers. 415 = carrier layer, like the 400 below.
-        let media_type = request
-            .header("content-type")
-            .map(|value| value.split(';').next().unwrap_or_default().trim().to_lowercase());
+        let media_type = request.header("content-type").map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase()
+        });
         if media_type.as_deref() != Some("application/json") {
             return text_response(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -444,48 +443,47 @@ impl FetchHandler {
             return text_response(StatusCode::NOT_FOUND, "not found");
         };
 
-        let message: ClientRequest =
-            match serde_json::from_value::<RpcMessage>(body.clone()) {
-                Ok(RpcMessage::ClientRequest {
-                    rpc_id,
-                    method: envelope_method,
-                    payload,
-                }) => {
-                    if envelope_method != method {
-                        return error_response(
-                            rpc_id,
-                            RpcError::BadRequest(RpcErrorBody {
-                                message: format!(
-                                    "method \"{envelope_method}\" does not match path \"{method}\""
-                                ),
-                                details: BadRequestDetails { issues: vec![] },
-                            }),
-                        );
-                    }
-                    ClientRequest {
-                        kind: ClientRequestType::ClientRequest,
-                        rpc_id,
-                        method: envelope_method,
-                        payload,
-                    }
-                }
-                _ => {
-                    // Best effort at correlation: salvage a string rpcId
-                    // from the raw body; otherwise the fixed sentinel keeps
-                    // the response a valid ServerResponse.
-                    let raw_id = body.get("rpcId").and_then(serde_json::Value::as_str);
-                    let rpc_id = raw_id
-                        .map(|id| rpc_id(id.to_string()))
-                        .unwrap_or_else(|| rpc_id(INVALID_REQUEST_RPC_ID));
+        let message: ClientRequest = match serde_json::from_value::<RpcMessage>(body.clone()) {
+            Ok(RpcMessage::ClientRequest {
+                rpc_id,
+                method: envelope_method,
+                payload,
+            }) => {
+                if envelope_method != method {
                     return error_response(
                         rpc_id,
                         RpcError::BadRequest(RpcErrorBody {
-                            message: "invalid client-request message".to_string(),
+                            message: format!(
+                                "method \"{envelope_method}\" does not match path \"{method}\""
+                            ),
                             details: BadRequestDetails { issues: vec![] },
                         }),
                     );
                 }
-            };
+                ClientRequest {
+                    kind: ClientRequestType::ClientRequest,
+                    rpc_id,
+                    method: envelope_method,
+                    payload,
+                }
+            }
+            _ => {
+                // Best effort at correlation: salvage a string rpcId
+                // from the raw body; otherwise the fixed sentinel keeps
+                // the response a valid ServerResponse.
+                let raw_id = body.get("rpcId").and_then(serde_json::Value::as_str);
+                let rpc_id = raw_id
+                    .map(|id| rpc_id(id.to_string()))
+                    .unwrap_or_else(|| rpc_id(INVALID_REQUEST_RPC_ID));
+                return error_response(
+                    rpc_id,
+                    RpcError::BadRequest(RpcErrorBody {
+                        message: "invalid client-request message".to_string(),
+                        details: BadRequestDetails { issues: vec![] },
+                    }),
+                );
+            }
+        };
 
         handle_unary(self.api.clone(), method, message, AbortSignal::new()).await
     }
@@ -525,7 +523,21 @@ fn uuid() -> String {
     bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10xx
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
     )
 }

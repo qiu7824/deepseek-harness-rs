@@ -12,10 +12,9 @@ use tokio::sync::oneshot;
 
 use dsh_session::{Session, SessionEvent, SessionStore, session_id};
 use dsh_session_title::{
-    Config, SessionTitleAutomaticMode, SessionTitleError, SessionTitlePlugin,
-    SessionTitleProvider, SessionTitleProviderId, SessionTitleProviderRequest,
-    SessionTitleProviderResult, SessionTitleService, SessionTitleSignal,
-    SessionTitleSource, session_title_provider_id,
+    Config, SessionTitleAutomaticMode, SessionTitleError, SessionTitlePlugin, SessionTitleProvider,
+    SessionTitleProviderId, SessionTitleProviderRequest, SessionTitleProviderResult,
+    SessionTitleService, SessionTitleSignal, SessionTitleSource, session_title_provider_id,
 };
 
 fn config() -> Config {
@@ -34,7 +33,12 @@ async fn setup() -> (Context, Arc<SessionStore>, Arc<SessionTitleService>) {
 }
 
 /// Mount the service through its plugin fiber (disposal tests).
-async fn setup_plugin() -> (Context, Arc<SessionStore>, Arc<SessionTitleService>, Arc<cordis::FiberCore>) {
+async fn setup_plugin() -> (
+    Context,
+    Arc<SessionStore>,
+    Arc<SessionTitleService>,
+    Arc<cordis::FiberCore>,
+) {
     let ctx = Context::root();
     let store = SessionStore::install(&ctx);
     let fiber = ctx.plugin(Arc::new(SessionTitlePlugin), arc(config()));
@@ -190,7 +194,13 @@ async fn returns_no_title_for_empty_input_and_rejects_detached_or_pre_aborted_re
     // Fallback-only path.
     let (_ctx, store, service) = setup().await;
     let empty = start_session(&store, &_ctx, "empty-fallback").await;
-    assert!(service.refresh(&empty, None).await.expect("refresh").is_none());
+    assert!(
+        service
+            .refresh(&empty, None)
+            .await
+            .expect("refresh")
+            .is_none()
+    );
 
     // Provider path: no eligible message → no call, no title.
     let (ctx, store, service) = setup().await;
@@ -210,12 +220,22 @@ async fn returns_no_title_for_empty_input_and_rejects_detached_or_pre_aborted_re
     });
     let _ = service.register(&ctx, provider).expect("register");
     let provider_empty = start_session(&store, &ctx, "empty-provider").await;
-    assert!(service.refresh(&provider_empty, None).await.expect("refresh").is_none());
+    assert!(
+        service
+            .refresh(&provider_empty, None)
+            .await
+            .expect("refresh")
+            .is_none()
+    );
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 
     // Detached session.
     let detached = Session::create(session_id("detached"), None, None).expect("create");
-    let error = service.refresh(&detached, None).await.err().expect("reject");
+    let error = service
+        .refresh(&detached, None)
+        .await
+        .err()
+        .expect("reject");
     assert!(error.contains("not live in this store"), "{error}");
 
     // Pre-aborted caller.
@@ -238,7 +258,11 @@ async fn passes_an_absent_route_and_caller_cancellation_into_explicit_generation
         id: session_title_provider_id("explicit-no-route"),
         automatic: SessionTitleAutomaticMode::FirstPrompt,
         generate_fn: Arc::new(move |request| {
-            let seqs = request.messages.iter().map(|message| message.seq).collect::<Vec<u64>>();
+            let seqs = request
+                .messages
+                .iter()
+                .map(|message| message.seq)
+                .collect::<Vec<u64>>();
             *observed_for_fn.lock() = Some(request.clone());
             Ok(SessionTitleProviderResult {
                 title: "Explicit title".to_string(),
@@ -317,7 +341,8 @@ async fn propagates_explicit_cancellation_and_session_disposal_to_active_work() 
     settle().await;
     let disposed_for_task = disposed.clone();
     let service_for_task = service.clone();
-    let refresh = tokio::spawn(async move { service_for_task.refresh(&disposed_for_task, None).await });
+    let refresh =
+        tokio::spawn(async move { service_for_task.refresh(&disposed_for_task, None).await });
     tokio::task::yield_now().await;
     detach().await;
     let _ = gate_tx.send(());
@@ -330,7 +355,8 @@ async fn propagates_explicit_cancellation_and_session_disposal_to_active_work() 
 async fn shares_one_fallback_across_concurrent_refreshes() {
     let (_ctx, store, service) = setup().await;
     let seed = Session::create(session_id("fallback-concurrency-seed"), None, None).expect("seed");
-    seed.append("turn/start", dsh_session::turn_start_data(1), None).expect("turn/start");
+    seed.append("turn/start", dsh_session::turn_start_data(1), None)
+        .expect("turn/start");
     let source = append_human(&seed, "s1", "Create exactly one fallback title");
     seed.append(
         "turn/end",
@@ -387,7 +413,11 @@ async fn shares_one_fallback_across_concurrent_refreshes() {
 async fn reuses_a_title_accepted_before_the_queued_fallback_commits() {
     let (_ctx, store, service) = setup().await;
     let session = start_session(&store, &_ctx, "fallback-already-accepted").await;
-    let source = append_human(&session, "r1", "Reuse the title that wins the fallback race");
+    let source = append_human(
+        &session,
+        "r1",
+        "Reuse the title that wins the fallback race",
+    );
 
     // The refresh future is not polled until awaited: the direct append
     // below lands before the queued fallback runs.
@@ -445,11 +475,13 @@ async fn lets_the_newest_overlapping_explicit_refresh_win() {
 
     let session_for_older = session.clone();
     let service_for_older = service.clone();
-    let older = tokio::spawn(async move { service_for_older.refresh(&session_for_older, None).await });
+    let older =
+        tokio::spawn(async move { service_for_older.refresh(&session_for_older, None).await });
     tokio::task::yield_now().await;
     let session_for_newer = session.clone();
     let service_for_newer = service.clone();
-    let newer = tokio::spawn(async move { service_for_newer.refresh(&session_for_newer, None).await });
+    let newer =
+        tokio::spawn(async move { service_for_newer.refresh(&session_for_newer, None).await });
     tokio::task::yield_now().await;
 
     assert_eq!(requests.lock().len(), 2);
@@ -495,7 +527,12 @@ impl SessionTitleProvider for OrderedGateProvider {
         self.gates.lock().push(tx);
         let _ = rx.await;
         Ok(SessionTitleProviderResult {
-            title: if is_first { "Obsolete title" } else { "Newest explicit title" }.to_string(),
+            title: if is_first {
+                "Obsolete title"
+            } else {
+                "Newest explicit title"
+            }
+            .to_string(),
             message_seqs: vec![self.source_seq],
             model: None,
         })
@@ -510,16 +547,19 @@ async fn cancels_a_queued_fallback_when_the_session_title_service_unloads() {
 
     fiber.dispose().await;
 
-    assert!(!session
-        .events()
-        .iter()
-        .any(|event| event.type_ == "session/title"));
+    assert!(
+        !session
+            .events()
+            .iter()
+            .any(|event| event.type_ == "session/title")
+    );
     let error = service.refresh(&session, None).await.err().expect("reject");
     assert_eq!(error, "session-title service disposed");
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn aborts_pending_and_active_provider_work_and_drains_ignored_cancellation_during_service_unload() {
+async fn aborts_pending_and_active_provider_work_and_drains_ignored_cancellation_during_service_unload()
+ {
     let (ctx, store, service, fiber) = setup_plugin().await;
     let (gate_tx, gate_rx) = oneshot::channel::<()>();
     let requests: Arc<Mutex<Vec<SessionTitleProviderRequest>>> = Arc::new(Mutex::new(Vec::new()));
@@ -537,7 +577,8 @@ async fn aborts_pending_and_active_provider_work_and_drains_ignored_cancellation
     settle().await;
     let active_for_task = active.clone();
     let service_for_task = service.clone();
-    let refresh = tokio::spawn(async move { service_for_task.refresh(&active_for_task, None).await });
+    let refresh =
+        tokio::spawn(async move { service_for_task.refresh(&active_for_task, None).await });
     tokio::task::yield_now().await;
     assert_eq!(requests.lock().len(), 1);
 
@@ -613,7 +654,11 @@ async fn warns_when_a_detached_session_prevents_queued_fallback_publication() {
             None
         })
     });
-    let _ = futures::executor::block_on(ctx.on("session/event", listener, cordis::EventOptions::default()));
+    let _ = futures::executor::block_on(ctx.on(
+        "session/event",
+        listener,
+        cordis::EventOptions::default(),
+    ));
     session
         .append("turn/start", dsh_session::turn_start_data(1), None)
         .expect("turn/start");
@@ -640,19 +685,24 @@ async fn leaves_a_title_absent_when_the_byte_cap_cannot_hold_the_first_code_poin
     append_human(&session, "n1", "😀");
     settle().await;
     assert!(service.get(&session).is_none());
-    assert!(service.refresh(&session, None).await.expect("refresh").is_none());
+    assert!(
+        service
+            .refresh(&session, None)
+            .await
+            .expect("refresh")
+            .is_none()
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn rejects_malformed_provider_results_without_replacing_the_fallback() {
     let (ctx, store, service) = setup().await;
-    let result: Arc<Mutex<SessionTitleProviderResult>> = Arc::new(Mutex::new(
-        SessionTitleProviderResult {
+    let result: Arc<Mutex<SessionTitleProviderResult>> =
+        Arc::new(Mutex::new(SessionTitleProviderResult {
             title: "valid".to_string(),
             message_seqs: vec![1],
             model: None,
-        },
-    ));
+        }));
     let result_for_fn = result.clone();
     let provider = Arc::new(FnProvider {
         id: session_title_provider_id("invalid-results"),
@@ -676,7 +726,11 @@ async fn rejects_malformed_provider_results_without_replacing_the_fallback() {
             "empty title",
         ),
         (
-            SessionTitleProviderResult { title: "valid".to_string(), message_seqs: vec![], model: None },
+            SessionTitleProviderResult {
+                title: "valid".to_string(),
+                message_seqs: vec![],
+                model: None,
+            },
             "at least one source message",
         ),
         (
@@ -729,7 +783,10 @@ async fn rejects_malformed_provider_results_without_replacing_the_fallback() {
     for (malformed, expected) in cases {
         *result.lock() = malformed;
         let error = service.refresh(&session, None).await.err().expect("reject");
-        assert!(error.contains(expected), "expected {expected:?}, got {error}");
+        assert!(
+            error.contains(expected),
+            "expected {expected:?}, got {error}"
+        );
         assert_eq!(
             service.get(&session).expect("title").source.kind(),
             "fallback"

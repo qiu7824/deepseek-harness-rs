@@ -18,21 +18,20 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use cordis::{
-    ArcValue, Context, Disposer, InjectSpec, Listener, NextFn, Plugin, PluginError, arc,
-    downcast, downcast_arc,
+    ArcValue, Context, Disposer, InjectSpec, Listener, NextFn, Plugin, PluginError, arc, downcast,
+    downcast_arc,
 };
 use dsh_agent::{AgentPreStepPayload, PreStepDecision};
 use dsh_llm::{
-    ContentBlock, ContextForm, MessageSource, SkillCatalogEntry, UserMessage,
-    create_user_message,
+    ContentBlock, ContextForm, MessageSource, SkillCatalogEntry, UserMessage, create_user_message,
 };
 use dsh_skill::{
     SkillCatalogSnapshot, SkillRegistry, SkillViewOptions, escape_text, is_model_invocable,
     is_skill_name, render_skill_content,
 };
 use dsh_tools::{
-    ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition, ToolRunContext,
-    ToolRuntime,
+    ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition,
+    ToolRunContext, ToolRuntime,
 };
 
 pub const NAME: &str = "tool-skill";
@@ -197,76 +196,81 @@ pub async fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
     // hands it the catalog-bearing list to extend: injected material must
     // come last, closest to the answer.
     let skills_for_invocation = skills.clone();
-    let invocation_listener: Arc<Listener> = Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
-        let skills = skills_for_invocation.clone();
-        Box::pin(async move {
-            let payload = args
-                .first()
-                .and_then(|value| downcast::<AgentPreStepPayload>(value))
-                .cloned()
-                .expect("agent/pre-step payload");
-            let next = downcast_arc::<NextFn>(args.last().expect("agent/pre-step next"))
-                .expect("agent/pre-step next");
-            let decision_value = next.call().await;
-            let decision = downcast_arc::<PreStepDecision>(&decision_value)
-                .expect("agent/pre-step decision")
-                .as_ref()
-                .clone();
-            if matches!(decision, PreStepDecision::Reject) {
-                return Some(decision_value);
-            }
-            let names = invoked_skill_names(&payload.messages);
-            if names.is_empty() {
-                return Some(decision_value);
-            }
-            // The payload carries no signal in the port (dsh-agent
-            // deviation); lookups run without an abort predicate.
-            let lookup = SkillViewOptions {
-                cwd: payload.agent.session().header().cwd.clone(),
-                signal: None,
-                scope: Some(payload.agent.scope_key().clone()),
-            };
-            let mut injections: Vec<UserMessage> = Vec::new();
-            for name in names {
-                let skill = skills
-                    .get(&name, lookup.clone())
-                    .await
-                    .expect("skill lookup without a signal cannot abort");
-                // Unknown names and user-disabled skills stay plain prose.
-                let Some(skill) = skill else {
-                    continue;
-                };
-                if !skill.invocation.user_invocable {
-                    continue;
+    let invocation_listener: Arc<Listener> =
+        Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+            let skills = skills_for_invocation.clone();
+            Box::pin(async move {
+                let payload = args
+                    .first()
+                    .and_then(|value| downcast::<AgentPreStepPayload>(value))
+                    .cloned()
+                    .expect("agent/pre-step payload");
+                let next = downcast_arc::<NextFn>(args.last().expect("agent/pre-step next"))
+                    .expect("agent/pre-step next");
+                let decision_value = next.call().await;
+                let decision = downcast_arc::<PreStepDecision>(&decision_value)
+                    .expect("agent/pre-step decision")
+                    .as_ref()
+                    .clone();
+                if matches!(decision, PreStepDecision::Reject) {
+                    return Some(decision_value);
                 }
-                injections.push(create_user_message(
-                    vec![ContentBlock::Text {
-                        text: render_skill_content(
-                            &skill.name,
-                            &skill.provider,
-                            skill.resource_base.as_ref(),
-                            &skill.content,
-                        ),
-                    }],
-                    MessageSource::SkillInvocation {
-                        name,
-                        form: ContextForm::Instructions,
-                    },
-                ));
-            }
-            if injections.is_empty() {
-                return Some(decision_value);
-            }
-            let PreStepDecision::Enter { messages } = decision else {
-                unreachable!("reject returned above");
-            };
-            let mut merged = messages;
-            merged.extend(injections);
-            Some(arc(PreStepDecision::Enter { messages: merged }))
-        })
-    });
+                let names = invoked_skill_names(&payload.messages);
+                if names.is_empty() {
+                    return Some(decision_value);
+                }
+                // The payload carries no signal in the port (dsh-agent
+                // deviation); lookups run without an abort predicate.
+                let lookup = SkillViewOptions {
+                    cwd: payload.agent.session().header().cwd.clone(),
+                    signal: None,
+                    scope: Some(payload.agent.scope_key().clone()),
+                };
+                let mut injections: Vec<UserMessage> = Vec::new();
+                for name in names {
+                    let skill = skills
+                        .get(&name, lookup.clone())
+                        .await
+                        .expect("skill lookup without a signal cannot abort");
+                    // Unknown names and user-disabled skills stay plain prose.
+                    let Some(skill) = skill else {
+                        continue;
+                    };
+                    if !skill.invocation.user_invocable {
+                        continue;
+                    }
+                    injections.push(create_user_message(
+                        vec![ContentBlock::Text {
+                            text: render_skill_content(
+                                &skill.name,
+                                &skill.provider,
+                                skill.resource_base.as_ref(),
+                                &skill.content,
+                            ),
+                        }],
+                        MessageSource::SkillInvocation {
+                            name,
+                            form: ContextForm::Instructions,
+                        },
+                    ));
+                }
+                if injections.is_empty() {
+                    return Some(decision_value);
+                }
+                let PreStepDecision::Enter { messages } = decision else {
+                    unreachable!("reject returned above");
+                };
+                let mut merged = messages;
+                merged.extend(injections);
+                Some(arc(PreStepDecision::Enter { messages: merged }))
+            })
+        });
     let invocation_disposer = ctx
-        .on("agent/pre-step", invocation_listener, cordis::EventOptions::default())
+        .on(
+            "agent/pre-step",
+            invocation_listener,
+            cordis::EventOptions::default(),
+        )
         .await;
 
     // The catalog listener. Registered after the invocation listener so
@@ -275,130 +279,135 @@ pub async fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
     let skills_for_catalog = skills.clone();
     let tools_for_catalog = tools.clone();
     let definition_for_catalog = definition.clone();
-    let catalog_listener: Arc<Listener> = Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
-        let skills = skills_for_catalog.clone();
-        let tools = tools_for_catalog.clone();
-        let definition = definition_for_catalog.clone();
-        Box::pin(async move {
-            let payload = args
-                .first()
-                .and_then(|value| downcast::<AgentPreStepPayload>(value))
-                .cloned()
-                .expect("agent/pre-step payload");
-            let next = downcast_arc::<NextFn>(args.last().expect("agent/pre-step next"))
-                .expect("agent/pre-step next");
-            let decision_value = next.call().await;
-            let decision = downcast_arc::<PreStepDecision>(&decision_value)
-                .expect("agent/pre-step decision")
-                .as_ref()
-                .clone();
-            if matches!(decision, PreStepDecision::Reject) {
-                return Some(decision_value);
-            }
-            let tool_visible = tools
-                .get("skill", Some(payload.agent.scope_key()))
-                .is_some_and(|registered| Arc::ptr_eq(&registered, &definition));
-            let lookup = SkillViewOptions {
-                cwd: payload.agent.session().header().cwd.clone(),
-                signal: None,
-                scope: Some(payload.agent.scope_key().clone()),
-            };
-            let snapshot = if tool_visible {
-                skills.snapshot(lookup).await.expect("catalog snapshot")
-            } else {
-                SkillCatalogSnapshot {
-                    skills: Vec::new(),
-                    complete: true,
-                }
-            };
-            if !snapshot.complete {
-                return Some(decision_value);
-            }
-            let skills: Vec<_> = snapshot
-                .skills
-                .into_iter()
-                .filter(|skill| is_model_invocable(skill))
-                .collect();
-            let entries: Vec<SkillCatalogEntry> = skills
-                .iter()
-                .map(|skill| SkillCatalogEntry {
-                    name: skill.name.clone(),
-                    description: catalog_description(
-                        &skill.description,
-                        catalog_description_max_length,
-                    ),
-                })
-                .collect();
-            let digest = digest_catalog_entries(&entries);
-            let history = catalog_history(&payload.agent);
-            let existing = catalog_message(&decision_messages(&decision));
-            if history.visible_digest.as_deref() == Some(digest.as_str()) {
-                return Some(match existing {
-                    None => decision_value,
-                    Some(existing) => {
-                        let PreStepDecision::Enter { messages } = decision else {
-                            unreachable!("reject returned above");
-                        };
-                        arc(PreStepDecision::Enter {
-                            messages: messages
-                                .into_iter()
-                                .filter(|message| message.id != existing.message.id)
-                                .collect(),
-                        })
-                    }
-                });
-            }
-            if let Some(existing) = &existing {
-                if digest_catalog_entries(&existing.entries) == digest {
+    let catalog_listener: Arc<Listener> =
+        Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+            let skills = skills_for_catalog.clone();
+            let tools = tools_for_catalog.clone();
+            let definition = definition_for_catalog.clone();
+            Box::pin(async move {
+                let payload = args
+                    .first()
+                    .and_then(|value| downcast::<AgentPreStepPayload>(value))
+                    .cloned()
+                    .expect("agent/pre-step payload");
+                let next = downcast_arc::<NextFn>(args.last().expect("agent/pre-step next"))
+                    .expect("agent/pre-step next");
+                let decision_value = next.call().await;
+                let decision = downcast_arc::<PreStepDecision>(&decision_value)
+                    .expect("agent/pre-step decision")
+                    .as_ref()
+                    .clone();
+                if matches!(decision, PreStepDecision::Reject) {
                     return Some(decision_value);
                 }
-            }
-            if !history.published && skills.is_empty() {
-                return Some(match existing {
-                    None => decision_value,
-                    Some(existing) => {
-                        let PreStepDecision::Enter { messages } = decision else {
-                            unreachable!("reject returned above");
-                        };
-                        arc(PreStepDecision::Enter {
-                            messages: messages
-                                .into_iter()
-                                .filter(|message| message.id != existing.message.id)
-                                .collect(),
-                        })
+                let tool_visible = tools
+                    .get("skill", Some(payload.agent.scope_key()))
+                    .is_some_and(|registered| Arc::ptr_eq(&registered, &definition));
+                let lookup = SkillViewOptions {
+                    cwd: payload.agent.session().header().cwd.clone(),
+                    signal: None,
+                    scope: Some(payload.agent.scope_key().clone()),
+                };
+                let snapshot = if tool_visible {
+                    skills.snapshot(lookup).await.expect("catalog snapshot")
+                } else {
+                    SkillCatalogSnapshot {
+                        skills: Vec::new(),
+                        complete: true,
                     }
-                });
-            }
-            let catalog = if history.published {
-                render_catalog_update(&entries)
-            } else {
-                render_catalog_message(&entries)
-            };
-            let PreStepDecision::Enter { messages } = decision else {
-                unreachable!("reject returned above");
-            };
-            let merged = match existing {
-                None => {
-                    let mut merged = messages;
-                    merged.push(catalog);
-                    merged
+                };
+                if !snapshot.complete {
+                    return Some(decision_value);
                 }
-                Some(existing) => messages
+                let skills: Vec<_> = snapshot
+                    .skills
                     .into_iter()
-                    .map(|message| {
-                        if message.id == existing.message.id {
-                            catalog.clone()
-                        } else {
-                            message
-                        }
+                    .filter(|skill| is_model_invocable(skill))
+                    .collect();
+                let entries: Vec<SkillCatalogEntry> = skills
+                    .iter()
+                    .map(|skill| SkillCatalogEntry {
+                        name: skill.name.clone(),
+                        description: catalog_description(
+                            &skill.description,
+                            catalog_description_max_length,
+                        ),
                     })
-                    .collect(),
-            };
-            Some(arc(PreStepDecision::Enter { messages: merged }))
-        })
-    });
+                    .collect();
+                let digest = digest_catalog_entries(&entries);
+                let history = catalog_history(&payload.agent);
+                let existing = catalog_message(&decision_messages(&decision));
+                if history.visible_digest.as_deref() == Some(digest.as_str()) {
+                    return Some(match existing {
+                        None => decision_value,
+                        Some(existing) => {
+                            let PreStepDecision::Enter { messages } = decision else {
+                                unreachable!("reject returned above");
+                            };
+                            arc(PreStepDecision::Enter {
+                                messages: messages
+                                    .into_iter()
+                                    .filter(|message| message.id != existing.message.id)
+                                    .collect(),
+                            })
+                        }
+                    });
+                }
+                if let Some(existing) = &existing {
+                    if digest_catalog_entries(&existing.entries) == digest {
+                        return Some(decision_value);
+                    }
+                }
+                if !history.published && skills.is_empty() {
+                    return Some(match existing {
+                        None => decision_value,
+                        Some(existing) => {
+                            let PreStepDecision::Enter { messages } = decision else {
+                                unreachable!("reject returned above");
+                            };
+                            arc(PreStepDecision::Enter {
+                                messages: messages
+                                    .into_iter()
+                                    .filter(|message| message.id != existing.message.id)
+                                    .collect(),
+                            })
+                        }
+                    });
+                }
+                let catalog = if history.published {
+                    render_catalog_update(&entries)
+                } else {
+                    render_catalog_message(&entries)
+                };
+                let PreStepDecision::Enter { messages } = decision else {
+                    unreachable!("reject returned above");
+                };
+                let merged = match existing {
+                    None => {
+                        let mut merged = messages;
+                        merged.push(catalog);
+                        merged
+                    }
+                    Some(existing) => messages
+                        .into_iter()
+                        .map(|message| {
+                            if message.id == existing.message.id {
+                                catalog.clone()
+                            } else {
+                                message
+                            }
+                        })
+                        .collect(),
+                };
+                Some(arc(PreStepDecision::Enter { messages: merged }))
+            })
+        });
     let catalog_disposer = ctx
-        .on("agent/pre-step", catalog_listener, cordis::EventOptions::default())
+        .on(
+            "agent/pre-step",
+            catalog_listener,
+            cordis::EventOptions::default(),
+        )
         .await;
 
     Ok(cordis::make_disposer(move || {
@@ -651,11 +660,9 @@ fn catalog_description(value: &str, max_length: usize) -> String {
 /// `/name` gesture tokens from the claimed user messages, deduplicated in
 /// first-seen order.
 fn invoked_skill_names(messages: &[UserMessage]) -> Vec<String> {
-    static GESTURE: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"(^|\s)/([a-z0-9]+(-[a-z0-9]+)*)(\s|$)")
-                .expect("static pattern")
-        });
+    static GESTURE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(^|\s)/([a-z0-9]+(-[a-z0-9]+)*)(\s|$)").expect("static pattern")
+    });
     let mut names: Vec<String> = Vec::new();
     for message in messages {
         if !matches!(message.source, MessageSource::User { .. }) {
@@ -705,10 +712,7 @@ impl Plugin for ToolSkillPlugin {
         let disposer = apply(ctx, self.config.clone())
             .await
             .map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
-        let _ = ctx.effect(
-            "tool-skill",
-            Box::pin(async move { Some(disposer) }),
-        );
+        let _ = ctx.effect("tool-skill", Box::pin(async move { Some(disposer) }));
         Ok(())
     }
 }

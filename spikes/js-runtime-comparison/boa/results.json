@@ -1,0 +1,160 @@
+{
+  "candidate": "boa",
+  "versions": {
+    "boa_engine": "0.21.1",
+    "cargo": "1.97.1 (c980f4866 2026-06-30)",
+    "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "build": {
+    "command": "C:/Users/Administrator/.cargo/bin/cargo.exe build --release",
+    "success": true,
+    "elapsed_ms": 150000,
+    "artifact_bytes": 11814912,
+    "download_bytes": 0,
+    "target_bytes": 537839678,
+    "details": "Release build completed on Windows; the binary ran real return-42 and infinite-loop probes."
+  },
+  "run": {
+    "command": "target/release/boa-runtime-spike.exe",
+    "success": true,
+    "stdout": "return_42=42\nloop_interrupted=true elapsed_ms=1"
+  },
+  "fixtures": [
+    {
+      "id": "typescript_erasable",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Only return-42 and a loop-iteration-limit probe were implemented; this frozen fixture did not execute."
+      }
+    },
+    {
+      "id": "top_level_await_binding",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Only return-42 and a loop-iteration-limit probe were implemented; this frozen fixture did not execute."
+      }
+    },
+    {
+      "id": "typed_binding_rejection",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Only return-42 and a loop-iteration-limit probe were implemented; this frozen fixture did not execute."
+      }
+    },
+    {
+      "id": "sync_loop_compute_timeout",
+      "status": "FAIL",
+      "elapsed_ms": 1,
+      "observed": {
+        "fixture_executed": false,
+        "probe_executed": true,
+        "probe": "for (;;) {} stopped by Boa set_loop_iteration_limit(100000)",
+        "probe_elapsed_ms": 1,
+        "reason": "Loop-iteration limiting is not measured compute time and cannot exclude time awaiting host bindings."
+      }
+    },
+    {
+      "id": "binding_dispatch_does_not_pause_busy_compute",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Candidate was already ineligible and this later fairness regression was not implemented or executed."
+      }
+    },
+    {
+      "id": "sync_loop_abort",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Only return-42 and a loop-iteration-limit probe were implemented; this frozen fixture did not execute."
+      }
+    },
+    {
+      "id": "dispose_inflight",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Only return-42 and a loop-iteration-limit probe were implemented; this frozen fixture did not execute."
+      }
+    },
+    {
+      "id": "idle_wall_timeout",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Only return-42 and a loop-iteration-limit probe were implemented; this frozen fixture did not execute."
+      }
+    },
+    {
+      "id": "slow_binding_not_charged",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Only return-42 and a loop-iteration-limit probe were implemented; this frozen fixture did not execute."
+      }
+    },
+    {
+      "id": "heap_limit",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Only return-42 and a loop-iteration-limit probe were implemented; this frozen fixture did not execute."
+      }
+    },
+    {
+      "id": "output_limit",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Only return-42 and a loop-iteration-limit probe were implemented; this frozen fixture did not execute."
+      }
+    },
+    {
+      "id": "invalid_output",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Only return-42 and a loop-iteration-limit probe were implemented; this frozen fixture did not execute."
+      }
+    },
+    {
+      "id": "non_erasable_typescript",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Only return-42 and a loop-iteration-limit probe were implemented; this frozen fixture did not execute."
+      }
+    },
+    {
+      "id": "fresh_realm",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Only return-42 and a loop-iteration-limit probe were implemented; this frozen fixture did not execute."
+      }
+    }
+  ],
+  "teardown": {
+    "clean": false,
+    "details": "Runtime-wide dispose, explicit cross-thread abort, host-binding cleanup, and heap-isolated teardown were not exercised."
+  },
+  "verdict": "PARTIAL",
+  "recommendation": "Do not select Boa: TypeScript parity, async host bindings, fair compute metering, explicit abort/dispose, and per-run heap isolation were not validated."
+}

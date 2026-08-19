@@ -50,8 +50,12 @@ async fn install_inner(ctx: &Context, fail: Arc<dyn Fn(&str) + Send + Sync>) {
             let ns = downcast::<crate::index::SettingsNamespace>(&args[0])
                 .cloned()
                 .expect("settings/updated namespace arg");
-            let next = downcast::<Data>(&args[1]).cloned().expect("settings/updated next arg");
-            let prev = downcast::<Data>(&args[2]).cloned().expect("settings/updated prev arg");
+            let next = downcast::<Data>(&args[1])
+                .cloned()
+                .expect("settings/updated next arg");
+            let prev = downcast::<Data>(&args[2])
+                .cloned()
+                .expect("settings/updated prev arg");
             let settings = listener_ctx
                 .get_typed::<Arc<SettingsProvider>>("settings", false)
                 .expect("settings service");
@@ -79,5 +83,6 @@ async fn install_inner(ctx: &Context, fail: Arc<dyn Fn(&str) + Send + Sync>) {
             None
         })
     });
-    let _ = futures::executor::block_on(ctx.on(SETTINGS_UPDATED, listener, EventOptions::default()));
+    let _ =
+        futures::executor::block_on(ctx.on(SETTINGS_UPDATED, listener, EventOptions::default()));
 }

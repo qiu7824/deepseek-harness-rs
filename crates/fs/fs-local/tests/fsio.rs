@@ -19,7 +19,7 @@ use std::sync::Arc;
 use cordis::Context;
 use futures::StreamExt;
 
-use dsh_fs::{FsErrorCode, FileSystem, ResolveOptions, fs_target_key};
+use dsh_fs::{FileSystem, FsErrorCode, ResolveOptions, fs_target_key};
 use dsh_fs_local::{
     Config, FsIoInternals, LocalFileSystem, LocalTarget, PathKind, apply_literal_edit,
     list_directory, normalize_line_endings, probe, read_for_edit, read_text_for_diff,
@@ -79,8 +79,19 @@ async fn resolves_a_relative_path_from_cwd_and_realpaths_it() {
     let local = resolve_local_target(temp.0.to_str().expect("cwd"), "a.txt")
         .await
         .expect("resolve");
-    assert_eq!(local.display_path, std::path::absolute(&file).expect("absolute").to_string_lossy());
-    assert_eq!(local.target_key.as_str(), tokio::fs::canonicalize(&file).await.expect("canonical").to_string_lossy());
+    assert_eq!(
+        local.display_path,
+        std::path::absolute(&file)
+            .expect("absolute")
+            .to_string_lossy()
+    );
+    assert_eq!(
+        local.target_key.as_str(),
+        tokio::fs::canonicalize(&file)
+            .await
+            .expect("canonical")
+            .to_string_lossy()
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -181,7 +192,9 @@ async fn list_directory_lists_direct_children_in_stable_order_without_reading_co
     let identity = resolve_local_target(temp.0.to_str().expect("cwd"), "dir")
         .await
         .expect("resolve");
-    let entries = list_directory(&identity, Some(&never())).await.expect("list");
+    let entries = list_directory(&identity, Some(&never()))
+        .await
+        .expect("list");
     let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
     assert_eq!(names, vec!["a.txt", "b.txt", "sub"]);
     assert_eq!(entries[0].size, Some(1));
@@ -201,14 +214,21 @@ async fn read_whole_text_reads_rejects_missing_directory_binary_and_invalid_utf8
         display_path: file.clone(),
         target_key: fs_target_key(file.clone()),
     };
-    assert_eq!(read_whole_text(&local, Some(&never())).await.expect("read"), "héllo");
+    assert_eq!(
+        read_whole_text(&local, Some(&never())).await.expect("read"),
+        "héllo"
+    );
 
     let missing = LocalTarget {
         display_path: temp.path("gone"),
         target_key: fs_target_key(temp.path("gone")),
     };
     assert_eq!(
-        read_whole_text(&missing, Some(&never())).await.err().expect("missing").code,
+        read_whole_text(&missing, Some(&never()))
+            .await
+            .err()
+            .expect("missing")
+            .code,
         FsErrorCode::FsNotFound
     );
 
@@ -219,7 +239,11 @@ async fn read_whole_text_reads_rejects_missing_directory_binary_and_invalid_utf8
         target_key: fs_target_key(dir.to_string_lossy().into_owned()),
     };
     assert_eq!(
-        read_whole_text(&dir_target, Some(&never())).await.err().expect("directory").code,
+        read_whole_text(&dir_target, Some(&never()))
+            .await
+            .err()
+            .expect("directory")
+            .code,
         FsErrorCode::FsNotRegularFile
     );
 
@@ -229,7 +253,11 @@ async fn read_whole_text_reads_rejects_missing_directory_binary_and_invalid_utf8
         target_key: fs_target_key(binary),
     };
     assert_eq!(
-        read_whole_text(&binary_target, Some(&never())).await.err().expect("binary").code,
+        read_whole_text(&binary_target, Some(&never()))
+            .await
+            .err()
+            .expect("binary")
+            .code,
         FsErrorCode::FsNotText
     );
 
@@ -239,13 +267,21 @@ async fn read_whole_text_reads_rejects_missing_directory_binary_and_invalid_utf8
         target_key: fs_target_key(invalid),
     };
     assert_eq!(
-        read_whole_text(&invalid_target, Some(&never())).await.err().expect("utf8").code,
+        read_whole_text(&invalid_target, Some(&never()))
+            .await
+            .err()
+            .expect("utf8")
+            .code,
         FsErrorCode::FsNotText
     );
 
     // Pre-aborted signal rejects with FS_ABORTED.
     assert_eq!(
-        read_whole_text(&local, Some(&aborted())).await.err().expect("aborted").code,
+        read_whole_text(&local, Some(&aborted()))
+            .await
+            .err()
+            .expect("aborted")
+            .code,
         FsErrorCode::FsAborted
     );
 }
@@ -261,11 +297,17 @@ async fn read_whole_bytes_bounds_content_and_skips_decoding() {
     };
     let internals = FsIoInternals::default();
     assert_eq!(
-        read_whole_bytes(&local, Some(&never()), 3, &internals).await.expect("read"),
+        read_whole_bytes(&local, Some(&never()), 3, &internals)
+            .await
+            .expect("read"),
         raw
     );
     assert_eq!(
-        read_whole_bytes(&local, Some(&never()), 2, &internals).await.err().expect("cap").code,
+        read_whole_bytes(&local, Some(&never()), 2, &internals)
+            .await
+            .err()
+            .expect("cap")
+            .code,
         FsErrorCode::FsTooLarge
     );
 }
@@ -280,7 +322,9 @@ async fn stream_whole_text_streams_the_same_decoded_text() {
         display_path: file.clone(),
         target_key: fs_target_key(file),
     };
-    let stream = stream_whole_text(&local, Some(&never())).await.expect("stream");
+    let stream = stream_whole_text(&local, Some(&never()))
+        .await
+        .expect("stream");
     futures::pin_mut!(stream);
     let mut collected = String::new();
     while let Some(chunk) = stream.next().await {
@@ -294,20 +338,28 @@ async fn stream_whole_text_streams_the_same_decoded_text() {
 
 #[test]
 fn apply_literal_edit_replaces_matches_and_rejects_bad_shapes() {
-    let ok = apply_literal_edit("alpha beta", "alpha", "gamma", false, "f")
-        .expect("unique");
+    let ok = apply_literal_edit("alpha beta", "alpha", "gamma", false, "f").expect("unique");
     assert_eq!(ok.0, "gamma beta");
 
     assert_eq!(
-        apply_literal_edit("alpha beta", "missing", "x", false, "f").err().expect("zero").code,
+        apply_literal_edit("alpha beta", "missing", "x", false, "f")
+            .err()
+            .expect("zero")
+            .code,
         FsErrorCode::FsEditNotFound
     );
     assert_eq!(
-        apply_literal_edit("alpha beta", "", "x", false, "f").err().expect("empty").code,
+        apply_literal_edit("alpha beta", "", "x", false, "f")
+            .err()
+            .expect("empty")
+            .code,
         FsErrorCode::FsEditNotFound
     );
     assert_eq!(
-        apply_literal_edit("alpha alpha", "alpha", "x", false, "f").err().expect("ambiguous").code,
+        apply_literal_edit("alpha alpha", "alpha", "x", false, "f")
+            .err()
+            .expect("ambiguous")
+            .code,
         FsErrorCode::FsAmbiguousEdit
     );
     let all = apply_literal_edit("alpha alpha", "alpha", "x", true, "f").expect("replace all");
@@ -323,10 +375,12 @@ fn apply_literal_edit_replaces_matches_and_rejects_bad_shapes() {
 async fn read_for_edit_round_trips_crlf_matching_on_lf_and_writing_back_crlf() {
     let temp = TempRoot::new();
     let file = temp.write("crlf.txt", b"line one\r\nline two\r\n");
-    let (content, endings) = read_for_edit(&file, &file, Some(&never())).await.expect("read");
+    let (content, endings) = read_for_edit(&file, &file, Some(&never()))
+        .await
+        .expect("read");
     assert_eq!(content, "line one\nline two\n");
-    let (edited, _) = apply_literal_edit(&content, "line one\n", "replaced\n", false, &file)
-        .expect("edit");
+    let (edited, _) =
+        apply_literal_edit(&content, "line one\n", "replaced\n", false, &file).expect("edit");
     let restored = restore_line_endings(&edited, endings);
     assert_eq!(restored, "replaced\r\nline two\r\n");
     assert_eq!(normalize_line_endings("a\r\nb"), "a\nb");
@@ -337,22 +391,40 @@ async fn read_text_for_diff_bounds_the_opened_file_and_returns_null_for_undiffab
     let temp = TempRoot::new();
     let small = temp.write("small.txt", b"line one\r\nline two");
     assert_eq!(
-        read_text_for_diff(&small, 1024, Some(&never())).await.expect("basis"),
+        read_text_for_diff(&small, 1024, Some(&never()))
+            .await
+            .expect("basis"),
         Some("line one\nline two".to_string())
     );
     // At/above the limit → None.
-    assert_eq!(read_text_for_diff(&small, 2, Some(&never())).await.expect("limit"), None);
+    assert_eq!(
+        read_text_for_diff(&small, 2, Some(&never()))
+            .await
+            .expect("limit"),
+        None
+    );
     // Binary → None.
     let binary = temp.write("bin.bin", &[0u8, 1]);
-    assert_eq!(read_text_for_diff(&binary, 1024, Some(&never())).await.expect("binary"), None);
+    assert_eq!(
+        read_text_for_diff(&binary, 1024, Some(&never()))
+            .await
+            .expect("binary"),
+        None
+    );
     // Missing → None (the caller's preflight owns the structured error).
     assert_eq!(
-        read_text_for_diff(&temp.path("gone"), 1024, Some(&never())).await.expect("missing"),
+        read_text_for_diff(&temp.path("gone"), 1024, Some(&never()))
+            .await
+            .expect("missing"),
         None
     );
     // Pre-aborted → FS_ABORTED (cancellation still propagates).
     assert_eq!(
-        read_text_for_diff(&small, 1024, Some(&aborted())).await.err().expect("aborted").code,
+        read_text_for_diff(&small, 1024, Some(&aborted()))
+            .await
+            .err()
+            .expect("aborted")
+            .code,
         FsErrorCode::FsAborted
     );
 }
@@ -364,9 +436,16 @@ async fn read_text_for_diff_bounds_the_opened_file_and_returns_null_for_undiffab
 async fn write_file_atomic_stages_privately_and_publishes() {
     let temp = TempRoot::new();
     let target = temp.path("out.txt");
-    write_file_atomic(&target, "fresh", None, Some(&never()), &FsIoInternals::default(), None)
-        .await
-        .expect("write");
+    write_file_atomic(
+        &target,
+        "fresh",
+        None,
+        Some(&never()),
+        &FsIoInternals::default(),
+        None,
+    )
+    .await
+    .expect("write");
     assert_eq!(std::fs::read_to_string(&target).expect("read"), "fresh");
     // No staging litter.
     let parent = Path::new(&target).parent().expect("parent");
@@ -377,9 +456,16 @@ async fn write_file_atomic_stages_privately_and_publishes() {
         .collect();
     assert!(leftovers.is_empty());
     // A second write replaces.
-    write_file_atomic(&target, "second", None, Some(&never()), &FsIoInternals::default(), None)
-        .await
-        .expect("write");
+    write_file_atomic(
+        &target,
+        "second",
+        None,
+        Some(&never()),
+        &FsIoInternals::default(),
+        None,
+    )
+    .await
+    .expect("write");
     assert_eq!(std::fs::read_to_string(&target).expect("read"), "second");
 }
 
@@ -387,15 +473,29 @@ async fn write_file_atomic_stages_privately_and_publishes() {
 async fn write_file_atomic_creates_parent_directories_and_honors_pre_abort() {
     let temp = TempRoot::new();
     let target = temp.path("nested/deep/out.txt");
-    write_file_atomic(&target, "x", None, Some(&never()), &FsIoInternals::default(), None)
-        .await
-        .expect("write");
+    write_file_atomic(
+        &target,
+        "x",
+        None,
+        Some(&never()),
+        &FsIoInternals::default(),
+        None,
+    )
+    .await
+    .expect("write");
     assert_eq!(std::fs::read_to_string(&target).expect("read"), "x");
     let other = temp.path("aborted.txt");
-    let error = write_file_atomic(&other, "y", None, Some(&aborted()), &FsIoInternals::default(), None)
-        .await
-        .err()
-        .expect("aborted");
+    let error = write_file_atomic(
+        &other,
+        "y",
+        None,
+        Some(&aborted()),
+        &FsIoInternals::default(),
+        None,
+    )
+    .await
+    .err()
+    .expect("aborted");
     assert_eq!(error.code, FsErrorCode::FsAborted);
     assert!(!Path::new(&other).exists());
 }
@@ -408,18 +508,35 @@ async fn guarded_create_preserves_a_competitor_through_hard_link() {
         display_path: target.clone(),
         target_key: fs_target_key(target.clone()),
     };
-    write_file_atomic(&target, "mine", None, Some(&never()), &FsIoInternals::default(), Some(&guard))
-        .await
-        .expect("create");
+    write_file_atomic(
+        &target,
+        "mine",
+        None,
+        Some(&never()),
+        &FsIoInternals::default(),
+        Some(&guard),
+    )
+    .await
+    .expect("create");
     assert_eq!(std::fs::read_to_string(&target).expect("read"), "mine");
     // A competitor appears; the guarded create must reject without clobbering.
     std::fs::write(&target, "competitor").expect("competitor");
-    let error = write_file_atomic(&target, "loser", None, Some(&never()), &FsIoInternals::default(), Some(&guard))
-        .await
-        .err()
-        .expect("rejects");
+    let error = write_file_atomic(
+        &target,
+        "loser",
+        None,
+        Some(&never()),
+        &FsIoInternals::default(),
+        Some(&guard),
+    )
+    .await
+    .err()
+    .expect("rejects");
     assert_eq!(error.code, FsErrorCode::FsNotObserved);
-    assert_eq!(std::fs::read_to_string(&target).expect("read"), "competitor");
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("read"),
+        "competitor"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -448,11 +565,22 @@ async fn provider_resolves_reads_writes_and_edits() {
         .expect("write");
     assert_eq!(created.before, None);
     assert_eq!(created.after, "hello world");
-    assert_eq!(backend.read_text(&target, None).await.expect("read"), "hello world");
+    assert_eq!(
+        backend.read_text(&target, None).await.expect("read"),
+        "hello world"
+    );
 
     // Guarded replace at the produced version.
     let replaced = backend
-        .write_text(&target, "replaced", Some(&dsh_fs::FsWriteIntent::ReplaceIfVersion { version: created.version.clone() }), None, None)
+        .write_text(
+            &target,
+            "replaced",
+            Some(&dsh_fs::FsWriteIntent::ReplaceIfVersion {
+                version: created.version.clone(),
+            }),
+            None,
+            None,
+        )
         .await
         .expect("replace");
     assert_eq!(replaced.before.as_deref(), Some("hello world"));
@@ -460,7 +588,15 @@ async fn provider_resolves_reads_writes_and_edits() {
 
     // Stale guard rejects.
     let stale = backend
-        .write_text(&target, "stale", Some(&dsh_fs::FsWriteIntent::ReplaceIfVersion { version: created.version.clone() }), None, None)
+        .write_text(
+            &target,
+            "stale",
+            Some(&dsh_fs::FsWriteIntent::ReplaceIfVersion {
+                version: created.version.clone(),
+            }),
+            None,
+            None,
+        )
         .await
         .err()
         .expect("stale");
@@ -468,19 +604,35 @@ async fn provider_resolves_reads_writes_and_edits() {
 
     // createIfAbsent onto an existing file rejects.
     let overwrite = backend
-        .write_text(&target, "blind", Some(&dsh_fs::FsWriteIntent::CreateIfAbsent), None, None)
+        .write_text(
+            &target,
+            "blind",
+            Some(&dsh_fs::FsWriteIntent::CreateIfAbsent),
+            None,
+            None,
+        )
         .await
         .err()
         .expect("blind overwrite rejects");
     assert_eq!(overwrite.code, FsErrorCode::FsNotObserved);
 
     // Literal edit at the fresh version.
-    let current = backend.stat(&target, None).await.expect("stat").expect("present");
+    let current = backend
+        .stat(&target, None)
+        .await
+        .expect("stat")
+        .expect("present");
     let edited = backend
         .edit_text(
             &target,
-            &dsh_fs::FsEditRequest { old_string: "replaced".to_string(), new_string: "edited".to_string(), replace_all: false },
-            Some(&dsh_fs::FsEditGuard { version: current.version.clone() }),
+            &dsh_fs::FsEditRequest {
+                old_string: "replaced".to_string(),
+                new_string: "edited".to_string(),
+                replace_all: false,
+            },
+            Some(&dsh_fs::FsEditGuard {
+                version: current.version.clone(),
+            }),
             None,
             None,
         )
@@ -488,7 +640,10 @@ async fn provider_resolves_reads_writes_and_edits() {
         .expect("edit");
     assert_eq!(edited.before, "replaced");
     assert_eq!(edited.after, "edited");
-    assert_eq!(backend.read_text(&target, None).await.expect("read"), "edited");
+    assert_eq!(
+        backend.read_text(&target, None).await.expect("read"),
+        "edited"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -498,13 +653,26 @@ async fn provider_rejects_directories_and_honors_opts_cwd() {
     temp.write("sub/inner.txt", b"inner");
     let backend = boot(&temp);
     // opts.cwd wins over config.cwd for relative paths.
-    let opts = ResolveOptions { cwd: Some(temp.path("sub")), signal: None };
-    let target = backend.resolve("inner.txt", Some(&opts)).await.expect("resolve");
-    assert_eq!(backend.read_text(&target, None).await.expect("read"), "inner");
+    let opts = ResolveOptions {
+        cwd: Some(temp.path("sub")),
+        signal: None,
+    };
+    let target = backend
+        .resolve("inner.txt", Some(&opts))
+        .await
+        .expect("resolve");
+    assert_eq!(
+        backend.read_text(&target, None).await.expect("read"),
+        "inner"
+    );
 
     // A directory target rejects writes.
     let dir_target = backend.resolve("sub", None).await.expect("resolve");
-    let error = backend.write_text(&dir_target, "x", None, None, None).await.err().expect("dir rejects");
+    let error = backend
+        .write_text(&dir_target, "x", None, None, None)
+        .await
+        .err()
+        .expect("dir rejects");
     assert_eq!(error.code, FsErrorCode::FsNotRegularFile);
 }
 
@@ -514,7 +682,13 @@ async fn concurrent_guarded_writes_serialize_one_wins_the_other_is_stale() {
     let backend = boot(&temp);
     let target = backend.resolve("race.txt", None).await.expect("resolve");
     let created = backend
-        .write_text(&target, "v1", Some(&dsh_fs::FsWriteIntent::CreateIfAbsent), None, None)
+        .write_text(
+            &target,
+            "v1",
+            Some(&dsh_fs::FsWriteIntent::CreateIfAbsent),
+            None,
+            None,
+        )
         .await
         .expect("create");
     let version = created.version.clone();
@@ -525,9 +699,15 @@ async fn concurrent_guarded_writes_serialize_one_wins_the_other_is_stale() {
     );
     let outcomes = [left, right];
     let wins = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
-    let stale = outcomes.iter().filter(|outcome| {
-        outcome.as_ref().err().is_some_and(|error| error.code == FsErrorCode::FsStaleVersion)
-    }).count();
+    let stale = outcomes
+        .iter()
+        .filter(|outcome| {
+            outcome
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.code == FsErrorCode::FsStaleVersion)
+        })
+        .count();
     assert_eq!(wins, 1);
     assert_eq!(stale, 1);
 }

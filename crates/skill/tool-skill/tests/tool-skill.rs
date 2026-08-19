@@ -14,13 +14,18 @@
 use std::sync::Arc;
 
 use cordis::{Context, arc, downcast_arc};
-use dsh_agent::{AgentPreStepPayload, AgentEventDispatch, PreStepDecision};
-use dsh_llm::{ContentBlock, ContextForm, MessageSource, UserMessage, call_id, create_user_message};
+use dsh_agent::{AgentEventDispatch, AgentPreStepPayload, PreStepDecision};
+use dsh_llm::{
+    ContentBlock, ContextForm, MessageSource, UserMessage, call_id, create_user_message,
+};
 use dsh_scope::{CreateScopeOptions, ScopeKey, create_scope};
 use dsh_session::{Session, SessionId, SurfaceIntent, SurfaceOp, session_id};
 use dsh_skill::{SkillInvocationPolicy, SkillRegistration, SkillRegistry};
-use dsh_tools::{ToolCallKind, ToolCallView, ToolDefinition, ToolExecutionInput, ToolOutputDefinition, ToolRuntime};
 use dsh_tool_skill::{Config, apply};
+use dsh_tools::{
+    ToolCallKind, ToolCallView, ToolDefinition, ToolExecutionInput, ToolOutputDefinition,
+    ToolRuntime,
+};
 
 // ---- helpers ----
 
@@ -78,7 +83,12 @@ impl dsh_agent::Agent for ProbeAgent {
         &self.scope_key
     }
 
-    fn cancel(&self, _cause: dsh_session::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_session::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -91,7 +101,13 @@ impl dsh_agent::Agent for ProbeAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 
@@ -156,7 +172,9 @@ async fn setup(config: Option<Config>) -> (Context, cordis::Disposer) {
             .expect("systemPrompt");
     let _tools = ToolRuntime::install(&ctx, dsh_tools::Config::default()).expect("tools");
     let _skills = SkillRegistry::install(&ctx, dsh_skill::Config::default()).expect("skills");
-    let disposer = apply(&ctx, config.unwrap_or_default()).await.expect("apply");
+    let disposer = apply(&ctx, config.unwrap_or_default())
+        .await
+        .expect("apply");
     (ctx, disposer)
 }
 
@@ -256,10 +274,7 @@ fn never_abort() -> Arc<dyn Fn() -> bool + Send + Sync> {
 #[tokio::test(flavor = "current_thread")]
 async fn registers_the_skill_tool_schema_and_removes_it_on_dispose() {
     let (ctx, disposer) = setup(None).await;
-    skills_of(&ctx).register(
-        &ctx,
-        runtime_skill("lifecycle-skill", "Lifecycle"),
-    );
+    skills_of(&ctx).register(&ctx, runtime_skill("lifecycle-skill", "Lifecycle"));
     let tools = tools_of(&ctx);
     let names: Vec<String> = tools
         .schemas(None)
@@ -324,18 +339,27 @@ async fn injects_a_stable_durable_catalog_at_the_first_step() {
             ..runtime_skill("z-skill", "z")
         },
     );
-    let _ = skills.register(&ctx, runtime_skill("a-skill", "Use {{placeholder}} <safely> & carefully."));
+    let _ = skills.register(
+        &ctx,
+        runtime_skill("a-skill", "Use {{placeholder}} <safely> & carefully."),
+    );
     let _ = skills.register(
         &ctx,
         SkillRegistration {
-            invocation: Some(SkillInvocationPolicy { model_invocable: true, user_invocable: false }),
+            invocation: Some(SkillInvocationPolicy {
+                model_invocable: true,
+                user_invocable: false,
+            }),
             ..runtime_skill("model-only-skill", "Model-only skill.")
         },
     );
     let _ = skills.register(
         &ctx,
         SkillRegistration {
-            invocation: Some(SkillInvocationPolicy { model_invocable: false, user_invocable: true }),
+            invocation: Some(SkillInvocationPolicy {
+                model_invocable: false,
+                user_invocable: true,
+            }),
             ..runtime_skill("user-only-skill", "User-only skill.")
         },
     );
@@ -344,8 +368,8 @@ async fn injects_a_stable_durable_catalog_at_the_first_step() {
         "agent/pre-step",
         Arc::new(|_ctx, args| {
             Box::pin(async move {
-                let next = downcast_arc::<cordis::NextFn>(args.last().expect("next"))
-                    .expect("next");
+                let next =
+                    downcast_arc::<cordis::NextFn>(args.last().expect("next")).expect("next");
                 let decision_value = next.call().await;
                 let decision = downcast_arc::<PreStepDecision>(&decision_value)
                     .expect("decision")
@@ -389,13 +413,19 @@ async fn injects_a_stable_durable_catalog_at_the_first_step() {
         messages[0].source,
         MessageSource::Plugin { ref plugin, .. } if plugin == "later-contribution"
     ));
-    let MessageSource::SkillCatalog { entries, update, .. } = &messages[1].source else {
+    let MessageSource::SkillCatalog {
+        entries, update, ..
+    } = &messages[1].source
+    else {
         panic!("catalog source expected");
     };
     assert!(update.is_none());
     let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
     assert_eq!(names, vec!["a-skill", "model-only-skill", "z-skill"]);
-    assert_eq!(entries[2].description, "Long description Long description Long descript...");
+    assert_eq!(
+        entries[2].description,
+        "Long description Long description Long descript..."
+    );
     let text = match &messages[1].content[0] {
         ContentBlock::Text { text } => text.clone(),
         _ => panic!("text block"),
@@ -414,7 +444,10 @@ async fn does_not_inject_a_catalog_when_no_model_invocable_skills_are_available(
     skills_of(&ctx).register(
         &ctx,
         SkillRegistration {
-            invocation: Some(SkillInvocationPolicy { model_invocable: false, user_invocable: true }),
+            invocation: Some(SkillInvocationPolicy {
+                model_invocable: false,
+                user_invocable: true,
+            }),
             ..runtime_skill("user-only-skill", "User-only skill")
         },
     );
@@ -463,7 +496,9 @@ async fn omits_an_incomplete_initial_catalog_and_retries_on_a_later_request_boun
         &ctx,
         Arc::new(move |control| {
             *invalidate_for_factory.lock() = Some(control.invalidate.clone());
-            Arc::new(RecoveringProvider { failing: failing_for_provider.clone() })
+            Arc::new(RecoveringProvider {
+                failing: failing_for_provider.clone(),
+            })
         }),
     );
     let (session, agent) = session_with_agent("incomplete-prefix");
@@ -497,7 +532,12 @@ async fn deduplicates_or_replaces_a_catalog_already_proposed_for_the_same_step()
     let initial = catalog_messages(&session).remove(0);
 
     let duplicate = propose_step(&ctx, &agent, vec![initial.clone()]).await;
-    assert_eq!(duplicate, PreStepDecision::Enter { messages: Vec::new() });
+    assert_eq!(
+        duplicate,
+        PreStepDecision::Enter {
+            messages: Vec::new()
+        }
+    );
 
     let _ = skills.register(&ctx, runtime_skill("second-skill", "Second skill"));
     let companion = create_user_message(
@@ -542,7 +582,12 @@ async fn removes_a_stale_proposed_catalog_before_the_first_empty_baseline() {
     );
     let (_session, agent) = session_with_agent("proposed-empty-catalog");
     let decision = propose_step(&ctx, &agent, vec![stale]).await;
-    assert_eq!(decision, PreStepDecision::Enter { messages: Vec::new() });
+    assert_eq!(
+        decision,
+        PreStepDecision::Enter {
+            messages: Vec::new()
+        }
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -564,7 +609,12 @@ async fn keeps_a_proposed_catalog_that_already_matches_the_current_snapshot() {
     );
     let (_session, agent) = session_with_agent("matching-proposal");
     let decision = propose_step(&ctx, &agent, vec![proposed.clone()]).await;
-    assert_eq!(decision, PreStepDecision::Enter { messages: vec![proposed] });
+    assert_eq!(
+        decision,
+        PreStepDecision::Enter {
+            messages: vec![proposed]
+        }
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -644,7 +694,10 @@ async fn resumes_from_the_durable_entries_of_the_latest_visible_catalog() {
     let catalogs = catalog_messages(&session);
     assert_eq!(catalogs.len(), 2);
     let latest = &catalogs[1];
-    let MessageSource::SkillCatalog { entries, update, .. } = &latest.source else {
+    let MessageSource::SkillCatalog {
+        entries, update, ..
+    } = &latest.source
+    else {
         panic!("catalog expected");
     };
     assert_eq!(update, &Some(true));
@@ -717,7 +770,10 @@ async fn returns_is_error_for_unknown_invalid_and_model_disabled_skills() {
     skills_of(&ctx).register(
         &ctx,
         SkillRegistration {
-            invocation: Some(SkillInvocationPolicy { model_invocable: true, user_invocable: false }),
+            invocation: Some(SkillInvocationPolicy {
+                model_invocable: true,
+                user_invocable: false,
+            }),
             ..runtime_skill("model-only-skill", "Model-only skill")
         },
     );
@@ -761,16 +817,23 @@ async fn returns_is_error_for_unknown_invalid_and_model_disabled_skills() {
     assert!(unknown.is_error);
     assert!(invalid.is_error);
     assert!(!model_only.is_error);
-    assert_eq!(model_only.value.as_ref().expect("value")["content"], "model-only-skill body.");
+    assert_eq!(
+        model_only.value.as_ref().expect("value")["content"],
+        "model-only-skill body."
+    );
     let unknown_text = text_block(&unknown.content[0]);
-    assert!(unknown_text.contains("skill \"missing\" is unknown or no longer available"), "{unknown_text}");
+    assert!(
+        unknown_text.contains("skill \"missing\" is unknown or no longer available"),
+        "{unknown_text}"
+    );
     let _ = session;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn checks_model_policy_before_provider_loading_and_rechecks_the_loaded_definition() {
     let (ctx, _disposer) = setup(None).await;
-    let get_calls: Arc<parking_lot::Mutex<Vec<String>>> = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let get_calls: Arc<parking_lot::Mutex<Vec<String>>> =
+        Arc::new(parking_lot::Mutex::new(Vec::new()));
     let get_calls_for_provider = get_calls.clone();
     struct PolicyProbeProvider {
         calls: Arc<parking_lot::Mutex<Vec<String>>>,
@@ -784,8 +847,8 @@ async fn checks_model_policy_before_provider_loading_and_rechecks_the_loaded_def
             &self,
             _options: &dsh_skill::SkillLookupOptions,
         ) -> Result<dsh_skill::SkillProviderObservation, String> {
-            let candidate = |name: &str, invocation: SkillInvocationPolicy| {
-                dsh_skill::SkillCandidate {
+            let candidate =
+                |name: &str, invocation: SkillInvocationPolicy| dsh_skill::SkillCandidate {
                     name: name.to_string(),
                     description: format!("{name} description"),
                     when_to_use: None,
@@ -797,13 +860,15 @@ async fn checks_model_policy_before_provider_loading_and_rechecks_the_loaded_def
                     locator: arc(name.to_string()),
                     path: None,
                     metadata: None,
-                }
-            };
+                };
             Ok(dsh_skill::SkillProviderObservation {
                 candidates: vec![
                     candidate(
                         "denied-skill",
-                        SkillInvocationPolicy { model_invocable: false, user_invocable: true },
+                        SkillInvocationPolicy {
+                            model_invocable: false,
+                            user_invocable: true,
+                        },
                     ),
                     candidate("policy-race-skill", SkillInvocationPolicy::BOTH),
                     candidate("vanishing-skill", SkillInvocationPolicy::BOTH),
@@ -824,7 +889,10 @@ async fn checks_model_policy_before_provider_loading_and_rechecks_the_loaded_def
                 name: candidate.name.clone(),
                 description: candidate.description.clone(),
                 when_to_use: None,
-                invocation: SkillInvocationPolicy { model_invocable: false, user_invocable: true },
+                invocation: SkillInvocationPolicy {
+                    model_invocable: false,
+                    user_invocable: true,
+                },
                 source: candidate.source.clone(),
                 provider: candidate.provider.clone(),
                 resource_base: None,
@@ -836,7 +904,11 @@ async fn checks_model_policy_before_provider_loading_and_rechecks_the_loaded_def
     }
     skills_of(&ctx).register_provider(
         &ctx,
-        Arc::new(move |_control| Arc::new(PolicyProbeProvider { calls: get_calls_for_provider.clone() })),
+        Arc::new(move |_control| {
+            Arc::new(PolicyProbeProvider {
+                calls: get_calls_for_provider.clone(),
+            })
+        }),
     );
     let tools = tools_of(&ctx);
     let (session, agent) = session_with_agent("policy-before-load");
@@ -859,11 +931,17 @@ async fn checks_model_policy_before_provider_loading_and_rechecks_the_loaded_def
     assert!(vanished.is_error);
     assert_eq!(
         *get_calls.lock(),
-        vec!["policy-race-skill".to_string(), "vanishing-skill".to_string()]
+        vec![
+            "policy-race-skill".to_string(),
+            "vanishing-skill".to_string()
+        ]
     );
     for result in [&denied, &raced] {
         let text = text_block(&result.content[0]);
-        assert!(text.contains("is not available for model invocation"), "{text}");
+        assert!(
+            text.contains("is not available for model invocation"),
+            "{text}"
+        );
         assert!(!text.contains("Instructions must not be disclosed."));
     }
     let vanished_text = text_block(&vanished.content[0]);
@@ -948,7 +1026,11 @@ async fn omits_catalog_guidance_when_the_calling_agent_restricts_away_the_shippe
     skills_of(&ctx).register(&ctx, runtime_skill("listed-skill", "Listed"));
     let (session, agent) = session_with_agent("restricted-catalog");
     open_message_turn(&session);
-    let scope = create_scope(&ctx, agent.scope_key().clone(), &CreateScopeOptions::default());
+    let scope = create_scope(
+        &ctx,
+        agent.scope_key().clone(),
+        &CreateScopeOptions::default(),
+    );
     tools_of(&ctx)
         .restrict(
             &scope.ctx,
@@ -959,7 +1041,11 @@ async fn omits_catalog_guidance_when_the_calling_agent_restricts_away_the_shippe
         )
         .expect("restrict");
 
-    assert!(tools_of(&ctx).get("skill", Some(agent.scope_key())).is_none());
+    assert!(
+        tools_of(&ctx)
+            .get("skill", Some(agent.scope_key()))
+            .is_none()
+    );
     let _ = fire_step(&ctx, &agent, Vec::new()).await;
     assert_eq!(catalog_messages(&session).len(), 0);
     let _ = fire_step(&ctx, &agent, Vec::new()).await;
@@ -978,7 +1064,11 @@ async fn does_not_attach_shipped_catalog_guidance_to_a_scoped_same_name_tool_sha
     skills_of(&ctx).register(&ctx, runtime_skill("listed-skill", "Listed"));
     let (session, agent) = session_with_agent("shadowed-catalog");
     open_message_turn(&session);
-    let scope = create_scope(&ctx, agent.scope_key().clone(), &CreateScopeOptions::default());
+    let scope = create_scope(
+        &ctx,
+        agent.scope_key().clone(),
+        &CreateScopeOptions::default(),
+    );
     let shadow = ToolDefinition {
         name: "skill".to_string(),
         description: "A scoped tool with unrelated semantics.".to_string(),
@@ -999,17 +1089,22 @@ async fn does_not_attach_shipped_catalog_guidance_to_a_scoped_same_name_tool_sha
         },
         timeout_ms: None,
         is_concurrency_safe: None,
-        execute: Arc::new(|_args, _exec| {
-            Box::pin(async move { Ok(serde_json::json!("shadow")) })
-        }),
+        execute: Arc::new(|_args, _exec| Box::pin(async move { Ok(serde_json::json!("shadow")) })),
         finalize_content: None,
         present_call: None,
         present_result: None,
     };
-    tools_of(&ctx).register(&scope.ctx, shadow).expect("shadow register");
+    tools_of(&ctx)
+        .register(&scope.ctx, shadow)
+        .expect("shadow register");
 
     assert_ne!(
-        Arc::as_ptr(tools_of(&ctx).get("skill", Some(agent.scope_key())).as_ref().expect("shadow")),
+        Arc::as_ptr(
+            tools_of(&ctx)
+                .get("skill", Some(agent.scope_key()))
+                .as_ref()
+                .expect("shadow")
+        ),
         Arc::as_ptr(tools_of(&ctx).get("skill", None).as_ref().expect("shipped"))
     );
     let _ = fire_step(&ctx, &agent, Vec::new()).await;
@@ -1031,7 +1126,10 @@ async fn invoke_harness() -> (Context, Arc<dyn dsh_agent::Agent>) {
         &ctx,
         SkillRegistration {
             content: "Say the magic word: PINEAPPLE.".to_string(),
-            invocation: Some(SkillInvocationPolicy { model_invocable: false, user_invocable: true }),
+            invocation: Some(SkillInvocationPolicy {
+                model_invocable: false,
+                user_invocable: true,
+            }),
             ..runtime_skill("hidden-demo", "User-only demo")
         },
     );
@@ -1046,7 +1144,10 @@ async fn invoke_harness() -> (Context, Arc<dyn dsh_agent::Agent>) {
         &ctx,
         SkillRegistration {
             content: "Model-only instructions.".to_string(),
-            invocation: Some(SkillInvocationPolicy { model_invocable: true, user_invocable: false }),
+            invocation: Some(SkillInvocationPolicy {
+                model_invocable: true,
+                user_invocable: false,
+            }),
             ..runtime_skill("model-only-skill", "Model only")
         },
     );
@@ -1079,11 +1180,20 @@ async fn injects_a_user_invocable_skill_named_by_a_leading_token_after_every_oth
     let PreStepDecision::Enter { messages } = decision else {
         panic!("enter expected");
     };
-    let kinds: Vec<&str> = messages.iter().map(|message| message.source.kind()).collect();
+    let kinds: Vec<&str> = messages
+        .iter()
+        .map(|message| message.source.kind())
+        .collect();
     assert_eq!(&kinds[..2], &["user", "user"]);
     assert_eq!(kinds.last(), Some(&"skill-invocation"));
-    let catalog_index = kinds.iter().position(|kind| *kind == "skill-catalog").expect("catalog");
-    let invocation_index = kinds.iter().position(|kind| *kind == "skill-invocation").expect("invocation");
+    let catalog_index = kinds
+        .iter()
+        .position(|kind| *kind == "skill-catalog")
+        .expect("catalog");
+    let invocation_index = kinds
+        .iter()
+        .position(|kind| *kind == "skill-invocation")
+        .expect("invocation");
     assert!(catalog_index < invocation_index);
     let injection = messages.last().expect("injection");
     let MessageSource::SkillInvocation { name, form } = &injection.source else {

@@ -7,7 +7,10 @@
 
 use std::sync::Arc;
 
-use cordis::{ArcValue, Context, EventOptions, InjectSpec, Listener, Plugin, PluginError, downcast, downcast_arc};
+use cordis::{
+    ArcValue, Context, EventOptions, InjectSpec, Listener, Plugin, PluginError, downcast,
+    downcast_arc,
+};
 use dsh_invariants::{InvariantInstaller, InvariantRegistry};
 use dsh_session::{Session, SessionEvent};
 
@@ -63,39 +66,41 @@ pub fn installer() -> InvariantInstaller {
                 // publication (the session/event listener would only observe
                 // the already-committed log).
                 let dispatch_fail = fail.clone();
-                let listener: Arc<Listener> = Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
-                    let event_name = args
-                        .get(1)
-                        .and_then(|value| downcast::<String>(value))
-                        .cloned()
-                        .unwrap_or_default();
-                    if event_name != "session/event" {
-                        return Box::pin(async { None });
-                    }
-                    let dispatch_args = args
-                        .get(2)
-                        .and_then(|value| downcast_arc::<Vec<ArcValue>>(value));
-                    let fail = dispatch_fail.clone();
-                    Box::pin(async move {
-                        let Some(dispatch_args) = dispatch_args else {
-                            return None;
-                        };
-                        let Some(event) = dispatch_args
+                let listener: Arc<Listener> =
+                    Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
+                        let event_name = args
                             .get(1)
-                            .and_then(|value| downcast::<SessionEvent>(value))
+                            .and_then(|value| downcast::<String>(value))
                             .cloned()
-                        else {
-                            return None;
-                        };
-                        if let Some(_session) =
-                            dispatch_args.first().and_then(|value| downcast::<Session>(value))
-                        {
-                            let _ = _session;
+                            .unwrap_or_default();
+                        if event_name != "session/event" {
+                            return Box::pin(async { None });
                         }
-                        check_title_event(&event, &|message| fail(message));
-                        None
-                    })
-                });
+                        let dispatch_args = args
+                            .get(2)
+                            .and_then(|value| downcast_arc::<Vec<ArcValue>>(value));
+                        let fail = dispatch_fail.clone();
+                        Box::pin(async move {
+                            let Some(dispatch_args) = dispatch_args else {
+                                return None;
+                            };
+                            let Some(event) = dispatch_args
+                                .get(1)
+                                .and_then(|value| downcast::<SessionEvent>(value))
+                                .cloned()
+                            else {
+                                return None;
+                            };
+                            if let Some(_session) = dispatch_args
+                                .first()
+                                .and_then(|value| downcast::<Session>(value))
+                            {
+                                let _ = _session;
+                            }
+                            check_title_event(&event, &|message| fail(message));
+                            None
+                        })
+                    });
                 ctx.on(
                     "internal/dispatch",
                     listener,

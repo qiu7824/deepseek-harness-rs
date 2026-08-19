@@ -213,10 +213,7 @@ fn create_acknowledges_with_the_new_cas_ref_and_pause_increments_it() {
             .await;
         assert_eq!(paused["result"]["ok"], true, "{paused}");
         assert_eq!(paused["result"]["value"]["ref"]["revision"], 2);
-        assert_eq!(
-            paused["result"]["value"]["ref"]["id"],
-            goal_ref["id"]
-        );
+        assert_eq!(paused["result"]["value"]["ref"]["id"], goal_ref["id"]);
 
         let cleared = harness
             .post(

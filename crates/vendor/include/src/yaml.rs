@@ -139,26 +139,19 @@ pub fn json_to_yaml(value: &Value) -> serde_yaml::Value {
             }
         }
         Value::String(value) => serde_yaml::Value::String(value.clone()),
-        Value::Array(list) => serde_yaml::Value::Sequence(
-            list.iter().map(json_to_yaml).collect(),
-        ),
+        Value::Array(list) => serde_yaml::Value::Sequence(list.iter().map(json_to_yaml).collect()),
         Value::Object(map) => {
             if map.len() == 1 {
                 if let Some(expr) = map.get("__jsExpr").and_then(|v| v.as_str()) {
-                    return serde_yaml::Value::Tagged(Box::new(
-                        serde_yaml::value::TaggedValue {
-                            tag: serde_yaml::value::Tag::new("tag:yaml.org,2002:js"),
-                            value: serde_yaml::Value::String(expr.to_string()),
-                        },
-                    ));
+                    return serde_yaml::Value::Tagged(Box::new(serde_yaml::value::TaggedValue {
+                        tag: serde_yaml::value::Tag::new("tag:yaml.org,2002:js"),
+                        value: serde_yaml::Value::String(expr.to_string()),
+                    }));
                 }
             }
             let mut result = serde_yaml::Mapping::new();
             for (key, item) in map {
-                result.insert(
-                    serde_yaml::Value::String(key.clone()),
-                    json_to_yaml(item),
-                );
+                result.insert(serde_yaml::Value::String(key.clone()), json_to_yaml(item));
             }
             serde_yaml::Value::Mapping(result)
         }
@@ -190,10 +183,8 @@ mod tests {
 
     #[test]
     fn nested_yaml_round_trips_through_json() {
-        let json = parse_yaml(
-            "a: 1\nb:\n  - true\n  - x\nc:\n  d: !!js 'process.env.FOO'\n",
-        )
-        .unwrap();
+        let json =
+            parse_yaml("a: 1\nb:\n  - true\n  - x\nc:\n  d: !!js 'process.env.FOO'\n").unwrap();
         assert_eq!(
             json,
             json!({ "a": 1, "b": [true, "x"], "c": { "d": { "__jsExpr": "process.env.FOO" } } })

@@ -24,7 +24,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cordis::{ArcValue, Context, Disposer, EventOptions, Listener, Service, arc, downcast, make_disposer};
+use cordis::{
+    ArcValue, Context, Disposer, EventOptions, Listener, Service, arc, downcast, make_disposer,
+};
 use dsh_session::{Session, SessionEvent};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -125,16 +127,20 @@ impl SessionProjectionRegistry {
         let event_registry = Arc::clone(&registry);
         let event_listener: Arc<Listener> = Arc::new(move |_ctx, args| {
             let session = downcast::<Session>(&args[0]).expect("session arg").clone();
-            let event = downcast::<SessionEvent>(&args[1]).expect("event arg").clone();
+            let event = downcast::<SessionEvent>(&args[1])
+                .expect("event arg")
+                .clone();
             let registry = Arc::clone(&event_registry);
             Box::pin(async move {
                 registry.drive(&session, &event);
                 None
             })
         });
-        let _ = futures::executor::block_on(
-            ctx.on("session/event", event_listener, EventOptions::default()),
-        );
+        let _ = futures::executor::block_on(ctx.on(
+            "session/event",
+            event_listener,
+            EventOptions::default(),
+        ));
 
         // session/disposed: drop the session's cells (WeakMap equivalent).
         let disposed_registry = Arc::clone(&registry);
@@ -146,9 +152,11 @@ impl SessionProjectionRegistry {
                 None
             })
         });
-        let _ = futures::executor::block_on(
-            ctx.on("session/disposed", disposed_listener, EventOptions::default()),
-        );
+        let _ = futures::executor::block_on(ctx.on(
+            "session/disposed",
+            disposed_listener,
+            EventOptions::default(),
+        ));
 
         registry
     }
@@ -207,7 +215,11 @@ impl SessionProjectionRegistry {
 
     /// Subscribe to the change feed (an effect on the caller context's
     /// fiber; TS `onChanged`).
-    pub fn on_changed(self: &Arc<Self>, caller: &Context, listener: ProjectionChangeListener) -> Disposer {
+    pub fn on_changed(
+        self: &Arc<Self>,
+        caller: &Context,
+        listener: ProjectionChangeListener,
+    ) -> Disposer {
         let id = self.next_listener_id.fetch_add(1, Ordering::Relaxed);
         self.listeners.lock().push((id, listener));
         let registry = Arc::clone(self);
@@ -286,7 +298,10 @@ impl SessionProjectionRegistry {
     }
 
     /// View a checkpoint's rows without any log read (TS `viewCheckpoint`).
-    pub fn view_checkpoint(&self, checkpoint: &ProjectionCheckpoint) -> serde_json::Map<String, ProjectionValue> {
+    pub fn view_checkpoint(
+        &self,
+        checkpoint: &ProjectionCheckpoint,
+    ) -> serde_json::Map<String, ProjectionValue> {
         let mut values = serde_json::Map::new();
         let registrations = self.registrations.lock();
         for registration in registrations.values() {
@@ -323,9 +338,7 @@ impl SessionProjectionRegistry {
             let def = &registration.def;
             let row = checkpoint.get(&def.key);
             let usable = row.is_some_and(|row| {
-                row.ver == def.state_version
-                    && row.seq >= base_seq - 1
-                    && row.seq <= end_seq
+                row.ver == def.state_version && row.seq >= base_seq - 1 && row.seq <= end_seq
             });
             if !usable && base_seq > 0 {
                 return Err(format!(
@@ -347,8 +360,8 @@ impl SessionProjectionRegistry {
             let parsed = (def.schema)(&(def.view)(&state))
                 .expect("session projection view violated its schema");
             values.insert(def.key.clone(), parsed);
-            let state_value: Arc<ProjectionValue> = cordis::downcast_arc(&state)
-                .expect("session projection state must be plain JSON");
+            let state_value: Arc<ProjectionValue> =
+                cordis::downcast_arc(&state).expect("session projection state must be plain JSON");
             refreshed.insert(
                 def.key.clone(),
                 ProjectionCheckpointRow {
@@ -406,7 +419,9 @@ impl SessionProjectionRegistry {
                         let events = session.events();
                         let prefix = &events[..event.seq as usize];
                         cells.insert(session.identity(), build_cell(&registration.def, prefix));
-                        cells.get_mut(&session.identity()).expect("cell just inserted")
+                        cells
+                            .get_mut(&session.identity())
+                            .expect("cell just inserted")
                     }
                 };
                 let next = (registration.def.apply)(&cell.state, event);
@@ -450,10 +465,13 @@ fn cell_for(registration: &Registration, session: &Session) -> UnitCell {
     }
     let events = session.events();
     let built = build_cell(&registration.def, &events);
-    registration.cells.lock().insert(identity, UnitCell {
-        state: built.state.clone(),
-        observed_seq: built.observed_seq,
-    });
+    registration.cells.lock().insert(
+        identity,
+        UnitCell {
+            state: built.state.clone(),
+            observed_seq: built.observed_seq,
+        },
+    );
     built
 }
 
@@ -472,8 +490,8 @@ mod tests {
     use dsh_session::SessionStore;
 
     fn marks_schema(value: &ArcValue) -> Result<ProjectionValue, String> {
-        let value: &ProjectionValue = cordis::downcast(value)
-            .ok_or_else(|| "view must produce a JSON value".to_string())?;
+        let value: &ProjectionValue =
+            cordis::downcast(value).ok_or_else(|| "view must produce a JSON value".to_string())?;
         let marks = value
             .get("marks")
             .and_then(|marks| marks.as_array())
@@ -551,7 +569,11 @@ mod tests {
         let store = SessionStore::install(&ctx);
         let registry = SessionProjectionRegistry::install(&ctx);
         let session = store
-            .create(&ctx, None, Some(dsh_session::CreateSessionOptions::default()))
+            .create(
+                &ctx,
+                None,
+                Some(dsh_session::CreateSessionOptions::default()),
+            )
             .await
             .unwrap();
         (ctx, registry, session)
@@ -571,7 +593,10 @@ mod tests {
         mark(&session, &["a"]);
         mark(&session, &["a", "b"]);
         let snapshot = registry.snapshot(&session);
-        assert_eq!(snapshot.values.get("test/marks"), Some(&serde_json::json!({"marks": ["a", "b"]})));
+        assert_eq!(
+            snapshot.values.get("test/marks"),
+            Some(&serde_json::json!({"marks": ["a", "b"]}))
+        );
         assert_eq!(snapshot.as_of_seq, session.seq() as i64 - 1);
     }
 
@@ -598,19 +623,31 @@ mod tests {
         registry.register(&ctx, marks_unit()).unwrap();
         let snapshot = registry.snapshot(&session);
         assert_eq!(snapshot.as_of_seq, -1);
-        assert_eq!(snapshot.values.get("test/marks"), Some(&serde_json::json!({"marks": []})));
+        assert_eq!(
+            snapshot.values.get("test/marks"),
+            Some(&serde_json::json!({"marks": []}))
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn notifies_on_changed_and_skips_same_reference_applies() {
         let (ctx, registry, session) = harness().await;
         registry.register(&ctx, marks_unit()).unwrap();
-        let seen: Arc<Mutex<Vec<(String, ProjectionValue, i64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen: Arc<Mutex<Vec<(String, ProjectionValue, i64)>>> =
+            Arc::new(Mutex::new(Vec::new()));
         {
             let seen = Arc::clone(&seen);
-            registry.on_changed(&ctx, Arc::new(move |_changed_session: &Session, key: &str, value: &ProjectionValue, seq: i64| {
-                seen.lock().push((key.to_string(), value.clone(), seq));
-            }));
+            registry.on_changed(
+                &ctx,
+                Arc::new(
+                    move |_changed_session: &Session,
+                          key: &str,
+                          value: &ProjectionValue,
+                          seq: i64| {
+                        seen.lock().push((key.to_string(), value.clone(), seq));
+                    },
+                ),
+            );
         }
         mark(&session, &["a"]);
         // Non-matching event: apply returns the same reference — no
@@ -618,7 +655,14 @@ mod tests {
         session
             .append("turn/start", serde_json::json!({"turn": 1}), None)
             .unwrap();
-        assert_eq!(seen.lock().clone(), vec![("test/marks".to_string(), serde_json::json!({"marks": ["a"]}), 0)]);
+        assert_eq!(
+            seen.lock().clone(),
+            vec![(
+                "test/marks".to_string(),
+                serde_json::json!({"marks": ["a"]}),
+                0
+            )]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -628,7 +672,11 @@ mod tests {
             .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
             .expect("sessions");
         let other = store
-            .create(&ctx, None, Some(dsh_session::CreateSessionOptions::default()))
+            .create(
+                &ctx,
+                None,
+                Some(dsh_session::CreateSessionOptions::default()),
+            )
             .await
             .unwrap();
         registry.register(&ctx, marks_unit()).unwrap();
@@ -652,17 +700,28 @@ mod tests {
         let changed_keys: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         {
             let changed_keys = Arc::clone(&changed_keys);
-            registry.on_changed(&ctx, Arc::new(move |_session: &Session, key: &str, _value: &ProjectionValue, _seq: i64| {
-                changed_keys.lock().push(key.to_string());
-            }));
+            registry.on_changed(
+                &ctx,
+                Arc::new(
+                    move |_session: &Session, key: &str, _value: &ProjectionValue, _seq: i64| {
+                        changed_keys.lock().push(key.to_string());
+                    },
+                ),
+            );
         }
         session
             .append("turn/start", serde_json::json!({"turn": 1}), None)
             .unwrap();
         assert_eq!(changed_keys.lock().clone(), vec!["test/count".to_string()]);
         let snapshot = registry.snapshot(&session);
-        assert_eq!(snapshot.values.get("test/count"), Some(&serde_json::json!(1)));
-        assert_eq!(snapshot.values.get("test/marks"), Some(&serde_json::json!({"marks": []})));
+        assert_eq!(
+            snapshot.values.get("test/count"),
+            Some(&serde_json::json!(1))
+        );
+        assert_eq!(
+            snapshot.values.get("test/marks"),
+            Some(&serde_json::json!({"marks": []}))
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -689,9 +748,14 @@ mod tests {
         registry.register(&ctx, marks_unit()).unwrap();
         let mut changed = marks_unit();
         changed.state_version = 9;
-        let error = registry.register(&ctx, changed).err().expect("register must fail");
+        let error = registry
+            .register(&ctx, changed)
+            .err()
+            .expect("register must fail");
         assert!(
-            error.contains("already registered at stateVersion 1; refusing to share it with stateVersion 9"),
+            error.contains(
+                "already registered at stateVersion 1; refusing to share it with stateVersion 9"
+            ),
             "{error}"
         );
     }
@@ -722,7 +786,10 @@ mod tests {
         let rows = registry.checkpoint(&session);
         assert_eq!(rows.get("test/marks").unwrap().ver, 1);
         assert_eq!(rows.get("test/marks").unwrap().seq, 0);
-        assert_eq!(rows.get("test/marks").unwrap().val, serde_json::json!({"marks": ["a"]}));
+        assert_eq!(
+            rows.get("test/marks").unwrap().val,
+            serde_json::json!({"marks": ["a"]})
+        );
         assert_eq!(rows.get("test/count").unwrap().ver, 7);
         assert_eq!(rows.get("test/count").unwrap().val, serde_json::json!(1));
         // Empty log: init-derived state at watermark -1.
@@ -731,13 +798,20 @@ mod tests {
             .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
             .expect("sessions");
         let fresh = store
-            .create(&ctx2, None, Some(dsh_session::CreateSessionOptions::default()))
+            .create(
+                &ctx2,
+                None,
+                Some(dsh_session::CreateSessionOptions::default()),
+            )
             .await
             .unwrap();
         registry2.register(&ctx2, marks_unit()).unwrap();
         let empty = registry2.checkpoint(&fresh);
         assert_eq!(empty.get("test/marks").unwrap().seq, -1);
-        assert_eq!(empty.get("test/marks").unwrap().val, serde_json::Value::Null);
+        assert_eq!(
+            empty.get("test/marks").unwrap().val,
+            serde_json::Value::Null
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -748,7 +822,10 @@ mod tests {
         let rows = registry.checkpoint(&session);
         // A hostile consumer mutates the handed-out state.
         let mut injected = rows.get("test/marks").unwrap().val.clone();
-        injected["marks"].as_array_mut().unwrap().push(serde_json::json!("INJECTED"));
+        injected["marks"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!("INJECTED"));
         // The registry's authoritative cell is untouched.
         assert_eq!(
             registry.snapshot(&session).values.get("test/marks"),
@@ -769,21 +846,70 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn restore_floor_anchors_one_below_lowest_usable_watermark() {
         let (ctx, registry, _session) = harness().await;
-        assert_eq!(registry.restore_floor(&ProjectionCheckpoint::new()), None, "no unit registered");
+        assert_eq!(
+            registry.restore_floor(&ProjectionCheckpoint::new()),
+            None,
+            "no unit registered"
+        );
         registry.register(&ctx, marks_unit()).unwrap();
         registry.register(&ctx, count_unit()).unwrap();
-        assert_eq!(registry.restore_floor(&ProjectionCheckpoint::new()), Some(0));
+        assert_eq!(
+            registry.restore_floor(&ProjectionCheckpoint::new()),
+            Some(0)
+        );
         let mut rows = ProjectionCheckpoint::new();
-        rows.insert("test/marks".to_string(), ProjectionCheckpointRow { ver: 1, seq: 10, val: serde_json::json!({"marks": []}) });
-        rows.insert("test/count".to_string(), ProjectionCheckpointRow { ver: 1, seq: 5, val: serde_json::json!(6) });
+        rows.insert(
+            "test/marks".to_string(),
+            ProjectionCheckpointRow {
+                ver: 1,
+                seq: 10,
+                val: serde_json::json!({"marks": []}),
+            },
+        );
+        rows.insert(
+            "test/count".to_string(),
+            ProjectionCheckpointRow {
+                ver: 1,
+                seq: 5,
+                val: serde_json::json!(6),
+            },
+        );
         assert_eq!(registry.restore_floor(&rows), Some(5));
         let mut mismatched = ProjectionCheckpoint::new();
-        mismatched.insert("test/marks".to_string(), ProjectionCheckpointRow { ver: 2, seq: 10, val: serde_json::json!({"marks": []}) });
-        mismatched.insert("test/count".to_string(), ProjectionCheckpointRow { ver: 1, seq: 5, val: serde_json::json!(6) });
+        mismatched.insert(
+            "test/marks".to_string(),
+            ProjectionCheckpointRow {
+                ver: 2,
+                seq: 10,
+                val: serde_json::json!({"marks": []}),
+            },
+        );
+        mismatched.insert(
+            "test/count".to_string(),
+            ProjectionCheckpointRow {
+                ver: 1,
+                seq: 5,
+                val: serde_json::json!(6),
+            },
+        );
         assert_eq!(registry.restore_floor(&mismatched), Some(0));
         let mut fresh = ProjectionCheckpoint::new();
-        fresh.insert("test/marks".to_string(), ProjectionCheckpointRow { ver: 1, seq: -1, val: serde_json::Value::Null });
-        fresh.insert("test/count".to_string(), ProjectionCheckpointRow { ver: 1, seq: -1, val: serde_json::json!(0) });
+        fresh.insert(
+            "test/marks".to_string(),
+            ProjectionCheckpointRow {
+                ver: 1,
+                seq: -1,
+                val: serde_json::Value::Null,
+            },
+        );
+        fresh.insert(
+            "test/count".to_string(),
+            ProjectionCheckpointRow {
+                ver: 1,
+                seq: -1,
+                val: serde_json::json!(0),
+            },
+        );
         assert_eq!(registry.restore_floor(&fresh), Some(0));
     }
 
@@ -806,30 +932,66 @@ mod tests {
         registry.register(&ctx, count_unit()).unwrap();
         let tail = vec![
             event("test/mark", 3, 3, serde_json::json!({"marks": ["new"]})),
-            event("turn/end", 4, 4, serde_json::json!({"turn": 1, "reason": {"kind": "completed"}})),
+            event(
+                "turn/end",
+                4,
+                4,
+                serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+            ),
         ];
         // marks row usable; count row mismatched — a mismatch with
         // baseSeq > 0 cannot silently refold: it throws for a re-read.
         let mut rows = ProjectionCheckpoint::new();
-        rows.insert("test/marks".to_string(), ProjectionCheckpointRow { ver: 1, seq: 2, val: serde_json::json!({"marks": ["old"]}) });
-        rows.insert("test/count".to_string(), ProjectionCheckpointRow { ver: 99, seq: 2, val: serde_json::json!(3) });
+        rows.insert(
+            "test/marks".to_string(),
+            ProjectionCheckpointRow {
+                ver: 1,
+                seq: 2,
+                val: serde_json::json!({"marks": ["old"]}),
+            },
+        );
+        rows.insert(
+            "test/count".to_string(),
+            ProjectionCheckpointRow {
+                ver: 99,
+                seq: 2,
+                val: serde_json::json!(3),
+            },
+        );
         let error = registry.restore(&rows, &tail, 3).unwrap_err();
         assert!(error.contains("re-read from seq 0"), "{error}");
         // The full-log re-read (baseSeq 0) refolds the mismatched key from init.
         let full = vec![
             event("turn/start", 0, 0, serde_json::json!({"turn": 1})),
             event("test/mark", 1, 1, serde_json::json!({"marks": ["old"]})),
-            event("test/mark", 2, 2, serde_json::json!({"marks": ["old", "2"]})),
+            event(
+                "test/mark",
+                2,
+                2,
+                serde_json::json!({"marks": ["old", "2"]}),
+            ),
             tail[0].clone(),
             tail[1].clone(),
         ];
         let (snapshot, refreshed) = registry.restore(&rows, &full, 0).unwrap();
         assert_eq!(snapshot.as_of_seq, 4);
-        assert_eq!(snapshot.values.get("test/marks"), Some(&serde_json::json!({"marks": ["new"]})));
-        assert_eq!(snapshot.values.get("test/count"), Some(&serde_json::json!(5)));
+        assert_eq!(
+            snapshot.values.get("test/marks"),
+            Some(&serde_json::json!({"marks": ["new"]}))
+        );
+        assert_eq!(
+            snapshot.values.get("test/count"),
+            Some(&serde_json::json!(5))
+        );
         assert_eq!(refreshed.get("test/marks").unwrap().seq, 4);
-        assert_eq!(refreshed.get("test/marks").unwrap().val, serde_json::json!({"marks": ["new"]}));
-        assert_eq!(refreshed.get("test/count").unwrap().val, serde_json::json!(5));
+        assert_eq!(
+            refreshed.get("test/marks").unwrap().val,
+            serde_json::json!({"marks": ["new"]})
+        );
+        assert_eq!(
+            refreshed.get("test/count").unwrap().val,
+            serde_json::json!(5)
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -838,24 +1000,66 @@ mod tests {
         registry.register(&ctx, marks_unit()).unwrap();
         registry.register(&ctx, count_unit()).unwrap();
         let mut rows = ProjectionCheckpoint::new();
-        rows.insert("test/marks".to_string(), ProjectionCheckpointRow { ver: 1, seq: 4, val: serde_json::json!({"marks": ["done"]}) });
-        rows.insert("test/count".to_string(), ProjectionCheckpointRow { ver: 1, seq: 2, val: serde_json::json!(3) });
+        rows.insert(
+            "test/marks".to_string(),
+            ProjectionCheckpointRow {
+                ver: 1,
+                seq: 4,
+                val: serde_json::json!({"marks": ["done"]}),
+            },
+        );
+        rows.insert(
+            "test/count".to_string(),
+            ProjectionCheckpointRow {
+                ver: 1,
+                seq: 2,
+                val: serde_json::json!(3),
+            },
+        );
         let tail = vec![
             event("turn/start", 3, 3, serde_json::json!({"turn": 2})),
-            event("turn/end", 4, 4, serde_json::json!({"turn": 2, "reason": {"kind": "completed"}})),
+            event(
+                "turn/end",
+                4,
+                4,
+                serde_json::json!({"turn": 2, "reason": {"kind": "completed"}}),
+            ),
         ];
         let (snapshot, _) = registry.restore(&rows, &tail, 3).unwrap();
         assert_eq!(snapshot.as_of_seq, 4);
-        assert_eq!(snapshot.values.get("test/marks"), Some(&serde_json::json!({"marks": ["done"]})));
-        assert_eq!(snapshot.values.get("test/count"), Some(&serde_json::json!(5)));
+        assert_eq!(
+            snapshot.values.get("test/marks"),
+            Some(&serde_json::json!({"marks": ["done"]}))
+        );
+        assert_eq!(
+            snapshot.values.get("test/count"),
+            Some(&serde_json::json!(5))
+        );
 
         // Empty tail (checkpoint is current): the cut sits at baseSeq - 1.
         let mut current_rows = ProjectionCheckpoint::new();
-        current_rows.insert("test/marks".to_string(), ProjectionCheckpointRow { ver: 1, seq: 4, val: serde_json::json!({"marks": ["done"]}) });
-        current_rows.insert("test/count".to_string(), ProjectionCheckpointRow { ver: 1, seq: 4, val: serde_json::json!(5) });
+        current_rows.insert(
+            "test/marks".to_string(),
+            ProjectionCheckpointRow {
+                ver: 1,
+                seq: 4,
+                val: serde_json::json!({"marks": ["done"]}),
+            },
+        );
+        current_rows.insert(
+            "test/count".to_string(),
+            ProjectionCheckpointRow {
+                ver: 1,
+                seq: 4,
+                val: serde_json::json!(5),
+            },
+        );
         let (current, _) = registry.restore(&current_rows, &[], 5).unwrap();
         assert_eq!(current.as_of_seq, 4);
-        assert_eq!(current.values.get("test/count"), Some(&serde_json::json!(5)));
+        assert_eq!(
+            current.values.get("test/count"),
+            Some(&serde_json::json!(5))
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -864,12 +1068,32 @@ mod tests {
         registry.register(&ctx, marks_unit()).unwrap();
         registry.register(&ctx, count_unit()).unwrap();
         let mut rows = ProjectionCheckpoint::new();
-        rows.insert("test/marks".to_string(), ProjectionCheckpointRow { ver: 1, seq: 4, val: serde_json::json!({"marks": ["stored"]}) });
-        rows.insert("test/count".to_string(), ProjectionCheckpointRow { ver: 99, seq: 4, val: serde_json::json!(5) });
+        rows.insert(
+            "test/marks".to_string(),
+            ProjectionCheckpointRow {
+                ver: 1,
+                seq: 4,
+                val: serde_json::json!({"marks": ["stored"]}),
+            },
+        );
+        rows.insert(
+            "test/count".to_string(),
+            ProjectionCheckpointRow {
+                ver: 99,
+                seq: 4,
+                val: serde_json::json!(5),
+            },
+        );
         let values = registry.view_checkpoint(&rows);
-        assert_eq!(values.get("test/marks"), Some(&serde_json::json!({"marks": ["stored"]})));
+        assert_eq!(
+            values.get("test/marks"),
+            Some(&serde_json::json!({"marks": ["stored"]}))
+        );
         assert!(!values.contains_key("test/count"));
-        assert_eq!(registry.view_checkpoint(&ProjectionCheckpoint::new()), serde_json::Map::new());
+        assert_eq!(
+            registry.view_checkpoint(&ProjectionCheckpoint::new()),
+            serde_json::Map::new()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -880,9 +1104,17 @@ mod tests {
         let floor = registry.restore_floor(&rows).unwrap();
         assert_eq!(floor, 9);
         // An intact log serves the anchor event and the checkpoint stands.
-        let anchor = event("turn/end", 9, 9, serde_json::json!({"turn": 2, "reason": {"kind": "completed"}}));
+        let anchor = event(
+            "turn/end",
+            9,
+            9,
+            serde_json::json!({"turn": 2, "reason": {"kind": "completed"}}),
+        );
         let (snapshot, _) = registry.restore(&rows, &[anchor], 9).unwrap();
-        assert_eq!(snapshot.values.get("test/count"), Some(&serde_json::json!(10)));
+        assert_eq!(
+            snapshot.values.get("test/count"),
+            Some(&serde_json::json!(10))
+        );
         // A shrunk log returns an empty tail: the row overreaches the proven
         // end and a tail read cannot fix this key.
         let error = registry.restore(&rows, &[], 9).unwrap_err();
@@ -890,11 +1122,19 @@ mod tests {
         // The full re-read discards the overreaching row and refolds.
         let events = vec![
             event("turn/start", 0, 0, serde_json::json!({"turn": 1})),
-            event("turn/end", 1, 1, serde_json::json!({"turn": 1, "reason": {"kind": "completed"}})),
+            event(
+                "turn/end",
+                1,
+                1,
+                serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+            ),
         ];
         let (snapshot, _) = registry.restore(&rows, &events, 0).unwrap();
         assert_eq!(snapshot.as_of_seq, 1);
-        assert_eq!(snapshot.values.get("test/count"), Some(&serde_json::json!(2)));
+        assert_eq!(
+            snapshot.values.get("test/count"),
+            Some(&serde_json::json!(2))
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -904,15 +1144,16 @@ mod tests {
             .register(
                 &ctx,
                 ProjectionDefinition {
-                key: "test/marks".to_string(),
-                schema: Arc::new(marks_schema),
-                init: Arc::new(|| arc(serde_json::Value::Null)),
-                apply: Arc::new(|state: &ArcValue, _event: &SessionEvent| state.clone()),
-                // A unit whose view output cannot satisfy its schema fails
-                // at the boundary parse (the TS async-view analogue).
-                view: Arc::new(|_state: &ArcValue| arc(serde_json::json!("not-an-object"))),
-                state_version: 1,
-            })
+                    key: "test/marks".to_string(),
+                    schema: Arc::new(marks_schema),
+                    init: Arc::new(|| arc(serde_json::Value::Null)),
+                    apply: Arc::new(|state: &ArcValue, _event: &SessionEvent| state.clone()),
+                    // A unit whose view output cannot satisfy its schema fails
+                    // at the boundary parse (the TS async-view analogue).
+                    view: Arc::new(|_state: &ArcValue| arc(serde_json::json!("not-an-object"))),
+                    state_version: 1,
+                },
+            )
             .unwrap();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             registry.snapshot(&session);

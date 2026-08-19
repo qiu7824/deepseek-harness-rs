@@ -14,10 +14,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::SeqCst};
 
 use dsh_subprocess::{
-    SubprocessOutcome, SubprocessTerminalHandle, SubprocessTerminalSignal,
+    SubprocessOutcome, SubprocessRuntime, SubprocessTerminalHandle, SubprocessTerminalSignal,
+    SubprocessTerminalSpawnSpec,
 };
 use dsh_subprocess_local::{
-    LocalTerminalHandle, ProcessIdentity, ProcessInspector, PtyTerminal, TerminalKillSignal,
+    LocalSubprocessRuntime, LocalTerminalHandle, ProcessIdentity, ProcessInspector, PtyTerminal,
+    TerminalKillSignal,
 };
 use futures::StreamExt;
 use parking_lot::Mutex;
@@ -89,7 +91,9 @@ impl PtyTerminal for FakePty {
         self.data_listeners.lock().push(listener.clone());
         let listeners = self.data_listeners.clone();
         Box::new(move || {
-            listeners.lock().retain(|entry| !Arc::ptr_eq(entry, &listener));
+            listeners
+                .lock()
+                .retain(|entry| !Arc::ptr_eq(entry, &listener));
         })
     }
 
@@ -100,7 +104,9 @@ impl PtyTerminal for FakePty {
         self.exit_listeners.lock().push(listener.clone());
         let listeners = self.exit_listeners.clone();
         Box::new(move || {
-            listeners.lock().retain(|entry| !Arc::ptr_eq(entry, &listener));
+            listeners
+                .lock()
+                .retain(|entry| !Arc::ptr_eq(entry, &listener));
         })
     }
 }
@@ -130,7 +136,10 @@ impl FakeInspector {
         Arc::new(Self {
             pgid: Mutex::new(Some(456)),
             waiting: AtomicBool::new(false),
-            root: Mutex::new(Some(ProcessIdentity { pid: 123, started: "shell".to_string() })),
+            root: Mutex::new(Some(ProcessIdentity {
+                pid: 123,
+                started: "shell".to_string(),
+            })),
             members: Mutex::new(Vec::new()),
             session_members: Mutex::new(Vec::new()),
             alive: Mutex::new(HashSet::new()),
@@ -218,8 +227,14 @@ async fn done_of(handle: &Arc<LocalTerminalHandle>) -> SubprocessOutcome {
 async fn force_kills_descendants_around_the_shell_during_synchronous_host_exit() {
     let pty = FakePty::new();
     let inspector = FakeInspector::new();
-    let first = ProcessIdentity { pid: 124, started: "first".to_string() };
-    let late = ProcessIdentity { pid: 125, started: "late".to_string() };
+    let first = ProcessIdentity {
+        pid: 124,
+        started: "first".to_string(),
+    };
+    let late = ProcessIdentity {
+        pid: 125,
+        started: "late".to_string(),
+    };
     inspector.members.lock().push(first.clone());
     inspector.alive.lock().insert(pty.pid);
     inspector.alive.lock().insert(first.pid);
@@ -237,7 +252,10 @@ async fn force_kills_descendants_around_the_shell_during_synchronous_host_exit()
                 }
             }
             if identity.pid == 123 {
-                inspector.members.lock().extend([first.clone(), late.clone()]);
+                inspector
+                    .members
+                    .lock()
+                    .extend([first.clone(), late.clone()]);
                 inspector.alive.lock().insert(late.pid);
             }
         })
@@ -264,7 +282,10 @@ async fn force_kills_descendants_around_the_shell_during_synchronous_host_exit()
 async fn uses_captured_identities_and_contains_shell_races_when_final_inspection_fails() {
     let pty = FakePty::new();
     let inspector = FakeInspector::new();
-    let captured = ProcessIdentity { pid: 124, started: "captured".to_string() };
+    let captured = ProcessIdentity {
+        pid: 124,
+        started: "captured".to_string(),
+    };
     inspector.members.lock().push(captured);
     inspector.alive.lock().insert(pty.pid);
     inspector.alive.lock().insert(124);
@@ -308,7 +329,10 @@ async fn does_not_signal_a_recycled_terminal_root_before_its_delayed_exit_callba
     let inspector = FakeInspector::new();
     inspector.alive.lock().insert(pty.pid);
     let handle = LocalTerminalHandle::new(pty.clone(), inspector.clone(), 10);
-    *inspector.root.lock() = Some(ProcessIdentity { pid: 123, started: "recycled".to_string() });
+    *inspector.root.lock() = Some(ProcessIdentity {
+        pid: 123,
+        started: "recycled".to_string(),
+    });
     *inspector.alive_override.lock() = Some(Arc::new(|identity| identity.started == "recycled"));
 
     handle.terminate_for_host_exit();
@@ -338,16 +362,25 @@ async fn bridges_terminal_bytes_foreground_control_and_signalled_exit_facts() {
         })
     );
     assert_eq!(
-        handle.signal_foreground(SubprocessTerminalSignal::SigInt).await.expect("signal"),
+        handle
+            .signal_foreground(SubprocessTerminalSignal::SigInt)
+            .await
+            .expect("signal"),
         456
     );
-    assert_eq!(*inspector.groups.lock(), vec![(456, SubprocessTerminalSignal::SigInt)]);
+    assert_eq!(
+        *inspector.groups.lock(),
+        vec![(456, SubprocessTerminalSignal::SigInt)]
+    );
 
     pty.emit_exit(7, Some(9));
     pty.emit_exit(0, None);
     assert_eq!(
         done_of(&handle).await,
-        SubprocessOutcome { exit_code: None, signal: Some("SIGKILL".to_string()) }
+        SubprocessOutcome {
+            exit_code: None,
+            signal: Some("SIGKILL".to_string())
+        }
     );
     handle.terminate().await.expect("terminate");
     let mut chunks: Vec<u8> = Vec::new();
@@ -370,7 +403,13 @@ async fn rejects_unsafe_foreground_signals_and_writes_after_exit() {
         .expect("SIGKILL refused");
     assert!(error.contains("terminate the terminal session"), "{error}");
     *inspector.pgid.lock() = None;
-    assert!(handle.inspect_foreground().await.expect("inspect").is_none());
+    assert!(
+        handle
+            .inspect_foreground()
+            .await
+            .expect("inspect")
+            .is_none()
+    );
     let error = handle
         .signal_foreground(SubprocessTerminalSignal::SigTerm)
         .await
@@ -381,7 +420,10 @@ async fn rejects_unsafe_foreground_signals_and_writes_after_exit() {
     pty.emit_exit(3, None);
     assert_eq!(
         done_of(&handle).await,
-        SubprocessOutcome { exit_code: Some(3), signal: None }
+        SubprocessOutcome {
+            exit_code: Some(3),
+            signal: None
+        }
     );
     handle.terminate().await.expect("terminate");
     let error = handle.write("late").await.err().expect("has exited");
@@ -394,7 +436,10 @@ async fn rejects_unsafe_foreground_signals_and_writes_after_exit() {
 async fn keeps_the_shell_alive_until_forced_descendants_leave() {
     let pty = FakePty::new();
     let inspector = FakeInspector::new();
-    inspector.members.lock().push(ProcessIdentity { pid: 124, started: "child".to_string() });
+    inspector.members.lock().push(ProcessIdentity {
+        pid: 124,
+        started: "child".to_string(),
+    });
     inspector.alive.lock().insert(124);
     inspector.remove_on_signal.store(false, SeqCst);
     let handle = LocalTerminalHandle::new(pty.clone(), inspector.clone(), 60);
@@ -410,7 +455,12 @@ async fn keeps_the_shell_alive_until_forced_descendants_leave() {
         });
     }
     tokio::time::sleep(std::time::Duration::from_millis(70)).await;
-    assert!(inspector.processes.lock().contains(&(124, TerminalKillSignal::SigKill)));
+    assert!(
+        inspector
+            .processes
+            .lock()
+            .contains(&(124, TerminalKillSignal::SigKill))
+    );
     assert!(pty.kills.lock().is_empty());
 
     // The survivor leaves during the KILL grace; cleanup completes through
@@ -427,7 +477,10 @@ async fn keeps_the_shell_alive_until_forced_descendants_leave() {
 async fn keeps_an_early_exit_wait_pending_through_descendant_cleanup() {
     let pty = FakePty::new();
     let inspector = FakeInspector::new();
-    inspector.members.lock().push(ProcessIdentity { pid: 124, started: "child".to_string() });
+    inspector.members.lock().push(ProcessIdentity {
+        pid: 124,
+        started: "child".to_string(),
+    });
     inspector.alive.lock().insert(124);
     inspector.remove_on_signal.store(false, SeqCst);
     let handle = LocalTerminalHandle::new(pty.clone(), inspector.clone(), 20);
@@ -453,7 +506,10 @@ async fn keeps_an_early_exit_wait_pending_through_descendant_cleanup() {
 async fn cleans_a_same_session_descendant_after_the_top_level_shell_exits_naturally() {
     let pty = FakePty::new();
     let inspector = FakeInspector::new();
-    let disowned = ProcessIdentity { pid: 124, started: "disowned".to_string() };
+    let disowned = ProcessIdentity {
+        pid: 124,
+        started: "disowned".to_string(),
+    };
     *inspector.session_override.lock() = Some({
         let inspector = inspector.clone();
         let disowned = disowned.clone();
@@ -481,7 +537,10 @@ async fn cleans_a_same_session_descendant_after_the_top_level_shell_exits_natura
 async fn retains_an_inspected_descendant_after_it_reparents_away_from_the_shell() {
     let pty = FakePty::new();
     let inspector = FakeInspector::new();
-    let descendant = ProcessIdentity { pid: 124, started: "observed".to_string() };
+    let descendant = ProcessIdentity {
+        pid: 124,
+        started: "observed".to_string(),
+    };
     inspector.members.lock().push(descendant);
     inspector.alive.lock().insert(124);
     let handle = LocalTerminalHandle::new(pty.clone(), inspector.clone(), 20);
@@ -504,8 +563,14 @@ async fn does_not_adopt_the_children_of_a_recycled_shell_pid() {
     let handle = LocalTerminalHandle::new(pty.clone(), inspector.clone(), 10);
 
     pty.emit_exit(0, None);
-    let imposter_child = ProcessIdentity { pid: 999, started: "imposter-child".to_string() };
-    *inspector.root.lock() = Some(ProcessIdentity { pid: 123, started: "imposter".to_string() });
+    let imposter_child = ProcessIdentity {
+        pid: 999,
+        started: "imposter-child".to_string(),
+    };
+    *inspector.root.lock() = Some(ProcessIdentity {
+        pid: 123,
+        started: "imposter".to_string(),
+    });
     inspector.members.lock().push(imposter_child);
     inspector.alive.lock().insert(999);
 
@@ -518,7 +583,10 @@ async fn adopts_nothing_when_the_shell_identity_was_never_observable() {
     let pty = FakePty::new();
     let inspector = FakeInspector::new();
     *inspector.root.lock() = None;
-    let orphan = ProcessIdentity { pid: 321, started: "unverifiable".to_string() };
+    let orphan = ProcessIdentity {
+        pid: 321,
+        started: "unverifiable".to_string(),
+    };
     inspector.members.lock().push(orphan);
     inspector.alive.lock().insert(321);
     let handle = LocalTerminalHandle::new(pty.clone(), inspector.clone(), 10);
@@ -532,7 +600,10 @@ async fn adopts_nothing_when_the_shell_identity_was_never_observable() {
 async fn rescans_for_descendants_forked_during_term() {
     let pty = FakePty::new();
     let inspector = FakeInspector::new();
-    let root = ProcessIdentity { pid: 123, started: "shell".to_string() };
+    let root = ProcessIdentity {
+        pid: 123,
+        started: "shell".to_string(),
+    };
     let reads = Arc::new(std::sync::atomic::AtomicU32::new(0));
     *inspector.tree_override.lock() = Some({
         let inspector = inspector.clone();
@@ -544,11 +615,23 @@ async fn rescans_for_descendants_forked_during_term() {
                 1 => vec![root.clone()],
                 2 => {
                     inspector.alive.lock().insert(124);
-                    vec![root.clone(), ProcessIdentity { pid: 124, started: "first".to_string() }]
+                    vec![
+                        root.clone(),
+                        ProcessIdentity {
+                            pid: 124,
+                            started: "first".to_string(),
+                        },
+                    ]
                 }
                 3 => {
                     inspector.alive.lock().insert(125);
-                    vec![root.clone(), ProcessIdentity { pid: 125, started: "late".to_string() }]
+                    vec![
+                        root.clone(),
+                        ProcessIdentity {
+                            pid: 125,
+                            started: "late".to_string(),
+                        },
+                    ]
                 }
                 _ => Vec::new(),
             }
@@ -558,7 +641,10 @@ async fn rescans_for_descendants_forked_during_term() {
     handle.terminate().await.expect("terminate");
     assert_eq!(
         *inspector.processes.lock(),
-        vec![(124, TerminalKillSignal::SigTerm), (125, TerminalKillSignal::SigKill)]
+        vec![
+            (124, TerminalKillSignal::SigTerm),
+            (125, TerminalKillSignal::SigKill)
+        ]
     );
     assert_eq!(*pty.kills.lock(), vec!["SIGTERM".to_string()]);
 }
@@ -567,7 +653,10 @@ async fn rescans_for_descendants_forked_during_term() {
 async fn sweeps_a_same_session_descendant_forked_while_the_shell_handles_term() {
     let pty = FakePty::new();
     let inspector = FakeInspector::new();
-    let late = ProcessIdentity { pid: 124, started: "shell-term-trap".to_string() };
+    let late = ProcessIdentity {
+        pid: 124,
+        started: "shell-term-trap".to_string(),
+    };
     *pty.on_kill.lock() = Some({
         let inspector = inspector.clone();
         let late = late.clone();
@@ -591,7 +680,10 @@ async fn sweeps_a_same_session_descendant_forked_while_the_shell_handles_term() 
 async fn retries_failed_cleanup_after_a_surviving_descendant_leaves() {
     let pty = FakePty::new();
     let inspector = FakeInspector::new();
-    let late = ProcessIdentity { pid: 124, started: "shell-term-survivor".to_string() };
+    let late = ProcessIdentity {
+        pid: 124,
+        started: "shell-term-survivor".to_string(),
+    };
     inspector.remove_on_signal.store(false, SeqCst);
     *pty.on_kill.lock() = Some({
         let inspector = inspector.clone();
@@ -621,8 +713,14 @@ async fn retries_failed_cleanup_after_a_surviving_descendant_leaves() {
 async fn retains_captured_descendants_after_reparenting() {
     let pty = FakePty::new();
     let inspector = FakeInspector::new();
-    let captured = ProcessIdentity { pid: 124, started: "captured".to_string() };
-    let root = ProcessIdentity { pid: 123, started: "shell".to_string() };
+    let captured = ProcessIdentity {
+        pid: 124,
+        started: "captured".to_string(),
+    };
+    let root = ProcessIdentity {
+        pid: 123,
+        started: "shell".to_string(),
+    };
     let reads = Arc::new(std::sync::atomic::AtomicU32::new(0));
     inspector.alive.lock().insert(124);
     *inspector.tree_override.lock() = Some({
@@ -651,7 +749,10 @@ async fn retains_captured_descendants_after_reparenting() {
     handle.terminate().await.expect("terminate");
     assert_eq!(
         *inspector.processes.lock(),
-        vec![(124, TerminalKillSignal::SigTerm), (124, TerminalKillSignal::SigKill)]
+        vec![
+            (124, TerminalKillSignal::SigTerm),
+            (124, TerminalKillSignal::SigKill)
+        ]
     );
 }
 
@@ -662,12 +763,18 @@ async fn reports_a_top_level_process_that_ignores_escalation() {
     let handle = LocalTerminalHandle::new(pty.clone(), FakeInspector::new(), 10);
     let error = handle.terminate().await.err().expect("surviving shell");
     assert!(error.contains("surviving pid: 123"), "{error}");
-    assert_eq!(*pty.kills.lock(), vec!["SIGTERM".to_string(), "SIGKILL".to_string()]);
+    assert_eq!(
+        *pty.kills.lock(),
+        vec!["SIGTERM".to_string(), "SIGKILL".to_string()]
+    );
 
     pty.emit_exit(0, Some(999));
     assert_eq!(
         done_of(&handle).await,
-        SubprocessOutcome { exit_code: None, signal: None }
+        SubprocessOutcome {
+            exit_code: None,
+            signal: None
+        }
     );
     handle.terminate().await.expect("terminate");
 }
@@ -677,10 +784,223 @@ async fn contains_process_races_while_reporting_surviving_descendants() {
     let pty = FakePty::new();
     pty.throw_kill.store(true, SeqCst);
     let inspector = FakeInspector::new();
-    inspector.members.lock().push(ProcessIdentity { pid: 124, started: "child".to_string() });
+    inspector.members.lock().push(ProcessIdentity {
+        pid: 124,
+        started: "child".to_string(),
+    });
     inspector.alive.lock().insert(124);
     inspector.throw_process.store(true, SeqCst);
     let handle = LocalTerminalHandle::new(pty, inspector, 1);
     let error = handle.terminate().await.err().expect("surviving");
     assert!(error.contains("surviving pids: 124"), "{error}");
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_captures_output_from_a_naturally_exiting_real_conpty() {
+    let runtime = LocalSubprocessRuntime::new();
+    let handle = runtime
+        .spawn_terminal(SubprocessTerminalSpawnSpec {
+            argv: vec![r"C:\Windows\System32\whoami.exe".to_string()],
+            cwd: std::env::current_dir()
+                .expect("current directory")
+                .to_string_lossy()
+                .into_owned(),
+            env: None,
+            rows: 24,
+            cols: 80,
+            grace_ms: 1_000,
+            signal: None,
+        })
+        .await
+        .expect("real ConPTY allocation");
+    let mut output = handle.output();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), handle.done())
+        .await
+        .expect("cmd exit deadline")
+        .expect("cmd outcome");
+    assert_eq!(outcome.exit_code, Some(0));
+    let captured = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut captured = String::new();
+        while let Some(chunk) = output.next().await {
+            captured.push_str(&String::from_utf8_lossy(&chunk));
+        }
+        captured
+    })
+    .await
+    .expect("output EOF deadline");
+    handle.terminate().await.expect("cleanup");
+    assert!(
+        !captured.trim().is_empty(),
+        "PTY output missing from naturally exiting child: {captured:?}"
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_allocates_a_real_conpty_and_round_trips_cmd_output() {
+    let runtime = LocalSubprocessRuntime::new();
+    let handle = runtime
+        .spawn_terminal(SubprocessTerminalSpawnSpec {
+            argv: vec![
+                r"C:\Windows\System32\cmd.exe".to_string(),
+                "/Q".to_string(),
+                "/K".to_string(),
+            ],
+            cwd: std::env::current_dir()
+                .expect("current directory")
+                .to_string_lossy()
+                .into_owned(),
+            env: None,
+            rows: 24,
+            cols: 80,
+            grace_ms: 1_000,
+            signal: None,
+        })
+        .await
+        .expect("real ConPTY allocation");
+    assert!(handle.pid() > 0);
+
+    let mut output = handle.output();
+    handle
+        .write("@echo off\r\n")
+        .await
+        .expect("disable command echo");
+    handle
+        .write("echo DSH_REAL_CONPTY_OUTPUT\r\n")
+        .await
+        .expect("write command through PTY");
+
+    let captured = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut captured = String::new();
+        while let Some(chunk) = output.next().await {
+            captured.push_str(&String::from_utf8_lossy(&chunk));
+            if captured.contains("DSH_REAL_CONPTY_OUTPUT") {
+                break;
+            }
+        }
+        captured
+    })
+    .await
+    .expect("cmd output deadline");
+    assert!(
+        captured.contains("DSH_REAL_CONPTY_OUTPUT"),
+        "PTY output did not contain command result: {captured:?}"
+    );
+
+    handle.write("exit\r").await.expect("exit shell");
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), handle.done())
+        .await
+        .expect("cmd exit deadline")
+        .expect("cmd outcome");
+    assert_eq!(outcome.exit_code, Some(0));
+    handle.terminate().await.expect("idempotent cleanup");
+}
+
+#[cfg(windows)]
+fn windows_process_exists(pid: u32) -> bool {
+    let output = std::process::Command::new(r"C:\Windows\System32\tasklist.exe")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()
+        .expect("tasklist runs");
+    String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+}
+
+#[cfg(windows)]
+fn force_kill_windows_tree(pid: u32) {
+    let _ = std::process::Command::new(r"C:\Windows\System32\taskkill.exe")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status();
+}
+
+#[cfg(windows)]
+async fn wait_for_windows_process_to_exit(pid: u32) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if !windows_process_exists(pid) {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    false
+}
+
+#[cfg(windows)]
+#[test]
+fn dropping_runtime_and_handle_quiesces_the_real_conpty_tree() {
+    let stage_file = std::env::temp_dir().join(format!(
+        "dsh-conpty-drop-stage-{}-{}.txt",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", "conpty_drop_child", "--nocapture"])
+        .env("DSH_CONPTY_DROP_CHILD", "1")
+        .env("DSH_CONPTY_DROP_STAGE", &stage_file)
+        .spawn()
+        .expect("spawn isolated ConPTY drop child");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll child") {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    let stage = std::fs::read_to_string(&stage_file).unwrap_or_else(|_| "not-started".to_string());
+    if status.is_none() {
+        force_kill_windows_tree(child.id());
+        let _ = child.wait();
+    }
+    let _ = std::fs::remove_file(stage_file);
+    let status = status.unwrap_or_else(|| panic!("ConPTY drop child hung after stage {stage:?}"));
+    assert!(
+        status.success(),
+        "ConPTY drop child failed after stage {stage:?}: {status}"
+    );
+    assert_eq!(stage, "done");
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conpty_drop_child() {
+    if std::env::var_os("DSH_CONPTY_DROP_CHILD").is_none() {
+        return;
+    }
+    let stage_file =
+        std::path::PathBuf::from(std::env::var_os("DSH_CONPTY_DROP_STAGE").expect("stage file"));
+    std::fs::write(&stage_file, "starting").expect("starting stage");
+    let runtime = LocalSubprocessRuntime::new();
+    let handle = runtime
+        .spawn_terminal(SubprocessTerminalSpawnSpec {
+            argv: vec![
+                r"C:\Windows\System32\cmd.exe".to_string(),
+                "/Q".to_string(),
+                "/K".to_string(),
+            ],
+            cwd: std::env::current_dir()
+                .expect("current directory")
+                .to_string_lossy()
+                .into_owned(),
+            env: None,
+            rows: 24,
+            cols: 80,
+            grace_ms: 1_000,
+            signal: None,
+        })
+        .await
+        .expect("real ConPTY allocation");
+    let root_pid = handle.pid();
+    assert!(windows_process_exists(root_pid));
+    std::fs::write(&stage_file, format!("spawned:{root_pid}")).expect("spawned stage");
+
+    drop(handle);
+    std::fs::write(&stage_file, "handle-dropped").expect("handle stage");
+    drop(runtime);
+    std::fs::write(&stage_file, "runtime-dropped").expect("runtime stage");
+
+    assert!(wait_for_windows_process_to_exit(root_pid).await);
+    std::fs::write(&stage_file, "done").expect("done stage");
 }

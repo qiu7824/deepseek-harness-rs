@@ -4,6 +4,7 @@
 //! transport and SDK renderers arrive with the dsh-code-runtime
 //! milestone).
 
+mod code_mode;
 pub mod index;
 pub mod json_schema;
 pub mod presentation;
@@ -23,14 +24,14 @@ pub use json_schema::{
 };
 pub use presentation::{
     FileDiff, FileLocation, ReadFileLine, ReadResultView, SearchFileMatches, SearchLineMatch,
-    SearchResultView, ToolCallKind, ToolCallView, ToolResult, ToolResultView, WebSource,
-    WebResultView,
+    SearchResultView, ToolCallKind, ToolCallView, ToolResult, ToolResultView, WebResultView,
+    WebSource,
 };
 pub use schema::{
-    ArrayValueSchemaSpec, BooleanValueSchemaSpec, IntegerValueSchemaSpec,
-    JsonValueSchemaSpec, NullValueSchemaSpec, NumberValueSchemaSpec, ObjectValueSchemaSpec,
-    OneOfValueSchemaSpec, ParameterJsonSchema, ParameterPropertySpec, ParameterSchemaSpec,
-    StringValueSchemaSpec, ToolArgsError, ValueSchemaAnnotations, ValueSchemaSpec,
-    parameter_schema_spec_to_json_schema, validate_args, value_schema_spec_to_json_schema,
+    ArrayValueSchemaSpec, BooleanValueSchemaSpec, IntegerValueSchemaSpec, JsonValueSchemaSpec,
+    NullValueSchemaSpec, NumberValueSchemaSpec, ObjectValueSchemaSpec, OneOfValueSchemaSpec,
+    ParameterJsonSchema, ParameterPropertySpec, ParameterSchemaSpec, StringValueSchemaSpec,
+    ToolArgsError, ValueSchemaAnnotations, ValueSchemaSpec, parameter_schema_spec_to_json_schema,
+    validate_args, value_schema_spec_to_json_schema,
 };
 pub use types::{CodeDispatchEventData, CodeDispatchStartEventData};

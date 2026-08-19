@@ -20,16 +20,19 @@ pub enum ApiKeyCheck {
 pub fn normalize_api_key(raw: &str) -> ApiKeyCheck {
     let value = raw.trim();
     if value.is_empty() {
-        return ApiKeyCheck::Rejected { reason: ApiKeyRejection::Empty };
+        return ApiKeyCheck::Rejected {
+            reason: ApiKeyRejection::Empty,
+        };
     }
     // Printable ASCII, space excluded (TS `LEGAL_API_KEY`).
-    if value
-        .chars()
-        .any(|ch| !('\u{21}'..='\u{7E}').contains(&ch))
-    {
-        return ApiKeyCheck::Rejected { reason: ApiKeyRejection::IllegalCharacters };
+    if value.chars().any(|ch| !('\u{21}'..='\u{7E}').contains(&ch)) {
+        return ApiKeyCheck::Rejected {
+            reason: ApiKeyRejection::IllegalCharacters,
+        };
     }
-    ApiKeyCheck::Ok { value: value.to_string() }
+    ApiKeyCheck::Ok {
+        value: value.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -40,15 +43,21 @@ mod tests {
     fn trims_and_judges_keys() {
         assert_eq!(
             normalize_api_key("  sk-abc123  "),
-            ApiKeyCheck::Ok { value: "sk-abc123".to_string() }
+            ApiKeyCheck::Ok {
+                value: "sk-abc123".to_string()
+            }
         );
         assert_eq!(
             normalize_api_key("   "),
-            ApiKeyCheck::Rejected { reason: ApiKeyRejection::Empty }
+            ApiKeyCheck::Rejected {
+                reason: ApiKeyRejection::Empty
+            }
         );
         assert_eq!(
             normalize_api_key("sk\u{00E9}abc"),
-            ApiKeyCheck::Rejected { reason: ApiKeyRejection::IllegalCharacters }
+            ApiKeyCheck::Rejected {
+                reason: ApiKeyRejection::IllegalCharacters
+            }
         );
     }
 }

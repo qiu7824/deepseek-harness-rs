@@ -122,7 +122,10 @@ pub fn has_linux_chooser_binary(
     path_value: Option<&str>,
     is_executable: &dyn Fn(&str) -> bool,
 ) -> bool {
-    for dir in path_value.unwrap_or_default().split_terminator(if cfg!(windows) { ';' } else { ':' }) {
+    for dir in path_value
+        .unwrap_or_default()
+        .split_terminator(if cfg!(windows) { ';' } else { ':' })
+    {
         if dir.is_empty() {
             continue;
         }
@@ -200,12 +203,7 @@ mod tests {
         let mut display = empty();
         display.insert("WAYLAND_DISPLAY".to_string(), "wayland-0".to_string());
         assert_eq!(
-            resolve_directory_picker_backend(&facts(
-                BindHost::Loopback,
-                "linux",
-                display,
-                false
-            )),
+            resolve_directory_picker_backend(&facts(BindHost::Loopback, "linux", display, false)),
             DirectoryPickerBackendKind::Browse
         );
         // Unsupported platforms: browse.

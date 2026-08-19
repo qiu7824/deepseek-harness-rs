@@ -167,7 +167,9 @@ impl SandboxUnavailableError {
                 None => String::new(),
             }
         );
-        Self { error: HarnessError::new(message, SANDBOX_UNAVAILABLE) }
+        Self {
+            error: HarnessError::new(message, SANDBOX_UNAVAILABLE),
+        }
     }
 
     /// The stable machine-routable failure class.
@@ -205,7 +207,11 @@ pub trait SandboxProvider: Send + Sync + 'static {
     /// `argv` is the exact argv the caller is about to spawn (program plus
     /// arguments), NOT a shell string — a shell-shaped consumer passes
     /// `['bash', '-c', command]`.
-    fn confine(&self, argv: &[String], policy: &SandboxPolicy) -> Result<ConfinedArgv, SandboxUnavailableError>;
+    fn confine(
+        &self,
+        argv: &[String],
+        policy: &SandboxPolicy,
+    ) -> Result<ConfinedArgv, SandboxUnavailableError>;
 }
 
 impl Service for dyn SandboxProvider {

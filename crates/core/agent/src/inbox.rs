@@ -52,10 +52,16 @@ impl Inbox {
             let splice: InboxSplice = serde_json::from_value(event.data.clone())
                 .map_err(|error| error.to_string())
                 .map_err(|error| {
-                    format!("invalid persisted inbox splice at session seq {}: {error}", event.seq)
+                    format!(
+                        "invalid persisted inbox splice at session seq {}: {error}",
+                        event.seq
+                    )
                 })?;
             inbox.apply(&splice).map_err(|error| {
-                format!("invalid persisted inbox splice at session seq {}: {error}", event.seq)
+                format!(
+                    "invalid persisted inbox splice at session seq {}: {error}",
+                    event.seq
+                )
             })?;
         }
         Ok(inbox)
@@ -91,7 +97,13 @@ impl Inbox {
     /// publishing each claimed message (TS `Inbox.claim`).
     pub fn claim(&self, target: InboxTarget, turn: u64) -> Result<Vec<UserMessage>, String> {
         let step_len = self.state.lock().next_step.len();
-        let mut claimed = self.mutate(InboxTarget::NextStep, 0.0, step_len as f64, Vec::new(), false)?;
+        let mut claimed = self.mutate(
+            InboxTarget::NextStep,
+            0.0,
+            step_len as f64,
+            Vec::new(),
+            false,
+        )?;
         if target == InboxTarget::NextTurn {
             claimed.extend(self.mutate(InboxTarget::NextTurn, 0.0, 1.0, Vec::new(), false)?);
         }
@@ -119,11 +131,20 @@ impl Inbox {
     }
 
     /// Replace one pending message in place, possibly changing its identity.
-    pub fn replace(&self, message_id: &MessageId, new_message: UserMessage) -> Result<bool, String> {
+    pub fn replace(
+        &self,
+        message_id: &MessageId,
+        new_message: UserMessage,
+    ) -> Result<bool, String> {
         let Some(location) = self.locate(message_id) else {
             return Ok(false);
         };
-        self.splice(location.target, location.index as f64, 1.0, vec![new_message])?;
+        self.splice(
+            location.target,
+            location.index as f64,
+            1.0,
+            vec![new_message],
+        )?;
         Ok(true)
     }
 
@@ -164,14 +185,20 @@ impl Inbox {
             .iter()
             .position(|message| message.id == *message_id)
         {
-            return Some(Location { target: InboxTarget::NextTurn, index });
+            return Some(Location {
+                target: InboxTarget::NextTurn,
+                index,
+            });
         }
         if let Some(index) = state
             .next_step
             .iter()
             .position(|message| message.id == *message_id)
         {
-            return Some(Location { target: InboxTarget::NextStep, index });
+            return Some(Location {
+                target: InboxTarget::NextStep,
+                index,
+            });
         }
         None
     }
@@ -189,15 +216,23 @@ impl Inbox {
     ) -> Result<Vec<UserMessage>, String> {
         let list_len = self.list_len(target);
         let truncated_start = start.trunc();
-        let offset = if truncated_start.is_nan() { 0.0 } else { truncated_start };
+        let offset = if truncated_start.is_nan() {
+            0.0
+        } else {
+            truncated_start
+        };
         let actual_start = if offset < 0.0 {
             (list_len as f64 + offset).max(0.0) as usize
         } else {
             (offset as usize).min(list_len)
         };
         let truncated_delete = delete_count.trunc();
-        let actual_delete = ((if truncated_delete.is_nan() { 0.0 } else { truncated_delete })
-            .max(0.0) as usize)
+        let actual_delete = ((if truncated_delete.is_nan() {
+            0.0
+        } else {
+            truncated_delete
+        })
+        .max(0.0) as usize)
             .min(list_len - actual_start);
         if actual_delete == 0 && inserted.is_empty() {
             return Ok(Vec::new());
@@ -210,7 +245,11 @@ impl Inbox {
         let splice = InboxSplice {
             target,
             start: actual_start as u64,
-            removed_count: if actual_delete == 0 { None } else { Some(actual_delete as u64) },
+            removed_count: if actual_delete == 0 {
+                None
+            } else {
+                Some(actual_delete as u64)
+            },
             inserted: inserted.clone(),
             outcome,
         };
@@ -228,8 +267,11 @@ impl Inbox {
                 InboxTarget::NextTurn => &mut state.next_turn,
                 InboxTarget::NextStep => &mut state.next_step,
             };
-            list.splice(actual_start..actual_start + actual_delete, logged.inserted.clone())
-                .collect()
+            list.splice(
+                actual_start..actual_start + actual_delete,
+                logged.inserted.clone(),
+            )
+            .collect()
         };
         if discard_removed {
             if let Some(notify) = &self.notifications.discarded {
@@ -266,9 +308,7 @@ impl Inbox {
     fn validate(&self, splice: &InboxSplice) -> Result<(), String> {
         let list_len = self.list_len(splice.target);
         let removed_count = splice.removed_count.unwrap_or(0);
-        if splice.start > list_len as u64
-            || splice.start + removed_count > list_len as u64
-        {
+        if splice.start > list_len as u64 || splice.start + removed_count > list_len as u64 {
             return Err("invalid inbox splice".to_string());
         }
         let state = self.state.lock();
@@ -282,12 +322,8 @@ impl Inbox {
         );
         let mut ids = std::collections::HashSet::new();
         let ordered: Vec<&UserMessage> = match splice.target {
-            InboxTarget::NextTurn => {
-                candidate.iter().chain(state.next_step.iter()).collect()
-            }
-            InboxTarget::NextStep => {
-                state.next_turn.iter().chain(candidate.iter()).collect()
-            }
+            InboxTarget::NextTurn => candidate.iter().chain(state.next_step.iter()).collect(),
+            InboxTarget::NextStep => state.next_turn.iter().chain(candidate.iter()).collect(),
         };
         for message in ordered {
             let id = message.id.as_str().to_string();
@@ -309,13 +345,18 @@ struct Location {
 mod tests {
     use super::*;
     use dsh_llm::{ContentBlock, MessageSource};
-    use dsh_session::{session_id, SurfaceIntent, SurfaceOp};
+    use dsh_session::{SurfaceIntent, SurfaceOp, session_id};
 
     fn message(id: &str) -> UserMessage {
         dsh_llm::create_message(
             dsh_llm::Role::User,
-            vec![ContentBlock::Text { text: id.to_string() }],
-            MessageSource::User { rpc_id: None, client_time_zone: None },
+            vec![ContentBlock::Text {
+                text: id.to_string(),
+            }],
+            MessageSource::User {
+                rpc_id: None,
+                client_time_zone: None,
+            },
         )
         // Override the fresh random identity with a deterministic one.
         .let_override(id)
@@ -363,7 +404,9 @@ mod tests {
     fn duplicate_identity_rejects() {
         let inbox = test_inbox();
         inbox.append(InboxTarget::NextTurn, message("dup")).unwrap();
-        let error = inbox.append(InboxTarget::NextStep, message("dup")).unwrap_err();
+        let error = inbox
+            .append(InboxTarget::NextStep, message("dup"))
+            .unwrap_err();
         assert!(error.contains("already pending"), "{error}");
     }
 
@@ -378,18 +421,31 @@ mod tests {
             &session,
             InboxNotifications {
                 discarded: Some(Arc::new(move |message: &UserMessage| {
-                    discarded_listener.lock().push(message.id.as_str().to_string());
+                    discarded_listener
+                        .lock()
+                        .push(message.id.as_str().to_string());
                 })),
                 inserted: Some(Arc::new(move |message: &UserMessage| {
-                    inserted_listener.lock().push(message.id.as_str().to_string());
+                    inserted_listener
+                        .lock()
+                        .push(message.id.as_str().to_string());
                 })),
                 claimed: None,
             },
         )
         .unwrap();
         inbox.append(InboxTarget::NextTurn, message("old")).unwrap();
-        assert!(inbox.replace(&dsh_llm::message_id("old"), message("new")).unwrap());
-        assert!(inbox.replace(&dsh_llm::message_id("gone"), message("x")).unwrap() == false);
+        assert!(
+            inbox
+                .replace(&dsh_llm::message_id("old"), message("new"))
+                .unwrap()
+        );
+        assert!(
+            inbox
+                .replace(&dsh_llm::message_id("gone"), message("x"))
+                .unwrap()
+                == false
+        );
         assert_eq!(inbox.next_turn()[0].id.as_str(), "new");
         assert_eq!(&*discarded.lock(), &["old"]);
         assert_eq!(&*inserted.lock(), &["old", "new"]);
@@ -422,7 +478,11 @@ mod tests {
 
         let claimed = inbox.claim(InboxTarget::NextStep, 4).unwrap();
         assert!(claimed.is_empty());
-        assert_eq!(inbox.next_turn().len(), 1, "next-step claim consumes no queued turn");
+        assert_eq!(
+            inbox.next_turn().len(),
+            1,
+            "next-step claim consumes no queued turn"
+        );
     }
 
     #[test]
@@ -443,7 +503,11 @@ mod tests {
         let removed = inbox
             .splice(InboxTarget::NextTurn, 2.0, 3.0, vec![message("y")])
             .unwrap();
-        assert_eq!(removed.len(), 0, "start clamps to the list end before deletes apply");
+        assert_eq!(
+            removed.len(),
+            0,
+            "start clamps to the list end before deletes apply"
+        );
         assert_eq!(inbox.next_turn().len(), 2);
         assert_eq!(inbox.next_turn()[1].id.as_str(), "y");
     }
@@ -495,12 +559,18 @@ mod tests {
         let session = Session::create(session_id("s1"), Some(seed), Some(&header)).unwrap();
         // Events BEFORE the seed boundary are not replayed by the projection.
         let inbox = Inbox::new(&session, InboxNotifications::default()).unwrap();
-        assert!(!inbox.has_pending(), "seed-boundary splices are not replayed");
+        assert!(
+            !inbox.has_pending(),
+            "seed-boundary splices are not replayed"
+        );
     }
 
     #[test]
     fn surface_intent_is_not_required_for_inbox_events() {
-        let _ = SurfaceIntent { surface_op: SurfaceOp::Append, source_event_seqs: None };
+        let _ = SurfaceIntent {
+            surface_op: SurfaceOp::Append,
+            source_event_seqs: None,
+        };
         let session = Session::create(session_id("s1"), None, None).unwrap();
         let inbox = Inbox::new(&session, InboxNotifications::default()).unwrap();
         // append() with no surface intent — the inbox splice is log-only.

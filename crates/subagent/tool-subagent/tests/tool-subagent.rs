@@ -22,8 +22,8 @@ use dsh_subagent::{
     SubagentRuntime, SubagentStopReason,
 };
 use dsh_system_prompt::SystemPrompt;
+use dsh_tool_subagent::{Config, apply};
 use dsh_tools::{ToolExecutionInput, ToolRuntime};
-use dsh_tool_subagent::{apply, Config};
 
 struct ProbeProvider {
     name: &'static str,
@@ -155,7 +155,12 @@ impl dsh_agent::Agent for ProbeAgent {
         &self.scope_key
     }
 
-    fn cancel(&self, _cause: dsh_session::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_session::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -168,7 +173,13 @@ impl dsh_agent::Agent for ProbeAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 
@@ -199,11 +210,19 @@ impl JobRegistry for FakeJobsService {
         Vec::new()
     }
 
-    fn get(&self, _id: &JobId, _caller: Option<&Arc<dyn dsh_agent::Agent>>) -> Result<dsh_jobs::JobSnapshot, String> {
+    fn get(
+        &self,
+        _id: &JobId,
+        _caller: Option<&Arc<dyn dsh_agent::Agent>>,
+    ) -> Result<dsh_jobs::JobSnapshot, String> {
         Err("not found".to_string())
     }
 
-    fn read(&self, _id: &JobId, _caller: Option<&Arc<dyn dsh_agent::Agent>>) -> Result<dsh_jobs::JobRead, String> {
+    fn read(
+        &self,
+        _id: &JobId,
+        _caller: Option<&Arc<dyn dsh_agent::Agent>>,
+    ) -> Result<dsh_jobs::JobRead, String> {
         Err("not found".to_string())
     }
 
@@ -255,10 +274,15 @@ fn setup(
     provider_result: SubagentResult,
     inherits: bool,
     enable_background: bool,
-) -> (Context, Arc<ToolRuntime>, Arc<ProbeProvider>, Arc<FakeJobsService>) {
+) -> (
+    Context,
+    Arc<ToolRuntime>,
+    Arc<ProbeProvider>,
+    Arc<FakeJobsService>,
+) {
     let ctx = Context::root();
-    let _system_prompt = SystemPrompt::install(&ctx, dsh_system_prompt::Config::default())
-        .expect("systemPrompt");
+    let _system_prompt =
+        SystemPrompt::install(&ctx, dsh_system_prompt::Config::default()).expect("systemPrompt");
     let tools = ToolRuntime::install(&ctx, dsh_tools::Config::default()).expect("tools");
     let subagents = SubagentRuntime::install(&ctx);
     let provider = Arc::new(ProbeProvider {
@@ -295,8 +319,6 @@ fn setup(
     let _ = (subagents, &ctx);
     (ctx, tools, provider, jobs)
 }
-
-
 
 fn agent() -> Arc<dyn dsh_agent::Agent> {
     let session = Session::create(session_id("parent"), None, None).expect("session");
@@ -379,8 +401,14 @@ async fn non_completed_results_become_errors_with_partial_text() {
             _ => None,
         })
         .collect();
-    assert!(text.contains("subagent run hit its token limit before finishing"), "{text}");
-    assert!(text.contains("Partial output before the run ended:"), "{text}");
+    assert!(
+        text.contains("subagent run hit its token limit before finishing"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Partial output before the run ended:"),
+        "{text}"
+    );
     assert!(text.contains("half an answer"), "{text}");
 }
 

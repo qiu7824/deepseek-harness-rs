@@ -18,11 +18,13 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use common::{
-    FailureSpec, FakeLiveSessions, Harness, MemoryMediaPool, TempRoot, harness, harness_with_backend,
-    header, record, selective_failure_backend, settle, sid, stored_pool, stored_record,
-    stored_state, wid,
+    FailureSpec, FakeLiveSessions, Harness, MemoryMediaPool, TempRoot, harness,
+    harness_with_backend, header, record, selective_failure_backend, settle, sid, stored_pool,
+    stored_record, stored_state, wid,
 };
-use dsh_workspace::{LiveSessionStore, WorkspaceDomainState, WorkspacePendingMutation, realpath_normalize};
+use dsh_workspace::{
+    LiveSessionStore, WorkspaceDomainState, WorkspacePendingMutation, realpath_normalize,
+};
 
 fn canonical(dir: &str) -> String {
     futures::executor::block_on(realpath_normalize(dir)).expect("canonical")
@@ -33,7 +35,9 @@ fn paths(list: &[dsh_workspace::Workspace]) -> Vec<String> {
 }
 
 fn id_strings(list: &[dsh_workspace::Workspace]) -> Vec<String> {
-    list.iter().map(|workspace| workspace.id().to_string()).collect()
+    list.iter()
+        .map(|workspace| workspace.id().to_string())
+        .collect()
 }
 
 fn order_strings(ids: &[dsh_workspace::WorkspaceId]) -> Vec<String> {
@@ -193,7 +197,10 @@ async fn reuses_partial_records_after_a_bootstrap_record_write_fails() {
         None,
         Some(selective_failure_backend(
             pool.clone(),
-            FailureSpec { put_at: Some(2), ..Default::default() },
+            FailureSpec {
+                put_at: Some(2),
+                ..Default::default()
+            },
         )),
     )
     .await
@@ -228,13 +235,19 @@ async fn reuses_durable_order_when_the_final_initialized_marker_write_fails() {
         None,
         Some(selective_failure_backend(
             pool.clone(),
-            FailureSpec { global_at: Some(2), ..Default::default() },
+            FailureSpec {
+                global_at: Some(2),
+                ..Default::default()
+            },
         )),
     )
     .await
     .err()
     .expect("bootstrap rejects");
-    assert!(error.contains("selected bootstrap marker failure"), "{error}");
+    assert!(
+        error.contains("selected bootstrap marker failure"),
+        "{error}"
+    );
     let state = stored_state(&pool);
     assert!(!state.initialized);
     assert_eq!(state.workspace_ids.len(), 1);
@@ -259,8 +272,14 @@ async fn merges_partial_records_and_leaves_an_already_accounted_cwd_drift_ungrou
     let prior_id = wid("00000000-0000-4000-8000-000000000011");
     let pool = stored_pool(
         &[
-            ("00000000-0000-4000-8000-000000000010", record(&owned, &["old"], "2026-07-24T00:00:00.000Z")),
-            ("00000000-0000-4000-8000-000000000011", record(&prior, &["drift"], "2026-07-23T00:00:00.000Z")),
+            (
+                "00000000-0000-4000-8000-000000000010",
+                record(&owned, &["old"], "2026-07-24T00:00:00.000Z"),
+            ),
+            (
+                "00000000-0000-4000-8000-000000000011",
+                record(&prior, &["drift"], "2026-07-23T00:00:00.000Z"),
+            ),
         ],
         WorkspaceDomainState {
             initialized: false,
@@ -300,8 +319,14 @@ async fn orders_headerless_partial_records_by_prior_order_then_stable_id() {
     let first_id = wid("00000000-0000-4000-8000-000000000020");
     let second_id = wid("00000000-0000-4000-8000-000000000021");
     let entries = [
-        ("00000000-0000-4000-8000-000000000021", record(&second, &[], "2026-07-24T00:00:00.000Z")),
-        ("00000000-0000-4000-8000-000000000020", record(&first, &[], "2026-07-24T00:00:00.000Z")),
+        (
+            "00000000-0000-4000-8000-000000000021",
+            record(&second, &[], "2026-07-24T00:00:00.000Z"),
+        ),
+        (
+            "00000000-0000-4000-8000-000000000020",
+            record(&first, &[], "2026-07-24T00:00:00.000Z"),
+        ),
     ];
 
     let prior_pool = stored_pool(
@@ -369,22 +394,45 @@ async fn creates_newest_first_and_idempotently_reuses_a_canonical_path_without_r
     make_symlink(&first_dir, &alias);
 
     let result = harness(Arc::new(MemoryMediaPool::new()), &[], None).await;
-    let first = result.registry.create(&first_dir, Some("Original")).await.expect("create");
-    let second = result.registry.create(&second_dir, None).await.expect("create");
-    let reused = result.registry.create(&alias, Some("Ignored")).await.expect("reuse");
+    let first = result
+        .registry
+        .create(&first_dir, Some("Original"))
+        .await
+        .expect("create");
+    let second = result
+        .registry
+        .create(&second_dir, None)
+        .await
+        .expect("create");
+    let reused = result
+        .registry
+        .create(&alias, Some("Ignored"))
+        .await
+        .expect("reuse");
     assert_eq!(reused, first);
     assert_eq!(first.title(), "Original");
-    assert_eq!(result.registry.list().expect("list"), vec![second.clone(), first.clone()]);
+    assert_eq!(
+        result.registry.list().expect("list"),
+        vec![second.clone(), first.clone()]
+    );
     let state = stored_state(&result.pool);
     assert_eq!(
         order_strings(&state.workspace_ids),
         vec![second.id().to_string(), first.id().to_string()]
     );
-    let resolved = result.registry.resolve_by_path(&alias).await.expect("resolve");
+    let resolved = result
+        .registry
+        .resolve_by_path(&alias)
+        .await
+        .expect("resolve");
     assert_eq!(resolved, Some(first.clone()));
     let unowned = canonical(&temp.dir("unowned"));
     assert_eq!(
-        result.registry.resolve_by_path(&unowned).await.expect("resolve"),
+        result
+            .registry
+            .resolve_by_path(&unowned)
+            .await
+            .expect("resolve"),
         None
     );
 }
@@ -413,8 +461,16 @@ async fn allows_a_duplicate_display_name_on_a_different_canonical_path() {
     let first_dir = canonical(&temp.dir("named-first"));
     let second_dir = canonical(&temp.dir("named-second"));
     let result = harness(Arc::new(MemoryMediaPool::new()), &[], None).await;
-    let first = result.registry.create(&first_dir, Some("Shared")).await.expect("create");
-    let second = result.registry.create(&second_dir, Some("Shared")).await.expect("create");
+    let first = result
+        .registry
+        .create(&first_dir, Some("Shared"))
+        .await
+        .expect("create");
+    let second = result
+        .registry
+        .create(&second_dir, Some("Shared"))
+        .await
+        .expect("create");
     assert_eq!(first.title(), "Shared");
     assert_eq!(second.title(), "Shared");
     assert_eq!(result.registry.list().expect("list"), vec![second, first]);
@@ -429,9 +485,19 @@ async fn rejects_nonexistent_and_non_directory_paths_without_changing_order() {
     let missing = temp.path("missing");
 
     let result = harness(Arc::new(MemoryMediaPool::new()), &[], None).await;
-    let error = result.registry.create(&missing, None).await.err().expect("rejects");
+    let error = result
+        .registry
+        .create(&missing, None)
+        .await
+        .err()
+        .expect("rejects");
     assert!(error.contains("cannot create a workspace at"), "{error}");
-    let error = result.registry.create(&file, None).await.err().expect("rejects");
+    let error = result
+        .registry
+        .create(&file, None)
+        .await
+        .err()
+        .expect("rejects");
     assert!(error.contains("path is not a directory"), "{error}");
     let error = result
         .registry
@@ -455,12 +521,20 @@ async fn rolls_back_the_provisional_cache_when_the_record_write_fails() {
         None,
         Some(selective_failure_backend(
             pool.clone(),
-            FailureSpec { put_at: Some(1), ..Default::default() },
+            FailureSpec {
+                put_at: Some(1),
+                ..Default::default()
+            },
         )),
     )
     .await
     .expect("install");
-    let error = result.registry.create(&dir, None).await.err().expect("create rejects");
+    let error = result
+        .registry
+        .create(&dir, None)
+        .await
+        .err()
+        .expect("create rejects");
     assert!(error.contains("selected bootstrap put failure"), "{error}");
     assert_eq!(result.registry.list().expect("list").len(), 0);
     assert!(result.registry.create(&dir, None).await.is_ok());
@@ -477,17 +551,32 @@ async fn does_not_publish_a_workspace_when_its_pending_marker_cannot_be_written(
         None,
         Some(selective_failure_backend(
             pool.clone(),
-            FailureSpec { global_at: Some(2), ..Default::default() },
+            FailureSpec {
+                global_at: Some(2),
+                ..Default::default()
+            },
         )),
     )
     .await
     .expect("install");
-    let error = result.registry.create(&dir, None).await.err().expect("create rejects");
-    assert!(error.contains("selected bootstrap marker failure"), "{error}");
+    let error = result
+        .registry
+        .create(&dir, None)
+        .await
+        .err()
+        .expect("create rejects");
+    assert!(
+        error.contains("selected bootstrap marker failure"),
+        "{error}"
+    );
     assert_eq!(result.registry.list().expect("list").len(), 0);
     let media = pool.media.lock();
     let medium = media.get("workspace").expect("medium");
-    let rows = medium.tables.get("workspaces").map(|table| table.len()).unwrap_or(0);
+    let rows = medium
+        .tables
+        .get("workspaces")
+        .map(|table| table.len())
+        .unwrap_or(0);
     assert_eq!(rows, 0);
 }
 
@@ -502,12 +591,20 @@ async fn rolls_back_a_record_when_registry_order_persistence_fails() {
         None,
         Some(selective_failure_backend(
             pool.clone(),
-            FailureSpec { global_at: Some(3), ..Default::default() },
+            FailureSpec {
+                global_at: Some(3),
+                ..Default::default()
+            },
         )),
     )
     .await
     .expect("install");
-    let error = result.registry.create(&dir, None).await.err().expect("create rejects");
+    let error = result
+        .registry
+        .create(&dir, None)
+        .await
+        .err()
+        .expect("create rejects");
     assert!(error.contains("marker failure"), "{error}");
     assert_eq!(result.registry.list().expect("list").len(), 0);
     let media = pool.media.lock();
@@ -535,9 +632,20 @@ async fn reports_both_order_and_rollback_failures_while_retaining_the_recoverabl
     )
     .await
     .expect("install");
-    let error = result.registry.create(&dir, None).await.err().expect("create rejects");
-    assert!(error.contains("selected bootstrap marker failure"), "{error}");
-    assert!(error.contains("selected rollback delete failure"), "{error}");
+    let error = result
+        .registry
+        .create(&dir, None)
+        .await
+        .err()
+        .expect("create rejects");
+    assert!(
+        error.contains("selected bootstrap marker failure"),
+        "{error}"
+    );
+    assert!(
+        error.contains("selected rollback delete failure"),
+        "{error}"
+    );
     let media = pool.media.lock();
     let medium = media.get("workspace").expect("medium");
     assert_eq!(medium.tables.get("workspaces").expect("table").len(), 1);
@@ -563,9 +671,17 @@ async fn reports_a_record_write_and_pending_marker_rollback_failure_together() {
     )
     .await
     .expect("install");
-    let error = result.registry.create(&dir, None).await.err().expect("create rejects");
+    let error = result
+        .registry
+        .create(&dir, None)
+        .await
+        .err()
+        .expect("create rejects");
     assert!(error.contains("selected bootstrap put failure"), "{error}");
-    assert!(error.contains("selected bootstrap marker failure"), "{error}");
+    assert!(
+        error.contains("selected bootstrap marker failure"),
+        "{error}"
+    );
     let state = stored_state(&pool);
     assert!(matches!(
         state.pending_mutation,
@@ -593,8 +709,16 @@ async fn reports_an_order_write_and_pending_marker_rollback_failure_together() {
     )
     .await
     .expect("install");
-    let error = result.registry.create(&dir, None).await.err().expect("create rejects");
-    assert!(error.contains("selected bootstrap marker failure"), "{error}");
+    let error = result
+        .registry
+        .create(&dir, None)
+        .await
+        .err()
+        .expect("create rejects");
+    assert!(
+        error.contains("selected bootstrap marker failure"),
+        "{error}"
+    );
     let state = stored_state(&pool);
     assert!(matches!(
         state.pending_mutation,
@@ -613,10 +737,27 @@ async fn deletes_only_the_registration_and_leaves_its_directory_and_session_head
     )
     .await;
     let workspace = result.registry.create(&dir, None).await.expect("create");
-    workspace.attach_session(&sid("kept-session")).await.expect("attach");
+    workspace
+        .attach_session(&sid("kept-session"))
+        .await
+        .expect("attach");
 
-    assert_eq!(result.registry.delete(workspace.id()).await.expect("delete"), true);
-    assert_eq!(result.registry.delete(workspace.id()).await.expect("delete"), false);
+    assert_eq!(
+        result
+            .registry
+            .delete(workspace.id())
+            .await
+            .expect("delete"),
+        true
+    );
+    assert_eq!(
+        result
+            .registry
+            .delete(workspace.id())
+            .await
+            .expect("delete"),
+        false
+    );
     assert_eq!(result.registry.get(workspace.id()), None);
     assert_eq!(result.registry.list().expect("list").len(), 0);
     let state = stored_state(&result.pool);
@@ -632,11 +773,13 @@ async fn deletes_only_the_registration_and_leaves_its_directory_and_session_head
     {
         let media = result.pool.media.lock();
         let medium = media.get("workspace").expect("medium");
-        assert!(!medium
-            .tables
-            .get("workspaces")
-            .expect("table")
-            .contains_key(workspace.id().as_str()));
+        assert!(
+            !medium
+                .tables
+                .get("workspaces")
+                .expect("table")
+                .contains_key(workspace.id().as_str())
+        );
     }
     assert_eq!(realpath_normalize(&dir).await.expect("realpath"), dir);
     assert_eq!(result.persistence.list_calls.load(Ordering::SeqCst), 1);
@@ -660,19 +803,36 @@ async fn rolls_registry_order_and_cache_back_when_record_deletion_fails() {
         None,
         Some(selective_failure_backend(
             pool.clone(),
-            FailureSpec { delete_at: Some(1), ..Default::default() },
+            FailureSpec {
+                delete_at: Some(1),
+                ..Default::default()
+            },
         )),
     )
     .await
     .expect("install");
     let workspace = result.registry.create(&dir, None).await.expect("create");
 
-    let error = result.registry.delete(workspace.id()).await.err().expect("delete rejects");
-    assert!(error.contains("selected rollback delete failure"), "{error}");
+    let error = result
+        .registry
+        .delete(workspace.id())
+        .await
+        .err()
+        .expect("delete rejects");
+    assert!(
+        error.contains("selected rollback delete failure"),
+        "{error}"
+    );
     assert_eq!(result.registry.get(workspace.id()), Some(workspace.clone()));
-    assert_eq!(result.registry.list().expect("list"), vec![workspace.clone()]);
+    assert_eq!(
+        result.registry.list().expect("list"),
+        vec![workspace.clone()]
+    );
     let state = stored_state(&pool);
-    assert_eq!(order_strings(&state.workspace_ids), vec![workspace.id().to_string()]);
+    assert_eq!(
+        order_strings(&state.workspace_ids),
+        vec![workspace.id().to_string()]
+    );
     let stored = stored_record(&pool, workspace.id().as_str());
     assert_eq!(stored.path, dir);
 }
@@ -688,14 +848,20 @@ async fn commits_deletion_and_leaves_a_recoverable_marker_when_marker_cleanup_fa
         None,
         Some(selective_failure_backend(
             pool.clone(),
-            FailureSpec { global_at: Some(5), ..Default::default() },
+            FailureSpec {
+                global_at: Some(5),
+                ..Default::default()
+            },
         )),
     )
     .await
     .expect("install");
     let workspace = first.registry.create(&dir, None).await.expect("create");
 
-    assert_eq!(first.registry.delete(workspace.id()).await.expect("delete"), true);
+    assert_eq!(
+        first.registry.delete(workspace.id()).await.expect("delete"),
+        true
+    );
     assert_eq!(first.registry.list().expect("list").len(), 0);
     let state = stored_state(&pool);
     assert_eq!(
@@ -752,8 +918,16 @@ async fn keeps_the_failed_deletion_unpublished_when_record_and_order_rollback_bo
     .expect("install");
     let workspace = result.registry.create(&dir, None).await.expect("create");
 
-    let error = result.registry.delete(workspace.id()).await.err().expect("delete rejects");
-    assert!(error.contains("selected rollback delete failure"), "{error}");
+    let error = result
+        .registry
+        .delete(workspace.id())
+        .await
+        .err()
+        .expect("delete rejects");
+    assert!(
+        error.contains("selected rollback delete failure"),
+        "{error}"
+    );
     assert_eq!(result.registry.get(workspace.id()), None);
     let state = stored_state(&pool);
     assert_eq!(state.workspace_ids.len(), 0);
@@ -773,12 +947,28 @@ async fn moves_a_workspace_before_an_anchor_or_to_the_end_and_restores_that_orde
     let second_dir = canonical(&temp.dir("order-second"));
     let third_dir = canonical(&temp.dir("order-third"));
     let result = harness(Arc::new(MemoryMediaPool::new()), &[], None).await;
-    let first = result.registry.create(&first_dir, None).await.expect("create");
-    let second = result.registry.create(&second_dir, None).await.expect("create");
-    let third = result.registry.create(&third_dir, None).await.expect("create");
+    let first = result
+        .registry
+        .create(&first_dir, None)
+        .await
+        .expect("create");
+    let second = result
+        .registry
+        .create(&second_dir, None)
+        .await
+        .expect("create");
+    let third = result
+        .registry
+        .create(&third_dir, None)
+        .await
+        .expect("create");
     assert_eq!(
         id_strings(&result.registry.list().expect("list")),
-        vec![third.id().to_string(), second.id().to_string(), first.id().to_string()]
+        vec![
+            third.id().to_string(),
+            second.id().to_string(),
+            first.id().to_string()
+        ]
     );
 
     let moved = result
@@ -788,7 +978,11 @@ async fn moves_a_workspace_before_an_anchor_or_to_the_end_and_restores_that_orde
         .expect("move");
     assert_eq!(
         order_strings(&moved),
-        vec![third.id().to_string(), first.id().to_string(), second.id().to_string()]
+        vec![
+            third.id().to_string(),
+            first.id().to_string(),
+            second.id().to_string()
+        ]
     );
     let moved = result
         .registry
@@ -797,19 +991,31 @@ async fn moves_a_workspace_before_an_anchor_or_to_the_end_and_restores_that_orde
         .expect("move to end");
     assert_eq!(
         order_strings(&moved),
-        vec![first.id().to_string(), second.id().to_string(), third.id().to_string()]
+        vec![
+            first.id().to_string(),
+            second.id().to_string(),
+            third.id().to_string()
+        ]
     );
     let state = stored_state(&result.pool);
     assert_eq!(
         order_strings(&state.workspace_ids),
-        vec![first.id().to_string(), second.id().to_string(), third.id().to_string()]
+        vec![
+            first.id().to_string(),
+            second.id().to_string(),
+            third.id().to_string()
+        ]
     );
 
     result.registry.domain().close().await;
     let restarted = harness(result.pool.clone(), &[], None).await;
     assert_eq!(
         id_strings(&restarted.registry.list().expect("list")),
-        vec![first.id().to_string(), second.id().to_string(), third.id().to_string()]
+        vec![
+            first.id().to_string(),
+            second.id().to_string(),
+            third.id().to_string()
+        ]
     );
 }
 
@@ -819,8 +1025,16 @@ async fn keeps_self_anchored_and_already_positioned_moves_write_free_and_rejects
     let first_dir = canonical(&temp.dir("order-noop-first"));
     let second_dir = canonical(&temp.dir("order-noop-second"));
     let result = harness(Arc::new(MemoryMediaPool::new()), &[], None).await;
-    let first = result.registry.create(&first_dir, None).await.expect("create");
-    let second = result.registry.create(&second_dir, None).await.expect("create");
+    let first = result
+        .registry
+        .create(&first_dir, None)
+        .await
+        .expect("create");
+    let second = result
+        .registry
+        .create(&second_dir, None)
+        .await
+        .expect("create");
     settle().await;
     let written = result.changes.lock().len();
 
@@ -852,7 +1066,10 @@ async fn keeps_self_anchored_and_already_positioned_moves_write_free_and_rejects
         .await
         .err()
         .expect("rejects unknown");
-    assert!(error.contains("cannot reorder unknown workspace 'missing'"), "{error}");
+    assert!(
+        error.contains("cannot reorder unknown workspace 'missing'"),
+        "{error}"
+    );
     let error = result
         .registry
         .insert_before(&second.id(), Some(&wid("missing-anchor")))
@@ -882,7 +1099,10 @@ async fn prepends_new_attaches_and_keeps_repeat_attach_idempotent() {
         session_strings(&workspace.session_ids()),
         vec!["s2".to_string(), "s1".to_string()]
     );
-    workspace.attach_session(&sid("s1")).await.expect("repeat attach");
+    workspace
+        .attach_session(&sid("s1"))
+        .await
+        .expect("repeat attach");
     assert_eq!(
         session_strings(&workspace.session_ids()),
         vec!["s2".to_string(), "s1".to_string()]
@@ -962,7 +1182,10 @@ async fn treats_self_anchored_and_already_in_place_moves_as_no_ops_without_writi
         .insert_session_before(&sid("s1"), None)
         .await
         .expect("already at end");
-    workspace.detach_session(&sid("absent")).await.expect("absent detach");
+    workspace
+        .detach_session(&sid("absent"))
+        .await
+        .expect("absent detach");
     settle().await;
     assert_eq!(result.changes.lock().len(), written);
     assert_eq!(
@@ -976,7 +1199,9 @@ async fn rejects_moves_naming_an_unaccounted_session_or_anchor() {
     let temp = TempRoot::new();
     let dir = canonical(&temp.dir("insert-invalid"));
     let result = harness(Arc::new(MemoryMediaPool::new()), &[], None).await;
-    result.persistence.set_sessions(&[header("s1", Some(&dir), 1)]);
+    result
+        .persistence
+        .set_sessions(&[header("s1", Some(&dir), 1)]);
     let workspace = result.registry.create(&dir, None).await.expect("create");
     workspace.attach_session(&sid("s1")).await.expect("attach");
     settle().await;
@@ -993,10 +1218,16 @@ async fn rejects_moves_naming_an_unaccounted_session_or_anchor() {
         .await
         .err()
         .expect("rejects unaccounted anchor");
-    assert!(error.contains("the anchor session is not accounted"), "{error}");
+    assert!(
+        error.contains("the anchor session is not accounted"),
+        "{error}"
+    );
     settle().await;
     assert_eq!(result.changes.lock().len(), written);
-    assert_eq!(session_strings(&workspace.session_ids()), vec!["s1".to_string()]);
+    assert_eq!(
+        session_strings(&workspace.session_ids()),
+        vec!["s1".to_string()]
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1006,8 +1237,14 @@ async fn validates_a_lazy_live_session_without_requiring_it_in_persistence_list(
     let live = FakeLiveSessions::new(&[header("live", Some(&dir), 1)]);
     let result = harness(Arc::new(MemoryMediaPool::new()), &[], Some(live)).await;
     let workspace = result.registry.create(&dir, None).await.expect("create");
-    workspace.attach_session(&sid("live")).await.expect("attach");
-    assert_eq!(session_strings(&workspace.session_ids()), vec!["live".to_string()]);
+    workspace
+        .attach_session(&sid("live"))
+        .await
+        .expect("attach");
+    assert_eq!(
+        session_strings(&workspace.session_ids()),
+        vec!["live".to_string()]
+    );
     assert_eq!(result.persistence.list_calls.load(Ordering::SeqCst), 1);
 }
 
@@ -1035,11 +1272,23 @@ async fn rejects_mismatched_missing_unresolved_non_directory_and_unknown_cwd_fac
         .err()
         .expect("rejects mismatch");
     assert!(error.contains("resolves to"), "{error}");
-    let error = workspace.attach_session(&sid("no-cwd")).await.err().expect("rejects no-cwd");
+    let error = workspace
+        .attach_session(&sid("no-cwd"))
+        .await
+        .err()
+        .expect("rejects no-cwd");
     assert!(error.contains("no cwd"), "{error}");
-    let error = workspace.attach_session(&sid("gone")).await.err().expect("rejects gone");
+    let error = workspace
+        .attach_session(&sid("gone"))
+        .await
+        .err()
+        .expect("rejects gone");
     assert!(error.contains("does not resolve"), "{error}");
-    let error = workspace.attach_session(&sid("file")).await.err().expect("rejects file");
+    let error = workspace
+        .attach_session(&sid("file"))
+        .await
+        .err()
+        .expect("rejects file");
     assert!(error.contains("not a directory"), "{error}");
     let error = workspace
         .attach_session(&sid("unknown"))
@@ -1068,7 +1317,10 @@ async fn decides_detach_attach_membership_at_domain_write_chain_slots() {
     let (detached, attached) = tokio::join!(detached, attached);
     detached.expect("detach");
     attached.expect("attach");
-    assert_eq!(session_strings(&workspace.session_ids()), vec!["s1".to_string()]);
+    assert_eq!(
+        session_strings(&workspace.session_ids()),
+        vec!["s1".to_string()]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,7 +1335,11 @@ async fn requires_both_candidate_id_and_matching_canonical_cwd_without_re_readin
     let pool = stored_pool(
         &[(
             "00000000-0000-4000-8000-000000000001",
-            record(&owned, &["good", "mismatch", "missing"], "2026-07-24T00:00:00.000Z"),
+            record(
+                &owned,
+                &["good", "mismatch", "missing"],
+                "2026-07-24T00:00:00.000Z",
+            ),
         )],
         initialized(vec![id.clone()]),
         false,
@@ -1099,7 +1355,10 @@ async fn requires_both_candidate_id_and_matching_canonical_cwd_without_re_readin
     )
     .await;
     let workspace = result.registry.list().expect("list").remove(0);
-    assert_eq!(session_strings(&workspace.session_ids()), vec!["good".to_string()]);
+    assert_eq!(
+        session_strings(&workspace.session_ids()),
+        vec!["good".to_string()]
+    );
     assert_eq!(
         session_strings(&result.registry.list().expect("list")[0].session_ids()),
         vec!["good".to_string()]
@@ -1108,12 +1367,19 @@ async fn requires_both_candidate_id_and_matching_canonical_cwd_without_re_readin
     let stored = stored_record(&pool, "00000000-0000-4000-8000-000000000001");
     assert_eq!(
         session_strings(&stored.session_ids),
-        vec!["good".to_string(), "mismatch".to_string(), "missing".to_string()]
+        vec![
+            "good".to_string(),
+            "mismatch".to_string(),
+            "missing".to_string()
+        ]
     );
 
     workspace.set_title("pruned").await.expect("set title");
     let stored = stored_record(&pool, "00000000-0000-4000-8000-000000000001");
-    assert_eq!(session_strings(&stored.session_ids), vec!["good".to_string()]);
+    assert_eq!(
+        session_strings(&stored.session_ids),
+        vec!["good".to_string()]
+    );
     assert!(!workspace.session_ids().contains(&sid("cwd-only")));
 }
 
@@ -1127,8 +1393,14 @@ async fn rejects_duplicate_candidate_ownership_duplicate_paths_and_initialized_o
 
     let duplicate_session = stored_pool(
         &[
-            ("00000000-0000-4000-8000-000000000002", record(&first, &["dup"], "2026-07-24T00:00:00.000Z")),
-            ("00000000-0000-4000-8000-000000000003", record(&second, &["dup"], "2026-07-24T00:00:00.000Z")),
+            (
+                "00000000-0000-4000-8000-000000000002",
+                record(&first, &["dup"], "2026-07-24T00:00:00.000Z"),
+            ),
+            (
+                "00000000-0000-4000-8000-000000000003",
+                record(&second, &["dup"], "2026-07-24T00:00:00.000Z"),
+            ),
         ],
         initialized(vec![first_id.clone(), second_id.clone()]),
         false,
@@ -1141,8 +1413,14 @@ async fn rejects_duplicate_candidate_ownership_duplicate_paths_and_initialized_o
 
     let duplicate_path = stored_pool(
         &[
-            ("00000000-0000-4000-8000-000000000002", record(&first, &[], "2026-07-24T00:00:00.000Z")),
-            ("00000000-0000-4000-8000-000000000003", record(&first, &[], "2026-07-24T00:00:00.000Z")),
+            (
+                "00000000-0000-4000-8000-000000000002",
+                record(&first, &[], "2026-07-24T00:00:00.000Z"),
+            ),
+            (
+                "00000000-0000-4000-8000-000000000003",
+                record(&first, &[], "2026-07-24T00:00:00.000Z"),
+            ),
         ],
         initialized(vec![first_id.clone(), second_id.clone()]),
         false,
@@ -1155,8 +1433,14 @@ async fn rejects_duplicate_candidate_ownership_duplicate_paths_and_initialized_o
 
     let orphan = stored_pool(
         &[
-            ("00000000-0000-4000-8000-000000000002", record(&first, &[], "2026-07-24T00:00:00.000Z")),
-            ("00000000-0000-4000-8000-000000000003", record(&second, &[], "2026-07-24T00:00:00.000Z")),
+            (
+                "00000000-0000-4000-8000-000000000002",
+                record(&first, &[], "2026-07-24T00:00:00.000Z"),
+            ),
+            (
+                "00000000-0000-4000-8000-000000000003",
+                record(&second, &[], "2026-07-24T00:00:00.000Z"),
+            ),
         ],
         initialized(vec![first_id.clone()]),
         false,
@@ -1229,11 +1513,13 @@ async fn recovers_only_an_explicitly_marked_interrupted_create_or_delete() {
     {
         let media = interrupted_create.media.lock();
         let medium = media.get("workspace").expect("medium");
-        assert!(!medium
-            .tables
-            .get("workspaces")
-            .expect("table")
-            .contains_key("00000000-0000-4000-8000-000000000004"));
+        assert!(
+            !medium
+                .tables
+                .get("workspaces")
+                .expect("table")
+                .contains_key("00000000-0000-4000-8000-000000000004")
+        );
     }
     assert_eq!(
         stored_state(&interrupted_create),
@@ -1265,11 +1551,13 @@ async fn recovers_only_an_explicitly_marked_interrupted_create_or_delete() {
     {
         let media = interrupted_delete.media.lock();
         let medium = media.get("workspace").expect("medium");
-        assert!(!medium
-            .tables
-            .get("workspaces")
-            .expect("table")
-            .contains_key("00000000-0000-4000-8000-000000000005"));
+        assert!(
+            !medium
+                .tables
+                .get("workspaces")
+                .expect("table")
+                .contains_key("00000000-0000-4000-8000-000000000005")
+        );
     }
     assert_eq!(
         stored_state(&interrupted_delete),
@@ -1318,12 +1606,15 @@ async fn keeps_created_at_stable_advances_updated_at_and_preserves_snapshot_on_w
     workspace.set_title("kept").await.expect("set title");
     assert_eq!(workspace.created_at(), created_at);
     assert!(
-        chrono::DateTime::parse_from_rfc3339(&workspace.updated_at())
-            .expect("updatedAt parses")
+        chrono::DateTime::parse_from_rfc3339(&workspace.updated_at()).expect("updatedAt parses")
             >= chrono::DateTime::parse_from_rfc3339(&created_at).expect("createdAt parses")
     );
     result.pool.fail_next_writes.store(1, Ordering::SeqCst);
-    let error = workspace.set_title("lost").await.err().expect("write fails");
+    let error = workspace
+        .set_title("lost")
+        .await
+        .err()
+        .expect("write fails");
     assert!(error.contains("injected"), "{error}");
     assert_eq!(workspace.title(), "kept");
 }
@@ -1351,14 +1642,21 @@ async fn archives_durably_in_order_idempotently_skips_repeats_and_leaves_account
     let dir = canonical(&temp.dir("archive-home"));
     let result = harness(
         Arc::new(MemoryMediaPool::new()),
-        &[header("kept", Some(&dir), 100), header("gone", Some(&dir), 200)],
+        &[
+            header("kept", Some(&dir), 100),
+            header("gone", Some(&dir), 200),
+        ],
         None,
     )
     .await;
     let workspace = result.registry.list().expect("list").remove(0);
     assert_eq!(result.registry.archived_session_ids().len(), 0);
 
-    result.registry.archive_session(&sid("gone")).await.expect("archive");
+    result
+        .registry
+        .archive_session(&sid("gone"))
+        .await
+        .expect("archive");
     assert_eq!(
         session_strings(&result.registry.archived_session_ids()),
         vec!["gone".to_string()]
@@ -1371,7 +1669,11 @@ async fn archives_durably_in_order_idempotently_skips_repeats_and_leaves_account
     );
     let changes_after_first = global_changes(&result);
 
-    result.registry.archive_session(&sid("gone")).await.expect("repeat archive");
+    result
+        .registry
+        .archive_session(&sid("gone"))
+        .await
+        .expect("repeat archive");
     settle().await;
     assert_eq!(
         session_strings(&result.registry.archived_session_ids()),
@@ -1379,13 +1681,21 @@ async fn archives_durably_in_order_idempotently_skips_repeats_and_leaves_account
     );
     assert_eq!(global_changes(&result), changes_after_first);
 
-    result.registry.archive_session(&sid("kept")).await.expect("archive kept");
+    result
+        .registry
+        .archive_session(&sid("kept"))
+        .await
+        .expect("archive kept");
     assert_eq!(
         session_strings(&result.registry.archived_session_ids()),
         vec!["gone".to_string(), "kept".to_string()]
     );
 
-    result.registry.unarchive_session(&sid("gone")).await.expect("unarchive");
+    result
+        .registry
+        .unarchive_session(&sid("gone"))
+        .await
+        .expect("unarchive");
     assert_eq!(
         session_strings(&result.registry.archived_session_ids()),
         vec!["kept".to_string()]
@@ -1398,7 +1708,11 @@ async fn archives_durably_in_order_idempotently_skips_repeats_and_leaves_account
     );
     let changes_after_restore = global_changes(&result);
 
-    result.registry.unarchive_session(&sid("gone")).await.expect("repeat unarchive");
+    result
+        .registry
+        .unarchive_session(&sid("gone"))
+        .await
+        .expect("repeat unarchive");
     settle().await;
     assert_eq!(
         session_strings(&result.registry.archived_session_ids()),
@@ -1419,8 +1733,16 @@ async fn accepts_unaccounted_and_live_sessions_but_rejects_unknown_ids_without_w
         Some(live),
     )
     .await;
-    result.registry.archive_session(&sid("stray")).await.expect("archive");
-    result.registry.archive_session(&sid("live-only")).await.expect("archive");
+    result
+        .registry
+        .archive_session(&sid("stray"))
+        .await
+        .expect("archive");
+    result
+        .registry
+        .archive_session(&sid("live-only"))
+        .await
+        .expect("archive");
     assert_eq!(
         session_strings(&result.registry.archived_session_ids()),
         vec!["stray".to_string(), "live-only".to_string()]
@@ -1445,7 +1767,10 @@ async fn permanently_deletes_only_archived_cold_sessions_and_clears_every_accoun
     let dir = canonical(&temp.dir("archive-delete"));
     let result = harness(
         Arc::new(MemoryMediaPool::new()),
-        &[header("deleted", Some(&dir), 100), header("kept", Some(&dir), 200)],
+        &[
+            header("deleted", Some(&dir), 100),
+            header("kept", Some(&dir), 200),
+        ],
         None,
     )
     .await;
@@ -1459,7 +1784,11 @@ async fn permanently_deletes_only_archived_cold_sessions_and_clears_every_accoun
         .expect("rejects unarchived");
     assert!(error.contains("it is not archived"), "{error}");
     assert!(result.persistence.delete_calls.lock().is_empty());
-    result.registry.archive_session(&sid("deleted")).await.expect("archive");
+    result
+        .registry
+        .archive_session(&sid("deleted"))
+        .await
+        .expect("archive");
     assert_eq!(
         result
             .registry
@@ -1480,7 +1809,10 @@ async fn permanently_deletes_only_archived_cold_sessions_and_clears_every_accoun
         vec!["kept".to_string()]
     );
     let stored = stored_record(&result.pool, workspace.id().as_str());
-    assert_eq!(session_strings(&stored.session_ids), vec!["kept".to_string()]);
+    assert_eq!(
+        session_strings(&stored.session_ids),
+        vec!["kept".to_string()]
+    );
     assert_eq!(
         session_strings(&result.deleted_sessions.lock()),
         vec!["deleted".to_string()]
@@ -1494,7 +1826,11 @@ async fn refuses_an_unowned_live_deletion_but_accepts_an_explicit_lifecycle_rele
     let live = FakeLiveSessions::new(&[header("live-delete", Some(&dir), 100)]);
     let result = harness(Arc::new(MemoryMediaPool::new()), &[], Some(live.clone())).await;
     let session_id = sid("live-delete");
-    result.registry.archive_session(&session_id).await.expect("archive");
+    result
+        .registry
+        .archive_session(&session_id)
+        .await
+        .expect("archive");
 
     let error = result
         .registry
@@ -1536,7 +1872,9 @@ async fn refuses_an_unowned_live_deletion_but_accepts_an_explicit_lifecycle_rele
 #[tokio::test(flavor = "current_thread")]
 async fn propagates_a_persistence_listing_failure_instead_of_reporting_an_unknown_session() {
     let result = harness(Arc::new(MemoryMediaPool::new()), &[], None).await;
-    result.persistence.set_list_error("persistence backend down");
+    result
+        .persistence
+        .set_list_error("persistence backend down");
     let error = result
         .registry
         .archive_session(&sid("unlisted"))
@@ -1553,7 +1891,11 @@ async fn restores_the_archive_set_across_restarts_and_defaults_it_for_pre_field_
     let dir = canonical(&temp.dir("archive-restart"));
     let pool = Arc::new(MemoryMediaPool::new());
     let first = harness(pool.clone(), &[header("s1", Some(&dir), 100)], None).await;
-    first.registry.archive_session(&sid("s1")).await.expect("archive");
+    first
+        .registry
+        .archive_session(&sid("s1"))
+        .await
+        .expect("archive");
     first.registry.domain().close().await;
 
     let second = harness(pool.clone(), &[header("s1", Some(&dir), 100)], None).await;

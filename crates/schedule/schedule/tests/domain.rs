@@ -9,9 +9,7 @@ use dsh_schedule::domain::{
     decode_schedule_change, fold_schedule_events, render_every_reminder_batch_framing,
     render_reminder_framing, resolve_every_occurrence, schedule_view,
 };
-use dsh_schedule::types::{
-    AtInput, LocalAtInput, ScheduleChange, ScheduleRecord, ScheduleState,
-};
+use dsh_schedule::types::{AtInput, LocalAtInput, ScheduleChange, ScheduleRecord, ScheduleState};
 use dsh_session::{SessionEvent, session_id};
 
 fn schedule_id(value: &str) -> dsh_schedule::types::ScheduleId {
@@ -30,11 +28,7 @@ fn schedule_event(data: serde_json::Value, seq: u64) -> SessionEvent {
     }
 }
 
-fn create_data(
-    id: &str,
-    prompt: &str,
-    scheduled_at: &str,
-) -> serde_json::Value {
+fn create_data(id: &str, prompt: &str, scheduled_at: &str) -> serde_json::Value {
     serde_json::json!({
         "version": 1,
         "operation": "create",
@@ -50,11 +44,7 @@ fn at_create_data(id: &str, prompt: &str, scheduled_at: &str) -> serde_json::Val
     })
 }
 
-fn every_create_data(
-    id: &str,
-    prompt: &str,
-    scheduled_at: &str,
-) -> serde_json::Value {
+fn every_create_data(id: &str, prompt: &str, scheduled_at: &str) -> serde_json::Value {
     serde_json::json!({
         "version": 1,
         "operation": "create",
@@ -68,16 +58,32 @@ fn parse(value: &str) -> i64 {
 
 #[test]
 fn decodes_each_exact_v1_operation() {
-    let create = decode_schedule_change(&create_data("schedule-1", "check logs", "2026-08-05T12:00:00.000Z"))
-        .expect("create");
-    let at = decode_schedule_change(&at_create_data("schedule-at", "join meeting", "2026-08-06T01:00:00.000Z"))
-        .expect("at");
-    let every = decode_schedule_change(&every_create_data("schedule-every", "check metrics", "2026-08-05T12:05:00.000Z"))
-        .expect("every");
-    let remove = decode_schedule_change(&serde_json::json!({ "version": 1, "operation": "delete", "id": "schedule-1" }))
-        .expect("delete");
-    let dispatch = decode_schedule_change(&serde_json::json!({ "version": 1, "operation": "dispatch", "id": "schedule-1" }))
-        .expect("dispatch");
+    let create = decode_schedule_change(&create_data(
+        "schedule-1",
+        "check logs",
+        "2026-08-05T12:00:00.000Z",
+    ))
+    .expect("create");
+    let at = decode_schedule_change(&at_create_data(
+        "schedule-at",
+        "join meeting",
+        "2026-08-06T01:00:00.000Z",
+    ))
+    .expect("at");
+    let every = decode_schedule_change(&every_create_data(
+        "schedule-every",
+        "check metrics",
+        "2026-08-05T12:05:00.000Z",
+    ))
+    .expect("every");
+    let remove = decode_schedule_change(
+        &serde_json::json!({ "version": 1, "operation": "delete", "id": "schedule-1" }),
+    )
+    .expect("delete");
+    let dispatch = decode_schedule_change(
+        &serde_json::json!({ "version": 1, "operation": "dispatch", "id": "schedule-1" }),
+    )
+    .expect("dispatch");
     let every_dispatch = decode_schedule_change(&serde_json::json!({
         "version": 1,
         "operation": "dispatch",
@@ -96,7 +102,11 @@ fn decodes_each_exact_v1_operation() {
     );
     assert_eq!(
         serde_json::to_value(&every).expect("json"),
-        every_create_data("schedule-every", "check metrics", "2026-08-05T12:05:00.000Z")
+        every_create_data(
+            "schedule-every",
+            "check metrics",
+            "2026-08-05T12:05:00.000Z"
+        )
     );
     assert!(matches!(
         &remove,
@@ -140,42 +150,68 @@ fn rejects_malformed_durable_data() {
             value
         },
         {
-            let mut value = at_create_data("schedule-at", "join meeting", "2026-08-06T01:00:00.000Z");
+            let mut value =
+                at_create_data("schedule-at", "join meeting", "2026-08-06T01:00:00.000Z");
             value["schedule"]["extra"] = serde_json::Value::Bool(true);
             value
         },
         {
-            let mut value = at_create_data("schedule-at", "join meeting", "2026-08-06T01:00:00.000Z");
+            let mut value =
+                at_create_data("schedule-at", "join meeting", "2026-08-06T01:00:00.000Z");
             value["schedule"]["prompt"] = serde_json::json!(" ");
             value
         },
         {
-            let mut value = every_create_data("schedule-every", "check metrics", "2026-08-05T12:05:00.000Z");
+            let mut value = every_create_data(
+                "schedule-every",
+                "check metrics",
+                "2026-08-05T12:05:00.000Z",
+            );
             value["schedule"]["extra"] = serde_json::Value::Bool(true);
             value
         },
         {
-            let mut value = every_create_data("schedule-every", "check metrics", "2026-08-05T12:05:00.000Z");
+            let mut value = every_create_data(
+                "schedule-every",
+                "check metrics",
+                "2026-08-05T12:05:00.000Z",
+            );
             value["schedule"]["prompt"] = serde_json::json!(" ");
             value
         },
         {
-            let mut value = every_create_data("schedule-every", "check metrics", "2026-08-05T12:05:00.000Z");
+            let mut value = every_create_data(
+                "schedule-every",
+                "check metrics",
+                "2026-08-05T12:05:00.000Z",
+            );
             value["schedule"]["everySeconds"] = serde_json::json!(299);
             value
         },
         {
-            let mut value = every_create_data("schedule-every", "check metrics", "2026-08-05T12:05:00.000Z");
+            let mut value = every_create_data(
+                "schedule-every",
+                "check metrics",
+                "2026-08-05T12:05:00.000Z",
+            );
             value["schedule"]["everySeconds"] = serde_json::json!(300.5);
             value
         },
         {
-            let mut value = every_create_data("schedule-every", "check metrics", "2026-08-05T12:05:00.000Z");
+            let mut value = every_create_data(
+                "schedule-every",
+                "check metrics",
+                "2026-08-05T12:05:00.000Z",
+            );
             value["schedule"]["everySeconds"] = serde_json::json!("300");
             value
         },
         {
-            let mut value = every_create_data("schedule-every", "check metrics", "2026-08-05T12:05:00.000Z");
+            let mut value = every_create_data(
+                "schedule-every",
+                "check metrics",
+                "2026-08-05T12:05:00.000Z",
+            );
             value["schedule"]["everySeconds"] = serde_json::json!(9_007_199_254_740_991i64);
             value
         },
@@ -210,12 +246,14 @@ fn rejects_malformed_durable_data() {
             value
         },
         {
-            let mut value = at_create_data("schedule-at", "join meeting", "2026-08-06T01:00:00.000Z");
+            let mut value =
+                at_create_data("schedule-at", "join meeting", "2026-08-06T01:00:00.000Z");
             value["schedule"]["kind"] = serde_json::json!("every");
             value
         },
         {
-            let mut value = at_create_data("schedule-at", "join meeting", "2026-08-06T01:00:00.000Z");
+            let mut value =
+                at_create_data("schedule-at", "join meeting", "2026-08-06T01:00:00.000Z");
             value["schedule"]["kind"] = serde_json::json!("later");
             value
         },
@@ -230,32 +268,58 @@ fn rejects_malformed_durable_data() {
 
 #[test]
 fn folds_active_records_in_create_order_and_rejects_invalid_transitions() {
-    let first = schedule_event(create_data("first", "check logs", "2026-08-05T12:00:00.000Z"), 0);
-    let second = schedule_event(at_create_data("second", "join meeting", "2026-08-06T01:00:00.000Z"), 1);
-    let removed = schedule_event(serde_json::json!({ "version": 1, "operation": "delete", "id": "first" }), 2);
-    let folded = fold_schedule_events(&[first.clone(), second.clone(), removed.clone()], 0).expect("fold");
+    let first = schedule_event(
+        create_data("first", "check logs", "2026-08-05T12:00:00.000Z"),
+        0,
+    );
+    let second = schedule_event(
+        at_create_data("second", "join meeting", "2026-08-06T01:00:00.000Z"),
+        1,
+    );
+    let removed = schedule_event(
+        serde_json::json!({ "version": 1, "operation": "delete", "id": "first" }),
+        2,
+    );
+    let folded =
+        fold_schedule_events(&[first.clone(), second.clone(), removed.clone()], 0).expect("fold");
     assert_eq!(folded.active.len(), 1);
     assert_eq!(folded.active[0].id().as_str(), "second");
     assert_eq!(
-        folded.seen_ids.iter().map(|id| id.as_str()).collect::<Vec<_>>(),
+        folded
+            .seen_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
         vec!["first", "second"]
     );
     let reused = fold_schedule_events(
-        &[first, schedule_event(create_data("first", "check logs", "2026-08-05T12:00:00.000Z"), 1)],
+        &[
+            first,
+            schedule_event(
+                create_data("first", "check logs", "2026-08-05T12:00:00.000Z"),
+                1,
+            ),
+        ],
         0,
     )
     .err()
     .expect("reused");
     assert!(reused.message.contains("was reused"));
     let missing_delete = fold_schedule_events(
-        &[schedule_event(serde_json::json!({ "version": 1, "operation": "delete", "id": "missing" }), 0)],
+        &[schedule_event(
+            serde_json::json!({ "version": 1, "operation": "delete", "id": "missing" }),
+            0,
+        )],
         0,
     )
     .err()
     .expect("missing delete");
     assert!(missing_delete.message.contains("inactive id"));
     let missing_dispatch = fold_schedule_events(
-        &[schedule_event(serde_json::json!({ "version": 1, "operation": "dispatch", "id": "missing" }), 0)],
+        &[schedule_event(
+            serde_json::json!({ "version": 1, "operation": "dispatch", "id": "missing" }),
+            0,
+        )],
         0,
     )
     .err()
@@ -265,13 +329,25 @@ fn folds_active_records_in_create_order_and_rejects_invalid_transitions() {
 
 #[test]
 fn folds_only_the_fork_owned_suffix_and_validates_its_boundary() {
-    let parent = schedule_event(create_data("parent", "check logs", "2026-08-05T12:00:00.000Z"), 0);
-    let child = schedule_event(create_data("child", "check logs", "2026-08-05T12:00:00.000Z"), 1);
+    let parent = schedule_event(
+        create_data("parent", "check logs", "2026-08-05T12:00:00.000Z"),
+        0,
+    );
+    let child = schedule_event(
+        create_data("child", "check logs", "2026-08-05T12:00:00.000Z"),
+        1,
+    );
     let folded = fold_schedule_events(&[parent, child], 1).expect("fold");
     assert_eq!(folded.active.len(), 1);
     assert_eq!(folded.active[0].id().as_str(), "child");
     assert_eq!(folded.seen_ids.len(), 1);
-    assert!(fold_schedule_events(&[], 1).err().expect("over").message.contains("seedLength"));
+    assert!(
+        fold_schedule_events(&[], 1)
+            .err()
+            .expect("over")
+            .message
+            .contains("seedLength")
+    );
 }
 
 #[test]
@@ -292,8 +368,9 @@ fn allocates_a_readable_id_without_reusing_ended_or_colliding_ids() {
 
 #[test]
 fn builds_canonical_after_records_and_derives_views() {
-    let record = create_after_schedule_record(schedule_id("schedule-1"), "  check logs  ", 30, 1_000)
-        .expect("record");
+    let record =
+        create_after_schedule_record(schedule_id("schedule-1"), "  check logs  ", 30, 1_000)
+            .expect("record");
     assert_eq!(
         serde_json::to_value(&record).expect("json"),
         serde_json::json!({
@@ -309,7 +386,10 @@ fn builds_canonical_after_records_and_derives_views() {
         ScheduleState::Scheduled
     );
     assert_eq!(schedule_view(&record, 31_000).state, ScheduleState::Overdue);
-    assert_eq!(schedule_view(&record, 31_000).delivery_mode, "session-local");
+    assert_eq!(
+        schedule_view(&record, 31_000).delivery_mode,
+        "session-local"
+    );
 }
 
 #[test]
@@ -370,15 +450,21 @@ fn creates_the_first_anchored_target_and_enforces_the_public_lower_bound() {
             "scheduledAt": "2026-08-05T12:05:00.000Z"
         })
     );
-    for (seconds, code) in [(299, "frequency_too_high"), (i64::MAX / 1_000, "time_out_of_range")] {
-        let error = create_every_schedule_record(schedule_id("schedule-every"), "x", seconds, start)
-            .err()
-            .expect("failure");
+    for (seconds, code) in [
+        (299, "frequency_too_high"),
+        (i64::MAX / 1_000, "time_out_of_range"),
+    ] {
+        let error =
+            create_every_schedule_record(schedule_id("schedule-every"), "x", seconds, start)
+                .err()
+                .expect("failure");
         assert_eq!(error.code, code);
     }
     assert!(create_every_schedule_record(schedule_id("schedule-every"), " ", 300, start).is_err());
     for now in [i64::MIN] {
-        assert!(create_every_schedule_record(schedule_id("schedule-every"), "x", 300, now).is_err());
+        assert!(
+            create_every_schedule_record(schedule_id("schedule-every"), "x", 300, now).is_err()
+        );
     }
 }
 
@@ -387,7 +473,8 @@ fn selects_only_the_latest_missed_occurrence_and_the_first_future_anchor() {
     let start = parse("2026-08-05T12:00:00.000Z");
     let record = create_every_schedule_record(schedule_id("schedule-every"), "x", 300, start)
         .expect("record");
-    let first = resolve_every_occurrence(&record, parse("2026-08-05T12:05:00.000Z")).expect("first");
+    let first =
+        resolve_every_occurrence(&record, parse("2026-08-05T12:05:00.000Z")).expect("first");
     assert_eq!(
         serde_json::to_value(&first).expect("json"),
         serde_json::json!({
@@ -395,14 +482,20 @@ fn selects_only_the_latest_missed_occurrence_and_the_first_future_anchor() {
             "nextScheduledAt": "2026-08-05T12:10:00.000Z"
         })
     );
-    let later = resolve_every_occurrence(&record, parse("2026-08-05T12:17:34.000Z")).expect("later");
+    let later =
+        resolve_every_occurrence(&record, parse("2026-08-05T12:17:34.000Z")).expect("later");
     assert_eq!(later.occurrence_at, "2026-08-05T12:15:00.000Z");
-    assert_eq!(later.next_scheduled_at.as_deref(), Some("2026-08-05T12:20:00.000Z"));
+    assert_eq!(
+        later.next_scheduled_at.as_deref(),
+        Some("2026-08-05T12:20:00.000Z")
+    );
     let early = resolve_every_occurrence(&record, parse("2026-08-05T12:04:59.999Z"))
         .err()
         .expect("early");
     assert!(early.message.contains("cannot precede"));
-    let out = resolve_every_occurrence(&record, i64::MIN).err().expect("out");
+    let out = resolve_every_occurrence(&record, i64::MIN)
+        .err()
+        .expect("out");
     assert!(out.message.contains("acceptedAt"));
     let huge = ScheduleRecord::Every {
         id: schedule_id("schedule-every"),
@@ -418,7 +511,14 @@ fn selects_only_the_latest_missed_occurrence_and_the_first_future_anchor() {
 
 #[test]
 fn advances_one_every_record_without_a_backlog_or_cross_record_gate() {
-    let create = schedule_event(every_create_data("schedule-every", "check metrics", "2026-08-05T12:05:00.000Z"), 0);
+    let create = schedule_event(
+        every_create_data(
+            "schedule-every",
+            "check metrics",
+            "2026-08-05T12:05:00.000Z",
+        ),
+        0,
+    );
     let first = schedule_event(
         serde_json::json!({
             "version": 1,
@@ -451,7 +551,10 @@ fn advances_one_every_record_without_a_backlog_or_cross_record_gate() {
     assert!(no_accepted.message.contains("must contain acceptedAt"));
     let one_shot_accepted = fold_schedule_events(
         &[
-            schedule_event(create_data("one-shot", "check logs", "2026-08-05T12:00:00.000Z"), 0),
+            schedule_event(
+                create_data("one-shot", "check logs", "2026-08-05T12:00:00.000Z"),
+                0,
+            ),
             schedule_event(
                 serde_json::json!({
                     "version": 1,
@@ -466,7 +569,11 @@ fn advances_one_every_record_without_a_backlog_or_cross_record_gate() {
     )
     .err()
     .expect("one-shot dispatch must not carry acceptedAt");
-    assert!(one_shot_accepted.message.contains("must not contain acceptedAt"));
+    assert!(
+        one_shot_accepted
+            .message
+            .contains("must not contain acceptedAt")
+    );
 }
 
 #[test]
@@ -503,10 +610,12 @@ fn terminates_at_the_representable_boundary_and_renders_a_batch() {
     .expect("fold");
     assert!(folded.active.is_empty());
 
-    let first = create_every_schedule_record(schedule_id("schedule-one"), "line\n\"quoted\"", 300, start)
-        .expect("first");
-    let second = create_every_schedule_record(schedule_id("schedule-two"), "check metrics", 600, start)
-        .expect("second");
+    let first =
+        create_every_schedule_record(schedule_id("schedule-one"), "line\n\"quoted\"", 300, start)
+            .expect("first");
+    let second =
+        create_every_schedule_record(schedule_id("schedule-two"), "check metrics", 600, start)
+            .expect("second");
     let framing = render_every_reminder_batch_framing(&[
         (first.clone(), "2026-08-05T12:15:00.000Z".to_string()),
         (second.clone(), "2026-08-05T12:10:00.000Z".to_string()),
@@ -596,7 +705,10 @@ fn distinguishes_non_future_and_out_of_range_absolute_targets() {
     }
     for (at, sample_now) in [
         ("9999-12-31T23:59:59.999-23:59", now),
-        ("0001-01-01T00:00:00+23:59", dsh_schedule::domain::MIN_FOUR_DIGIT_YEAR_MS - 1),
+        (
+            "0001-01-01T00:00:00+23:59",
+            dsh_schedule::domain::MIN_FOUR_DIGIT_YEAR_MS - 1,
+        ),
         ("2026-08-06T01:00:00Z", i64::MIN),
     ] {
         let error = create_at_schedule_record(
@@ -746,7 +858,9 @@ fn keeps_latest_only_runtime_calculation_and_durable_folding_on_the_creation_anc
     let base = parse("2000-01-01T00:00:00.000Z");
     let mut seed: u64 = 0xC0FFEE;
     let mut next = move || {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         seed
     };
     for _ in 0..300 {
@@ -764,14 +878,19 @@ fn keeps_latest_only_runtime_calculation_and_durable_folding_on_the_creation_anc
         let target = parse(record.scheduled_at());
         let accepted = target + skipped as i64 * interval as i64 + (raw_offset % interval) as i64;
         let calculated = resolve_every_occurrence(&record, accepted).expect("calculated");
-        let expected_occurrence =
-            dsh_schedule::domain::format_canonical_instant(target + skipped as i64 * interval as i64)
-                .expect("occurrence");
-        let expected_next =
-            dsh_schedule::domain::format_canonical_instant(target + (skipped + 1) as i64 * interval as i64)
-                .expect("next");
+        let expected_occurrence = dsh_schedule::domain::format_canonical_instant(
+            target + skipped as i64 * interval as i64,
+        )
+        .expect("occurrence");
+        let expected_next = dsh_schedule::domain::format_canonical_instant(
+            target + (skipped + 1) as i64 * interval as i64,
+        )
+        .expect("next");
         assert_eq!(calculated.occurrence_at, expected_occurrence);
-        assert_eq!(calculated.next_scheduled_at.as_deref(), Some(expected_next.as_str()));
+        assert_eq!(
+            calculated.next_scheduled_at.as_deref(),
+            Some(expected_next.as_str())
+        );
         let folded = fold_schedule_events(
             &[
                 schedule_event(

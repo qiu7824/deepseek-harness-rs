@@ -114,16 +114,25 @@ mod tests {
     fn removes_terminal_controls_and_collapses_whitespace() {
         let input = "\u{1b}]0;stolen\u{7}  Hello\t brave\nnew world  ";
         assert_eq!(normalize_session_title(input, 80), "Hello brave new world");
-        assert_eq!(fallback_session_title("one two three four", 3, 80), "one two three");
+        assert_eq!(
+            fallback_session_title("one two three four", 3, 80),
+            "one two three"
+        );
         assert_eq!(fallback_session_title("你好世界", 5, 7), "你好");
         assert_eq!(fallback_session_title("😀😀", 5, 5).len(), 4);
     }
 
     #[test]
     fn strips_ansi_color_and_directional_controls() {
-        assert_eq!(normalize_session_title("\u{1b}[31m red \u{1b}[0m", 80), "red");
+        assert_eq!(
+            normalize_session_title("\u{1b}[31m red \u{1b}[0m", 80),
+            "red"
+        );
         assert_eq!(normalize_session_title("\u{202e}tfel\u{202c}", 80), "tfel");
-        assert_eq!(normalize_session_title("\u{200b}zero-width\u{feff}", 80), "zero-width");
+        assert_eq!(
+            normalize_session_title("\u{200b}zero-width\u{feff}", 80),
+            "zero-width"
+        );
     }
 
     #[test]
@@ -134,13 +143,19 @@ mod tests {
             .err()
             .and_then(|payload| payload.downcast::<String>().ok())
             .expect("panic payload");
-        assert!(message.contains("maxBytes must be a positive integer"), "{message}");
+        assert!(
+            message.contains("maxBytes must be a positive integer"),
+            "{message}"
+        );
         let outcome = std::panic::catch_unwind(|| fallback_session_title("title", 0, 10));
         let message = outcome
             .err()
             .and_then(|payload| payload.downcast::<String>().ok())
             .expect("panic payload");
-        assert!(message.contains("maxWords must be a positive integer"), "{message}");
+        assert!(
+            message.contains("maxWords must be a positive integer"),
+            "{message}"
+        );
     }
 
     #[test]

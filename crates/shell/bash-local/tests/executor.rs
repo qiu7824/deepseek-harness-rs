@@ -1,4 +1,4 @@
-﻿//! Rust port of the TS `executor.spec.ts` suite for `dsh-bash-local`:
+//! Rust port of the TS `executor.spec.ts` suite for `dsh-bash-local`:
 //! foreground runs (outputs, cwd, timeout caps, cause classification, stdin/
 //! env threading) and background process handles (incremental reads, stderr
 //! sections, spill paths, kill, escalation, spawn failures).
@@ -75,7 +75,11 @@ struct BashPlugin {
 
 #[async_trait::async_trait]
 impl Plugin for BashPlugin {
-    async fn apply(&self, ctx: &Context, _config: cordis::ArcValue) -> Result<(), cordis::PluginError> {
+    async fn apply(
+        &self,
+        ctx: &Context,
+        _config: cordis::ArcValue,
+    ) -> Result<(), cordis::PluginError> {
         let executor = LocalBashExecutor::install(ctx, self.config.clone());
         executor.ready().await.map_err(|error| error)?;
         *self.slot.lock() = Some(executor);
@@ -119,11 +123,7 @@ fn config() -> dsh_bash_local::Config {
 /// Poll a handle's consuming readOutput until the ACCUMULATED delta contains
 /// `expected` (reads never re-deliver). The generous window absorbs slow
 /// WSL/bootstrap spawns.
-async fn read_until(
-    proc: &Arc<dyn ShellProcess>,
-    expected: &str,
-    timeout_ms: u64,
-) -> String {
+async fn read_until(proc: &Arc<dyn ShellProcess>, expected: &str, timeout_ms: u64) -> String {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut all = String::new();
     while Instant::now() < deadline {
@@ -149,7 +149,11 @@ async fn resolves_with_output_and_the_effective_timeout() {
     let harness = setup(entry).await;
     let result = harness
         .bash
-        .run(harness.bash.resolve(dsh_shell::ShellExecRequest::new("echo hi")))
+        .run(
+            harness
+                .bash
+                .resolve(dsh_shell::ShellExecRequest::new("echo hi")),
+        )
         .await
         .expect("run");
     assert_eq!(result.exit_code, Some(0));
@@ -168,13 +172,25 @@ async fn uses_config_cwd_overridable_per_call() {
     let harness = setup(entry).await;
     let from_config = harness
         .bash
-        .run(harness.bash.resolve(dsh_shell::ShellExecRequest::new("pwd")))
+        .run(
+            harness
+                .bash
+                .resolve(dsh_shell::ShellExecRequest::new("pwd")),
+        )
         .await
         .expect("run");
-    assert!(from_config.stdout.text.trim().ends_with("/tmp"), "{}", from_config.stdout.text);
+    assert!(
+        from_config.stdout.text.trim().ends_with("/tmp"),
+        "{}",
+        from_config.stdout.text
+    );
     let mut request = dsh_shell::ShellExecRequest::new("pwd");
     request.workdir = Some("/".to_string());
-    let from_call = harness.bash.run(harness.bash.resolve(request)).await.expect("run");
+    let from_call = harness
+        .bash
+        .run(harness.bash.resolve(request))
+        .await
+        .expect("run");
     assert_eq!(from_call.stdout.text.trim(), "/");
 }
 
@@ -187,7 +203,11 @@ async fn defaults_cwd_to_process_cwd() {
     let harness = setup(config()).await;
     let result = harness
         .bash
-        .run(harness.bash.resolve(dsh_shell::ShellExecRequest::new("pwd")))
+        .run(
+            harness
+                .bash
+                .resolve(dsh_shell::ShellExecRequest::new("pwd")),
+        )
         .await
         .expect("run");
     let expected = std::env::current_dir()
@@ -208,7 +228,11 @@ async fn caps_per_call_timeouts_at_max_timeout_ms() {
     let harness = setup(entry).await;
     let mut request = dsh_shell::ShellExecRequest::new("true");
     request.timeout_ms = Some(99_999);
-    let result = harness.bash.run(harness.bash.resolve(request)).await.expect("run");
+    let result = harness
+        .bash
+        .run(harness.bash.resolve(request))
+        .await
+        .expect("run");
     assert_eq!(result.timeout_ms, 2_000);
 }
 
@@ -216,13 +240,45 @@ async fn caps_per_call_timeouts_at_max_timeout_ms() {
 async fn rejects_invalid_numeric_config_and_timeout_overrides() {
     // Config validation runs at construction (the TS constructor throw).
     for (label, entry) in [
-        ("timeoutMs", dsh_bash_local::Config { timeout_ms: Some(0), ..Default::default() }),
-        ("maxTimeoutMs", dsh_bash_local::Config { max_timeout_ms: Some(0), ..Default::default() }),
-        ("maxOutputBytes", dsh_bash_local::Config { max_output_bytes: Some(0), ..Default::default() }),
-        ("maxSpillBytes", dsh_bash_local::Config { max_spill_bytes: Some(0), ..Default::default() }),
-        ("graceMs", dsh_bash_local::Config { grace_ms: Some(0), ..Default::default() }),
+        (
+            "timeoutMs",
+            dsh_bash_local::Config {
+                timeout_ms: Some(0),
+                ..Default::default()
+            },
+        ),
+        (
+            "maxTimeoutMs",
+            dsh_bash_local::Config {
+                max_timeout_ms: Some(0),
+                ..Default::default()
+            },
+        ),
+        (
+            "maxOutputBytes",
+            dsh_bash_local::Config {
+                max_output_bytes: Some(0),
+                ..Default::default()
+            },
+        ),
+        (
+            "maxSpillBytes",
+            dsh_bash_local::Config {
+                max_spill_bytes: Some(0),
+                ..Default::default()
+            },
+        ),
+        (
+            "graceMs",
+            dsh_bash_local::Config {
+                grace_ms: Some(0),
+                ..Default::default()
+            },
+        ),
     ] {
-        let error = dsh_bash_local::ResolvedConfig::resolve(&entry).err().expect("invalid entry");
+        let error = dsh_bash_local::ResolvedConfig::resolve(&entry)
+            .err()
+            .expect("invalid entry");
         assert!(error.contains(label), "{error}");
     }
     let error = dsh_bash_local::ResolvedConfig::resolve(&dsh_bash_local::Config {
@@ -232,7 +288,10 @@ async fn rejects_invalid_numeric_config_and_timeout_overrides() {
     .err()
     .expect("grace bound");
     assert!(
-        error.contains(&format!("graceMs must be no greater than {}", dsh_timeout::MAX_TIMER_DELAY_MS)),
+        error.contains(&format!(
+            "graceMs must be no greater than {}",
+            dsh_timeout::MAX_TIMER_DELAY_MS
+        )),
         "{error}"
     );
 
@@ -243,11 +302,10 @@ async fn rejects_invalid_numeric_config_and_timeout_overrides() {
     for invalid in [0u64] {
         let mut request = dsh_shell::ShellExecRequest::new("true");
         request.timeout_ms = Some(invalid);
-        let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            bash.resolve(request)
-        }))
-        .err()
-        .expect("request.timeoutMs rejection");
+        let error =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| bash.resolve(request)))
+                .err()
+                .expect("request.timeoutMs rejection");
         assert!(render_panic(&error).contains("request.timeoutMs"));
     }
     let mut request = dsh_shell::ShellExecRequest::new("true");
@@ -267,14 +325,20 @@ async fn defaults_stdout_max_bytes_and_lets_foreground_callers_raise_stdout_only
     let mut entry = config();
     entry.max_output_bytes = Some(100);
     let harness = setup(entry).await;
-    let resolved = harness.bash.resolve(dsh_shell::ShellExecRequest::new("true"));
+    let resolved = harness
+        .bash
+        .resolve(dsh_shell::ShellExecRequest::new("true"));
     assert_eq!(resolved.stdout_max_bytes, 100);
 
     let mut request = dsh_shell::ShellExecRequest::new(
         r#"printf "%.0sx" $(seq 1 500); printf "%.0se" $(seq 1 500) >&2"#,
     );
     request.stdout_max_bytes = Some(500);
-    let result = harness.bash.run(harness.bash.resolve(request)).await.expect("run");
+    let result = harness
+        .bash
+        .run(harness.bash.resolve(request))
+        .await
+        .expect("run");
     assert!(!result.stdout.truncated);
     assert_eq!(result.stdout.text, "x".repeat(500));
     assert!(result.stderr.truncated);
@@ -292,8 +356,15 @@ async fn per_call_timeout_takes_precedence_under_the_cap_and_kills_on_expiry() {
     let mut request = dsh_shell::ShellExecRequest::new("sleep 60");
     request.timeout_ms = Some(100);
     let started = Instant::now();
-    let result = harness.bash.run(harness.bash.resolve(request)).await.expect("run");
-    assert!(started.elapsed() < Duration::from_secs(30), "timeout must kill the sleep");
+    let result = harness
+        .bash
+        .run(harness.bash.resolve(request))
+        .await
+        .expect("run");
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "timeout must kill the sleep"
+    );
     assert!(result.timed_out);
     // Mutually exclusive: a timeout classifies as timedOut, never also aborted.
     assert!(!result.aborted);
@@ -335,7 +406,11 @@ async fn classifies_a_self_killed_command_as_neither_timed_out_nor_aborted() {
     let harness = setup(entry).await;
     let result = harness
         .bash
-        .run(harness.bash.resolve(dsh_shell::ShellExecRequest::new("kill -TERM $$")))
+        .run(
+            harness
+                .bash
+                .resolve(dsh_shell::ShellExecRequest::new("kill -TERM $$")),
+        )
         .await
         .expect("run");
     assert_eq!(result.signal.as_deref(), Some("SIGTERM"));
@@ -374,8 +449,14 @@ async fn resolve_carries_stdin_env_dsh_env_onto_the_spec_and_run_threads_them() 
     let spec = harness.bash.resolve(request);
     // resolve() keeps the optional input/environment fields verbatim.
     assert_eq!(spec.stdin.as_deref(), Some("piped\n"));
-    assert_eq!(spec.env.as_ref().map(|entries| entries.as_slice()), Some(&[("SEAM_VAR".to_string(), "env-ok".to_string())][..]));
-    assert_eq!(spec.dsh_env.as_ref().map(|entries| entries.as_slice()), Some(&[("DSH_SEAM_VAR".to_string(), "dsh-ok".to_string())][..]));
+    assert_eq!(
+        spec.env.as_ref().map(|entries| entries.as_slice()),
+        Some(&[("SEAM_VAR".to_string(), "env-ok".to_string())][..])
+    );
+    assert_eq!(
+        spec.dsh_env.as_ref().map(|entries| entries.as_slice()),
+        Some(&[("DSH_SEAM_VAR".to_string(), "dsh-ok".to_string())][..])
+    );
     let result = harness.bash.run(spec).await.expect("run");
     assert_eq!(result.stdout.text, "piped\n[env-ok][dsh-ok]\n");
 }
@@ -383,7 +464,9 @@ async fn resolve_carries_stdin_env_dsh_env_onto_the_spec_and_run_threads_them() 
 #[tokio::test(flavor = "current_thread")]
 async fn resolve_omits_stdin_env_dsh_env_when_the_request_supplies_none() {
     let harness = setup(config()).await;
-    let spec = harness.bash.resolve(dsh_shell::ShellExecRequest::new("true"));
+    let spec = harness
+        .bash
+        .resolve(dsh_shell::ShellExecRequest::new("true"));
     assert!(spec.stdin.is_none());
     assert!(spec.env.is_none());
     assert!(spec.dsh_env.is_none());
@@ -396,9 +479,11 @@ async fn start_returns_immediately_with_a_running_handle_that_settles_as_complet
     }
     let harness = setup(config()).await;
     let before = Instant::now();
-    let proc = harness
-        .bash
-        .start(harness.bash.resolve(dsh_shell::ShellExecRequest::new("sleep 0.2; echo done")));
+    let proc = harness.bash.start(
+        harness
+            .bash
+            .resolve(dsh_shell::ShellExecRequest::new("sleep 0.2; echo done")),
+    );
     assert!(before.elapsed() < Duration::from_millis(150));
     assert_eq!(proc.status(), ShellProcessStatus::Running);
     proc.done().await;
@@ -413,8 +498,7 @@ async fn threads_stdin_and_extra_env_into_a_background_process() {
         return;
     }
     let harness = setup(config()).await;
-    let mut request =
-        dsh_shell::ShellExecRequest::new("cat; echo \"[$BG_VAR][$DSH_BG_VAR]\"");
+    let mut request = dsh_shell::ShellExecRequest::new("cat; echo \"[$BG_VAR][$DSH_BG_VAR]\"");
     request.stdin = Some("bg-stdin\n".to_string());
     request.env = Some(vec![("BG_VAR".to_string(), "bg-env".to_string())]);
     request.dsh_env = Some(vec![("DSH_BG_VAR".to_string(), "bg-dsh-env".to_string())]);
@@ -433,7 +517,9 @@ async fn read_output_is_consuming_and_reads_stay_valid_after_exit() {
     let harness = setup(config()).await;
     let proc = harness
         .bash
-        .start(harness.bash.resolve(dsh_shell::ShellExecRequest::new("echo first; sleep 1; echo second")));
+        .start(harness.bash.resolve(dsh_shell::ShellExecRequest::new(
+            "echo first; sleep 1; echo second",
+        )));
     let first = read_until(&proc, "first\n", 20_000).await;
     assert_eq!(first, "first\n");
     proc.done().await;
@@ -450,9 +536,11 @@ async fn read_output_marks_stderr_sections() {
         return;
     }
     let harness = setup(config()).await;
-    let proc = harness
-        .bash
-        .start(harness.bash.resolve(dsh_shell::ShellExecRequest::new("echo out; echo err >&2")));
+    let proc = harness.bash.start(
+        harness
+            .bash
+            .resolve(dsh_shell::ShellExecRequest::new("echo out; echo err >&2")),
+    );
     proc.done().await;
     assert_eq!(proc.read_output().delta, "out\n[stderr]\nerr\n");
 }
@@ -463,9 +551,11 @@ async fn read_output_reports_stderr_only_deltas_without_a_leading_newline() {
         return;
     }
     let harness = setup(config()).await;
-    let proc = harness
-        .bash
-        .start(harness.bash.resolve(dsh_shell::ShellExecRequest::new("echo err >&2")));
+    let proc = harness.bash.start(
+        harness
+            .bash
+            .resolve(dsh_shell::ShellExecRequest::new("echo err >&2")),
+    );
     proc.done().await;
     assert_eq!(proc.read_output().delta, "[stderr]\nerr\n");
 }
@@ -476,9 +566,11 @@ async fn read_output_adds_a_separator_only_when_stdout_lacks_a_trailing_newline(
         return;
     }
     let harness = setup(config()).await;
-    let proc = harness
-        .bash
-        .start(harness.bash.resolve(dsh_shell::ShellExecRequest::new("printf out; echo err >&2")));
+    let proc = harness.bash.start(
+        harness
+            .bash
+            .resolve(dsh_shell::ShellExecRequest::new("printf out; echo err >&2")),
+    );
     proc.done().await;
     assert_eq!(proc.read_output().delta, "out\n[stderr]\nerr\n");
 }
@@ -492,11 +584,11 @@ async fn read_output_flags_lossy_reads_and_reports_stdout_spill_paths() {
     let mut entry = config();
     entry.max_output_bytes = Some(100);
     let harness = setup(entry).await;
-    let proc = harness.bash.start(
-        harness.bash.resolve(dsh_shell::ShellExecRequest::new(
+    let proc = harness
+        .bash
+        .start(harness.bash.resolve(dsh_shell::ShellExecRequest::new(
             "for i in $(seq 1 100); do printf \"line-%04d\\n\" $i; done",
-        )),
-    );
+        )));
     proc.done().await;
     let read = proc.read_output();
     // Window slid past offset 0 鈫?lossy, spill path points at the full stream.
@@ -513,11 +605,11 @@ async fn read_output_reports_stderr_spill_paths() {
     let mut entry = config();
     entry.max_output_bytes = Some(100);
     let harness = setup(entry).await;
-    let proc = harness.bash.start(
-        harness.bash.resolve(dsh_shell::ShellExecRequest::new(
+    let proc = harness
+        .bash
+        .start(harness.bash.resolve(dsh_shell::ShellExecRequest::new(
             "for i in $(seq 1 100); do printf \"line-%04d\\n\" $i >&2; done",
-        )),
-    );
+        )));
     proc.done().await;
     let read = proc.read_output();
     assert!(read.lossy);
@@ -532,9 +624,11 @@ async fn kill_terminates_the_process_group_true_once_false_after_settlement() {
         return;
     }
     let harness = setup(config()).await;
-    let proc = harness
-        .bash
-        .start(harness.bash.resolve(dsh_shell::ShellExecRequest::new("sleep 60")));
+    let proc = harness.bash.start(
+        harness
+            .bash
+            .resolve(dsh_shell::ShellExecRequest::new("sleep 60")),
+    );
     assert!(proc.kill());
     proc.done().await;
     assert_eq!(proc.status(), ShellProcessStatus::Killed);
@@ -548,9 +642,11 @@ async fn kill_returns_false_for_a_naturally_completed_process() {
         return;
     }
     let harness = setup(config()).await;
-    let proc = harness
-        .bash
-        .start(harness.bash.resolve(dsh_shell::ShellExecRequest::new("true")));
+    let proc = harness.bash.start(
+        harness
+            .bash
+            .resolve(dsh_shell::ShellExecRequest::new("true")),
+    );
     proc.done().await;
     assert_eq!(proc.status(), ShellProcessStatus::Completed);
     assert!(!proc.kill());
@@ -605,9 +701,11 @@ async fn a_self_signal_exit_settles_the_handle_as_killed_not_completed() {
         return;
     }
     let harness = setup(config()).await;
-    let proc = harness
-        .bash
-        .start(harness.bash.resolve(dsh_shell::ShellExecRequest::new("kill -TERM $$")));
+    let proc = harness.bash.start(
+        harness
+            .bash
+            .resolve(dsh_shell::ShellExecRequest::new("kill -TERM $$")),
+    );
     proc.done().await;
     assert_eq!(proc.status(), ShellProcessStatus::Killed);
     assert_eq!(proc.exit_code(), None);

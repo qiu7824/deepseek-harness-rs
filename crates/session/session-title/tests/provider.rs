@@ -95,7 +95,10 @@ async fn start_session(store: &SessionStore, ctx: &Context, id: &str) -> Session
 }
 
 fn user_message(seq: u64, text: &str) -> SessionTitleUserMessage {
-    SessionTitleUserMessage { seq, text: text.to_string() }
+    SessionTitleUserMessage {
+        seq,
+        text: text.to_string(),
+    }
 }
 
 /// A provider whose `generate` runs a test-provided closure.
@@ -159,9 +162,19 @@ impl SessionTitleProvider for ParkingProvider {
                 let _ = rx.await;
             }
         }
-        let messages = self.requests.lock().last().map(|r| r.messages.clone()).unwrap_or_default();
+        let messages = self
+            .requests
+            .lock()
+            .last()
+            .map(|r| r.messages.clone())
+            .unwrap_or_default();
         Ok(SessionTitleProviderResult {
-            title: if is_first { "Old ignored result" } else { "Newest complete title" }.to_string(),
+            title: if is_first {
+                "Old ignored result"
+            } else {
+                "Newest complete title"
+            }
+            .to_string(),
             message_seqs: messages.iter().map(|message| message.seq).collect(),
             model: None,
         })
@@ -270,7 +283,8 @@ async fn inherits_title_events_across_forks_skips_first_prompt_retitling_and_upd
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn runs_a_first_prompt_provider_once_after_the_routed_request_and_retries_only_through_refresh() {
+async fn runs_a_first_prompt_provider_once_after_the_routed_request_and_retries_only_through_refresh()
+ {
     let (ctx, store, service) = setup().await;
     let requests: Arc<Mutex<Vec<SessionTitleProviderRequest>>> = Arc::new(Mutex::new(Vec::new()));
     let requests_for_fn = requests.clone();
@@ -293,7 +307,10 @@ async fn runs_a_first_prompt_provider_once_after_the_routed_request_and_retries_
     let session = start_session(&store, &ctx, "first-provider").await;
     let first = append_human(&session, "f1", "Explain asynchronous title generation");
     settle().await;
-    assert_eq!(service.get(&session).expect("title").source.kind(), "fallback");
+    assert_eq!(
+        service.get(&session).expect("title").source.kind(),
+        "fallback"
+    );
 
     append_route(&session, "initial");
     settle().await;
@@ -301,7 +318,13 @@ async fn runs_a_first_prompt_provider_once_after_the_routed_request_and_retries_
     assert_eq!(requests.lock().len(), 1);
     {
         let requests = requests.lock();
-        assert_eq!(requests[0].messages, vec![user_message(first.seq, "Explain asynchronous title generation")]);
+        assert_eq!(
+            requests[0].messages,
+            vec![user_message(
+                first.seq,
+                "Explain asynchronous title generation"
+            )]
+        );
         assert_eq!(
             requests[0].route,
             Some(SessionTitleModelProvenance {
@@ -372,18 +395,32 @@ async fn rejects_a_second_provider_and_drains_stale_work_when_the_winner_is_disp
     settle().await;
     append_route(&session, "initial");
     settle().await;
-    assert!(!observed_signal.lock().as_ref().expect("signal").is_aborted());
+    assert!(
+        !observed_signal
+            .lock()
+            .as_ref()
+            .expect("signal")
+            .is_aborted()
+    );
 
     // Drive the disposer concurrently: it aborts the active call and then
     // drains until the parked provider is released.
     let disposal = dispose();
     let disposed = tokio::spawn(disposal);
-    while !observed_signal.lock().as_ref().expect("signal").is_aborted() {
+    while !observed_signal
+        .lock()
+        .as_ref()
+        .expect("signal")
+        .is_aborted()
+    {
         tokio::task::yield_now().await;
     }
     let _ = gate_tx.send(());
     disposed.await.expect("disposal completes");
-    assert_eq!(service.get(&session).expect("title").source.kind(), "fallback");
+    assert_eq!(
+        service.get(&session).expect("title").source.kind(),
+        "fallback"
+    );
 
     let replacement = Arc::new(FnProvider {
         id: session_title_provider_id("replacement"),
@@ -432,7 +469,10 @@ async fn supersedes_an_older_all_messages_revision_and_cannot_commit_an_ignored_
 
     let _ = first_tx.send(());
     settle().await;
-    assert_eq!(service.get(&session).expect("title").title, "Newest complete title");
+    assert_eq!(
+        service.get(&session).expect("title").title,
+        "Newest complete title"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -449,8 +489,12 @@ async fn runs_an_all_messages_revision_when_the_next_main_request_reuses_its_log
             }]))
         }
     }
-    llm.register_adapter(&ctx, vec!["main-route".to_string()], Arc::new(ScriptedAdapter))
-        .expect("adapter");
+    llm.register_adapter(
+        &ctx,
+        vec!["main-route".to_string()],
+        Arc::new(ScriptedAdapter),
+    )
+    .expect("adapter");
     let service = SessionTitleService::install(&ctx, config()).expect("install");
 
     let requests: Arc<Mutex<Vec<SessionTitleProviderRequest>>> = Arc::new(Mutex::new(Vec::new()));
@@ -560,8 +604,12 @@ async fn ignores_model_streams_that_are_not_a_matching_loop_request() {
             }]))
         }
     }
-    llm.register_adapter(&ctx, vec!["main-route".to_string()], Arc::new(ScriptedAdapter))
-        .expect("adapter");
+    llm.register_adapter(
+        &ctx,
+        vec!["main-route".to_string()],
+        Arc::new(ScriptedAdapter),
+    )
+    .expect("adapter");
     let service = SessionTitleService::install(&ctx, config()).expect("install");
 
     let calls = Arc::new(AtomicUsize::new(0));
@@ -639,7 +687,10 @@ async fn contains_automatic_failures_but_lets_explicit_refresh_reject() {
     append_route(&session, "initial");
     settle().await;
 
-    assert_eq!(service.get(&session).expect("title").source.kind(), "fallback");
+    assert_eq!(
+        service.get(&session).expect("title").source.kind(),
+        "fallback"
+    );
     let error = service.refresh(&session, None).await.err().expect("reject");
     assert_eq!(error, "title backend failed");
 }

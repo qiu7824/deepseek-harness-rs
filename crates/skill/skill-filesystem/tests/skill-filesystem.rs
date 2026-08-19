@@ -143,16 +143,22 @@ async fn parses_invocation_policies_and_metadata_from_frontmatter() {
         .await
         .expect("list");
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].invocation, dsh_skill::SkillInvocationPolicy {
-        model_invocable: false,
-        user_invocable: true,
-    });
+    assert_eq!(
+        listed[0].invocation,
+        dsh_skill::SkillInvocationPolicy {
+            model_invocable: false,
+            user_invocable: true,
+        }
+    );
     let loaded = skills_of(&ctx)
         .get("policy-skill", SkillViewOptions::default())
         .await
         .expect("get");
     let loaded = loaded.expect("loaded");
-    assert_eq!(loaded.metadata, Some(serde_json::json!({ "owner": "tests" })));
+    assert_eq!(
+        loaded.metadata,
+        Some(serde_json::json!({ "owner": "tests" }))
+    );
     assert_eq!(loaded.content, "Policy body.");
 }
 
@@ -191,7 +197,9 @@ async fn rejects_legacy_invocation_keys_and_missing_required_fields() {
     // No frontmatter at all.
     let plain = root.join("plain-file");
     tokio::fs::create_dir_all(&plain).await.expect("dir");
-    tokio::fs::write(plain.join("SKILL.md"), "no frontmatter here\n").await.expect("write");
+    tokio::fs::write(plain.join("SKILL.md"), "no frontmatter here\n")
+        .await
+        .expect("write");
     let ctx = mounted(&home, None).await;
 
     let listed = skills_of(&ctx)
@@ -205,8 +213,15 @@ async fn rejects_legacy_invocation_keys_and_missing_required_fields() {
 async fn discovers_project_skills_from_the_git_root() {
     let home = temp_dir("fs-project-home").await;
     let project = temp_dir("fs-project").await;
-    tokio::fs::create_dir_all(project.join(".git")).await.expect("git");
-    write_skill(&project.join(".dsh/skills"), "project-skill", "Project skill").await;
+    tokio::fs::create_dir_all(project.join(".git"))
+        .await
+        .expect("git");
+    write_skill(
+        &project.join(".dsh/skills"),
+        "project-skill",
+        "Project skill",
+    )
+    .await;
     let ctx = mounted(&home, None).await;
 
     let listed = skills_of(&ctx)

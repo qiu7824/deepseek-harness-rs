@@ -24,9 +24,7 @@ use futures::future::BoxFuture;
 use futures::stream::{BoxStream, StreamExt};
 use parking_lot::Mutex;
 
-use crate::process_inspector::{
-    ProcessIdentity, ProcessInspector, TerminalKillSignal,
-};
+use crate::process_inspector::{ProcessIdentity, ProcessInspector, TerminalKillSignal};
 
 /// One allocated terminal process (the TS `IPty` collapse).
 pub trait PtyTerminal: Send + Sync {
@@ -170,7 +168,8 @@ impl LocalTerminalHandle {
         if self.root_identity.is_some() {
             if let Some(root) = &self.root_identity {
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    self.inspector.signal_process(root, TerminalKillSignal::SigKill);
+                    self.inspector
+                        .signal_process(root, TerminalKillSignal::SigKill);
                 }));
             }
             return;
@@ -265,7 +264,10 @@ impl LocalTerminalHandle {
             self.wait_done_or(self.grace_ms).await;
         }
         if !self.exited.load(SeqCst) {
-            return Err(format!("terminal cleanup failed; surviving pid: {}", self.pid));
+            return Err(format!(
+                "terminal cleanup failed; surviving pid: {}",
+                self.pid
+            ));
         }
         Ok(())
     }
@@ -377,15 +379,12 @@ impl SubprocessTerminalHandle for LocalTerminalHandle {
     ) -> BoxFuture<'static, Result<u32, String>> {
         let handle = self_arc_of(self);
         Box::pin(async move {
-            let foreground = handle
-                .inspect_foreground()
-                .await?
-                .ok_or_else(|| {
-                    format!(
-                        "cannot resolve foreground process group for terminal {}",
-                        handle.pid
-                    )
-                })?;
+            let foreground = handle.inspect_foreground().await?.ok_or_else(|| {
+                format!(
+                    "cannot resolve foreground process group for terminal {}",
+                    handle.pid
+                )
+            })?;
             if signal == SubprocessTerminalSignal::SigKill
                 && foreground.process_group_id == handle.pid
             {

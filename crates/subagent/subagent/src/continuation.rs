@@ -16,26 +16,23 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::child_agent::{
+    ChildComposition, DelegatedPolicyOverrides, append_delegated_policy_overrides,
+    apply_child_composition, capture_delegated_policy_overrides, child_session_meta,
+    resolve_child_agent_options, resolve_child_depth,
+};
+use crate::descriptor::{SubagentDescriptorData, snapshot_subagent_descriptor};
+use crate::descriptor_seed::seed_descriptor_turn;
+use crate::error::SubagentError;
+use crate::lifecycle::ActivationObserver;
+use crate::types::{
+    ContinuableCreateRequest, ContinuableCreateSpec, SubagentStartRequest, SubagentStopReason,
+};
 use cordis::Context;
-use dsh_agent::{Agent, AgentHandle, AgentOptions, AgentRegistry};
+use dsh_agent::{Agent, AgentHandle, AgentRegistry};
 use dsh_llm::{ContentBlock, MessageId, MessageSource, bound_context_summary, create_user_message};
 use dsh_session::{SessionEvent, SessionId, session_id};
 use dsh_session_persistence::SessionPersistenceApi;
-use dsh_tools::ToolRestriction;
-
-use crate::child_agent::{
-    append_delegated_policy_overrides, apply_child_composition, capture_delegated_policy_overrides,
-    child_session_meta, resolve_child_agent_options, resolve_child_depth, ChildComposition,
-    DelegatedPolicyOverrides,
-};
-use crate::descriptor::{SubagentDescriptorData, fold_subagent_descriptor, snapshot_subagent_descriptor};
-use crate::descriptor_seed::seed_descriptor_turn;
-use crate::error::SubagentError;
-use crate::lifecycle::{ActivationObserver, ActivationTerminal, create_activation_observer};
-use crate::types::{
-    ContinuableCreateRequest, ContinuableCreateSpec, SubagentResult, SubagentStartRequest,
-    SubagentStopReason,
-};
 
 /// What a caller asks for when starting a continuable background child.
 #[derive(Clone)]
@@ -102,6 +99,20 @@ enum ActivationState {
     Settled,
 }
 
+type ActivationDisposal = Arc<tokio::sync::Mutex<Option<Result<(), String>>>>;
+
+struct MaterializeRequest<'a> {
+    child_id: &'a SessionId,
+    provider: &'a str,
+    parent: Arc<dyn Agent>,
+    seed: &'a [SessionEvent],
+    child_depth: u64,
+    lineage_seed_length: usize,
+    request: &'a SubagentStartRequest,
+    delegated_policies: &'a DelegatedPolicyOverrides,
+    signal: &'a Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
 /// One residency epoch for a reconstructed continuable child Agent.
 struct Activation {
     child_id: SessionId,
@@ -110,7 +121,7 @@ struct Activation {
     ancestry: HashSet<usize>,
     owned_children: HashSet<String>,
     observer: ActivationObserver,
-    disposal: Option<Arc<tokio::sync::Mutex<Option<Result<(), String>>>>>,
+    disposal: Option<ActivationDisposal>,
     accepted: HashSet<String>,
     announced: bool,
     poke: Arc<tokio::sync::Notify>,
@@ -265,7 +276,10 @@ impl SubagentContinuationManager {
             )
             .await?;
         if (spec.signal)() {
-            return Err(SubagentError::new("CANCELLED", "subagent request was aborted"));
+            return Err(SubagentError::new(
+                "CANCELLED",
+                "subagent request was aborted",
+            ));
         }
         self.assert_admitting(parent.as_ref())?;
 
@@ -281,19 +295,30 @@ impl SubagentContinuationManager {
                 let spec = spec.clone();
                 async move {
                     let activation = manager
-                        .materialize(&child_id_for_child, &spec.provider, parent.clone(), &seed, child_depth, lineage_seed_length, &descriptor, request, &delegated_policies, &spec.signal)
+                        .materialize(MaterializeRequest {
+                            child_id: &child_id_for_child,
+                            provider: &spec.provider,
+                            parent: parent.clone(),
+                            seed: &seed,
+                            child_depth,
+                            lineage_seed_length,
+                            request,
+                            delegated_policies: &delegated_policies,
+                            signal: &spec.signal,
+                        })
                         .await?;
-                    manager.submit_materialized(
-                        activation,
-                        &spec.request.prompt,
-                        MessageSource::User {
-                            rpc_id: None,
-                            client_time_zone: None,
-                        },
-                        parent,
-                        &spec.signal,
-                    )
-                    .await
+                    manager
+                        .submit_materialized(
+                            activation,
+                            &spec.request.prompt,
+                            MessageSource::User {
+                                rpc_id: None,
+                                client_time_zone: None,
+                            },
+                            parent,
+                            &spec.signal,
+                        )
+                        .await
                 }
             })
             .await?;
@@ -345,7 +370,10 @@ impl SubagentContinuationManager {
                     // The disposal cutoff race: retry.
                     self.assert_admitting(parent.as_ref())?;
                     if (options.signal)() {
-                        return Err(SubagentError::new("CANCELLED", "subagent request was aborted"));
+                        return Err(SubagentError::new(
+                            "CANCELLED",
+                            "subagent request was aborted",
+                        ));
                     }
                     continue;
                 }
@@ -365,13 +393,15 @@ impl SubagentContinuationManager {
             return Ok(());
         };
         let agent = activation.lock().handle().agent.clone();
-        let mut activation = activation.lock();
+        let activation = activation.lock();
         match authority {
             SubagentInterruptAuthority::User { parent_session_id } => {
                 if agent.session().header().parent_session.as_ref() != Some(parent_session_id) {
                     return Err(SubagentError::new(
                         "UNAUTHORIZED",
-                        format!("subagent \"{target_session_id}\" belongs to another parent session"),
+                        format!(
+                            "subagent \"{target_session_id}\" belongs to another parent session"
+                        ),
                     ));
                 }
                 agent.cancel(
@@ -408,7 +438,10 @@ impl SubagentContinuationManager {
         options: &SubagentReportOptions,
     ) -> Result<MessageId, SubagentError> {
         if (options.signal)() {
-            return Err(SubagentError::new("CANCELLED", "subagent request was aborted"));
+            return Err(SubagentError::new(
+                "CANCELLED",
+                "subagent request was aborted",
+            ));
         }
         self.assert_admitting(child.as_ref())?;
         let activation = {
@@ -418,18 +451,34 @@ impl SubagentContinuationManager {
         .ok_or_else(|| {
             SubagentError::new(
                 "UNAUTHORIZED",
-                format!("agent \"{}\" is not a live continuable subagent and cannot report", child.id().as_str()),
+                format!(
+                    "agent \"{}\" is not a live continuable subagent and cannot report",
+                    child.id().as_str()
+                ),
             )
         })?;
-        let parent_id = child.session().header().parent_session.clone().ok_or_else(|| {
-            SubagentError::new("PARENT_UNAVAILABLE", "direct parent is not live; report was not delivered")
+        let parent_id = child
+            .session()
+            .header()
+            .parent_session
+            .clone()
+            .ok_or_else(|| {
+                SubagentError::new(
+                    "PARENT_UNAVAILABLE",
+                    "direct parent is not live; report was not delivered",
+                )
+            })?;
+        let parent = self.agents().get(&parent_id).ok_or_else(|| {
+            SubagentError::new(
+                "PARENT_UNAVAILABLE",
+                "direct parent is not live; report was not delivered",
+            )
         })?;
-        let parent = self
-            .agents()
-            .get(&parent_id)
-            .ok_or_else(|| SubagentError::new("PARENT_UNAVAILABLE", "direct parent is not live; report was not delivered"))?;
         let mut content_blocks = vec![ContentBlock::Text {
-            text: format!("Background subagent {} reported:", activation.lock().child_id.as_str()),
+            text: format!(
+                "Background subagent {} reported:",
+                activation.lock().child_id.as_str()
+            ),
         }];
         content_blocks.extend(content.iter().cloned());
         let message = create_user_message(
@@ -450,7 +499,8 @@ impl SubagentContinuationManager {
     /// Close admission, await materializations, then dispose the stable live
     /// Activation forest child-first.
     pub async fn drain(&self) -> Result<(), SubagentError> {
-        self.draining.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.draining
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let roots = {
             let activations = self.activations.lock();
             let mut owned: HashSet<String> = HashSet::new();
@@ -477,7 +527,10 @@ impl SubagentContinuationManager {
         } else {
             Err(SubagentError::new(
                 "ACTIVATION_TEARDOWN_FAILED",
-                format!("continuable subagent teardown failed: {}", failures.join("; ")),
+                format!(
+                    "continuable subagent teardown failed: {}",
+                    failures.join("; ")
+                ),
             ))
         }
     }
@@ -487,7 +540,11 @@ impl SubagentContinuationManager {
     pub async fn drain_descendants(&self, parents: &[Arc<dyn Agent>]) -> Result<(), SubagentError> {
         let mut roots: HashSet<usize> = HashSet::new();
         for parent in parents {
-            if self.agents().get(parent.id()).is_some_and(|live| Arc::ptr_eq(&live, parent)) {
+            if self
+                .agents()
+                .get(parent.id())
+                .is_some_and(|live| Arc::ptr_eq(&live, parent))
+            {
                 roots.insert(Arc::as_ptr(parent).cast::<()>() as usize);
             }
         }
@@ -502,7 +559,9 @@ impl SubagentContinuationManager {
                     let activation = activation.lock();
                     let agent = activation.handle().agent.clone();
                     let agent_key = Arc::as_ptr(&agent).cast::<()>() as usize;
-                    roots.iter().any(|root| *root != agent_key && activation.ancestry.contains(root))
+                    roots
+                        .iter()
+                        .any(|root| *root != agent_key && activation.ancestry.contains(root))
                 })
                 .cloned()
                 .collect::<Vec<_>>()
@@ -518,7 +577,10 @@ impl SubagentContinuationManager {
         } else {
             Err(SubagentError::new(
                 "ACTIVATION_TEARDOWN_FAILED",
-                format!("continuable subagent teardown failed: {}", failures.join("; ")),
+                format!(
+                    "continuable subagent teardown failed: {}",
+                    failures.join("; ")
+                ),
             ))
         }
     }
@@ -527,20 +589,25 @@ impl SubagentContinuationManager {
     /// Activation, and register ownership.
     async fn materialize(
         &self,
-        child_id: &SessionId,
-        provider: &str,
-        parent: Arc<dyn Agent>,
-        seed: &[SessionEvent],
-        child_depth: u64,
-        lineage_seed_length: usize,
-        _descriptor: &SubagentDescriptorData,
-        request: &SubagentStartRequest,
-        delegated_policies: &DelegatedPolicyOverrides,
-        signal: &Arc<dyn Fn() -> bool + Send + Sync>,
+        input: MaterializeRequest<'_>,
     ) -> Result<Arc<parking_lot::Mutex<Activation>>, SubagentError> {
+        let MaterializeRequest {
+            child_id,
+            provider,
+            parent,
+            seed,
+            child_depth,
+            lineage_seed_length,
+            request,
+            delegated_policies,
+            signal,
+        } = input;
         self.assert_admitting(parent.as_ref())?;
         if (signal)() {
-            return Err(SubagentError::new("CANCELLED", "subagent request was aborted"));
+            return Err(SubagentError::new(
+                "CANCELLED",
+                "subagent request was aborted",
+            ));
         }
         // Compose the child after publication, before its first turn (the
         // TS creation-window setup deviation, shared with the one-shot
@@ -574,7 +641,9 @@ impl SubagentContinuationManager {
                 .await
                 .map_err(|error| SubagentError::new("CHILD_CREATE_FAILED", error))?;
             let _ = registry_for_setup;
-            if let Err(error) = append_delegated_policy_overrides(handle.agent.session(), &delegated) {
+            if let Err(error) =
+                append_delegated_policy_overrides(handle.agent.session(), &delegated)
+            {
                 handle.dispose.await;
                 return Err(SubagentError::new("CHILD_COMPOSE_FAILED", error));
             }
@@ -587,9 +656,7 @@ impl SubagentContinuationManager {
             .map(|agent| Arc::as_ptr(agent).cast::<()>() as usize)
             .collect();
         ancestry.insert(Arc::as_ptr(&handle.agent).cast::<()>() as usize);
-        let observer = self
-            .host
-            .observe_activation(provider, child_id, &parent);
+        let observer = self.host.observe_activation(provider, child_id, &parent);
         let activation = Arc::new(parking_lot::Mutex::new(Activation {
             child_id: child_id.clone(),
             parent_session: parent.id().clone(),
@@ -640,7 +707,10 @@ impl SubagentContinuationManager {
         signal: &Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<MessageId, SubagentError> {
         if (signal)() {
-            return Err(SubagentError::new("CANCELLED", "subagent request was aborted"));
+            return Err(SubagentError::new(
+                "CANCELLED",
+                "subagent request was aborted",
+            ));
         }
         self.assert_admitting(parent.as_ref())?;
         let child_id = activation.lock().child_id.clone();
@@ -649,7 +719,9 @@ impl SubagentContinuationManager {
             if activation_guard.disposal.is_some() {
                 return Err(SubagentError::new(
                     "ACTIVATION_CLOSING",
-                    format!("subagent \"{child_id}\" activation is being disposed; the message was not accepted"),
+                    format!(
+                        "subagent \"{child_id}\" activation is being disposed; the message was not accepted"
+                    ),
                 ));
             }
         }
@@ -659,7 +731,10 @@ impl SubagentContinuationManager {
         let message_id = message.id.clone();
         let child_agent = activation.lock().handle().agent.clone();
         child_agent.followup(message);
-        activation.lock().accepted.insert(message_id.as_str().to_string());
+        activation
+            .lock()
+            .accepted
+            .insert(message_id.as_str().to_string());
         activation.lock().announced = true;
         activation.lock().poke.notify_waiters();
         Ok(message_id)
@@ -714,7 +789,10 @@ impl SubagentContinuationManager {
         if parent_activation.disposal.is_some() {
             return Err(SubagentError::new(
                 "ACTIVATION_CLOSING",
-                format!("subagent parent \"{}\" is being disposed; the child was not established", parent.id().as_str()),
+                format!(
+                    "subagent parent \"{}\" is being disposed; the child was not established",
+                    parent.id().as_str()
+                ),
             ));
         }
         parent_activation
@@ -775,9 +853,7 @@ impl SubagentContinuationManager {
                             {
                                 return None;
                             }
-                            Some(Box::pin(async move {
-                                manager.dispose(&activation).await
-                            }))
+                            Some(Box::pin(async move { manager.dispose(&activation).await }))
                         }
                     })
                     .await;
@@ -863,7 +939,11 @@ impl SubagentContinuationManager {
             )
         };
         handle.dispose.await;
-        let terminal_failure = if failures.is_empty() { None } else { Some(failures.join("; ")) };
+        let terminal_failure = if failures.is_empty() {
+            None
+        } else {
+            Some(failures.join("; "))
+        };
         self.activations.lock().remove(child_id.as_str());
         self.notify_settlement(activation, terminal_failure.as_deref());
         self.release_ownership(&child_id);

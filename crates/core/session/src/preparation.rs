@@ -28,7 +28,11 @@ pub struct SessionPreparation {
 impl SessionPreparation {
     /// Wrap an unpublished Session in one preparation lifetime.
     pub fn create(session: Session, options: SessionPreparationOptions) -> Self {
-        Self { session, options, released: false }
+        Self {
+            session,
+            options,
+            released: false,
+        }
     }
 
     /// Release provider state once when this preparation leaves its caller.

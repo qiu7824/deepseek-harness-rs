@@ -21,9 +21,7 @@ fn is_base64_line(line: &str) -> bool {
         return false;
     }
     match base64::engine::general_purpose::STANDARD.decode(line) {
-        Ok(bytes) => {
-            base64::engine::general_purpose::STANDARD.encode(&bytes) == line
-        }
+        Ok(bytes) => base64::engine::general_purpose::STANDARD.encode(&bytes) == line,
         Err(_) => false,
     }
 }
@@ -90,9 +88,8 @@ pub async fn read_remote_environment(
             "subprocess-e2b: remote login home is invalid: {home:?}"
         ));
     }
-    let mut environment: IndexMap<String, String> = remote_environment_entries(&raw)
-        .into_iter()
-        .collect();
+    let mut environment: IndexMap<String, String> =
+        remote_environment_entries(&raw).into_iter().collect();
     environment.insert("HOME".to_string(), home);
     Ok(environment
         .into_iter()

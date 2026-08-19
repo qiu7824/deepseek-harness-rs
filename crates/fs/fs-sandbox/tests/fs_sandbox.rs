@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use cordis::Context;
-use dsh_fs::{FsErrorCode, FileSystem};
+use dsh_fs::{FileSystem, FsErrorCode};
 use dsh_fs_sandbox::SandboxedFileSystem;
 use dsh_sandbox::{SandboxExecutionPolicy, SandboxMode};
 use dsh_sandbox_policy::{Config as PolicyConfig, SandboxPolicyService};
@@ -57,11 +57,7 @@ fn outside_base() -> std::path::PathBuf {
     base
 }
 
-fn boot(
-    ctx: &Context,
-    mode: SandboxMode,
-    workspace: &str,
-) -> Arc<SandboxedFileSystem> {
+fn boot(ctx: &Context, mode: SandboxMode, workspace: &str) -> Arc<SandboxedFileSystem> {
     SandboxPolicyService::install(
         ctx,
         PolicyConfig {
@@ -71,7 +67,10 @@ fn boot(
     );
     SandboxedFileSystem::install(
         ctx,
-        dsh_fs_local::Config { cwd: Some(workspace.to_string()), diff_basis_max_bytes: None },
+        dsh_fs_local::Config {
+            cwd: Some(workspace.to_string()),
+            diff_basis_max_bytes: None,
+        },
     )
     .expect("backend")
 }
@@ -109,8 +108,14 @@ async fn read_only_denies_write_and_edit_but_allows_reads() {
 
     // Reads pass through in every mode.
     std::fs::write(temp.path("ws/readable.txt"), "hello").expect("write");
-    let target = backend.resolve("readable.txt", None).await.expect("resolve");
-    assert_eq!(backend.read_text(&target, None).await.expect("read"), "hello");
+    let target = backend
+        .resolve("readable.txt", None)
+        .await
+        .expect("resolve");
+    assert_eq!(
+        backend.read_text(&target, None).await.expect("read"),
+        "hello"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -126,7 +131,10 @@ async fn workspace_write_contains_and_denies_traversal_and_symlink_escapes() {
     // A write under the workspace lands.
     let ok = backend
         .write_text(
-            &backend.resolve("nested/ok.txt", None).await.expect("resolve"),
+            &backend
+                .resolve("nested/ok.txt", None)
+                .await
+                .expect("resolve"),
             "inside",
             None,
             None,
@@ -155,7 +163,10 @@ async fn workspace_write_contains_and_denies_traversal_and_symlink_escapes() {
     // A `..` traversal out of the workspace is denied.
     let error = backend
         .write_text(
-            &backend.resolve("../sibling-escape.txt", None).await.expect("resolve"),
+            &backend
+                .resolve("../sibling-escape.txt", None)
+                .await
+                .expect("resolve"),
             "x",
             None,
             None,
@@ -219,8 +230,14 @@ async fn mutates_the_freshly_checked_identity_not_a_stale_outside_target_key() {
         display_path: inside_path.clone(),
         target_key: dsh_fs::fs_target_key(temp.path("out/escaped.txt")),
     };
-    backend.write_text(&stale_target, "inside", None, None, None).await.expect("write");
-    assert_eq!(std::fs::read_to_string(&inside_path).expect("read"), "inside");
+    backend
+        .write_text(&stale_target, "inside", None, None, None)
+        .await
+        .expect("write");
+    assert_eq!(
+        std::fs::read_to_string(&inside_path).expect("read"),
+        "inside"
+    );
     assert!(!std::path::Path::new(&temp.path("out/escaped.txt")).exists());
 }
 
@@ -264,7 +281,10 @@ async fn the_per_call_policy_override_escalation() {
     };
     backend
         .write_text(
-            &backend.resolve("escalated.txt", None).await.expect("resolve"),
+            &backend
+                .resolve("escalated.txt", None)
+                .await
+                .expect("resolve"),
             "granted",
             None,
             None,

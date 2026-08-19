@@ -1,0 +1,20 @@
+[package]
+name = "dsh-pwsh-local"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Local PowerShell executor over the subprocess seam"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-sandbox = { path = "../../sandbox/sandbox" }
+dsh-shell = { path = "../shell" }
+dsh-subprocess = { path = "../../subprocess/subprocess" }
+dsh-timeout = { path = "../../util/timeout" }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }
+tokio = { workspace = true }

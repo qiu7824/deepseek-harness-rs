@@ -6,6 +6,5 @@ pub mod index;
 pub mod invariant;
 
 pub use index::{
-    INJECT, NAME, aborted_before_dispatch_result, after_checkpoint, apply,
-    needs_tool_checkpoint,
+    INJECT, NAME, aborted_before_dispatch_result, after_checkpoint, apply, needs_tool_checkpoint,
 };

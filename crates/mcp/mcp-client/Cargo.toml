@@ -1,0 +1,27 @@
+[package]
+name = "dsh-mcp-client"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "MCP stdio client bridge for DeepSeek Harness"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-llm = { path = "../../core/llm" }
+dsh-subprocess = { path = "../../subprocess/subprocess" }
+dsh-tools = { path = "../../core/tools" }
+parking_lot = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+
+[[bin]]
+name = "mcp-test-fixture"
+path = "tests/fixtures/stdio_server.rs"
+test = false
+bench = false

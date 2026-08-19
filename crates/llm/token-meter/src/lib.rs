@@ -17,9 +17,7 @@ pub use estimate::{
 };
 pub use index::{TokenMeter, validate_config_keys};
 pub use surface_fold::{SurfaceTokenFold, fold_surface_tokens};
-pub use surface_projection::{
-    ShadowPriceClaim, SurfaceTokensFold, fold_surface_projection,
-};
+pub use surface_projection::{ShadowPriceClaim, SurfaceTokensFold, fold_surface_projection};
 pub use types::{
     ContextBreakdownProjection, ContextPressureProjection, TokenMeasurement,
     TokenMeasurementBaseline, TokenMeterConfig, TokenSurfaceNode, TokenUsageProjection,

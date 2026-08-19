@@ -1,0 +1,169 @@
+{
+  "candidate": "deno_core",
+  "versions": {
+    "deno_core": "0.410.0",
+    "v8": "150.4.0",
+    "deno_v8": "0.2.0",
+    "serde_v8": "0.319.0",
+    "cargo": "1.97.1 (c980f4866 2026-06-30)",
+    "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "fixture_source": {
+    "path": "../fixtures.json",
+    "sha256": "c60d164ed4ec003be74e9599fcb7a1a41b354ea9189d959a891722a555d6d3e2",
+    "count": 13
+  },
+  "build": {
+    "command": "C:/Users/Administrator/.cargo/bin/cargo.exe build --release",
+    "success": false,
+    "elapsed_ms": 154000,
+    "artifact_bytes": 0,
+    "v8_download_bytes": null,
+    "v8_download_details": "Cargo downloaded v8 150.4.0 and the build reached and completed `Compiling v8 v150.4.0`, `deno_v8 v0.2.0`, `serde_v8 v0.319.0`, and `deno_core v0.410.0` on Windows. The binary payload byte count was not separately captured before the stop instruction.",
+    "first_failure": "error[E0599]: no method named `handle_scope` found for struct `JsRuntime` in the current scope at src\\main.rs:15:30",
+    "latest_verified_failure": "error[E0308]: mismatched types at src\\main.rs:15:8: expected serde_json::Value, found deno_core::deno_v8::Global<deno_core::deno_v8::Value>",
+    "current_source_status": "A subsequent source edit removed the mismatched conversion, but per the stop instruction it was not rebuilt or run and is unverified."
+  },
+  "run": {
+    "command": "target/release/deno-core-runtime-spike.exe",
+    "attempted": false,
+    "success": false,
+    "elapsed_ms": 0,
+    "details": "No runnable artifact existed after the latest verified build failure; no fixture program was executed."
+  },
+  "fixtures": [
+    {
+      "id": "typescript_erasable",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "CLI did not compile; TypeScript stripping was not implemented or exercised."
+      }
+    },
+    {
+      "id": "top_level_await_binding",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "CLI did not compile; async-function wrapping and host echo binding were not exercised."
+      }
+    },
+    {
+      "id": "typed_binding_rejection",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "CLI did not compile; ToolCallError mapping was not implemented or exercised."
+      }
+    },
+    {
+      "id": "sync_loop_compute_timeout",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "An IsolateHandle termination probe was authored but no executable was produced, so for(;;) termination was not run or timed."
+      }
+    },
+    {
+      "id": "binding_dispatch_does_not_pause_busy_compute",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "Candidate was already ineligible and this later fairness regression was not implemented or executed."
+      }
+    },
+    {
+      "id": "sync_loop_abort",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "CLI did not compile; explicit abort was not exercised."
+      }
+    },
+    {
+      "id": "dispose_inflight",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "CLI did not compile; dispose cancellation, join, and follow-up rejection were not implemented or exercised."
+      }
+    },
+    {
+      "id": "idle_wall_timeout",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "CLI did not compile; never-settling host binding and wall timeout were not exercised."
+      }
+    },
+    {
+      "id": "slow_binding_not_charged",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "CLI did not compile; delayed host binding and compute-budget accounting were not exercised."
+      }
+    },
+    {
+      "id": "heap_limit",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "CLI did not compile; V8 isolate heap limits and host follow-up health were not exercised."
+      }
+    },
+    {
+      "id": "output_limit",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "CLI did not compile; bounded logs/result serialization was not implemented or exercised."
+      }
+    },
+    {
+      "id": "invalid_output",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "CLI did not compile; lossless-JSON validation was not implemented or exercised."
+      }
+    },
+    {
+      "id": "non_erasable_typescript",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "CLI did not compile; non-erasable TypeScript rejection was not implemented or exercised."
+      }
+    },
+    {
+      "id": "fresh_realm",
+      "status": "UNSUPPORTED",
+      "elapsed_ms": 0,
+      "observed": {
+        "fixture_executed": false,
+        "reason": "CLI did not compile; sequential fresh-isolate runs were not exercised."
+      }
+    }
+  ],
+  "teardown": {
+    "clean": false,
+    "details": "The Cargo build processes exited, but runtime teardown, in-flight disposal, worker joining, and follow-up rejection were not exercised because no runnable artifact was produced."
+  },
+  "verdict": "PARTIAL",
+  "recommendation": "Windows V8 distribution/build feasibility is partially evidenced, but this candidate is not eligible for production: the CLI did not compile and none of the 13 frozen fixtures ran. Complete the deno_core 0.410 value-conversion API integration and then implement and execute the full fixture runner before reconsidering."
+}

@@ -93,7 +93,12 @@ impl dsh_agent::Agent for ProbeAgent {
         &self.scope_key
     }
 
-    fn cancel(&self, _cause: dsh_session::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_session::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -106,7 +111,13 @@ impl dsh_agent::Agent for ProbeAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 
@@ -220,7 +231,11 @@ async fn fire_step(ctx: &Context, agent: &Arc<dyn dsh_agent::Agent>) -> PreStepD
                     step: 1,
                 })
             },
-            Box::pin(async move { arc(PreStepDecision::Enter { messages: Vec::new() }) }),
+            Box::pin(async move {
+                arc(PreStepDecision::Enter {
+                    messages: Vec::new(),
+                })
+            }),
         )
         .await;
     let decision = downcast_arc::<PreStepDecision>(&decision_value)
@@ -279,13 +294,25 @@ fn folds_the_last_plan_mode_event_or_inactive_without_one() {
 #[test]
 fn validates_deployment_guidance_and_headings() {
     assert_eq!(
-        resolve_config(&PlanModeConfig { section: "  guidance  ".to_string() }).expect("ok"),
+        resolve_config(&PlanModeConfig {
+            section: "  guidance  ".to_string()
+        })
+        .expect("ok"),
         "guidance"
     );
-    let blank = resolve_config(&PlanModeConfig { section: "   ".to_string() }).expect_err("blank");
+    let blank = resolve_config(&PlanModeConfig {
+        section: "   ".to_string(),
+    })
+    .expect_err("blank");
     assert!(blank.contains("non-empty"), "{blank}");
-    assert_eq!(first_heading("# The Plan\nbody"), Some("The Plan".to_string()));
-    assert_eq!(first_heading("### Deep heading"), Some("Deep heading".to_string()));
+    assert_eq!(
+        first_heading("# The Plan\nbody"),
+        Some("The Plan".to_string())
+    );
+    assert_eq!(
+        first_heading("### Deep heading"),
+        Some("Deep heading".to_string())
+    );
     assert_eq!(first_heading("no heading here"), None);
 }
 
@@ -319,7 +346,13 @@ async fn commits_an_idle_selection_and_narrates_against_the_last_header() {
 
     assert_eq!(service.set(&agent, true), SetOutcome::Committed);
     assert!(fold_plan_mode(&session.events(), session.events().len()));
-    assert_eq!(service.get(&agent), dsh_plan_mode::PlanRead { active: true, pending: None });
+    assert_eq!(
+        service.get(&agent),
+        dsh_plan_mode::PlanRead {
+            active: true,
+            pending: None
+        }
+    );
     // The narration names the switch because the last header told the other
     // mode.
     let injected = probe.injected();
@@ -341,7 +374,10 @@ async fn commits_an_idle_selection_and_narrates_against_the_last_header() {
         ContentBlock::Text { text } => text.clone(),
         _ => panic!("text"),
     };
-    assert_eq!(text, "The user switched this session back to the default mode.");
+    assert_eq!(
+        text,
+        "The user switched this session back to the default mode."
+    );
     let _ = ctx;
 }
 
@@ -355,13 +391,25 @@ async fn queues_an_open_turn_selection_until_the_next_accepted_pre_step() {
 
     assert_eq!(service.set(&agent, true), SetOutcome::Queued);
     assert!(!fold_plan_mode(&session.events(), session.events().len()));
-    assert_eq!(service.get(&agent), dsh_plan_mode::PlanRead { active: false, pending: Some(true) });
+    assert_eq!(
+        service.get(&agent),
+        dsh_plan_mode::PlanRead {
+            active: false,
+            pending: Some(true)
+        }
+    );
 
     // An accepted pre-step commits the selection.
     let decision = fire_step(&ctx, &agent).await;
     assert!(matches!(decision, PreStepDecision::Enter { .. }));
     assert!(fold_plan_mode(&session.events(), session.events().len()));
-    assert_eq!(service.get(&agent), dsh_plan_mode::PlanRead { active: true, pending: None });
+    assert_eq!(
+        service.get(&agent),
+        dsh_plan_mode::PlanRead {
+            active: true,
+            pending: None
+        }
+    );
 
     // A repeated selection of the current state is a no-op.
     assert_eq!(service.set(&agent, true), SetOutcome::Noop);
@@ -379,11 +427,23 @@ async fn an_opposite_pending_selection_cancels_without_appending() {
     // Selecting the currently-logged state again replaces the pending entry
     // with the logged value (TS 'cancelled': nothing remains to commit).
     assert_eq!(service.set(&agent, false), SetOutcome::Cancelled);
-    assert_eq!(service.get(&agent), dsh_plan_mode::PlanRead { active: false, pending: Some(false) });
+    assert_eq!(
+        service.get(&agent),
+        dsh_plan_mode::PlanRead {
+            active: false,
+            pending: Some(false)
+        }
+    );
     let decision = fire_step(&ctx, &agent).await;
     assert!(matches!(decision, PreStepDecision::Enter { .. }));
     // The boundary clears the matching selection without appending.
-    assert_eq!(service.get(&agent), dsh_plan_mode::PlanRead { active: false, pending: None });
+    assert_eq!(
+        service.get(&agent),
+        dsh_plan_mode::PlanRead {
+            active: false,
+            pending: None
+        }
+    );
     assert!(!fold_plan_mode(&session.events(), session.events().len()));
 }
 
@@ -395,7 +455,9 @@ async fn approves_the_plan_and_leaves_plan_mode_at_the_next_step() {
     let provider = Arc::new(FakeProvider {
         answer: parking_lot::Mutex::new(Ok(approve_answer())),
     });
-    let _ = questions_of(&ctx).register_provider(provider).expect("provider");
+    let _ = questions_of(&ctx)
+        .register_provider(provider)
+        .expect("provider");
     let (session, _probe, agent) = session_with_agent("approve-review");
     register_agent(&ctx, &agent);
     service.set(&agent, true);
@@ -403,13 +465,21 @@ async fn approves_the_plan_and_leaves_plan_mode_at_the_next_step() {
         .append("turn/start", serde_json::json!({ "turn": 1 }), None)
         .expect("turn/start");
 
-    let result = tools_of(&ctx).execute(exit_input(agent.clone(), "# The Plan\nbody")).await;
+    let result = tools_of(&ctx)
+        .execute(exit_input(agent.clone(), "# The Plan\nbody"))
+        .await;
     assert!(!result.is_error, "{:?}", result.error);
     assert_eq!(result.value.as_ref().expect("value")["approved"], true);
     // Still active until the next accepted pre-step commits the silent
     // selection.
     assert!(fold_plan_mode(&session.events(), session.events().len()));
-    assert_eq!(service.get(&agent), dsh_plan_mode::PlanRead { active: true, pending: Some(false) });
+    assert_eq!(
+        service.get(&agent),
+        dsh_plan_mode::PlanRead {
+            active: true,
+            pending: Some(false)
+        }
+    );
 
     let _ = fire_step(&ctx, &agent).await;
     assert!(!fold_plan_mode(&session.events(), session.events().len()));
@@ -421,12 +491,16 @@ async fn keep_planning_returns_the_revision_feedback() {
     let provider = Arc::new(FakeProvider {
         answer: parking_lot::Mutex::new(Ok(keep_planning_answer())),
     });
-    let _ = questions_of(&ctx).register_provider(provider).expect("provider");
+    let _ = questions_of(&ctx)
+        .register_provider(provider)
+        .expect("provider");
     let (_session, _probe, agent) = session_with_agent("keep-planning");
     register_agent(&ctx, &agent);
     service.set(&agent, true);
 
-    let result = tools_of(&ctx).execute(exit_input(agent.clone(), "# The Plan\nbody")).await;
+    let result = tools_of(&ctx)
+        .execute(exit_input(agent.clone(), "# The Plan\nbody"))
+        .await;
     assert!(result.is_error);
     let text = match &result.content[0] {
         ContentBlock::Text { text } => text.clone(),
@@ -444,12 +518,16 @@ async fn a_dismissed_review_tells_the_model_to_stop_and_wait() {
     let provider = Arc::new(FakeProvider {
         answer: parking_lot::Mutex::new(Err(UserQuestionError::new("ASK_ABORTED", "dismissed"))),
     });
-    let _ = questions_of(&ctx).register_provider(provider).expect("provider");
+    let _ = questions_of(&ctx)
+        .register_provider(provider)
+        .expect("provider");
     let (_session, _probe, agent) = session_with_agent("dismissed-review");
     register_agent(&ctx, &agent);
     service.set(&agent, true);
 
-    let result = tools_of(&ctx).execute(exit_input(agent.clone(), "# The Plan\nbody")).await;
+    let result = tools_of(&ctx)
+        .execute(exit_input(agent.clone(), "# The Plan\nbody"))
+        .await;
     assert!(result.is_error);
     let text = match &result.content[0] {
         ContentBlock::Text { text } => text.clone(),
@@ -467,12 +545,19 @@ async fn rejects_exit_outside_plan_mode_without_a_heading_and_without_a_channel(
     let _system_prompt =
         SystemPrompt::install(&ctx, dsh_system_prompt::Config::default()).expect("systemPrompt");
     let _tools = ToolRuntime::install(&ctx, dsh_tools::Config::default()).expect("tools");
-    let service = PlanModeController::install(&ctx, &PlanModeConfig { section: "g".to_string() })
-        .expect("install");
+    let service = PlanModeController::install(
+        &ctx,
+        &PlanModeConfig {
+            section: "g".to_string(),
+        },
+    )
+    .expect("install");
     let (_session, _probe, agent) = session_with_agent("exit-errors");
 
     // Not in plan mode.
-    let result = tools_of(&ctx).execute(exit_input(agent.clone(), "# The Plan\nbody")).await;
+    let result = tools_of(&ctx)
+        .execute(exit_input(agent.clone(), "# The Plan\nbody"))
+        .await;
     assert!(result.is_error);
     let text = match &result.content[0] {
         ContentBlock::Text { text } => text.clone(),
@@ -482,22 +567,32 @@ async fn rejects_exit_outside_plan_mode_without_a_heading_and_without_a_channel(
 
     // In plan mode but a plan without a # heading.
     service.set(&agent, true);
-    let result = tools_of(&ctx).execute(exit_input(agent.clone(), "no heading")).await;
+    let result = tools_of(&ctx)
+        .execute(exit_input(agent.clone(), "no heading"))
+        .await;
     assert!(result.is_error);
     let text = match &result.content[0] {
         ContentBlock::Text { text } => text.clone(),
         _ => panic!("text"),
     };
-    assert!(text.contains("requires a non-empty markdown plan starting with a # heading"), "{text}");
+    assert!(
+        text.contains("requires a non-empty markdown plan starting with a # heading"),
+        "{text}"
+    );
 
     // No user-questions channel composed in this context.
-    let result = tools_of(&ctx).execute(exit_input(agent.clone(), "# The Plan\nbody")).await;
+    let result = tools_of(&ctx)
+        .execute(exit_input(agent.clone(), "# The Plan\nbody"))
+        .await;
     assert!(result.is_error);
     let text = match &result.content[0] {
         ContentBlock::Text { text } => text.clone(),
         _ => panic!("text"),
     };
-    assert!(text.contains("no user-questions channel is available"), "{text}");
+    assert!(
+        text.contains("no user-questions channel is available"),
+        "{text}"
+    );
 }
 
 // ---- /plan command ----
@@ -527,7 +622,10 @@ async fn the_plan_command_enters_steers_and_leaves() {
     let execution = execution.expect("command registered");
     match &execution.result {
         CommandResult::Success { text, .. } => {
-            assert_eq!(text.as_deref(), Some("Plan mode on. Use /plan off to leave."));
+            assert_eq!(
+                text.as_deref(),
+                Some("Plan mode on. Use /plan off to leave.")
+            );
         }
         other => panic!("success expected, got {other:?}"),
     }
@@ -595,7 +693,10 @@ async fn projects_active_and_pending_from_the_two_event_fold() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(landed, "the plan projection unit must land after install");
-    assert_eq!(snapshot(&registry, &session), serde_json::json!({ "active": false, "pending": false }));
+    assert_eq!(
+        snapshot(&registry, &session),
+        serde_json::json!({ "active": false, "pending": false })
+    );
 
     // A queued selection records command/run before plan/mode commits.
     assert_eq!(service.set(&agent, true), SetOutcome::Queued);
@@ -606,10 +707,16 @@ async fn projects_active_and_pending_from_the_two_event_fold() {
             None,
         )
         .expect("append");
-    assert_eq!(snapshot(&registry, &session), serde_json::json!({ "active": false, "pending": true }));
+    assert_eq!(
+        snapshot(&registry, &session),
+        serde_json::json!({ "active": false, "pending": true })
+    );
 
     let _ = fire_step(&ctx, &agent).await;
-    assert_eq!(snapshot(&registry, &session), serde_json::json!({ "active": true, "pending": false }));
+    assert_eq!(
+        snapshot(&registry, &session),
+        serde_json::json!({ "active": true, "pending": false })
+    );
 }
 
 // ---- invariant ----

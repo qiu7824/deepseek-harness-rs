@@ -147,17 +147,40 @@ impl ProcessInspectorInternals for FakeInternals {
 #[test]
 fn treats_zombie_only_groups_as_quiescent_and_fails_closed_when_unobservable() {
     let fake = FakeInternals::new();
-    assert_eq!(linux_process_group_has_live_members(77, fake.as_ref()), None);
+    assert_eq!(
+        linux_process_group_has_live_members(77, fake.as_ref()),
+        None
+    );
 
-    fake.dirs.lock().insert("/proc".to_string(), vec!["self".into(), "10".into(), "11".into(), "12".into()]);
-    fake.files.lock().insert("/proc/10/stat".into(), stat(10, 77, 10, -1, "500", 1, "Z"));
-    fake.files.lock().insert("/proc/11/stat".into(), stat(11, 77, 10, -1, "501", 1, "X"));
-    fake.files.lock().insert("/proc/12/stat".into(), stat(12, 88, 12, -1, "502", 1, "S"));
-    assert_eq!(linux_process_group_has_live_members(77, fake.as_ref()), Some(false));
-    assert_eq!(linux_process_group_has_live_members(99, fake.as_ref()), None);
+    fake.dirs.lock().insert(
+        "/proc".to_string(),
+        vec!["self".into(), "10".into(), "11".into(), "12".into()],
+    );
+    fake.files
+        .lock()
+        .insert("/proc/10/stat".into(), stat(10, 77, 10, -1, "500", 1, "Z"));
+    fake.files
+        .lock()
+        .insert("/proc/11/stat".into(), stat(11, 77, 10, -1, "501", 1, "X"));
+    fake.files
+        .lock()
+        .insert("/proc/12/stat".into(), stat(12, 88, 12, -1, "502", 1, "S"));
+    assert_eq!(
+        linux_process_group_has_live_members(77, fake.as_ref()),
+        Some(false)
+    );
+    assert_eq!(
+        linux_process_group_has_live_members(99, fake.as_ref()),
+        None
+    );
 
-    fake.files.lock().insert("/proc/11/stat".into(), stat(11, 77, 10, -1, "501", 1, "S"));
-    assert_eq!(linux_process_group_has_live_members(77, fake.as_ref()), Some(true));
+    fake.files
+        .lock()
+        .insert("/proc/11/stat".into(), stat(11, 77, 10, -1, "501", 1, "S"));
+    assert_eq!(
+        linux_process_group_has_live_members(77, fake.as_ref()),
+        Some(true)
+    );
 }
 
 #[test]
@@ -180,11 +203,29 @@ fn parses_stat_safely_captures_only_the_rooted_tree_and_signals_identities() {
     );
 
     let fake = FakeInternals::new();
-    fake.dirs.lock().insert("/proc".to_string(), vec!["x".into(), "10".into(), "11".into(), "12".into(), "13".into(), "14".into()]);
-    fake.files.lock().insert("/proc/10/stat".into(), stat(10, 20, 30, 40, "500", 1, "S"));
-    fake.files.lock().insert("/proc/11/stat".into(), stat(11, 21, 30, -1, "501", 1, "S"));
-    fake.files.lock().insert("/proc/12/stat".into(), stat(12, 22, 30, -1, "502", 10, "S"));
-    fake.files.lock().insert("/proc/13/stat".into(), stat(13, 23, 30, -1, "503", 12, "S"));
+    fake.dirs.lock().insert(
+        "/proc".to_string(),
+        vec![
+            "x".into(),
+            "10".into(),
+            "11".into(),
+            "12".into(),
+            "13".into(),
+            "14".into(),
+        ],
+    );
+    fake.files
+        .lock()
+        .insert("/proc/10/stat".into(), stat(10, 20, 30, 40, "500", 1, "S"));
+    fake.files
+        .lock()
+        .insert("/proc/11/stat".into(), stat(11, 21, 30, -1, "501", 1, "S"));
+    fake.files
+        .lock()
+        .insert("/proc/12/stat".into(), stat(12, 22, 30, -1, "502", 10, "S"));
+    fake.files
+        .lock()
+        .insert("/proc/13/stat".into(), stat(13, 23, 30, -1, "503", 12, "S"));
     let inspector = create_process_inspector("linux", "x64", fake.clone()).expect("inspector");
 
     assert_eq!(inspector.foreground_pgid(10), Some(40));
@@ -193,34 +234,84 @@ fn parses_stat_safely_captures_only_the_rooted_tree_and_signals_identities() {
     assert_eq!(
         inspector.process_tree(10),
         vec![
-            ProcessIdentity { pid: 13, started: "503".to_string() },
-            ProcessIdentity { pid: 12, started: "502".to_string() },
-            ProcessIdentity { pid: 10, started: "500".to_string() },
+            ProcessIdentity {
+                pid: 13,
+                started: "503".to_string()
+            },
+            ProcessIdentity {
+                pid: 12,
+                started: "502".to_string()
+            },
+            ProcessIdentity {
+                pid: 10,
+                started: "500".to_string()
+            },
         ]
     );
     assert!(inspector.process_tree(99).is_empty());
     assert_eq!(
         inspector.process_session(30),
         vec![
-            ProcessIdentity { pid: 10, started: "500".to_string() },
-            ProcessIdentity { pid: 11, started: "501".to_string() },
-            ProcessIdentity { pid: 12, started: "502".to_string() },
-            ProcessIdentity { pid: 13, started: "503".to_string() },
+            ProcessIdentity {
+                pid: 10,
+                started: "500".to_string()
+            },
+            ProcessIdentity {
+                pid: 11,
+                started: "501".to_string()
+            },
+            ProcessIdentity {
+                pid: 12,
+                started: "502".to_string()
+            },
+            ProcessIdentity {
+                pid: 13,
+                started: "503".to_string()
+            },
         ]
     );
     assert!(inspector.process_session(99).is_empty());
-    assert!(inspector.is_alive(&ProcessIdentity { pid: 10, started: "500".to_string() }));
-    assert!(!inspector.is_alive(&ProcessIdentity { pid: 10, started: "old".to_string() }));
+    assert!(inspector.is_alive(&ProcessIdentity {
+        pid: 10,
+        started: "500".to_string()
+    }));
+    assert!(!inspector.is_alive(&ProcessIdentity {
+        pid: 10,
+        started: "old".to_string()
+    }));
     inspector.signal_group(40, SubprocessTerminalSignal::SigInt);
-    inspector.signal_process(&ProcessIdentity { pid: 10, started: "500".to_string() }, TerminalKillSignal::SigTerm);
-    inspector.signal_process(&ProcessIdentity { pid: 10, started: "old".to_string() }, TerminalKillSignal::SigKill);
+    inspector.signal_process(
+        &ProcessIdentity {
+            pid: 10,
+            started: "500".to_string(),
+        },
+        TerminalKillSignal::SigTerm,
+    );
+    inspector.signal_process(
+        &ProcessIdentity {
+            pid: 10,
+            started: "old".to_string(),
+        },
+        TerminalKillSignal::SigKill,
+    );
     assert_eq!(
         *fake.kills.lock(),
         vec![(-40, "SIGINT".to_string()), (10, "SIGTERM".to_string())]
     );
-    fake.files.lock().insert("/proc/10/stat".into(), stat(10, 20, 30, 40, "500", 1, "Z"));
-    assert!(!inspector.is_alive(&ProcessIdentity { pid: 10, started: "500".to_string() }));
-    inspector.signal_process(&ProcessIdentity { pid: 10, started: "500".to_string() }, TerminalKillSignal::SigKill);
+    fake.files
+        .lock()
+        .insert("/proc/10/stat".into(), stat(10, 20, 30, 40, "500", 1, "Z"));
+    assert!(!inspector.is_alive(&ProcessIdentity {
+        pid: 10,
+        started: "500".to_string()
+    }));
+    inspector.signal_process(
+        &ProcessIdentity {
+            pid: 10,
+            started: "500".to_string(),
+        },
+        TerminalKillSignal::SigKill,
+    );
     assert_eq!(
         *fake.kills.lock(),
         vec![(-40, "SIGINT".to_string()), (10, "SIGTERM".to_string())]
@@ -230,19 +321,39 @@ fn parses_stat_safely_captures_only_the_rooted_tree_and_signals_identities() {
 #[test]
 fn detects_read_select_poll_and_epoll_waits_across_non_leader_threads() {
     let fake = FakeInternals::new();
-    fake.dirs.lock().insert("/proc".to_string(), vec!["100".into(), "101".into()]);
-    fake.files.lock().insert("/proc/100/stat".into(), stat(100, 77, 100, 77, "1", 1, "S"));
-    fake.files.lock().insert("/proc/101/stat".into(), stat(101, 77, 100, 77, "2", 1, "S"));
-    fake.dirs.lock().insert("/proc/100/task".to_string(), vec!["100".into()]);
-    fake.dirs.lock().insert("/proc/101/task".to_string(), vec!["101".into(), "102".into()]);
+    fake.dirs
+        .lock()
+        .insert("/proc".to_string(), vec!["100".into(), "101".into()]);
+    fake.files
+        .lock()
+        .insert("/proc/100/stat".into(), stat(100, 77, 100, 77, "1", 1, "S"));
+    fake.files
+        .lock()
+        .insert("/proc/101/stat".into(), stat(101, 77, 100, 77, "2", 1, "S"));
+    fake.dirs
+        .lock()
+        .insert("/proc/100/task".to_string(), vec!["100".into()]);
+    fake.dirs.lock().insert(
+        "/proc/101/task".to_string(),
+        vec!["101".into(), "102".into()],
+    );
     let inspector = create_process_inspector("linux", "x64", fake.clone()).expect("inspector");
 
-    fake.files.lock().insert("/proc/100/task/100/syscall".into(), "running".to_string());
-    fake.files.lock().insert("/proc/101/task/101/syscall".into(), "-1 0x0".to_string());
-    fake.files.lock().insert("/proc/101/task/102/syscall".into(), syscall(0, &[0]));
+    fake.files
+        .lock()
+        .insert("/proc/100/task/100/syscall".into(), "running".to_string());
+    fake.files
+        .lock()
+        .insert("/proc/101/task/101/syscall".into(), "-1 0x0".to_string());
+    fake.files
+        .lock()
+        .insert("/proc/101/task/102/syscall".into(), syscall(0, &[0]));
     assert!(inspector.is_stdin_waiting(77));
 
-    fake.files.lock().insert("/proc/101/task/102/syscall".into(), syscall(270, &[1, 0x10]));
+    fake.files.lock().insert(
+        "/proc/101/task/102/syscall".into(),
+        syscall(270, &[1, 0x10]),
+    );
     let mut fd_set = vec![0u8; 0x11];
     fd_set[0x10] = 1;
     fake.memories.lock().insert("/proc/101/mem".into(), fd_set);
@@ -251,13 +362,18 @@ fn detects_read_select_poll_and_epoll_waits_across_non_leader_threads() {
     let mut poll = vec![0u8; 8];
     poll[0..4].copy_from_slice(&0i32.to_le_bytes());
     poll[4..6].copy_from_slice(&1i16.to_le_bytes());
-    fake.files.lock().insert("/proc/101/task/102/syscall".into(), syscall(7, &[0x20, 1]));
+    fake.files
+        .lock()
+        .insert("/proc/101/task/102/syscall".into(), syscall(7, &[0x20, 1]));
     let mut memory = vec![0u8; 0x20];
     memory.extend(poll);
     fake.memories.lock().insert("/proc/101/mem".into(), memory);
     assert!(inspector.is_stdin_waiting(77));
 
-    fake.files.lock().insert("/proc/101/task/102/syscall".into(), syscall(232, &[5, 0, 1]));
+    fake.files.lock().insert(
+        "/proc/101/task/102/syscall".into(),
+        syscall(232, &[5, 0, 1]),
+    );
     fake.files.lock().insert(
         "/proc/101/fdinfo/5".into(),
         "pos: 0\ntfd: 0 events: 19\n".to_string(),
@@ -268,54 +384,142 @@ fn detects_read_select_poll_and_epoll_waits_across_non_leader_threads() {
 #[test]
 fn fails_closed_on_unsupported_malformed_unreadable_or_non_stdin_waits() {
     let fake = FakeInternals::new();
-    fake.dirs.lock().insert("/proc".to_string(), vec!["100".into()]);
-    fake.files.lock().insert("/proc/100/stat".into(), stat(100, 77, 100, 77, "1", 1, "S"));
-    fake.dirs.lock().insert("/proc/100/task".to_string(), vec!["100".into()]);
-    fake.files.lock().insert("/proc/100/task/100/syscall".into(), syscall(0, &[2]));
-    assert!(!create_process_inspector("linux", "mips", fake.clone()).expect("inspector").is_stdin_waiting(77));
-    assert!(!create_process_inspector("linux", "x64", fake.clone()).expect("inspector").is_stdin_waiting(77));
+    fake.dirs
+        .lock()
+        .insert("/proc".to_string(), vec!["100".into()]);
+    fake.files
+        .lock()
+        .insert("/proc/100/stat".into(), stat(100, 77, 100, 77, "1", 1, "S"));
+    fake.dirs
+        .lock()
+        .insert("/proc/100/task".to_string(), vec!["100".into()]);
+    fake.files
+        .lock()
+        .insert("/proc/100/task/100/syscall".into(), syscall(0, &[2]));
+    assert!(
+        !create_process_inspector("linux", "mips", fake.clone())
+            .expect("inspector")
+            .is_stdin_waiting(77)
+    );
+    assert!(
+        !create_process_inspector("linux", "x64", fake.clone())
+            .expect("inspector")
+            .is_stdin_waiting(77)
+    );
 
-    fake.files.lock().insert("/proc/100/task/100/syscall".into(), syscall(270, &[1, 0]));
-    assert!(!create_process_inspector("linux", "x64", fake.clone()).expect("inspector").is_stdin_waiting(77));
-    fake.files.lock().insert("/proc/100/task/100/syscall".into(), syscall(7, &[0, 0]));
-    assert!(!create_process_inspector("linux", "x64", fake.clone()).expect("inspector").is_stdin_waiting(77));
-    fake.files.lock().insert("/proc/100/task/100/syscall".into(), syscall(7, &[0, 1]));
-    assert!(!create_process_inspector("linux", "x64", fake.clone()).expect("inspector").is_stdin_waiting(77));
-    fake.files.lock().insert("/proc/100/task/100/syscall".into(), syscall(7, &[0x20, 1]));
-    assert!(!create_process_inspector("linux", "x64", fake.clone()).expect("inspector").is_stdin_waiting(77));
-    fake.files.lock().insert("/proc/100/task/100/syscall".into(), syscall(232, &[9, 0, 1]));
-    assert!(!create_process_inspector("linux", "x64", fake.clone()).expect("inspector").is_stdin_waiting(77));
-    fake.files.lock().insert("/proc/100/task/100/syscall".into(), syscall(999, &[]));
-    assert!(!create_process_inspector("linux", "x64", fake.clone()).expect("inspector").is_stdin_waiting(77));
+    fake.files
+        .lock()
+        .insert("/proc/100/task/100/syscall".into(), syscall(270, &[1, 0]));
+    assert!(
+        !create_process_inspector("linux", "x64", fake.clone())
+            .expect("inspector")
+            .is_stdin_waiting(77)
+    );
+    fake.files
+        .lock()
+        .insert("/proc/100/task/100/syscall".into(), syscall(7, &[0, 0]));
+    assert!(
+        !create_process_inspector("linux", "x64", fake.clone())
+            .expect("inspector")
+            .is_stdin_waiting(77)
+    );
+    fake.files
+        .lock()
+        .insert("/proc/100/task/100/syscall".into(), syscall(7, &[0, 1]));
+    assert!(
+        !create_process_inspector("linux", "x64", fake.clone())
+            .expect("inspector")
+            .is_stdin_waiting(77)
+    );
+    fake.files
+        .lock()
+        .insert("/proc/100/task/100/syscall".into(), syscall(7, &[0x20, 1]));
+    assert!(
+        !create_process_inspector("linux", "x64", fake.clone())
+            .expect("inspector")
+            .is_stdin_waiting(77)
+    );
+    fake.files.lock().insert(
+        "/proc/100/task/100/syscall".into(),
+        syscall(232, &[9, 0, 1]),
+    );
+    assert!(
+        !create_process_inspector("linux", "x64", fake.clone())
+            .expect("inspector")
+            .is_stdin_waiting(77)
+    );
+    fake.files
+        .lock()
+        .insert("/proc/100/task/100/syscall".into(), syscall(999, &[]));
+    assert!(
+        !create_process_inspector("linux", "x64", fake.clone())
+            .expect("inspector")
+            .is_stdin_waiting(77)
+    );
 
-    fake.files.lock().insert("/proc/100/task/100/syscall".into(), "not-a-number 0x0".to_string());
-    assert!(!create_process_inspector("linux", "x64", fake.clone()).expect("inspector").is_stdin_waiting(77));
+    fake.files.lock().insert(
+        "/proc/100/task/100/syscall".into(),
+        "not-a-number 0x0".to_string(),
+    );
+    assert!(
+        !create_process_inspector("linux", "x64", fake.clone())
+            .expect("inspector")
+            .is_stdin_waiting(77)
+    );
     fake.dirs.lock().remove("/proc/100/task");
-    assert!(!create_process_inspector("linux", "x64", fake.clone()).expect("inspector").is_stdin_waiting(77));
-    fake.dirs.lock().insert("/proc".to_string(), vec!["100".into(), "200".into()]);
-    fake.files.lock().insert("/proc/200/stat".into(), stat(200, 88, 200, 88, "2", 1, "S"));
-    assert!(!create_process_inspector("linux", "x64", fake.clone()).expect("inspector").is_stdin_waiting(77));
+    assert!(
+        !create_process_inspector("linux", "x64", fake.clone())
+            .expect("inspector")
+            .is_stdin_waiting(77)
+    );
+    fake.dirs
+        .lock()
+        .insert("/proc".to_string(), vec!["100".into(), "200".into()]);
+    fake.files
+        .lock()
+        .insert("/proc/200/stat".into(), stat(200, 88, 200, 88, "2", 1, "S"));
+    assert!(
+        !create_process_inspector("linux", "x64", fake.clone())
+            .expect("inspector")
+            .is_stdin_waiting(77)
+    );
 }
 
 #[test]
 fn contains_unreadable_syscall_memory_and_fdinfo_boundaries() {
     let fake = FakeInternals::new();
-    fake.dirs.lock().insert("/proc".to_string(), vec!["100".into()]);
-    fake.files.lock().insert("/proc/100/stat".into(), stat(100, 77, 100, 77, "1", 1, "S"));
-    fake.dirs.lock().insert("/proc/100/task".to_string(), vec!["100".into()]);
+    fake.dirs
+        .lock()
+        .insert("/proc".to_string(), vec!["100".into()]);
+    fake.files
+        .lock()
+        .insert("/proc/100/stat".into(), stat(100, 77, 100, 77, "1", 1, "S"));
+    fake.dirs
+        .lock()
+        .insert("/proc/100/task".to_string(), vec!["100".into()]);
     let inspector = create_process_inspector("linux", "x64", fake.clone()).expect("inspector");
     assert!(!inspector.is_stdin_waiting(77));
 
-    fake.files.lock().insert("/proc/100/task/100/syscall".into(), syscall(270, &[1, 0x10]));
+    fake.files.lock().insert(
+        "/proc/100/task/100/syscall".into(),
+        syscall(270, &[1, 0x10]),
+    );
     assert!(!inspector.is_stdin_waiting(77));
-    fake.files.lock().insert("/proc/100/task/100/syscall".into(), syscall(232, &[5, 0, 1]));
+    fake.files.lock().insert(
+        "/proc/100/task/100/syscall".into(),
+        syscall(232, &[5, 0, 1]),
+    );
     assert!(!inspector.is_stdin_waiting(77));
 
     let mut no_stdin_poll = vec![0u8; 0x28];
     no_stdin_poll[0x20..0x24].copy_from_slice(&2i32.to_le_bytes());
     no_stdin_poll[0x24..0x26].copy_from_slice(&1i16.to_le_bytes());
-    fake.memories.lock().insert("/proc/100/mem".into(), no_stdin_poll);
-    fake.files.lock().insert("/proc/100/task/100/syscall".into(), syscall(7, &[0x20, 1]));
+    fake.memories
+        .lock()
+        .insert("/proc/100/mem".into(), no_stdin_poll);
+    fake.files
+        .lock()
+        .insert("/proc/100/task/100/syscall".into(), syscall(7, &[0x20, 1]));
     assert!(!inspector.is_stdin_waiting(77));
 }
 
@@ -332,29 +536,60 @@ fn reads_tpgid_and_trees_contains_cycles_and_identity_fences_signals() {
     assert_eq!(
         inspector.process_tree(10),
         vec![
-            ProcessIdentity { pid: 12, started: "Mon Jul 21 10:00:02 2026".to_string() },
-            ProcessIdentity { pid: 11, started: "Mon Jul 21 10:00:01 2026".to_string() },
-            ProcessIdentity { pid: 10, started: "Mon Jul 21 10:00:00 2026".to_string() },
+            ProcessIdentity {
+                pid: 12,
+                started: "Mon Jul 21 10:00:02 2026".to_string()
+            },
+            ProcessIdentity {
+                pid: 11,
+                started: "Mon Jul 21 10:00:01 2026".to_string()
+            },
+            ProcessIdentity {
+                pid: 10,
+                started: "Mon Jul 21 10:00:00 2026".to_string()
+            },
         ]
     );
     assert!(inspector.process_tree(99).is_empty());
     assert!(inspector.process_session(10).is_empty());
-    assert!(inspector.is_alive(&ProcessIdentity { pid: 11, started: "Mon Jul 21 10:00:01 2026".to_string() }));
+    assert!(inspector.is_alive(&ProcessIdentity {
+        pid: 11,
+        started: "Mon Jul 21 10:00:01 2026".to_string()
+    }));
     inspector.signal_group(55, SubprocessTerminalSignal::SigTstp);
-    inspector.signal_process(&ProcessIdentity { pid: 11, started: "Mon Jul 21 10:00:01 2026".to_string() }, TerminalKillSignal::SigKill);
-    inspector.signal_process(&ProcessIdentity { pid: 12, started: "missing".to_string() }, TerminalKillSignal::SigTerm);
+    inspector.signal_process(
+        &ProcessIdentity {
+            pid: 11,
+            started: "Mon Jul 21 10:00:01 2026".to_string(),
+        },
+        TerminalKillSignal::SigKill,
+    );
+    inspector.signal_process(
+        &ProcessIdentity {
+            pid: 12,
+            started: "missing".to_string(),
+        },
+        TerminalKillSignal::SigTerm,
+    );
     assert_eq!(
         *fake.kills.lock(),
         vec![(-55, "SIGTSTP".to_string()), (11, "SIGKILL".to_string())]
     );
 
     // A two-entry cycle stays bounded by the visited set.
-    *fake.ps.lock() = " 10 11 Mon Jul 21 10:00:00 2026\n 11 10 Mon Jul 21 10:00:01 2026\n".to_string();
+    *fake.ps.lock() =
+        " 10 11 Mon Jul 21 10:00:00 2026\n 11 10 Mon Jul 21 10:00:01 2026\n".to_string();
     assert_eq!(
         inspector.process_tree(10),
         vec![
-            ProcessIdentity { pid: 11, started: "Mon Jul 21 10:00:01 2026".to_string() },
-            ProcessIdentity { pid: 10, started: "Mon Jul 21 10:00:00 2026".to_string() },
+            ProcessIdentity {
+                pid: 11,
+                started: "Mon Jul 21 10:00:01 2026".to_string()
+            },
+            ProcessIdentity {
+                pid: 10,
+                started: "Mon Jul 21 10:00:00 2026".to_string()
+            },
         ]
     );
 }
@@ -364,15 +599,21 @@ fn returns_undefined_for_missing_or_invalid_foreground_groups_and_rejects_unsupp
     let fake = FakeInternals::new();
     *fake.tpgid.lock() = "-1".to_string();
     assert_eq!(
-        create_process_inspector("darwin", "arm64", fake.clone()).expect("inspector").foreground_pgid(1),
+        create_process_inspector("darwin", "arm64", fake.clone())
+            .expect("inspector")
+            .foreground_pgid(1),
         None
     );
     // exec throws: foreground resolution fails closed.
     *fake.tpgid.lock() = "gone-parse".to_string();
     assert_eq!(
-        create_process_inspector("darwin", "arm64", fake.clone()).expect("inspector").foreground_pgid(1),
+        create_process_inspector("darwin", "arm64", fake.clone())
+            .expect("inspector")
+            .foreground_pgid(1),
         None
     );
-    let error = create_process_inspector("win32", "x64", fake.clone()).err().expect("unsupported");
+    let error = create_process_inspector("win32", "x64", fake.clone())
+        .err()
+        .expect("unsupported");
     assert!(error.contains("unsupported on platform win32"), "{error}");
 }

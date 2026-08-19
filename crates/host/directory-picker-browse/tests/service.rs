@@ -84,7 +84,10 @@ fn fixture() -> TempRoot {
     std::fs::write(root.path().join("notes.txt"), "not a directory").unwrap();
     try_symlink_dir(&root.path().join("projects"), &root.path().join("linked"));
     try_symlink_dir(&root.path().join("gone"), &root.path().join("broken"));
-    try_symlink_file(&root.path().join("notes.txt"), &root.path().join("file-link"));
+    try_symlink_file(
+        &root.path().join("notes.txt"),
+        &root.path().join("file-link"),
+    );
     root
 }
 
@@ -107,9 +110,12 @@ fn lists_directories_only_flags_hidden_rows_follows_symlinks_skips_broken_links_
         let backend = install(&ctx, Config::default());
         let capability = browse(&backend.capability()).clone();
 
-        let listing = (capability.list)(Some(root.path().to_string_lossy().into_owned()), AbortSignal::new())
-            .await
-            .expect("list");
+        let listing = (capability.list)(
+            Some(root.path().to_string_lossy().into_owned()),
+            AbortSignal::new(),
+        )
+        .await
+        .expect("list");
         assert_eq!(Path::new(&listing.path), root.path());
         assert_eq!(listing.home, home_dir());
         let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
@@ -138,9 +144,12 @@ fn cuts_a_level_at_max_entries_keeping_the_name_sorted_head_and_flags_the_cut() 
         let backend = install(&ctx, Config { max_entries: 1 });
         let capability = browse(&backend.capability()).clone();
 
-        let cut = (capability.list)(Some(root.path().to_string_lossy().into_owned()), AbortSignal::new())
-            .await
-            .expect("list");
+        let cut = (capability.list)(
+            Some(root.path().to_string_lossy().into_owned()),
+            AbortSignal::new(),
+        )
+        .await
+        .expect("list");
         let names: Vec<&str> = cut.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec![".hidden-dir"]);
         assert!(cut.truncated);
@@ -200,11 +209,7 @@ fn stops_the_scan_with_the_caller_an_aborted_signal_resolves_as_aborted() {
         // Aborted against a missing target: the abandoned open rejects on
         // its own and there is nothing to close.
         let missing = root.path().join("no-such-dir");
-        let outcome = (capability.list)(
-            Some(missing.to_string_lossy().into_owned()),
-            gone,
-        )
-        .await;
+        let outcome = (capability.list)(Some(missing.to_string_lossy().into_owned()), gone).await;
         assert!(matches!(outcome, Err(DirectoryPickerListError::Aborted)));
 
         // A live signal leaves a normal listing untouched — the reads and
@@ -220,11 +225,7 @@ fn stops_the_scan_with_the_caller_an_aborted_signal_resolves_as_aborted() {
         assert!(complete.entries.iter().any(|e| e.name == "linked"));
 
         // A live signal changes nothing about ordinary failures.
-        let failure = (capability.list)(
-            Some(missing.to_string_lossy().into_owned()),
-            live,
-        )
-        .await;
+        let failure = (capability.list)(Some(missing.to_string_lossy().into_owned()), live).await;
         match failure {
             Err(DirectoryPickerListError::Unreadable(error)) => {
                 assert_eq!(error.code, DirectoryPickerErrorCode::DirectoryUnreadable);
@@ -377,11 +378,8 @@ fn rejects_non_absolute_paths_instead_of_rebasing_them_under_the_process_cwd() {
         let backend = install(&ctx, Config::default());
         let capability = browse(&backend.capability()).clone();
         for relative in ["", "projects", "./projects", ".."] {
-            let list_failure = (capability.list)(
-                Some(relative.to_string()),
-                AbortSignal::new(),
-            )
-            .await;
+            let list_failure =
+                (capability.list)(Some(relative.to_string()), AbortSignal::new()).await;
             match list_failure {
                 Err(DirectoryPickerListError::Unreadable(error)) => {
                     assert_eq!(error.code, DirectoryPickerErrorCode::DirectoryUnreadable);
@@ -389,11 +387,8 @@ fn rejects_non_absolute_paths_instead_of_rebasing_them_under_the_process_cwd() {
                 }
                 other => panic!("expected unreadable for {relative:?}, got {other:?}"),
             }
-            let create_failure = (capability.create_directory)(
-                relative.to_string(),
-                "child".to_string(),
-            )
-            .await;
+            let create_failure =
+                (capability.create_directory)(relative.to_string(), "child".to_string()).await;
             match create_failure {
                 Err(error) => {
                     assert_eq!(error.code, DirectoryPickerErrorCode::DirectoryCreateFailed);
@@ -419,9 +414,12 @@ fn creates_one_child_directory_and_surfaces_it_in_the_next_listing() {
         .await
         .expect("create");
         assert_eq!(Path::new(&created), root.path().join("fresh"));
-        let listing = (capability.list)(Some(root.path().to_string_lossy().into_owned()), AbortSignal::new())
-            .await
-            .expect("list");
+        let listing = (capability.list)(
+            Some(root.path().to_string_lossy().into_owned()),
+            AbortSignal::new(),
+        )
+        .await
+        .expect("list");
         assert!(listing.entries.iter().any(|e| e.name == "fresh"));
     });
 }
@@ -430,11 +428,8 @@ fn creates_one_child_directory_and_surfaces_it_in_the_next_listing() {
 fn refuses_an_existing_child_with_directory_exists() {
     run(async {
         let root = fixture();
-        let failure = create_directory(
-            &root.path().to_string_lossy().into_owned(),
-            "projects",
-        )
-        .await;
+        let failure =
+            create_directory(&root.path().to_string_lossy().into_owned(), "projects").await;
         match failure {
             Err(error) => assert_eq!(error.code, DirectoryPickerErrorCode::DirectoryExists),
             other => panic!("expected directory-exists, got {other:?}"),
@@ -447,8 +442,7 @@ fn refuses_non_segment_names_and_other_filesystem_failures_with_directory_create
     run(async {
         let root = fixture();
         for name in ["", "  ", ".", "..", "a/b", r"a\b"] {
-            let failure =
-                create_directory(&root.path().to_string_lossy().into_owned(), name).await;
+            let failure = create_directory(&root.path().to_string_lossy().into_owned(), name).await;
             match failure {
                 Err(error) => {
                     assert_eq!(
@@ -462,7 +456,11 @@ fn refuses_non_segment_names_and_other_filesystem_failures_with_directory_create
         }
         // Missing parent is a real failure, not a level to invent.
         let missing_parent = create_directory(
-            &root.path().join("no-such-dir").to_string_lossy().into_owned(),
+            &root
+                .path()
+                .join("no-such-dir")
+                .to_string_lossy()
+                .into_owned(),
             "child",
         )
         .await;

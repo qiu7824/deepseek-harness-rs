@@ -15,12 +15,10 @@ use futures::FutureExt;
 use parking_lot::Mutex;
 
 /// The durable write future: resolves only after backend durability.
-pub type WriteFuture =
-    Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+pub type WriteFuture = Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
 /// The flush/barrier future.
-pub type FlushFuture =
-    Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+pub type FlushFuture = Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
 /// Await one shared barrier receiver (async fn form so the receiver is a
 /// plain owned parameter, matching the drain-barrier await).
@@ -211,30 +209,30 @@ impl SessionWriteBehind {
 
     /// Await overlapping work, drain to quiescence, and settle the shared
     /// barrier (TS `drainBarrier`).
-    async fn drain_barrier(
-        self: &Arc<Self>,
-        tx: tokio::sync::oneshot::Sender<Result<(), String>>,
-    ) {
+    async fn drain_barrier(self: &Arc<Self>, tx: tokio::sync::oneshot::Sender<Result<(), String>>) {
         // Await the overlapping active write, if any.
         loop {
             let overlapping = self.state.lock().active.take();
             match overlapping {
-                Some(receiver) => {
-                    match receiver.await {
-                        Ok(Ok(())) => {
-                            self.state.lock().automatic_paused = false;
-                        }
-                        _ => {
-                            // Close admission to this barrier and reject
-                            // (TS rejects after clearing the barrier).
-                            self.state.lock().barrier = None;
-                            let _ = tx.send(Err(
-                                "overlapping active write failed".to_string()
-                            ));
-                            return;
-                        }
+                Some(receiver) => match receiver.await {
+                    Ok(Ok(())) => {
+                        self.state.lock().automatic_paused = false;
                     }
-                }
+                    Ok(Err(error)) => {
+                        // Preserve the durable backend failure as the
+                        // authority for every waiter on this barrier.
+                        self.state.lock().barrier = None;
+                        let _ = tx.send(Err(error));
+                        return;
+                    }
+                    Err(_) => {
+                        // The writer disappeared without publishing an
+                        // outcome; this is the only genuinely generic case.
+                        self.state.lock().barrier = None;
+                        let _ = tx.send(Err("overlapping active write failed".to_string()));
+                        return;
+                    }
+                },
                 None => break,
             }
         }
@@ -414,5 +412,54 @@ mod tests {
             1,
             "both flushes drained through one barrier"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_preserves_an_overlapping_write_failure() {
+        let (started_tx, mut started_rx) = tokio::sync::watch::channel(false);
+        let (release_tx, release_rx) = tokio::sync::watch::channel(false);
+        let write: Arc<dyn Fn(Vec<SessionEvent>) -> WriteFuture + Send + Sync> =
+            Arc::new(move |_batch| {
+                let started_tx = started_tx.clone();
+                let mut release_rx = release_rx.clone();
+                Box::pin(async move {
+                    started_tx.send_replace(true);
+                    while !*release_rx.borrow() {
+                        release_rx.changed().await.expect("release sender");
+                    }
+                    Err("disk full".to_string())
+                })
+            });
+        let controller = SessionWriteBehind::new(SessionWriteBehindOptions {
+            max_delay_ms: 60_000,
+            write,
+            report_background_failure: Arc::new(|_| {}),
+        });
+        controller.enqueue(event(0));
+        controller.start_background();
+        while !*started_rx.borrow() {
+            started_rx.changed().await.expect("started sender");
+        }
+        let flushing = tokio::spawn({
+            let controller = controller.clone();
+            async move { controller.flush().await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if controller.state.lock().active.is_none() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("flush barrier did not claim the active write");
+        release_tx.send_replace(true);
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), flushing)
+            .await
+            .expect("flush deadline")
+            .expect("flush task")
+            .expect_err("flush failure");
+        assert_eq!(error, "disk full");
     }
 }

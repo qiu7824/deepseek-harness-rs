@@ -14,12 +14,12 @@
 use std::sync::Arc;
 
 use cordis::{
-    ArcValue, BoxFuture, Context, InjectSpec, Plugin, PluginError, ValidationError, arc,
-    downcast, downcast_arc,
+    ArcValue, BoxFuture, Context, InjectSpec, Plugin, PluginError, ValidationError, arc, downcast,
+    downcast_arc,
 };
 use dsh_fs::{
-    AbortPredicate, FileSystem, FsEditGuard, FsError, FsErrorCode, FsInfo, FsObservation,
-    FsTarget, FsWriteIntent,
+    AbortPredicate, FileSystem, FsEditGuard, FsError, FsErrorCode, FsInfo, FsObservation, FsTarget,
+    FsWriteIntent,
 };
 use dsh_fs_observation_policy::FsObservationActorHandle;
 use dsh_sandbox::{SandboxExecutionPolicy, SandboxMode, sandbox_denial_marker};
@@ -135,7 +135,9 @@ impl MutationPolicy {
         if error.code != FsErrorCode::FsSandboxDenied {
             return error;
         }
-        let mode = policy.map(|policy| policy.mode).unwrap_or(SandboxMode::ReadOnly);
+        let mode = policy
+            .map(|policy| policy.mode)
+            .unwrap_or(SandboxMode::ReadOnly);
         FsError::with_cause(
             sandbox_denial_marker(mode),
             FsErrorCode::FsSandboxDenied,
@@ -157,9 +159,15 @@ async fn resolve_target(
             "The path {path} is not an absolute path, it should start with `/`. Maybe you meant /{path}?"
         )));
     }
-    fs.resolve(path, Some(&dsh_fs::ResolveOptions { cwd: None, signal: Some(signal) }))
-        .await
-        .map_err(|error| fs_tool_error(&error))
+    fs.resolve(
+        path,
+        Some(&dsh_fs::ResolveOptions {
+            cwd: None,
+            signal: Some(signal),
+        }),
+    )
+    .await
+    .map_err(|error| fs_tool_error(&error))
 }
 
 async fn stat_existing(
@@ -318,8 +326,13 @@ async fn list_directory(
                 rows.push(format!("{kind}\t{}", entry.target.display_path));
                 if entry.kind == dsh_fs::FsInfoType::Directory && depth < 2 {
                     rows.extend(
-                        visit(fs.clone(), entry.target.clone(), depth + 1, execution.clone())
-                            .await?,
+                        visit(
+                            fs.clone(),
+                            entry.target.clone(),
+                            depth + 1,
+                            execution.clone(),
+                        )
+                        .await?,
                     );
                 }
             }
@@ -328,9 +341,7 @@ async fn list_directory(
     }
 
     let mut rows = vec![format!("d\t{}", target.display_path)];
-    rows.extend(
-        visit(fs.clone(), target.clone(), 1, execution.clone()).await?,
-    );
+    rows.extend(visit(fs.clone(), target.clone(), 1, execution.clone()).await?);
     rows.sort_by(|left, right| {
         let left_path = left.split_once('\t').map(|(_, path)| path).unwrap_or("");
         let right_path = right.split_once('\t').map(|(_, path)| path).unwrap_or("");
@@ -380,7 +391,9 @@ async fn view_path(
         "fs/observed",
         vec![
             arc(target.clone()),
-            arc(FsObservation::Present { version: info.version.clone() }),
+            arc(FsObservation::Present {
+                version: info.version.clone(),
+            }),
             arc(actor_of(execution)),
         ],
     );
@@ -464,13 +477,19 @@ async fn create_file(
         .await
     {
         Ok(outcome) => outcome,
-        Err(error) => return Err(fs_tool_error(&policy.map_error(error, sandbox_policy.as_ref()))),
+        Err(error) => {
+            return Err(fs_tool_error(
+                &policy.map_error(error, sandbox_policy.as_ref()),
+            ));
+        }
     };
     ctx.emit(
         "fs/observed",
         vec![
             arc(target.clone()),
-            arc(FsObservation::Present { version: outcome.version.clone() }),
+            arc(FsObservation::Present {
+                version: outcome.version.clone(),
+            }),
             arc(actor_of(execution)),
         ],
     );
@@ -568,8 +587,12 @@ async fn replace_in_file(
         &before[offset + old_value.len()..]
     );
     let expected = match &intent {
-        Some(guard) => FsWriteIntent::ReplaceIfVersion { version: guard.version.clone() },
-        None => FsWriteIntent::ReplaceIfVersion { version: info.version.clone() },
+        Some(guard) => FsWriteIntent::ReplaceIfVersion {
+            version: guard.version.clone(),
+        },
+        None => FsWriteIntent::ReplaceIfVersion {
+            version: info.version.clone(),
+        },
     };
     let signal = execution.signal.lock().clone();
     let outcome = match fs
@@ -583,13 +606,19 @@ async fn replace_in_file(
         .await
     {
         Ok(outcome) => outcome,
-        Err(error) => return Err(fs_tool_error(&policy.map_error(error, sandbox_policy.as_ref()))),
+        Err(error) => {
+            return Err(fs_tool_error(
+                &policy.map_error(error, sandbox_policy.as_ref()),
+            ));
+        }
     };
     ctx.emit(
         "fs/observed",
         vec![
             arc(target.clone()),
-            arc(FsObservation::Present { version: outcome.version.clone() }),
+            arc(FsObservation::Present {
+                version: outcome.version.clone(),
+            }),
             arc(actor_of(execution)),
         ],
     );
@@ -648,8 +677,12 @@ async fn insert_in_file(
     parts.extend(lines[insert_line..].iter().copied());
     let after = parts.join("\n");
     let expected = match &intent {
-        Some(guard) => FsWriteIntent::ReplaceIfVersion { version: guard.version.clone() },
-        None => FsWriteIntent::ReplaceIfVersion { version: info.version.clone() },
+        Some(guard) => FsWriteIntent::ReplaceIfVersion {
+            version: guard.version.clone(),
+        },
+        None => FsWriteIntent::ReplaceIfVersion {
+            version: info.version.clone(),
+        },
     };
     let signal = execution.signal.lock().clone();
     let outcome = match fs
@@ -663,13 +696,19 @@ async fn insert_in_file(
         .await
     {
         Ok(outcome) => outcome,
-        Err(error) => return Err(fs_tool_error(&policy.map_error(error, sandbox_policy.as_ref()))),
+        Err(error) => {
+            return Err(fs_tool_error(
+                &policy.map_error(error, sandbox_policy.as_ref()),
+            ));
+        }
     };
     ctx.emit(
         "fs/observed",
         vec![
             arc(target.clone()),
-            arc(FsObservation::Present { version: outcome.version.clone() }),
+            arc(FsObservation::Present {
+                version: outcome.version.clone(),
+            }),
             arc(actor_of(execution)),
         ],
     );
@@ -825,9 +864,8 @@ impl ToolStrReplaceEditorService {
                         let Some(command) = command else {
                             return Err(ToolBodyError::plain("Parameter `command` is required"));
                         };
-                        let path = path.ok_or_else(|| {
-                            ToolBodyError::plain("Parameter `path` is required")
-                        })?;
+                        let path = path
+                            .ok_or_else(|| ToolBodyError::plain("Parameter `path` is required"))?;
                         let view_range = args.get("view_range").and_then(|v| v.as_array());
                         let result: Result<String, ToolBodyError> = match command {
                             "view" => {
@@ -989,13 +1027,15 @@ impl Plugin for ToolStrReplaceEditorPlugin {
         let data = data_from_json(value);
         let validated = Schema::validate(&config_schema(), data)
             .map_err(|error| ValidationError::new([error.to_string()]))?;
-        let json = validated.to_json().unwrap_or_else(|| serde_json::Value::Null);
+        let json = validated
+            .to_json()
+            .unwrap_or_else(|| serde_json::Value::Null);
         Ok(arc(json))
     }
 
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
-        let config =
-            config_from_value(&config).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
+        let config = config_from_value(&config)
+            .map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
         apply(ctx, config).map_err(|message| PluginError::from(anyhow::anyhow!(message)))
     }
 }

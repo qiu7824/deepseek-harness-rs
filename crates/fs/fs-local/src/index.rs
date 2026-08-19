@@ -10,9 +10,9 @@ use cordis::Context;
 use parking_lot::Mutex;
 
 use dsh_fs::{
-    AbortPredicate, FsDirEntry, FsEditOutcome, FsEditRequest, FsError, FsErrorCode, FsInfo,
-    FsInfoType, FsPathInfo, FsPathInfoType, FsTarget, FsVersion, FsWriteIntent,
-    FsWriteOperation, FsWriteOutcome, FileSystem, LstatOptions, ResolveOptions, fs_version,
+    AbortPredicate, FileSystem, FsDirEntry, FsEditOutcome, FsEditRequest, FsError, FsErrorCode,
+    FsInfo, FsInfoType, FsPathInfo, FsPathInfoType, FsTarget, FsVersion, FsWriteIntent,
+    FsWriteOperation, FsWriteOutcome, LstatOptions, ResolveOptions, fs_version,
 };
 use dsh_sandbox::SandboxExecutionPolicy;
 
@@ -65,18 +65,24 @@ impl LocalFileSystem {
     /// (`dsh-fs-sandbox`) builds through this and registers its own erased
     /// handle.
     pub fn build(config: Config) -> Result<Arc<Self>, String> {
-        let cwd = config
-            .cwd
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir().map(|cwd| cwd.to_string_lossy().into_owned()).unwrap_or_else(|_| ".".to_string()));
-        let diff_basis_max_bytes = config.diff_basis_max_bytes.unwrap_or(DEFAULT_DIFF_BASIS_MAX_BYTES);
+        let cwd = config.cwd.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|cwd| cwd.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".to_string())
+        });
+        let diff_basis_max_bytes = config
+            .diff_basis_max_bytes
+            .unwrap_or(DEFAULT_DIFF_BASIS_MAX_BYTES);
         if diff_basis_max_bytes == 0 || diff_basis_max_bytes > MAX_DIFF_BASIS_BYTES {
             return Err(format!(
                 "fs-local: diffBasisMaxBytes must be a positive integer no greater than {MAX_DIFF_BASIS_BYTES}"
             ));
         }
         Ok(Arc::new(Self {
-            config: ResolvedConfig { cwd, diff_basis_max_bytes },
+            config: ResolvedConfig {
+                cwd,
+                diff_basis_max_bytes,
+            },
             internals: FsIoInternals::default(),
             locks: Mutex::new(HashMap::new()),
         }))
@@ -109,20 +115,36 @@ impl LocalFileSystem {
 
     /// The post-write version probe; falls back to a sentinel when a
     /// concurrent unlink removed the target between rename and stat.
-    fn version_after_write(&self, after: Option<dsh_fs::FsVersion>, target: &FsTarget) -> FsVersion {
+    fn version_after_write(
+        &self,
+        after: Option<dsh_fs::FsVersion>,
+        target: &FsTarget,
+    ) -> FsVersion {
         after.unwrap_or_else(|| fs_version(format!("missing:{}", target.target_key)))
     }
 }
 
 #[async_trait::async_trait]
 impl FileSystem for LocalFileSystem {
-    async fn resolve(&self, path: &str, opts: Option<&ResolveOptions>) -> Result<FsTarget, FsError> {
-        if opts.and_then(|opts| opts.signal.as_ref()).is_some_and(|signal| signal()) {
+    async fn resolve(
+        &self,
+        path: &str,
+        opts: Option<&ResolveOptions>,
+    ) -> Result<FsTarget, FsError> {
+        if opts
+            .and_then(|opts| opts.signal.as_ref())
+            .is_some_and(|signal| signal())
+        {
             return Err(FsError::new("resolve aborted", FsErrorCode::FsAborted));
         }
-        let cwd = opts.and_then(|opts| opts.cwd.as_deref()).unwrap_or(&self.config.cwd);
+        let cwd = opts
+            .and_then(|opts| opts.cwd.as_deref())
+            .unwrap_or(&self.config.cwd);
         let local = resolve_local_target(cwd, path).await?;
-        if opts.and_then(|opts| opts.signal.as_ref()).is_some_and(|signal| signal()) {
+        if opts
+            .and_then(|opts| opts.signal.as_ref())
+            .is_some_and(|signal| signal())
+        {
             return Err(FsError::new("resolve aborted", FsErrorCode::FsAborted));
         }
         Ok(FsTarget {
@@ -138,18 +160,30 @@ impl FileSystem for LocalFileSystem {
     fn file_url(&self, target: &FsTarget) -> String {
         // The TS `pathToFileURL` percent-encodes the path into a file:// URL.
         let path = self.process_path(target);
-        format!("file:///{}", path.replace('\\', "/").split('/').map(|segment| {
-            let mut encoded = String::new();
-            for byte in segment.as_bytes() {
-                match byte {
-                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b':' => {
-                        encoded.push(*byte as char)
+        format!(
+            "file:///{}",
+            path.replace('\\', "/")
+                .split('/')
+                .map(|segment| {
+                    let mut encoded = String::new();
+                    for byte in segment.as_bytes() {
+                        match byte {
+                            b'A'..=b'Z'
+                            | b'a'..=b'z'
+                            | b'0'..=b'9'
+                            | b'-'
+                            | b'.'
+                            | b'_'
+                            | b'~'
+                            | b':' => encoded.push(*byte as char),
+                            _ => encoded.push_str(&format!("%{byte:02X}")),
+                        }
                     }
-                    _ => encoded.push_str(&format!("%{byte:02X}")),
-                }
-            }
-            encoded
-        }).collect::<Vec<_>>().join("/"))
+                    encoded
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        )
     }
 
     fn contains(&self, parent: &FsTarget, child: &FsTarget) -> bool {
@@ -163,7 +197,11 @@ impl FileSystem for LocalFileSystem {
         child.starts_with(&prefix)
     }
 
-    async fn stat(&self, target: &FsTarget, signal: Option<AbortPredicate>) -> Result<Option<FsInfo>, FsError> {
+    async fn stat(
+        &self,
+        target: &FsTarget,
+        signal: Option<AbortPredicate>,
+    ) -> Result<Option<FsInfo>, FsError> {
         if signal.as_ref().is_some_and(|signal| signal()) {
             return Err(FsError::new("stat aborted", FsErrorCode::FsAborted));
         }
@@ -192,9 +230,14 @@ impl FileSystem for LocalFileSystem {
             return Err(FsError::new("lstat aborted", FsErrorCode::FsAborted));
         }
         if path.trim().is_empty() {
-            return Err(FsError::new("file_path must be a non-empty string", FsErrorCode::FsNotFound));
+            return Err(FsError::new(
+                "file_path must be a non-empty string",
+                FsErrorCode::FsNotFound,
+            ));
         }
-        let cwd = opts.and_then(|opts| opts.cwd.as_deref()).unwrap_or(&self.config.cwd);
+        let cwd = opts
+            .and_then(|opts| opts.cwd.as_deref())
+            .unwrap_or(&self.config.cwd);
         let joined = Path::new(cwd).join(path);
         let info = probe_no_follow(&joined.to_string_lossy()).await?;
         if signal.as_ref().is_some_and(|signal| signal()) {
@@ -212,7 +255,11 @@ impl FileSystem for LocalFileSystem {
         }))
     }
 
-    async fn read_text(&self, target: &FsTarget, signal: Option<AbortPredicate>) -> Result<String, FsError> {
+    async fn read_text(
+        &self,
+        target: &FsTarget,
+        signal: Option<AbortPredicate>,
+    ) -> Result<String, FsError> {
         let local = LocalTarget {
             display_path: target.display_path.clone(),
             target_key: target.target_key.clone(),
@@ -245,7 +292,11 @@ impl FileSystem for LocalFileSystem {
         read_whole_bytes(&local, signal.as_ref(), max_bytes, &self.internals).await
     }
 
-    async fn list_dir(&self, target: &FsTarget, signal: Option<AbortPredicate>) -> Result<Vec<FsDirEntry>, FsError> {
+    async fn list_dir(
+        &self,
+        target: &FsTarget,
+        signal: Option<AbortPredicate>,
+    ) -> Result<Vec<FsDirEntry>, FsError> {
         let local = LocalTarget {
             display_path: target.display_path.clone(),
             target_key: target.target_key.clone(),
@@ -280,9 +331,15 @@ impl FileSystem for LocalFileSystem {
     ) -> Result<FsWriteOutcome, FsError> {
         self.with_lock(target.target_key.as_str(), async {
             let existing = probe(target.target_key.as_str()).await?;
-            if existing.as_ref().is_some_and(|info| info.kind != PathKind::File) {
+            if existing
+                .as_ref()
+                .is_some_and(|info| info.kind != PathKind::File)
+            {
                 return Err(FsError::new(
-                    format!("cannot write \"{}\": not a regular file", target.display_path),
+                    format!(
+                        "cannot write \"{}\": not a regular file",
+                        target.display_path
+                    ),
                     FsErrorCode::FsNotRegularFile,
                 ));
             }
@@ -290,13 +347,19 @@ impl FileSystem for LocalFileSystem {
                 Some(FsWriteIntent::ReplaceIfVersion { version }) => {
                     let Some(existing) = &existing else {
                         return Err(FsError::new(
-                            format!("cannot write \"{}\": file no longer exists", target.display_path),
+                            format!(
+                                "cannot write \"{}\": file no longer exists",
+                                target.display_path
+                            ),
                             FsErrorCode::FsStaleVersion,
                         ));
                     };
                     if &existing.version != version {
                         return Err(FsError::new(
-                            format!("cannot write \"{}\": file changed since it was read", target.display_path),
+                            format!(
+                                "cannot write \"{}\": file changed since it was read",
+                                target.display_path
+                            ),
                             FsErrorCode::FsStaleVersion,
                         ));
                     }
@@ -304,7 +367,10 @@ impl FileSystem for LocalFileSystem {
                 Some(FsWriteIntent::CreateIfAbsent) => {
                     if existing.is_some() {
                         return Err(FsError::new(
-                            format!("cannot overwrite existing \"{}\" without reading it first", target.display_path),
+                            format!(
+                                "cannot overwrite existing \"{}\" without reading it first",
+                                target.display_path
+                            ),
                             FsErrorCode::FsNotObserved,
                         ));
                     }
@@ -312,8 +378,8 @@ impl FileSystem for LocalFileSystem {
                 None => {}
             }
 
-            let diffable = existing.is_some()
-                && (content.len() as u64) < self.config.diff_basis_max_bytes;
+            let diffable =
+                existing.is_some() && (content.len() as u64) < self.config.diff_basis_max_bytes;
             let before = if diffable {
                 read_text_for_diff(
                     target.target_key.as_str(),
@@ -342,8 +408,13 @@ impl FileSystem for LocalFileSystem {
             .await?;
             let after = probe(target.target_key.as_str()).await?;
             Ok(FsWriteOutcome {
-                operation: if existing.is_some() { FsWriteOperation::Update } else { FsWriteOperation::Create },
-                version: self.version_after_write(after.as_ref().map(|info| info.version.clone()), target),
+                operation: if existing.is_some() {
+                    FsWriteOperation::Update
+                } else {
+                    FsWriteOperation::Create
+                },
+                version: self
+                    .version_after_write(after.as_ref().map(|info| info.version.clone()), target),
                 before,
                 // LF-normalized to share the diff basis with `before` (also
                 // LF): a CRLF overwrite must not read as every line changed.
@@ -365,26 +436,39 @@ impl FileSystem for LocalFileSystem {
             let existing = probe(target.target_key.as_str()).await?;
             let Some(existing) = existing else {
                 return Err(FsError::new(
-                    format!("cannot edit \"{}\": file changed since it was read", target.display_path),
+                    format!(
+                        "cannot edit \"{}\": file changed since it was read",
+                        target.display_path
+                    ),
                     FsErrorCode::FsStaleVersion,
                 ));
             };
             if existing.kind != PathKind::File {
                 return Err(FsError::new(
-                    format!("cannot edit \"{}\": not a regular file", target.display_path),
+                    format!(
+                        "cannot edit \"{}\": not a regular file",
+                        target.display_path
+                    ),
                     FsErrorCode::FsNotRegularFile,
                 ));
             }
             if let Some(guard) = expected {
                 if existing.version != guard.version {
                     return Err(FsError::new(
-                        format!("cannot edit \"{}\": file changed since it was read", target.display_path),
+                        format!(
+                            "cannot edit \"{}\": file changed since it was read",
+                            target.display_path
+                        ),
                         FsErrorCode::FsStaleVersion,
                     ));
                 }
             }
-            let (original, line_endings) =
-                read_for_edit(target.target_key.as_str(), &target.display_path, signal.as_ref()).await?;
+            let (original, line_endings) = read_for_edit(
+                target.target_key.as_str(),
+                &target.display_path,
+                signal.as_ref(),
+            )
+            .await?;
             let (edited, _replacements) = apply_literal_edit(
                 &original,
                 &edit.old_string,
@@ -404,7 +488,8 @@ impl FileSystem for LocalFileSystem {
             .await?;
             let after = probe(target.target_key.as_str()).await?;
             Ok(FsEditOutcome {
-                version: self.version_after_write(after.as_ref().map(|info| info.version.clone()), target),
+                version: self
+                    .version_after_write(after.as_ref().map(|info| info.version.clone()), target),
                 before: original,
                 after: edited,
             })
@@ -414,4 +499,3 @@ impl FileSystem for LocalFileSystem {
 }
 
 use std::path::Path;
-

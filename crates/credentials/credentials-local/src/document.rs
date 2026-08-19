@@ -34,7 +34,11 @@ fn describe_yaml_error(error: &serde_yaml::Error) -> String {
         let location = error.location();
         let position = location
             .map(|location| {
-                format!(" at line {}, column {}", location.line() + 1, location.column() + 1)
+                format!(
+                    " at line {}, column {}",
+                    location.line() + 1,
+                    location.column() + 1
+                )
             })
             .unwrap_or_default();
         return format!("DUPLICATE_KEY{position}");
@@ -42,7 +46,11 @@ fn describe_yaml_error(error: &serde_yaml::Error) -> String {
     let Some(location) = error.location() else {
         return "PARSE_ERROR".to_string();
     };
-    format!("PARSE_ERROR at line {}, column {}", location.line() + 1, location.column() + 1)
+    format!(
+        "PARSE_ERROR at line {}, column {}",
+        location.line() + 1,
+        location.column() + 1
+    )
 }
 
 /// Parse one credentials document into its entries. The document is a strict
@@ -57,8 +65,12 @@ pub fn parse_credentials_document(
 ) -> Result<IndexMap<String, String>, String> {
     // Whole-document shape validation through the YAML parser; its message is
     // never surfaced — only the code and position leave this function.
-    let value: serde_yaml::Value = serde_yaml::from_str(text)
-        .map_err(|error| format!("credentials-local: invalid document at {filename}: {}", describe_yaml_error(&error)))?;
+    let value: serde_yaml::Value = serde_yaml::from_str(text).map_err(|error| {
+        format!(
+            "credentials-local: invalid document at {filename}: {}",
+            describe_yaml_error(&error)
+        )
+    })?;
     // An empty document (comments and blank lines only) parses to Null; the
     // TS `document.toJS() ?? {}` treats it as the empty store.
     let serde_yaml::Value::Mapping(mapping) = value else {
@@ -71,15 +83,16 @@ pub fn parse_credentials_document(
     };
     let mut entries = IndexMap::new();
     for (key, value) in mapping {
-        let key = key
-            .as_str()
-            .ok_or_else(|| format!("credentials-local: {filename} must be a mapping of credential reference to value"))?;
+        let key = key.as_str().ok_or_else(|| {
+            format!(
+                "credentials-local: {filename} must be a mapping of credential reference to value"
+            )
+        })?;
         // credential_ref rejects anything that is not a POSIX identifier,
         // which is exactly the constraint a stored reference must satisfy to
         // be addressable through the seam. The panic is contained here.
-        let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            credential_ref(key)
-        }));
+        let checked =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| credential_ref(key)));
         if let Err(payload) = checked {
             let message = payload
                 .downcast::<String>()
@@ -234,7 +247,8 @@ fn locate_entry(text: &str, reference: &str) -> Option<EntrySpan> {
     let mut pending: Option<EntrySpan> = None;
     for line in text.split_inclusive('\n') {
         let trimmed = line.trim_start();
-        let blank_or_meta = trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("---");
+        let blank_or_meta =
+            trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("---");
         if !blank_or_meta {
             if let Some(key) = plain_key_of(line) {
                 if let Some(span) = pending.take() {
@@ -331,7 +345,10 @@ fn is_plain_safe(value: &str) -> bool {
         return false;
     }
     let first = value.chars().next().expect("non-empty");
-    if "-?:,[]{}#&*!|>'\"%@`".contains(first) || value.starts_with("---") || value.starts_with("...") {
+    if "-?:,[]{}#&*!|>'\"%@`".contains(first)
+        || value.starts_with("---")
+        || value.starts_with("...")
+    {
         return false;
     }
     // A plain scalar must not contain ": " or end with ":".
@@ -364,7 +381,10 @@ mod tests {
         )
         .expect("parse");
         assert_eq!(entries.get("DSH_CRED_TEST"), Some(&"plain".to_string()));
-        assert_eq!(entries.get("DSH_CRED_OTHER"), Some(&"with space".to_string()));
+        assert_eq!(
+            entries.get("DSH_CRED_OTHER"),
+            Some(&"with space".to_string())
+        );
         let empty = parse_credentials_document("# nothing stored yet\n", "f.yaml").expect("empty");
         assert!(empty.is_empty());
     }
@@ -380,7 +400,9 @@ mod tests {
             ("DSH_CRED_TEST: one\nDSH_CRED_TEST: two\n", "DUPLICATE_KEY"),
             ("DSH_CRED_TEST: \"unterminated\n", "invalid document"),
         ] {
-            let error = parse_credentials_document(text, "f.yaml").err().expect("rejects");
+            let error = parse_credentials_document(text, "f.yaml")
+                .err()
+                .expect("rejects");
             assert!(error.contains(needle), "{text:?} -> {error}");
         }
     }
@@ -388,7 +410,11 @@ mod tests {
     #[test]
     fn render_patches_one_entry_preserving_comments() {
         let text = "# deployment notes\nDSH_CRED_OTHER: keep\n\n# the one under edit\nDSH_CRED_TEST: old\n";
-        let rendered = render_document(Some(text), &credential_ref("DSH_CRED_TEST"), Some("new value!"));
+        let rendered = render_document(
+            Some(text),
+            &credential_ref("DSH_CRED_TEST"),
+            Some("new value!"),
+        );
         assert_eq!(
             rendered,
             "# deployment notes\nDSH_CRED_OTHER: keep\n\n# the one under edit\nDSH_CRED_TEST: new value!\n"
@@ -400,21 +426,47 @@ mod tests {
         let text = "# about the doomed one\nDSH_CRED_TEST: gone\n# about the survivor\nDSH_CRED_OTHER: stays\n";
         let rendered = render_document(Some(text), &credential_ref("DSH_CRED_TEST"), None);
         assert_eq!(rendered, "# about the survivor\nDSH_CRED_OTHER: stays\n");
-        let emptied = render_document(Some("DSH_CRED_TEST: only\n"), &credential_ref("DSH_CRED_TEST"), None);
+        let emptied = render_document(
+            Some("DSH_CRED_TEST: only\n"),
+            &credential_ref("DSH_CRED_TEST"),
+            None,
+        );
         assert_eq!(emptied, "{}\n");
     }
 
     #[test]
     fn render_leaves_sibling_block_scalars_untouched_and_quotes_structural_values() {
         let wrapped = "DSH_REVIEW_WRAPPED: |-\n  line1\n  line2\nDSH_REVIEW_ALPHA: a\n";
-        let rendered = render_document(Some(wrapped), &credential_ref("DSH_REVIEW_ALPHA"), Some("b"));
-        assert_eq!(rendered, "DSH_REVIEW_WRAPPED: |-\n  line1\n  line2\nDSH_REVIEW_ALPHA: b\n");
+        let rendered = render_document(
+            Some(wrapped),
+            &credential_ref("DSH_REVIEW_ALPHA"),
+            Some("b"),
+        );
+        assert_eq!(
+            rendered,
+            "DSH_REVIEW_WRAPPED: |-\n  line1\n  line2\nDSH_REVIEW_ALPHA: b\n"
+        );
 
-        let structural = render_document(None, &credential_ref("DSH_REVIEW_ALPHA"), Some("DSH_REVIEW_INNER: injected"));
-        assert_eq!(structural, "DSH_REVIEW_ALPHA: \"DSH_REVIEW_INNER: injected\"\n");
-        let multi = render_document(None, &credential_ref("DSH_REVIEW_ALPHA"), Some("line one\nline two"));
+        let structural = render_document(
+            None,
+            &credential_ref("DSH_REVIEW_ALPHA"),
+            Some("DSH_REVIEW_INNER: injected"),
+        );
+        assert_eq!(
+            structural,
+            "DSH_REVIEW_ALPHA: \"DSH_REVIEW_INNER: injected\"\n"
+        );
+        let multi = render_document(
+            None,
+            &credential_ref("DSH_REVIEW_ALPHA"),
+            Some("line one\nline two"),
+        );
         assert_eq!(multi, "DSH_REVIEW_ALPHA: \"line one\\nline two\"\n");
-        let quotes = render_document(None, &credential_ref("DSH_REVIEW_ALPHA"), Some("both ' and \""));
+        let quotes = render_document(
+            None,
+            &credential_ref("DSH_REVIEW_ALPHA"),
+            Some("both ' and \""),
+        );
         assert_eq!(quotes, "DSH_REVIEW_ALPHA: \"both ' and \\\"\"\n");
     }
 
@@ -427,10 +479,22 @@ mod tests {
 
     #[test]
     fn scalar_round_trips_through_the_parser() {
-        for value in ["sk-fresh", "new value!", "line one\nline two", "both ' and \"", "a:b: injected", "#hash", "- dash"] {
+        for value in [
+            "sk-fresh",
+            "new value!",
+            "line one\nline two",
+            "both ' and \"",
+            "a:b: injected",
+            "#hash",
+            "- dash",
+        ] {
             let rendered = format!("DSH_CRED_TEST: {}\n", serialize_scalar(value));
             let entries = parse_credentials_document(&rendered, "f.yaml").expect("round-trips");
-            assert_eq!(entries.get("DSH_CRED_TEST"), Some(&value.to_string()), "{rendered}");
+            assert_eq!(
+                entries.get("DSH_CRED_TEST"),
+                Some(&value.to_string()),
+                "{rendered}"
+            );
         }
     }
 }

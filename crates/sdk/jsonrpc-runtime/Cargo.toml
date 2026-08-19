@@ -1,0 +1,16 @@
+[package]
+name = "dsh-jsonrpc-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Stdio NDJSON JSON-RPC runtime for DeepSeek Harness protocol services"
+
+[dependencies]
+serde_json.workspace = true
+
+[[bin]]
+name = "jsonrpc-runtime-fixture"
+path = "tests/fixtures/server.rs"
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -67,7 +67,9 @@ impl SessionTelemetryCoordinator {
         });
         if capture == SessionTelemetryCapture::Live {
             coordinator.install_live_listeners(ctx);
-            if let Some(sessions) = ctx.get_typed::<Arc<dsh_session::SessionStore>>("sessions", false) {
+            if let Some(sessions) =
+                ctx.get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
+            {
                 for session in sessions.list() {
                     coordinator.adopt(&session);
                 }
@@ -96,7 +98,11 @@ impl SessionTelemetryCoordinator {
                 None
             })
         });
-        let _ = futures::executor::block_on(ctx.on("session/created", created, EventOptions::default()));
+        let _ = futures::executor::block_on(ctx.on(
+            "session/created",
+            created,
+            EventOptions::default(),
+        ));
 
         let disposed_coordinator = Arc::clone(self);
         let disposed: Arc<Listener> = Arc::new(move |_ctx, args| {
@@ -107,27 +113,37 @@ impl SessionTelemetryCoordinator {
                     if !coordinator.state.adopted.lock().remove(&session.identity()) {
                         return;
                     }
-                    coordinator.deliver(&session, ProjectedRecord {
-                        record: coordinator.redact(shutdown_record(&session)),
-                        seq: None,
-                    });
+                    coordinator.deliver(
+                        &session,
+                        ProjectedRecord {
+                            record: coordinator.redact(shutdown_record(&session)),
+                            seq: None,
+                        },
+                    );
                 });
                 None
             })
         });
-        let _ = futures::executor::block_on(ctx.on("session/disposed", disposed, EventOptions::default()));
+        let _ = futures::executor::block_on(ctx.on(
+            "session/disposed",
+            disposed,
+            EventOptions::default(),
+        ));
 
         let event_coordinator = Arc::clone(self);
         let event: Arc<Listener> = Arc::new(move |_ctx, args| {
             let session = downcast::<Session>(&args[0]).cloned().expect("session arg");
-            let event = downcast::<SessionEvent>(&args[1]).cloned().expect("event arg");
+            let event = downcast::<SessionEvent>(&args[1])
+                .cloned()
+                .expect("event arg");
             let coordinator = Arc::clone(&event_coordinator);
             Box::pin(async move {
                 coordinator.contain(|| coordinator.capture_event(&session, &event));
                 None
             })
         });
-        let _ = futures::executor::block_on(ctx.on("session/event", event, EventOptions::default()));
+        let _ =
+            futures::executor::block_on(ctx.on("session/event", event, EventOptions::default()));
 
         let flush_coordinator = Arc::clone(self);
         let flush: Arc<Listener> = Arc::new(move |_ctx, args| {
@@ -138,7 +154,8 @@ impl SessionTelemetryCoordinator {
                 None
             })
         });
-        let _ = futures::executor::block_on(ctx.on("session/flush", flush, EventOptions::default()));
+        let _ =
+            futures::executor::block_on(ctx.on("session/flush", flush, EventOptions::default()));
 
         let error_coordinator = Arc::clone(self);
         let error: Arc<Listener> = Arc::new(move |_ctx, args| {
@@ -147,7 +164,12 @@ impl SessionTelemetryCoordinator {
             let coordinator = Arc::clone(&error_coordinator);
             Box::pin(async move {
                 coordinator.contain(|| {
-                    coordinator.relay_agent_error(&payload.agent, payload.turn, payload.step, &payload.error)
+                    coordinator.relay_agent_error(
+                        &payload.agent,
+                        payload.turn,
+                        payload.step,
+                        &payload.error,
+                    )
                 });
                 None
             })
@@ -169,10 +191,13 @@ impl SessionTelemetryCoordinator {
             for session in sessions.list() {
                 if adopted.contains(&session.identity()) {
                     self.contain(|| {
-                        self.deliver(&session, ProjectedRecord {
-                            record: self.redact(shutdown_record(&session)),
-                            seq: None,
-                        });
+                        self.deliver(
+                            &session,
+                            ProjectedRecord {
+                                record: self.redact(shutdown_record(&session)),
+                                seq: None,
+                            },
+                        );
                     });
                 }
             }
@@ -180,7 +205,9 @@ impl SessionTelemetryCoordinator {
         if let Err(error) = self.backend.shutdown().await {
             self.ctx
                 .named_logger(Some("telemetry"))
-                .warn(vec![cordis::arc(format!("backend shutdown failed: {error}"))]);
+                .warn(vec![cordis::arc(format!(
+                    "backend shutdown failed: {error}"
+                ))]);
         }
     }
 
@@ -254,7 +281,13 @@ impl SessionTelemetryCoordinator {
             attributes: identity_of(session, event),
             body: event.data.clone(),
         });
-        self.deliver(session, ProjectedRecord { record, seq: Some(event.seq) });
+        self.deliver(
+            session,
+            ProjectedRecord {
+                record,
+                seq: Some(event.seq),
+            },
+        );
     }
 
     /// Run the `session-telemetry/record` waterfall at capture time (TS
@@ -312,10 +345,22 @@ impl SessionTelemetryCoordinator {
             time: now_ms(),
             severity: SessionTelemetrySeverity::Error,
             attributes: vec![
-                ("telemetry.op".to_string(), AttributeValue::Str("agent-error".to_string())),
-                ("session.id".to_string(), AttributeValue::Str(agent.session().id().as_str().to_string())),
-                ("agent.id".to_string(), AttributeValue::Str(agent.id().as_str().to_string())),
-                ("error.name".to_string(), AttributeValue::Str(detail.0.clone())),
+                (
+                    "telemetry.op".to_string(),
+                    AttributeValue::Str("agent-error".to_string()),
+                ),
+                (
+                    "session.id".to_string(),
+                    AttributeValue::Str(agent.session().id().as_str().to_string()),
+                ),
+                (
+                    "agent.id".to_string(),
+                    AttributeValue::Str(agent.id().as_str().to_string()),
+                ),
+                (
+                    "error.name".to_string(),
+                    AttributeValue::Str(detail.0.clone()),
+                ),
                 ("turn".to_string(), AttributeValue::Num(turn as f64)),
                 ("step".to_string(), AttributeValue::Num(step as f64)),
             ],
@@ -355,8 +400,14 @@ fn shutdown_record(session: &Session) -> SessionTelemetryRecord {
         time: now_ms(),
         severity: SessionTelemetrySeverity::Info,
         attributes: vec![
-            ("telemetry.op".to_string(), AttributeValue::Str("shutdown".to_string())),
-            ("session.id".to_string(), AttributeValue::Str(session.id().as_str().to_string())),
+            (
+                "telemetry.op".to_string(),
+                AttributeValue::Str("shutdown".to_string()),
+            ),
+            (
+                "session.id".to_string(),
+                AttributeValue::Str(session.id().as_str().to_string()),
+            ),
         ],
         body: serde_json::json!({"op": "shutdown"}),
     }
@@ -409,9 +460,18 @@ fn error_detail(error: &serde_json::Value) -> (String, String) {
 /// Build the minimal identity attributes.
 fn identity_of(session: &Session, event: &SessionEvent) -> Vec<(String, AttributeValue)> {
     let mut attributes = vec![
-        ("session.id".to_string(), AttributeValue::Str(session.id().as_str().to_string())),
-        ("event.type".to_string(), AttributeValue::Str(event.type_.clone())),
-        ("event.seq".to_string(), AttributeValue::Num(event.seq as f64)),
+        (
+            "session.id".to_string(),
+            AttributeValue::Str(session.id().as_str().to_string()),
+        ),
+        (
+            "event.type".to_string(),
+            AttributeValue::Str(event.type_.clone()),
+        ),
+        (
+            "event.seq".to_string(),
+            AttributeValue::Num(event.seq as f64),
+        ),
     ];
     let header = session.header();
     if let Some(cwd) = &header.cwd {

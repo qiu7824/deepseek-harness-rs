@@ -91,11 +91,20 @@ fn empty_stdio() -> SubprocessStdio {
 #[test]
 fn child_env_merges_overrides_and_tombstones() {
     let env = child_env(Some(&[
-        ("DSH_TEST_CHILD_ENV_VALUE".to_string(), Some("kept".to_string())),
-        ("DSH_TEST_CHILD_ENV_CREDENTIAL".to_string(), Some("secret-survives".to_string())),
+        (
+            "DSH_TEST_CHILD_ENV_VALUE".to_string(),
+            Some("kept".to_string()),
+        ),
+        (
+            "DSH_TEST_CHILD_ENV_CREDENTIAL".to_string(),
+            Some("secret-survives".to_string()),
+        ),
         ("PATH".to_string(), None),
     ]));
-    assert!(env.iter().any(|(key, value)| key == "DSH_TEST_CHILD_ENV_VALUE" && value == "kept"));
+    assert!(
+        env.iter()
+            .any(|(key, value)| key == "DSH_TEST_CHILD_ENV_VALUE" && value == "kept")
+    );
     // A deliberately supplied credential-shaped entry survives the scrub.
     assert!(env.iter().any(|(key, value)| {
         key == "DSH_TEST_CHILD_ENV_CREDENTIAL" && value == "secret-survives"
@@ -109,9 +118,20 @@ fn child_env_merges_overrides_and_tombstones() {
 #[cfg(windows)]
 #[test]
 fn child_env_windows_merge_is_case_insensitive() {
-    let env = child_env(Some(&[("path".to_string(), Some("C:\\overridden".to_string()))]));
-    assert!(env.iter().any(|(key, value)| key == "path" && value == "C:\\overridden"));
-    assert_eq!(env.iter().filter(|(key, _)| key.to_uppercase() == "PATH").count(), 1);
+    let env = child_env(Some(&[(
+        "path".to_string(),
+        Some("C:\\overridden".to_string()),
+    )]));
+    assert!(
+        env.iter()
+            .any(|(key, value)| key == "path" && value == "C:\\overridden")
+    );
+    assert_eq!(
+        env.iter()
+            .filter(|(key, _)| key.to_uppercase() == "PATH")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -154,8 +174,14 @@ fn collector_spills_whole_stream_then_discards_over_cap() {
     let read = collector.read_from(0);
     assert!(read.lossy);
     assert_eq!(read.text, "xxxxxxxxxx");
-    assert!(read.spill_path.is_none(), "spill must be discarded over cap");
-    assert!(!PathBuf::from(&spill_path).exists(), "spill file must be unlinked");
+    assert!(
+        read.spill_path.is_none(),
+        "spill must be discarded over cap"
+    );
+    assert!(
+        !PathBuf::from(&spill_path).exists(),
+        "spill file must be unlinked"
+    );
 }
 
 #[test]
@@ -166,7 +192,10 @@ fn collector_seal_is_idempotent() {
     let read = collector.read_from(0);
     assert!(read.spill_path.is_some());
     let finalized = collector.finalize();
-    assert!(finalized.spill_path.is_some(), "seal keeps the intact spill path");
+    assert!(
+        finalized.spill_path.is_some(),
+        "seal keeps the intact spill path"
+    );
     let again = collector.finalize();
     assert_eq!(finalized.text, again.text);
 }
@@ -241,7 +270,10 @@ async fn spawn_terminate_stops_a_long_sleeper() {
         // The tree is really gone (ESRCH), not just settled.
         unsafe {
             assert_eq!(libc::kill(pid, 0), -1);
-            assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
         }
     }
     #[cfg(windows)]
@@ -273,12 +305,7 @@ async fn spawn_reacts_to_abort_predicate() {
     let deadline = started + Duration::from_millis(150);
     let abort: SubprocessAbort = Arc::new(move || Instant::now() >= deadline);
     let handle = spawn_subprocess(
-        spec(
-            argv(&["sleep", "60000"]),
-            empty_stdio(),
-            2_000,
-            Some(abort),
-        ),
+        spec(argv(&["sleep", "60000"]), empty_stdio(), 2_000, Some(abort)),
         SpawnInternals::default(),
     )
     .expect("spawn");
@@ -355,8 +382,16 @@ async fn runtime_resolves_executables() {
     assert_eq!(resolved, absolute);
 
     // A bare file name resolves through an explicit PATH entry.
-    let directory = executable.parent().expect("parent dir").to_string_lossy().into_owned();
-    let name = executable.file_name().expect("file name").to_string_lossy().into_owned();
+    let directory = executable
+        .parent()
+        .expect("parent dir")
+        .to_string_lossy()
+        .into_owned();
+    let name = executable
+        .file_name()
+        .expect("file name")
+        .to_string_lossy()
+        .into_owned();
     let env = vec![("PATH".to_string(), directory.clone())];
     let resolved = runtime
         .resolve_executable(&name, Some(&env), None)
@@ -365,7 +400,11 @@ async fn runtime_resolves_executables() {
     assert!(resolved.starts_with(&directory), "{resolved}");
 
     // Empty commands and relative paths fail loud.
-    let error = runtime.resolve_executable("", None, None).await.err().expect("empty");
+    let error = runtime
+        .resolve_executable("", None, None)
+        .await
+        .err()
+        .expect("empty");
     assert!(error.contains("non-empty"), "{error}");
     let error = runtime
         .resolve_executable("dir/command", None, None)
@@ -396,12 +435,7 @@ async fn runtime_spawns_and_disposes_through_the_service() {
         .expect("registered subprocess service");
 
     let handle = service
-        .spawn(spec(
-            argv(&["sleep", "60000"]),
-            empty_stdio(),
-            2_000,
-            None,
-        ))
+        .spawn(spec(argv(&["sleep", "60000"]), empty_stdio(), 2_000, None))
         .expect("spawn through service");
     // Dispose the plugin fiber while the child runs: normal disposal must
     // terminate and join the whole tree.
@@ -412,13 +446,40 @@ async fn runtime_spawns_and_disposes_through_the_service() {
     assert!(handle.wait_for_exit(None).await);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn disposed_runtime_rejects_new_process_spawns() {
+    let ctx = Context::root();
+    let fiber = ctx.plugin(Arc::new(SubprocessTestPlugin), cordis::arc(()));
+    fiber.settle().await.expect("plugin loads");
+    let service = ctx
+        .get_typed::<Arc<dyn SubprocessRuntime>>("subprocess", false)
+        .map(|slot| slot.as_ref().clone())
+        .expect("registered subprocess service");
+
+    fiber.dispose().await;
+    let error = service
+        .spawn(spec(
+            argv(&["node", "-e", "process.exit(0)"]),
+            empty_stdio(),
+            2_000,
+            None,
+        ))
+        .err()
+        .expect("disposed runtime must reject spawn");
+    assert!(error.contains("closing"), "{error}");
+}
+
 /// Minimal plugin: installs the local subprocess runtime in its own fiber
 /// context so the test can exercise the teardown effect.
 struct SubprocessTestPlugin;
 
 #[async_trait::async_trait]
 impl cordis::Plugin for SubprocessTestPlugin {
-    async fn apply(&self, ctx: &Context, _config: cordis::ArcValue) -> Result<(), cordis::PluginError> {
+    async fn apply(
+        &self,
+        ctx: &Context,
+        _config: cordis::ArcValue,
+    ) -> Result<(), cordis::PluginError> {
         let _ = LocalSubprocessRuntime::install(ctx);
         Ok(())
     }

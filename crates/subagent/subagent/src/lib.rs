@@ -27,6 +27,7 @@ pub mod lifecycle;
 pub mod list_children;
 pub mod projection;
 pub mod run_settlement;
+pub mod structured;
 pub mod types;
 
 pub use crate::assistant_output::{AssistantOutputFold, final_assistant_output};
@@ -55,4 +56,8 @@ pub use crate::projection::{
     subagent_identity_projection_definition, subagent_timing_projection_definition,
 };
 pub use crate::run_settlement::settle_run;
+pub use crate::structured::{
+    STRUCTURED_OUTPUT_INSTRUCTION, STRUCTURED_OUTPUT_TOOL, StructuredAttachment,
+    attach_structured_runtime,
+};
 pub use crate::types::*;

@@ -139,10 +139,7 @@ pub async fn flush_live_session_log(
 
 /// Collect media references from one artifact text (one JSON event per
 /// line).
-fn image_refs_in_artifact(
-    content: &str,
-    media: &mut HashMap<String, ImageAttachmentRef>,
-) {
+fn image_refs_in_artifact(content: &str, media: &mut HashMap<String, ImageAttachmentRef>) {
     for line in content.lines() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
@@ -204,13 +201,20 @@ pub async fn session_log_zip_entries(
             }
             seen.insert(id.clone());
             flush_live_session_log(deps, &id, signal).await?;
-            let Some(raw) = persistence.read_raw(&id).await.map_err(|error| error.to_string())?
+            let Some(raw) = persistence
+                .read_raw(&id)
+                .await
+                .map_err(|error| error.to_string())?
             else {
                 return Err(format!("subagent \"{id}\" has no stored log artifact"));
             };
             image_refs_in_artifact(&raw.content, &mut media);
             entries.push(SessionLogZipEntry::Text {
-                path: format!("subagents/{}/{}", safe_session_id_segment(id.as_str()), raw.filename),
+                path: format!(
+                    "subagents/{}/{}",
+                    safe_session_id_segment(id.as_str()),
+                    raw.filename
+                ),
                 content: raw.content,
             });
             pending.extend(node.descendants.iter());

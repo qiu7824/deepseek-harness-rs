@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use dsh_session::SessionEvent;
 use serde_json::Value;
 
-use crate::domain::{GoalChangeMeta, GoalClearChangeMeta, GoalSnapshotChangeMeta, GoalOperation};
+use crate::domain::{GoalChangeMeta, GoalClearChangeMeta, GoalOperation, GoalSnapshotChangeMeta};
 use crate::runtime::GOAL_CHANGE_VERSION;
 use crate::types::{GoalBlockReason, GoalPhase, GoalRef, GoalSnapshot, goal_id};
 
@@ -39,23 +39,31 @@ fn field_keys(value: &serde_json::Map<String, Value>) -> String {
 fn positive_integer(value: &Value, field: &str) -> Result<u64, String> {
     match value.as_u64() {
         Some(integer) if integer >= 1 => Ok(integer),
-        _ => Err(format!("goal change {field} must be a positive safe integer")),
+        _ => Err(format!(
+            "goal change {field} must be a positive safe integer"
+        )),
     }
 }
 
 fn non_negative_integer(value: &Value, field: &str) -> Result<u64, String> {
     match value.as_u64() {
         Some(integer) => Ok(integer),
-        _ => Err(format!("goal change {field} must be a non-negative safe integer")),
+        _ => Err(format!(
+            "goal change {field} must be a non-negative safe integer"
+        )),
     }
 }
 
 fn decode_block_reason(value: &Value) -> Result<GoalBlockReason, String> {
     let Some(object) = value.as_object() else {
-        return Err("goal change goal.blockedReason must have exactly code and message fields".to_string());
+        return Err(
+            "goal change goal.blockedReason must have exactly code and message fields".to_string(),
+        );
     };
     if field_keys(object) != "code,message" {
-        return Err("goal change goal.blockedReason must have exactly code and message fields".to_string());
+        return Err(
+            "goal change goal.blockedReason must have exactly code and message fields".to_string(),
+        );
     }
     let code = object.get("code").and_then(Value::as_str);
     let kebab = regex::Regex::new(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$").expect("valid regex");
@@ -73,7 +81,9 @@ fn decode_block_reason(value: &Value) -> Result<GoalBlockReason, String> {
                 message: message.to_string(),
             })
         }
-        _ => Err("goal change goal.blockedReason.message must be non-empty and normalized".to_string()),
+        _ => Err(
+            "goal change goal.blockedReason.message must be non-empty and normalized".to_string(),
+        ),
     }
 }
 
@@ -102,7 +112,10 @@ fn decode_snapshot(value: &Value) -> Result<GoalSnapshot, String> {
         "id,maxGoalRounds,objective,phase,revision"
     };
     if field_keys(object) != expected_keys {
-        return Err(format!("goal change goal for phase {} must have exactly {expected_keys} fields", phase.as_str()));
+        return Err(format!(
+            "goal change goal for phase {} must have exactly {expected_keys} fields",
+            phase.as_str()
+        ));
     }
     Ok(GoalSnapshot {
         id: goal_id(id.expect("checked")),
@@ -149,13 +162,18 @@ pub fn decode_goal_change(value: &Value) -> Result<Option<GoalChangeMeta>, Strin
     if object.get("version").and_then(Value::as_u64) != Some(GOAL_CHANGE_VERSION as u64) {
         return Err(format!(
             "unsupported goal change version {}",
-            object.get("version").map(|v| v.to_string()).unwrap_or_default()
+            object
+                .get("version")
+                .map(|v| v.to_string())
+                .unwrap_or_default()
         ));
     }
     if object.get("operation").and_then(Value::as_str) == Some("clear") {
         let expected = "cleared,clearedAt,kind,operation,version";
         if field_keys(object) != expected {
-            return Err(format!("goal clear change must have exactly {expected} fields"));
+            return Err(format!(
+                "goal clear change must have exactly {expected} fields"
+            ));
         }
         return Ok(Some(GoalChangeMeta::Clear(GoalClearChangeMeta {
             cleared: decode_ref(&object["cleared"])?,
@@ -173,7 +191,9 @@ pub fn decode_goal_change(value: &Value) -> Result<Option<GoalChangeMeta>, Strin
     };
     let expected = "createdAt,goal,kind,operation,roundsStarted,updatedAt,version";
     if field_keys(object) != expected {
-        return Err(format!("goal snapshot change must have exactly {expected} fields"));
+        return Err(format!(
+            "goal snapshot change must have exactly {expected} fields"
+        ));
     }
     let created_at = non_negative_integer(&object["createdAt"], "createdAt")?;
     let updated_at = non_negative_integer(&object["updatedAt"], "updatedAt")?;
@@ -235,7 +255,14 @@ fn validate_snapshot_transition(
     current: &GoalSnapshot,
 ) -> Result<(), String> {
     let next = &change.goal;
-    require_next_revision(current, &GoalRef { id: next.id.clone(), revision: next.revision }, change.operation)?;
+    require_next_revision(
+        current,
+        &GoalRef {
+            id: next.id.clone(),
+            revision: next.revision,
+        },
+        change.operation,
+    )?;
     let updated_at = state
         .updated_at
         .ok_or_else(|| "current goal fold lacks updatedAt".to_string())?;
@@ -266,9 +293,13 @@ fn validate_snapshot_transition(
                 current.phase,
                 GoalPhase::Active | GoalPhase::Paused | GoalPhase::Blocked
             );
-            if !resumable || next.phase != GoalPhase::Active || state.rounds_started >= next.max_goal_rounds {
+            if !resumable
+                || next.phase != GoalPhase::Active
+                || state.rounds_started >= next.max_goal_rounds
+            {
                 return Err(
-                    "goal resume has an invalid phase transition or exhausted round budget".to_string(),
+                    "goal resume has an invalid phase transition or exhausted round budget"
+                        .to_string(),
                 );
             }
         }
@@ -306,7 +337,9 @@ pub fn apply_goal_change(state: &mut GoalFoldState, change: &GoalChangeMeta) -> 
                 .updated_at
                 .ok_or_else(|| "current goal fold lacks updatedAt".to_string())?;
             if clear.cleared_at < updated_at {
-                return Err("goal clear timestamp cannot precede the current goal update".to_string());
+                return Err(
+                    "goal clear timestamp cannot precede the current goal update".to_string(),
+                );
             }
             state.goal = None;
             state.rounds_started = 0;
@@ -329,15 +362,17 @@ pub fn apply_goal_change(state: &mut GoalFoldState, change: &GoalChangeMeta) -> 
                     || state.seen_goal_ids.contains(change.goal.id.as_str())
                 {
                     return Err(
-                        "goal create requires a fresh active revision-one goal with zero rounds".to_string(),
+                        "goal create requires a fresh active revision-one goal with zero rounds"
+                            .to_string(),
                     );
                 }
-                state.seen_goal_ids.insert(change.goal.id.as_str().to_string());
+                state
+                    .seen_goal_ids
+                    .insert(change.goal.id.as_str().to_string());
             } else {
-                let current = state
-                    .goal
-                    .as_ref()
-                    .ok_or_else(|| format!("goal {} requires a current goal", change.operation.as_str()))?;
+                let current = state.goal.as_ref().ok_or_else(|| {
+                    format!("goal {} requires a current goal", change.operation.as_str())
+                })?;
                 validate_snapshot_transition(state, change, current)?;
             }
             state.goal = Some(change.goal.clone());
@@ -382,8 +417,12 @@ fn goal_source(source: Option<&Value>) -> Result<Option<crate::domain::GoalMessa
 /// `applyGoalEvent`).
 pub fn apply_goal_event(state: &mut GoalFoldState, event: &SessionEvent) -> Result<(), String> {
     if event.type_ == "goal/change" {
-        let change = decode_goal_change(&event.data)?
-            .ok_or_else(|| format!("goal change at session event {} has an invalid kind", event.seq))?;
+        let change = decode_goal_change(&event.data)?.ok_or_else(|| {
+            format!(
+                "goal change at session event {} has an invalid kind",
+                event.seq
+            )
+        })?;
         return apply_goal_change(state, &change);
     }
     if event.type_ == "user/message" {

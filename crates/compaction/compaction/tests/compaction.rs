@@ -3,6 +3,7 @@
 //! tool-pairing balance fold, the result vocabulary, and the compaction
 //! bracket state machine.
 
+use dsh_compaction::invariant::SessionTrace;
 use dsh_compaction::{
     CompactionTrigger, ManualCompactionError, ManualCompactionErrorCode, compact_checkpoint_source,
     compaction_id, invariant::apply_compaction_event, is_compact_checkpoint_source,
@@ -10,7 +11,6 @@ use dsh_compaction::{
 };
 use dsh_llm::{MessageSource, create_user_message};
 use dsh_session::{Session, SurfaceIntent, SurfaceOp, session_id};
-use dsh_compaction::invariant::SessionTrace;
 
 fn message(session: &Session, source: MessageSource, text: &str) -> dsh_session::SessionEvent {
     let message = create_user_message(
@@ -84,7 +84,12 @@ fn checkpoint_sources_carry_the_compact_marker() {
     let id = compaction_id("c-1");
     let source = compact_checkpoint_source(&id, None);
     assert!(is_compact_checkpoint_source(&source));
-    let MessageSource::Plugin { plugin, compaction_id: carried, source_command_id, .. } = &source
+    let MessageSource::Plugin {
+        plugin,
+        compaction_id: carried,
+        source_command_id,
+        ..
+    } = &source
     else {
         panic!("plugin source");
     };
@@ -93,7 +98,10 @@ fn checkpoint_sources_carry_the_compact_marker() {
     assert_eq!(source_command_id, &None);
 
     let with_command = compact_checkpoint_source(&id, Some(&dsh_commands::command_id("cmd-1")));
-    let MessageSource::Plugin { source_command_id, .. } = &with_command else {
+    let MessageSource::Plugin {
+        source_command_id, ..
+    } = &with_command
+    else {
         panic!("plugin source");
     };
     assert_eq!(source_command_id.as_deref(), Some("cmd-1"));
@@ -111,7 +119,14 @@ fn tool_pairing_balances_cuts_around_paired_calls() {
     let before_any = tool_pairing_balanced_before(&session, 0);
     assert!(before_any.is_err(), "no surface node yet");
 
-    message(&session, MessageSource::User { rpc_id: None, client_time_zone: None }, "go");
+    message(
+        &session,
+        MessageSource::User {
+            rpc_id: None,
+            client_time_zone: None,
+        },
+        "go",
+    );
     let with_calls = assistant_with_tool_calls(&session, 2);
     let result = tool_result(&session, "c0");
     let _ = result;
@@ -180,9 +195,11 @@ fn compaction_trace_rejects_malformed_brackets() {
             None,
         )
         .expect("second start");
-    assert!(apply_compaction_event(&mut trace, &overlapping)
-        .unwrap_err()
-        .contains("overlaps an open compaction"));
+    assert!(
+        apply_compaction_event(&mut trace, &overlapping)
+            .unwrap_err()
+            .contains("overlaps an open compaction")
+    );
 
     let summary = session
         .append(
@@ -208,9 +225,11 @@ fn compaction_trace_rejects_malformed_brackets() {
         compact_checkpoint_source(&compaction_id("c-9"), None),
         "summary text",
     );
-    assert!(apply_compaction_event(&mut trace, &checkpoint)
-        .unwrap_err()
-        .contains("no matching compaction/start"));
+    assert!(
+        apply_compaction_event(&mut trace, &checkpoint)
+            .unwrap_err()
+            .contains("no matching compaction/start")
+    );
 
     // A turn boundary crossing an open standalone compaction fails.
     let mut trace = SessionTrace::default();
@@ -225,7 +244,9 @@ fn compaction_trace_rejects_malformed_brackets() {
     let turn = session
         .append("turn/start", serde_json::json!({ "turn": 2 }), None)
         .expect("turn/start");
-    assert!(apply_compaction_event(&mut trace, &turn)
-        .unwrap_err()
-        .contains("cannot cross an open standalone compaction"));
+    assert!(
+        apply_compaction_event(&mut trace, &turn)
+            .unwrap_err()
+            .contains("cannot cross an open standalone compaction")
+    );
 }

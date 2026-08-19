@@ -14,10 +14,11 @@ dsh-goal = { path = "../goal" }
 dsh-invariants = { path = "../../util/invariants" }
 dsh-llm = { path = "../../core/llm" }
 dsh-session = { path = "../../core/session" }
+dsh-scope = { path = "../../core/scope" }
 dsh-system-prompt = { path = "../../core/system-prompt" }
 dsh-tools = { path = "../../core/tools" }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-dsh-scope = { path = "../../core/scope" }
+futures = { workspace = true }
 tokio = { workspace = true }

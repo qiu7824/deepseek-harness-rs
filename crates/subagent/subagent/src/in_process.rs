@@ -12,14 +12,15 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use dsh_agent::{fold_consumed_work, Agent};
+use dsh_agent::{Agent, fold_consumed_work};
 use dsh_llm::{ContentBlock, MessageSource, create_user_message};
 use dsh_session::{SessionEvent, SessionId, TurnEndReason, session_id};
 
 use crate::assistant_output::final_assistant_output;
 use crate::child_agent::{
-    append_delegated_policy_overrides, apply_child_composition, capture_delegated_policy_overrides,
-    child_session_meta, resolve_child_agent_options, resolve_child_depth, ChildComposition,
+    ChildComposition, append_delegated_policy_overrides, apply_child_composition,
+    capture_delegated_policy_overrides, child_session_meta, resolve_child_agent_options,
+    resolve_child_depth,
 };
 use crate::error::SubagentError;
 use crate::types::{ResolvedSubagentStartRequest, SubagentResult, SubagentRun, SubagentStopReason};
@@ -73,7 +74,12 @@ pub async fn start_in_process_run(
         .ctx()
         .get_typed::<Arc<dsh_agent::AgentRegistry>>("agents", false)
         .map(|slot| slot.as_ref().clone())
-        .ok_or_else(|| SubagentError::new("CONTINUATION_UNAVAILABLE", "subagent requires the agents service"))?;
+        .ok_or_else(|| {
+            SubagentError::new(
+                "CONTINUATION_UNAVAILABLE",
+                "subagent requires the agents service",
+            )
+        })?;
 
     let handle = registry
         .create(dsh_agent::CreateAgentOptions {
@@ -93,6 +99,18 @@ pub async fn start_in_process_run(
         })
         .await
         .map_err(|error| SubagentError::new("CHILD_CREATE_FAILED", error))?;
+
+    let structured = if let Some(schema) = request.request.output_schema.clone() {
+        match crate::structured::attach_structured_runtime(handle.agent.ctx(), schema).await {
+            Ok(attachment) => Some(attachment),
+            Err(error) => {
+                handle.dispose.await;
+                return Err(SubagentError::new("CHILD_COMPOSE_FAILED", error));
+            }
+        }
+    } else {
+        None
+    };
 
     // Compose the child right after publication but before its first turn:
     // the delegation policy seeds and the scoped persona/restriction land
@@ -120,6 +138,7 @@ pub async fn start_in_process_run(
         &request.request.prompt,
         child_id,
         activation_boundary,
+        structured,
     ))
 }
 
@@ -131,6 +150,7 @@ fn drive_published_run(
     prompt: &[ContentBlock],
     child_id: SessionId,
     boundary: usize,
+    structured: Option<crate::structured::StructuredAttachment>,
 ) -> Arc<dyn SubagentRun> {
     let child = handle.agent.clone();
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -153,7 +173,12 @@ fn drive_published_run(
             ));
             result_child.when_idle().await;
         }
-        read_result(&result_child, boundary, result_cancelled.load(Ordering::SeqCst))
+        read_result(
+            &result_child,
+            boundary,
+            result_cancelled.load(Ordering::SeqCst),
+            structured.as_ref(),
+        )
     });
 
     struct PublishedRun {
@@ -186,10 +211,8 @@ fn drive_published_run(
 
         async fn dispose(&self) -> Result<(), String> {
             self.cancelled.store(true, Ordering::SeqCst);
-            self.child.cancel(
-                dsh_session::AgentCancelCause::Parent,
-                None,
-            );
+            self.child
+                .cancel(dsh_session::AgentCancelCause::Parent, None);
             let handle = { self.handle.lock().take() };
             if let Some(handle) = handle {
                 handle.dispose.await;
@@ -210,7 +233,12 @@ fn drive_published_run(
 
 /// Read one settled child's result from events after its activation
 /// boundary.
-fn read_result(child: &Arc<dyn Agent>, boundary: usize, cancelled: bool) -> SubagentResult {
+fn read_result(
+    child: &Arc<dyn Agent>,
+    boundary: usize,
+    cancelled: bool,
+    structured: Option<&crate::structured::StructuredAttachment>,
+) -> SubagentResult {
     let events = child.session().events();
     let own: &[SessionEvent] = &events[boundary.min(events.len())..];
     let last_end = fold_consumed_work(own).end;
@@ -218,7 +246,12 @@ fn read_result(child: &Arc<dyn Agent>, boundary: usize, cancelled: bool) -> Suba
     let recorded = to_stop_reason(
         last_end
             .as_ref()
-            .and_then(|event| serde_json::from_value::<TurnEndReason>(event.data.get("reason").cloned().unwrap_or_default()).ok())
+            .and_then(|event| {
+                serde_json::from_value::<TurnEndReason>(
+                    event.data.get("reason").cloned().unwrap_or_default(),
+                )
+                .ok()
+            })
             .as_ref(),
     );
     let stop_reason = if cancelled && recorded != SubagentStopReason::Completed {
@@ -226,9 +259,18 @@ fn read_result(child: &Arc<dyn Agent>, boundary: usize, cancelled: bool) -> Suba
     } else {
         recorded
     };
+    let captured = structured.and_then(crate::structured::StructuredAttachment::captured);
+    let stop_reason = if structured.is_some()
+        && captured.is_none()
+        && stop_reason == SubagentStopReason::Completed
+    {
+        SubagentStopReason::Error
+    } else {
+        stop_reason
+    };
     SubagentResult {
         output,
-        structured: None,
+        structured: captured,
         stop_reason,
     }
 }

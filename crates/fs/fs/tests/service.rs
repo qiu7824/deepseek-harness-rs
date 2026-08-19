@@ -16,13 +16,13 @@
 use std::sync::Arc;
 
 use cordis::Context;
-use futures::stream::BoxStream;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 
 use dsh_fs::{
-    FsDirEntry, FsEditOutcome, FsEditRequest, FsError, FsErrorCode, FsInfo, FsInfoType,
+    FileSystem, FsDirEntry, FsEditOutcome, FsEditRequest, FsError, FsErrorCode, FsInfo, FsInfoType,
     FsPathInfo, FsPathInfoType, FsTarget, FsWriteIntent, FsWriteOperation, FsWriteOutcome,
-    FileSystem, check_dispatch, fs_target_key, fs_version,
+    check_dispatch, fs_target_key, fs_version,
 };
 use dsh_sandbox::SandboxExecutionPolicy;
 
@@ -33,7 +33,9 @@ struct FakeFileSystem {
 
 impl FakeFileSystem {
     fn install(ctx: &Context) -> Arc<Self> {
-        let fake = Arc::new(Self { files: parking_lot::Mutex::new(Default::default()) });
+        let fake = Arc::new(Self {
+            files: parking_lot::Mutex::new(Default::default()),
+        });
         let erased: Arc<dyn FileSystem> = fake.clone();
         ctx.register_service(erased);
         fake
@@ -44,17 +46,26 @@ impl FakeFileSystem {
     }
 
     fn set(&self, key: &str, content: &str) {
-        self.files.lock().insert(key.to_string(), content.to_string());
+        self.files
+            .lock()
+            .insert(key.to_string(), content.to_string());
     }
 }
 
 fn mk_target(key: &str, display_path: &str) -> FsTarget {
-    FsTarget { target_key: fs_target_key(key), display_path: display_path.to_string() }
+    FsTarget {
+        target_key: fs_target_key(key),
+        display_path: display_path.to_string(),
+    }
 }
 
 #[async_trait::async_trait]
 impl FileSystem for FakeFileSystem {
-    async fn resolve(&self, path: &str, _opts: Option<&dsh_fs::ResolveOptions>) -> Result<FsTarget, FsError> {
+    async fn resolve(
+        &self,
+        path: &str,
+        _opts: Option<&dsh_fs::ResolveOptions>,
+    ) -> Result<FsTarget, FsError> {
         Ok(mk_target(path, path))
     }
 
@@ -68,10 +79,17 @@ impl FileSystem for FakeFileSystem {
 
     fn contains(&self, parent: &FsTarget, child: &FsTarget) -> bool {
         child.target_key == parent.target_key
-            || child.target_key.as_str().starts_with(&format!("{}/", parent.target_key))
+            || child
+                .target_key
+                .as_str()
+                .starts_with(&format!("{}/", parent.target_key))
     }
 
-    async fn stat(&self, target: &FsTarget, _signal: Option<dsh_fs::AbortPredicate>) -> Result<Option<FsInfo>, FsError> {
+    async fn stat(
+        &self,
+        target: &FsTarget,
+        _signal: Option<dsh_fs::AbortPredicate>,
+    ) -> Result<Option<FsInfo>, FsError> {
         let Some(content) = self.get(target.target_key.as_str()) else {
             return Ok(None);
         };
@@ -98,9 +116,16 @@ impl FileSystem for FakeFileSystem {
         }))
     }
 
-    async fn read_text(&self, target: &FsTarget, _signal: Option<dsh_fs::AbortPredicate>) -> Result<String, FsError> {
+    async fn read_text(
+        &self,
+        target: &FsTarget,
+        _signal: Option<dsh_fs::AbortPredicate>,
+    ) -> Result<String, FsError> {
         let Some(content) = self.get(target.target_key.as_str()) else {
-            return Err(FsError::new(format!("not found: {}", target.display_path), FsErrorCode::FsNotFound));
+            return Err(FsError::new(
+                format!("not found: {}", target.display_path),
+                FsErrorCode::FsNotFound,
+            ));
         };
         Ok(content)
     }
@@ -122,12 +147,19 @@ impl FileSystem for FakeFileSystem {
     ) -> Result<Vec<u8>, FsError> {
         let content = self.read_text(target, None).await?;
         if content.len() as u64 > max_bytes {
-            return Err(FsError::new(format!("too large: {}", target.display_path), FsErrorCode::FsTooLarge));
+            return Err(FsError::new(
+                format!("too large: {}", target.display_path),
+                FsErrorCode::FsTooLarge,
+            ));
         }
         Ok(content.into_bytes())
     }
 
-    async fn list_dir(&self, target: &FsTarget, _signal: Option<dsh_fs::AbortPredicate>) -> Result<Vec<FsDirEntry>, FsError> {
+    async fn list_dir(
+        &self,
+        target: &FsTarget,
+        _signal: Option<dsh_fs::AbortPredicate>,
+    ) -> Result<Vec<FsDirEntry>, FsError> {
         if target.target_key.as_str() != "skills" {
             return Err(FsError::new(
                 format!("not a directory: {}", target.display_path),
@@ -154,7 +186,11 @@ impl FileSystem for FakeFileSystem {
         let before = self.get(target.target_key.as_str());
         self.set(target.target_key.as_str(), content);
         Ok(FsWriteOutcome {
-            operation: if before.is_some() { FsWriteOperation::Update } else { FsWriteOperation::Create },
+            operation: if before.is_some() {
+                FsWriteOperation::Update
+            } else {
+                FsWriteOperation::Create
+            },
             version: fs_version("v2"),
             before,
             after: content.to_string(),
@@ -172,7 +208,11 @@ impl FileSystem for FakeFileSystem {
         let content = self.get(target.target_key.as_str()).unwrap_or_default();
         let after = content.replace(&edit.old_string, &edit.new_string);
         self.set(target.target_key.as_str(), &after);
-        Ok(FsEditOutcome { version: fs_version("v3"), before: content, after })
+        Ok(FsEditOutcome {
+            version: fs_version("v3"),
+            before: content,
+            after,
+        })
     }
 }
 
@@ -184,7 +224,11 @@ async fn registers_as_ctx_fs_and_serves_the_primitives() {
     fake.set("a.txt", "hi");
     let target = fake.resolve("a.txt", None).await.expect("resolve");
     assert_eq!(
-        fake.stat(&target, None).await.expect("stat").expect("present").kind,
+        fake.stat(&target, None)
+            .await
+            .expect("stat")
+            .expect("present")
+            .kind,
         FsInfoType::File
     );
     assert_eq!(fake.read_text(&target, None).await.expect("read"), "hi");
@@ -223,8 +267,15 @@ async fn read_bytes_returns_raw_content_and_enforces_the_byte_cap() {
     let fake = FakeFileSystem::install(&ctx);
     fake.set("a.bin", "hi");
     let target = fake.resolve("a.bin", None).await.expect("resolve");
-    assert_eq!(fake.read_bytes(&target, None, 2).await.expect("read"), b"hi");
-    let error = fake.read_bytes(&target, None, 1).await.err().expect("cap rejects");
+    assert_eq!(
+        fake.read_bytes(&target, None, 2).await.expect("read"),
+        b"hi"
+    );
+    let error = fake
+        .read_bytes(&target, None, 1)
+        .await
+        .err()
+        .expect("cap rejects");
     assert_eq!(error.code, FsErrorCode::FsTooLarge);
 }
 
@@ -249,9 +300,12 @@ async fn stat_returns_none_for_an_absent_target() {
     let ctx = Context::root();
     let fake = FakeFileSystem::install(&ctx);
     assert_eq!(
-        fake.stat(&fake.resolve("missing.txt", None).await.expect("resolve"), None)
-            .await
-            .expect("stat"),
+        fake.stat(
+            &fake.resolve("missing.txt", None).await.expect("resolve"),
+            None
+        )
+        .await
+        .expect("stat"),
         None
     );
 }
@@ -263,9 +317,16 @@ async fn lstat_returns_path_metadata_before_resolving_a_target() {
     fake.set("a.txt", "hi");
     assert_eq!(
         fake.lstat("a.txt", None, None).await.expect("lstat"),
-        Some(FsPathInfo { version: fs_version("v1"), kind: FsPathInfoType::File, size: Some(2) })
+        Some(FsPathInfo {
+            version: fs_version("v1"),
+            kind: FsPathInfoType::File,
+            size: Some(2)
+        })
     );
-    assert_eq!(fake.lstat("missing.txt", None, None).await.expect("lstat"), None);
+    assert_eq!(
+        fake.lstat("missing.txt", None, None).await.expect("lstat"),
+        None
+    );
 }
 
 #[test]
@@ -284,11 +345,7 @@ fn fs_error_carries_a_stable_code() {
 #[test]
 fn fs_error_chains_an_underlying_cause() {
     let root = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "EACCES");
-    let error = FsError::with_cause(
-        "cannot read",
-        FsErrorCode::FsAborted,
-        Box::new(root),
-    );
+    let error = FsError::with_cause("cannot read", FsErrorCode::FsAborted, Box::new(root));
     assert!(error.cause().is_some());
     assert_eq!(error.code, FsErrorCode::FsAborted);
 }
@@ -306,7 +363,9 @@ fn accepts_decision_and_observation_events_with_usable_identities() {
             failures.lock().push(message.to_string());
         }
     };
-    let present = dsh_fs::FsObservation::Present { version: fs_version("v1") };
+    let present = dsh_fs::FsObservation::Present {
+        version: fs_version("v1"),
+    };
     let absent = dsh_fs::FsObservation::Absent;
     let t = mk_target("file:1", "file.txt");
 
@@ -341,7 +400,9 @@ fn rejects_empty_target_and_version_identities() {
         "fs/observed",
         &[
             cordis::arc(mk_target("", "file.txt")),
-            cordis::arc(dsh_fs::FsObservation::Present { version: fs_version("v1") }),
+            cordis::arc(dsh_fs::FsObservation::Present {
+                version: fs_version("v1"),
+            }),
         ],
         &fail,
     );
@@ -357,7 +418,9 @@ fn rejects_empty_target_and_version_identities() {
         "fs/observed",
         &[
             cordis::arc(mk_target("file:1", "")),
-            cordis::arc(dsh_fs::FsObservation::Present { version: fs_version("v1") }),
+            cordis::arc(dsh_fs::FsObservation::Present {
+                version: fs_version("v1"),
+            }),
         ],
         &fail,
     );
@@ -373,7 +436,9 @@ fn rejects_empty_target_and_version_identities() {
         "fs/observed",
         &[
             cordis::arc(mk_target("file:1", "file.txt")),
-            cordis::arc(dsh_fs::FsObservation::Present { version: fs_version("") }),
+            cordis::arc(dsh_fs::FsObservation::Present {
+                version: fs_version(""),
+            }),
         ],
         &fail,
     );

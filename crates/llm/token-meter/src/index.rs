@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cordis::{ArcValue, Context, EventOptions, Listener, Service, downcast};
-use dsh_session::{EpochHeader, Session, SessionEvent};
 use dsh_session::surface::{derive_event_message, is_surface_event};
+use dsh_session::{EpochHeader, Session, SessionEvent};
 use parking_lot::Mutex;
 
 use crate::breakdown_projection::context_breakdown_projection_definition;
@@ -100,9 +100,8 @@ impl TokenMeter {
             )
             .is_some()
         {
-            let registry: Arc<Arc<dsh_session_projection::SessionProjectionRegistry>> = ctx
-                .get_typed("sessionProjections", false)
-                .expect("checked");
+            let registry: Arc<Arc<dsh_session_projection::SessionProjectionRegistry>> =
+                ctx.get_typed("sessionProjections", false).expect("checked");
             let _ = registry.register(ctx, token_usage_projection_definition());
             let _ = registry.register(ctx, context_pressure_projection_definition());
             let _ = registry.register(ctx, context_breakdown_projection_definition());
@@ -120,9 +119,11 @@ impl TokenMeter {
                 None
             })
         });
-        let _ = futures::executor::block_on(
-            ctx.on("session/event", event_listener, EventOptions::default()),
-        );
+        let _ = futures::executor::block_on(ctx.on(
+            "session/event",
+            event_listener,
+            EventOptions::default(),
+        ));
 
         // Drop one disposed session's replay state (WeakMap equivalent).
         let disposed_meter = Arc::clone(&meter);
@@ -134,16 +135,22 @@ impl TokenMeter {
                 None
             })
         });
-        let _ = futures::executor::block_on(
-            ctx.on("session/disposed", disposed_listener, EventOptions::default()),
-        );
+        let _ = futures::executor::block_on(ctx.on(
+            "session/disposed",
+            disposed_listener,
+            EventOptions::default(),
+        ));
 
         meter
     }
 
     /// Measure current request pressure and surface through the durable tail
     /// (TS `measure`).
-    pub fn measure(&self, session: &Session, request_header: Option<EpochHeader>) -> TokenMeasurement {
+    pub fn measure(
+        &self,
+        session: &Session,
+        request_header: Option<EpochHeader>,
+    ) -> TokenMeasurement {
         let mut states = self.states.lock();
         let state = states
             .entry(session.identity())
@@ -237,7 +244,12 @@ impl TokenMeter {
             "request/header" => {
                 next_header = Some(
                     serde_json::from_value(event.data.get("header").cloned().unwrap_or_default())
-                        .map_err(|error| format!("token meter: request/header at seq {} is malformed: {error}", event.seq))?,
+                        .map_err(|error| {
+                        format!(
+                            "token meter: request/header at seq {} is malformed: {error}",
+                            event.seq
+                        )
+                    })?,
                 );
             }
             "step/start" => {
@@ -293,21 +305,30 @@ impl TokenMeter {
             let event_tokens = surface.as_ref().map(|fold| fold.tokens).unwrap_or(0);
             let step_start = state.step_start.expect("checked");
             if let (Some(usage), Some(header)) = (event.data.get("usage"), next_header.as_ref()) {
-                let usage: dsh_llm::TokenUsage = serde_json::from_value(usage.clone())
-                    .map_err(|error| format!("token meter: usage at seq {} is malformed: {error}", event.seq))?;
+                let usage: dsh_llm::TokenUsage =
+                    serde_json::from_value(usage.clone()).map_err(|error| {
+                        format!(
+                            "token meter: usage at seq {} is malformed: {error}",
+                            event.seq
+                        )
+                    })?;
                 let provider_assistant_tokens =
                     self.estimate_provider_assistant(session, event, event_tokens)?;
                 let anchor_surface_tokens = step_start.2 + provider_assistant_tokens;
                 let provider_tokens = usage_tokens(&usage);
-                let estimated_anchor_tokens =
-                    estimate_header(Some(header)) + anchor_surface_tokens;
+                let estimated_anchor_tokens = estimate_header(Some(header)) + anchor_surface_tokens;
                 next_anchor = Some(MeasurementAnchor {
                     header: next_header.clone(),
                     surface_tokens: anchor_surface_tokens,
                     baseline: if provider_tokens >= estimated_anchor_tokens {
-                        TokenMeasurementBaseline::Usage { tokens: provider_tokens, usage }
+                        TokenMeasurementBaseline::Usage {
+                            tokens: provider_tokens,
+                            usage,
+                        }
                     } else {
-                        TokenMeasurementBaseline::Estimated { tokens: estimated_anchor_tokens }
+                        TokenMeasurementBaseline::Estimated {
+                            tokens: estimated_anchor_tokens,
+                        }
                     },
                 });
             } else {
@@ -326,7 +347,8 @@ impl TokenMeter {
         state.step_start = next_step_start;
         if let Some(surface) = surface {
             state.surface = surface.nodes;
-            state.surface_tokens = (state.surface_tokens as i64 + surface.delta_tokens).max(0) as u64;
+            state.surface_tokens =
+                (state.surface_tokens as i64 + surface.delta_tokens).max(0) as u64;
         }
         state.anchor = next_anchor;
         Ok(())
@@ -402,14 +424,25 @@ struct LocalBlockAssembler {
 }
 
 enum OpenBlock {
-    Text { text: String },
-    Reasoning { text: String },
-    ToolCall { id: String, name: String, arguments: String },
+    Text {
+        text: String,
+    },
+    Reasoning {
+        text: String,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
 }
 
 impl LocalBlockAssembler {
     fn new() -> Self {
-        Self { blocks: Vec::new(), open: None }
+        Self {
+            blocks: Vec::new(),
+            open: None,
+        }
     }
 
     fn push(&mut self, chunk: &dsh_llm::StreamChunk) {
@@ -417,8 +450,12 @@ impl LocalBlockAssembler {
         match chunk {
             StreamChunk::BlockStart { block_type, .. } => {
                 self.open = match block_type.as_str() {
-                    "text" => Some(OpenBlock::Text { text: String::new() }),
-                    "reasoning" => Some(OpenBlock::Reasoning { text: String::new() }),
+                    "text" => Some(OpenBlock::Text {
+                        text: String::new(),
+                    }),
+                    "reasoning" => Some(OpenBlock::Reasoning {
+                        text: String::new(),
+                    }),
                     "tool-call" => Some(OpenBlock::ToolCall {
                         id: String::new(),
                         name: String::new(),
@@ -437,9 +474,17 @@ impl LocalBlockAssembler {
                     buffer.push_str(text);
                 }
             }
-            StreamChunk::ToolCallDelta { id, name, arguments_delta, .. } => {
-                if let Some(OpenBlock::ToolCall { id: id_buffer, name: name_buffer, arguments }) =
-                    &mut self.open
+            StreamChunk::ToolCallDelta {
+                id,
+                name,
+                arguments_delta,
+                ..
+            } => {
+                if let Some(OpenBlock::ToolCall {
+                    id: id_buffer,
+                    name: name_buffer,
+                    arguments,
+                }) = &mut self.open
                 {
                     if !id.as_str().is_empty() {
                         *id_buffer = id.as_str().to_string();
@@ -456,10 +501,19 @@ impl LocalBlockAssembler {
                 if let Some(open) = self.open.take() {
                     let block = match open {
                         OpenBlock::Text { text, .. } => dsh_llm::ContentBlock::Text { text },
-                        OpenBlock::Reasoning { text, .. } => dsh_llm::ContentBlock::Reasoning { text },
-                        OpenBlock::ToolCall { id, name, arguments, .. } => {
-                            dsh_llm::ContentBlock::ToolCall { id: dsh_llm::call_id(id), name, arguments }
+                        OpenBlock::Reasoning { text, .. } => {
+                            dsh_llm::ContentBlock::Reasoning { text }
                         }
+                        OpenBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            ..
+                        } => dsh_llm::ContentBlock::ToolCall {
+                            id: dsh_llm::call_id(id),
+                            name,
+                            arguments,
+                        },
                     };
                     self.blocks.push(block);
                 }
@@ -528,8 +582,14 @@ mod tests {
             .expect_err("malformed header must fail");
 
         assert!(error.contains("request/header"), "{error}");
-        let anchor = state.anchor.as_ref().expect("failed fold must preserve anchor");
+        let anchor = state
+            .anchor
+            .as_ref()
+            .expect("failed fold must preserve anchor");
         assert_eq!(anchor.surface_tokens, 7);
-        assert_eq!(anchor.baseline, TokenMeasurementBaseline::Estimated { tokens: 11 });
+        assert_eq!(
+            anchor.baseline,
+            TokenMeasurementBaseline::Estimated { tokens: 11 }
+        );
     }
 }

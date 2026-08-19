@@ -100,7 +100,9 @@ impl ResolvedRetryPolicy {
 
     pub fn retryable_codes(&self) -> Option<&[String]> {
         match self {
-            ResolvedRetryPolicy::Normal { retryable_codes, .. } => Some(retryable_codes),
+            ResolvedRetryPolicy::Normal {
+                retryable_codes, ..
+            } => Some(retryable_codes),
             ResolvedRetryPolicy::Always { .. } => None,
         }
     }
@@ -110,7 +112,11 @@ const NORMAL_POLICY_KEYS: [&str; 4] = ["mode", "maxRetries", "retryableCodes", "
 const ALWAYS_POLICY_KEYS: [&str; 2] = ["mode", "backoff"];
 const BACKOFF_KEYS: [&str; 3] = ["initialDelayMs", "maxDelayMs", "jitterRatio"];
 
-fn validate_keys(object: &serde_json::Map<String, serde_json::Value>, allowed: &[&str], path: &str) -> Result<(), String> {
+fn validate_keys(
+    object: &serde_json::Map<String, serde_json::Value>,
+    allowed: &[&str],
+    path: &str,
+) -> Result<(), String> {
     for key in object.keys() {
         if !allowed.contains(&key.as_str()) {
             return Err(format!("{path}: unknown key \"{key}\""));
@@ -119,7 +125,10 @@ fn validate_keys(object: &serde_json::Map<String, serde_json::Value>, allowed: &
     Ok(())
 }
 
-fn resolve_backoff(config: Option<&serde_json::Value>, path: &str) -> Result<ResolvedRetryBackoff, String> {
+fn resolve_backoff(
+    config: Option<&serde_json::Value>,
+    path: &str,
+) -> Result<ResolvedRetryBackoff, String> {
     if let Some(serde_json::Value::Object(config)) = config {
         validate_keys(config, &BACKOFF_KEYS, path)?;
     }
@@ -146,7 +155,9 @@ fn resolve_backoff(config: Option<&serde_json::Value>, path: &str) -> Result<Res
         ));
     }
     if initial > max {
-        return Err(format!("{path}.initialDelayMs must be less than or equal to maxDelayMs"));
+        return Err(format!(
+            "{path}.initialDelayMs must be less than or equal to maxDelayMs"
+        ));
     }
     if !jitter.is_finite() || !(0.0..=1.0).contains(&jitter) {
         return Err(format!("{path}.jitterRatio must be between 0 and 1"));
@@ -167,7 +178,10 @@ pub fn resolve_retry_policy(
     let Some(config) = config else {
         return Ok(ResolvedRetryPolicy::Normal {
             max_retries: DEFAULT_MAX_RETRIES,
-            retryable_codes: DEFAULT_RETRYABLE_CODES.iter().map(|code| code.to_string()).collect(),
+            retryable_codes: DEFAULT_RETRYABLE_CODES
+                .iter()
+                .map(|code| code.to_string())
+                .collect(),
             backoff: resolve_backoff(None, &format!("{path}.backoff"))?,
         });
     };
@@ -191,14 +205,26 @@ pub fn resolve_retry_policy(
                         .filter_map(|code| code.as_str().map(str::to_string))
                         .collect()
                 })
-                .unwrap_or_else(|| DEFAULT_RETRYABLE_CODES.iter().map(|code| code.to_string()).collect());
+                .unwrap_or_else(|| {
+                    DEFAULT_RETRYABLE_CODES
+                        .iter()
+                        .map(|code| code.to_string())
+                        .collect()
+                });
             if retryable_codes.is_empty() {
                 return Err(format!("{path}.retryableCodes must not be empty"));
             }
             if retryable_codes.iter().any(|code| code.is_empty()) {
-                return Err(format!("{path}.retryableCodes must contain only non-empty strings"));
+                return Err(format!(
+                    "{path}.retryableCodes must contain only non-empty strings"
+                ));
             }
-            if retryable_codes.iter().collect::<std::collections::HashSet<_>>().len() != retryable_codes.len() {
+            if retryable_codes
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != retryable_codes.len()
+            {
                 return Err(format!("{path}.retryableCodes must not contain duplicates"));
             }
             Ok(ResolvedRetryPolicy::Normal {
@@ -228,13 +254,19 @@ mod tests {
         assert_eq!(policy.max_retries(), Some(2));
         assert_eq!(
             policy.retryable_codes().unwrap(),
-            DEFAULT_RETRYABLE_CODES.iter().map(|code| code.to_string()).collect::<Vec<_>>()
+            DEFAULT_RETRYABLE_CODES
+                .iter()
+                .map(|code| code.to_string())
+                .collect::<Vec<_>>()
         );
-        assert_eq!(policy.backoff(), ResolvedRetryBackoff {
-            initial_delay_ms: 500,
-            max_delay_ms: 10_000,
-            jitter_ratio: 0.1,
-        });
+        assert_eq!(
+            policy.backoff(),
+            ResolvedRetryBackoff {
+                initial_delay_ms: 500,
+                max_delay_ms: 10_000,
+                jitter_ratio: 0.1,
+            }
+        );
     }
 
     #[test]
@@ -252,23 +284,44 @@ mod tests {
         assert_eq!(normal.backoff().initial_delay_ms, 100);
         assert_eq!(normal.backoff().jitter_ratio, 0.25);
 
-        let always = resolve_retry_policy(Some(&serde_json::json!({"mode": "always"})), "p").unwrap();
+        let always =
+            resolve_retry_policy(Some(&serde_json::json!({"mode": "always"})), "p").unwrap();
         assert_eq!(always.mode(), "always");
 
         assert!(resolve_retry_policy(Some(&serde_json::json!({"mode": "never"})), "p").is_err());
-        assert!(resolve_retry_policy(Some(&serde_json::json!({"mode": "normal", "retryableCodes": []})), "p").is_err());
-        assert!(resolve_retry_policy(Some(&serde_json::json!({"mode": "normal", "retryableCodes": ["a", "a"]})), "p").is_err());
+        assert!(
+            resolve_retry_policy(
+                Some(&serde_json::json!({"mode": "normal", "retryableCodes": []})),
+                "p"
+            )
+            .is_err()
+        );
+        assert!(
+            resolve_retry_policy(
+                Some(&serde_json::json!({"mode": "normal", "retryableCodes": ["a", "a"]})),
+                "p"
+            )
+            .is_err()
+        );
         assert!(resolve_retry_policy(
             Some(&serde_json::json!({"mode": "normal", "backoff": {"initialDelayMs": 900, "maxDelayMs": 100}})),
             "p",
         )
         .is_err());
-        assert!(resolve_retry_policy(
-            Some(&serde_json::json!({"mode": "normal", "backoff": {"jitterRatio": 2}})),
-            "p",
-        )
-        .is_err());
-        assert!(resolve_retry_policy(Some(&serde_json::json!({"mode": "normal", "extra": 1})), "p").is_err());
+        assert!(
+            resolve_retry_policy(
+                Some(&serde_json::json!({"mode": "normal", "backoff": {"jitterRatio": 2}})),
+                "p",
+            )
+            .is_err()
+        );
+        assert!(
+            resolve_retry_policy(
+                Some(&serde_json::json!({"mode": "normal", "extra": 1})),
+                "p"
+            )
+            .is_err()
+        );
     }
 
     #[test]

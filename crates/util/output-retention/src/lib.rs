@@ -48,9 +48,16 @@ pub struct ItemRetentionStrategy {
 /// Text retention strategy: keep a prefix, a suffix, or both, in bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextRetentionStrategy {
-    Head { max_bytes: usize },
-    Tail { max_bytes: usize },
-    HeadTail { head_bytes: usize, tail_bytes: usize },
+    Head {
+        max_bytes: usize,
+    },
+    Tail {
+        max_bytes: usize,
+    },
+    HeadTail {
+        head_bytes: usize,
+        tail_bytes: usize,
+    },
 }
 
 /// A neutral, tool-agnostic description of one retention outcome.
@@ -115,10 +122,16 @@ impl<T> ItemRetainer<T> {
         self.seen += 1;
         if self.items.len() < self.max_items {
             self.items.push(item);
-            return PushDecision { kept: true, truncated: false };
+            return PushDecision {
+                kept: true,
+                truncated: false,
+            };
         }
         self.omitted_count += 1;
-        PushDecision { kept: false, truncated: true }
+        PushDecision {
+            kept: false,
+            truncated: true,
+        }
     }
 
     pub fn finish(self) -> RetainedItems<T> {
@@ -129,7 +142,9 @@ impl<T> ItemRetainer<T> {
             truncated,
             seen: self.seen,
             omitted: if truncated {
-                Omitted::Exact { count: self.omitted_count }
+                Omitted::Exact {
+                    count: self.omitted_count,
+                }
             } else {
                 Omitted::None
             },
@@ -210,7 +225,10 @@ impl TextRetainer {
                 assert_budget(max_bytes, "maxBytes");
                 (0, max_bytes)
             }
-            TextRetentionStrategy::HeadTail { head_bytes, tail_bytes } => {
+            TextRetentionStrategy::HeadTail {
+                head_bytes,
+                tail_bytes,
+            } => {
                 assert_budget(head_bytes, "headBytes");
                 assert_budget(tail_bytes, "tailBytes");
                 (head_bytes, tail_bytes)
@@ -268,8 +286,7 @@ impl TextRetainer {
             }
         }
 
-        let dropped_this_chunk =
-            self.omitted_at(self.total) > self.omitted_at(before);
+        let dropped_this_chunk = self.omitted_at(self.total) > self.omitted_at(before);
         PushDecision {
             kept: !dropped_this_chunk,
             truncated: self.omitted_at(self.total) > 0,
@@ -337,11 +354,14 @@ pub fn format_retention_notice(
     notice: &RetentionNotice,
     recovery: impl Fn(&RetentionNotice) -> String,
 ) -> String {
-    [describe_omitted(notice.omitted, notice.unit), recovery(notice)]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+    [
+        describe_omitted(notice.omitted, notice.unit),
+        recovery(notice),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 #[cfg(test)]
@@ -351,9 +371,27 @@ mod tests {
     #[test]
     fn item_retainer_head() {
         let mut retainer = ItemRetainer::new(ItemRetentionStrategy { max_items: 2 });
-        assert_eq!(retainer.push("a"), PushDecision { kept: true, truncated: false });
-        assert_eq!(retainer.push("b"), PushDecision { kept: true, truncated: false });
-        assert_eq!(retainer.push("c"), PushDecision { kept: false, truncated: true });
+        assert_eq!(
+            retainer.push("a"),
+            PushDecision {
+                kept: true,
+                truncated: false
+            }
+        );
+        assert_eq!(
+            retainer.push("b"),
+            PushDecision {
+                kept: true,
+                truncated: false
+            }
+        );
+        assert_eq!(
+            retainer.push("c"),
+            PushDecision {
+                kept: false,
+                truncated: true
+            }
+        );
         let result = retainer.finish();
         assert_eq!(result.items, vec!["a", "b"]);
         assert_eq!(result.seen, 3);
@@ -405,8 +443,10 @@ mod tests {
 
     #[test]
     fn text_retainer_head_tail_skips_middle() {
-        let mut retainer =
-            TextRetainer::new(TextRetentionStrategy::HeadTail { head_bytes: 2, tail_bytes: 2 });
+        let mut retainer = TextRetainer::new(TextRetentionStrategy::HeadTail {
+            head_bytes: 2,
+            tail_bytes: 2,
+        });
         retainer.push("abcdefgh".as_bytes());
         let result = retainer.finish();
         assert_eq!(result.text, "abgh");

@@ -119,10 +119,10 @@ pub trait SessionPersistenceApi: Send + Sync {
     /// `SessionStore::prepare` with `seedSource: 'persistence'`).
     async fn prepare(&self, id: &SessionId) -> Result<dsh_session::SessionPreparation, String> {
         let loaded = self.load(id).await?;
-        let sessions: Arc<Arc<dsh_session::SessionStore>> = self
-            .ctx()
-            .get_typed("sessions", false)
-            .ok_or_else(|| "cannot prepare a session: SessionStore is not configured".to_string())?;
+        let sessions: Arc<Arc<dsh_session::SessionStore>> =
+            self.ctx().get_typed("sessions", false).ok_or_else(|| {
+                "cannot prepare a session: SessionStore is not configured".to_string()
+            })?;
         let session = sessions.prepare(
             Some(id.clone()),
             Some(dsh_session::CreateSessionOptions {
@@ -153,7 +153,11 @@ pub trait SessionPersistenceApi: Send + Sync {
     async fn inspect(&self, id: &SessionId) -> Result<SessionInspection, String>;
 
     /// Read the stored events from `fromSeq` onward.
-    async fn read_from(&self, id: &SessionId, from_seq: u64) -> Result<SessionReadFromResult, String>;
+    async fn read_from(
+        &self,
+        id: &SessionId,
+        from_seq: u64,
+    ) -> Result<SessionReadFromResult, String>;
 
     /// Lightweight listing from metadata, without a full-log parse.
     async fn list(&self) -> Result<Vec<SessionHeader>, String>;

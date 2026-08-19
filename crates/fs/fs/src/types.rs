@@ -256,7 +256,10 @@ pub struct FsError {
 
 impl FsError {
     pub fn new(message: impl Into<String>, code: FsErrorCode) -> Self {
-        Self { error: HarnessError::new(message, code.as_str()), code }
+        Self {
+            error: HarnessError::new(message, code.as_str()),
+            code,
+        }
     }
 
     pub fn with_cause(
@@ -264,7 +267,10 @@ impl FsError {
         code: FsErrorCode,
         cause: Box<dyn std::error::Error + Send + Sync>,
     ) -> Self {
-        Self { error: HarnessError::with_cause(message, code.as_str(), cause), code }
+        Self {
+            error: HarnessError::with_cause(message, code.as_str(), cause),
+            code,
+        }
     }
 
     /// The chained cause, when present.

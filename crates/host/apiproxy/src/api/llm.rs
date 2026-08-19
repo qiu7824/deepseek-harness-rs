@@ -94,10 +94,7 @@ pub trait LlmApi: Send + Sync {
     ) -> RpcResponse<LlmProvidersResult>;
 
     /// Host-scoped model catalog over every registered provider route.
-    async fn models(
-        &self,
-        request: RpcRequest<serde_json::Value>,
-    ) -> RpcResponse<LlmModelsResult>;
+    async fn models(&self, request: RpcRequest<serde_json::Value>) -> RpcResponse<LlmModelsResult>;
 
     /// Interrogate a provider endpoint the configuration surface is still
     /// drafting, and return the models it advertises for the user to adopt.

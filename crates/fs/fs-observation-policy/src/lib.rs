@@ -4,6 +4,4 @@
 pub mod index;
 pub mod invariant;
 
-pub use index::{
-    FsObservationActorHandle, NAME, ObservedStateGate, OwnerKey, apply,
-};
+pub use index::{FsObservationActorHandle, NAME, ObservedStateGate, OwnerKey, apply};

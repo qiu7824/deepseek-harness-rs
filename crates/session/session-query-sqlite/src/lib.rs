@@ -26,25 +26,23 @@ use dsh_session_persistence::{SessionPersistenceApi, SessionPersistenceRevision}
 use dsh_session_query::filters::surface_from_str;
 use dsh_session_query::{
     SessionEventSearchHit, SessionEventSearchPage, SessionEventSearchRequest, SessionEventSurface,
-    SessionQueryEngine, SessionQueryError, SessionQueryErrorCode, SessionQuerySearch, SessionRecord,
-    SessionSearchCursor, SessionSearchExecContext, SessionSearchHit, SessionSearchPage,
-    SessionSearchRequest, assert_session_headers_compatible,
+    SessionQueryEngine, SessionQueryError, SessionQueryErrorCode, SessionQuerySearch,
+    SessionRecord, SessionSearchCursor, SessionSearchExecContext, SessionSearchHit,
+    SessionSearchPage, SessionSearchRequest, assert_session_headers_compatible,
     build_session_event_search_documents,
 };
 use rusqlite::{Connection, OptionalExtension};
 use sha2::Digest;
 
 use crate::query::{
-    Binding, CursorPayload, NormalizedEventRequest, NormalizedSessionRequest, RequestFingerprint,
-    build_event_where, build_session_where, decode_cursor, encode_cursor, make_snippet,
-    normalize_event_request, normalize_session_request, quote_fts_data, request_fingerprint,
-    sanitize_fts_text, FTS_HIGHLIGHT_END, FTS_HIGHLIGHT_START,
+    Binding, CursorPayload, FTS_HIGHLIGHT_END, FTS_HIGHLIGHT_START, NormalizedEventRequest,
+    NormalizedSessionRequest, RequestFingerprint, build_event_where, build_session_where,
+    decode_cursor, encode_cursor, make_snippet, normalize_event_request, normalize_session_request,
+    quote_fts_data, request_fingerprint, sanitize_fts_text,
 };
 use crate::schema::open_search_database;
 
-pub use crate::schema::{
-    SESSION_QUERY_SQLITE_APPLICATION_ID, SESSION_QUERY_SQLITE_SCHEMA_VERSION,
-};
+pub use crate::schema::{SESSION_QUERY_SQLITE_APPLICATION_ID, SESSION_QUERY_SQLITE_SCHEMA_VERSION};
 
 /// Boot-context slot for a launcher-owned absolute path to this process's
 /// derived query index.
@@ -131,9 +129,9 @@ pub fn resolve_config(config: &Config) -> Result<ResolvedConfig, SessionQueryErr
         read_window_max: config
             .read_window_max
             .unwrap_or(dsh_session_query::SESSION_QUERY_READ_WINDOW_MAX),
-        persisted_inspect_concurrency: config.persisted_inspect_concurrency.unwrap_or(
-            dsh_session_query::SESSION_QUERY_DEFAULT_PERSISTED_INSPECT_CONCURRENCY,
-        ),
+        persisted_inspect_concurrency: config
+            .persisted_inspect_concurrency
+            .unwrap_or(dsh_session_query::SESSION_QUERY_DEFAULT_PERSISTED_INSPECT_CONCURRENCY),
     };
     if resolved.path.trim().is_empty() {
         return Err(invalid_config("path must not be blank"));
@@ -580,10 +578,7 @@ impl SqliteSearch {
             .values()
             .filter(|entry| {
                 let indexed = live_by_id.get(&entry.header.id.as_str().to_string());
-                let persisted = if observation
-                    .persisted
-                    .contains_key(entry.header.id.as_str())
-                {
+                let persisted = if observation.persisted.contains_key(entry.header.id.as_str()) {
                     1
                 } else {
                     0
@@ -620,9 +615,7 @@ impl SqliteSearch {
                 (
                     *entry,
                     next_local_generation,
-                    observation
-                        .persisted
-                        .contains_key(entry.header.id.as_str()),
+                    observation.persisted.contains_key(entry.header.id.as_str()),
                 )
             })
             .collect();
@@ -631,7 +624,8 @@ impl SqliteSearch {
             let db = self.db.lock();
             let db = db.as_ref().ok_or_else(index_closed)?;
             let outcome = (|| -> Result<(), String> {
-                db.execute_batch("BEGIN IMMEDIATE").map_err(|error| error.to_string())?;
+                db.execute_batch("BEGIN IMMEDIATE")
+                    .map_err(|error| error.to_string())?;
                 for row in &persistent_deletes {
                     delete_session(db, false, &row.id).map_err(|error| error.to_string())?;
                 }
@@ -659,7 +653,8 @@ impl SqliteSearch {
                     replace_live_session(db, entry, *generation, *persisted)
                         .map_err(|error| error.to_string())?;
                 }
-                db.execute_batch("COMMIT").map_err(|error| error.to_string())?;
+                db.execute_batch("COMMIT")
+                    .map_err(|error| error.to_string())?;
                 Ok(())
             })();
             if let Err(message) = outcome {
@@ -764,9 +759,9 @@ impl SqliteSearch {
         };
         for entry in persisted.values_mut() {
             if can_reuse_indexed
-                && indexed.get(entry.header.id.as_str()).is_some_and(|row| {
-                    row.revision == entry.revision.as_str()
-                })
+                && indexed
+                    .get(entry.header.id.as_str())
+                    .is_some_and(|row| row.revision == entry.revision.as_str())
             {
                 continue;
             }
@@ -951,7 +946,10 @@ impl SqliteSearch {
             if let Some((header, generation)) = persisted_row {
                 return Ok((
                     header,
-                    format!("persisted:{}:{generation}", self.generations.lock().persistence_epoch),
+                    format!(
+                        "persisted:{}:{generation}",
+                        self.generations.lock().persistence_epoch
+                    ),
                 ));
             }
         }
@@ -1014,9 +1012,13 @@ impl SessionQuerySearch for SqliteSearch {
         });
         let offset = match &normalized.cursor {
             None => 0,
-            Some(cursor) => {
-                decode_cursor(cursor, &self.instance, "sessions", &fingerprint, &generation)?
-            }
+            Some(cursor) => decode_cursor(
+                cursor,
+                &self.instance,
+                "sessions",
+                &fingerprint,
+                &generation,
+            )?,
         };
         let rows = self.query_sessions(&normalized, offset, binding.service.is_some())?;
         let (items, next_cursor) = page(&rows, normalized.limit, offset, |cursor_offset| {
@@ -1030,10 +1032,7 @@ impl SessionQuerySearch for SqliteSearch {
             })
         });
         Ok(SessionSearchPage {
-            items: items
-                .iter()
-                .map(|row| self.session_hit(row))
-                .collect(),
+            items: items.iter().map(|row| self.session_hit(row)).collect(),
             next_cursor,
         })
     }
@@ -1277,9 +1276,7 @@ fn header_option_bindings(header: &SessionHeader) -> Vec<Option<Binding>> {
             .as_ref()
             .map(|id| Binding::Text(id.as_str().to_string())),
         header.seed_length.map(|v| Binding::Integer(v as i64)),
-        header
-            .delegation_depth
-            .map(|v| Binding::Integer(v as i64)),
+        header.delegation_depth.map(|v| Binding::Integer(v as i64)),
         header.agent_preset.clone().map(Binding::Text),
     ]
 }
@@ -1334,7 +1331,11 @@ fn replace_live_session(
     delete_session(db, true, entry.header.id.as_str())?;
     let mut bindings = option_params(header_option_bindings(&entry.header));
     bindings.push(rusqlite::types::Value::Text(entry.fingerprint.clone()));
-    bindings.push(rusqlite::types::Value::Integer(if persisted { 1 } else { 0 }));
+    bindings.push(rusqlite::types::Value::Integer(if persisted {
+        1
+    } else {
+        0
+    }));
     bindings.push(rusqlite::types::Value::Integer(generation as i64));
     db.execute(
         "INSERT INTO temp.live_sessions
@@ -1346,7 +1347,11 @@ fn replace_live_session(
     Ok(())
 }
 
-fn insert_documents(db: &Connection, table: &str, entry: &ObservedSession) -> Result<(), rusqlite::Error> {
+fn insert_documents(
+    db: &Connection,
+    table: &str,
+    entry: &ObservedSession,
+) -> Result<(), rusqlite::Error> {
     for document in &entry.documents {
         let text = sanitize_fts_text(&document.text);
         let length = text.chars().count() as i64;

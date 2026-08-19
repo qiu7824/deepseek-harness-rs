@@ -17,7 +17,7 @@ use dsh_sandbox::SandboxMode;
 use dsh_scope::ScopeKey;
 use dsh_session::{AgentCancelCause, Session, SessionId, SessionStore, session_id};
 use dsh_session_projection::{ProjectionChangeListener, SessionProjectionRegistry};
-use dsh_shell::{ShellExecutor, ShellExecRequest, ShellExecSpec, ShellProcess, ShellRunResult};
+use dsh_shell::{ShellExecRequest, ShellExecSpec, ShellExecutor, ShellProcess, ShellRunResult};
 use dsh_user_approval::{ApprovalService, Config as ApprovalConfig};
 
 struct FakeShell;
@@ -220,7 +220,11 @@ async fn appends_custom_as_a_current_only_option_when_the_knobs_match_no_preset(
     let snapshot = registry.snapshot(&session);
     let value = snapshot.values.get("permissions").expect("key");
     assert_eq!(value["currentValue"], "custom");
-    let last_option = value["options"].as_array().expect("options").last().expect("last");
+    let last_option = value["options"]
+        .as_array()
+        .expect("options")
+        .last()
+        .expect("last");
     assert_eq!(last_option["value"], "custom");
     assert_eq!(last_option["name"], "Custom");
 }
@@ -229,9 +233,17 @@ async fn appends_custom_as_a_current_only_option_when_the_knobs_match_no_preset(
 async fn has_no_permissions_key_without_the_service_and_drops_it_on_unload() {
     let (ctx, session, _service) = harness(false).await;
     let registry = projection_registry(&ctx);
-    assert!(!registry.snapshot(&session).values.contains_key("permissions"));
+    assert!(
+        !registry
+            .snapshot(&session)
+            .values
+            .contains_key("permissions")
+    );
 
-    let fiber = ctx.plugin(Arc::new(PermissionPresetsPlugin::new(Config::default())), arc(()));
+    let fiber = ctx.plugin(
+        Arc::new(PermissionPresetsPlugin::new(Config::default())),
+        arc(()),
+    );
     fiber.settle().await.expect("settle");
     // The inject child registers asynchronously; poll until the key lands.
     let mut landed = false;
@@ -253,7 +265,11 @@ async fn has_no_permissions_key_without_the_service_and_drops_it_on_unload() {
     // Poll for the release too (unload runs through the fiber chain).
     let mut dropped = false;
     for _ in 0..100 {
-        if !registry.snapshot(&session).values.contains_key("permissions") {
+        if !registry
+            .snapshot(&session)
+            .values
+            .contains_key("permissions")
+        {
             dropped = true;
             break;
         }

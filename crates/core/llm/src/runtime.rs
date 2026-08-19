@@ -23,8 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use cordis::{
-    ArcValue, BoxFuture, Context, DispatchMode, Disposer, Service, arc, downcast_arc,
-    make_disposer,
+    ArcValue, BoxFuture, Context, DispatchMode, Disposer, Service, arc, downcast_arc, make_disposer,
 };
 use futures::{FutureExt, StreamExt};
 use indexmap::IndexMap;
@@ -83,13 +82,23 @@ impl LlmError {
         if code.is_empty() {
             panic!("LlmError code must be a non-empty string");
         }
-        if options.status.is_some_and(|status| !(100..=599).contains(&status)) {
+        if options
+            .status
+            .is_some_and(|status| !(100..=599).contains(&status))
+        {
             panic!("LlmError status must be an integer from 100 through 599");
         }
-        if options.provider_retry_after_ms.is_some_and(|delay| delay == 0) {
+        if options
+            .provider_retry_after_ms
+            .is_some_and(|delay| delay == 0)
+        {
             panic!("LlmError providerRetryAfterMs must be a positive finite number");
         }
-        if options.request_id.as_ref().is_some_and(|id| id.as_str().is_empty()) {
+        if options
+            .request_id
+            .as_ref()
+            .is_some_and(|id| id.as_str().is_empty())
+        {
             panic!("LlmError requestId must be a non-empty string");
         }
         Self {
@@ -128,7 +137,11 @@ pub fn assert_usable_api_key(raw: &str, pkg: &str, reference: &str) -> Result<St
                     "{pkg}: the API key resolved from {reference} contains characters no HTTP header can carry; set {reference} to the raw key alone (the web Models page writes it)"
                 ),
             };
-            Err(LlmError::new(&message, INVALID_CREDENTIAL_CODE, LlmErrorOptions::default()))
+            Err(LlmError::new(
+                &message,
+                INVALID_CREDENTIAL_CODE,
+                LlmErrorOptions::default(),
+            ))
         }
     }
 }
@@ -159,7 +172,10 @@ pub struct PreparedLlmCall {
 pub trait LlmAdapter: Send + Sync {
     /// Describe one provider route owned by this adapter.
     fn provider_info(&self, provider: &str) -> LlmProviderInfo {
-        LlmProviderInfo { id: provider.to_string(), name: provider.to_string() }
+        LlmProviderInfo {
+            id: provider.to_string(),
+            name: provider.to_string(),
+        }
     }
 
     /// Return the provider-owned retry policy captured with this route.
@@ -215,8 +231,7 @@ pub struct DirectoryRegistrationHandle {
     /// Withdraw every entry this registration currently holds.
     pub dispose: Disposer,
     /// Replace this registration's entries with `entries`.
-    pub replace:
-        Arc<dyn Fn(Vec<LlmConfigurableProvider>) -> Result<(), LlmError> + Send + Sync>,
+    pub replace: Arc<dyn Fn(Vec<LlmConfigurableProvider>) -> Result<(), LlmError> + Send + Sync>,
 }
 
 struct AdapterRegistration {
@@ -263,7 +278,9 @@ impl LlmRuntime {
     /// the commit. `INVARIANT`-coded failures still surface.
     fn emit_adapters_updated(&self) {
         let args: Vec<ArcValue> = Vec::new();
-        let listeners = self.ctx.collect(DispatchMode::Emit, "llm/adapters-updated", &args);
+        let listeners = self
+            .ctx
+            .collect(DispatchMode::Emit, "llm/adapters-updated", &args);
         let mut invariant_failure: Option<String> = None;
         for (listener_ctx, listener) in listeners {
             let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -289,9 +306,9 @@ impl LlmRuntime {
 
     /// Contained-listener diagnostic shared by the failure paths.
     fn warn_adapters_listener_failure(&self, error: String) {
-        self.ctx
-            .named_logger(Some("llm"))
-            .warn(vec![arc(format!("an llm/adapters-updated listener failed: {error}"))]);
+        self.ctx.named_logger(Some("llm")).warn(vec![arc(format!(
+            "an llm/adapters-updated listener failed: {error}"
+        ))]);
     }
 
     /// Register an adapter for the given provider routes. Throws `LlmError`
@@ -396,7 +413,9 @@ impl LlmRuntime {
             let info = adapter.provider_info(provider);
             if info.id != *provider || info.name.is_empty() {
                 return Err(LlmError::new(
-                    &format!("adapter metadata for provider \"{provider}\" must preserve its id and have a non-empty name"),
+                    &format!(
+                        "adapter metadata for provider \"{provider}\" must preserve its id and have a non-empty name"
+                    ),
                     "INVALID_ADAPTER",
                     LlmErrorOptions::default(),
                 ));
@@ -524,16 +543,24 @@ impl LlmRuntime {
             }
             if entry.settings_path.iter().any(|segment| segment.is_empty()) {
                 return Err(LlmError::new(
-                    &format!("configurable provider \"{}\" has an empty settingsPath segment", entry.provider),
+                    &format!(
+                        "configurable provider \"{}\" has an empty settingsPath segment",
+                        entry.provider
+                    ),
                     "INVALID_DIRECTORY",
                     LlmErrorOptions::default(),
                 ));
             }
             if (directory.contains_key(&entry.provider) && !own.contains(&entry.provider))
-                || detached.iter().any(|seen: &LlmConfigurableProvider| seen.provider == entry.provider)
+                || detached
+                    .iter()
+                    .any(|seen: &LlmConfigurableProvider| seen.provider == entry.provider)
             {
                 return Err(LlmError::new(
-                    &format!("configurable provider \"{}\" is already declared", entry.provider),
+                    &format!(
+                        "configurable provider \"{}\" is already declared",
+                        entry.provider
+                    ),
                     "DUPLICATE_DIRECTORY",
                     LlmErrorOptions::default(),
                 ));
@@ -662,7 +689,9 @@ impl LlmRuntime {
                 || !seen.insert(model.id.clone())
             {
                 return Err(LlmError::new(
-                    &format!("adapter returned invalid or duplicate model metadata for provider \"{provider}\""),
+                    &format!(
+                        "adapter returned invalid or duplicate model metadata for provider \"{provider}\""
+                    ),
                     "INVALID_CATALOG",
                     LlmErrorOptions::default(),
                 ));
@@ -690,10 +719,15 @@ impl LlmRuntime {
         signal: Option<&AbortSignal>,
     ) -> Result<LlmResolvedModelInfo, LlmError> {
         let provider = &registration.provider.id;
-        let resolved = registration.adapter.resolve_model(provider, model, signal).await;
+        let resolved = registration
+            .adapter
+            .resolve_model(provider, model, signal)
+            .await;
         if resolved.provider != *provider || resolved.id != model || resolved.name.is_empty() {
             return Err(LlmError::new(
-                &format!("adapter returned invalid exact model metadata for provider \"{provider}\" model \"{model}\""),
+                &format!(
+                    "adapter returned invalid exact model metadata for provider \"{provider}\" model \"{model}\""
+                ),
                 "INVALID_MODEL_INFO",
                 LlmErrorOptions::default(),
             ));
@@ -701,15 +735,22 @@ impl LlmRuntime {
         if let Some(context) = &resolved.context {
             if context.context_window == 0 {
                 return Err(LlmError::new(
-                    &format!("adapter returned invalid context metadata for provider \"{provider}\" model \"{model}\""),
+                    &format!(
+                        "adapter returned invalid context metadata for provider \"{provider}\" model \"{model}\""
+                    ),
                     "INVALID_MODEL_CONTEXT",
                     LlmErrorOptions::default(),
                 ));
             }
         }
-        if resolved.default_max_tokens.is_some_and(|tokens| tokens == 0) {
+        if resolved
+            .default_max_tokens
+            .is_some_and(|tokens| tokens == 0)
+        {
             return Err(LlmError::new(
-                &format!("adapter returned invalid default maxTokens for provider \"{provider}\" model \"{model}\""),
+                &format!(
+                    "adapter returned invalid default maxTokens for provider \"{provider}\" model \"{model}\""
+                ),
                 "INVALID_MODEL_MAX_TOKENS",
                 LlmErrorOptions::default(),
             ));
@@ -717,7 +758,9 @@ impl LlmRuntime {
         if let Some(reasoning) = &resolved.reasoning {
             if reasoning.efforts.is_empty() {
                 return Err(LlmError::new(
-                    &format!("adapter returned invalid reasoning metadata for provider \"{provider}\" model \"{model}\""),
+                    &format!(
+                        "adapter returned invalid reasoning metadata for provider \"{provider}\" model \"{model}\""
+                    ),
                     "INVALID_MODEL_REASONING",
                     LlmErrorOptions::default(),
                 ));
@@ -729,7 +772,9 @@ impl LlmRuntime {
                     || !seen.insert(effort.id.as_str().to_string())
                 {
                     return Err(LlmError::new(
-                        &format!("adapter returned invalid or duplicate reasoning effort metadata for provider \"{provider}\" model \"{model}\""),
+                        &format!(
+                            "adapter returned invalid or duplicate reasoning effort metadata for provider \"{provider}\" model \"{model}\""
+                        ),
                         "INVALID_MODEL_REASONING",
                         LlmErrorOptions::default(),
                     ));
@@ -738,7 +783,9 @@ impl LlmRuntime {
             if let Some(default) = &reasoning.default_effort {
                 if !seen.contains(default.as_str()) {
                     return Err(LlmError::new(
-                        &format!("adapter returned an unknown default reasoning effort for provider \"{provider}\" model \"{model}\""),
+                        &format!(
+                            "adapter returned an unknown default reasoning effort for provider \"{provider}\" model \"{model}\""
+                        ),
                         "INVALID_MODEL_REASONING",
                         LlmErrorOptions::default(),
                     ));
@@ -756,7 +803,9 @@ impl LlmRuntime {
         signal: Option<&AbortSignal>,
     ) -> Result<LlmCallConfig, LlmError> {
         let registration = self.registration(&config.provider)?;
-        Ok(Self::resolve_call_for(&registration, config, signal).await?.0)
+        Ok(Self::resolve_call_for(&registration, config, signal)
+            .await?
+            .0)
     }
 
     async fn resolve_call_for(
@@ -788,9 +837,15 @@ impl LlmRuntime {
                 }
             }
             Some(reasoning) => {
-                let effective = requested.clone().or_else(|| reasoning.default_effort.clone());
+                let effective = requested
+                    .clone()
+                    .or_else(|| reasoning.default_effort.clone());
                 if let Some(effective) = &effective {
-                    if !reasoning.efforts.iter().any(|effort| &effort.id == effective) {
+                    if !reasoning
+                        .efforts
+                        .iter()
+                        .any(|effort| &effort.id == effective)
+                    {
                         return Err(LlmError::new(
                             &format!(
                                 "provider \"{}\" model \"{}\" does not support reasoning effort \"{}\"",
@@ -856,7 +911,10 @@ impl LlmRuntime {
                 }
                 Ok(runtime.stream_with_registration(
                     options,
-                    Some((Arc::clone(&registration_for_stream), resolved_for_stream.clone())),
+                    Some((
+                        Arc::clone(&registration_for_stream),
+                        resolved_for_stream.clone(),
+                    )),
                 ))
             });
         Ok(PreparedLlmCall {
@@ -880,14 +938,23 @@ impl LlmRuntime {
 
     /// Remove replay state whose historical route is owned by another
     /// adapter.
-    fn for_adapter(&self, options: GenerateOptions, adapter: &Arc<dyn LlmAdapter>) -> GenerateOptions {
+    fn for_adapter(
+        &self,
+        options: GenerateOptions,
+        adapter: &Arc<dyn LlmAdapter>,
+    ) -> GenerateOptions {
         let adapters = self.adapters.lock();
         let mut changed = false;
         let messages: Vec<Message> = options
             .messages
             .iter()
             .map(|message| {
-                let MessageSource::Model { provider, model, replay_state: Some(_) } = &message.source else {
+                let MessageSource::Model {
+                    provider,
+                    model,
+                    replay_state: Some(_),
+                } = &message.source
+                else {
                     return message.clone();
                 };
                 if message.role != Role::Assistant {
@@ -928,15 +995,12 @@ impl LlmRuntime {
         prepared: Option<(Arc<AdapterRegistration>, LlmCallConfig)>,
     ) -> ChunkStream {
         let runtime = Arc::clone(self);
-        Box::pin(futures::stream::unfold(
-            AdapterPhase::Setup,
-            move |phase| {
-                let runtime = Arc::clone(&runtime);
-                let options = options.clone();
-                let prepared = prepared.clone();
-                async move { runtime.adapter_phase(phase, options, prepared).await }
-            },
-        ))
+        Box::pin(futures::stream::unfold(AdapterPhase::Setup, move |phase| {
+            let runtime = Arc::clone(&runtime);
+            let options = options.clone();
+            let prepared = prepared.clone();
+            async move { runtime.adapter_phase(phase, options, prepared).await }
+        }))
     }
 
     async fn adapter_phase(
@@ -954,8 +1018,7 @@ impl LlmRuntime {
                         let registration = match self.registration(&options.provider) {
                             Ok(registration) => registration,
                             Err(error) => {
-                                let chunk =
-                                    adapter_failure_chunk(error.failure, signal.as_ref());
+                                let chunk = adapter_failure_chunk(error.failure, signal.as_ref());
                                 return Some((chunk, AdapterPhase::Done));
                             }
                         };
@@ -968,8 +1031,7 @@ impl LlmRuntime {
                         {
                             Ok((config, _context)) => (registration, config),
                             Err(error) => {
-                                let chunk =
-                                    adapter_failure_chunk(error.failure, signal.as_ref());
+                                let chunk = adapter_failure_chunk(error.failure, signal.as_ref());
                                 return Some((chunk, AdapterPhase::Done));
                             }
                         }
@@ -985,20 +1047,28 @@ impl LlmRuntime {
                         provider_retry_after_ms: None,
                         request_id: None,
                     };
-                    return Some((adapter_failure_chunk(failure, signal.as_ref()), AdapterPhase::Done));
+                    return Some((
+                        adapter_failure_chunk(failure, signal.as_ref()),
+                        AdapterPhase::Done,
+                    ));
                 }
-                let resolved_options = if generate_options_config_equals(&options, &resolved_config) {
+                let resolved_options = if generate_options_config_equals(&options, &resolved_config)
+                {
                     options
                 } else {
                     merged_call_options(options, &resolved_config)
                 };
                 let adapter = Arc::clone(&registration.adapter);
                 let filtered = self.for_adapter(resolved_options, &adapter);
-                let mut stream = match catch_unwind(AssertUnwindSafe(|| adapter.stream(&filtered))) {
+                let mut stream = match catch_unwind(AssertUnwindSafe(|| adapter.stream(&filtered)))
+                {
                     Ok(stream) => stream,
                     Err(payload) => {
                         let failure = normalize_llm_failure(&render_panic(payload));
-                        return Some((adapter_failure_chunk(failure, signal.as_ref()), AdapterPhase::Done));
+                        return Some((
+                            adapter_failure_chunk(failure, signal.as_ref()),
+                            AdapterPhase::Done,
+                        ));
                     }
                 };
                 match AssertUnwindSafe(stream.next()).catch_unwind().await {
@@ -1006,7 +1076,10 @@ impl LlmRuntime {
                     Ok(None) => None,
                     Err(payload) => {
                         let failure = normalize_llm_failure(&render_panic(payload));
-                        Some((adapter_failure_chunk(failure, signal.as_ref()), AdapterPhase::Done))
+                        Some((
+                            adapter_failure_chunk(failure, signal.as_ref()),
+                            AdapterPhase::Done,
+                        ))
                     }
                 }
             }
@@ -1017,7 +1090,10 @@ impl LlmRuntime {
                     Ok(None) => None,
                     Err(payload) => {
                         let failure = normalize_llm_failure(&render_panic(payload));
-                        Some((adapter_failure_chunk(failure, signal.as_ref()), AdapterPhase::Done))
+                        Some((
+                            adapter_failure_chunk(failure, signal.as_ref()),
+                            AdapterPhase::Done,
+                        ))
                     }
                 }
             }

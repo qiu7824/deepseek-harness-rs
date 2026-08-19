@@ -71,7 +71,9 @@ async fn install_inner(ctx: &Context, fail: Arc<dyn Fn(&str) + Send + Sync>) {
     let event_fail = Arc::clone(&fail);
     let event: Arc<Listener> = Arc::new(move |_ctx, args: Vec<ArcValue>| {
         let session = downcast::<Session>(&args[0]).cloned().expect("session arg");
-        let event = downcast::<SessionEvent>(&args[1]).cloned().expect("event arg");
+        let event = downcast::<SessionEvent>(&args[1])
+            .cloned()
+            .expect("event arg");
         let fail = Arc::clone(&event_fail);
         Box::pin(async move {
             let history = session.events();
@@ -110,9 +112,14 @@ fn validate_failure(value: &serde_json::Value, fail: &Arc<dyn Fn(&str) + Send + 
             fail("llm/retry failure.status must be an integer from 100 through 599 when present");
         }
     }
-    if let Some(retry_after) = object.get("providerRetryAfterMs").and_then(|value| value.as_u64()) {
+    if let Some(retry_after) = object
+        .get("providerRetryAfterMs")
+        .and_then(|value| value.as_u64())
+    {
         if retry_after == 0 {
-            fail("llm/retry failure.providerRetryAfterMs must be a positive finite number when present");
+            fail(
+                "llm/retry failure.providerRetryAfterMs must be a positive finite number when present",
+            );
         }
     }
     if let Some(request_id) = object.get("requestId") {
@@ -139,7 +146,10 @@ fn validate_retry(
         fail("llm/retry retryId must be a non-empty string");
         return;
     }
-    let failure = data.get("failure").cloned().unwrap_or(serde_json::Value::Null);
+    let failure = data
+        .get("failure")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     validate_failure(&failure, fail);
     let retry = data.get("retry").and_then(|value| value.as_u64());
     if retry.is_none_or(|retry| retry < 1) {
@@ -161,12 +171,17 @@ fn validate_retry(
             if max_retries.is_none_or(|max_retries| max_retries < 1 || retry > max_retries) {
                 fail(&format!(
                     "llm/retry retry {retry} must not exceed a positive safe maxRetries {}",
-                    max_retries.map(|value| value.to_string()).unwrap_or_default()
+                    max_retries
+                        .map(|value| value.to_string())
+                        .unwrap_or_default()
                 ));
             }
         }
         Some("always") => {
-            if data.as_object().is_some_and(|object| object.contains_key("maxRetries")) {
+            if data
+                .as_object()
+                .is_some_and(|object| object.contains_key("maxRetries"))
+            {
                 fail("llm/retry always mode must omit maxRetries");
             }
         }
@@ -177,7 +192,9 @@ fn validate_retry(
     }
     let delay_ms = data.get("delayMs").and_then(|value| value.as_u64());
     if delay_ms.is_none_or(|delay_ms| delay_ms > MAX_TIMER_DELAY_MS) {
-        fail(&format!("llm/retry delayMs must be a finite number within 0..{MAX_TIMER_DELAY_MS}"));
+        fail(&format!(
+            "llm/retry delayMs must be a finite number within 0..{MAX_TIMER_DELAY_MS}"
+        ));
     }
 
     let turn = data.get("turn").and_then(|value| value.as_u64());
@@ -200,7 +217,10 @@ fn validate_retry(
         .get("turn")
         .and_then(|value| value.as_u64());
     if boundary_turn != Some(turn) {
-        fail(&format!("llm/retry names turn {turn}, but the open turn is {}", boundary_turn.map(|t| t.to_string()).unwrap_or_default()));
+        fail(&format!(
+            "llm/retry names turn {turn}, but the open turn is {}",
+            boundary_turn.map(|t| t.to_string()).unwrap_or_default()
+        ));
     }
     let step_boundary = history
         .iter()
@@ -248,7 +268,9 @@ fn validate_retry(
         .unwrap_or(0)
         + 1;
     if retry != expected_retry {
-        fail(&format!("llm/retry retry {retry} must equal provider policy retry {expected_retry}"));
+        fail(&format!(
+            "llm/retry retry {retry} must equal provider policy retry {expected_retry}"
+        ));
     }
     if let Some(prior) = prior_policy_retry {
         if prior.data.get("retryId") != data.get("retryId") {

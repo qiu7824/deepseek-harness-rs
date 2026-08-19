@@ -35,7 +35,7 @@ pub async fn open_json_unit(
             return Err(StorageError::new(
                 StorageErrorCode::MalformedMedium,
                 format!("unit '{}': failed to read: {error}", descriptor.name),
-            ))
+            ));
         }
     };
     let state = match text {
@@ -67,7 +67,10 @@ struct InFlight {
 
 impl InFlight {
     fn new() -> Self {
-        Self { count: AtomicUsize::new(0), notify: Notify::new() }
+        Self {
+            count: AtomicUsize::new(0),
+            notify: Notify::new(),
+        }
     }
 
     fn begin(&self) {
@@ -145,10 +148,7 @@ impl JsonKvUnit {
                 result.map_err(|error| {
                     StorageError::new(
                         StorageErrorCode::MalformedMedium,
-                        format!(
-                            "unit '{}': publish failed: {error}",
-                            self.descriptor.name
-                        ),
+                        format!("unit '{}': publish failed: {error}", self.descriptor.name),
                     )
                 })
             });
@@ -190,7 +190,10 @@ impl KvUnit for JsonKvUnit {
         self.check_table(table)?;
         let (had_key, previous) = {
             let mut state = self.state.lock();
-            let records = state.tables.get_mut(table).expect("declared table checked above");
+            let records = state
+                .tables
+                .get_mut(table)
+                .expect("declared table checked above");
             let had_key = records.contains_key(key);
             let previous = records.get(key).cloned();
             records.insert(key.to_string(), value);
@@ -200,7 +203,10 @@ impl KvUnit for JsonKvUnit {
             // Roll back on a failed publish: memory is authoritative, so a
             // rejected write must not survive in memory.
             let mut state = self.state.lock();
-            let records = state.tables.get_mut(table).expect("declared table checked above");
+            let records = state
+                .tables
+                .get_mut(table)
+                .expect("declared table checked above");
             match (had_key, previous) {
                 (true, Some(previous)) => {
                     records.insert(key.to_string(), previous);
@@ -219,7 +225,10 @@ impl KvUnit for JsonKvUnit {
         self.check_table(table)?;
         let previous = {
             let mut state = self.state.lock();
-            let records = state.tables.get_mut(table).expect("declared table checked above");
+            let records = state
+                .tables
+                .get_mut(table)
+                .expect("declared table checked above");
             match records.get(key).cloned() {
                 Some(previous) => {
                     records.shift_remove(key);

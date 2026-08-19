@@ -7,7 +7,7 @@ pub mod invariant;
 
 pub use index::{
     AbortSignal, DirectoryEntry, DirectoryListing, DirectoryPicker,
-    DirectoryPickerBrowseCapability, DirectoryPickerCapability,
-    DirectoryPickerError, DirectoryPickerErrorCode, DirectoryPickerListError,
-    DirectoryPickerNativeCapability, SERVICE_NAME, register,
+    DirectoryPickerBrowseCapability, DirectoryPickerCapability, DirectoryPickerError,
+    DirectoryPickerErrorCode, DirectoryPickerListError, DirectoryPickerNativeCapability,
+    SERVICE_NAME, register,
 };

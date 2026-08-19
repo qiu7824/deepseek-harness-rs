@@ -266,7 +266,10 @@ fn escape_attr(value: &str) -> String {
 /// Escape model-facing prose embedded inside skill markup so
 /// provider-supplied text cannot open or close framing tags.
 pub fn escape_text(value: &str) -> String {
-    value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// One catalog observation plus whether discovery completed within a
@@ -355,14 +358,21 @@ impl SkillLayer {
     fn new(scope: Option<&ScopeKey>) -> Self {
         let scoped = scope.is_some();
         Self {
-            providers: NamedEntries::new(move |name: &str| -> Box<dyn std::error::Error + Send + Sync> {
-                let message = if scoped {
-                    format!("a skill provider named \"{name}\" is already registered in this scope")
-                } else {
-                    format!("a skill provider named \"{name}\" is already registered")
-                };
-                Box::new(std::io::Error::new(std::io::ErrorKind::AlreadyExists, message))
-            }),
+            providers: NamedEntries::new(
+                move |name: &str| -> Box<dyn std::error::Error + Send + Sync> {
+                    let message = if scoped {
+                        format!(
+                            "a skill provider named \"{name}\" is already registered in this scope"
+                        )
+                    } else {
+                        format!("a skill provider named \"{name}\" is already registered")
+                    };
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        message,
+                    ))
+                },
+            ),
             runtime: Arc::new(parking_lot::Mutex::new(IndexMap::new())),
         }
     }
@@ -384,7 +394,10 @@ impl SkillProvider for RuntimeSkillProvider {
         RUNTIME_PROVIDER
     }
 
-    async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+    async fn list(
+        &self,
+        _options: &SkillLookupOptions,
+    ) -> Result<SkillProviderObservation, String> {
         Ok(SkillProviderObservation::default())
     }
 
@@ -461,8 +474,9 @@ impl cordis::Service for SkillRegistry {
 impl SkillRegistry {
     /// Create the service and register it as `ctx.skills` (TS constructor).
     pub fn install(ctx: &Context, config: Config) -> Result<Arc<Self>, String> {
-        let collect_cache_max_entries =
-            config.collect_cache_max_entries.unwrap_or(DEFAULT_COLLECT_CACHE_ENTRIES);
+        let collect_cache_max_entries = config
+            .collect_cache_max_entries
+            .unwrap_or(DEFAULT_COLLECT_CACHE_ENTRIES);
         if collect_cache_max_entries < 1 {
             return Err(
                 "skill: collectCacheMaxEntries must be an integer greater than or equal to 1"
@@ -474,19 +488,14 @@ impl SkillRegistry {
         // construction cycle (TS captures `this` before assignment).
         struct Slot(parking_lot::Mutex<Option<std::sync::Weak<SkillRegistry>>>);
         let slot = Arc::new(Slot(parking_lot::Mutex::new(None)));
-        let layers = ScopedLayers::new(
-            SkillLayer::new,
-            {
-                let slot = slot.clone();
-                move || {
-                    if let Some(registry) =
-                        slot.0.lock().as_ref().and_then(std::sync::Weak::upgrade)
-                    {
-                        registry.invalidate_cache();
-                    }
+        let layers = ScopedLayers::new(SkillLayer::new, {
+            let slot = slot.clone();
+            move || {
+                if let Some(registry) = slot.0.lock().as_ref().and_then(std::sync::Weak::upgrade) {
+                    registry.invalidate_cache();
                 }
-            },
-        );
+            }
+        });
         let registry = Arc::new(Self {
             ctx: ctx.clone(),
             collect_cache_max_entries,
@@ -597,11 +606,12 @@ impl SkillRegistry {
             name: skill.name.clone(),
             description: skill.description.clone(),
             when_to_use: skill.when_to_use.clone(),
-            invocation: skill
-                .invocation
-                .unwrap_or(SkillInvocationPolicy::BOTH),
+            invocation: skill.invocation.unwrap_or(SkillInvocationPolicy::BOTH),
             source: skill.source.clone(),
-            provider: skill.provider.clone().unwrap_or_else(|| RUNTIME_PROVIDER.to_string()),
+            provider: skill
+                .provider
+                .clone()
+                .unwrap_or_else(|| RUNTIME_PROVIDER.to_string()),
             resource_base: skill.resource_base.clone(),
             content: skill.content.clone(),
             path: skill.path.clone(),
@@ -612,7 +622,10 @@ impl SkillRegistry {
             move |layer| {
                 let name = definition.name.clone();
                 let runtime = layer.runtime.clone();
-                layer.runtime.lock().insert(name.clone(), definition.clone());
+                layer
+                    .runtime
+                    .lock()
+                    .insert(name.clone(), definition.clone());
                 Box::new(move || {
                     runtime.lock().shift_remove(&name);
                 })
@@ -789,22 +802,24 @@ impl SkillRegistry {
         }
         for (provider_name, registered) in layer.providers.entries() {
             let mut local_order = 0;
-            let observation =
-                match wait_with_abort(registered.provider.list(&options.lookup()), options.signal.as_ref())
-                    .await
-                {
-                    Ok(observation) => observation,
-                    Err(error) => {
-                        if options.signal.as_ref().is_some_and(|signal| signal()) {
-                            return Err(error);
-                        }
-                        cacheable = false;
-                        self.ctx.named_logger(None).warn(vec![arc(format!(
-                            "skill provider \"{provider_name}\" skipped: {error}"
-                        ))]);
-                        continue;
+            let observation = match wait_with_abort(
+                registered.provider.list(&options.lookup()),
+                options.signal.as_ref(),
+            )
+            .await
+            {
+                Ok(observation) => observation,
+                Err(error) => {
+                    if options.signal.as_ref().is_some_and(|signal| signal()) {
+                        return Err(error);
                     }
-                };
+                    cacheable = false;
+                    self.ctx.named_logger(None).warn(vec![arc(format!(
+                        "skill provider \"{provider_name}\" skipped: {error}"
+                    ))]);
+                    continue;
+                }
+            };
             if !observation.complete {
                 cacheable = false;
             }
@@ -943,7 +958,10 @@ fn validate_definition(skill: &SkillDefinition) -> Result<(), String> {
         return Err(format!("loaded skill has invalid name \"{}\"", skill.name));
     }
     if skill.description.is_empty() {
-        return Err(format!("loaded skill \"{}\" requires a description", skill.name));
+        return Err(format!(
+            "loaded skill \"{}\" requires a description",
+            skill.name
+        ));
     }
     Ok(())
 }
@@ -964,7 +982,10 @@ fn compare_code_points(left: &str, right: &str) -> std::cmp::Ordering {
     left.cmp(right)
 }
 
-fn compare_indexed_candidates(left: &IndexedCandidate, right: &IndexedCandidate) -> std::cmp::Ordering {
+fn compare_indexed_candidates(
+    left: &IndexedCandidate,
+    right: &IndexedCandidate,
+) -> std::cmp::Ordering {
     left.candidate
         .rank
         .cmp(&right.candidate.rank)

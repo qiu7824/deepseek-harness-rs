@@ -45,7 +45,11 @@ pub struct AskUserQuestionItem {
     pub header: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<AskUserQuestionOption>>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "multiSelect")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "multiSelect"
+    )]
     pub multi_select: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<AskUserQuestionIntent>,
@@ -103,8 +107,10 @@ impl std::error::Error for UserQuestionError {}
 /// UI-side provider for user questions.
 #[async_trait::async_trait]
 pub trait UserQuestionProvider: Send + Sync + 'static {
-    async fn ask(&self, request: &AskUserQuestionRequest)
-        -> Result<AskUserQuestionAnswer, UserQuestionError>;
+    async fn ask(
+        &self,
+        request: &AskUserQuestionRequest,
+    ) -> Result<AskUserQuestionAnswer, UserQuestionError>;
 }
 
 /// `ctx.userQuestions`: one active UI provider plus an `ask()` API.
@@ -181,9 +187,9 @@ impl UserQuestionService {
                     "human interaction requires the exact live calling agent when an agent is supplied",
                 ));
             }
-            let rooted = agents
-                .as_ref()
-                .is_some_and(|registry| registry.roots().iter().any(|root| Arc::ptr_eq(root, agent)));
+            let rooted = agents.as_ref().is_some_and(|registry| {
+                registry.roots().iter().any(|root| Arc::ptr_eq(root, agent))
+            });
             if !rooted {
                 return Err(UserQuestionError::new(
                     "DELEGATED_CALLER",

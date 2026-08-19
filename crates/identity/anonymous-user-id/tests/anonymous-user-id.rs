@@ -14,10 +14,7 @@ use dsh_anonymous_user_id::{
 const UUID_PATTERN: &str = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
 
 fn temp_home() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "dsh-userid-{}",
-        uuid::Uuid::new_v4().to_string()
-    ));
+    let dir = std::env::temp_dir().join(format!("dsh-userid-{}", uuid::Uuid::new_v4().to_string()));
     std::fs::create_dir_all(&dir).expect("temp home");
     dir
 }

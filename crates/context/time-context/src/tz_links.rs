@@ -41,7 +41,10 @@ pub const TZ_LINKS: &[(&str, &str)] = &[
     ("Africa/Timbuktu", "Africa/Abidjan"),
     ("America/Anguilla", "America/Puerto_Rico"),
     ("America/Antigua", "America/Puerto_Rico"),
-    ("America/Argentina/ComodRivadavia", "America/Argentina/Catamarca"),
+    (
+        "America/Argentina/ComodRivadavia",
+        "America/Argentina/Catamarca",
+    ),
     ("America/Aruba", "America/Puerto_Rico"),
     ("America/Atikokan", "America/Panama"),
     ("America/Atka", "America/Adak"),

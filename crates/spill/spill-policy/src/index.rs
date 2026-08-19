@@ -39,9 +39,11 @@ use cordis::{
     arc, downcast_arc, make_disposer,
 };
 use dsh_llm::{CallId, ContentBlock};
-use dsh_output_retention::{NoticeUnit, Omitted, TextRetainer, TextRetentionStrategy, describe_omitted};
+use dsh_output_retention::{
+    NoticeUnit, Omitted, TextRetainer, TextRetentionStrategy, describe_omitted,
+};
 use dsh_session::SessionId;
-use dsh_spill::{SaveTextSpill, SpillRef, SpillStore, SpillOwner, SpillSource};
+use dsh_spill::{SaveTextSpill, SpillOwner, SpillRef, SpillSource, SpillStore};
 use dsh_tools::{PostToolDecision, ToolExecution, ToolExecutionResult};
 
 /// Plugin config.
@@ -77,7 +79,9 @@ fn flatten_plain_text(content: &[ContentBlock]) -> Option<String> {
 /// The owning session id, or `None` for a call with no agent (a direct/test
 /// call).
 fn owner_session_id(exec: &ToolExecution) -> Option<SessionId> {
-    exec.agent.as_ref().map(|agent| agent.session().header().id.clone())
+    exec.agent
+        .as_ref()
+        .map(|agent| agent.session().header().id.clone())
 }
 
 /// Build the bounded head/tail preview for `text`, splitting `budget` bytes
@@ -85,7 +89,10 @@ fn owner_session_id(exec: &ToolExecution) -> Option<SessionId> {
 fn preview(text: &str, budget: usize) -> (String, Omitted) {
     let head_bytes = budget.div_ceil(2);
     let tail_bytes = budget / 2;
-    let mut retainer = TextRetainer::new(TextRetentionStrategy::HeadTail { head_bytes, tail_bytes });
+    let mut retainer = TextRetainer::new(TextRetentionStrategy::HeadTail {
+        head_bytes,
+        tail_bytes,
+    });
     retainer.push(text.as_bytes());
     let kept = retainer.finish();
     (kept.text, kept.omitted_bytes)
@@ -191,8 +198,8 @@ pub fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
         // The waterfall args carry the live handles: `Arc<ToolExecution>`
         // and `Arc<Arc<ToolExecutionResult>>` (the registry's own dispatch
         // shape).
-        let exec = downcast_arc::<Arc<ToolExecution>>(&args[0])
-            .expect("tools/post-execute exec argument");
+        let exec =
+            downcast_arc::<Arc<ToolExecution>>(&args[0]).expect("tools/post-execute exec argument");
         let result = downcast_arc::<Arc<ToolExecutionResult>>(&args[1])
             .expect("tools/post-execute result argument");
         let next = downcast_arc::<NextFn>(&args[2])
@@ -211,7 +218,11 @@ pub fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
 
             // Skip `read` to avoid a read → spill → read again loop; nested
             // calls and value replacements pass through unchanged.
-            let PostToolDecision::Accept { content, value: None, additional_contexts } = &decision
+            let PostToolDecision::Accept {
+                content,
+                value: None,
+                additional_contexts,
+            } = &decision
             else {
                 return Some(arc(decision));
             };
@@ -242,7 +253,9 @@ pub fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
             let Some(replaced_text) = replaced_text else {
                 return Some(arc(decision));
             };
-            let replaced: Vec<ContentBlock> = vec![ContentBlock::Text { text: replaced_text }];
+            let replaced: Vec<ContentBlock> = vec![ContentBlock::Text {
+                text: replaced_text,
+            }];
             Some(arc(PostToolDecision::Accept {
                 content: Some(replaced),
                 value: None,
@@ -281,6 +294,8 @@ impl Plugin for SpillPolicyPlugin {
     }
 
     async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
-        apply(ctx, self.config.clone()).map(|_| ()).map_err(|error| PluginError::new(arc(error)))
+        apply(ctx, self.config.clone())
+            .map(|_| ())
+            .map_err(|error| PluginError::new(arc(error)))
     }
 }

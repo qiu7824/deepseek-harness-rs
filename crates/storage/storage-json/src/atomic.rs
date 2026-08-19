@@ -21,9 +21,9 @@ use std::path::Path;
 /// Durably replace `path` with `data` (TS `writeAtomic`; synchronous —
 /// callers wrap it in `spawn_blocking`).
 pub fn write_atomic(path: &Path, data: &str) -> std::io::Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "unit path has no parent"))?;
+    let dir = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "unit path has no parent")
+    })?;
     let tmp = dir.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
     let outcome = (|| {
         let mut handle = std::fs::OpenOptions::new()

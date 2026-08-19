@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use cordis::Context;
-use dsh_llm::*;
 use dsh_invariants::{InvariantConfig, InvariantRegistry};
+use dsh_llm::*;
 use futures::StreamExt;
 
 fn failing_fail() -> Arc<dyn Fn(&str) + Send + Sync> {
@@ -15,11 +15,27 @@ fn failing_fail() -> Arc<dyn Fn(&str) + Send + Sync> {
 
 fn well_formed() -> Vec<StreamChunk> {
     vec![
-        StreamChunk::BlockStart { index: 0, block_type: "text".to_string() },
-        StreamChunk::TextDelta { index: 0, text: "hi".to_string() },
-        StreamChunk::BlockEnd { index: 0, block: ContentBlock::Text { text: "hi".to_string() } },
-        StreamChunk::Usage { usage: TokenUsage::default() },
-        StreamChunk::Finish { reason: FinishReason::Stop, replay_state: None },
+        StreamChunk::BlockStart {
+            index: 0,
+            block_type: "text".to_string(),
+        },
+        StreamChunk::TextDelta {
+            index: 0,
+            text: "hi".to_string(),
+        },
+        StreamChunk::BlockEnd {
+            index: 0,
+            block: ContentBlock::Text {
+                text: "hi".to_string(),
+            },
+        },
+        StreamChunk::Usage {
+            usage: TokenUsage::default(),
+        },
+        StreamChunk::Finish {
+            reason: FinishReason::Stop,
+            replay_state: None,
+        },
     ]
 }
 
@@ -54,65 +70,133 @@ fn accepts_well_formed_streams() {
 #[test]
 fn rejects_deltas_without_matching_open_blocks() {
     let chunks = vec![
-        StreamChunk::TextDelta { index: 0, text: "x".to_string() },
-        StreamChunk::Finish { reason: FinishReason::Stop, replay_state: None },
+        StreamChunk::TextDelta {
+            index: 0,
+            text: "x".to_string(),
+        },
+        StreamChunk::Finish {
+            reason: FinishReason::Stop,
+            replay_state: None,
+        },
     ];
     let error = drain(chunks).expect_err("delta without an open block must fail");
-    assert!(error.contains("text delta at index 0 requires an open text block, got undefined"), "got {error}");
+    assert!(
+        error.contains("text delta at index 0 requires an open text block, got undefined"),
+        "got {error}"
+    );
 
     let chunks = vec![
-        StreamChunk::BlockStart { index: 0, block_type: "text".to_string() },
-        StreamChunk::ReasoningDelta { index: 0, text: "x".to_string() },
-        StreamChunk::Finish { reason: FinishReason::Stop, replay_state: None },
+        StreamChunk::BlockStart {
+            index: 0,
+            block_type: "text".to_string(),
+        },
+        StreamChunk::ReasoningDelta {
+            index: 0,
+            text: "x".to_string(),
+        },
+        StreamChunk::Finish {
+            reason: FinishReason::Stop,
+            replay_state: None,
+        },
     ];
     let error = drain(chunks).expect_err("type-mismatched delta must fail");
-    assert!(error.contains("reasoning delta at index 0 requires an open reasoning block, got text"), "got {error}");
+    assert!(
+        error.contains("reasoning delta at index 0 requires an open reasoning block, got text"),
+        "got {error}"
+    );
 }
 
 #[test]
 fn rejects_repeated_block_starts_and_mismatched_block_ends() {
     let chunks = vec![
-        StreamChunk::BlockStart { index: 0, block_type: "text".to_string() },
-        StreamChunk::BlockStart { index: 0, block_type: "text".to_string() },
+        StreamChunk::BlockStart {
+            index: 0,
+            block_type: "text".to_string(),
+        },
+        StreamChunk::BlockStart {
+            index: 0,
+            block_type: "text".to_string(),
+        },
     ];
     let error = drain(chunks).expect_err("repeated block-start must fail");
-    assert!(error.contains("repeated block-start index 0"), "got {error}");
+    assert!(
+        error.contains("repeated block-start index 0"),
+        "got {error}"
+    );
 
     let chunks = vec![
-        StreamChunk::BlockStart { index: 0, block_type: "text".to_string() },
-        StreamChunk::BlockEnd { index: 0, block: ContentBlock::Reasoning { text: String::new() } },
+        StreamChunk::BlockStart {
+            index: 0,
+            block_type: "text".to_string(),
+        },
+        StreamChunk::BlockEnd {
+            index: 0,
+            block: ContentBlock::Reasoning {
+                text: String::new(),
+            },
+        },
     ];
     let error = drain(chunks).expect_err("mismatched block-end must fail");
-    assert!(error.contains("block-end index 0 closes reasoning, expected text"), "got {error}");
+    assert!(
+        error.contains("block-end index 0 closes reasoning, expected text"),
+        "got {error}"
+    );
 
     let chunks = vec![StreamChunk::BlockEnd {
         index: 3,
-        block: ContentBlock::Text { text: String::new() },
+        block: ContentBlock::Text {
+            text: String::new(),
+        },
     }];
     let error = drain(chunks).expect_err("unopened block-end must fail");
-    assert!(error.contains("block-end index 3 has no open block"), "got {error}");
+    assert!(
+        error.contains("block-end index 3 has no open block"),
+        "got {error}"
+    );
 }
 
 #[test]
 fn rejects_duplicate_usage_and_open_blocks_at_clean_finish() {
     let chunks = vec![
-        StreamChunk::Usage { usage: TokenUsage::default() },
-        StreamChunk::Usage { usage: TokenUsage::default() },
-        StreamChunk::Finish { reason: FinishReason::Stop, replay_state: None },
+        StreamChunk::Usage {
+            usage: TokenUsage::default(),
+        },
+        StreamChunk::Usage {
+            usage: TokenUsage::default(),
+        },
+        StreamChunk::Finish {
+            reason: FinishReason::Stop,
+            replay_state: None,
+        },
     ];
     let error = drain(chunks).expect_err("duplicate usage must fail");
-    assert!(error.contains("emitted usage more than once"), "got {error}");
+    assert!(
+        error.contains("emitted usage more than once"),
+        "got {error}"
+    );
 
     let chunks = vec![
-        StreamChunk::BlockStart { index: 0, block_type: "text".to_string() },
-        StreamChunk::Finish { reason: FinishReason::Stop, replay_state: None },
+        StreamChunk::BlockStart {
+            index: 0,
+            block_type: "text".to_string(),
+        },
+        StreamChunk::Finish {
+            reason: FinishReason::Stop,
+            replay_state: None,
+        },
     ];
     let error = drain(chunks).expect_err("clean finish with open blocks must fail");
-    assert!(error.contains("finished with 1 open block(s)"), "got {error}");
+    assert!(
+        error.contains("finished with 1 open block(s)"),
+        "got {error}"
+    );
 
     // Error and aborted finishes may legitimately strand open blocks.
     let aborted = vec![
-        StreamChunk::BlockStart { index: 0, block_type: "text".to_string() },
+        StreamChunk::BlockStart {
+            index: 0,
+            block_type: "text".to_string(),
+        },
         StreamChunk::Finish {
             reason: FinishReason::Aborted {
                 failure: LlmFailure {
@@ -131,22 +215,41 @@ fn rejects_duplicate_usage_and_open_blocks_at_clean_finish() {
 
 #[test]
 fn rejects_missing_terminal_finish_and_chunks_after_finish() {
-    let chunks = vec![StreamChunk::Usage { usage: TokenUsage::default() }];
+    let chunks = vec![StreamChunk::Usage {
+        usage: TokenUsage::default(),
+    }];
     let error = drain(chunks).expect_err("missing terminal finish must fail");
-    assert!(error.contains("ended without a terminal finish chunk"), "got {error}");
+    assert!(
+        error.contains("ended without a terminal finish chunk"),
+        "got {error}"
+    );
 
     let chunks = vec![
-        StreamChunk::Finish { reason: FinishReason::Stop, replay_state: None },
-        StreamChunk::Usage { usage: TokenUsage::default() },
+        StreamChunk::Finish {
+            reason: FinishReason::Stop,
+            replay_state: None,
+        },
+        StreamChunk::Usage {
+            usage: TokenUsage::default(),
+        },
     ];
     let error = drain(chunks).expect_err("chunks after finish must fail");
-    assert!(error.contains("emitted usage after terminal finish"), "got {error}");
+    assert!(
+        error.contains("emitted usage after terminal finish"),
+        "got {error}"
+    );
 }
 
 #[tokio::test]
 async fn companion_wraps_runtime_streams_and_reads_the_registry() {
     let ctx = Context::root();
-    InvariantRegistry::new(&ctx, InvariantConfig { enabled: true, ..InvariantConfig::default() });
+    InvariantRegistry::new(
+        &ctx,
+        InvariantConfig {
+            enabled: true,
+            ..InvariantConfig::default()
+        },
+    );
     let runtime = LlmRuntime::install(&ctx);
     apply_llm_invariant(&ctx);
     // The companion installer runs in a child fiber; let it activate.
@@ -158,8 +261,14 @@ async fn companion_wraps_runtime_streams_and_reads_the_registry() {
     impl LlmAdapter for BrokenAdapter {
         fn stream(&self, _options: &GenerateOptions) -> ChunkStream {
             Box::pin(futures::stream::iter(vec![
-                StreamChunk::TextDelta { index: 0, text: "x".to_string() },
-                StreamChunk::Finish { reason: FinishReason::Stop, replay_state: None },
+                StreamChunk::TextDelta {
+                    index: 0,
+                    text: "x".to_string(),
+                },
+                StreamChunk::Finish {
+                    reason: FinishReason::Stop,
+                    replay_state: None,
+                },
             ]))
         }
     }
@@ -213,15 +322,16 @@ async fn companion_wraps_runtime_streams_and_reads_the_registry() {
     });
     let mut stream = stream;
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        futures::executor::block_on(async {
-            while let Some(_chunk) = stream.next().await {}
-        })
+        futures::executor::block_on(async { while let Some(_chunk) = stream.next().await {} })
     }));
     let payload = outcome.expect_err("grammar violation must surface");
     let rendered = payload
         .downcast_ref::<String>()
         .cloned()
         .unwrap_or_else(|| "listener panicked".to_string());
-    assert!(rendered.contains("invariant violated by \"@deepseek-ai/dsh-llm\""), "got {rendered}");
+    assert!(
+        rendered.contains("invariant violated by \"@deepseek-ai/dsh-llm\""),
+        "got {rendered}"
+    );
     assert!(rendered.contains("text delta at index 0"), "got {rendered}");
 }

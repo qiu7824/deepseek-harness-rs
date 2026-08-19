@@ -19,11 +19,15 @@ mod tests {
 
     #[test]
     fn walks_nested_tool_result_content() {
-        assert!(!content_has_image(&[ContentBlock::Text { text: "hi".to_string() }]));
+        assert!(!content_has_image(&[ContentBlock::Text {
+            text: "hi".to_string()
+        }]));
         assert!(content_has_image(&[ContentBlock::ToolResult {
             tool_call_id: crate::brand::call_id("c1"),
             content: vec![ContentBlock::Image {
-                attachment: crate::types::ImageAttachmentRef { id: "img".to_string() },
+                attachment: crate::types::ImageAttachmentRef {
+                    id: "img".to_string()
+                },
             }],
             is_error: None,
         }]));

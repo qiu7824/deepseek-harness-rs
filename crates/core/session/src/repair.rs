@@ -50,9 +50,12 @@ pub fn interrupted_turn_closers(events: &[SessionEvent]) -> Vec<SessionEvent> {
             "assistant/message" => {
                 let step = event.data.get("step").and_then(|value| value.as_u64());
                 if let (Some(step), Some(message)) = (step, event.data.get("message")) {
-                    if let Some(blocks) = message.get("content").and_then(|value| value.as_array()) {
+                    if let Some(blocks) = message.get("content").and_then(|value| value.as_array())
+                    {
                         for block in blocks {
-                            if block.get("type").and_then(|value| value.as_str()) == Some("tool-call") {
+                            if block.get("type").and_then(|value| value.as_str())
+                                == Some("tool-call")
+                            {
                                 if let Some(id) = block.get("id").and_then(|value| value.as_str()) {
                                     pending_calls.entry(id.to_string()).or_insert(PendingCall {
                                         step,
@@ -159,10 +162,14 @@ fn interrupted_tool_result_message(call_id: &str, seq: u64, started: bool) -> Me
     Message {
         id: dsh_llm::message_id(format!("interrupted-tool-result-{call_id}-{seq}")),
         role: Role::User,
-        source: MessageSource::Tool { call_id: dsh_llm::call_id(call_id) },
+        source: MessageSource::Tool {
+            call_id: dsh_llm::call_id(call_id),
+        },
         content: vec![ContentBlock::ToolResult {
             tool_call_id: dsh_llm::call_id(call_id),
-            content: vec![ContentBlock::Text { text: text.to_string() }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
             is_error: Some(true),
         }],
     }
@@ -194,7 +201,11 @@ mod tests {
             event("turn/start", 0, serde_json::json!({"turn": 1})),
             event("step/start", 1, serde_json::json!({"turn": 1, "step": 1})),
             event("step/end", 2, serde_json::json!({"turn": 1, "step": 1})),
-            event("turn/end", 3, serde_json::json!({"turn": 1, "reason": {"kind": "completed"}})),
+            event(
+                "turn/end",
+                3,
+                serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+            ),
         ];
         assert!(interrupted_turn_closers(&events).is_empty());
         assert!(interrupted_turn_closers(&[]).is_empty());
@@ -213,8 +224,14 @@ mod tests {
         assert_eq!(closers[0].data, serde_json::json!({"turn": 1, "step": 1}));
         assert_eq!(closers[1].type_, "turn/end");
         assert_eq!(closers[1].seq, 3);
-        assert_eq!(closers[1].data, serde_json::json!({"turn": 1, "reason": {"kind": "interrupted"}}));
-        assert_eq!(closers[0].time, 1000, "closers reuse the last real timestamp");
+        assert_eq!(
+            closers[1].data,
+            serde_json::json!({"turn": 1, "reason": {"kind": "interrupted"}})
+        );
+        assert_eq!(
+            closers[0].time, 1000,
+            "closers reuse the last real timestamp"
+        );
         assert_eq!(closers[1].time, 1000);
     }
 
@@ -244,9 +261,11 @@ mod tests {
         assert_eq!(result.data["turn"], 1);
         assert_eq!(result.data["step"], 1);
         assert_eq!(result.data["error"]["code"], TOOL_NOT_STARTED);
-        assert!(result.source_event_seqs.is_none(), "not-started call cites no tool/call seq");
-        let message: Message =
-            serde_json::from_value(result.data["message"].clone()).unwrap();
+        assert!(
+            result.source_event_seqs.is_none(),
+            "not-started call cites no tool/call seq"
+        );
+        let message: Message = serde_json::from_value(result.data["message"].clone()).unwrap();
         assert_eq!(message.role, Role::User);
         assert_eq!(message.id.as_str(), "interrupted-tool-result-c1-3");
         let MessageSource::Tool { call_id } = &message.source else {
@@ -291,7 +310,13 @@ mod tests {
         let result = &closers[0];
         assert_eq!(result.data["error"]["code"], TOOL_OUTCOME_UNKNOWN);
         assert_eq!(result.source_event_seqs, Some(vec![3]));
-        assert!(!result.data.as_object().unwrap().contains_key("sourceEventSeqs"));
+        assert!(
+            !result
+                .data
+                .as_object()
+                .unwrap()
+                .contains_key("sourceEventSeqs")
+        );
     }
 
     #[test]
@@ -326,7 +351,11 @@ mod tests {
             ),
         ];
         let closers = interrupted_turn_closers(&events);
-        assert_eq!(closers.len(), 2, "no synthetic tool result; only step/end + turn/end");
+        assert_eq!(
+            closers.len(),
+            2,
+            "no synthetic tool result; only step/end + turn/end"
+        );
         assert_eq!(closers[0].type_, "step/end");
         assert_eq!(closers[1].type_, "turn/end");
     }

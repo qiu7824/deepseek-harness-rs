@@ -306,7 +306,10 @@ impl OutputCollector {
             text: String::from_utf8_lossy(text).into_owned(),
             next_offset: self.total,
             lossy,
-            spill_path: self.spill_file.as_ref().map(|path| path.to_string_lossy().into_owned()),
+            spill_path: self
+                .spill_file
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
         }
     }
 
@@ -331,7 +334,10 @@ impl OutputCollector {
         CollectedOutput {
             text: String::from_utf8_lossy(&buffer).into_owned(),
             truncated: self.dropped,
-            spill_path: self.spill_file.as_ref().map(|path| path.to_string_lossy().into_owned()),
+            spill_path: self
+                .spill_file
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
         }
     }
 }
@@ -610,16 +616,12 @@ impl SubprocessHandle for LocalHandle {
 
     fn collected(&self) -> SubprocessCollectedOutputs {
         SubprocessCollectedOutputs {
-            stdout: self
-                .inner
-                .stdout_collector
-                .as_ref()
-                .map(|collector| Arc::new(CollectorReader::new(collector.clone())) as Arc<dyn SubprocessOutputReader>),
-            stderr: self
-                .inner
-                .stderr_collector
-                .as_ref()
-                .map(|collector| Arc::new(CollectorReader::new(collector.clone())) as Arc<dyn SubprocessOutputReader>),
+            stdout: self.inner.stdout_collector.as_ref().map(|collector| {
+                Arc::new(CollectorReader::new(collector.clone())) as Arc<dyn SubprocessOutputReader>
+            }),
+            stderr: self.inner.stderr_collector.as_ref().map(|collector| {
+                Arc::new(CollectorReader::new(collector.clone())) as Arc<dyn SubprocessOutputReader>
+            }),
         }
     }
 
@@ -766,11 +768,15 @@ pub fn spawn_subprocess(
         ));
     }
     let spill_dir = internals.spill_dir.unwrap_or_else(private_spill_dir);
-    let platform = internals.platform.unwrap_or_else(|| host_platform().to_string());
-    let taskkill: Arc<dyn Fn(i32) + Send + Sync> =
-        internals.taskkill.unwrap_or_else(|| Arc::new(taskkill_process_tree));
-    let linux_live: Arc<dyn Fn(i32) -> Option<bool> + Send + Sync> =
-        internals.linux_group_has_live_members.unwrap_or_else(|| Arc::new(default_linux_group_live));
+    let platform = internals
+        .platform
+        .unwrap_or_else(|| host_platform().to_string());
+    let taskkill: Arc<dyn Fn(i32) + Send + Sync> = internals
+        .taskkill
+        .unwrap_or_else(|| Arc::new(taskkill_process_tree));
+    let linux_live: Arc<dyn Fn(i32) -> Option<bool> + Send + Sync> = internals
+        .linux_group_has_live_members
+        .unwrap_or_else(|| Arc::new(default_linux_group_live));
 
     if let Some(signal) = &spec.signal {
         if signal() {
@@ -966,15 +972,15 @@ pub fn spawn_subprocess(
         inner: Arc::new(LocalHandleInner {
             shared,
             pid,
-            stdin: Mutex::new(stdin_stream.map(|stream| {
-                Box::new(stream) as Box<dyn AsyncWrite + Unpin + Send>
-            })),
-            stdout: Mutex::new(stdout_stream.map(|stream| {
-                Box::new(stream) as Box<dyn AsyncRead + Unpin + Send>
-            })),
-            stderr: Mutex::new(stderr_stream.map(|stream| {
-                Box::new(stream) as Box<dyn AsyncRead + Unpin + Send>
-            })),
+            stdin: Mutex::new(
+                stdin_stream.map(|stream| Box::new(stream) as Box<dyn AsyncWrite + Unpin + Send>),
+            ),
+            stdout: Mutex::new(
+                stdout_stream.map(|stream| Box::new(stream) as Box<dyn AsyncRead + Unpin + Send>),
+            ),
+            stderr: Mutex::new(
+                stderr_stream.map(|stream| Box::new(stream) as Box<dyn AsyncRead + Unpin + Send>),
+            ),
             stdout_collector,
             stderr_collector,
             done,
@@ -1005,11 +1011,7 @@ pub fn default_linux_group_live(process_group_id: i32) -> Option<bool> {
             return Some(true);
         }
     }
-    if matched {
-        Some(false)
-    } else {
-        None
-    }
+    if matched { Some(false) } else { None }
 }
 
 struct ProcStat {

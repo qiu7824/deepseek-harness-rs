@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use dsh_e2b::{
-    E2bBackgroundOptions, E2bCommandHandle, E2bCommandResult, E2bRuntime, E2bSandbox,
-    E2bSdkError, e2b_control_envs, quote_e2b_shell_arg,
+    E2bBackgroundOptions, E2bCommandHandle, E2bCommandResult, E2bRuntime, E2bSandbox, E2bSdkError,
+    e2b_control_envs, quote_e2b_shell_arg,
 };
 use dsh_subprocess::{
     SubprocessAbort, SubprocessCollect, SubprocessCollectedOutputs, SubprocessHandle,
@@ -30,7 +30,7 @@ use parking_lot::Mutex;
 use crate::environment::{
     bootstrap_environment, read_remote_environment, serialize_remote_environment,
 };
-use crate::output::{E2bOutputReader, E2bBase64Decoder};
+use crate::output::{E2bBase64Decoder, E2bOutputReader};
 use crate::remote::{signal_remote_groups, wait_tick};
 
 /// Remote file paths one handle's state lives under (TS `RemotePaths`).
@@ -56,7 +56,7 @@ fn is_valid_process_id(pid: i32) -> bool {
 fn command_text(spec: &SubprocessSpawnSpec, paths: &RemotePaths) -> String {
     let encoder = "\"$dsh_e2b_env_bin\" -i \"$dsh_e2b_node\" -e \"\"";
     let _ = encoder; // The encoder source is injected by the remote side;
-                     // the Rust adapter ships the same frame contract.
+    // the Rust adapter ships the same frame contract.
     let argv = spec
         .argv
         .iter()
@@ -108,7 +108,12 @@ pub struct E2bSubprocessHandle {
 impl E2bSubprocessHandle {
     /// Begin an E2B command without blocking the synchronous spawn call
     /// (TS constructor).
-    pub fn new(runtime: Arc<E2bRuntime>, spec: SubprocessSpawnSpec, state_dir: String, poll_ms: u64) -> Self {
+    pub fn new(
+        runtime: Arc<E2bRuntime>,
+        spec: SubprocessSpawnSpec,
+        state_dir: String,
+        poll_ms: u64,
+    ) -> Self {
         let paths = RemotePaths {
             pid: format!("{state_dir}/pid"),
             status: format!("{state_dir}/exit-code"),
@@ -127,7 +132,8 @@ impl E2bSubprocessHandle {
                 collect.max_bytes,
                 collect.spill.as_ref().map(|spill| spill.max_bytes),
                 paths.stdout.clone(),
-            )) as Arc<dyn dsh_subprocess::SubprocessOutputReader>),
+            ))
+                as Arc<dyn dsh_subprocess::SubprocessOutputReader>),
             _ => None,
         };
         let stderr_reader = match &spec.stdio.stderr {
@@ -135,7 +141,8 @@ impl E2bSubprocessHandle {
                 collect.max_bytes,
                 collect.spill.as_ref().map(|spill| spill.max_bytes),
                 paths.stderr.clone(),
-            )) as Arc<dyn dsh_subprocess::SubprocessOutputReader>),
+            ))
+                as Arc<dyn dsh_subprocess::SubprocessOutputReader>),
             _ => None,
         };
         let collected = SubprocessCollectedOutputs {
@@ -225,11 +232,7 @@ impl E2bSubprocessHandle {
     }
 
     /// Whether the process group is still alive remotely (TS `groupAlive`).
-    async fn group_alive(
-        &self,
-        sandbox: &Arc<dyn E2bSandbox>,
-        group: i64,
-    ) -> Result<bool, String> {
+    async fn group_alive(&self, sandbox: &Arc<dyn E2bSandbox>, group: i64) -> Result<bool, String> {
         let result = sandbox
             .run(
                 &format!("kill -0 -- -{group}"),
@@ -245,7 +248,6 @@ impl E2bSubprocessHandle {
             Err(error) => Err(error.to_string()),
         }
     }
-
 }
 
 /// The run state machine (TS `E2BSubprocessHandle.run`): prepare the
@@ -333,10 +335,7 @@ async fn run_state_machine(
     }
     // Poll the exit-code file until it settles.
     loop {
-        let raw = match sandbox
-            .read_bytes(&format!("{state_dir}/exit-code"))
-            .await
-        {
+        let raw = match sandbox.read_bytes(&format!("{state_dir}/exit-code")).await {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(error) if error.is_not_found() => String::new(),
             Err(error) => return Err(error.to_string()),
@@ -409,9 +408,7 @@ impl SubprocessHandle for E2bSubprocessHandle {
     }
 
     fn terminate(&self) {
-        if self.quiescent.load(Ordering::SeqCst)
-            || self.terminating.swap(true, Ordering::SeqCst)
-        {
+        if self.quiescent.load(Ordering::SeqCst) || self.terminating.swap(true, Ordering::SeqCst) {
             return;
         }
         let runtime = self.runtime.clone();
@@ -446,10 +443,7 @@ impl SubprocessHandle for E2bSubprocessHandle {
         });
     }
 
-    fn wait_for_exit(
-        &self,
-        signal: Option<SubprocessAbort>,
-    ) -> BoxFuture<'static, bool> {
+    fn wait_for_exit(&self, signal: Option<SubprocessAbort>) -> BoxFuture<'static, bool> {
         let done = self.done();
         let mut done = Box::pin(done);
         async move {

@@ -80,13 +80,19 @@ mod tests {
     #[test]
     fn table_is_sorted_and_holds_every_method_once() {
         assert!(
-            CLIENT_REQUEST_METHODS.windows(2).all(|pair| pair[0] < pair[1]),
+            CLIENT_REQUEST_METHODS
+                .windows(2)
+                .all(|pair| pair[0] < pair[1]),
             "method table must stay name-sorted for binary search"
         );
         let unique: std::collections::HashSet<&str> =
             CLIENT_REQUEST_METHODS.iter().copied().collect();
         assert_eq!(unique.len(), CLIENT_REQUEST_METHODS.len(), "no duplicates");
-        assert_eq!(CLIENT_REQUEST_METHODS.len(), 54, "the TS map holds 54 methods");
+        assert_eq!(
+            CLIENT_REQUEST_METHODS.len(),
+            54,
+            "the TS map holds 54 methods"
+        );
     }
 
     #[test]

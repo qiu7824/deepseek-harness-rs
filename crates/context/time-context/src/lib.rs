@@ -192,10 +192,8 @@ pub fn render_text(
 pub fn validate_refresh_interval(refresh_interval_ms: Option<f64>) -> Result<(), String> {
     const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
     if let Some(value) = refresh_interval_ms {
-        let safe_integer = value.is_finite()
-            && value.fract() == 0.0
-            && value >= -MAX_SAFE
-            && value <= MAX_SAFE;
+        let safe_integer =
+            value.is_finite() && value.fract() == 0.0 && value >= -MAX_SAFE && value <= MAX_SAFE;
         if !safe_integer || value < 0.0 {
             return Err(format!(
                 "time-context: refreshIntervalMs must be a non-negative safe integer, got {}",
@@ -245,11 +243,9 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
         }
     };
     let fallback_time_zone = fallback_formatter.time_zone().to_string();
-    let formatters: Arc<Mutex<HashMap<String, TimestampFormatter>>> =
-        Arc::new(Mutex::new(HashMap::from([(
-            fallback_time_zone.clone(),
-            fallback_formatter,
-        )])));
+    let formatters: Arc<Mutex<HashMap<String, TimestampFormatter>>> = Arc::new(Mutex::new(
+        HashMap::from([(fallback_time_zone.clone(), fallback_formatter)]),
+    ));
 
     let ctx_for_listener = ctx.clone();
     let listener: Arc<Listener> = Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
@@ -330,9 +326,7 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
             );
             let mut merged = messages;
             merged.push(create_user_message(
-                vec![ContentBlock::Text {
-                    text: text.clone(),
-                }],
+                vec![ContentBlock::Text { text: text.clone() }],
                 MessageSource::Plugin {
                     plugin: NAME.to_string(),
                     form: Some(ContextForm::Snapshot),
@@ -389,8 +383,8 @@ impl Plugin for TimeContextPlugin {
 
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
         let config = config.downcast_ref::<Config>().cloned().unwrap_or_default();
-        let disposer = apply(ctx, &config)
-            .map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
+        let disposer =
+            apply(ctx, &config).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
         // Registration attaches the removal disposer to this fiber.
         (disposer)().await;
         Ok(())

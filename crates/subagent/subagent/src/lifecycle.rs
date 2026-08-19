@@ -16,10 +16,40 @@ use std::sync::Arc;
 
 use cordis::{ArcValue, Context, DispatchMode, Listener, arc};
 use dsh_agent::Agent;
-use dsh_session::SessionEvent;
 use dsh_scope::{ScopeCarrier, scope_target};
+use dsh_session::SessionEvent;
 
-use crate::types::{SubagentRun, SubagentRunEndInfo, SubagentRunInfo, SubagentStopReason, subagent_run_id};
+use crate::types::{
+    SubagentResult, SubagentRun, SubagentRunEndInfo, SubagentRunInfo, SubagentStopReason,
+    subagent_run_id,
+};
+
+struct ObservedRun {
+    inner: Arc<dyn SubagentRun>,
+    result: Arc<tokio::sync::OnceCell<Result<SubagentResult, String>>>,
+}
+
+#[async_trait::async_trait]
+impl SubagentRun for ObservedRun {
+    fn id(&self) -> &dsh_session::SessionId {
+        self.inner.id()
+    }
+
+    fn local_agent(&self) -> Option<Arc<dyn Agent>> {
+        self.inner.local_agent()
+    }
+
+    async fn result(&self) -> Result<SubagentResult, String> {
+        self.result
+            .get_or_init(|| self.inner.result())
+            .await
+            .clone()
+    }
+
+    async fn dispose(&self) -> Result<(), String> {
+        self.inner.dispose().await
+    }
+}
 
 /// Publish one lifecycle edge with per-listener exception containment.
 pub enum LifecycleEdge {
@@ -32,9 +62,19 @@ pub enum LifecycleEdge {
 /// through.
 pub fn emit_lifecycle_edge(ctx: &Context, edge: LifecycleEdge) {
     let (name, info, parent): (&str, Option<ArcValue>, Option<Arc<dyn Agent>>) = match &edge {
-        LifecycleEdge::Start(info, parent) => ("subagent/start", Some(arc(info.clone())), Some(parent.clone())),
-        LifecycleEdge::End(info, parent) => ("subagent/end", Some(arc(info.clone())), Some(parent.clone())),
-        LifecycleEdge::ProviderRemoved(info) => ("subagent/provider-removed", Some(arc(info.clone())), None),
+        LifecycleEdge::Start(info, parent) => (
+            "subagent/start",
+            Some(arc(info.clone())),
+            Some(parent.clone()),
+        ),
+        LifecycleEdge::End(info, parent) => (
+            "subagent/end",
+            Some(arc(info.clone())),
+            Some(parent.clone()),
+        ),
+        LifecycleEdge::ProviderRemoved(info) => {
+            ("subagent/provider-removed", Some(arc(info.clone())), None)
+        }
     };
     let args: Vec<ArcValue> = match &info {
         Some(info) => vec![info.clone()],
@@ -45,7 +85,8 @@ pub fn emit_lifecycle_edge(ctx: &Context, edge: LifecycleEdge) {
         Some(parent) => {
             let carrier: ScopeCarrier = scope_target(None, Some(parent.scope_key().clone()));
             let dispatch_ctx = ctx.with_filter(carrier.filter);
-            ctx.events.collect(DispatchMode::Emit, Some(&dispatch_ctx), name, &args)
+            ctx.events
+                .collect(DispatchMode::Emit, Some(&dispatch_ctx), name, &args)
         }
     };
     for (listener_ctx, callback) in listeners {
@@ -71,6 +112,13 @@ pub fn observe_run(
     parent: Arc<dyn Agent>,
     run: Arc<dyn SubagentRun>,
 ) -> Arc<dyn SubagentRun> {
+    // `SubagentRun::result` is allowed to be backed by a one-shot join handle.
+    // The lifecycle observer and the business caller therefore share one
+    // cached terminal result instead of racing to consume the provider.
+    let run: Arc<dyn SubagentRun> = Arc::new(ObservedRun {
+        inner: run,
+        result: Arc::new(tokio::sync::OnceCell::new()),
+    });
     let identity = SubagentRunInfo {
         run_id: subagent_run_id(uuid::Uuid::new_v4().to_string()),
         provider: provider.to_string(),
@@ -127,12 +175,6 @@ pub struct ActivationTerminal {
     /// The epoch's final assistant content, absent when it produced none or
     /// failed.
     pub output: Option<Vec<dsh_llm::ContentBlock>>,
-}
-
-impl Default for SubagentStopReason {
-    fn default() -> Self {
-        SubagentStopReason::Completed
-    }
 }
 
 /// Lifecycle observer for one Activation's residency epoch.

@@ -68,7 +68,11 @@ pub struct SessionTitleLlmError {
 
 impl SessionTitleLlmError {
     fn plain(message: impl Into<String>) -> Self {
-        Self { message: message.into(), code: None, timeout_ms: None }
+        Self {
+            message: message.into(),
+            code: None,
+            timeout_ms: None,
+        }
     }
 }
 
@@ -109,7 +113,9 @@ pub fn resolve_session_title_llm_config(
     let integer = |name: &str| -> Result<u64, String> {
         match object.get(name).and_then(|value| value.as_u64()) {
             Some(value) if value > 0 => Ok(value),
-            _ => Err(format!("session-title-llm: {name} must be a positive integer")),
+            _ => Err(format!(
+                "session-title-llm: {name} must be a positive integer"
+            )),
         }
     };
     let target_words = integer("targetWords")?;
@@ -138,7 +144,7 @@ pub fn resolve_session_title_llm_config(
             return Err(
                 "session-title-llm: provider and model overrides must be non-empty strings"
                     .to_string(),
-            )
+            );
         }
     };
     Ok(SessionTitleLlmConfig {
@@ -270,9 +276,8 @@ impl SessionTitleProvider for LlmTitleProvider {
         &self,
         request: SessionTitleProviderRequest,
     ) -> Result<SessionTitleProviderResult, dsh_session_title::SessionTitleError> {
-        let selected = (self.select_messages)(request.messages.clone()).map_err(|error| {
-            dsh_session_title::SessionTitleError::new(error)
-        })?;
+        let selected = (self.select_messages)(request.messages.clone())
+            .map_err(|error| dsh_session_title::SessionTitleError::new(error))?;
         generate_session_title_with_llm(&self.ctx, &self.config, request, selected, self.id.clone())
             .await
             .map_err(|error| dsh_session_title::SessionTitleError::new(error.message))
@@ -317,7 +322,11 @@ pub async fn generate_session_title_with_llm(
         },
     )];
     let system = system_prompt(config);
-    let call_deadline = Arc::new(deadline(None, config.timeout_ms, SESSION_TITLE_TIMEOUT_CODE));
+    let call_deadline = Arc::new(deadline(
+        None,
+        config.timeout_ms,
+        SESSION_TITLE_TIMEOUT_CODE,
+    ));
     let request_signal = request.signal.clone();
     let signal_predicate: Arc<dyn Fn() -> bool + Send + Sync> = {
         let deadline = call_deadline.clone();
@@ -394,7 +403,10 @@ pub async fn generate_session_title_with_llm(
     }
     finish_error(&assembler.finish())?;
     let blocks = assembler.blocks();
-    if blocks.iter().any(|block| matches!(block, ContentBlock::ToolCall { .. })) {
+    if blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolCall { .. }))
+    {
         return Err(SessionTitleLlmError::plain(
             "session-title-llm: title output must contain text only",
         ));
@@ -415,7 +427,10 @@ pub async fn generate_session_title_with_llm(
     }
     Ok(SessionTitleProviderResult {
         title,
-        message_seqs: selected_messages.iter().map(|message| message.seq).collect(),
+        message_seqs: selected_messages
+            .iter()
+            .map(|message| message.seq)
+            .collect(),
         model: Some(route),
     })
 }

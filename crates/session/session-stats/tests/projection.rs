@@ -12,7 +12,9 @@ use serde_json::{Value, json};
 use dsh_session_stats::session_stats_projection_definition;
 use dsh_session_stats::types::SessionStatsProjection;
 
-async fn harness(with_stats_plugin: bool) -> (cordis::Context, Arc<SessionProjectionRegistry>, Session) {
+async fn harness(
+    with_stats_plugin: bool,
+) -> (cordis::Context, Arc<SessionProjectionRegistry>, Session) {
     let ctx = cordis::Context::root();
     let store = SessionStore::install(&ctx);
     let registry = SessionProjectionRegistry::install(&ctx);
@@ -80,7 +82,10 @@ fn stats_value(snapshot_value: Option<&Value>) -> SessionStatsProjection {
 async fn serves_zero_figures_on_the_empty_log() {
     let (_ctx, registry, session) = harness(true).await;
     let snapshot = registry.snapshot(&session);
-    assert_eq!(stats_value(snapshot.values.get("sessionStats")), SessionStatsProjection::zero());
+    assert_eq!(
+        stats_value(snapshot.values.get("sessionStats")),
+        SessionStatsProjection::zero()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -94,46 +99,67 @@ async fn counts_distinct_turns_and_closed_steps_and_notifies_change_feed() {
         });
         registry.on_changed(&ctx, listener);
     }
-    session.append("turn/start", json!({"turn": 1}), None).unwrap();
+    session
+        .append("turn/start", json!({"turn": 1}), None)
+        .unwrap();
     let first_seq = close_step(&session, 1, 1);
     let second_seq = close_step(&session, 1, 2);
     session
-        .append("turn/end", json!({"turn": 1, "reason": {"kind": "completed"}}), None)
+        .append(
+            "turn/end",
+            json!({"turn": 1, "reason": {"kind": "completed"}}),
+            None,
+        )
         .unwrap();
-    session.append("turn/start", json!({"turn": 2}), None).unwrap();
+    session
+        .append("turn/start", json!({"turn": 2}), None)
+        .unwrap();
     let third_seq = close_step(&session, 2, 1);
     session
-        .append("turn/end", json!({"turn": 2, "reason": {"kind": "completed"}}), None)
+        .append(
+            "turn/end",
+            json!({"turn": 2, "reason": {"kind": "completed"}}),
+            None,
+        )
         .unwrap();
 
     let all = changes.lock().clone();
     assert!(all.iter().all(|(key, _, _)| key == "sessionStats"));
     let counted: Vec<(i64, Value)> = all
         .iter()
-        .filter(|(_, value, seq)| {
-            stats_value(Some(value)).steps > 0 || *seq == first_seq as i64
-        })
+        .filter(|(_, value, seq)| stats_value(Some(value)).steps > 0 || *seq == first_seq as i64)
         .map(|(_, value, seq)| (*seq, value.clone()))
         .collect();
-    assert!(counted.contains(&(first_seq as i64, serde_json::to_value(totals(|t| {
-        t.turns = 1;
-        t.steps = 1;
-    }))
-    .unwrap())));
+    assert!(
+        counted.contains(&(
+            first_seq as i64,
+            serde_json::to_value(totals(|t| {
+                t.turns = 1;
+                t.steps = 1;
+            }))
+            .unwrap()
+        ))
+    );
     let last = all.last().unwrap();
     assert_eq!(last.0, "sessionStats");
-    assert_eq!(last.1, serde_json::to_value(totals(|t| {
-        t.turns = 2;
-        t.steps = 3;
-    }))
-    .unwrap());
+    assert_eq!(
+        last.1,
+        serde_json::to_value(totals(|t| {
+            t.turns = 2;
+            t.steps = 3;
+        }))
+        .unwrap()
+    );
     assert_eq!(last.2, third_seq as i64);
 
     let snapshot = registry.snapshot(&session);
-    assert_eq!(stats_value(snapshot.values.get("sessionStats")), totals(|t| {
-        t.turns = 2;
-        t.steps = 3;
-    }));
+    assert_eq!(
+        stats_value(snapshot.values.get("sessionStats")),
+        totals(|t| {
+            t.turns = 2;
+            t.steps = 3;
+        })
+    );
     assert_eq!(snapshot.as_of_seq, session.seq() as i64 - 1);
     assert!(all.iter().any(|(_, _, seq)| *seq == second_seq as i64));
 }
@@ -141,20 +167,35 @@ async fn counts_distinct_turns_and_closed_steps_and_notifies_change_feed() {
 #[tokio::test(flavor = "multi_thread")]
 async fn does_not_count_a_rejected_or_empty_turn() {
     let (_ctx, registry, session) = harness(true).await;
-    session.append("turn/start", json!({"turn": 1}), None).unwrap();
     session
-        .append("turn/end", json!({"turn": 1, "reason": {"kind": "blocked"}}), None)
+        .append("turn/start", json!({"turn": 1}), None)
         .unwrap();
-    assert_eq!(stats_value(registry.snapshot(&session).values.get("sessionStats")), SessionStatsProjection::zero());
+    session
+        .append(
+            "turn/end",
+            json!({"turn": 1, "reason": {"kind": "blocked"}}),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        stats_value(registry.snapshot(&session).values.get("sessionStats")),
+        SessionStatsProjection::zero()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn counts_a_cancelled_step_that_closed_without_message() {
     let (_ctx, registry, session) = harness(true).await;
-    session.append("turn/start", json!({"turn": 1}), None).unwrap();
+    session
+        .append("turn/start", json!({"turn": 1}), None)
+        .unwrap();
     close_step(&session, 1, 1);
     session
-        .append("turn/end", json!({"turn": 1, "reason": {"kind": "aborted", "reason": {"kind": "legacy"}}}), None)
+        .append(
+            "turn/end",
+            json!({"turn": 1, "reason": {"kind": "aborted", "reason": {"kind": "legacy"}}}),
+            None,
+        )
         .unwrap();
     let value = stats_value(registry.snapshot(&session).values.get("sessionStats"));
     assert_eq!((value.turns, value.steps), (1, 1));
@@ -163,25 +204,49 @@ async fn counts_a_cancelled_step_that_closed_without_message() {
 #[tokio::test(flavor = "multi_thread")]
 async fn adds_no_extra_step_for_max_tokens_usage_host_message() {
     let (_ctx, registry, session) = harness(true).await;
-    session.append("turn/start", json!({"turn": 1}), None).unwrap();
-    session.append("step/start", json!({"turn": 1, "step": 1}), None).unwrap();
-    append_empty_assistant_message(&session, 1, 1);
-    session.append("step/end", json!({"turn": 1, "step": 1}), None).unwrap();
     session
-        .append("turn/end", json!({"turn": 1, "reason": {"kind": "max-tokens"}}), None)
+        .append("turn/start", json!({"turn": 1}), None)
+        .unwrap();
+    session
+        .append("step/start", json!({"turn": 1, "step": 1}), None)
+        .unwrap();
+    append_empty_assistant_message(&session, 1, 1);
+    session
+        .append("step/end", json!({"turn": 1, "step": 1}), None)
+        .unwrap();
+    session
+        .append(
+            "turn/end",
+            json!({"turn": 1, "reason": {"kind": "max-tokens"}}),
+            None,
+        )
         .unwrap();
     let value = stats_value(registry.snapshot(&session).values.get("sessionStats"));
-    assert_eq!((value.turns, value.steps, value.ttft_steps, value.decode_tokens), (1, 1, 0, 0));
+    assert_eq!(
+        (
+            value.turns,
+            value.steps,
+            value.ttft_steps,
+            value.decode_tokens
+        ),
+        (1, 1, 0, 0)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn folds_steps_already_in_log_when_plugin_mounts_late() {
     let (ctx, registry, session) = harness(false).await;
-    session.append("turn/start", json!({"turn": 1}), None).unwrap();
+    session
+        .append("turn/start", json!({"turn": 1}), None)
+        .unwrap();
     close_step(&session, 1, 1);
     close_step(&session, 1, 2);
     session
-        .append("turn/end", json!({"turn": 1, "reason": {"kind": "completed"}}), None)
+        .append(
+            "turn/end",
+            json!({"turn": 1, "reason": {"kind": "completed"}}),
+            None,
+        )
         .unwrap();
     dsh_session_stats::apply(&ctx).unwrap();
     let value = stats_value(registry.snapshot(&session).values.get("sessionStats"));
@@ -191,17 +256,34 @@ async fn folds_steps_already_in_log_when_plugin_mounts_late() {
 #[tokio::test(flavor = "multi_thread")]
 async fn no_key_without_plugin_and_dropped_when_plugin_unloads() {
     let (ctx, registry, session) = harness(false).await;
-    assert!(!registry.snapshot(&session).values.contains_key("sessionStats"));
+    assert!(
+        !registry
+            .snapshot(&session)
+            .values
+            .contains_key("sessionStats")
+    );
     let fiber = ctx.plugin(
         Arc::new(dsh_session_stats::StatsPlugin),
         cordis::arc(serde_json::Value::Null),
     );
     fiber.settle().await.unwrap();
-    assert!(registry.snapshot(&session).values.contains_key("sessionStats"), "plugin registers the unit");
+    assert!(
+        registry
+            .snapshot(&session)
+            .values
+            .contains_key("sessionStats"),
+        "plugin registers the unit"
+    );
     // Unloading the plugin fiber removes the key (HMR safety): the
     // registration rides the plugin fiber's effect.
     fiber.dispose().await;
-    assert!(!registry.snapshot(&session).values.contains_key("sessionStats"), "unload removes the key");
+    assert!(
+        !registry
+            .snapshot(&session)
+            .values
+            .contains_key("sessionStats"),
+        "unload removes the key"
+    );
 }
 
 /// Build one synthetic committed event with a controlled timestamp (TS
@@ -245,8 +327,16 @@ fn accrues_model_ttft_and_decode_time_from_one_fully_recorded_step() {
     assert_eq!(
         fold(&[
             at(1_000, "step/start", json!({"turn": 1, "step": 1})),
-            at(1_800, "assistant/chunk", json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "a"}})),
-            at(4_800, "assistant/message", json!({"turn": 1, "step": 1, "message": message_json(), "usage": {"inputTokens": 10, "outputTokens": 60}})),
+            at(
+                1_800,
+                "assistant/chunk",
+                json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "a"}})
+            ),
+            at(
+                4_800,
+                "assistant/message",
+                json!({"turn": 1, "step": 1, "message": message_json(), "usage": {"inputTokens": 10, "outputTokens": 60}})
+            ),
             at(4_900, "step/end", json!({"turn": 1, "step": 1})),
         ]),
         totals(|t| {
@@ -266,10 +356,22 @@ fn keeps_first_attempt_token_boundary_across_in_step_retry() {
     assert_eq!(
         fold(&[
             at(1_000, "step/start", json!({"turn": 1, "step": 1})),
-            at(1_200, "assistant/chunk", json!({"turn": 1, "step": 1, "chunk": {"type": "reasoning-delta", "index": 0, "text": "x"}})),
+            at(
+                1_200,
+                "assistant/chunk",
+                json!({"turn": 1, "step": 1, "chunk": {"type": "reasoning-delta", "index": 0, "text": "x"}})
+            ),
             at(2_000, "llm/retry", json!({"turn": 1, "step": 1})),
-            at(3_000, "assistant/chunk", json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "y"}})),
-            at(5_000, "assistant/message", json!({"turn": 1, "step": 1, "message": message_json()})),
+            at(
+                3_000,
+                "assistant/chunk",
+                json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "y"}})
+            ),
+            at(
+                5_000,
+                "assistant/message",
+                json!({"turn": 1, "step": 1, "message": message_json()})
+            ),
             at(5_100, "step/end", json!({"turn": 1, "step": 1})),
         ]),
         totals(|t| {
@@ -287,13 +389,37 @@ fn ignores_empty_deltas_non_token_chunks_and_chunks_outside_open_step() {
     assert_eq!(
         fold(&[
             // Chunk before any step/start: no open boundary.
-            at(500, "assistant/chunk", json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "stray"}})),
+            at(
+                500,
+                "assistant/chunk",
+                json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "stray"}})
+            ),
             at(1_000, "step/start", json!({"turn": 1, "step": 1})),
-            at(1_100, "assistant/chunk", json!({"turn": 1, "step": 1, "chunk": {"type": "block-start", "index": 0, "blockType": "text"}})),
-            at(1_200, "assistant/chunk", json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": ""}})),
-            at(1_300, "assistant/chunk", json!({"turn": 2, "step": 9, "chunk": {"type": "text-delta", "index": 0, "text": "other"}})),
-            at(1_400, "assistant/chunk", json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "first"}})),
-            at(2_000, "assistant/message", json!({"turn": 1, "step": 1, "message": message_json()})),
+            at(
+                1_100,
+                "assistant/chunk",
+                json!({"turn": 1, "step": 1, "chunk": {"type": "block-start", "index": 0, "blockType": "text"}})
+            ),
+            at(
+                1_200,
+                "assistant/chunk",
+                json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": ""}})
+            ),
+            at(
+                1_300,
+                "assistant/chunk",
+                json!({"turn": 2, "step": 9, "chunk": {"type": "text-delta", "index": 0, "text": "other"}})
+            ),
+            at(
+                1_400,
+                "assistant/chunk",
+                json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "first"}})
+            ),
+            at(
+                2_000,
+                "assistant/message",
+                json!({"turn": 1, "step": 1, "message": message_json()})
+            ),
             at(2_100, "step/end", json!({"turn": 1, "step": 1})),
         ]),
         totals(|t| {
@@ -311,7 +437,11 @@ fn leaves_cancelled_step_untimed() {
     assert_eq!(
         fold(&[
             at(1_000, "step/start", json!({"turn": 1, "step": 1})),
-            at(1_500, "assistant/chunk", json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "partial"}})),
+            at(
+                1_500,
+                "assistant/chunk",
+                json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "partial"}})
+            ),
             at(2_000, "step/end", json!({"turn": 1, "step": 1})),
         ]),
         totals(|t| {
@@ -330,8 +460,16 @@ fn pairs_tool_wall_time_by_call_id_and_prunes_leftovers_at_turn_end() {
     assert_eq!(
         fold(&[
             at(1_000, "step/start", json!({"turn": 1, "step": 1})),
-            at(1_100, "tool/call", json!({"turn": 1, "step": 1, "callId": "a", "name": "read", "arguments": "{}"})),
-            at(1_200, "tool/call", json!({"turn": 1, "step": 1, "callId": "b", "name": "read", "arguments": "{}"})),
+            at(
+                1_100,
+                "tool/call",
+                json!({"turn": 1, "step": 1, "callId": "a", "name": "read", "arguments": "{}"})
+            ),
+            at(
+                1_200,
+                "tool/call",
+                json!({"turn": 1, "step": 1, "callId": "b", "name": "read", "arguments": "{}"})
+            ),
             // Out-of-order settlement pairs by id, not adjacency.
             at(4_200, "tool/result", tool_result("b")),
             at(1_600, "tool/result", tool_result("a")),
@@ -348,9 +486,17 @@ fn pairs_tool_wall_time_by_call_id_and_prunes_leftovers_at_turn_end() {
     assert_eq!(
         fold(&[
             at(1_000, "step/start", json!({"turn": 1, "step": 1})),
-            at(1_100, "tool/call", json!({"turn": 1, "step": 1, "callId": "orphan", "name": "read", "arguments": "{}"})),
+            at(
+                1_100,
+                "tool/call",
+                json!({"turn": 1, "step": 1, "callId": "orphan", "name": "read", "arguments": "{}"})
+            ),
             at(2_000, "step/end", json!({"turn": 1, "step": 1})),
-            at(2_100, "turn/end", json!({"turn": 1, "reason": {"kind": "aborted", "reason": {"kind": "legacy"}}})),
+            at(
+                2_100,
+                "turn/end",
+                json!({"turn": 1, "reason": {"kind": "aborted", "reason": {"kind": "legacy"}}})
+            ),
             at(9_000, "tool/result", tool_result("orphan")),
         ]),
         totals(|t| {
@@ -382,7 +528,11 @@ fn pairs_only_own_pending_calls_keys() {
     assert_eq!(
         fold(&[
             at(1_000, "step/start", json!({"turn": 1, "step": 1})),
-            at(1_100, "tool/call", json!({"turn": 1, "step": 1, "callId": "constructor", "name": "read", "arguments": "{}"})),
+            at(
+                1_100,
+                "tool/call",
+                json!({"turn": 1, "step": 1, "callId": "constructor", "name": "read", "arguments": "{}"})
+            ),
             at(1_600, "tool/result", tool_result("constructor")),
             at(2_000, "step/end", json!({"turn": 1, "step": 1})),
         ]),
@@ -398,9 +548,17 @@ fn pairs_only_own_pending_calls_keys() {
 fn skips_decode_for_invalid_usage_report_and_ignores_duplicate_message() {
     let events = [
         at(1_000, "step/start", json!({"turn": 1, "step": 1})),
-        at(1_400, "assistant/chunk", json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "a"}})),
+        at(
+            1_400,
+            "assistant/chunk",
+            json!({"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "a"}}),
+        ),
         // A malformed provider report: guarded like the window fold.
-        at(2_000, "assistant/message", json!({"turn": 1, "step": 1, "message": message_json(), "usage": {"inputTokens": 1, "outputTokens": -5}})),
+        at(
+            2_000,
+            "assistant/message",
+            json!({"turn": 1, "step": 1, "message": message_json(), "usage": {"inputTokens": 1, "outputTokens": -5}}),
+        ),
     ];
     let mut with_end = events.to_vec();
     with_end.push(at(2_100, "step/end", json!({"turn": 1, "step": 1})));
@@ -421,9 +579,16 @@ fn skips_decode_for_invalid_usage_report_and_ignores_duplicate_message() {
     for event in &events {
         state = (definition.apply)(&state, event);
     }
-    let duplicate = at(2_050, "assistant/message", json!({"turn": 1, "step": 1, "message": message_json()}));
+    let duplicate = at(
+        2_050,
+        "assistant/message",
+        json!({"turn": 1, "step": 1, "message": message_json()}),
+    );
     let next = (definition.apply)(&state, &duplicate);
-    assert!(Arc::ptr_eq(&next, &state), "duplicate message must fold to the same reference");
+    assert!(
+        Arc::ptr_eq(&next, &state),
+        "duplicate message must fold to the same reference"
+    );
 }
 
 #[test]
@@ -435,7 +600,11 @@ fn accrues_nothing_for_unrelated_events_and_clamps_negative_clock_skew() {
     assert_eq!(
         fold(&[
             at(2_000, "step/start", json!({"turn": 1, "step": 1})),
-            at(1_000, "assistant/message", json!({"turn": 1, "step": 1, "message": message_json()})),
+            at(
+                1_000,
+                "assistant/message",
+                json!({"turn": 1, "step": 1, "message": message_json()})
+            ),
             at(2_100, "step/end", json!({"turn": 1, "step": 1})),
         ]),
         totals(|t| {

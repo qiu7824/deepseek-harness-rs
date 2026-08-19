@@ -14,8 +14,7 @@ use serde_json::Value as JsonValue;
 use crate::types::{SessionEvent, SurfaceOp};
 
 /// Runtime counterpart of the message-producing event union.
-pub const SURFACE_EVENT_TYPES: [&str; 3] =
-    ["user/message", "assistant/message", "tool/result"];
+pub const SURFACE_EVENT_TYPES: [&str; 3] = ["user/message", "assistant/message", "tool/result"];
 
 /// Whether an event type can join the model-visible surface.
 pub fn is_surface_eligible_type(type_: &str) -> bool {
@@ -48,10 +47,8 @@ pub fn derive_event_message(event: &SessionEvent) -> Option<Message> {
     match event.type_.as_str() {
         "user/message" => serde_json::from_value::<Message>(event.data.clone()).ok(),
         "assistant/message" => {
-            let message: Message = serde_json::from_value(
-                event.data.get("message")?.clone(),
-            )
-            .ok()?;
+            let message: Message =
+                serde_json::from_value(event.data.get("message")?.clone()).ok()?;
             // Skip an empty-content assistant/message: it exists only to host
             // a max-tokens step's usage.
             if message.content.is_empty() {
@@ -152,7 +149,9 @@ fn assert_provenance(event: &SessionEvent, shadowed_seqs: &[u64]) -> Result<(), 
     let mut sources = std::collections::HashSet::new();
     if let Some(raw) = &event.source_event_seqs {
         if raw.is_empty() && event.type_ != "assistant/message" {
-            return Err("sourceEventSeqs must not be empty except on assistant/message".to_string());
+            return Err(
+                "sourceEventSeqs must not be empty except on assistant/message".to_string(),
+            );
         }
         let mut non_earlier_source: Option<u64> = None;
         for source in raw {
@@ -224,17 +223,25 @@ fn assert_tool_result_rewrite(
         return Ok(());
     }
     if shadowed_seqs.len() != 1 {
-        return Err("tool/result surface replacement must rewrite exactly one current node".to_string());
+        return Err(
+            "tool/result surface replacement must rewrite exactly one current node".to_string(),
+        );
     }
     let original_seq = shadowed_seqs[0];
     if original_seq < base_seq {
-        return Err("tool/result surface replacement must target a current tool/result".to_string());
+        return Err(
+            "tool/result surface replacement must target a current tool/result".to_string(),
+        );
     }
     let Some(original) = events.get((original_seq - base_seq) as usize) else {
-        return Err("tool/result surface replacement must target a current tool/result".to_string());
+        return Err(
+            "tool/result surface replacement must target a current tool/result".to_string(),
+        );
     };
     if original.type_ != "tool/result" {
-        return Err("tool/result surface replacement must target a current tool/result".to_string());
+        return Err(
+            "tool/result surface replacement must target a current tool/result".to_string(),
+        );
     }
     let original_rest = with_nulled_result_content(&original.data);
     let replacement_rest = with_nulled_result_content(&event.data);
@@ -315,10 +322,24 @@ fn apply_surface_plan(
             None
         }
         Some(SurfacePlan::Replace(plan)) => {
-            let SurfaceReplacePlan { seq, start, end, start_idx, end_idx, shadowed_seqs } = plan;
-            state.nodes.splice(start_idx..=end_idx, std::iter::once(seq));
+            let SurfaceReplacePlan {
+                seq,
+                start,
+                end,
+                start_idx,
+                end_idx,
+                shadowed_seqs,
+            } = plan;
+            state
+                .nodes
+                .splice(start_idx..=end_idx, std::iter::once(seq));
             state.replace_generation += 1;
-            Some(SurfaceFoldReplacement { seq, start, end, shadowed_seqs })
+            Some(SurfaceFoldReplacement {
+                seq,
+                start,
+                end,
+                shadowed_seqs,
+            })
         }
         None => None,
     }
@@ -342,11 +363,15 @@ pub fn fold_surface(events: &[SessionEvent]) -> Result<SurfaceFoldResult, String
     let mut state = SurfaceFoldState::default();
     let mut replacements = Vec::new();
     for (index, event) in events.iter().enumerate() {
-        if let Some(replacement) = apply_surface_event(&mut state, event, index as u64, events, 0)? {
+        if let Some(replacement) = apply_surface_event(&mut state, event, index as u64, events, 0)?
+        {
             replacements.push(replacement);
         }
     }
-    Ok(SurfaceFoldResult { nodes: state.nodes, replacements })
+    Ok(SurfaceFoldResult {
+        nodes: state.nodes,
+        replacements,
+    })
 }
 
 /// Incremental ordered surface view and append-boundary validator
@@ -427,7 +452,11 @@ impl SurfaceManager {
     }
 
     /// Validate the next candidate without mutating the committed surface.
-    pub fn validate_next(&mut self, log: &[SessionEvent], event: &SessionEvent) -> Result<(), String> {
+    pub fn validate_next(
+        &mut self,
+        log: &[SessionEvent],
+        event: &SessionEvent,
+    ) -> Result<(), String> {
         if self.needs_process(log) {
             self.process_delta(log)?;
         }
@@ -491,7 +520,12 @@ mod tests {
         assert!(is_surface_eligible_type("tool/result"));
         assert!(!is_surface_eligible_type("turn/start"));
 
-        let surface = event("user/message", 0, user_message_data("a"), Some(SurfaceOp::Append));
+        let surface = event(
+            "user/message",
+            0,
+            user_message_data("a"),
+            Some(SurfaceOp::Append),
+        );
         assert!(is_surface_event(&surface));
         assert!(is_append_surface_event(&surface));
         assert!(!is_replacement_surface_event(&surface));
@@ -510,7 +544,12 @@ mod tests {
 
     #[test]
     fn derive_event_message_projects_messages() {
-        let user = event("user/message", 0, user_message_data("a"), Some(SurfaceOp::Append));
+        let user = event(
+            "user/message",
+            0,
+            user_message_data("a"),
+            Some(SurfaceOp::Append),
+        );
         let message = derive_event_message(&user).unwrap();
         assert_eq!(message.role, dsh_llm::Role::User);
 
@@ -554,13 +593,28 @@ mod tests {
     fn fold_append_only() {
         let events = vec![
             event("turn/start", 0, serde_json::json!({"turn": 1}), None),
-            event("user/message", 1, user_message_data("a"), Some(SurfaceOp::Append)),
-            event("assistant/message", 2, serde_json::json!({
-                "turn": 1, "step": 1,
-                "message": {"id": "m1", "role": "assistant", "content": [{"type": "text", "text": "hi"}],
-                    "source": {"kind": "model", "provider": "p", "model": "m"}},
-            }), Some(SurfaceOp::Append)),
-            event("turn/end", 3, serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}), None),
+            event(
+                "user/message",
+                1,
+                user_message_data("a"),
+                Some(SurfaceOp::Append),
+            ),
+            event(
+                "assistant/message",
+                2,
+                serde_json::json!({
+                    "turn": 1, "step": 1,
+                    "message": {"id": "m1", "role": "assistant", "content": [{"type": "text", "text": "hi"}],
+                        "source": {"kind": "model", "provider": "p", "model": "m"}},
+                }),
+                Some(SurfaceOp::Append),
+            ),
+            event(
+                "turn/end",
+                3,
+                serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+                None,
+            ),
         ];
         let result = fold_surface(&events).unwrap();
         assert_eq!(result.nodes, vec![1, 2]);
@@ -597,10 +651,19 @@ mod tests {
     #[test]
     fn fold_rejects_missing_marker_and_provenance() {
         let events = vec![event("user/message", 0, user_message_data("a"), None)];
-        assert!(fold_surface(&events).unwrap_err().contains("requires a surfaceOp marker"));
+        assert!(
+            fold_surface(&events)
+                .unwrap_err()
+                .contains("requires a surfaceOp marker")
+        );
 
         let events = vec![
-            event("user/message", 0, user_message_data("a"), Some(SurfaceOp::Append)),
+            event(
+                "user/message",
+                0,
+                user_message_data("a"),
+                Some(SurfaceOp::Append),
+            ),
             SessionEvent {
                 type_: "user/message".to_string(),
                 seq: 1,
@@ -611,9 +674,11 @@ mod tests {
                 source_event_seqs: None,
             },
         ];
-        assert!(fold_surface(&events)
-            .unwrap_err()
-            .contains("must include every shadowed surface node"));
+        assert!(
+            fold_surface(&events)
+                .unwrap_err()
+                .contains("must include every shadowed surface node")
+        );
     }
 
     #[test]
@@ -624,9 +689,11 @@ mod tests {
             serde_json::json!({"turn": 1}),
             Some(SurfaceOp::Append),
         )];
-        assert!(fold_surface(&events)
-            .unwrap_err()
-            .contains("not surface-eligible"));
+        assert!(
+            fold_surface(&events)
+                .unwrap_err()
+                .contains("not surface-eligible")
+        );
     }
 
     #[test]
@@ -637,7 +704,12 @@ mod tests {
 
         // simulate session flow: validate candidate, then admit into log
         let mut log = log;
-        let candidate = event("user/message", 0, user_message_data("a"), Some(SurfaceOp::Append));
+        let candidate = event(
+            "user/message",
+            0,
+            user_message_data("a"),
+            Some(SurfaceOp::Append),
+        );
         manager.validate_next(&log, &candidate).unwrap();
         log.push(candidate);
         assert_eq!(manager.nodes(&log).unwrap(), vec![0]);
@@ -646,7 +718,12 @@ mod tests {
 
     #[test]
     fn manager_rejects_invalid_candidate_without_mutation() {
-        let mut log = vec![event("user/message", 0, user_message_data("a"), Some(SurfaceOp::Append))];
+        let mut log = vec![event(
+            "user/message",
+            0,
+            user_message_data("a"),
+            Some(SurfaceOp::Append),
+        )];
         let mut manager = SurfaceManager::new(0);
         assert_eq!(manager.nodes(&log).unwrap(), vec![0]);
 
@@ -656,12 +733,22 @@ mod tests {
         assert_eq!(manager.nodes(&log).unwrap(), vec![0]);
 
         // candidate with seq gap: validation fails
-        let gap = event("user/message", 5, user_message_data("c"), Some(SurfaceOp::Append));
+        let gap = event(
+            "user/message",
+            5,
+            user_message_data("c"),
+            Some(SurfaceOp::Append),
+        );
         assert!(manager.validate_next(&log, &gap).is_err());
         assert_eq!(manager.nodes(&log).unwrap(), vec![0]);
 
         // valid candidate admitted
-        let good = event("user/message", 1, user_message_data("d"), Some(SurfaceOp::Append));
+        let good = event(
+            "user/message",
+            1,
+            user_message_data("d"),
+            Some(SurfaceOp::Append),
+        );
         manager.validate_next(&log, &good).unwrap();
         log.push(good);
         assert_eq!(manager.nodes(&log).unwrap(), vec![0, 1]);

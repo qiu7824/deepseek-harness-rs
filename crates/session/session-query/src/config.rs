@@ -57,7 +57,9 @@ impl SessionQueryErrorCode {
             SessionQueryErrorCode::SessionQueryInvalidLineage => "SESSION_QUERY_INVALID_LINEAGE",
             SessionQueryErrorCode::SessionQueryInvalidSurface => "SESSION_QUERY_INVALID_SURFACE",
             SessionQueryErrorCode::SessionQueryInvalidWindow => "SESSION_QUERY_INVALID_WINDOW",
-            SessionQueryErrorCode::SessionQueryPersistenceFailed => "SESSION_QUERY_PERSISTENCE_FAILED",
+            SessionQueryErrorCode::SessionQueryPersistenceFailed => {
+                "SESSION_QUERY_PERSISTENCE_FAILED"
+            }
             SessionQueryErrorCode::SessionQuerySearchDisabled => "SESSION_QUERY_SEARCH_DISABLED",
             SessionQueryErrorCode::SessionQuerySessionNotFound => "SESSION_QUERY_SESSION_NOT_FOUND",
             SessionQueryErrorCode::SessionQueryStaleCursor => "SESSION_QUERY_STALE_CURSOR",

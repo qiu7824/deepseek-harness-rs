@@ -7,10 +7,12 @@
 //! `PayloadRest<K>` contract, enforced here by construction).
 
 use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll};
 
 use cordis::{ArcValue, BoxFuture, Context, DispatchMode, arc};
 use dsh_scope::{ScopeCarrier, scope_target};
 use dsh_system_prompt::AssembleContext;
+use futures::FutureExt;
 
 use crate::runtime_types::Agent;
 
@@ -46,21 +48,62 @@ impl AgentEventDispatch {
     pub fn emit(&self, name: &str, build: impl FnOnce(&Arc<dyn Agent>) -> ArcValue) {
         let payload = build(&self.agent);
         let dispatch_ctx = self.dispatch_ctx();
-        let listeners = dispatch_ctx
-            .events
-            .collect(DispatchMode::Emit, Some(&dispatch_ctx), name, &[payload.clone()]);
+        let listeners = dispatch_ctx.events.collect(
+            DispatchMode::Emit,
+            Some(&dispatch_ctx),
+            name,
+            &[payload.clone()],
+        );
         let logger = self.ctx.named_logger(Some("agents"));
+        let mut pending = Vec::new();
         for (listener_ctx, callback) in &listeners {
-            let future = callback(listener_ctx, vec![payload.clone()]);
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                futures::executor::block_on(future)
-            })) {
-                Ok(_) => {}
+            let future = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                callback(listener_ctx, vec![payload.clone()])
+            }));
+            let mut future = match future {
+                Ok(future) => future,
                 Err(error) => {
                     logger.warn(vec![arc(format!(
                         "agent event \"{name}\" listener threw: {}",
                         crate::registry::render_panic(error)
                     ))]);
+                    continue;
+                }
+            };
+            let waker = futures::task::noop_waker();
+            let mut task_context = TaskContext::from_waker(&waker);
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                future.as_mut().poll(&mut task_context)
+            })) {
+                Ok(Poll::Ready(_)) => {}
+                Ok(Poll::Pending) => {
+                    pending.push(future);
+                }
+                Err(error) => {
+                    logger.warn(vec![arc(format!(
+                        "agent event \"{name}\" listener threw: {}",
+                        crate::registry::render_panic(error)
+                    ))]);
+                }
+            }
+        }
+        for future in pending {
+            let logger = logger.clone();
+            let name = name.to_string();
+            let task = async move {
+                if let Err(error) = std::panic::AssertUnwindSafe(future).catch_unwind().await {
+                    logger.warn(vec![arc(format!(
+                        "agent event \"{name}\" listener threw: {}",
+                        crate::registry::render_panic(error)
+                    ))]);
+                }
+            };
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.spawn(task);
+                }
+                Err(_) => {
+                    std::thread::spawn(move || futures::executor::block_on(task));
                 }
             }
         }
@@ -77,7 +120,9 @@ impl AgentEventDispatch {
         let name = name.to_string();
         let events = dispatch_ctx.events.clone();
         Box::pin(async move {
-            events.serial(Some(&dispatch_ctx), &name, vec![payload]).await
+            events
+                .serial(Some(&dispatch_ctx), &name, vec![payload])
+                .await
         })
     }
 

@@ -19,8 +19,9 @@
 //! - `runMaintenance` erases its generic result (Rust
 //!   `BoxFuture<'static, ()>`).
 
-use std::sync::{Arc, Weak};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 
 use cordis::{ArcValue, BoxFuture, Context, arc, downcast_arc};
 use dsh_agent::{
@@ -53,11 +54,26 @@ use crate::tool_calls::execute_tool_calls;
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoopCancelled {
     pub reason: AgentCancelCause,
+    pub failure: Option<LlmFailure>,
 }
 
 impl LoopCancelled {
     fn hook(reason: impl Into<String>) -> Self {
-        Self { reason: AgentCancelCause::Hook { reason: reason.into() } }
+        Self {
+            reason: AgentCancelCause::Hook {
+                reason: reason.into(),
+            },
+            failure: None,
+        }
+    }
+
+    fn failure(failure: LlmFailure) -> Self {
+        Self {
+            reason: AgentCancelCause::Hook {
+                reason: failure.message.clone(),
+            },
+            failure: Some(failure),
+        }
     }
 }
 
@@ -73,6 +89,7 @@ fn throw_if_aborted(signal: &Arc<CancellationSignal>) -> Result<(), LoopCancelle
     if signal.aborted() {
         Err(LoopCancelled {
             reason: signal.reason().unwrap_or(AgentCancelCause::User),
+            failure: None,
         })
     } else {
         Ok(())
@@ -81,7 +98,9 @@ fn throw_if_aborted(signal: &Arc<CancellationSignal>) -> Result<(), LoopCancelle
 
 #[derive(Clone)]
 enum Phase {
-    Idle { last_turn: u64 },
+    Idle {
+        last_turn: u64,
+    },
     Maintenance {
         abort: Arc<CancellationSignal>,
         last_turn: u64,
@@ -97,36 +116,75 @@ enum Phase {
 
 struct Activity {
     epoch: u64,
+    next_token: u64,
+    active: HashSet<u64>,
     sender: Option<tokio::sync::watch::Sender<()>>,
     receiver: Option<tokio::sync::watch::Receiver<()>>,
 }
 
 impl Activity {
     fn resolved() -> Self {
-        Self { epoch: 0, sender: None, receiver: None }
-    }
-
-    /// Open a pending driver boundary: `whenIdle` waits on the receiver
-    /// until `finish` sends.
-    fn begin(&mut self) {
-        self.epoch += 1;
-        let (sender, receiver) = tokio::sync::watch::channel(());
-        self.sender = Some(sender);
-        self.receiver = Some(receiver);
-    }
-
-    /// Settle the current driver and wake its waiters.
-    fn finish(&mut self) {
-        self.epoch += 1;
-        if let Some(sender) = self.sender.take() {
-            let _ = sender.send(());
+        Self {
+            epoch: 0,
+            next_token: 0,
+            active: HashSet::new(),
+            sender: None,
+            receiver: None,
         }
-        self.receiver = None;
     }
+
+    /// Join the current pending boundary or open a new one. Overlapping
+    /// handoffs share one waiter; only the last activity may settle it.
+    fn begin(&mut self) -> u64 {
+        self.next_token += 1;
+        let token = self.next_token;
+        if self.active.is_empty() {
+            self.epoch += 1;
+            let (sender, receiver) = tokio::sync::watch::channel(());
+            self.sender = Some(sender);
+            self.receiver = Some(receiver);
+        }
+        self.active.insert(token);
+        token
+    }
+
+    fn finish(&mut self, token: u64) -> bool {
+        if !self.active.remove(&token) {
+            return false;
+        }
+        if self.active.is_empty() {
+            self.epoch += 1;
+            if let Some(sender) = self.sender.take() {
+                let _ = sender.send(());
+            }
+            self.receiver = None;
+        }
+        true
+    }
+}
+
+/// An active driver latches every explicit wake unless teardown has made
+/// that lifecycle terminal. Work consumed by the current kick resets the
+/// latch before continuing; work arriving at its tail starts the next kick.
+fn should_latch_active_wake(disposed: bool) -> bool {
+    !disposed
 }
 
 /// Remove adapter-derived values before plugins propose the next request
 /// config.
+#[cfg(test)]
+mod wake_policy_tests {
+    #[test]
+    fn ordinary_running_wake_is_latched() {
+        assert!(super::should_latch_active_wake(false));
+    }
+
+    #[test]
+    fn disposed_running_wake_is_not_latched() {
+        assert!(!super::should_latch_active_wake(true));
+    }
+}
+
 fn request_proposal(header: &EpochHeader) -> LlmCallConfig {
     let mut proposal = header.config.clone();
     if header
@@ -162,6 +220,7 @@ pub struct ReactLoopAgent {
     session: Session,
     inbox: Inbox,
     scope: Scope,
+    scope_key: dsh_scope::ScopeKey,
     ctx: Context,
     dispatch: Mutex<Option<AgentEventDispatch>>,
     weak: Weak<Self>,
@@ -171,6 +230,40 @@ pub struct ReactLoopAgent {
     runtime_context: RuntimeContextProjection,
 }
 
+struct MaintenanceGuard {
+    agent: Weak<ReactLoopAgent>,
+    activity_token: u64,
+}
+
+impl Drop for MaintenanceGuard {
+    fn drop(&mut self) {
+        let Some(agent) = self.agent.upgrade() else {
+            return;
+        };
+        let wake_requested = {
+            let mut phase = agent.phase.lock();
+            let Phase::Maintenance {
+                last_turn,
+                wake_requested,
+                ..
+            } = &*phase
+            else {
+                drop(phase);
+                agent.activity.lock().finish(self.activity_token);
+                return;
+            };
+            let last_turn = *last_turn;
+            let wake_requested = *wake_requested;
+            *phase = Phase::Idle { last_turn };
+            wake_requested
+        };
+        if wake_requested && agent.inbox.has_pending() {
+            agent.wake_driver(false);
+        }
+        agent.activity.lock().finish(self.activity_token);
+    }
+}
+
 impl ReactLoopAgent {
     pub fn new(
         loop_ctx: &Context,
@@ -178,9 +271,10 @@ impl ReactLoopAgent {
         options: AgentOptions,
         session: Session,
     ) -> Result<Arc<Self>, String> {
+        let scope_key = dsh_scope::ScopeKey::new();
         let scope = create_scope(
             loop_ctx,
-            dsh_scope::ScopeKey::new(),
+            scope_key.clone(),
             &dsh_scope::CreateScopeOptions::default(),
         );
         let scope_ctx = scope.ctx.clone();
@@ -209,6 +303,7 @@ impl ReactLoopAgent {
                 session,
                 inbox,
                 scope,
+                scope_key,
                 ctx: scope_ctx,
                 dispatch: Mutex::new(None),
                 weak: agent_ref.clone(),
@@ -266,18 +361,15 @@ impl ReactLoopAgent {
         }
     }
 
-    /// Commit a phase and publish its externally visible status transition.
-    fn set_phase(&self, next: Phase) {
-        let previous = self.status();
-        *self.phase.lock() = next;
-        let status = self.status();
-        if status != previous {
-            if let Some(agent) = self.weak.upgrade() {
-                let agent_dyn: Arc<dyn Agent> = agent;
-                self.dispatcher().emit("agent/status", |_| {
-                    arc(AgentStatusPayload { agent: Arc::clone(&agent_dyn), status })
-                });
-            }
+    fn emit_status(&self, status: AgentStatus) {
+        if let Some(agent) = self.weak.upgrade() {
+            let agent_dyn: Arc<dyn Agent> = agent;
+            self.dispatcher().emit("agent/status", |_| {
+                arc(AgentStatusPayload {
+                    agent: Arc::clone(&agent_dyn),
+                    status,
+                })
+            });
         }
     }
 
@@ -301,56 +393,82 @@ impl ReactLoopAgent {
         }
     }
 
-    fn wake_driver(&self, wake_after_abort: bool) {
-        {
+    fn wake_driver(&self, _wake_after_abort: bool) {
+        // Claim Idle and open its activity in one critical section. Two
+        // concurrent wakeups can no longer both observe Idle and spawn
+        // competing drivers for the same Session.
+        let activity_token = {
+            let mut activity = self.activity.lock();
             let mut phase = self.phase.lock();
-            let is_maintenance = matches!(*phase, Phase::Maintenance { .. });
             match &mut *phase {
-                Phase::Maintenance { abort, wake_requested, .. }
-                | Phase::Running { abort, wake_requested, .. } => {
+                Phase::Maintenance {
+                    abort,
+                    wake_requested,
+                    ..
+                }
+                | Phase::Running {
+                    abort,
+                    wake_requested,
+                    ..
+                } => {
                     let disposed = abort
                         .reason()
                         .is_some_and(|reason| reason == AgentCancelCause::Disposed);
-                    if !disposed && (is_maintenance || wake_after_abort) {
+                    if should_latch_active_wake(disposed) {
                         *wake_requested = true;
                     }
                     return;
                 }
-                Phase::Idle { .. } => {}
+                Phase::Idle { last_turn } => {
+                    let last_turn = *last_turn;
+                    *phase = Phase::Running {
+                        abort: CancellationSignal::new(),
+                        turn: last_turn,
+                        step: 0,
+                        wake_requested: false,
+                    };
+                    activity.begin()
+                }
             }
-        }
-        let last_turn = match &*self.phase.lock() {
-            Phase::Idle { last_turn } => *last_turn,
-            _ => unreachable!(),
         };
-        self.set_phase(Phase::Running {
-            abort: CancellationSignal::new(),
-            turn: last_turn,
-            step: 0,
-            wake_requested: false,
-        });
-        // The driver boundary is pending until the spawned kick converges,
-        // so `whenIdle` waits for it exactly like the TS `activityDone`.
-        self.activity.lock().begin();
+        self.emit_status(AgentStatus::Running);
         let weak = self.weak.clone();
         tokio::spawn(async move {
             if let Some(agent) = weak.upgrade() {
-                let _ = agent.kick().await;
-                agent.finish_driver();
+                let agent_dyn: Arc<dyn Agent> = agent.clone();
+                if let Some(agents) = agent
+                    .loop_ctx
+                    .get_typed::<Arc<dsh_agent::AgentRegistry>>("agents", false)
+                    .map(|slot| slot.as_ref().clone())
+                {
+                    let _ = agents.with_initiator(agent_dyn, agent.kick()).await;
+                }
+                agent.finish_driver(activity_token);
             }
         });
     }
 
-    fn finish_driver(&self) {
-        let (turn, wake_requested) = match &*self.phase.lock() {
-            Phase::Running { turn, wake_requested, .. } => (*turn, *wake_requested),
-            _ => return,
+    fn finish_driver(&self, activity_token: u64) {
+        let wake_requested = {
+            let mut phase = self.phase.lock();
+            let Phase::Running {
+                turn,
+                wake_requested,
+                ..
+            } = &*phase
+            else {
+                return;
+            };
+            let turn = *turn;
+            let wake_requested = *wake_requested;
+            *phase = Phase::Idle { last_turn: turn };
+            wake_requested
         };
-        self.set_phase(Phase::Idle { last_turn: turn });
-        self.activity.lock().finish();
+        self.emit_status(AgentStatus::Idle);
         if wake_requested && self.inbox.has_pending() {
             self.wake_driver(false);
         }
+        self.activity.lock().finish(activity_token);
     }
 
     async fn kick(&self) {
@@ -370,7 +488,10 @@ impl ReactLoopAgent {
         let (turn, step) = position;
         let signal = match &*self.phase.lock() {
             Phase::Running { abort, .. } => Arc::clone(abort),
-            _ => panic!("agent {:?}: pre-step outside running phase", self.id.as_str()),
+            _ => panic!(
+                "agent {:?}: pre-step outside running phase",
+                self.id.as_str()
+            ),
         };
         let claimed = self.inbox.claim(target, turn).expect("inbox claim");
         let agent: Arc<dyn Agent> = self.weak.upgrade().expect("live agent");
@@ -432,7 +553,10 @@ impl ReactLoopAgent {
     async fn turn(&self) -> Result<bool, LoopCancelled> {
         let signal = match &*self.phase.lock() {
             Phase::Running { abort, .. } => Arc::clone(abort),
-            _ => panic!("agent {:?}: turn without driver reservation", self.id.as_str()),
+            _ => panic!(
+                "agent {:?}: turn without driver reservation",
+                self.id.as_str()
+            ),
         };
         throw_if_aborted(&signal)?;
         let turn = match &*self.phase.lock() {
@@ -442,7 +566,10 @@ impl ReactLoopAgent {
         self.session
             .append("turn/start", serde_json::json!({ "turn": turn }), None)
             .expect("turn/start");
-        if let Phase::Running { turn: phase_turn, .. } = &mut *self.phase.lock() {
+        if let Phase::Running {
+            turn: phase_turn, ..
+        } = &mut *self.phase.lock()
+        {
             *phase_turn = turn;
         }
         let mut turn_ends: Option<TurnEndReason> = None;
@@ -475,9 +602,16 @@ impl ReactLoopAgent {
                 }
                 throw_if_aborted(&signal)?;
                 self.session
-                    .append("step/start", serde_json::json!({ "turn": turn, "step": step }), None)
+                    .append(
+                        "step/start",
+                        serde_json::json!({ "turn": turn, "step": step }),
+                        None,
+                    )
                     .expect("step/start");
-                if let Phase::Running { step: phase_step, .. } = &mut *self.phase.lock() {
+                if let Phase::Running {
+                    step: phase_step, ..
+                } = &mut *self.phase.lock()
+                {
                     *phase_step = step;
                 }
                 let step_end = async {
@@ -497,7 +631,11 @@ impl ReactLoopAgent {
                 }
                 .await;
                 self.session
-                    .append("step/end", serde_json::json!({ "turn": turn, "step": step }), None)
+                    .append(
+                        "step/end",
+                        serde_json::json!({ "turn": turn, "step": step }),
+                        None,
+                    )
                     .expect("step/end");
                 let step_end = step_end?;
                 // max-tokens is sticky: a later completed step must not
@@ -542,13 +680,13 @@ impl ReactLoopAgent {
                 // anything else flattens to `errorChain` text under the
                 // `UNKNOWN` code.
                 turn_ends = Some(TurnEndReason::Error {
-                    error: LlmFailure {
+                    error: error.failure.clone().unwrap_or_else(|| LlmFailure {
                         message: error.to_string(),
                         code: "UNKNOWN".to_string(),
                         status: None,
                         provider_retry_after_ms: None,
                         request_id: None,
-                    },
+                    }),
                 });
                 let current_step = match &*self.phase.lock() {
                     Phase::Running { step, .. } => *step,
@@ -576,7 +714,13 @@ impl ReactLoopAgent {
         }
         // A fresh controller makes a latch set on the old one stale: the live
         // driver claims the queue itself.
-        if let Phase::Running { abort, wake_requested, step, .. } = &mut *self.phase.lock() {
+        if let Phase::Running {
+            abort,
+            wake_requested,
+            step,
+            ..
+        } = &mut *self.phase.lock()
+        {
             *abort = CancellationSignal::new();
             *wake_requested = false;
             *step = 0;
@@ -585,9 +729,14 @@ impl ReactLoopAgent {
     }
 
     /// Execute one model step; `None` means the turn keeps stepping.
-    async fn step(&self, assembly: &PromptAssembly) -> Result<Option<TurnEndReason>, LoopCancelled> {
+    async fn step(
+        &self,
+        assembly: &PromptAssembly,
+    ) -> Result<Option<TurnEndReason>, LoopCancelled> {
         let (turn, step, signal) = match &*self.phase.lock() {
-            Phase::Running { abort, turn, step, .. } => (*turn, *step, Arc::clone(abort)),
+            Phase::Running {
+                abort, turn, step, ..
+            } => (*turn, *step, Arc::clone(abort)),
             _ => panic!("agent {:?}: step outside running phase", self.id.as_str()),
         };
         throw_if_aborted(&signal)?;
@@ -611,13 +760,24 @@ impl ReactLoopAgent {
                 Some(prepared) => {
                     let request_for_stream = request.clone();
                     (prepared.stream)(request_for_stream)
-                        .map_err(|error| LoopCancelled::hook(error.message))?
+                        .map_err(|error| LoopCancelled::failure(error.failure))?
                 }
                 None => self.llm().stream(request.clone()),
             };
             throw_if_aborted(&signal)?;
             let mut stream = stream;
-            while let Some(chunk) = stream.next().await {
+            loop {
+                let next = tokio::select! {
+                    biased;
+                    _ = signal.cancelled() => return Err(LoopCancelled {
+                        reason: signal.reason().unwrap_or(AgentCancelCause::User),
+                        failure: None,
+                    }),
+                    next = stream.next() => next,
+                };
+                let Some(chunk) = next else {
+                    break;
+                };
                 throw_if_aborted(&signal)?;
                 let event = self
                     .session
@@ -632,7 +792,10 @@ impl ReactLoopAgent {
             }
             throw_if_aborted(&signal)?;
             let finish = assembler.finish();
-            if matches!(finish, FinishReason::Error { .. } | FinishReason::Aborted { .. }) {
+            if matches!(
+                finish,
+                FinishReason::Error { .. } | FinishReason::Aborted { .. }
+            ) {
                 let failure = match &finish {
                     FinishReason::Error { failure } | FinishReason::Aborted { failure } => {
                         failure.clone()
@@ -665,17 +828,7 @@ impl ReactLoopAgent {
                 let action = downcast_arc::<Option<RequestErrorAction>>(&decision)
                     .expect("agent/request-error action");
                 if action.as_ref().as_ref() != Some(&RequestErrorAction::Retry) {
-                    return Err(LoopCancelled::hook(format!(
-                        "{}",
-                        LlmFailure {
-                            message: failure.message,
-                            code: failure.code,
-                            status: failure.status,
-                            provider_retry_after_ms: failure.provider_retry_after_ms,
-                            request_id: failure.request_id,
-                        }
-                        .message
-                    )));
+                    return Err(LoopCancelled::failure(failure));
                 }
                 continue;
             }
@@ -714,7 +867,11 @@ impl ReactLoopAgent {
                 .content
                 .iter()
                 .filter_map(|block| match block {
-                    ContentBlock::ToolCall { id, name, arguments } => Some(ToolCallBlock {
+                    ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    } => Some(ToolCallBlock {
                         id: id.clone(),
                         name: name.clone(),
                         arguments: arguments.clone(),
@@ -770,7 +927,9 @@ impl ReactLoopAgent {
         signal: &Arc<CancellationSignal>,
     ) -> Result<(GenerateOptions, Option<dsh_llm::PreparedLlmCall>), LoopCancelled> {
         let persisted_header = self.session.request_header();
-        let persisted_config = persisted_header.as_ref().map(|header| header.config.clone());
+        let persisted_config = persisted_header
+            .as_ref()
+            .map(|header| header.config.clone());
         let provider = self.options.provider.clone().unwrap_or_default();
         let model = self.options.model.clone().unwrap_or_default();
         let reasoning_effort = if persisted_config
@@ -829,10 +988,8 @@ impl ReactLoopAgent {
             Ok(prepared) => (prepared.config.clone(), Some(prepared)),
             // Middleware may serve an unregistered route; terminal dispatch
             // still requires an adapter.
-            Err(error) if error.code == "NO_ADAPTER" => {
-                (proposed_config.as_ref().clone(), None)
-            }
-            Err(error) => return Err(LoopCancelled::hook(error.message)),
+            Err(error) if error.code == "NO_ADAPTER" => (proposed_config.as_ref().clone(), None),
+            Err(error) => return Err(LoopCancelled::failure(error.failure)),
         };
         throw_if_aborted(signal)?;
 
@@ -841,8 +998,16 @@ impl ReactLoopAgent {
             adapter_defaults: prepared_call
                 .as_ref()
                 .map(|prepared| prepared.adapter_defaults.clone()),
-            system: if system.is_empty() { None } else { Some(system.to_string()) },
-            tools: if tools.is_empty() { None } else { Some(tools.to_vec()) },
+            system: if system.is_empty() {
+                None
+            } else {
+                Some(system.to_string())
+            },
+            tools: if tools.is_empty() {
+                None
+            } else {
+                Some(tools.to_vec())
+            },
         });
         let baseline = self.session.request_header();
         if !self.request_header_logged.load(Ordering::SeqCst) {
@@ -879,13 +1044,11 @@ impl ReactLoopAgent {
                 .map(|context| context.context_window),
         };
         let previous_context = self.session.request_context();
-        let changed = previous_context
-            .as_ref()
-            .is_none_or(|previous| {
-                previous.provider != request_context.provider
-                    || previous.model != request_context.model
-                    || previous.context_window != request_context.context_window
-            });
+        let changed = previous_context.as_ref().is_none_or(|previous| {
+            previous.provider != request_context.provider
+                || previous.model != request_context.model
+                || previous.context_window != request_context.context_window
+        });
         if changed {
             self.session
                 .append(
@@ -930,12 +1093,15 @@ fn inbox_notify_inserted(
             return;
         };
         let agent_dyn: Arc<dyn Agent> = agent;
-        AgentEventDispatch::new(&loop_ctx, Arc::clone(&agent_dyn)).emit("agent/inbox/inserted", |_| {
-            arc(AgentInboxMessagePayload {
-                agent: Arc::clone(&agent_dyn),
-                message: message.clone(),
-            })
-        });
+        AgentEventDispatch::new(&loop_ctx, Arc::clone(&agent_dyn)).emit(
+            "agent/inbox/inserted",
+            |_| {
+                arc(AgentInboxMessagePayload {
+                    agent: Arc::clone(&agent_dyn),
+                    message: message.clone(),
+                })
+            },
+        );
     })
 }
 
@@ -950,12 +1116,15 @@ fn inbox_notify_discarded(
             return;
         };
         let agent_dyn: Arc<dyn Agent> = agent;
-        AgentEventDispatch::new(&loop_ctx, Arc::clone(&agent_dyn)).emit("agent/inbox/discarded", |_| {
-            arc(AgentInboxMessagePayload {
-                agent: Arc::clone(&agent_dyn),
-                message: message.clone(),
-            })
-        });
+        AgentEventDispatch::new(&loop_ctx, Arc::clone(&agent_dyn)).emit(
+            "agent/inbox/discarded",
+            |_| {
+                arc(AgentInboxMessagePayload {
+                    agent: Arc::clone(&agent_dyn),
+                    message: message.clone(),
+                })
+            },
+        );
     })
 }
 
@@ -970,13 +1139,16 @@ fn inbox_notify_claimed(
             return;
         };
         let agent_dyn: Arc<dyn Agent> = agent;
-        AgentEventDispatch::new(&loop_ctx, Arc::clone(&agent_dyn)).emit("agent/inbox/claimed", |_| {
-            arc(AgentInboxClaimedPayload {
-                agent: Arc::clone(&agent_dyn),
-                message: message.clone(),
-                turn,
-            })
-        });
+        AgentEventDispatch::new(&loop_ctx, Arc::clone(&agent_dyn)).emit(
+            "agent/inbox/claimed",
+            |_| {
+                arc(AgentInboxClaimedPayload {
+                    agent: Arc::clone(&agent_dyn),
+                    message: message.clone(),
+                    turn,
+                })
+            },
+        );
     })
 }
 
@@ -1006,8 +1178,7 @@ impl Agent for ReactLoopAgent {
     }
 
     fn scope_key(&self) -> &dsh_scope::ScopeKey {
-        static KEY: std::sync::OnceLock<dsh_scope::ScopeKey> = std::sync::OnceLock::new();
-        KEY.get_or_init(dsh_scope::ScopeKey::new)
+        &self.scope_key
     }
 
     fn cancel(&self, cause: AgentCancelCause, options: Option<&CancelOptions>) {
@@ -1050,34 +1221,27 @@ impl Agent for ReactLoopAgent {
         &self,
         task: Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>,
     ) -> BoxFuture<'static, ()> {
-        if !matches!(&*self.phase.lock(), Phase::Idle { .. }) {
-            panic!("agent \"{}\" already has active work", self.id.as_str());
-        }
-        let last_turn = match &*self.phase.lock() {
-            Phase::Idle { last_turn } => *last_turn,
-            _ => unreachable!(),
+        let activity_token = {
+            let mut activity = self.activity.lock();
+            let mut phase = self.phase.lock();
+            let Phase::Idle { last_turn } = &*phase else {
+                panic!("agent \"{}\" already has active work", self.id.as_str());
+            };
+            let last_turn = *last_turn;
+            *phase = Phase::Maintenance {
+                abort: CancellationSignal::new(),
+                last_turn,
+                wake_requested: false,
+            };
+            activity.begin()
         };
-        self.set_phase(Phase::Maintenance {
-            abort: CancellationSignal::new(),
-            last_turn,
-            wake_requested: false,
-        });
-        let weak = self.weak.clone();
+        let guard = MaintenanceGuard {
+            agent: self.weak.clone(),
+            activity_token,
+        };
         Box::pin(async move {
+            let _guard = guard;
             let _ = task().await;
-            if let Some(agent) = weak.upgrade() {
-                let (last_turn, wake_requested) = match &*agent.phase.lock() {
-                    Phase::Maintenance { last_turn, wake_requested, .. } => {
-                        (*last_turn, *wake_requested)
-                    }
-                    _ => return,
-                };
-                agent.set_phase(Phase::Idle { last_turn });
-                if wake_requested && agent.inbox.has_pending() {
-                    agent.wake_driver(false);
-                }
-                agent.activity.lock().finish();
-            }
         })
     }
 

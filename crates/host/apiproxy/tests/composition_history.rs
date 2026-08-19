@@ -149,7 +149,9 @@ fn the_tail_page_cuts_at_message_boundaries() {
             .post(serde_json::json!({ "sessionId": "hist-1", "maxMessages": 2 }))
             .await;
         assert_eq!(response["result"]["ok"], true, "{response}");
-        let events = response["result"]["value"]["events"].as_array().expect("events");
+        let events = response["result"]["value"]["events"]
+            .as_array()
+            .expect("events");
         // Two complete messages back from the tail: the "again" pair plus
         // the trailing "third" user message (the seed-end marker rides the
         // same window); the "hello" pair is cut away.

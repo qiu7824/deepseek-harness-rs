@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "default_limits": {
+    "compute_ms": 300,
+    "wall_ms": 2000,
+    "max_output_bytes": 65536,
+    "max_old_generation_mb": 64
+  },
+  "fixtures": [
+    {
+      "id": "typescript_erasable",
+      "program": "interface Point { x: number; y: number }\nconst p: Point = { x: 20, y: 22 } as Point;\nreturn p.x + p.y;",
+      "expect": { "value": 42, "logs": [], "error": null }
+    },
+    {
+      "id": "top_level_await_binding",
+      "program": "const echoed = await tools.echo({ nested: [1, { ok: true }] });\nconsole.log('echoed', echoed.nested[1].ok);\nreturn echoed;",
+      "bindings": ["tools.echo"],
+      "expect": {
+        "value": { "nested": [1, { "ok": true }] },
+        "logs": ["echoed true"],
+        "error": null
+      }
+    },
+    {
+      "id": "typed_binding_rejection",
+      "program": "try { await tools.fail({}); } catch (error) { return { typed: error instanceof ToolCallError, name: error.name, toolName: error.toolName, message: error.message }; }",
+      "bindings": ["tools.fail"],
+      "expect": {
+        "value": { "typed": true, "name": "ToolCallError", "toolName": "fail", "message": "fixture failure" },
+        "logs": [],
+        "error": null
+      }
+    },
+    {
+      "id": "sync_loop_compute_timeout",
+      "program": "for (;;) {}",
+      "limits": { "compute_ms": 150, "wall_ms": 2000 },
+      "expect": { "error_kind": "timeout", "max_elapsed_ms": 3000 }
+    },
+    {
+      "id": "binding_dispatch_does_not_pause_busy_compute",
+      "program": "tools.never({});\nfor (;;) {}",
+      "bindings": ["tools.never"],
+      "limits": { "compute_ms": 150, "wall_ms": 2000 },
+      "expect": {
+        "error_kind": "timeout",
+        "timeout_reason": "compute",
+        "max_elapsed_ms": 3000
+      }
+    },
+    {
+      "id": "sync_loop_abort",
+      "program": "for (;;) {}",
+      "abort_after_ms": 150,
+      "limits": { "compute_ms": 30000, "wall_ms": 30000 },
+      "expect": { "error_kind": "abort", "max_elapsed_ms": 3000 }
+    },
+    {
+      "id": "dispose_inflight",
+      "program": "for (;;) {}",
+      "dispose_after_ms": 150,
+      "limits": { "compute_ms": 30000, "wall_ms": 30000 },
+      "expect": {
+        "error_kind": "abort",
+        "rejects_followup_run": true,
+        "teardown_clean": true,
+        "max_elapsed_ms": 3000
+      }
+    },
+    {
+      "id": "idle_wall_timeout",
+      "program": "await tools.never({});\nreturn 1;",
+      "bindings": ["tools.never"],
+      "limits": { "compute_ms": 30000, "wall_ms": 250 },
+      "expect": { "error_kind": "timeout", "max_elapsed_ms": 3000 }
+    },
+    {
+      "id": "slow_binding_not_charged",
+      "program": "return await tools.slow({});",
+      "bindings": ["tools.slow"],
+      "binding_delay_ms": 500,
+      "limits": { "compute_ms": 150, "wall_ms": 2000 },
+      "expect": { "value": "slow-done", "logs": [], "error": null }
+    },
+    {
+      "id": "heap_limit",
+      "program": "const hog = []; for (;;) hog.push(new Array(1000000).fill(1));",
+      "limits": { "compute_ms": 30000, "wall_ms": 30000, "max_old_generation_mb": 32 },
+      "expect": { "error_kind": "worker-exit", "host_survives_followup": true, "max_elapsed_ms": 15000 }
+    },
+    {
+      "id": "output_limit",
+      "program": "for (let i = 0; i < 1000; i++) console.log('spam', i);\nreturn 'unreachable';",
+      "limits": { "max_output_bytes": 256 },
+      "expect": { "error_kind": "output-limit", "max_serialized_payload_bytes": 256 }
+    },
+    {
+      "id": "invalid_output",
+      "program": "return { callable: () => 1 };",
+      "expect": { "error_kind": "invalid-output" }
+    },
+    {
+      "id": "non_erasable_typescript",
+      "program": "enum Direction { Left, Right }\nreturn Direction.Left;",
+      "expect": { "error_kind": "exception" }
+    },
+    {
+      "id": "fresh_realm",
+      "sequence": [
+        { "program": "globalThis.__dsh_leak__ = 42; return 1;", "expect_value": 1 },
+        { "program": "return typeof globalThis.__dsh_leak__;", "expect_value": "undefined" }
+      ],
+      "expect": { "fresh_per_run": true }
+    }
+  ]
+}

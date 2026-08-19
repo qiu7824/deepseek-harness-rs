@@ -30,7 +30,9 @@ struct Booted {
 
 async fn write(path: &std::path::Path, body: &str) {
     if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await.expect("create parent");
+        tokio::fs::create_dir_all(parent)
+            .await
+            .expect("create parent");
     }
     tokio::fs::write(path, body).await.expect("write fixture");
 }
@@ -120,7 +122,11 @@ async fn request(port: u16, path: &str, method: Method) -> (u16, Option<String>,
         .await
         .expect("body")
         .to_bytes();
-    (status, content_type, String::from_utf8_lossy(&body).to_string())
+    (
+        status,
+        content_type,
+        String::from_utf8_lossy(&body).to_string(),
+    )
 }
 
 async fn get(port: u16, path: &str) -> (u16, Option<String>, String) {
@@ -143,7 +149,11 @@ async fn serves_dist_with_spa_fallback_taps_traversal_and_method_gating() {
     assert_eq!(manifest.1.as_deref(), Some("application/manifest+json"));
     assert_eq!(manifest.2, "{}");
 
-    write(&booted.root.join("dist/app.js"), "export const rebuilt = true").await;
+    write(
+        &booted.root.join("dist/app.js"),
+        "export const rebuilt = true",
+    )
+    .await;
     assert_eq!(get(port, "/app.js").await.2, "export const rebuilt = true");
 
     // Unknown extension ships as octet-stream.
@@ -167,21 +177,20 @@ async fn serves_dist_with_spa_fallback_taps_traversal_and_method_gating() {
 
     // Traversal outside the dist root is 403; non-GET/HEAD is 405.
     assert_eq!(get(port, "/..%2f..%2fetc%2fpasswd").await.0, 403);
-    assert_eq!(
-        request(port, "/nowhere", Method::POST).await.0,
-        405
-    );
+    assert_eq!(request(port, "/nowhere", Method::POST).await.0, 405);
 
     // HMR safety: disposing the frontend row releases the fallback seat; the
     // unclaimed webserver answers 404 and the seat is claimable again.
     booted.frontend_fiber.dispose().await;
     assert_eq!(get(port, "/no/such/route").await.0, 404);
-    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = booted.server.register_fallback(Arc::new(|_request| {
-            Box::pin(async { Ok(text_response(StatusCode::OK, "SECOND")) })
-        }));
-    }))
-    .is_ok());
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = booted.server.register_fallback(Arc::new(|_request| {
+                Box::pin(async { Ok(text_response(StatusCode::OK, "SECOND")) })
+            }));
+        }))
+        .is_ok()
+    );
 
     booted.webserver_fiber.dispose().await;
     let _ = booted.ctx.fiber.state();

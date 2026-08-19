@@ -55,7 +55,10 @@ impl SkillProvider for BadgeProvider {
         PROVIDER_NAME
     }
 
-    async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+    async fn list(
+        &self,
+        _options: &SkillLookupOptions,
+    ) -> Result<SkillProviderObservation, String> {
         Ok(SkillProviderObservation {
             candidates: vec![candidate()],
             complete: true,

@@ -64,7 +64,12 @@ impl dsh_agent::Agent for ProbeAgent {
         KEY.get_or_init(dsh_scope::ScopeKey::new)
     }
 
-    fn cancel(&self, _cause: dsh_session::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_session::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -77,7 +82,13 @@ impl dsh_agent::Agent for ProbeAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 
@@ -136,7 +147,9 @@ fn parses_slash_lines_without_normalizing_trailing_input() {
 async fn registers_lists_and_resolves_commands_with_scoped_shadowing() {
     let ctx = Context::root();
     let runtime = CommandRuntime::install(&ctx);
-    let _disposer = runtime.register(&ctx, echo_command("global")).expect("register");
+    let _disposer = runtime
+        .register(&ctx, echo_command("global"))
+        .expect("register");
 
     let agent: Arc<dyn dsh_agent::Agent> = ProbeAgent::new("agent-1");
     let descriptors = runtime.list(&agent);
@@ -166,14 +179,20 @@ async fn registers_lists_and_resolves_commands_with_scoped_shadowing() {
     // layer semantics of the scope crate).
     let any: Arc<dyn dsh_agent::Agent> = ProbeAgent::new("any");
     let scoped_view = runtime.list(&any);
-    assert!(scoped_view.iter().any(|descriptor| descriptor.name == "global"));
+    assert!(
+        scoped_view
+            .iter()
+            .any(|descriptor| descriptor.name == "global")
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn executes_a_command_with_paired_lifecycle_events() {
     let ctx = Context::root();
     let runtime = CommandRuntime::install(&ctx);
-    let _disposer = runtime.register(&ctx, echo_command("echo")).expect("register");
+    let _disposer = runtime
+        .register(&ctx, echo_command("echo"))
+        .expect("register");
     let agent: Arc<dyn dsh_agent::Agent> = ProbeAgent::new("executor");
 
     let execution = runtime
@@ -258,7 +277,9 @@ async fn handler_failures_settle_as_error_records_and_rethrow() {
         description: "always fails".to_string(),
         input: None,
         record_input: None,
-        handler: Arc::new(|_invocation| Box::pin(async move { Err("handler blew up".to_string()) })),
+        handler: Arc::new(|_invocation| {
+            Box::pin(async move { Err("handler blew up".to_string()) })
+        }),
     };
     let _disposer = runtime.register(&ctx, definition).expect("register");
     let agent: Arc<dyn dsh_agent::Agent> = ProbeAgent::new("boom-agent");
@@ -324,7 +345,14 @@ async fn registration_and_result_validation_fail_loud() {
         description: "x".to_string(),
         input: None,
         record_input: None,
-        handler: Arc::new(|_| Box::pin(async move { Ok(CommandResult::Success { text: None, source_event_seq: None }) })),
+        handler: Arc::new(|_| {
+            Box::pin(async move {
+                Ok(CommandResult::Success {
+                    text: None,
+                    source_event_seq: None,
+                })
+            })
+        }),
     };
     assert!(runtime.register(&ctx, bad_name).is_err());
     let bad_description = CommandDefinition {
@@ -332,7 +360,14 @@ async fn registration_and_result_validation_fail_loud() {
         description: "   ".to_string(),
         input: None,
         record_input: None,
-        handler: Arc::new(|_| Box::pin(async move { Ok(CommandResult::Success { text: None, source_event_seq: None }) })),
+        handler: Arc::new(|_| {
+            Box::pin(async move {
+                Ok(CommandResult::Success {
+                    text: None,
+                    source_event_seq: None,
+                })
+            })
+        }),
     };
     assert!(runtime.register(&ctx, bad_description).is_err());
 

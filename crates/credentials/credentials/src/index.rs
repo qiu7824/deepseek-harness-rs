@@ -104,19 +104,15 @@ pub trait CredentialProvider: Send + Sync + 'static {
     /// Providers call this only after the write or reload actually
     /// committed, so a broken observer can never make a durable change look
     /// failed.
-    async fn notify_updated(
-        &self,
-        ctx: &Context,
-        reference: &CredentialRef,
-    ) -> Result<(), String> {
+    async fn notify_updated(&self, ctx: &Context, reference: &CredentialRef) -> Result<(), String> {
         let args = vec![arc(reference.clone())];
         let mut invariant_failure: Option<String> = None;
         for (listener_ctx, callback) in
             ctx.collect(DispatchMode::Emit, "credentials/updated", &args)
         {
             let future = callback(&listener_ctx, args.clone());
-            let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(future))
-                .await;
+            let outcome =
+                futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(future)).await;
             match outcome {
                 Ok(_) => {}
                 Err(payload) => {

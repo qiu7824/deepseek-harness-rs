@@ -12,7 +12,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cordis::{ArcValue, Context, Exporter, LoggerLevel, LoggerType, Message, Plugin, PluginError, arc};
+use cordis::{
+    ArcValue, Context, Exporter, LoggerLevel, LoggerType, Message, Plugin, PluginError, arc,
+};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -21,10 +23,10 @@ use serde::Deserialize;
 pub const C16: [usize; 6] = [6, 2, 3, 4, 5, 1];
 /// ANSI 256-color palette indexes used for logger name coloring.
 pub const C256: &[usize] = &[
-    20, 21, 26, 27, 32, 33, 38, 39, 40, 41, 42, 43, 44, 45, 56, 57, 62, 63, 68, 69, 74, 75,
-    76, 77, 78, 79, 80, 81, 92, 93, 98, 99, 112, 113, 129, 134, 135, 148, 149, 160, 161, 162,
-    163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 178, 179, 184, 185, 196, 197, 198,
-    199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 214, 215, 220, 221,
+    20, 21, 26, 27, 32, 33, 38, 39, 40, 41, 42, 43, 44, 45, 56, 57, 62, 63, 68, 69, 74, 75, 76, 77,
+    78, 79, 80, 81, 92, 93, 98, 99, 112, 113, 129, 134, 135, 148, 149, 160, 161, 162, 163, 164,
+    165, 166, 167, 168, 169, 170, 171, 172, 173, 178, 179, 184, 185, 196, 197, 198, 199, 200, 201,
+    202, 203, 204, 205, 206, 207, 208, 209, 214, 215, 220, 221,
 ];
 
 /// Terminal color support level compatible with supports-color.
@@ -81,7 +83,9 @@ pub struct ConsoleConfig {
 }
 
 fn color(colors: Option<usize>, code: usize, value: &str, decoration: &str) -> String {
-    let Some(level) = colors else { return value.to_string() };
+    let Some(level) = colors else {
+        return value.to_string();
+    };
     if level == 0 {
         return value.to_string();
     }
@@ -151,7 +155,10 @@ pub fn format_message(message: &Message, exporter: &ConsoleExporter) -> String {
         let text = stringify(&error);
         args.insert(0, arc(text));
         args.insert(0, arc("%s".to_string()));
-    } else if !args.first().is_some_and(|arg| cordis::downcast::<String>(arg).is_some()) {
+    } else if !args
+        .first()
+        .is_some_and(|arg| cordis::downcast::<String>(arg).is_some())
+    {
         args.insert(0, arc("%o".to_string()));
     }
 
@@ -174,7 +181,9 @@ pub fn format_message(message: &Message, exporter: &ConsoleExporter) -> String {
         let value = args.remove(0);
         let formatted = match next {
             's' => stringify(&value),
-            'd' | 'i' => stringify(&arc(stringify(&value).parse::<f64>().unwrap_or(0.0).trunc() as i64)),
+            'd' | 'i' => stringify(&arc(
+                stringify(&value).parse::<f64>().unwrap_or(0.0).trunc() as i64,
+            )),
             'f' => stringify(&arc(stringify(&value).parse::<f64>().unwrap_or(0.0))),
             'o' | 'O' => exporter.inspect(&value),
             'c' => String::new(),
@@ -275,12 +284,7 @@ impl ConsoleExporter {
         let label_text = color(self.colors, code, &message.name, ";1");
         let width = self.label.as_ref().and_then(|l| l.width).unwrap_or(0);
         let pad_length = width + label_text.len() - message.name.len();
-        if self
-            .label
-            .as_ref()
-            .and_then(|l| l.align.as_deref())
-            == Some("right")
-        {
+        if self.label.as_ref().and_then(|l| l.align.as_deref()) == Some("right") {
             output += &format!("{:>pad_length$}", label_text);
             output += &space;
             output += &prefix;
@@ -292,12 +296,18 @@ impl ConsoleExporter {
             output += &format!("{: <pad_length$}", label_text);
             output += &space;
         }
-        output += &format_message(message, self).replace('\n', &format!("\n{}", " ".repeat(indent)));
+        output +=
+            &format_message(message, self).replace('\n', &format!("\n{}", " ".repeat(indent)));
         if self.show_diff {
             let mut timestamp = self.timestamp.lock();
             if *timestamp != 0 {
                 let diff = message.ts as i64 - *timestamp;
-                output += &color(self.colors, code, &format!(" +{}", dsh_cosmokit::format(diff)), "");
+                output += &color(
+                    self.colors,
+                    code,
+                    &format!(" +{}", dsh_cosmokit::format(diff)),
+                    "",
+                );
             }
             *timestamp = message.ts as i64;
         }
@@ -409,7 +419,10 @@ mod tests {
             ..ConsoleConfig::default()
         };
         let exporter = Arc::try_unwrap(ConsoleExporter::new(&config)).unwrap();
-        let output = exporter.render(&message("abc", vec![arc("%s!".to_string()), arc("hi".to_string())]));
+        let output = exporter.render(&message(
+            "abc",
+            vec![arc("%s!".to_string()), arc("hi".to_string())],
+        ));
         assert_eq!(output, "[I] abc hi!");
     }
 

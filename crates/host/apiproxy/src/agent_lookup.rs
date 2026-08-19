@@ -20,13 +20,11 @@ use cordis::Context;
 use dsh_agent::{Agent, AgentRegistry, AgentSetup, ResumeAgentOptions};
 use dsh_session::{SessionEvent, SessionHeader, SessionId};
 use dsh_session_persistence::SessionPersistenceApi;
-use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
+use futures::future::{BoxFuture, Shared};
 use parking_lot::Mutex;
 
-use crate::api::rpc::{
-    EmptyDetails, ReasonDetails, RpcError, RpcErrorBody, SessionIdDetails,
-};
+use crate::api::rpc::{EmptyDetails, ReasonDetails, RpcError, RpcErrorBody, SessionIdDetails};
 
 /// Resume configuration supplied by the owning Host composition.
 pub struct ApiRemoteAgentOptions {
@@ -36,8 +34,10 @@ pub struct ApiRemoteAgentOptions {
     /// publication, keyed by the resumed session itself.
     pub setup: Option<
         Arc<
-            dyn Fn(SessionHeader, Vec<SessionEvent>)
-                    -> BoxFuture<'static, Result<Option<AgentSetup>, String>>
+            dyn Fn(
+                    SessionHeader,
+                    Vec<SessionEvent>,
+                ) -> BoxFuture<'static, Result<Option<AgentSetup>, String>>
                 + Send
                 + Sync,
         >,
@@ -53,8 +53,7 @@ enum ResumeFailure {
     Internal(String),
 }
 
-type SharedResume =
-    Shared<BoxFuture<'static, Result<Arc<dyn Agent>, ResumeFailure>>>;
+type SharedResume = Shared<BoxFuture<'static, Result<Arc<dyn Agent>, ResumeFailure>>>;
 
 /// Result of resolving one session identity to its live Agent.
 pub enum ApiRemoteAgentResult {
@@ -143,7 +142,9 @@ impl AgentResolver {
     fn fenced_live_agent(&self, session_id: &SessionId) -> Option<ApiRemoteAgentResult> {
         let live = self.agents()?.get(session_id)?;
         if has_api_remote_subagent_owner(self.ctx(), live.session().header(), Some(&live)) {
-            Some(ApiRemoteAgentResult::Error(subagent_ownership_error(session_id)))
+            Some(ApiRemoteAgentResult::Error(subagent_ownership_error(
+                session_id,
+            )))
         } else {
             Some(ApiRemoteAgentResult::Agent(live))
         }
@@ -175,58 +176,63 @@ impl AgentResolver {
                 let resume_id = session_id.clone();
                 let ctx = self.ctx.clone();
                 let options = self.options.clone();
-                let future: BoxFuture<'static, Result<Arc<dyn Agent>, ResumeFailure>> = Box::pin(async move {
-                    let (meta, events) = inspect_cold(&ctx, &resume_id).await?;
-                    if has_api_remote_subagent_owner(&ctx, &meta, None) {
-                        return Err(ResumeFailure::SubagentOwned(resume_id.clone()));
-                    }
-                    let setup = match &options.setup {
-                        None => None,
-                        Some(build) => build(meta.clone(), events.clone()).await.map_err(|error| {
-                            ResumeFailure::Internal(error)
-                        })?,
-                    };
-                    // Re-check published state before resuming (the TS
-                    // collision-window guard).
-                    let published_owned = ctx
-                        .get_typed::<Arc<AgentRegistry>>("agents", false)
-                        .and_then(|slot| {
-                            let registry = slot.as_ref().clone();
-                            registry.get(&resume_id).map(|agent| {
-                                has_api_remote_subagent_owner(&ctx, agent.session().header(), Some(&agent))
-                            })
-                        })
-                        .unwrap_or(false)
-                        || ctx
-                            .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
+                let future: BoxFuture<'static, Result<Arc<dyn Agent>, ResumeFailure>> =
+                    Box::pin(async move {
+                        let (meta, events) = inspect_cold(&ctx, &resume_id).await?;
+                        if has_api_remote_subagent_owner(&ctx, &meta, None) {
+                            return Err(ResumeFailure::SubagentOwned(resume_id.clone()));
+                        }
+                        let setup = match &options.setup {
+                            None => None,
+                            Some(build) => build(meta.clone(), events.clone())
+                                .await
+                                .map_err(|error| ResumeFailure::Internal(error))?,
+                        };
+                        // Re-check published state before resuming (the TS
+                        // collision-window guard).
+                        let published_owned = ctx
+                            .get_typed::<Arc<AgentRegistry>>("agents", false)
                             .and_then(|slot| {
-                                slot.as_ref().clone().get(&resume_id).map(|attached| {
-                                    has_api_remote_subagent_owner(&ctx, attached.header(), None)
+                                let registry = slot.as_ref().clone();
+                                registry.get(&resume_id).map(|agent| {
+                                    has_api_remote_subagent_owner(
+                                        &ctx,
+                                        agent.session().header(),
+                                        Some(&agent),
+                                    )
                                 })
                             })
-                            .unwrap_or(false);
-                    if published_owned {
-                        return Err(ResumeFailure::SubagentOwned(resume_id.clone()));
-                    }
-                    let Some(registry) = ctx
-                        .get_typed::<Arc<AgentRegistry>>("agents", false)
-                        .map(|slot| slot.as_ref().clone())
-                    else {
-                        return Err(ResumeFailure::Internal(
-                            "the agents service is not composed".to_string(),
-                        ));
-                    };
-                    let options_builder = ResumeAgentOptions {
-                        resume_session_id: Some(resume_id),
-                        agent_options: Some((options.agent_options)()),
-                        setup,
-                    };
-                    let handle = registry
-                        .resume(options_builder)
-                        .await
-                        .map_err(|error| ResumeFailure::Internal(error))?;
-                    Ok(handle.agent)
-                });
+                            .unwrap_or(false)
+                            || ctx
+                                .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
+                                .and_then(|slot| {
+                                    slot.as_ref().clone().get(&resume_id).map(|attached| {
+                                        has_api_remote_subagent_owner(&ctx, attached.header(), None)
+                                    })
+                                })
+                                .unwrap_or(false);
+                        if published_owned {
+                            return Err(ResumeFailure::SubagentOwned(resume_id.clone()));
+                        }
+                        let Some(registry) = ctx
+                            .get_typed::<Arc<AgentRegistry>>("agents", false)
+                            .map(|slot| slot.as_ref().clone())
+                        else {
+                            return Err(ResumeFailure::Internal(
+                                "the agents service is not composed".to_string(),
+                            ));
+                        };
+                        let options_builder = ResumeAgentOptions {
+                            resume_session_id: Some(resume_id),
+                            agent_options: Some((options.agent_options)()),
+                            setup,
+                        };
+                        let handle = registry
+                            .resume(options_builder)
+                            .await
+                            .map_err(|error| ResumeFailure::Internal(error))?;
+                        Ok(handle.agent)
+                    });
                 let shared: SharedResume = future.shared();
                 resumes.insert(session_id.clone(), shared.clone());
                 shared
@@ -257,7 +263,9 @@ impl AgentResolver {
                             return fenced;
                         }
                         ApiRemoteAgentResult::Error(RpcError::Internal(RpcErrorBody {
-                            message: format!("resume failed for session \"{session_id}\": {message}"),
+                            message: format!(
+                                "resume failed for session \"{session_id}\": {message}"
+                            ),
                             details: EmptyDetails {},
                         }))
                     }
@@ -282,10 +290,9 @@ async fn inspect_cold(
                 .to_string(),
         ));
     };
-    let inspected = persistence
-        .inspect(session_id)
-        .await
-        .map_err(|_| ResumeFailure::SessionNotFound(format!("session \"{session_id}\" not found")))?;
+    let inspected = persistence.inspect(session_id).await.map_err(|_| {
+        ResumeFailure::SessionNotFound(format!("session \"{session_id}\" not found"))
+    })?;
     if inspected.meta.cwd.is_none() {
         return Err(ResumeFailure::SessionNotFound(format!(
             "session \"{session_id}\" not found"

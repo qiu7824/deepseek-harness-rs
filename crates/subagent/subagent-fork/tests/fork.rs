@@ -103,7 +103,12 @@ impl dsh_agent::Agent for ParentAgent {
         &self.scope_key
     }
 
-    fn cancel(&self, _cause: dsh_session::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_session::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -116,7 +121,13 @@ impl dsh_agent::Agent for ParentAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 
@@ -135,7 +146,10 @@ fn slices_the_balanced_completed_turn_prefix() {
     ]);
     let prefix = completed_turn_prefix(completed.as_ref());
     assert_eq!(
-        prefix.iter().map(|event| event.type_.as_str()).collect::<Vec<_>>(),
+        prefix
+            .iter()
+            .map(|event| event.type_.as_str())
+            .collect::<Vec<_>>(),
         vec!["turn/start", "user/message", "turn/end"]
     );
 
@@ -148,7 +162,10 @@ fn slices_the_balanced_completed_turn_prefix() {
     ]);
     let prefix = completed_turn_prefix(in_flight.as_ref());
     assert_eq!(
-        prefix.iter().map(|event| event.type_.as_str()).collect::<Vec<_>>(),
+        prefix
+            .iter()
+            .map(|event| event.type_.as_str())
+            .collect::<Vec<_>>(),
         vec!["turn/start", "turn/end"]
     );
 
@@ -170,6 +187,5 @@ async fn registers_the_fork_provider_with_full_capabilities() {
     assert!(capabilities.depth_limit);
     assert!(capabilities.tool_filter);
     assert!(capabilities.persona);
-    // Structured output capture is not ported yet.
-    assert!(!capabilities.output_schema);
+    assert!(capabilities.output_schema);
 }

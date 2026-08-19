@@ -15,11 +15,13 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub mod shipped_registry;
 
 /// Directory under the Harness home holding every profile.
 pub const PROFILES_DIR: &str = "profiles";
@@ -59,6 +61,14 @@ pub struct DshManifestSection {
 pub struct ProfileManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub dependencies: IndexMap<String, String>,
+    #[serde(
+        rename = "peerDependencies",
+        default,
+        skip_serializing_if = "IndexMap::is_empty"
+    )]
+    pub peer_dependencies: IndexMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dsh: Option<DshManifestSection>,
 }
@@ -106,13 +116,17 @@ pub fn resolve_profile_dir(name: &str, home: &Path) -> Result<PathBuf, String> {
 }
 
 /// The shipped profile templates auto-initialized on first use, by name.
-pub fn profile_templates() -> &'static std::collections::HashMap<&'static str, &'static [&'static str]> {
+pub fn profile_templates()
+-> &'static std::collections::HashMap<&'static str, &'static [&'static str]> {
     static TEMPLATES: std::sync::OnceLock<
         std::collections::HashMap<&'static str, &'static [&'static str]>,
     > = std::sync::OnceLock::new();
     TEMPLATES.get_or_init(|| {
         let mut map = std::collections::HashMap::new();
-        map.insert("web", &["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"][..]);
+        map.insert(
+            "web",
+            &["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"][..],
+        );
         map.insert(
             "headless",
             &["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless"][..],
@@ -130,7 +144,8 @@ const PROFILE_PATCH_TEMPLATE: &str = "# Your patch layer for this dsh profile, a
 # overrides, disables, and insert lists).\n\
 []\n";
 
-const PROFILE_PNPM_WORKSPACE: &str = "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n";
+const PROFILE_PNPM_WORKSPACE: &str =
+    "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n";
 
 /// Initialize a profile directory: manifest, empty user patch layer, and the
 /// pnpm settings out-of-tree plugins need. Existing files are never touched.
@@ -144,7 +159,10 @@ pub fn init_profile(dir: &Path, bundles: &[String]) -> Result<(), String> {
             "dependencies": {},
             "dsh": { "profile": { "bundles": bundles } },
         });
-        let text = format!("{}\n", serde_json::to_string_pretty(&manifest).expect("manifest"));
+        let text = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&manifest).expect("manifest")
+        );
         std::fs::write(&manifest_path, text).map_err(|error| error.to_string())?;
     }
     let patch_path = dir.join(PROFILE_PATCH_FILENAME);
@@ -153,7 +171,228 @@ pub fn init_profile(dir: &Path, bundles: &[String]) -> Result<(), String> {
     }
     let workspace_path = dir.join("pnpm-workspace.yaml");
     if !workspace_path.exists() {
-        std::fs::write(&workspace_path, PROFILE_PNPM_WORKSPACE).map_err(|error| error.to_string())?;
+        std::fs::write(&workspace_path, PROFILE_PNPM_WORKSPACE)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Resolve a package directory using Node's ordinary parent `node_modules`
+/// walk from one file anchor. Direct manifest probing works even when an npm
+/// exports map hides `./package.json`.
+pub fn package_dir_from_anchor(anchor: &Path, package_name: &str) -> Option<PathBuf> {
+    if package_name.is_empty()
+        || package_name == "."
+        || package_name == ".."
+        || package_name.contains('\\')
+        || (!package_name.starts_with('@') && package_name.contains('/'))
+        || (package_name.starts_with('@') && package_name.split('/').count() != 2)
+    {
+        return None;
+    }
+    let mut current = if anchor.is_dir() {
+        anchor.to_path_buf()
+    } else {
+        anchor.parent()?.to_path_buf()
+    };
+    loop {
+        let candidate = current.join("node_modules").join(package_name);
+        if candidate.join("package.json").is_file() {
+            return Some(candidate);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+/// Resolve one profile bundle installation-first, then profile-local.
+pub fn resolve_bundle_dir(
+    bin_name: &str,
+    package_name: &str,
+    install_anchor: &Path,
+    profile_dir: &Path,
+) -> Result<PathBuf, String> {
+    package_dir_from_anchor(install_anchor, package_name)
+        .or_else(|| package_dir_from_anchor(&profile_dir.join("package.json"), package_name))
+        .ok_or_else(|| format!(
+            "{bin_name}: cannot resolve profile bundle {package_name:?} from the dsh installation or {}; run 'dsh plugin --profile {} install' if its dependency is not installed",
+            profile_dir.display(),
+            profile_dir.file_name().map(|name| name.to_string_lossy()).unwrap_or_default()
+        ))
+}
+
+fn read_profile_manifest(bin_name: &str, dir: &Path) -> Result<ProfileManifest, String> {
+    let path = dir.join("package.json");
+    let value: Value = serde_json::from_slice(&std::fs::read(&path).map_err(|error| {
+        format!(
+            "{bin_name}: failed to read profile manifest {}: {error}",
+            path.display()
+        )
+    })?)
+    .map_err(|error| {
+        format!(
+            "{bin_name}: invalid profile manifest {}: {error}",
+            path.display()
+        )
+    })?;
+    if !value.is_object() {
+        return Err(format!(
+            "{bin_name}: profile manifest {} must hold a JSON object",
+            path.display()
+        ));
+    }
+    serde_json::from_value(value).map_err(|error| {
+        format!(
+            "{bin_name}: invalid profile manifest {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn valid_package_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('\\')
+        && ((!name.starts_with('@') && !name.contains('/'))
+            || (name.starts_with('@')
+                && name.split('/').count() == 2
+                && name
+                    .split('/')
+                    .all(|part| !part.is_empty() && part != "." && part != "..")))
+}
+
+fn link_matches(link: &Path, target: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        std::fs::canonicalize(link).ok() == std::fs::canonicalize(target).ok()
+            && std::fs::canonicalize(target).is_ok()
+    }
+    #[cfg(unix)]
+    {
+        std::fs::symlink_metadata(link).is_ok_and(|metadata| metadata.file_type().is_symlink())
+            && std::fs::read_link(link).ok().as_deref() == Some(target)
+    }
+}
+
+fn managed_directory_link(link: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        junction::exists(link).unwrap_or(false)
+    }
+    #[cfg(unix)]
+    {
+        std::fs::symlink_metadata(link).is_ok_and(|metadata| metadata.file_type().is_symlink())
+    }
+}
+
+fn ensure_directory_link(link: &Path, target: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(link) {
+        Ok(_) if !managed_directory_link(link) => {
+            // `junction::create` first creates the directory and then commits
+            // its reparse point. A concurrent process can observe that short
+            // intermediate state; wait briefly before classifying it as a
+            // user-owned real directory.
+            #[cfg(windows)]
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                if managed_directory_link(link) {
+                    return if link_matches(link, target) {
+                        Ok(())
+                    } else {
+                        ensure_directory_link(link, target)
+                    };
+                }
+            }
+            return Err(format!(
+                "dsh: {} exists and is not a managed directory link; remove it so dsh can manage the installation fallback",
+                link.display()
+            ));
+        }
+        Ok(_) => {
+            if link_matches(link, target) {
+                return Ok(());
+            }
+            #[cfg(windows)]
+            let removed = junction::delete(link);
+            #[cfg(unix)]
+            let removed = std::fs::remove_file(link);
+            if let Err(error) = removed
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(error.to_string());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    if let Some(parent) = link.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    #[cfg(windows)]
+    let created = junction::create(target, link);
+    #[cfg(unix)]
+    let created = std::os::unix::fs::symlink(target, link);
+    match created {
+        Ok(()) => Ok(()),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::AlreadyExists
+                || error.raw_os_error() == Some(183) =>
+        {
+            for _ in 0..20 {
+                if link_matches(link, target) {
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(error.to_string())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Heal `$DSH_HOME/profiles/node_modules` with the app's resolvable dependency
+/// and peer-dependency closure. Declared but absent packages are skipped.
+pub fn heal_profiles_module_fallback(install_anchor: &Path, home: &Path) -> Result<(), String> {
+    let app_dir = install_anchor.parent().ok_or_else(|| {
+        format!(
+            "dsh: install anchor {} has no parent",
+            install_anchor.display()
+        )
+    })?;
+    let app_manifest = read_profile_manifest("dsh", app_dir)?;
+    let mut links: IndexMap<String, PathBuf> = IndexMap::new();
+    if let Some(name) = app_manifest
+        .name
+        .as_ref()
+        .filter(|name| valid_package_name(name))
+    {
+        links.insert(name.clone(), app_dir.to_path_buf());
+    }
+    let mut queue =
+        std::collections::VecDeque::from([(install_anchor.to_path_buf(), app_manifest)]);
+    while let Some((anchor, manifest)) = queue.pop_front() {
+        for name in manifest
+            .dependencies
+            .keys()
+            .chain(manifest.peer_dependencies.keys())
+        {
+            if !valid_package_name(name) || links.contains_key(name) {
+                continue;
+            }
+            let Some(dir) = package_dir_from_anchor(&anchor, name) else {
+                continue;
+            };
+            let child = read_profile_manifest("dsh", &dir)?;
+            links.insert(name.clone(), dir.clone());
+            queue.push_back((dir.join("package.json"), child));
+        }
+    }
+    let modules = home.join(PROFILES_DIR).join("node_modules");
+    std::fs::create_dir_all(&modules).map_err(|error| error.to_string())?;
+    for (name, target) in links {
+        ensure_directory_link(&modules.join(name), &target)?;
     }
     Ok(())
 }
@@ -202,6 +441,19 @@ pub fn load_profile_with_user_layer(
     home: &Path,
     user_layer: bool,
 ) -> Result<Profile, String> {
+    load_profile_with_anchors(name, home, user_layer, None, "dsh")
+}
+
+/// Full profile loader with the TypeScript installation-first/profile-second
+/// package-resolution anchors. `install_anchor: None` preserves the shipped
+/// registry and legacy directory fallback for embedded/static compositions.
+pub fn load_profile_with_anchors(
+    name: &str,
+    home: &Path,
+    user_layer: bool,
+    install_anchor: Option<&Path>,
+    bin_name: &str,
+) -> Result<Profile, String> {
     let dir = resolve_profile_dir(name, home)?;
     let manifest_path = dir.join("package.json");
     let manifest: ProfileManifest = serde_json::from_slice(
@@ -218,11 +470,22 @@ pub fn load_profile_with_user_layer(
         .unwrap_or_default();
     let mut layers = Vec::new();
     for bundle in bundles {
-        // Directory-style resolution: a bundle may name a directory beside
-        // the profile or an absolute path (the TS node resolution arrives
-        // with the node_modules milestone).
         let package_dir = if Path::new(&bundle).is_absolute() {
             PathBuf::from(&bundle)
+        } else if let Some(anchor) = install_anchor {
+            match resolve_bundle_dir(bin_name, &bundle, anchor, &dir) {
+                Ok(dir) => dir,
+                Err(error) => {
+                    if let Some(layer) = shipped_registry::shipped_bundle_layer(&bundle) {
+                        layers.push(layer);
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        } else if let Some(layer) = shipped_registry::shipped_bundle_layer(&bundle) {
+            layers.push(layer);
+            continue;
         } else {
             dir.join(&bundle)
         };
@@ -268,11 +531,17 @@ pub fn load_profile_with_user_layer(
 
 /// Load an optional patch-list file: a missing file means "no layer"; an
 /// unreadable, unparsable, or non-array file fails loud.
-pub fn load_optional_patches(bin_name: &str, file: &Path) -> Result<Option<Vec<PatchOptions>>, String> {
+pub fn load_optional_patches(
+    bin_name: &str,
+    file: &Path,
+) -> Result<Option<Vec<PatchOptions>>, String> {
     match load_patch_file(file) {
         Ok(patches) => Ok(Some(patches)),
         Err(_) if !file.exists() => Ok(None),
-        Err(error) => Err(format!("{bin_name}: failed to read patches {}: {error}", file.display())),
+        Err(error) => Err(format!(
+            "{bin_name}: failed to read patches {}: {error}",
+            file.display()
+        )),
     }
 }
 
@@ -285,25 +554,28 @@ pub fn load_overlay_patches(bin_name: &str, file: &Path) -> Result<Vec<PatchOpti
             file.display()
         ));
     }
-    load_patch_file(file)
-        .map_err(|error| format!("{bin_name}: failed to read overlay {}: {error}", file.display()))
+    load_patch_file(file).map_err(|error| {
+        format!(
+            "{bin_name}: failed to read overlay {}: {error}",
+            file.display()
+        )
+    })
 }
 
 /// Compose the effective entry list exactly as `boot()` would mount it:
 /// apply every layer's patches as ONE flattened list through the include's
 /// own patch algorithm over an empty entry list.
-pub fn compose_entries(
-    layers: &[Vec<PatchOptions>],
-) -> Result<Vec<Value>, String> {
+pub fn compose_entries(layers: &[Vec<PatchOptions>]) -> Result<Vec<Value>, String> {
     let mut flattened: Vec<PatchOptions> = Vec::new();
     for layer in layers {
         flattened.extend(layer.iter().cloned());
     }
     let root: Vec<Value> = Vec::new();
     let mut warnings = Vec::new();
-    let entries = dsh_cordis_include::apply_entry_patches(&root, Some(&flattened), &mut |warning: &str| {
-        warnings.push(warning.to_string());
-    });
+    let entries =
+        dsh_cordis_include::apply_entry_patches(&root, Some(&flattened), &mut |warning: &str| {
+            warnings.push(warning.to_string());
+        });
     let _ = warnings;
     Ok(entries)
 }
@@ -336,7 +608,10 @@ pub fn render_config_dump(
     warn: &mut dyn FnMut(&str),
 ) -> Result<String, String> {
     let content = std::fs::read_to_string(absolute_config_path).map_err(|error| {
-        format!("{bin_name}: failed to read config {}: {error}", absolute_config_path.display())
+        format!(
+            "{bin_name}: failed to read config {}: {error}",
+            absolute_config_path.display()
+        )
     })?;
     let parsed = dsh_cordis_include::yaml::parse_yaml(&content).map_err(|error| {
         format!(
@@ -384,10 +659,10 @@ pub fn render_config_dump(
         for (row_index, entry) in composed.iter().enumerate() {
             if row_index >= before.len() {
                 provenance.push((layer.label.clone(), Vec::new()));
-            } else if serde_json::to_string(entry).unwrap_or_default() != before[row_index] {
-                if let Some(record) = provenance.get_mut(row_index) {
-                    record.1.push(layer.label.clone());
-                }
+            } else if serde_json::to_string(entry).unwrap_or_default() != before[row_index]
+                && let Some(record) = provenance.get_mut(row_index)
+            {
+                record.1.push(layer.label.clone());
             }
         }
         previous = composed.clone();
@@ -398,10 +673,7 @@ pub fn render_config_dump(
 
 /// Render the composed rows grouped under one source-and-patches comment
 /// per contiguous run (TS `groupedDump`).
-fn grouped_dump(
-    composed: &[Value],
-    provenance: &[(String, Vec<String>)],
-) -> String {
+fn grouped_dump(composed: &[Value], provenance: &[(String, Vec<String>)]) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut current_label: Option<String> = None;
     let mut group: Vec<Value> = Vec::new();
@@ -446,12 +718,7 @@ pub fn assert_entries_loaded(
         .tree
         .entries()
         .into_iter()
-        .filter(|entry| {
-            entry.fiber.lock().is_none()
-                && !entry
-                    .disabled()
-                    .unwrap_or(false)
-        })
+        .filter(|entry| entry.fiber.lock().is_none() && !entry.disabled().unwrap_or(false))
         .map(|entry| entry.options.lock().name.clone())
         .collect();
     if failed.is_empty() {
@@ -493,7 +760,11 @@ pub fn assert_entries_activated(
     if failures.is_empty() {
         return Ok(());
     }
-    let noun = if failures.len() == 1 { "entry" } else { "entries" };
+    let noun = if failures.len() == 1 {
+        "entry"
+    } else {
+        "entries"
+    };
     Err(format!(
         "{bin_name}: {} {noun} did not activate\n{}",
         failures.len(),
@@ -513,11 +784,23 @@ pub async fn mount_entries(
     for entry in entries {
         let options: dsh_cordis_loader::EntryOptions = serde_json::from_value(entry.clone())
             .map_err(|error| format!("invalid loader entry: {error}"))?;
-        loader
+        let mounted_id = loader
             .tree
             .create(options, None, None)
             .await
             .map_err(|error| error.to_string())?;
+        if let Some(mounted) = loader
+            .tree
+            .entries()
+            .into_iter()
+            .find(|entry| entry.options.lock().id == mounted_id)
+            && mounted.options.lock().name == "include"
+        {
+            // The loader tree owns the entry for the lifetime of this
+            // composition. Retain only a weak registry pointer; stale entries
+            // disappear naturally when the tree drops the entry.
+            std::mem::forget(register_root_include(&loader.tree.ctx, &mounted));
+        }
     }
     Ok(())
 }
@@ -594,7 +877,7 @@ impl FailLoudGuard {
 pub fn install_fail_loud(
     bin_name: &str,
     proc: Arc<dyn FailLoudProcess>,
-    release: Option<Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>>,
+    release: Option<AsyncDisposer>,
 ) -> FailLoudGuard {
     let installed = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let latch = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -619,7 +902,7 @@ pub fn install_fail_loud(
                 return;
             };
             let proc = proc.clone();
-            let _ = tokio::spawn(async move {
+            std::mem::drop(tokio::spawn(async move {
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_millis(FAIL_LOUD_RELEASE_TIMEOUT_MS),
                     release(),
@@ -627,7 +910,7 @@ pub fn install_fail_loud(
                 .await;
                 // Release failure is swallowed: the fatal exit owns the outcome.
                 proc.exit(1);
-            });
+            }));
         }) as Arc<dyn Fn(String) + Send + Sync>
     };
     let uninstall = Arc::new(move || {
@@ -637,8 +920,56 @@ pub fn install_fail_loud(
 }
 
 /// Async disposer returned by watchers (TS `() => Promise<void>`).
-pub type AsyncDisposer =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+pub type AsyncDisposer = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+fn root_include_registry()
+-> &'static parking_lot::Mutex<std::collections::HashMap<usize, Weak<dsh_cordis_loader::Entry>>> {
+    static REGISTRY: std::sync::OnceLock<
+        parking_lot::Mutex<std::collections::HashMap<usize, Weak<dsh_cordis_loader::Entry>>>,
+    > = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn context_identity(ctx: &cordis::Context) -> usize {
+    Arc::as_ptr(&ctx.fiber) as usize
+}
+
+/// Owner-bound registration of the root Include used by live patch reloads.
+pub struct RootIncludeRegistration {
+    context: usize,
+    entry: Weak<dsh_cordis_loader::Entry>,
+}
+
+impl Drop for RootIncludeRegistration {
+    fn drop(&mut self) {
+        let mut registry = root_include_registry().lock();
+        if registry
+            .get(&self.context)
+            .is_some_and(|current| current.ptr_eq(&self.entry))
+        {
+            registry.remove(&self.context);
+        }
+    }
+}
+
+pub fn register_root_include(
+    ctx: &cordis::Context,
+    entry: &Arc<dsh_cordis_loader::Entry>,
+) -> RootIncludeRegistration {
+    let context = context_identity(ctx);
+    let entry = Arc::downgrade(entry);
+    root_include_registry()
+        .lock()
+        .insert(context, entry.clone());
+    RootIncludeRegistration { context, entry }
+}
+
+pub fn root_include(ctx: &cordis::Context) -> Option<Arc<dsh_cordis_loader::Entry>> {
+    root_include_registry()
+        .lock()
+        .get(&context_identity(ctx))
+        .and_then(Weak::upgrade)
+}
 
 /// HMR service face used by user-patch watching (TS `hmr.registerConfig`).
 pub trait UserPatchWatcher {
@@ -646,19 +977,17 @@ pub trait UserPatchWatcher {
         &self,
         filename: PathBuf,
         refresh: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<AsyncDisposer, String>>
-                + Send,
-        >,
-    >;
+    ) -> Pin<Box<dyn Future<Output = Result<AsyncDisposer, String>> + Send>>;
 }
+
+/// Pure patch-composition hook used by the user-patch watcher.
+pub type PatchComposer = Arc<dyn Fn(Vec<PatchOptions>) -> Vec<PatchOptions> + Send + Sync>;
 
 /// Options for [`watch_user_patches`] (TS `UserPatchWatchOptions`).
 pub struct UserPatchWatchOptions {
     pub bin_name: String,
     pub filename: PathBuf,
-    pub compose: Option<Arc<dyn Fn(Vec<PatchOptions>) -> Vec<PatchOptions> + Send + Sync>>,
+    pub compose: Option<PatchComposer>,
 }
 
 /// Re-read the user patch layer and transactionally re-apply it to the boot
@@ -719,7 +1048,11 @@ pub async fn watch_user_patches(
     options: UserPatchWatchOptions,
     watcher: Option<&dyn UserPatchWatcher>,
 ) -> Result<AsyncDisposer, String> {
-    let UserPatchWatchOptions { bin_name, filename, compose } = options;
+    let UserPatchWatchOptions {
+        bin_name,
+        filename,
+        compose,
+    } = options;
     let Some(watcher) = watcher else {
         return Err(format!(
             "{bin_name}: user patch-layer watching requires the Cordis HMR service"
@@ -751,6 +1084,22 @@ pub async fn watch_user_patches(
         }
         Err(error) => Err(error),
     }
+}
+
+/// TypeScript-compatible context-shaped watcher entry. HMR remains injected
+/// in the Rust port; the root Include is resolved from its owner registration.
+pub async fn watch_user_patches_from_context(
+    ctx: &cordis::Context,
+    options: UserPatchWatchOptions,
+    watcher: Option<&dyn UserPatchWatcher>,
+) -> Result<AsyncDisposer, String> {
+    let entry = root_include(ctx).ok_or_else(|| {
+        format!(
+            "{}: user patch-layer watching requires the root Include entry",
+            options.bin_name
+        )
+    })?;
+    watch_user_patches(entry, options, watcher).await
 }
 
 #[cfg(test)]
@@ -795,6 +1144,117 @@ mod tests {
     }
 
     #[test]
+    fn shipped_web_profile_resolves_without_node_modules() {
+        let home = temp_root("shipped-web");
+        let dir = resolve_profile_dir("web", &home).expect("dir");
+        let bundles = profile_templates()["web"]
+            .iter()
+            .map(|bundle| (*bundle).to_string())
+            .collect::<Vec<_>>();
+        init_profile(&dir, &bundles).expect("init");
+
+        let profile = load_profile("web", &home).expect("shipped profile");
+        assert_eq!(
+            profile
+                .layers
+                .iter()
+                .map(|layer| layer.package_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]
+        );
+        let entries = compose_entries(
+            &profile
+                .layers
+                .iter()
+                .map(|layer| layer.patches.clone())
+                .collect::<Vec<_>>(),
+        )
+        .expect("compose");
+        assert!(
+            entries.iter().any(|entry| entry["id"] == "web-runtime"),
+            "the built-in web bundle must select the web surface: {entries:?}"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn two_anchor_resolution_prefers_installation_then_profile() {
+        let root = temp_root("two-anchor");
+        let app = root.join("app");
+        let profile = root.join("profile");
+        std::fs::create_dir_all(app.join("node_modules/in-box")).expect("app modules");
+        std::fs::create_dir_all(profile.join("node_modules/local-only")).expect("profile modules");
+        std::fs::write(app.join("package.json"), "{}\n").expect("app manifest");
+        std::fs::write(app.join("node_modules/in-box/package.json"), "{}\n").expect("in-box");
+        std::fs::write(profile.join("package.json"), "{}\n").expect("profile manifest");
+        std::fs::write(profile.join("node_modules/local-only/package.json"), "{}\n")
+            .expect("local");
+        assert_eq!(
+            resolve_bundle_dir("dsh", "in-box", &app.join("package.json"), &profile).unwrap(),
+            app.join("node_modules/in-box")
+        );
+        assert_eq!(
+            resolve_bundle_dir("dsh", "local-only", &app.join("package.json"), &profile).unwrap(),
+            profile.join("node_modules/local-only")
+        );
+        assert!(resolve_bundle_dir("dsh", "absent", &app.join("package.json"), &profile).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn heals_the_resolvable_dependency_closure_under_profiles_modules() {
+        let root = temp_root("heal-modules");
+        let app = root.join("app");
+        let modules = app.join("node_modules");
+        let home = root.join("home");
+        std::fs::create_dir_all(modules.join("bundle-a")).expect("bundle");
+        std::fs::create_dir_all(modules.join("dep-of-a")).expect("dep");
+        std::fs::write(
+            app.join("package.json"),
+            r#"{"name":"dsh-app","dependencies":{"bundle-a":"0","missing":"0"}}"#,
+        )
+        .expect("app manifest");
+        std::fs::write(
+            modules.join("bundle-a/package.json"),
+            r#"{"name":"bundle-a","peerDependencies":{"dep-of-a":"0"}}"#,
+        )
+        .expect("bundle manifest");
+        std::fs::write(
+            modules.join("dep-of-a/package.json"),
+            r#"{"name":"dep-of-a"}"#,
+        )
+        .expect("dep manifest");
+
+        heal_profiles_module_fallback(&app.join("package.json"), &home).expect("heal");
+        for name in ["dsh-app", "bundle-a", "dep-of-a"] {
+            assert!(
+                std::fs::symlink_metadata(home.join("profiles/node_modules").join(name))
+                    .expect("link")
+                    .file_type()
+                    .is_symlink(),
+                "{name}"
+            );
+        }
+        let anchor = app.join("package.json");
+        let shared_home = Arc::new(home.clone());
+        let mut healers = Vec::new();
+        for _ in 0..8 {
+            let anchor = anchor.clone();
+            let home = shared_home.clone();
+            healers.push(std::thread::spawn(move || {
+                heal_profiles_module_fallback(&anchor, &home)
+            }));
+        }
+        for healer in healers {
+            healer
+                .join()
+                .expect("healer thread")
+                .expect("concurrent heal");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn load_profile_resolves_bundle_layers_and_own_patches() {
         let home = temp_root("load");
         let dir = resolve_profile_dir("web", &home).expect("dir");
@@ -833,7 +1293,12 @@ mod tests {
         assert_eq!(profile.layers.len(), 1);
         assert_eq!(profile.layers[0].package_name, "test-bundle");
         assert_eq!(profile.layers[0].patches.len(), 1);
-        assert_eq!(profile.layers[0].patches[0].get("id").and_then(Value::as_str), Some("row-1"));
+        assert_eq!(
+            profile.layers[0].patches[0]
+                .get("id")
+                .and_then(Value::as_str),
+            Some("row-1")
+        );
         // The empty template patch parses as zero patches.
         assert!(profile.patches.is_empty());
         let _ = std::fs::remove_dir_all(&home);
@@ -858,7 +1323,11 @@ mod tests {
                 fn inject(&self) -> InjectSpec {
                     InjectSpec::new([])
                 }
-                async fn apply(&self, _ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
+                async fn apply(
+                    &self,
+                    _ctx: &Context,
+                    _config: ArcValue,
+                ) -> Result<(), PluginError> {
                     Ok(())
                 }
             }
@@ -936,8 +1405,7 @@ mod tests {
         }
 
         fn exit(&self, code: i32) {
-            self.exited
-                .store(code, std::sync::atomic::Ordering::SeqCst);
+            self.exited.store(code, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -949,11 +1417,12 @@ mod tests {
         guard.handle("boom".to_string());
         let lines = fake.lines();
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("dsh: fatal load failure: boom"), "{}", lines[0]);
-        assert_eq!(
-            fake.exited.load(std::sync::atomic::Ordering::SeqCst),
-            1
+        assert!(
+            lines[0].contains("dsh: fatal load failure: boom"),
+            "{}",
+            lines[0]
         );
+        assert_eq!(fake.exited.load(std::sync::atomic::Ordering::SeqCst), 1);
         // A later rejection falls through the latch: still one report.
         guard.handle("later".to_string());
         assert_eq!(fake.lines().len(), 1);
@@ -969,9 +1438,8 @@ mod tests {
             tokio::time::pause();
             let fake = FakeProc::new();
             let proc: Arc<dyn FailLoudProcess> = fake.clone();
-            let release: Arc<
-                dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
-            > = Arc::new(|| Box::pin(std::future::pending::<()>()));
+            let release: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync> =
+                Arc::new(|| Box::pin(std::future::pending::<()>()));
             let guard = install_fail_loud("dsh", proc, Some(release));
 
             guard.handle("boom".to_string());
@@ -1048,7 +1516,9 @@ mod tests {
             configs: std::sync::Mutex::new(Vec::new()),
         });
         loader.core.register("probe", probe.clone());
-        loader.core.register("include", dsh_cordis_include::plugin());
+        loader
+            .core
+            .register("include", dsh_cordis_include::plugin());
         let entry = dsh_cordis_loader::EntryOptions {
             name: "include".to_string(),
             config: Some(serde_json::to_value(&config).expect("config")),
@@ -1088,7 +1558,10 @@ mod tests {
                 enable_logs: None,
             };
             let (_loader, include_entry, probe) = include_fixture(config).await;
-            assert_eq!(probe.configs.lock().unwrap().as_slice(), &[serde_json::json!(1)]);
+            assert_eq!(
+                probe.configs.lock().unwrap().as_slice(),
+                &[serde_json::json!(1)]
+            );
 
             // First refresh: the patch file appears with an override.
             std::fs::write(&patch_path, "- id: a\n  config: 2\n").expect("patch file");
@@ -1121,6 +1594,64 @@ mod tests {
             assert_eq!(include_config.patches.expect("patches").len(), 1);
 
             let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn root_include_registration_is_generation_safe() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let ctx = cordis::Context::root();
+            let loader = dsh_cordis_loader::LoaderService::new(&ctx).await;
+            loader
+                .core
+                .register("include", dsh_cordis_include::plugin());
+            loader
+                .tree
+                .create(
+                    dsh_cordis_loader::EntryOptions {
+                        id: "first".into(),
+                        name: "include".into(),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                )
+                .await
+                .expect("first");
+            loader
+                .tree
+                .create(
+                    dsh_cordis_loader::EntryOptions {
+                        id: "second".into(),
+                        name: "include".into(),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                )
+                .await
+                .expect("second");
+            let entries = loader.tree.entries();
+            let first = entries
+                .iter()
+                .find(|entry| entry.options.lock().id == "first")
+                .unwrap()
+                .clone();
+            let second = entries
+                .iter()
+                .find(|entry| entry.options.lock().id == "second")
+                .unwrap()
+                .clone();
+            let stale = register_root_include(&ctx, &first);
+            let current = register_root_include(&ctx, &second);
+            drop(stale);
+            assert!(root_include(&ctx).is_some_and(|entry| Arc::ptr_eq(&entry, &second)));
+            drop(current);
+            assert!(root_include(&ctx).is_none());
         });
     }
 
@@ -1158,12 +1689,8 @@ mod tests {
             fn register_config(
                 &self,
                 _filename: PathBuf,
-                _refresh: Arc<
-                    dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
-                >,
-            ) -> Pin<
-                Box<dyn Future<Output = Result<AsyncDisposer, String>> + Send>,
-            > {
+                _refresh: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+            ) -> Pin<Box<dyn Future<Output = Result<AsyncDisposer, String>> + Send>> {
                 Box::pin(async { Err("INACTIVE_EFFECT".to_string()) })
             }
         }
@@ -1228,7 +1755,10 @@ mod tests {
         })
         .expect("dump");
         // Row a was patched by layer-one; b stayed base; c came from layer-two.
-        assert!(dump.contains("# == cordis.yml, patched by layer-one"), "{dump}");
+        assert!(
+            dump.contains("# == cordis.yml, patched by layer-one"),
+            "{dump}"
+        );
         assert!(dump.contains("# == cordis.yml"), "{dump}");
         assert!(dump.contains("# == layer-two"), "{dump}");
         // The patched config value appears in the rendered rows.

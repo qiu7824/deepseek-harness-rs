@@ -10,7 +10,10 @@
 use std::sync::Arc;
 
 use cordis::{Context, arc, downcast_arc};
-use dsh_agent::{Agent, AgentOptions, AgentStatus, AgentPreStepPayload, CancelOptions, Inbox, InboxTarget, PreStepDecision};
+use dsh_agent::{
+    Agent, AgentOptions, AgentPreStepPayload, AgentStatus, CancelOptions, Inbox, InboxTarget,
+    PreStepDecision,
+};
 use dsh_llm::{
     ContentBlock, ContextForm, ContextSnapshotSection, MessageSource, UserMessage,
     create_user_message,
@@ -18,10 +21,12 @@ use dsh_llm::{
 use dsh_scope::ScopeKey;
 use dsh_session::{AgentCancelCause, Session, SessionId, session_id};
 use dsh_time_context::{
-    Config, INJECT, NAME, TimeContextPlugin, config_schema, format_duration,
-    latest_injection_time, preceding_message_time, preceding_step_context_time, render_text,
-    request_messages, request_zone::{BrowserTimeZoneContext, derive_browser_time_zone_context, render_browser_time_zone_context},
-    timestamp::{TimestampFormatter, format_timestamp, canonical_time_zone},
+    Config, INJECT, NAME, TimeContextPlugin, config_schema, format_duration, latest_injection_time,
+    preceding_message_time, preceding_step_context_time, render_text, request_messages,
+    request_zone::{
+        BrowserTimeZoneContext, derive_browser_time_zone_context, render_browser_time_zone_context,
+    },
+    timestamp::{TimestampFormatter, canonical_time_zone, format_timestamp},
     validate_refresh_interval,
 };
 
@@ -189,21 +194,25 @@ fn refresh_interval_validation_rejects_non_integers_and_negatives() {
     for value in [-1.0, 0.5, 9_007_199_254_740_992.0, f64::INFINITY, f64::NAN] {
         let message = validate_refresh_interval(Some(value)).expect_err("must reject");
         assert!(
-            message.contains(
-                "time-context: refreshIntervalMs must be a non-negative safe integer"
-            ),
+            message.contains("time-context: refreshIntervalMs must be a non-negative safe integer"),
             "{message}"
         );
     }
-    assert!(validate_refresh_interval(Some(-1.0))
-        .unwrap_err()
-        .ends_with("got -1"));
-    assert!(validate_refresh_interval(Some(0.5))
-        .unwrap_err()
-        .ends_with("got 0.5"));
-    assert!(validate_refresh_interval(Some(f64::INFINITY))
-        .unwrap_err()
-        .ends_with("got Infinity"));
+    assert!(
+        validate_refresh_interval(Some(-1.0))
+            .unwrap_err()
+            .ends_with("got -1")
+    );
+    assert!(
+        validate_refresh_interval(Some(0.5))
+            .unwrap_err()
+            .ends_with("got 0.5")
+    );
+    assert!(
+        validate_refresh_interval(Some(f64::INFINITY))
+            .unwrap_err()
+            .ends_with("got Infinity")
+    );
 }
 
 #[test]
@@ -240,10 +249,7 @@ fn browser_zone_derivation_classifies_and_renders_every_context() {
         ])
         .unwrap(),
         BrowserTimeZoneContext::Mixed {
-            time_zones: vec![
-                "America/New_York".to_string(),
-                "Asia/Shanghai".to_string()
-            ]
+            time_zones: vec!["America/New_York".to_string(), "Asia/Shanghai".to_string()]
         }
     );
 
@@ -257,35 +263,41 @@ fn browser_zone_derivation_classifies_and_renders_every_context() {
     );
 
     let outcome = derive_browser_time_zone_context(&[rpc_message("+08:00")]);
-    assert!(outcome
-        .unwrap_err()
-        .message()
-        .contains("canonical UTC or IANA Area/Location"));
+    assert!(
+        outcome
+            .unwrap_err()
+            .message()
+            .contains("canonical UTC or IANA Area/Location")
+    );
     let outcome = derive_browser_time_zone_context(&[rpc_message("Not/A_Real_Zone")]);
     assert!(outcome.unwrap_err().message().contains("is unsupported"));
     let outcome = derive_browser_time_zone_context(&[rpc_message("Etc/UTC")]);
     assert!(outcome.unwrap_err().message().contains("must be canonical"));
 
-    assert!(render_browser_time_zone_context(&BrowserTimeZoneContext::Resolved {
-        time_zone: "Asia/Shanghai".to_string()
-    })
-    .contains("Interpret otherwise-unqualified dates and times in this zone."));
+    assert!(
+        render_browser_time_zone_context(&BrowserTimeZoneContext::Resolved {
+            time_zone: "Asia/Shanghai".to_string()
+        })
+        .contains("Interpret otherwise-unqualified dates and times in this zone.")
+    );
     assert_eq!(
         render_browser_time_zone_context(&BrowserTimeZoneContext::Mixed {
-            time_zones: vec![
-                "America/New_York".to_string(),
-                "Asia/Shanghai".to_string()
-            ]
+            time_zones: vec!["America/New_York".to_string(), "Asia/Shanghai".to_string()]
         }),
         "Browser time zone for this request: mixed [\"America/New_York\",\"Asia/Shanghai\"]. Ask the user to clarify otherwise-unqualified dates and times."
     );
-    assert!(render_browser_time_zone_context(&BrowserTimeZoneContext::Missing).contains("unavailable"));
+    assert!(
+        render_browser_time_zone_context(&BrowserTimeZoneContext::Missing).contains("unavailable")
+    );
 }
 
 #[test]
 fn canonicalization_and_timestamp_formatting_follow_icu() {
     assert_eq!(canonical_time_zone("UTC").unwrap(), "UTC");
-    assert_eq!(canonical_time_zone("Asia/Shanghai").unwrap(), "Asia/Shanghai");
+    assert_eq!(
+        canonical_time_zone("Asia/Shanghai").unwrap(),
+        "Asia/Shanghai"
+    );
     let base = chrono::DateTime::parse_from_rfc3339("2026-07-14T00:00:00+00:00")
         .unwrap()
         .timestamp_millis();
@@ -332,11 +344,7 @@ fn event_scans_find_the_right_preceding_times() {
         Some(reading_time)
     );
 
-    let tool = append_time(
-        agent.session(),
-        "tool/result",
-        plain_message("tool result"),
-    );
+    let tool = append_time(agent.session(), "tool/result", plain_message("tool result"));
     assert_eq!(preceding_message_time(agent.as_ref()), Some(tool));
 }
 
@@ -454,8 +462,10 @@ async fn prepended_listener_injects_one_snapshot_reading_per_step() {
     let decision = ctx
         .waterfall("agent/pre-step", vec![arc(payload)], fallback)
         .await;
-    let PreStepDecision::Enter { messages } =
-        downcast_arc::<PreStepDecision>(&decision).expect("decision").as_ref().clone()
+    let PreStepDecision::Enter { messages } = downcast_arc::<PreStepDecision>(&decision)
+        .expect("decision")
+        .as_ref()
+        .clone()
     else {
         panic!("enter decision");
     };
@@ -480,12 +490,18 @@ async fn prepended_listener_injects_one_snapshot_reading_per_step() {
     let [ContentBlock::Text { text }] = reading.content.as_slice() else {
         panic!("single text block");
     };
-    assert!(text.starts_with("Time sampled while preparing turn 1, step 1: "), "{text}");
+    assert!(
+        text.starts_with("Time sampled while preparing turn 1, step 1: "),
+        "{text}"
+    );
     assert!(text.contains("[Asia/Shanghai]"), "{text}");
     assert!(text.contains(
         "Browser time zone for this request: Asia/Shanghai. Interpret otherwise-unqualified dates and times in this zone."
     ), "{text}");
-    assert!(text.contains("Elapsed since the preceding model-visible message: 0s."), "{text}");
+    assert!(
+        text.contains("Elapsed since the preceding model-visible message: 0s."),
+        "{text}"
+    );
     assert_eq!(sections[0].text, *text);
 
     // The loop appends the proposed reading, then step 2 uses the durable
@@ -506,8 +522,10 @@ async fn prepended_listener_injects_one_snapshot_reading_per_step() {
     let decision = ctx
         .waterfall("agent/pre-step", vec![arc(payload)], fallback)
         .await;
-    let PreStepDecision::Enter { messages } =
-        downcast_arc::<PreStepDecision>(&decision).expect("decision").as_ref().clone()
+    let PreStepDecision::Enter { messages } = downcast_arc::<PreStepDecision>(&decision)
+        .expect("decision")
+        .as_ref()
+        .clone()
     else {
         panic!("enter decision");
     };
@@ -515,8 +533,14 @@ async fn prepended_listener_injects_one_snapshot_reading_per_step() {
     let [ContentBlock::Text { text }] = reading.content.as_slice() else {
         panic!("single text block");
     };
-    assert!(text.starts_with("Time sampled while preparing turn 1, step 2: "), "{text}");
-    assert!(text.contains("Elapsed since the preceding step context: 0s."), "{text}");
+    assert!(
+        text.starts_with("Time sampled while preparing turn 1, step 2: "),
+        "{text}"
+    );
+    assert!(
+        text.contains("Elapsed since the preceding step context: 0s."),
+        "{text}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -550,8 +574,10 @@ async fn plugin_fiber_disposal_removes_the_listener() {
     let decision = ctx
         .waterfall("agent/pre-step", vec![arc(payload)], fallback)
         .await;
-    let PreStepDecision::Enter { messages } =
-        downcast_arc::<PreStepDecision>(&decision).expect("decision").as_ref().clone()
+    let PreStepDecision::Enter { messages } = downcast_arc::<PreStepDecision>(&decision)
+        .expect("decision")
+        .as_ref()
+        .clone()
     else {
         panic!("enter decision");
     };
@@ -573,8 +599,10 @@ async fn plugin_fiber_disposal_removes_the_listener() {
     let decision = ctx
         .waterfall("agent/pre-step", vec![arc(payload)], fallback)
         .await;
-    let PreStepDecision::Enter { messages } =
-        downcast_arc::<PreStepDecision>(&decision).expect("decision").as_ref().clone()
+    let PreStepDecision::Enter { messages } = downcast_arc::<PreStepDecision>(&decision)
+        .expect("decision")
+        .as_ref()
+        .clone()
     else {
         panic!("enter decision");
     };
@@ -611,8 +639,10 @@ async fn refresh_interval_suppresses_a_recent_second_reading() {
     let decision = ctx
         .waterfall("agent/pre-step", vec![arc(payload)], fallback)
         .await;
-    let PreStepDecision::Enter { messages } =
-        downcast_arc::<PreStepDecision>(&decision).expect("decision").as_ref().clone()
+    let PreStepDecision::Enter { messages } = downcast_arc::<PreStepDecision>(&decision)
+        .expect("decision")
+        .as_ref()
+        .clone()
     else {
         panic!("enter decision");
     };
@@ -635,8 +665,10 @@ async fn refresh_interval_suppresses_a_recent_second_reading() {
     let decision = ctx
         .waterfall("agent/pre-step", vec![arc(payload)], fallback)
         .await;
-    let PreStepDecision::Enter { messages } =
-        downcast_arc::<PreStepDecision>(&decision).expect("decision").as_ref().clone()
+    let PreStepDecision::Enter { messages } = downcast_arc::<PreStepDecision>(&decision)
+        .expect("decision")
+        .as_ref()
+        .clone()
     else {
         panic!("enter decision");
     };
@@ -654,10 +686,12 @@ fn invalid_plugin_configuration_fails_load() {
             refresh_interval_ms: None,
         },
     );
-    assert!(outcome
-        .err()
-        .expect("must fail")
-        .starts_with("time-context: invalid IANA timeZone \"Not/A_Real_Zone\""));
+    assert!(
+        outcome
+            .err()
+            .expect("must fail")
+            .starts_with("time-context: invalid IANA timeZone \"Not/A_Real_Zone\"")
+    );
     let outcome = dsh_time_context::apply(
         &ctx,
         &Config {
@@ -665,8 +699,10 @@ fn invalid_plugin_configuration_fails_load() {
             refresh_interval_ms: Some(-1.0),
         },
     );
-    assert!(outcome
-        .err()
-        .expect("must fail")
-        .contains("refreshIntervalMs must be a non-negative safe integer"));
+    assert!(
+        outcome
+            .err()
+            .expect("must fail")
+            .contains("refreshIntervalMs must be a non-negative safe integer")
+    );
 }

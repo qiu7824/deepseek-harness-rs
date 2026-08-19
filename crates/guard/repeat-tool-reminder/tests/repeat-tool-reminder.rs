@@ -7,15 +7,17 @@
 use std::sync::Arc;
 
 use cordis::{Context, arc, downcast_arc};
-use dsh_agent::{Agent, AgentOptions, AgentPreStepPayload, AgentStatus, CancelOptions, Inbox, InboxTarget};
+use dsh_agent::{
+    Agent, AgentOptions, AgentPreStepPayload, AgentStatus, CancelOptions, Inbox, InboxTarget,
+};
 use dsh_llm::{ContentBlock, MessageSource, UserMessage, create_user_message};
-use dsh_scope::ScopeKey;
-use dsh_session::{AgentCancelCause, Session, SessionId, session_id};
-use dsh_tools::{PostToolDecision, ToolExecution, ToolExecutionResult};
 use dsh_repeat_tool_reminder::{
     Config, NAME, canonicalize, detailed_reminder, json_stringify, preview_arguments,
     sort_json_value, validate_thresholds, wildcard_to_regexp,
 };
+use dsh_scope::ScopeKey;
+use dsh_session::{AgentCancelCause, Session, SessionId, session_id};
+use dsh_tools::{PostToolDecision, ToolExecution, ToolExecutionResult};
 
 struct ProbeAgent {
     id: SessionId,
@@ -91,7 +93,11 @@ impl Agent for ProbeAgent {
     fn inject(&self, _message: UserMessage) {}
 }
 
-fn execution(agent: Option<Arc<ProbeAgent>>, name: &str, arguments: serde_json::Value) -> Arc<ToolExecution> {
+fn execution(
+    agent: Option<Arc<ProbeAgent>>,
+    name: &str,
+    arguments: serde_json::Value,
+) -> Arc<ToolExecution> {
     let token = TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Arc::new(ToolExecution {
         token,
@@ -122,10 +128,14 @@ fn empty_result() -> ToolExecutionResult {
 
 fn contexts(decision: &PostToolDecision) -> Vec<UserMessage> {
     match decision {
-        PostToolDecision::Accept { additional_contexts, .. }
-        | PostToolDecision::Block { additional_contexts, .. } => {
-            additional_contexts.clone().unwrap_or_default()
+        PostToolDecision::Accept {
+            additional_contexts,
+            ..
         }
+        | PostToolDecision::Block {
+            additional_contexts,
+            ..
+        } => additional_contexts.clone().unwrap_or_default(),
     }
 }
 
@@ -169,12 +179,12 @@ fn canonicalization_ignores_property_order_deeply() {
     let a = serde_json::json!({"a": 1, "nested": {"x": [1, 2], "y": null}});
     let b = serde_json::json!({"nested": {"y": null, "x": [1, 2]}, "a": 1});
     assert_eq!(canonicalize(&a), canonicalize(&b));
-    assert_eq!(
-        canonicalize(&a),
-        r#"{"a":1,"nested":{"x":[1,2],"y":null}}"#
-    );
+    assert_eq!(canonicalize(&a), r#"{"a":1,"nested":{"x":[1,2],"y":null}}"#);
     // JSON.stringify number parity: integers render without a fraction.
-    assert_eq!(json_stringify(&serde_json::json!([1.0, 1.5, "x", null, true])), r#"[1,1.5,"x",null,true]"#);
+    assert_eq!(
+        json_stringify(&serde_json::json!([1.0, 1.5, "x", null, true])),
+        r#"[1,1.5,"x",null,true]"#
+    );
     let _ = sort_json_value(&serde_json::json!({"z": [{"b": 1, "a": 2}]}));
 }
 
@@ -192,7 +202,10 @@ fn wildcard_patterns_escape_metacharacters() {
 fn argument_preview_truncates_at_the_cap() {
     let canonical = format!(r#"{{"body":"{}"}}"#, "x".repeat(400));
     let preview = preview_arguments(&canonical, 24);
-    assert!(preview.starts_with(r#"{"body":"xxxxxxxxxxxxxxx"#), "{preview}");
+    assert!(
+        preview.starts_with(r#"{"body":"xxxxxxxxxxxxxxx"#),
+        "{preview}"
+    );
     assert!(preview.contains("… (+387 more chars)"), "{preview}");
     assert!(!preview.contains(&"x".repeat(400)));
     assert_eq!(preview_arguments("short", 24), "short");
@@ -205,18 +218,26 @@ fn threshold_validation_fails_loud_and_normalizes_order() {
         validate_thresholds(vec![3.0, 5.0, 8.0]).unwrap(),
         vec![3, 5, 8]
     );
-    assert!(validate_thresholds(vec![])
-        .unwrap_err()
-        .contains("must not be empty"));
-    assert!(validate_thresholds(vec![1.0, 3.0])
-        .unwrap_err()
-        .contains("integer >= 2"));
-    assert!(validate_thresholds(vec![2.5])
-        .unwrap_err()
-        .contains("integer >= 2"));
-    assert!(validate_thresholds(vec![3.0, 3.0])
-        .unwrap_err()
-        .contains("duplicates"));
+    assert!(
+        validate_thresholds(vec![])
+            .unwrap_err()
+            .contains("must not be empty")
+    );
+    assert!(
+        validate_thresholds(vec![1.0, 3.0])
+            .unwrap_err()
+            .contains("integer >= 2")
+    );
+    assert!(
+        validate_thresholds(vec![2.5])
+            .unwrap_err()
+            .contains("integer >= 2")
+    );
+    assert!(
+        validate_thresholds(vec![3.0, 3.0])
+            .unwrap_err()
+            .contains("duplicates")
+    );
 }
 
 #[test]
@@ -233,21 +254,32 @@ async fn escalates_gently_at_the_first_threshold_and_detailed_at_the_second() {
     let agent = ProbeAgent::new("escalate");
     let mut reminders = 0;
     for count in 1..=5i64 {
-        let exec = execution(Some(agent.clone()), "probe", serde_json::json!({"q": "same"}));
+        let exec = execution(
+            Some(agent.clone()),
+            "probe",
+            serde_json::json!({"q": "same"}),
+        );
         let decision = fire_post(&ctx, &exec, accept()).await;
         let found = contexts(&decision);
         match count {
             1 | 2 | 4 => assert!(found.is_empty(), "count {count}"),
             3 => {
                 reminders += 1;
-                let [reminder] = found.as_slice() else { panic!("one reminder") };
+                let [reminder] = found.as_slice() else {
+                    panic!("one reminder")
+                };
                 assert_source(reminder, "probe", 3);
                 let text = text_of(reminder);
-                assert!(text.contains("repeating the exact same tool call"), "{text}");
+                assert!(
+                    text.contains("repeating the exact same tool call"),
+                    "{text}"
+                );
             }
             5 => {
                 reminders += 1;
-                let [reminder] = found.as_slice() else { panic!("one reminder") };
+                let [reminder] = found.as_slice() else {
+                    panic!("one reminder")
+                };
                 assert_source(reminder, "probe", 5);
                 let text = text_of(reminder);
                 assert!(text.contains("consecutive_calls: 5"), "{text}");
@@ -338,7 +370,10 @@ async fn different_tracked_calls_and_excluded_calls_reset_or_stay_transparent() 
             reminded += 1;
         }
     }
-    assert_eq!(reminded, 1, "only the third consecutive probe after the reset");
+    assert_eq!(
+        reminded, 1,
+        "only the third consecutive probe after the reset"
+    );
 
     // Excluded calls are invisible to the chain.
     let (ctx, _disposer) = mounted(Config {
@@ -425,7 +460,9 @@ async fn a_user_pre_step_message_resets_the_chain() {
         step: 1,
     };
     let fallback = Box::pin(async move {
-        arc(dsh_agent::PreStepDecision::Enter { messages: Vec::new() })
+        arc(dsh_agent::PreStepDecision::Enter {
+            messages: Vec::new(),
+        })
     });
     let value = ctx
         .waterfall("agent/pre-step", vec![arc(payload)], fallback)
@@ -472,11 +509,18 @@ async fn folds_the_reminder_onto_downstream_decisions() {
         additional_contexts: Some(vec![downstream_context.clone()]),
     };
     let exec = execution(Some(agent.clone()), "probe", serde_json::json!({"q": 1}));
-    assert!(contexts(&fire_post(&ctx, &exec, accept()).await).is_empty(), "count 1");
+    assert!(
+        contexts(&fire_post(&ctx, &exec, accept()).await).is_empty(),
+        "count 1"
+    );
 
     let exec = execution(Some(agent.clone()), "probe", serde_json::json!({"q": 1}));
     let decision = fire_post(&ctx, &exec, downstream).await;
-    let PostToolDecision::Block { feedback, additional_contexts } = decision else {
+    let PostToolDecision::Block {
+        feedback,
+        additional_contexts,
+    } = decision
+    else {
         panic!("block decision");
     };
     assert_eq!(
@@ -499,10 +543,18 @@ async fn folds_the_reminder_onto_downstream_decisions() {
         additional_contexts: None,
     };
     let exec = execution(Some(agent.clone()), "probe", serde_json::json!({"q": 1}));
-    assert!(contexts(&fire_post(&ctx, &exec, accept()).await).is_empty(), "count 1");
+    assert!(
+        contexts(&fire_post(&ctx, &exec, accept()).await).is_empty(),
+        "count 1"
+    );
     let exec = execution(Some(agent.clone()), "probe", serde_json::json!({"q": 1}));
     let decision = fire_post(&ctx, &exec, downstream).await;
-    let PostToolDecision::Accept { value, additional_contexts, .. } = decision else {
+    let PostToolDecision::Accept {
+        value,
+        additional_contexts,
+        ..
+    } = decision
+    else {
         panic!("accept decision");
     };
     assert_eq!(

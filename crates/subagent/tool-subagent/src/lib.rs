@@ -118,9 +118,7 @@ fn with_partial_text(error: &str, output: &[ContentBlock]) -> String {
 
 /// Collect and release one foreground run without letting disposal replace
 /// an independent result failure.
-async fn settle_foreground_run(
-    run: Arc<dyn SubagentRun>,
-) -> Result<serde_json::Value, String> {
+async fn settle_foreground_run(run: Arc<dyn SubagentRun>) -> Result<serde_json::Value, String> {
     let execution = run.result().await.and_then(|result| {
         if let Some(error) = stop_reason_error(&result) {
             return Err(with_partial_text(&error, &result.output));
@@ -171,7 +169,10 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<(), String> {
                 .to_string(),
         );
     }
-    let tool_name = config.tool_name.clone().unwrap_or_else(|| "subagent".to_string());
+    let tool_name = config
+        .tool_name
+        .clone()
+        .unwrap_or_else(|| "subagent".to_string());
     let tools = ctx
         .get_typed::<Arc<ToolRuntime>>("tools", false)
         .map(|slot| slot.as_ref().clone())
@@ -301,7 +302,10 @@ fn mount_tool(
                     ));
                 };
                 let request = SubagentStartRequest {
-                    label: args.get("description").and_then(|value| value.as_str()).map(str::to_string),
+                    label: args
+                        .get("description")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
                     prompt: vec![ContentBlock::Text {
                         text: args
                             .get("prompt")
@@ -343,26 +347,27 @@ fn mount_tool(
                     let start_subagents = subagents.clone();
                     let start_provider = provider.clone();
                     let start_request = request;
-                    let id = jobs.start(JobStart {
-                        kind: "subagent".to_string(),
-                        label: label.clone(),
-                        output_limit_bytes: None,
-                        owner: Some(parent),
-                        run: Arc::new({
-                            let subagents_owned = start_subagents.clone();
-                            let provider_owned = start_provider.clone();
-                            let request_owned = start_request.clone();
-                            move || {
-                                let subagents = subagents_owned.clone();
-                                let provider = provider_owned.clone();
-                                let request = request_owned.clone();
-                                Arc::new(SettledRunHooks::new(Box::pin(async move {
-                                    subagents.start(&provider, request).await
-                                })))
-                            }
-                        }),
-                    })
-                    .map_err(ToolBodyError::plain)?;
+                    let id = jobs
+                        .start(JobStart {
+                            kind: "subagent".to_string(),
+                            label: label.clone(),
+                            output_limit_bytes: None,
+                            owner: Some(parent),
+                            run: Arc::new({
+                                let subagents_owned = start_subagents.clone();
+                                let provider_owned = start_provider.clone();
+                                let request_owned = start_request.clone();
+                                move || {
+                                    let subagents = subagents_owned.clone();
+                                    let provider = provider_owned.clone();
+                                    let request = request_owned.clone();
+                                    Arc::new(SettledRunHooks::new(Box::pin(async move {
+                                        subagents.start(&provider, request).await
+                                    })))
+                                }
+                            }),
+                        })
+                        .map_err(ToolBodyError::plain)?;
                     return Ok(serde_json::json!({
                         "kind": "background",
                         "jobId": id.as_str(),
@@ -382,7 +387,9 @@ fn mount_tool(
             Some(ToolCallView::Generic {
                 title: format!(
                     "Delegate: {}",
-                    args.get("description").and_then(|value| value.as_str()).unwrap_or("subagent")
+                    args.get("description")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("subagent")
                 ),
                 kind: Some(ToolCallKind::Other),
                 raw_input: args.get("description").cloned(),
@@ -392,9 +399,7 @@ fn mount_tool(
         })),
         present_result: None,
     };
-    tools
-        .register(ctx, definition)
-        .map(|_| ())
+    tools.register(ctx, definition).map(|_| ())
 }
 
 /// Job hooks that settle one background one-shot run (TS `settleStart`).
@@ -406,7 +411,11 @@ struct SettledRunHooks {
 impl SettledRunHooks {
     fn new(
         start: std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<Arc<dyn SubagentRun>, dsh_subagent::SubagentError>> + Send>,
+            Box<
+                dyn std::future::Future<
+                        Output = Result<Arc<dyn SubagentRun>, dsh_subagent::SubagentError>,
+                    > + Send,
+            >,
         >,
     ) -> Self {
         let cancelled = Arc::new(parking_lot::Mutex::new(false));

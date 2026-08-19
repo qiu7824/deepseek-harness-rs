@@ -581,14 +581,8 @@ impl<'de> Deserialize<'de> for False {
 #[serde(rename_all = "camelCase")]
 #[serde(untagged)]
 pub enum RpcResult<T> {
-    Ok {
-        ok: True,
-        value: T,
-    },
-    Err {
-        ok: False,
-        error: RpcError,
-    },
+    Ok { ok: True, value: T },
+    Err { ok: False, error: RpcError },
 }
 
 impl<T> RpcResult<T> {
@@ -779,6 +773,11 @@ pub enum RpcReceiptReason {
 #[serde(rename_all = "camelCase")]
 #[serde(untagged)]
 pub enum RpcReceipt {
-    Accepted { accepted: True },
-    Rejected { accepted: False, reason: RpcReceiptReason },
+    Accepted {
+        accepted: True,
+    },
+    Rejected {
+        accepted: False,
+        reason: RpcReceiptReason,
+    },
 }

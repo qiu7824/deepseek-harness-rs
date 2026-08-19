@@ -5,13 +5,13 @@
 //! services in a dynamic `Arc<dyn Any>` store.
 
 use std::ops::Deref;
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
 
 use crate::error::PluginError;
-use crate::events::{Disposer, DispatchMode, EventOptions, EventsService, Listener};
+use crate::events::{DispatchMode, Disposer, EventOptions, EventsService, Listener};
 use crate::fiber::FiberCore;
 use crate::logger::LoggerService;
 use crate::reflect::{Accessor, ReflectService};
@@ -65,7 +65,9 @@ impl Deref for Context {
 
 impl std::fmt::Debug for Context {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Context").field("fiber", &self.fiber.name()).finish()
+        f.debug_struct("Context")
+            .field("fiber", &self.fiber.name())
+            .finish()
     }
 }
 
@@ -100,19 +102,18 @@ impl Context {
         // `logger` is both a built-in field and a named service. The root TS
         // constructor clears the built-in effects so they remain permanent;
         // do the same after registration.
-        let _ = ctx.reflect.provide(
-            &ctx,
-            "logger",
-            Some(arc(logger)),
-            None,
-        );
+        let _ = ctx.reflect.provide(&ctx, "logger", Some(arc(logger)), None);
         let _ = ctx.fiber.disposables.clear();
         ctx
     }
 
     /// The root context shared by every child.
     pub fn root_context(&self) -> Context {
-        self.inner.root.get().cloned().unwrap_or_else(|| self.clone())
+        self.inner
+            .root
+            .get()
+            .cloned()
+            .unwrap_or_else(|| self.clone())
     }
 
     /// Base URL used to resolve relative plugin/module specifiers.
@@ -160,13 +161,7 @@ impl Context {
                 intercept.insert(name.clone(), config.clone());
             }
         }
-        self.child_with(
-            fiber,
-            self.isolate.clone(),
-            intercept,
-            None,
-            None,
-        )
+        self.child_with(fiber, self.isolate.clone(), intercept, None, None)
     }
 
     /// Create a child context sharing this fiber with no overlay changes
@@ -218,10 +213,7 @@ impl Context {
     }
 
     /// Context used by scoped internal/service dispatch.
-    pub fn with_filter(
-        &self,
-        filter: Arc<dyn Fn(&Context) -> bool + Send + Sync>,
-    ) -> Context {
+    pub fn with_filter(&self, filter: Arc<dyn Fn(&Context) -> bool + Send + Sync>) -> Context {
         self.child_with(
             self.fiber.clone(),
             self.isolate.clone(),
@@ -264,11 +256,7 @@ impl Context {
     // ---- lifecycle / registry mixins ----
 
     /// Register a cleanup-aware effect on this context's fiber.
-    pub fn effect(
-        &self,
-        label: &str,
-        execute: BoxFuture<'static, Option<Disposer>>,
-    ) -> Disposer {
+    pub fn effect(&self, label: &str, execute: BoxFuture<'static, Option<Disposer>>) -> Disposer {
         self.fiber.effect(label, execute)
     }
 
@@ -281,19 +269,16 @@ impl Context {
     pub fn inject(
         &self,
         deps: InjectSpec,
-        callback: Arc<dyn Fn(&Context, ArcValue) -> BoxFuture<'static, Result<(), PluginError>> + Send + Sync>,
+        callback: Arc<
+            dyn Fn(&Context, ArcValue) -> BoxFuture<'static, Result<(), PluginError>> + Send + Sync,
+        >,
     ) -> Arc<FiberCore> {
         self.registry.inject(self, deps, callback)
     }
 
     // ---- event mixins ----
 
-    pub async fn on(
-        &self,
-        name: &str,
-        listener: Arc<Listener>,
-        options: EventOptions,
-    ) -> Disposer {
+    pub async fn on(&self, name: &str, listener: Arc<Listener>, options: EventOptions) -> Disposer {
         self.events.on(self, name, listener, options).await
     }
 

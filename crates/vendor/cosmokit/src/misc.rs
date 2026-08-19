@@ -50,7 +50,11 @@ pub use map_values as value_map;
 /// (TS `pick(source, keys, forced)`).
 ///
 /// `None` values are skipped unless `forced` is set.
-pub fn pick<K, V, I>(source: &IndexMap<K, Option<V>>, keys: Option<I>, forced: bool) -> IndexMap<K, Option<V>>
+pub fn pick<K, V, I>(
+    source: &IndexMap<K, Option<V>>,
+    keys: Option<I>,
+    forced: bool,
+) -> IndexMap<K, Option<V>>
 where
     K: Eq + std::hash::Hash + Clone,
     V: Clone,
@@ -107,9 +111,13 @@ mod tests {
         let mapped = map_values(&source, |value, key| format!("{key}:{value}"));
         assert_eq!(
             mapped,
-            [("a".to_string(), "a:1".to_string()), ("b".into(), "b:2".into()), ("c".into(), "c:3".into())]
-                .into_iter()
-                .collect::<IndexMap<_, _>>()
+            [
+                ("a".to_string(), "a:1".to_string()),
+                ("b".into(), "b:2".into()),
+                ("c".into(), "c:3".into())
+            ]
+            .into_iter()
+            .collect::<IndexMap<_, _>>()
         );
         assert_eq!(value_map(&source, |v, _| *v), source);
     }
@@ -120,7 +128,11 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
             .collect();
-        let picked = pick(&source, Some(["a".to_string(), "b".to_string(), "x".to_string()]), false);
+        let picked = pick(
+            &source,
+            Some(["a".to_string(), "b".to_string(), "x".to_string()]),
+            false,
+        );
         assert_eq!(picked.len(), 1);
         assert_eq!(picked.get("a"), Some(&Some(1)));
         let forced = pick(&source, Some(["b".to_string()]), true);

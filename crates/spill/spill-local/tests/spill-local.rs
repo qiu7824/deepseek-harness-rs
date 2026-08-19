@@ -10,9 +10,7 @@ use std::sync::Arc;
 
 use cordis::Context;
 use dsh_spill::{SaveTextSpill, SpillOwner, SpillSource, SpillStore};
-use dsh_spill_local::{
-    LocalSpillStore, encode_segment, private_root, save_text_file, session_dir,
-};
+use dsh_spill_local::{LocalSpillStore, encode_segment, private_root, save_text_file, session_dir};
 
 /// A per-test temp root that cleans itself up.
 struct TempRoot(std::path::PathBuf);
@@ -41,7 +39,9 @@ impl Drop for TempRoot {
 
 fn request() -> SaveTextSpill {
     SaveTextSpill {
-        owner: SpillOwner { session_id: dsh_session::session_id("sess-1") },
+        owner: SpillOwner {
+            session_id: dsh_session::session_id("sess-1"),
+        },
         source: SpillSource {
             tool_name: "web_fetch".to_string(),
             call_id: dsh_llm::call_id("call-1"),
@@ -84,11 +84,21 @@ fn session_dir_is_a_stable_per_session_hash_under_the_root() {
     let dir = session_dir("/spill", "sess-1");
     assert_eq!(dir, session_dir("/spill", "sess-1"));
     let path = std::path::Path::new(&dir);
-    assert_eq!(path.parent().expect("parent"), std::path::Path::new("/spill"));
-    let base = path.file_name().expect("basename").to_string_lossy().into_owned();
+    assert_eq!(
+        path.parent().expect("parent"),
+        std::path::Path::new("/spill")
+    );
+    let base = path
+        .file_name()
+        .expect("basename")
+        .to_string_lossy()
+        .into_owned();
     assert!(
-        base.len() == 20 && base.starts_with("session-")
-            && base[8..].chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        base.len() == 20
+            && base.starts_with("session-")
+            && base[8..]
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
         "{base}"
     );
     assert_ne!(session_dir("/spill", "sess-2"), dir);
@@ -111,7 +121,10 @@ async fn save_text_file_writes_the_content_under_the_session_dir_and_reports_byt
     assert_eq!(std::fs::read_to_string(&saved.path).expect("read"), "héllo");
     assert_eq!(saved.bytes, "héllo".len() as u64);
     assert_eq!(
-        std::path::Path::new(&saved.path).parent().expect("parent").to_string_lossy(),
+        std::path::Path::new(&saved.path)
+            .parent()
+            .expect("parent")
+            .to_string_lossy(),
         session_dir(&temp.path(), "sess-1")
     );
     let base = std::path::Path::new(&saved.path)
@@ -120,7 +133,10 @@ async fn save_text_file_writes_the_content_under_the_session_dir_and_reports_byt
         .to_string_lossy()
         .into_owned();
     assert!(
-        base.len() == 18 && base[..12].chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+        base.len() == 18
+            && base[..12]
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
             && &base[13..] == "r.txt",
         "{base}"
     );
@@ -140,10 +156,17 @@ async fn save_text_file_sanitizes_a_traversal_shaped_suggested_name_into_one_seg
     // The separators escaped, so the whole name is one leaf under the
     // session dir.
     assert_eq!(
-        std::path::Path::new(&saved.path).parent().expect("parent").to_string_lossy(),
+        std::path::Path::new(&saved.path)
+            .parent()
+            .expect("parent")
+            .to_string_lossy(),
         session_dir(&temp.path(), "sess-1")
     );
-    assert!(!saved.path.replace('\\', "/").contains("/.."), "{}", saved.path);
+    assert!(
+        !saved.path.replace('\\', "/").contains("/.."),
+        "{}",
+        saved.path
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -206,7 +229,9 @@ async fn local_store_registers_as_ctx_spill_store_and_saves_under_the_configured
     let ctx = Context::root();
     let store = LocalSpillStore::install(
         &ctx,
-        dsh_spill_local::Config { root: Some(temp.path()) },
+        dsh_spill_local::Config {
+            root: Some(temp.path()),
+        },
     )
     .expect("install");
     let reference = store.save_text(&request()).await.expect("save");
@@ -233,7 +258,9 @@ async fn local_store_resolves_a_relative_configured_root_to_absolute() {
     let ctx = Context::root();
     let store = LocalSpillStore::install(
         &ctx,
-        dsh_spill_local::Config { root: Some(".".to_string()) },
+        dsh_spill_local::Config {
+            root: Some(".".to_string()),
+        },
     )
     .expect("install");
     assert!(std::path::Path::new(store.root()).is_absolute());
@@ -242,8 +269,8 @@ async fn local_store_resolves_a_relative_configured_root_to_absolute() {
 #[tokio::test(flavor = "current_thread")]
 async fn local_store_falls_back_to_the_private_root_when_none_is_configured() {
     let ctx = Context::root();
-    let store = LocalSpillStore::install(&ctx, dsh_spill_local::Config::default())
-        .expect("install");
+    let store =
+        LocalSpillStore::install(&ctx, dsh_spill_local::Config::default()).expect("install");
     assert_eq!(store.root(), private_root());
 }
 
@@ -263,7 +290,9 @@ async fn local_store_rejects_when_the_root_is_not_writable() {
     let ctx = Context::root();
     let store = LocalSpillStore::install(
         &ctx,
-        dsh_spill_local::Config { root: Some(saved.path.clone()) },
+        dsh_spill_local::Config {
+            root: Some(saved.path.clone()),
+        },
     )
     .expect("install");
     assert!(store.save_text(&request()).await.is_err());
@@ -278,7 +307,9 @@ async fn the_spill_store_service_resolves_through_the_erased_handle() {
     let ctx = Context::root();
     let _store = LocalSpillStore::install(
         &ctx,
-        dsh_spill_local::Config { root: Some(temp.path()) },
+        dsh_spill_local::Config {
+            root: Some(temp.path()),
+        },
     )
     .expect("install");
     let resolved = ctx

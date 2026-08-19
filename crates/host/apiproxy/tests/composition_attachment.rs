@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use cordis::Context;
 use dsh_attachment::{
-    AttachmentError, AttachmentStore, ImageAttachmentLimits, ImageAttachmentRef,
-    ImageMediaType, SaveImageAttachment, StoredImageAttachment,
+    AttachmentError, AttachmentStore, ImageAttachmentLimits, ImageAttachmentRef, ImageMediaType,
+    SaveImageAttachment, StoredImageAttachment,
 };
 use dsh_host_apiproxy::{
     ApiProxyDefaults, ApiProxyService, Body, CarrierRequest, to_fetch_handler,
@@ -32,8 +32,7 @@ struct StubStore {
 #[async_trait::async_trait]
 impl AttachmentStore for StubStore {
     fn image_limits(&self) -> &ImageAttachmentLimits {
-        static LIMITS: std::sync::OnceLock<ImageAttachmentLimits> =
-            std::sync::OnceLock::new();
+        static LIMITS: std::sync::OnceLock<ImageAttachmentLimits> = std::sync::OnceLock::new();
         LIMITS.get_or_init(|| ImageAttachmentLimits {
             max_image_bytes: 1024 * 1024,
             max_images_per_message: 8,

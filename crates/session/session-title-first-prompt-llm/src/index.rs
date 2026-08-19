@@ -4,9 +4,7 @@
 use std::sync::Arc;
 
 use cordis::{ArcValue, Context, InjectSpec, Plugin, PluginError, arc, downcast};
-use dsh_session_title_llm::{
-    SessionTitleLlmConfig, register_session_title_llm_provider,
-};
+use dsh_session_title_llm::{SessionTitleLlmConfig, register_session_title_llm_provider};
 
 /// Cordis plugin name (TS `name`).
 pub const NAME: &str = "session-title-first-prompt-llm";
@@ -24,13 +22,9 @@ pub fn apply(ctx: &Context, config: Config) -> Result<(), String> {
         config,
         NAME,
         dsh_session_title::SessionTitleAutomaticMode::FirstPrompt,
-        Arc::new(|messages| {
-            match messages.into_iter().next() {
-                Some(first) => Ok(vec![first]),
-                None => Err(
-                    "first-prompt title provider requires one human message".to_string()
-                ),
-            }
+        Arc::new(|messages| match messages.into_iter().next() {
+            Some(first) => Ok(vec![first]),
+            None => Err("first-prompt title provider requires one human message".to_string()),
         }),
     )
     .map(|_| ())
@@ -52,7 +46,9 @@ impl Plugin for SessionTitleFirstPromptLlmPlugin {
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
         let config = downcast::<Config>(&config)
             .cloned()
-            .or_else(|| serde_json::from_value(downcast::<serde_json::Value>(&config)?.clone()).ok())
+            .or_else(|| {
+                serde_json::from_value(downcast::<serde_json::Value>(&config)?.clone()).ok()
+            })
             .ok_or_else(|| {
                 PluginError::new(arc(
                     "session-title-first-prompt-llm: configuration is required".to_string(),

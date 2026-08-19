@@ -88,21 +88,21 @@ pub fn trace_event(
         }
     }
 
-    let target_record = analysis
-        .records
-        .get(seq as usize)
-        .cloned()
-        .ok_or_else(|| {
-            SessionQueryError::new(
-                SessionQueryErrorCode::SessionQueryEventNotFound,
-                format!("session \"{session_id}\" has no event at seq {seq}"),
-            )
-        })?;
+    let target_record = analysis.records.get(seq as usize).cloned().ok_or_else(|| {
+        SessionQueryError::new(
+            SessionQueryErrorCode::SessionQueryEventNotFound,
+            format!("session \"{session_id}\" has no event at seq {seq}"),
+        )
+    })?;
     Ok(SessionEventTrace {
         target: target_record,
         replaced_by: analysis.replaced_by.get(&seq).copied(),
         replacement_chain,
-        replaced_event_seqs: analysis.replaced_event_seqs.get(&seq).cloned().unwrap_or_default(),
+        replaced_event_seqs: analysis
+            .replaced_event_seqs
+            .get(&seq)
+            .cloned()
+            .unwrap_or_default(),
         source_event_seqs: event_sources(target),
         derived_event_seqs,
     })

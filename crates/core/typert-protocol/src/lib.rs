@@ -87,7 +87,9 @@ impl LookupRegistry {
             panic!("typert-protocol: lookup \"{key}\" is already registered");
         }
         let provider = Arc::new(provider);
-        self.lookups.lock().insert(key.to_string(), provider.clone());
+        self.lookups
+            .lock()
+            .insert(key.to_string(), provider.clone());
         let lookups = Arc::clone(&self.lookups);
         let key = key.to_string();
         make_disposer(move || {
@@ -101,7 +103,10 @@ impl LookupRegistry {
 
     /// Resolve a wire identity through the registered provider.
     pub fn resolve(&self, key: &str, id: &str) -> Option<ArcValue> {
-        self.lookups.lock().get(key).and_then(|lookup| (lookup.resolve)(id))
+        self.lookups
+            .lock()
+            .get(key)
+            .and_then(|lookup| (lookup.resolve)(id))
     }
 
     /// The registered lookup keys, in registration order.
@@ -176,20 +181,22 @@ mod tests {
             Some("session-object".to_string())
         );
         assert!(registry.resolve("session", "other").is_none());
-        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            registry.register(
-                "session",
-                TypertLookup {
-                    key: "session".to_string(),
-                    parameter: "s".to_string(),
-                    wire: "w".to_string(),
-                    host_type_symbol: "h".to_string(),
-                    wire_type_symbol: "w".to_string(),
-                    resolve: Arc::new(|_| None),
-                },
-            )
-        }))
-        .is_err());
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                registry.register(
+                    "session",
+                    TypertLookup {
+                        key: "session".to_string(),
+                        parameter: "s".to_string(),
+                        wire: "w".to_string(),
+                        host_type_symbol: "h".to_string(),
+                        wire_type_symbol: "w".to_string(),
+                        resolve: Arc::new(|_| None),
+                    },
+                )
+            }))
+            .is_err()
+        );
         dispose().await;
         assert!(registry.keys().is_empty());
     }

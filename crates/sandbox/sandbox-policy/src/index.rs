@@ -68,10 +68,11 @@ impl SandboxPolicyService {
     /// register as `ctx.sandboxPolicy`.
     pub fn install(ctx: &Context, config: Config) -> Arc<Self> {
         let default_mode = config.mode.unwrap_or(SandboxMode::ReadOnly);
-        let fallback = config
-            .workspace_root
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir().map(|cwd| cwd.to_string_lossy().into_owned()).unwrap_or_else(|_| ".".to_string()));
+        let fallback = config.workspace_root.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|cwd| cwd.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".to_string())
+        });
         let service = Arc::new(Self {
             ctx: ctx.clone(),
             default_mode,

@@ -17,7 +17,7 @@
 
 pub mod store;
 
-pub use store::{AnonymousEntries, NamedEntries, ScopeLayer, ScopedLayers};
+pub use store::{AnonymousEntries, NamedEntries, PreparedRegistration, ScopeLayer, ScopedLayers};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,7 +43,10 @@ pub struct ScopeKey {
 
 impl ScopeKey {
     pub fn new() -> Self {
-        Self { id: NEXT_KEY_ID.fetch_add(1, Ordering::Relaxed), _anchor: Arc::new(()) }
+        Self {
+            id: NEXT_KEY_ID.fetch_add(1, Ordering::Relaxed),
+            _anchor: Arc::new(()),
+        }
     }
 
     pub(crate) fn key_id(&self) -> u64 {
@@ -183,30 +186,29 @@ pub fn create_scope(ctx: &Context, key: ScopeKey, options: &CreateScopeOptions) 
         let mut tags = SCOPE_TAGS.lock();
         tags.insert(Arc::as_ptr(&fiber) as *const () as usize, key);
     }
-    let fiber_ctx = fiber
-        .ctx()
-        .expect("scope fiber context")
-        .extend();
+    let fiber_ctx = fiber.ctx().expect("scope fiber context").extend();
     let raw_fiber = fiber.clone();
-    let raw_dispose: Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync> =
-        Arc::new(move || {
-            let fiber = raw_fiber.clone();
-            Box::pin(async move {
-                forget_scope_fiber(&fiber);
-                fiber.dispose().await;
-            })
-        });
+    let raw_dispose: Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync> = Arc::new(move || {
+        let fiber = raw_fiber.clone();
+        Box::pin(async move {
+            forget_scope_fiber(&fiber);
+            fiber.dispose().await;
+        })
+    });
     let dispose_cell = Arc::new(tokio::sync::OnceCell::new());
     let raw_for_dispose = raw_dispose.clone();
-    let dispose: Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync> =
-        Arc::new(move || {
-            let cell = dispose_cell.clone();
-            let raw = raw_for_dispose.clone();
-            Box::pin(async move {
-                let _ = cell.get_or_init(|| async { raw().await }).await;
-            })
-        });
-    Scope { ctx: fiber_ctx, raw_dispose, dispose }
+    let dispose: Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync> = Arc::new(move || {
+        let cell = dispose_cell.clone();
+        let raw = raw_for_dispose.clone();
+        Box::pin(async move {
+            let _ = cell.get_or_init(|| async { raw().await }).await;
+        })
+    });
+    Scope {
+        ctx: fiber_ctx,
+        raw_dispose,
+        dispose,
+    }
 }
 
 /// Read the nearest scope tag inherited by a context (TS `scopeOf`). The
@@ -260,8 +262,12 @@ pub fn scope_target(
                 return false;
             }
         }
-        let Some(tag) = scope_of(ctx) else { return true };
-        let Some(key) = &key_for_filter else { return false };
+        let Some(tag) = scope_of(ctx) else {
+            return true;
+        };
+        let Some(key) = &key_for_filter else {
+            return false;
+        };
         for cursor in scope_chain_of(Some(key)) {
             if cursor.key_id() == tag.key_id() {
                 return true;
@@ -413,6 +419,10 @@ mod tests {
         dispatch_ctx3.emit("ping", vec![]);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(untagged_hits.load(Ordering::SeqCst), 1);
-        assert_eq!(hits.load(Ordering::SeqCst), 2, "root listener receives again");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "root listener receives again"
+        );
     }
 }

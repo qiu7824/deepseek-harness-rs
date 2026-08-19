@@ -10,7 +10,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cordis::{ArcValue, Context, EventOptions, InjectSpec, NextFn, Plugin, PluginError, arc, downcast_arc};
+use cordis::{
+    ArcValue, Context, EventOptions, InjectSpec, NextFn, Plugin, PluginError, arc, downcast_arc,
+};
 use dsh_invariants::{InvariantInstaller, InvariantRegistry};
 use futures::StreamExt;
 
@@ -51,10 +53,7 @@ struct ValidateState {
 }
 
 /// Wrap one provider stream and enforce its grammar as chunks are consumed.
-pub fn validate_stream(
-    source: ChunkStream,
-    fail: Arc<dyn Fn(&str) + Send + Sync>,
-) -> ChunkStream {
+pub fn validate_stream(source: ChunkStream, fail: Arc<dyn Fn(&str) + Send + Sync>) -> ChunkStream {
     Box::pin(futures::stream::unfold(
         ValidateState {
             source,
@@ -118,7 +117,10 @@ pub fn validate_stream(
                 }
                 StreamChunk::Finish { reason, .. } => {
                     if !state.open.is_empty()
-                        && !matches!(reason, FinishReason::Error { .. } | FinishReason::Aborted { .. })
+                        && !matches!(
+                            reason,
+                            FinishReason::Error { .. } | FinishReason::Aborted { .. }
+                        )
                     {
                         (state.fail)(&format!(
                             "LLM stream finished with {} open block(s)",
@@ -145,7 +147,9 @@ pub fn installer() -> InvariantInstaller {
                 let stream_fail = fail.clone();
                 let stream_listener: Arc<cordis::Listener> =
                     Arc::new(move |_listener_ctx: &Context, args: Vec<ArcValue>| {
-                        let Some(next) = args.get(1).and_then(|value| downcast_arc::<NextFn>(value)) else {
+                        let Some(next) =
+                            args.get(1).and_then(|value| downcast_arc::<NextFn>(value))
+                        else {
                             return Box::pin(async { None });
                         };
                         let fail = stream_fail.clone();
@@ -171,8 +175,8 @@ pub fn installer() -> InvariantInstaller {
                 // The notification promises a readable registry; only that
                 // broken promise can make the retry-policy lookup fail.
                 let updated_fail = fail.clone();
-                let updated_listener: Arc<cordis::Listener> =
-                    Arc::new(move |listener_ctx: &Context, _args: Vec<ArcValue>| {
+                let updated_listener: Arc<cordis::Listener> = Arc::new(
+                    move |listener_ctx: &Context, _args: Vec<ArcValue>| {
                         let fail = updated_fail.clone();
                         let llm = listener_ctx.get_typed::<Arc<LlmRuntime>>("llm", false);
                         Box::pin(async move {
@@ -189,7 +193,8 @@ pub fn installer() -> InvariantInstaller {
                             }
                             None
                         })
-                    });
+                    },
+                );
                 ctx.on(
                     "llm/adapters-updated",
                     updated_listener,

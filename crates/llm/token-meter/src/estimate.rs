@@ -23,7 +23,9 @@ pub fn estimate_content(blocks: &[ContentBlock]) -> u64 {
             ContentBlock::Text { text } | ContentBlock::Reasoning { text } => {
                 tokens += ceil_div(text.chars().count(), CHARS_PER_TOKEN) + BLOCK_OVERHEAD
             }
-            ContentBlock::ToolCall { name, arguments, .. } => {
+            ContentBlock::ToolCall {
+                name, arguments, ..
+            } => {
                 tokens += ceil_div(name.chars().count(), CHARS_PER_TOKEN)
                     + ceil_div(arguments.chars().count(), CHARS_PER_TOKEN)
                     + BLOCK_OVERHEAD
@@ -87,7 +89,9 @@ mod tests {
         assert_eq!(estimate_content(&[]), 0);
         let message = dsh_llm::create_assistant_message(
             vec![
-                ContentBlock::Text { text: "abcd".to_string() }, // 1 + 4
+                ContentBlock::Text {
+                    text: "abcd".to_string(),
+                }, // 1 + 4
                 ContentBlock::ToolCall {
                     id: dsh_llm::call_id("c1"),
                     name: "read".to_string(),    // ceil(4/4)=1
@@ -106,7 +110,9 @@ mod tests {
         // Nested tool results recurse.
         let nested = dsh_llm::create_tool_result_message(dsh_llm::ToolResultMessageInput {
             call_id: dsh_llm::call_id("c1"),
-            content: vec![ContentBlock::Text { text: "12345678".to_string() }], // 2+4=6
+            content: vec![ContentBlock::Text {
+                text: "12345678".to_string(),
+            }], // 2+4=6
             is_error: false,
         });
         // inner text 6 + block overhead 4 = 10, plus role overhead 4 = 14.

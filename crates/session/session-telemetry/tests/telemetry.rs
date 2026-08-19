@@ -8,8 +8,8 @@ use std::sync::Arc;
 use cordis::Context;
 use dsh_session::{Session, SessionStore, session_id};
 use dsh_session_telemetry::{
-    AttributeValue, SessionTelemetryCapture, SessionTelemetryChannel, SessionTelemetryRecord,
-    SessionTelemetrySeverity, SessionTelemetrySink, SessionTelemetryCoordinator,
+    AttributeValue, SessionTelemetryCapture, SessionTelemetryChannel, SessionTelemetryCoordinator,
+    SessionTelemetryRecord, SessionTelemetrySeverity, SessionTelemetrySink,
 };
 use parking_lot::Mutex;
 
@@ -36,7 +36,9 @@ impl SessionTelemetrySink for RecordingSink {
     }
 }
 
-fn harness(capture: SessionTelemetryCapture) -> (
+fn harness(
+    capture: SessionTelemetryCapture,
+) -> (
     Context,
     Arc<SessionStore>,
     Arc<RecordingSink>,
@@ -102,19 +104,28 @@ async fn live_adoption_replays_then_the_firehose_continues() {
         .await
         .unwrap();
     append(&session, "turn/start", serde_json::json!({"turn": 1}));
-    append(&session, "user/message", serde_json::json!({
-        "id": "u1", "role": "user",
-        "content": [{"type": "text", "text": "hi"}],
-        "source": {"kind": "user"},
-    }));
+    append(
+        &session,
+        "user/message",
+        serde_json::json!({
+            "id": "u1", "role": "user",
+            "content": [{"type": "text", "text": "hi"}],
+            "source": {"kind": "user"},
+        }),
+    );
 
-    let _coordinator = SessionTelemetryCoordinator::new(&ctx, sink.clone(), SessionTelemetryCapture::Live);
+    let _coordinator =
+        SessionTelemetryCoordinator::new(&ctx, sink.clone(), SessionTelemetryCapture::Live);
     // The live sweep adopted the already-live session and replayed it.
     let records = ledger(&sink);
     assert_eq!(records.len(), 2, "sweep re-hands the existing log");
 
     // The firehose continues from here.
-    append(&session, "turn/end", serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}));
+    append(
+        &session,
+        "turn/end",
+        serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+    );
     assert_eq!(ledger(&sink).len(), 3);
     let _ = store;
 }
@@ -124,19 +135,38 @@ async fn on_demand_capture_reads_the_canonical_log() {
     let (ctx, store, sink, coordinator) = harness(SessionTelemetryCapture::OnDemand);
     let session = session(&store, "ondemand");
     append(&session, "turn/start", serde_json::json!({"turn": 1}));
-    append(&session, "step/start", serde_json::json!({"turn": 1, "step": 1}));
-    append(&session, "user/message", serde_json::json!({
-        "id": "u1", "role": "user",
-        "content": [{"type": "text", "text": "hi"}],
-        "source": {"kind": "user"},
-    }));
-    append(&session, "step/end", serde_json::json!({"turn": 1, "step": 1}));
-    append(&session, "turn/end", serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}));
+    append(
+        &session,
+        "step/start",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
+    append(
+        &session,
+        "user/message",
+        serde_json::json!({
+            "id": "u1", "role": "user",
+            "content": [{"type": "text", "text": "hi"}],
+            "source": {"kind": "user"},
+        }),
+    );
+    append(
+        &session,
+        "step/end",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
+    append(
+        &session,
+        "turn/end",
+        serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+    );
 
     coordinator.capture_session(&session, None);
     let records = ledger(&sink);
     assert_eq!(records.len(), 5);
-    assert_eq!(records[0].attributes[1].1, AttributeValue::Str("turn/start".to_string()));
+    assert_eq!(
+        records[0].attributes[1].1,
+        AttributeValue::Str("turn/start".to_string())
+    );
 
     // A second capture from the handoff cursor re-hands nothing.
     coordinator.capture_session(&session, None);
@@ -149,21 +179,45 @@ async fn chunk_projection_ships_only_the_first_chunk_per_step() {
     let (ctx, store, sink, coordinator) = harness(SessionTelemetryCapture::OnDemand);
     let session = session(&store, "chunks");
     append(&session, "turn/start", serde_json::json!({"turn": 1}));
-    append(&session, "step/start", serde_json::json!({"turn": 1, "step": 1}));
-    append(&session, "assistant/chunk", serde_json::json!({
-        "turn": 1, "step": 1,
-        "chunk": {"type": "text-delta", "index": 0, "text": "a"},
-    }));
-    append(&session, "assistant/chunk", serde_json::json!({
-        "turn": 1, "step": 1,
-        "chunk": {"type": "text-delta", "index": 0, "text": "b"},
-    }));
-    append(&session, "assistant/chunk", serde_json::json!({
-        "turn": 1, "step": 2,
-        "chunk": {"type": "text-delta", "index": 0, "text": "c"},
-    }));
-    append(&session, "step/end", serde_json::json!({"turn": 1, "step": 1}));
-    append(&session, "turn/end", serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}));
+    append(
+        &session,
+        "step/start",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
+    append(
+        &session,
+        "assistant/chunk",
+        serde_json::json!({
+            "turn": 1, "step": 1,
+            "chunk": {"type": "text-delta", "index": 0, "text": "a"},
+        }),
+    );
+    append(
+        &session,
+        "assistant/chunk",
+        serde_json::json!({
+            "turn": 1, "step": 1,
+            "chunk": {"type": "text-delta", "index": 0, "text": "b"},
+        }),
+    );
+    append(
+        &session,
+        "assistant/chunk",
+        serde_json::json!({
+            "turn": 1, "step": 2,
+            "chunk": {"type": "text-delta", "index": 0, "text": "c"},
+        }),
+    );
+    append(
+        &session,
+        "step/end",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
+    append(
+        &session,
+        "turn/end",
+        serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+    );
 
     coordinator.capture_session(&session, None);
     let records = ledger(&sink);
@@ -183,27 +237,47 @@ async fn severity_maps_error_outcomes() {
     let (ctx, store, sink, coordinator) = harness(SessionTelemetryCapture::OnDemand);
     let session = session(&store, "severity");
     append(&session, "turn/start", serde_json::json!({"turn": 1}));
-    append(&session, "tool/result", serde_json::json!({
-        "message": {
-            "id": "t1", "role": "user",
-            "content": [{"type": "tool-result", "toolCallId": "c1", "isError": true}],
-            "source": {"kind": "tool", "callId": "c1"},
-        },
-    }));
-    append(&session, "turn/end", serde_json::json!({
-        "turn": 1, "reason": {"kind": "error", "failure": {"message": "boom", "code": "SERVER"}},
-    }));
+    append(
+        &session,
+        "tool/result",
+        serde_json::json!({
+            "message": {
+                "id": "t1", "role": "user",
+                "content": [{"type": "tool-result", "toolCallId": "c1", "isError": true}],
+                "source": {"kind": "tool", "callId": "c1"},
+            },
+        }),
+    );
+    append(
+        &session,
+        "turn/end",
+        serde_json::json!({
+            "turn": 1, "reason": {"kind": "error", "failure": {"message": "boom", "code": "SERVER"}},
+        }),
+    );
 
     coordinator.capture_session(&session, None);
     let records = ledger(&sink);
     let tool = records.iter().find(|record| {
-        record.attributes.iter().any(|(_, value)| value == &AttributeValue::Str("tool/result".to_string()))
+        record
+            .attributes
+            .iter()
+            .any(|(_, value)| value == &AttributeValue::Str("tool/result".to_string()))
     });
-    assert_eq!(tool.map(|record| record.severity), Some(SessionTelemetrySeverity::Error));
+    assert_eq!(
+        tool.map(|record| record.severity),
+        Some(SessionTelemetrySeverity::Error)
+    );
     let turn_end = records.iter().find(|record| {
-        record.attributes.iter().any(|(_, value)| value == &AttributeValue::Str("turn/end".to_string()))
+        record
+            .attributes
+            .iter()
+            .any(|(_, value)| value == &AttributeValue::Str("turn/end".to_string()))
     });
-    assert_eq!(turn_end.map(|record| record.severity), Some(SessionTelemetrySeverity::Error));
+    assert_eq!(
+        turn_end.map(|record| record.severity),
+        Some(SessionTelemetrySeverity::Error)
+    );
     let _ = ctx;
 }
 
@@ -237,7 +311,11 @@ async fn identity_attributes_include_header_facts() {
     assert!(has("session.id", "ident"));
     assert!(has("session.cwd", "C:\\work"));
     assert!(has("session.parent_id", "parent-1"));
-    assert!(attributes.iter().any(|(k, v)| k == "session.seed_length" && v == &AttributeValue::Num(7.0)));
+    assert!(
+        attributes
+            .iter()
+            .any(|(k, v)| k == "session.seed_length" && v == &AttributeValue::Num(7.0))
+    );
     let _ = ctx;
 }
 
@@ -246,8 +324,7 @@ async fn redaction_waterfall_transforms_records() {
     let (ctx, store, sink, coordinator) = harness(SessionTelemetryCapture::OnDemand);
     // Mount a redaction rule: drop the body for every record.
     let listener: Arc<cordis::Listener> = Arc::new(|_ctx, args: Vec<cordis::ArcValue>| {
-        let record = cordis::downcast_arc::<SessionTelemetryRecord>(&args[0])
-            .expect("record");
+        let record = cordis::downcast_arc::<SessionTelemetryRecord>(&args[0]).expect("record");
         let next = cordis::downcast_arc::<cordis::NextFn>(&args[1]).expect("next");
         Box::pin(async move {
             let mut result = record.as_ref().clone();
@@ -279,7 +356,8 @@ async fn live_capture_relays_agent_errors_and_dispose_shutdowns() {
         flushes: Arc::new(Mutex::new(0)),
         shutdowns: Arc::new(Mutex::new(0)),
     });
-    let _coordinator = SessionTelemetryCoordinator::new(&ctx, sink.clone(), SessionTelemetryCapture::Live);
+    let _coordinator =
+        SessionTelemetryCoordinator::new(&ctx, sink.clone(), SessionTelemetryCapture::Live);
     let session = store
         .create(
             &ctx,
@@ -292,12 +370,15 @@ async fn live_capture_relays_agent_errors_and_dispose_shutdowns() {
 
     // agent/error relay emits an ops record.
     let error_payload = Arc::new(dsh_agent::AgentErrorPayload {
-        agent: Arc::new(TestAgent { session: session.clone() }),
+        agent: Arc::new(TestAgent {
+            session: session.clone(),
+        }),
         turn: 1,
         step: 1,
         error: serde_json::json!("boom"),
     });
-    ctx.parallel("agent/error", vec![cordis::arc(error_payload)]).await;
+    ctx.parallel("agent/error", vec![cordis::arc(error_payload)])
+        .await;
     let ops: Vec<SessionTelemetryRecord> = sink
         .records
         .lock()
@@ -347,7 +428,12 @@ impl dsh_agent::Agent for TestAgent {
         unreachable!("not used")
     }
 
-    fn cancel(&self, _cause: dsh_agent::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_agent::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -360,7 +446,13 @@ impl dsh_agent::Agent for TestAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 

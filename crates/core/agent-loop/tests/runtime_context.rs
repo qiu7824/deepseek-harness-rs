@@ -4,16 +4,16 @@
 
 use cordis::Context;
 use dsh_agent_loop::RuntimeContextProjection;
-use dsh_llm::{ContextForm, ContentBlock, MessageSource, create_user_message};
-use dsh_session::{
-    SessionStore, SurfaceIntent, SurfaceOp, session_id,
-};
+use dsh_llm::{ContentBlock, ContextForm, MessageSource, create_user_message};
+use dsh_session::{SessionStore, SurfaceIntent, SurfaceOp, session_id};
 
 const SOURCE: &str = "@deepseek-ai/dsh-system-prompt";
 
 fn context_message(text: &str) -> dsh_llm::UserMessage {
     create_user_message(
-        vec![ContentBlock::Text { text: text.to_string() }],
+        vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
         MessageSource::Plugin {
             plugin: SOURCE.to_string(),
             form: None,
@@ -26,7 +26,10 @@ fn context_message(text: &str) -> dsh_llm::UserMessage {
 }
 
 fn append_intent() -> SurfaceIntent {
-    SurfaceIntent { surface_op: SurfaceOp::Append, source_event_seqs: None }
+    SurfaceIntent {
+        surface_op: SurfaceOp::Append,
+        source_event_seqs: None,
+    }
 }
 
 fn message_data(message: &dsh_llm::UserMessage) -> serde_json::Value {
@@ -43,16 +46,26 @@ async fn restores_the_latest_visible_owned_snapshot_and_ignores_other_sessions()
         .expect("session");
 
     let retained = session
-        .append("user/message", message_data(&context_message("retained")), Some(append_intent()))
+        .append(
+            "user/message",
+            message_data(&context_message("retained")),
+            Some(append_intent()),
+        )
         .expect("append");
     let shadowed = session
-        .append("user/message", message_data(&context_message("shadowed")), Some(append_intent()))
+        .append(
+            "user/message",
+            message_data(&context_message("shadowed")),
+            Some(append_intent()),
+        )
         .expect("append");
     session
         .append(
             "user/message",
             message_data(&create_user_message(
-                vec![ContentBlock::Text { text: "summary".to_string() }],
+                vec![ContentBlock::Text {
+                    text: "summary".to_string(),
+                }],
                 MessageSource::Plugin {
                     plugin: "test-compaction".to_string(),
                     form: None,
@@ -63,7 +76,10 @@ async fn restores_the_latest_visible_owned_snapshot_and_ignores_other_sessions()
                 },
             )),
             Some(SurfaceIntent {
-                surface_op: SurfaceOp::Replace { start: shadowed.seq, end: shadowed.seq },
+                surface_op: SurfaceOp::Replace {
+                    start: shadowed.seq,
+                    end: shadowed.seq,
+                },
                 source_event_seqs: Some(vec![shadowed.seq]),
             }),
         )
@@ -77,10 +93,13 @@ async fn restores_the_latest_visible_owned_snapshot_and_ignores_other_sessions()
     assert!(projection.project("retained", &[]).is_none());
     // A changed snapshot projects with its named sections.
     let next = projection
-        .project("next", &[dsh_llm::ContextSnapshotSection {
-            name: "sandbox:policy".to_string(),
-            text: "policy".to_string(),
-        }])
+        .project(
+            "next",
+            &[dsh_llm::ContextSnapshotSection {
+                name: "sandbox:policy".to_string(),
+                text: "policy".to_string(),
+            }],
+        )
         .expect("next snapshot");
     assert_eq!(
         next.source,
@@ -103,7 +122,11 @@ async fn restores_the_latest_visible_owned_snapshot_and_ignores_other_sessions()
         .await
         .expect("other session");
     other
-        .append("user/message", message_data(&context_message("other")), Some(append_intent()))
+        .append(
+            "user/message",
+            message_data(&context_message("other")),
+            Some(append_intent()),
+        )
         .expect("append");
     assert!(projection.project("retained", &[]).is_none());
 }
@@ -112,9 +135,16 @@ async fn restores_the_latest_visible_owned_snapshot_and_ignores_other_sessions()
 async fn cleared_marker_replaces_the_retained_snapshot() {
     let ctx = Context::root();
     let store = SessionStore::install(&ctx);
-    let session = store.create(&ctx, Some(session_id("runtime-context-clear")), None).await.expect("session");
+    let session = store
+        .create(&ctx, Some(session_id("runtime-context-clear")), None)
+        .await
+        .expect("session");
     session
-        .append("user/message", message_data(&context_message("kept")), Some(append_intent()))
+        .append(
+            "user/message",
+            message_data(&context_message("kept")),
+            Some(append_intent()),
+        )
         .expect("append");
 
     let projection = RuntimeContextProjection::new(&ctx, &session);
@@ -123,8 +153,9 @@ async fn cleared_marker_replaces_the_retained_snapshot() {
     assert_eq!(
         cleared.content,
         vec![ContentBlock::Text {
-            text: "Current runtime context: none. Earlier runtime-context snapshots no longer apply."
-                .to_string()
+            text:
+                "Current runtime context: none. Earlier runtime-context snapshots no longer apply."
+                    .to_string()
         }]
     );
     assert_eq!(

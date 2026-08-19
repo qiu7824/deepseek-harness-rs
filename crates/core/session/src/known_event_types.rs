@@ -75,7 +75,12 @@ mod tests {
     #[test]
     fn catalog_is_sorted() {
         for window in KNOWN_SESSION_EVENT_TYPES.windows(2) {
-            assert!(window[0] < window[1], "{} must precede {}", window[0], window[1]);
+            assert!(
+                window[0] < window[1],
+                "{} must precede {}",
+                window[0],
+                window[1]
+            );
         }
     }
 }

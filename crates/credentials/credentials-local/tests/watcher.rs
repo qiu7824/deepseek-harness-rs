@@ -1,4 +1,4 @@
-﻿//! Rust port of the TS `watcher.spec.ts` + `drain.spec.ts` suites, plus the
+//! Rust port of the TS `watcher.spec.ts` + `drain.spec.ts` suites, plus the
 //! real end-to-end hot reload from `local.spec.ts`. The watcher pipeline is
 //! driven through the crate's fake-watcher seam (the TS `vi.mock('chokidar')`
 //! equivalent); the real `notify` backend is exercised by one end-to-end
@@ -73,13 +73,17 @@ async fn survives_a_watcher_error_and_keeps_publishing_later_edits() {
 
     write_credentials(&path, "DSH_CRED_PIPE: arrived\n");
     emit_to(&path, WatchSignal::Changed);
-    wait_for("arrived", || {
-        futures::executor::block_on(provider.resolve(&key()))
-            == Some(dsh_credentials::ResolvedCredential {
-                value: "arrived".to_string(),
-                source: "file".to_string(),
-            })
-    }, 3000)
+    wait_for(
+        "arrived",
+        || {
+            futures::executor::block_on(provider.resolve(&key()))
+                == Some(dsh_credentials::ResolvedCredential {
+                    value: "arrived".to_string(),
+                    source: "file".to_string(),
+                })
+        },
+        3000,
+    )
     .await;
 }
 
@@ -106,15 +110,25 @@ async fn keeps_the_last_good_snapshot_when_the_read_fails_after_its_permission_c
             })
         })
     };
-    let provider = boot_with(&ctx, &path, true, real_writer(), Some(fake_watcher_factory()), Some(reader))
-        .expect("boot");
+    let provider = boot_with(
+        &ctx,
+        &path,
+        true,
+        real_writer(),
+        Some(fake_watcher_factory()),
+        Some(reader),
+    )
+    .expect("boot");
     fail.store(true, Ordering::SeqCst);
     emit_to(&path, WatchSignal::Changed);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     // The warn-and-keep path holds the last good snapshot.
     assert_eq!(
         provider.resolve(&key()).await,
-        Some(dsh_credentials::ResolvedCredential { value: "good".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "good".to_string(),
+            source: "file".to_string()
+        })
     );
 }
 
@@ -154,25 +168,33 @@ async fn keeps_the_reload_queue_alive_after_an_invariant_violation_escapes_the_f
 
     write_credentials(&path, "DSH_CRED_PIPE: first\n");
     emit_to(&path, WatchSignal::Changed);
-    wait_for("first lands", || {
-        futures::executor::block_on(provider.resolve(&key()))
-            == Some(dsh_credentials::ResolvedCredential {
-                value: "first".to_string(),
-                source: "file".to_string(),
-            })
-    }, 3000)
+    wait_for(
+        "first lands",
+        || {
+            futures::executor::block_on(provider.resolve(&key()))
+                == Some(dsh_credentials::ResolvedCredential {
+                    value: "first".to_string(),
+                    source: "file".to_string(),
+                })
+        },
+        3000,
+    )
     .await;
 
     arm.store(false, Ordering::SeqCst);
     write_credentials(&path, "DSH_CRED_PIPE: second\n");
     emit_to(&path, WatchSignal::Changed);
-    wait_for("second lands", || {
-        futures::executor::block_on(provider.resolve(&key()))
-            == Some(dsh_credentials::ResolvedCredential {
-                value: "second".to_string(),
-                source: "file".to_string(),
-            })
-    }, 3000)
+    wait_for(
+        "second lands",
+        || {
+            futures::executor::block_on(provider.resolve(&key()))
+                == Some(dsh_credentials::ResolvedCredential {
+                    value: "second".to_string(),
+                    source: "file".to_string(),
+                })
+        },
+        3000,
+    )
     .await;
 }
 
@@ -260,9 +282,11 @@ async fn empties_the_snapshot_when_the_document_is_deleted_and_emits_the_removal
 
     std::fs::remove_file(&path).expect("rm");
     emit_to(&path, WatchSignal::Changed);
-    wait_for("emptied", || {
-        futures::executor::block_on(provider.resolve(&key())).is_none()
-    }, 3000)
+    wait_for(
+        "emptied",
+        || futures::executor::block_on(provider.resolve(&key())).is_none(),
+        3000,
+    )
     .await;
     assert_eq!(seen.lock().clone(), vec![key()]);
 }
@@ -306,17 +330,27 @@ async fn keeps_the_last_good_snapshot_when_an_external_edit_makes_the_document_i
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert_eq!(
         provider.resolve(&key()).await,
-        Some(dsh_credentials::ResolvedCredential { value: "a".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "a".to_string(),
+            source: "file".to_string()
+        })
     );
     assert!(seen.lock().is_empty());
 
     // Repairing the document resumes publishing.
     write_credentials(&path, "DSH_CRED_PIPE: b\n");
     emit_to(&path, WatchSignal::Changed);
-    wait_for("repaired", || {
-        futures::executor::block_on(provider.resolve(&key()))
-            == Some(dsh_credentials::ResolvedCredential { value: "b".to_string(), source: "file".to_string() })
-    }, 3000)
+    wait_for(
+        "repaired",
+        || {
+            futures::executor::block_on(provider.resolve(&key()))
+                == Some(dsh_credentials::ResolvedCredential {
+                    value: "b".to_string(),
+                    source: "file".to_string(),
+                })
+        },
+        3000,
+    )
     .await;
     assert_eq!(seen.lock().clone(), vec![key()]);
 }
@@ -359,13 +393,17 @@ async fn reconciles_at_watcher_ready_so_a_change_during_setup_is_not_missed() {
     // no change event will ever fire for it.
     write_credentials(&path, "DSH_CRED_PIPE: written-before-ready\n");
     emit_to(&path, WatchSignal::Ready);
-    wait_for("ready reconcile", || {
-        futures::executor::block_on(provider.resolve(&key()))
-            == Some(dsh_credentials::ResolvedCredential {
-                value: "written-before-ready".to_string(),
-                source: "file".to_string(),
-            })
-    }, 3000)
+    wait_for(
+        "ready reconcile",
+        || {
+            futures::executor::block_on(provider.resolve(&key()))
+                == Some(dsh_credentials::ResolvedCredential {
+                    value: "written-before-ready".to_string(),
+                    source: "file".to_string(),
+                })
+        },
+        3000,
+    )
     .await;
 }
 
@@ -406,7 +444,10 @@ async fn lets_the_in_flight_write_land_and_fails_the_queued_one_after_disposal()
     let _ = release.send(());
     disposal.await;
 
-    first.await.expect("in-flight write lands").expect("write ok");
+    first
+        .await
+        .expect("in-flight write lands")
+        .expect("write ok");
     let second_result = second.await.expect("queued task settles");
     if let Err(error) = &second_result {
         assert!(error.contains("disposed before the queued"), "{error}");
@@ -415,7 +456,10 @@ async fn lets_the_in_flight_write_land_and_fails_the_queued_one_after_disposal()
     }
     assert_eq!(
         provider.resolve(&key()).await,
-        Some(dsh_credentials::ResolvedCredential { value: "one".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "one".to_string(),
+            source: "file".to_string()
+        })
     );
     assert_eq!(
         provider.resolve(&credential_ref("DSH_CRED_DRAIN_B")).await,
@@ -462,17 +506,29 @@ async fn publishes_external_edits_replaces_the_snapshot_wholesale_and_suppresses
     ));
 
     write_credentials(&path, "DSH_CRED_PIPE: live\nDSH_CRED_OTHER: extra\n");
-    wait_for("live lands", || {
-        futures::executor::block_on(provider.resolve(&key()))
-            == Some(dsh_credentials::ResolvedCredential { value: "live".to_string(), source: "file".to_string() })
-    }, 8000)
+    wait_for(
+        "live lands",
+        || {
+            futures::executor::block_on(provider.resolve(&key()))
+                == Some(dsh_credentials::ResolvedCredential {
+                    value: "live".to_string(),
+                    source: "file".to_string(),
+                })
+        },
+        8000,
+    )
     .await;
 
     // Wholesale replacement: an entry deleted on disk never lingers.
     write_credentials(&path, "DSH_CRED_PIPE: live\n");
-    wait_for("extra removed", || {
-        futures::executor::block_on(provider.resolve(&credential_ref("DSH_CRED_OTHER"))).is_none()
-    }, 8000)
+    wait_for(
+        "extra removed",
+        || {
+            futures::executor::block_on(provider.resolve(&credential_ref("DSH_CRED_OTHER")))
+                .is_none()
+        },
+        8000,
+    )
     .await;
 
     let before = seen.lock().len();
@@ -483,6 +539,9 @@ async fn publishes_external_edits_replaces_the_snapshot_wholesale_and_suppresses
     assert_eq!(seen.lock().len(), before + 1);
     assert_eq!(
         provider.resolve(&key()).await,
-        Some(dsh_credentials::ResolvedCredential { value: "self-written".to_string(), source: "file".to_string() })
+        Some(dsh_credentials::ResolvedCredential {
+            value: "self-written".to_string(),
+            source: "file".to_string()
+        })
     );
 }

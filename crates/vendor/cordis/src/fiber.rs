@@ -67,7 +67,11 @@ struct EffectInner {
 }
 
 impl EffectInner {
-    fn collect(&self, disposer: Disposer, fiber_list: &DisposableList<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>) {
+    fn collect(
+        &self,
+        disposer: Disposer,
+        fiber_list: &DisposableList<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>,
+    ) {
         // TS track(): collect into the effect and drop the inner disposer
         // from the fiber list (it was never registered — the fiber holds the
         // wrapper — but delete is harmless and mirrors the source).
@@ -241,7 +245,8 @@ impl FiberCore {
                 *core.uid.lock() = None;
                 // emitPluginDisposed → internal/plugin with the fiber
                 if let Some(ctx) = core.ctx() {
-                    ctx.events.emit(None, "internal/plugin", vec![arc(core.clone())]);
+                    ctx.events
+                        .emit(None, "internal/plugin", vec![arc(core.clone())]);
                 }
                 runtime.fibers.delete(&core);
                 if runtime.fibers.is_empty() {
@@ -264,11 +269,14 @@ impl FiberCore {
             })
         });
         *core.dispose_self.lock() = Some(disposer.clone());
-        let _ = parent.fiber.effect("ctx.plugin()", Box::pin(async move { Some(disposer) }));
+        let _ = parent
+            .fiber
+            .effect("ctx.plugin()", Box::pin(async move { Some(disposer) }));
 
         // 3. Publish so observers can react (TS emits synchronously here).
         if let Some(ctx) = core.ctx() {
-            ctx.events.emit(None, "internal/plugin", vec![arc(core.clone())]);
+            ctx.events
+                .emit(None, "internal/plugin", vec![arc(core.clone())]);
         }
 
         // 4. Resolve dependencies and start the load chain.
@@ -413,7 +421,11 @@ impl FiberCore {
     }
 
     /// Validate and apply new config, then restart the plugin (TS `update()`).
-    pub async fn update(self: &Arc<Self>, config: ArcValue, no_save: bool) -> Result<(), PluginError> {
+    pub async fn update(
+        self: &Arc<Self>,
+        config: ArcValue,
+        no_save: bool,
+    ) -> Result<(), PluginError> {
         self.assert_active()?;
         *self.config_raw.lock() = config.clone();
         if self.state() != FiberState::Active {
@@ -439,7 +451,12 @@ impl FiberCore {
         let raw = self.config_raw.lock().clone();
         let result = ctx
             .events
-            .waterfall(Some(&ctx), "internal/update", vec![raw, arc(no_save)], fallback)
+            .waterfall(
+                Some(&ctx),
+                "internal/update",
+                vec![raw, arc(no_save)],
+                fallback,
+            )
             .await;
         if let Some(error) = crate::util::downcast::<PluginError>(&result) {
             return Err(error.clone());
@@ -450,7 +467,9 @@ impl FiberCore {
     // ---- dependency machinery (TS `_checkImpl` / `_refresh` / `_setEpoch`) ----
 
     pub(crate) fn check_impl(&self, name: &str) {
-        let impl_opt = self.ctx().and_then(|ctx| ctx.reflect.get_impl(&ctx, name, true));
+        let impl_opt = self
+            .ctx()
+            .and_then(|ctx| ctx.reflect.get_impl(&ctx, name, true));
         let mut store = self.store.lock();
         match impl_opt {
             None => {
@@ -550,91 +569,89 @@ impl FiberCore {
     // reference each other without an opaque-type cycle.
     fn reload(self: Arc<Self>) -> BoxFuture<'static, ()> {
         Box::pin(async move {
-        tracing::debug!("reload start (uid {:?})", self.uid.lock());
-        let old_epoch = self.runner_epoch();
-        {
-            let mut store = self.store.lock();
-            store.active = Some(store.pending.clone());
-        }
-        let ctx = match self.ctx() {
-            Some(ctx) => ctx,
-            None => return,
-        };
-        let raw = self.config_raw.lock().clone();
-        tracing::debug!("reload resolving config (uid {:?})", self.uid.lock());
-        match self.resolve_config(raw).await {
-            Ok(config) => {
-                tracing::debug!("reload config ok (uid {:?})", self.uid.lock());
-                *self.config.lock() = config.clone();
-                if let Some(runtime) = &self.runtime {
-                    tracing::debug!("reload applying (uid {:?})", self.uid.lock());
-                    // Panics inside `apply` (e.g. duplicate service provide)
-                    // must fail the fiber instead of hanging the chain.
-                    let apply_result = std::panic::AssertUnwindSafe(
-                        runtime.plugin.apply(&ctx, config),
-                    )
-                    .catch_unwind()
-                    .await;
-                    tracing::debug!("reload applied (uid {:?})", self.uid.lock());
-                    match apply_result {
-                        Ok(Ok(())) => {
-                            *self.error.lock() = None;
-                        }
-                        Ok(Err(error)) => {
-                            self.log_plugin_error(&error);
-                            *self.error.lock() = Some(error);
-                            self.set_runner_epoch(None);
-                        }
-                        Err(_) => {
-                            let error = PluginError::new(arc(
-                                "plugin callback panicked".to_string(),
-                            ));
-                            self.log_plugin_error(&error);
-                            *self.error.lock() = Some(error);
-                            self.set_runner_epoch(None);
+            tracing::debug!("reload start (uid {:?})", self.uid.lock());
+            let old_epoch = self.runner_epoch();
+            {
+                let mut store = self.store.lock();
+                store.active = Some(store.pending.clone());
+            }
+            let ctx = match self.ctx() {
+                Some(ctx) => ctx,
+                None => return,
+            };
+            let raw = self.config_raw.lock().clone();
+            tracing::debug!("reload resolving config (uid {:?})", self.uid.lock());
+            match self.resolve_config(raw).await {
+                Ok(config) => {
+                    tracing::debug!("reload config ok (uid {:?})", self.uid.lock());
+                    *self.config.lock() = config.clone();
+                    if let Some(runtime) = &self.runtime {
+                        tracing::debug!("reload applying (uid {:?})", self.uid.lock());
+                        // Panics inside `apply` (e.g. duplicate service provide)
+                        // must fail the fiber instead of hanging the chain.
+                        let apply_result =
+                            std::panic::AssertUnwindSafe(runtime.plugin.apply(&ctx, config))
+                                .catch_unwind()
+                                .await;
+                        tracing::debug!("reload applied (uid {:?})", self.uid.lock());
+                        match apply_result {
+                            Ok(Ok(())) => {
+                                *self.error.lock() = None;
+                            }
+                            Ok(Err(error)) => {
+                                self.log_plugin_error(&error);
+                                *self.error.lock() = Some(error);
+                                self.set_runner_epoch(None);
+                            }
+                            Err(_) => {
+                                let error =
+                                    PluginError::new(arc("plugin callback panicked".to_string()));
+                                self.log_plugin_error(&error);
+                                *self.error.lock() = Some(error);
+                                self.set_runner_epoch(None);
+                            }
                         }
                     }
                 }
+                Err(error) => {
+                    self.log_plugin_error(&error);
+                    *self.error.lock() = Some(error);
+                    self.set_runner_epoch(None);
+                }
             }
-            Err(error) => {
-                self.log_plugin_error(&error);
-                *self.error.lock() = Some(error);
-                self.set_runner_epoch(None);
-            }
-        }
-        self.update_state(|| {
-            if self.runner_epoch() == old_epoch {
-                tracing::debug!("reload stable (uid {:?})", self.uid.lock());
-                None // stable
-            } else {
-                let core = self.clone();
-                self.spawn_inertia(Box::pin(async move { core.unload().await }));
-                Some(FiberState::Unloading)
-            }
-        });
+            self.update_state(|| {
+                if self.runner_epoch() == old_epoch {
+                    tracing::debug!("reload stable (uid {:?})", self.uid.lock());
+                    None // stable
+                } else {
+                    let core = self.clone();
+                    self.spawn_inertia(Box::pin(async move { core.unload().await }));
+                    Some(FiberState::Unloading)
+                }
+            });
         })
     }
 
     fn unload(self: Arc<Self>) -> BoxFuture<'static, ()> {
         Box::pin(async move {
-        for disposer in self.disposables.clear() {
-            let _ = std::panic::AssertUnwindSafe(disposer())
-                .catch_unwind()
-                .await;
-        }
-        {
-            let mut store = self.store.lock();
-            store.active = None;
-        }
-        self.update_state(|| {
-            if self.runner_epoch().is_none() {
-                None
-            } else {
-                let core = self.clone();
-                self.spawn_inertia(Box::pin(async move { core.reload().await }));
-                Some(FiberState::Loading)
+            for disposer in self.disposables.clear() {
+                let _ = std::panic::AssertUnwindSafe(disposer())
+                    .catch_unwind()
+                    .await;
             }
-        });
+            {
+                let mut store = self.store.lock();
+                store.active = None;
+            }
+            self.update_state(|| {
+                if self.runner_epoch().is_none() {
+                    None
+                } else {
+                    let core = self.clone();
+                    self.spawn_inertia(Box::pin(async move { core.reload().await }));
+                    Some(FiberState::Loading)
+                }
+            });
         })
     }
 
@@ -698,8 +715,13 @@ impl FiberCore {
     /// when the fiber unloads, whichever comes first. Panics with
     /// `INACTIVE_EFFECT` if the fiber is already disposed (mirrors the TS
     /// synchronous throw).
-    pub fn effect(self: &Arc<Self>, label: &str, execute: BoxFuture<'static, Option<Disposer>>) -> Disposer {
-        self.assert_active().unwrap_or_else(|error| panic!("{error}"));
+    pub fn effect(
+        self: &Arc<Self>,
+        label: &str,
+        execute: BoxFuture<'static, Option<Disposer>>,
+    ) -> Disposer {
+        self.assert_active()
+            .unwrap_or_else(|error| panic!("{error}"));
         if self.state() == FiberState::Unloading {
             panic!("{}", CordisError::new(CordisErrorCode::InactiveEffect));
         }
@@ -738,7 +760,10 @@ impl FiberCore {
     /// Return metadata for currently registered effects.
     pub fn get_effects(&self) -> Vec<EffectMeta> {
         let count = self.disposables.len();
-        vec![EffectMeta { label: format!("{count} effect(s)"), children: vec![] }]
+        vec![EffectMeta {
+            label: format!("{count} effect(s)"),
+            children: vec![],
+        }]
     }
 
     // ---- per-fiber update hooks (TS `Fiber._hooks`) ----

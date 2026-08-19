@@ -101,7 +101,9 @@ impl Drop for Harness {
 fn describe_reports_the_host_snapshot() {
     run(async {
         let harness = Harness::new();
-        let response = harness.post("/api/host.describe", serde_json::json!({})).await;
+        let response = harness
+            .post("/api/host.describe", serde_json::json!({}))
+            .await;
         assert_eq!(response["type"], "server-response");
         assert_eq!(response["rpcId"], "r1");
         assert_eq!(response["result"]["ok"], true);
@@ -122,7 +124,10 @@ fn list_directory_serves_the_browse_backend() {
         let harness = Harness::new();
         let path = harness.root.to_string_lossy().into_owned();
         let response = harness
-            .post("/api/host.listDirectory", serde_json::json!({ "path": path }))
+            .post(
+                "/api/host.listDirectory",
+                serde_json::json!({ "path": path }),
+            )
             .await;
         assert_eq!(response["result"]["ok"], true);
         let value = &response["result"]["value"];
@@ -156,7 +161,10 @@ fn create_directory_writes_and_surfaces_the_child() {
         );
 
         let listing = harness
-            .post("/api/host.listDirectory", serde_json::json!({ "path": path }))
+            .post(
+                "/api/host.listDirectory",
+                serde_json::json!({ "path": path }),
+            )
             .await;
         let names: Vec<&str> = listing["result"]["value"]["entries"]
             .as_array()
@@ -238,12 +246,12 @@ fn list_directory_rejects_a_non_fully_qualified_path_with_directory_unreadable()
     run(async {
         let harness = Harness::new();
         let response = harness
-            .post("/api/host.listDirectory", serde_json::json!({ "path": "relative" }))
+            .post(
+                "/api/host.listDirectory",
+                serde_json::json!({ "path": "relative" }),
+            )
             .await;
         assert_eq!(response["result"]["ok"], false);
-        assert_eq!(
-            response["result"]["error"]["code"],
-            "directory-unreadable"
-        );
+        assert_eq!(response["result"]["error"]["code"], "directory-unreadable");
     });
 }

@@ -22,9 +22,8 @@ use dsh_e2b::{
 };
 use dsh_fs::{
     AbortPredicate, FileSystem, FsDirEntry, FsEditGuard, FsEditOutcome, FsEditRequest, FsError,
-    FsErrorCode, FsInfo, FsInfoType, FsPathInfo, FsPathInfoType, FsTarget, FsTargetKey,
-    FsVersion, FsWriteIntent, FsWriteOutcome, LstatOptions, ResolveOptions, fs_target_key,
-    fs_version,
+    FsErrorCode, FsInfo, FsInfoType, FsPathInfo, FsPathInfoType, FsTarget, FsTargetKey, FsVersion,
+    FsWriteIntent, FsWriteOutcome, LstatOptions, ResolveOptions, fs_target_key, fs_version,
 };
 use futures::StreamExt;
 use futures::future::BoxFuture;
@@ -43,7 +42,10 @@ const BINARY_SAMPLE_BYTES: usize = 8192;
 
 fn assert_not_aborted(signal: Option<&AbortPredicate>, operation: &str) -> Result<(), FsError> {
     if signal.is_some_and(|signal| signal()) {
-        return Err(FsError::new(format!("{operation} aborted"), FsErrorCode::FsAborted));
+        return Err(FsError::new(
+            format!("{operation} aborted"),
+            FsErrorCode::FsAborted,
+        ));
     }
     Ok(())
 }
@@ -74,21 +76,26 @@ fn decode_text(bytes: &[u8], display_path: &str) -> Result<String, FsError> {
             FsErrorCode::FsNotText,
         ));
     }
-    std::str::from_utf8(bytes).map(|text| text.to_string()).map_err(|_| {
-        FsError::new(
-            format!("cannot read \"{display_path}\": invalid UTF-8 text"),
-            FsErrorCode::FsNotText,
-        )
-    })
+    std::str::from_utf8(bytes)
+        .map(|text| text.to_string())
+        .map_err(|_| {
+            FsError::new(
+                format!("cannot read \"{display_path}\": invalid UTF-8 text"),
+                FsErrorCode::FsNotText,
+            )
+        })
 }
 
 fn is_base64(encoded: &str) -> bool {
     if encoded.is_empty() || encoded.len() % 4 != 0 {
         return false;
     }
-    encoded.bytes().all(|byte| {
-        byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/' || byte == b'='
-    }) && encoded[..encoded.len() - 2].bytes().all(|byte| byte != b'=')
+    encoded
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/' || byte == b'=')
+        && encoded[..encoded.len() - 2]
+            .bytes()
+            .all(|byte| byte != b'=')
 }
 
 fn decode_canonical_path(encoded: &str) -> Result<String, String> {
@@ -124,7 +131,10 @@ fn entry_type(entry: &E2bEntryInfo) -> FsInfoType {
 
 fn entry_version(entry: &E2bEntryInfo) -> FsVersion {
     let facts = serde_json::to_string(&serde_json::json!([
-        entry.metadata.as_ref().and_then(|m| m.get(VERSION_METADATA_KEY)),
+        entry
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get(VERSION_METADATA_KEY)),
         entry.path,
         match entry.file_type {
             FileType::File => "file",
@@ -180,7 +190,11 @@ fn map_error(error: E2bSdkError, operation: &str, display_path: &str) -> FsError
     }
 }
 
-fn literal_edit(content: &str, request: &FsEditRequest, display_path: &str) -> Result<String, FsError> {
+fn literal_edit(
+    content: &str,
+    request: &FsEditRequest,
+    display_path: &str,
+) -> Result<String, FsError> {
     let old_string = normalize_line_endings(&request.old_string);
     let new_string = normalize_line_endings(&request.new_string);
     if old_string.is_empty() {
@@ -211,7 +225,10 @@ fn literal_edit(content: &str, request: &FsEditRequest, display_path: &str) -> R
         ));
     }
     if request.replace_all {
-        Ok(content.split(&old_string).collect::<Vec<_>>().join(&new_string))
+        Ok(content
+            .split(&old_string)
+            .collect::<Vec<_>>()
+            .join(&new_string))
     } else {
         Ok(content.replacen(&old_string, &new_string, 1))
     }
@@ -259,7 +276,10 @@ fn posix_relative(parent: &str, child: &str) -> Option<String> {
     let parent_parts: Vec<&str> = parent.split('/').filter(|part| !part.is_empty()).collect();
     let child_parts: Vec<&str> = child.split('/').filter(|part| !part.is_empty()).collect();
     let mut common = 0;
-    while common < parent_parts.len() && common < child_parts.len() && parent_parts[common] == child_parts[common] {
+    while common < parent_parts.len()
+        && common < child_parts.len()
+        && parent_parts[common] == child_parts[common]
+    {
         common += 1;
     }
     if common == parent_parts.len() {
@@ -285,10 +305,7 @@ impl E2bFileSystem {
     /// Construct, register as `ctx.fs`, and validate the `e2b` owner (TS
     /// constructor collapse).
     pub fn install(ctx: &Context) -> Result<Arc<Self>, String> {
-        if ctx
-            .get_typed::<Arc<E2bRuntime>>("e2b", false)
-            .is_none()
-        {
+        if ctx.get_typed::<Arc<E2bRuntime>>("e2b", false).is_none() {
             return Err("dsh-fs-e2b requires the e2b service".to_string());
         }
         let backend = Arc::new(Self {
@@ -355,7 +372,10 @@ impl E2bFileSystem {
     ) -> Result<Option<E2bEntryInfo>, FsError> {
         assert_not_aborted(signal, "stat")?;
         let sandbox = self.runtime().get_sandbox().await.map_err(|message| {
-            FsError::new(format!("cannot stat \"{display_path}\": {message}"), FsErrorCode::FsIoError)
+            FsError::new(
+                format!("cannot stat \"{display_path}\": {message}"),
+                FsErrorCode::FsIoError,
+            )
         })?;
         let entry = match sandbox.get_info(path).await {
             Ok(entry) => entry,
@@ -371,16 +391,18 @@ impl E2bFileSystem {
         target: &FsTarget,
         signal: Option<&AbortPredicate>,
     ) -> Result<FsInfo, FsError> {
-        let info = self
-            .stat(target, signal.cloned())
-            .await?
-            .ok_or_else(|| FsError::new(
+        let info = self.stat(target, signal.cloned()).await?.ok_or_else(|| {
+            FsError::new(
                 format!("cannot read \"{}\": not found", target.display_path),
                 FsErrorCode::FsNotFound,
-            ))?;
+            )
+        })?;
         if info.kind != FsInfoType::File {
             return Err(FsError::new(
-                format!("cannot read \"{}\": not a regular file", target.display_path),
+                format!(
+                    "cannot read \"{}\": not a regular file",
+                    target.display_path
+                ),
                 FsErrorCode::FsNotRegularFile,
             ));
         }
@@ -423,7 +445,10 @@ impl E2bFileSystem {
         signal: Option<&AbortPredicate>,
     ) -> Result<Option<String>, FsError> {
         let sandbox = self.runtime().get_sandbox().await.map_err(|message| {
-            FsError::new(format!("cannot read \"{}\": {message}", target.display_path), FsErrorCode::FsIoError)
+            FsError::new(
+                format!("cannot read \"{}\": {message}", target.display_path),
+                FsErrorCode::FsIoError,
+            )
         })?;
         let bytes = sandbox
             .read_bytes(target.target_key.as_str())
@@ -443,7 +468,10 @@ impl E2bFileSystem {
         signal: Option<&AbortPredicate>,
     ) -> Result<String, FsError> {
         let sandbox = self.runtime().get_sandbox().await.map_err(|message| {
-            FsError::new(format!("cannot edit \"{}\": {message}", target.display_path), FsErrorCode::FsIoError)
+            FsError::new(
+                format!("cannot edit \"{}\": {message}", target.display_path),
+                FsErrorCode::FsIoError,
+            )
         })?;
         let bytes = sandbox
             .read_bytes(target.target_key.as_str())
@@ -464,7 +492,10 @@ impl E2bFileSystem {
     ) -> Result<FsVersion, FsError> {
         assert_not_aborted(signal, "write")?;
         let sandbox = self.runtime().get_sandbox().await.map_err(|message| {
-            FsError::new(format!("cannot write \"{}\": {message}", target.display_path), FsErrorCode::FsIoError)
+            FsError::new(
+                format!("cannot write \"{}\": {message}", target.display_path),
+                FsErrorCode::FsIoError,
+            )
         })?;
         let target_path = target.target_key.as_str();
         let version_id = uuid::Uuid::new_v4().to_string();
@@ -599,7 +630,10 @@ impl FileSystem for E2bFileSystem {
             .unwrap_or_else(|| self.runtime().cwd().to_string());
         let display_path = posix_resolve(&cwd, path);
         let sandbox = self.runtime().get_sandbox().await.map_err(|message| {
-            FsError::new(format!("cannot resolve \"{display_path}\": {message}"), FsErrorCode::FsIoError)
+            FsError::new(
+                format!("cannot resolve \"{display_path}\": {message}"),
+                FsErrorCode::FsIoError,
+            )
         })?;
         let target_key = self
             .canonical_path(&sandbox, &display_path, signal.as_ref())
@@ -641,7 +675,11 @@ impl FileSystem for E2bFileSystem {
     ) -> Result<Option<FsInfo>, FsError> {
         assert_not_aborted(signal.as_ref(), "stat")?;
         let Some(entry) = self
-            .probe(target.target_key.as_str(), &target.display_path, signal.as_ref())
+            .probe(
+                target.target_key.as_str(),
+                &target.display_path,
+                signal.as_ref(),
+            )
             .await?
         else {
             return Ok(None);
@@ -702,7 +740,10 @@ impl FileSystem for E2bFileSystem {
         signal: Option<AbortPredicate>,
     ) -> Result<String, FsError> {
         let sandbox = self.runtime().get_sandbox().await.map_err(|message| {
-            FsError::new(format!("cannot read \"{}\": {message}", target.display_path), FsErrorCode::FsIoError)
+            FsError::new(
+                format!("cannot read \"{}\": {message}", target.display_path),
+                FsErrorCode::FsIoError,
+            )
         })?;
         self.require_regular(target, signal.as_ref()).await?;
         let bytes = sandbox
@@ -719,7 +760,10 @@ impl FileSystem for E2bFileSystem {
         signal: Option<AbortPredicate>,
     ) -> Result<BoxStream<'static, Result<String, FsError>>, FsError> {
         let sandbox = self.runtime().get_sandbox().await.map_err(|message| {
-            FsError::new(format!("cannot read \"{}\": {message}", target.display_path), FsErrorCode::FsIoError)
+            FsError::new(
+                format!("cannot read \"{}\": {message}", target.display_path),
+                FsErrorCode::FsIoError,
+            )
         })?;
         self.require_regular(target, signal.as_ref()).await?;
         let mut stream = sandbox
@@ -813,7 +857,10 @@ impl FileSystem for E2bFileSystem {
         max_bytes: u64,
     ) -> Result<Vec<u8>, FsError> {
         let sandbox = self.runtime().get_sandbox().await.map_err(|message| {
-            FsError::new(format!("cannot read \"{}\": {message}", target.display_path), FsErrorCode::FsIoError)
+            FsError::new(
+                format!("cannot read \"{}\": {message}", target.display_path),
+                FsErrorCode::FsIoError,
+            )
         })?;
         let info = self.require_regular(target, signal.as_ref()).await?;
         if let Some(size) = info.size {
@@ -863,13 +910,12 @@ impl FileSystem for E2bFileSystem {
         target: &FsTarget,
         signal: Option<AbortPredicate>,
     ) -> Result<Vec<FsDirEntry>, FsError> {
-        let info = self
-            .stat(target, signal.clone())
-            .await?
-            .ok_or_else(|| FsError::new(
+        let info = self.stat(target, signal.clone()).await?.ok_or_else(|| {
+            FsError::new(
                 format!("cannot list \"{}\": not found", target.display_path),
                 FsErrorCode::FsNotFound,
-            ))?;
+            )
+        })?;
         if info.kind != FsInfoType::Directory {
             return Err(FsError::new(
                 format!("cannot list \"{}\": not a directory", target.display_path),
@@ -877,7 +923,10 @@ impl FileSystem for E2bFileSystem {
             ));
         }
         let sandbox = self.runtime().get_sandbox().await.map_err(|message| {
-            FsError::new(format!("cannot list \"{}\": {message}", target.display_path), FsErrorCode::FsIoError)
+            FsError::new(
+                format!("cannot list \"{}\": {message}", target.display_path),
+                FsErrorCode::FsIoError,
+            )
         })?;
         let listed = sandbox
             .list(target.target_key.as_str())
@@ -889,16 +938,21 @@ impl FileSystem for E2bFileSystem {
             let canonical = if entry.symlink_target.is_none() {
                 entry.path.clone()
             } else {
-                self.canonical_path(&sandbox, &entry.path, signal.as_ref()).await?
+                self.canonical_path(&sandbox, &entry.path, signal.as_ref())
+                    .await?
             };
             let resolved: Option<E2bEntryInfo> = if entry.symlink_target.is_none() {
                 Some(entry.clone())
             } else {
-                self.probe(&canonical, &display_path, signal.as_ref()).await?
+                self.probe(&canonical, &display_path, signal.as_ref())
+                    .await?
             };
             entries.push(FsDirEntry {
                 name: entry.name,
-                kind: resolved.as_ref().map(entry_type).unwrap_or(FsInfoType::Other),
+                kind: resolved
+                    .as_ref()
+                    .map(entry_type)
+                    .unwrap_or(FsInfoType::Other),
                 target: FsTarget {
                     target_key: fs_target_key(canonical),
                     display_path,
@@ -924,12 +978,19 @@ impl FileSystem for E2bFileSystem {
     ) -> Result<FsWriteOutcome, FsError> {
         self.with_lock(target.target_key.as_str(), async {
             let existing = self
-                .probe(target.target_key.as_str(), &target.display_path, signal.as_ref())
+                .probe(
+                    target.target_key.as_str(),
+                    &target.display_path,
+                    signal.as_ref(),
+                )
                 .await?;
             if let Some(entry) = &existing {
                 if entry_type(entry) != FsInfoType::File {
                     return Err(FsError::new(
-                        format!("cannot write \"{}\": not a regular file", target.display_path),
+                        format!(
+                            "cannot write \"{}\": not a regular file",
+                            target.display_path
+                        ),
                         FsErrorCode::FsNotRegularFile,
                     ));
                 }
@@ -972,7 +1033,11 @@ impl FileSystem for E2bFileSystem {
     ) -> Result<FsEditOutcome, FsError> {
         self.with_lock(target.target_key.as_str(), async {
             let existing = self
-                .probe(target.target_key.as_str(), &target.display_path, signal.as_ref())
+                .probe(
+                    target.target_key.as_str(),
+                    &target.display_path,
+                    signal.as_ref(),
+                )
                 .await?;
             let Some(existing) = existing else {
                 return Err(FsError::new(
@@ -985,7 +1050,10 @@ impl FileSystem for E2bFileSystem {
             };
             if entry_type(&existing) != FsInfoType::File {
                 return Err(FsError::new(
-                    format!("cannot edit \"{}\": not a regular file", target.display_path),
+                    format!(
+                        "cannot edit \"{}\": not a regular file",
+                        target.display_path
+                    ),
                     FsErrorCode::FsNotRegularFile,
                 ));
             }
@@ -1005,7 +1073,11 @@ impl FileSystem for E2bFileSystem {
             let version = self
                 .write_atomic(target, &storage, Some(&existing), false, signal.as_ref())
                 .await?;
-            Ok(FsEditOutcome { version, before, after })
+            Ok(FsEditOutcome {
+                version,
+                before,
+                after,
+            })
         })
         .await
     }
@@ -1017,8 +1089,18 @@ fn percent_encode_segment(segment: &str) -> String {
     let mut encoded = String::new();
     for byte in segment.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~'
-            | b'*' | b'\'' | b'(' | b')' => encoded.push(byte as char),
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => encoded.push(byte as char),
             other => encoded.push_str(&format!("%{other:02X}")),
         }
     }
@@ -1030,7 +1112,10 @@ fn percent_encode_segment(segment: &str) -> String {
 /// decoded prefix and the un-decoded tail.
 fn decode_incremental(buffer: &[u8], streaming: bool) -> Result<(String, Vec<u8>), ()> {
     match std::str::from_utf8(buffer) {
-        Ok(_) => Ok((std::str::from_utf8(buffer).expect("utf8").to_string(), Vec::new())),
+        Ok(_) => Ok((
+            std::str::from_utf8(buffer).expect("utf8").to_string(),
+            Vec::new(),
+        )),
         Err(error) => {
             let valid_up_to = error.valid_up_to();
             if error.error_len().is_none() && streaming {
@@ -1063,6 +1148,8 @@ impl Plugin for FsE2bPlugin {
     }
 
     async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
-        E2bFileSystem::install(ctx).map(|_| ()).map_err(|message| PluginError::from(anyhow::anyhow!(message)))
+        E2bFileSystem::install(ctx)
+            .map(|_| ())
+            .map_err(|message| PluginError::from(anyhow::anyhow!(message)))
     }
 }

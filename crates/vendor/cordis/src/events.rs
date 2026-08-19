@@ -83,9 +83,7 @@ pub struct ListenerWrap(pub Arc<Listener>);
 /// listener (finally the built-in behavior); not calling it vetoes the chain.
 /// Calling it more than once yields a dummy value (the continuation is
 /// single-use, matching the TS `next` contract).
-pub struct NextFn(
-    Arc<Mutex<Option<Box<dyn FnOnce() -> BoxFuture<'static, ArcValue> + Send>>>>,
-);
+pub struct NextFn(Arc<Mutex<Option<Box<dyn FnOnce() -> BoxFuture<'static, ArcValue> + Send>>>>);
 
 impl NextFn {
     /// Invoke the continuation (at most once).
@@ -101,9 +99,7 @@ impl NextFn {
 pub type Disposer = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
 
 /// Build a disposer from a closure.
-pub fn make_disposer(
-    f: impl Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static,
-) -> Disposer {
+pub fn make_disposer(f: impl Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static) -> Disposer {
     Arc::new(f)
 }
 
@@ -123,7 +119,10 @@ impl EventsService {
     /// Create the empty event bus; `install` binds the root context and
     /// installs the built-in internal listeners.
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { hooks: HookMap::default(), ctx: OnceLock::new() })
+        Arc::new(Self {
+            hooks: HookMap::default(),
+            ctx: OnceLock::new(),
+        })
     }
 
     /// Bind the root context and install the built-in internal listeners.
@@ -167,8 +166,7 @@ impl EventsService {
                                 .map(|wrap| wrap.0.clone())
                             {
                                 let wrapped = ListenerWrap(listener);
-                                let remove =
-                                    ctx.fiber.hooks_push("internal/update", arc(wrapped));
+                                let remove = ctx.fiber.hooks_push("internal/update", arc(wrapped));
                                 return Box::pin(async move { Some(arc(remove)) });
                             }
                         }
@@ -217,8 +215,12 @@ impl EventsService {
                         None => arc(String::from("<none>")),
                     },
                 ];
-                let internal =
-                    self.collect(DispatchMode::Bail, Some(root), "internal/dispatch", &dispatch_args);
+                let internal = self.collect(
+                    DispatchMode::Bail,
+                    Some(root),
+                    "internal/dispatch",
+                    &dispatch_args,
+                );
                 for (ctx, callback) in internal {
                     let future = callback(&ctx, dispatch_args.clone());
                     // TS runs this pre-hook synchronously; failures are
@@ -447,7 +449,10 @@ impl EventsService {
         listener: Arc<Listener>,
         options: EventOptions,
     ) -> Disposer {
-        caller.fiber.assert_active().unwrap_or_else(|error| panic!("{error}"));
+        caller
+            .fiber
+            .assert_active()
+            .unwrap_or_else(|error| panic!("{error}"));
 
         // handle special events (internal/listener bail interception)
         let args = vec![
@@ -462,7 +467,10 @@ impl EventsService {
                 .unwrap_or_else(noop_disposer);
         }
 
-        let label = format!("ctx.on({})", serde_json::to_string(name).unwrap_or_default());
+        let label = format!(
+            "ctx.on({})",
+            serde_json::to_string(name).unwrap_or_default()
+        );
         self.register(caller, &label, name, listener, &options)
     }
 

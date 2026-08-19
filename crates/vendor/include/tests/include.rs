@@ -31,7 +31,13 @@ impl Plugin for ProbePlugin {
     }
 }
 
-fn probe(name: &'static str) -> (Arc<dyn Plugin>, Arc<AtomicU32>, Arc<std::sync::Mutex<Vec<Value>>>) {
+fn probe(
+    name: &'static str,
+) -> (
+    Arc<dyn Plugin>,
+    Arc<AtomicU32>,
+    Arc<std::sync::Mutex<Vec<Value>>>,
+) {
     let runs = Arc::new(AtomicU32::new(0));
     let configs = Arc::new(std::sync::Mutex::new(Vec::new()));
     let plugin = Arc::new(ProbePlugin {
@@ -51,30 +57,30 @@ async fn setup() -> (Context, Arc<LoaderService>) {
         .expect("loader service")
         .as_ref()
         .clone();
-    service.core.register("include", dsh_cordis_include::plugin());
+    service
+        .core
+        .register("include", dsh_cordis_include::plugin());
     (ctx, service)
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "dsh-include-test-{name}-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("dsh-include-test-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
 
-async fn mount_include(
-    service: &Arc<LoaderService>,
-    config: IncludeConfig,
-) -> Result<(), String> {
+async fn mount_include(service: &Arc<LoaderService>, config: IncludeConfig) -> Result<(), String> {
     let config_value = serde_json::to_value(&config).unwrap();
     let entry = EntryOptions {
         name: "include".to_string(),
         config: Some(config_value),
         ..EntryOptions::default()
     };
-    service.tree.create(entry, None, None).await.map_err(|e| e.to_string())?;
+    service
+        .tree
+        .create(entry, None, None)
+        .await
+        .map_err(|e| e.to_string())?;
     service.tree.await_ready().await.map_err(|e| e.to_string())
 }
 
@@ -94,11 +100,7 @@ async fn mounts_entry_list_from_yaml() {
 
     let dir = temp_dir("yaml");
     let path = dir.join("cordis.yml");
-    std::fs::write(
-        &path,
-        "- id: a\n  name: probe\n  config: 42\n",
-    )
-    .unwrap();
+    std::fs::write(&path, "- id: a\n  name: probe\n  config: 42\n").unwrap();
 
     mount_include(
         &service,
@@ -145,7 +147,10 @@ async fn initial_creates_missing_file() {
     assert_eq!(runs.load(Ordering::SeqCst), 1);
     assert_eq!(configs.lock().unwrap().as_slice(), &[json!(7)]);
     let content = std::fs::read_to_string(&path).unwrap();
-    assert!(content.contains("probe"), "initial list persisted: {content}");
+    assert!(
+        content.contains("probe"),
+        "initial list persisted: {content}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -210,7 +215,11 @@ async fn tree_mutations_persist_to_file() {
         .into_iter()
         .find(|entry| entry.options.lock().name == "include")
         .expect("include entry");
-    let include_tree = include_entry.subtree.lock().clone().expect("include subtree");
+    let include_tree = include_entry
+        .subtree
+        .lock()
+        .clone()
+        .expect("include subtree");
     include_tree
         .create(entry("probe", json!(5)), None, None)
         .await
@@ -219,7 +228,10 @@ async fn tree_mutations_persist_to_file() {
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
     let content = std::fs::read_to_string(&path).unwrap();
-    assert!(content.contains("config: 5"), "tree mutation persisted: {content}");
+    assert!(
+        content.contains("config: 5"),
+        "tree mutation persisted: {content}"
+    );
     assert_eq!(runs.load(Ordering::SeqCst), 2, "second probe entry started");
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -256,7 +268,11 @@ async fn refresh_reapplies_changed_file() {
         .into_iter()
         .find(|entry| entry.options.lock().name == "include")
         .expect("include entry");
-    let include_tree = include_entry.subtree.lock().clone().expect("include subtree");
+    let include_tree = include_entry
+        .subtree
+        .lock()
+        .clone()
+        .expect("include subtree");
     let handle = include_tree.extras.lock().clone().expect("include handle");
     let include: Arc<dsh_cordis_include::Include> = handle
         .downcast::<Arc<dsh_cordis_include::Include>>()
@@ -316,7 +332,10 @@ async fn config_update_reapplies_patches_without_rereading() {
         enable_logs: None,
     };
     let mut update = indexmap::IndexMap::new();
-    update.insert("config".to_string(), serde_json::to_value(&new_config).unwrap());
+    update.insert(
+        "config".to_string(),
+        serde_json::to_value(&new_config).unwrap(),
+    );
     include_entry
         .update(update, false)
         .await
@@ -348,7 +367,10 @@ async fn js_expr_in_file_fails_loudly() {
         },
     )
     .await;
-    assert!(result.is_err(), "js-expr config must fail loudly: {result:?}");
+    assert!(
+        result.is_err(),
+        "js-expr config must fail loudly: {result:?}"
+    );
     assert_eq!(runs.load(Ordering::SeqCst), 0);
 
     let _ = std::fs::remove_dir_all(&dir);

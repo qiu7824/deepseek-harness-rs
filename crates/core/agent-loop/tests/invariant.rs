@@ -13,7 +13,13 @@ use futures::StreamExt;
 
 fn setup() -> (Context, Arc<LlmRuntime>) {
     let ctx = Context::root();
-    InvariantRegistry::new(&ctx, InvariantConfig { enabled: true, ..InvariantConfig::default() });
+    InvariantRegistry::new(
+        &ctx,
+        InvariantConfig {
+            enabled: true,
+            ..InvariantConfig::default()
+        },
+    );
     let _sessions = SessionStore::install(&ctx);
     let runtime = LlmRuntime::install(&ctx);
     let _ = apply_agent_loop_invariant(&ctx);

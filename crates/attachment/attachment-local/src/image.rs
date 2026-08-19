@@ -32,12 +32,9 @@ pub fn probe_image(data: &[u8]) -> Result<DetectedImage, AttachmentError> {
         .map_err(|_| {
             AttachmentError::new("INVALID_IMAGE", "Unsupported or malformed image data.")
         })?;
-    let media_type = reader
-        .format()
-        .and_then(media_type_of)
-        .ok_or_else(|| {
-            AttachmentError::new("INVALID_IMAGE", "Unsupported or malformed image data.")
-        })?;
+    let media_type = reader.format().and_then(media_type_of).ok_or_else(|| {
+        AttachmentError::new("INVALID_IMAGE", "Unsupported or malformed image data.")
+    })?;
     let (width, height) = reader.into_dimensions().map_err(|_| {
         AttachmentError::new("INVALID_IMAGE", "Unsupported or malformed image data.")
     })?;
@@ -51,7 +48,10 @@ pub fn probe_image(data: &[u8]) -> Result<DetectedImage, AttachmentError> {
 /// Fully decode a supported raster and return its intrinsic metadata (TS
 /// `detectImage`). The decoded-pixel admission limit is checked from the
 /// header BEFORE the full raster decode, like the TS metadata-first order.
-pub fn detect_image(data: &[u8], max_pixels: Option<u64>) -> Result<DetectedImage, AttachmentError> {
+pub fn detect_image(
+    data: &[u8],
+    max_pixels: Option<u64>,
+) -> Result<DetectedImage, AttachmentError> {
     let detected = probe_image(data)?;
     if let Some(max_pixels) = max_pixels {
         if detected.width * detected.height > max_pixels {

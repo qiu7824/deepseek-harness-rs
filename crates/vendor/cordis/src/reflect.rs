@@ -56,8 +56,18 @@ impl Default for ReflectService {
 }
 
 impl ReflectService {
-    /// Read a service from the store without the inject requirement.
+    /// Read a computed accessor or service without the inject requirement.
     pub fn get(&self, caller: &Context, name: &str, strict: bool) -> Option<ArcValue> {
+        let accessor = {
+            let props = self.props.lock();
+            match props.get(name) {
+                Some(Property::Accessor(accessor)) => Some(accessor.clone()),
+                _ => None,
+            }
+        };
+        if let Some(accessor) = accessor {
+            return Some((accessor.get)(caller));
+        }
         self.get_impl(caller, name, strict)
             .and_then(|impl_| impl_.value.clone())
     }
@@ -112,7 +122,9 @@ impl ReflectService {
         check: Option<Arc<dyn Fn(&Context) -> bool + Send + Sync>>,
     ) -> Disposer {
         let fiber = caller.fiber.clone();
-        fiber.assert_active().unwrap_or_else(|error| panic!("{error}"));
+        fiber
+            .assert_active()
+            .unwrap_or_else(|error| panic!("{error}"));
         if fiber.state() == FiberState::Unloading {
             panic!("cannot create effect on inactive context");
         }
@@ -233,7 +245,9 @@ impl ReflectService {
     /// Define a computed context property backed by get/set hooks.
     pub fn accessor(&self, caller: &Context, name: &str, accessor: Arc<Accessor>) -> Disposer {
         let fiber = caller.fiber.clone();
-        fiber.assert_active().unwrap_or_else(|error| panic!("{error}"));
+        fiber
+            .assert_active()
+            .unwrap_or_else(|error| panic!("{error}"));
         {
             let mut props = self.props.lock();
             if let Some(existing) = props.get(name) {
@@ -273,9 +287,7 @@ impl ReflectService {
                     caller,
                     &key,
                     Arc::new(Accessor {
-                        get: Arc::new(move |ctx| {
-                            ctx.get(&source, true).unwrap_or_else(|| arc(()))
-                        }),
+                        get: Arc::new(move |ctx| ctx.get(&source, true).unwrap_or_else(|| arc(()))),
                         set: None,
                     }),
                 )

@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use cordis::{Context, Plugin, PluginError, arc};
-use dsh_agent_tool_presentation::{Config, ToolPresentationPlugin, apply, INJECT, NAME};
+use dsh_agent_tool_presentation::{Config, INJECT, NAME, ToolPresentationPlugin, apply};
 use dsh_scope::{CreateScopeOptions, ScopeKey, create_scope};
 use dsh_tools::{ToolPresentationMode, ToolRuntime};
 
@@ -21,7 +21,12 @@ fn setup() -> (Context, Arc<ToolRuntime>) {
 async fn native_declares_the_presentation_for_the_mounting_scope() {
     let (ctx, tools) = setup();
     let scope = create_scope(&ctx, ScopeKey::new(), &CreateScopeOptions::default());
-    let result = apply(&scope.ctx, Config { mode: ToolPresentationMode::Native });
+    let result = apply(
+        &scope.ctx,
+        Config {
+            mode: ToolPresentationMode::Native,
+        },
+    );
     assert!(result.is_ok());
     // The scoped mode resolves through the layers; the global default stays
     // untouched.
@@ -33,7 +38,13 @@ async fn native_declares_the_presentation_for_the_mounting_scope() {
 async fn native_row_rejects_a_context_global_mount() {
     let (ctx, _tools) = setup();
     // A plain context has no scope: presentAs must refuse loudly.
-    let error = apply(&ctx, Config { mode: ToolPresentationMode::Native }).expect_err("global mount must reject");
+    let error = apply(
+        &ctx,
+        Config {
+            mode: ToolPresentationMode::Native,
+        },
+    )
+    .expect_err("global mount must reject");
     assert!(error.contains("scoped context"), "got {error}");
 }
 
@@ -41,7 +52,13 @@ async fn native_row_rejects_a_context_global_mount() {
 async fn code_row_waits_for_the_code_runtime() {
     let (ctx, tools) = setup();
     let scope = create_scope(&ctx, ScopeKey::new(), &CreateScopeOptions::default());
-    apply(&scope.ctx, Config { mode: ToolPresentationMode::Code }).expect("apply");
+    apply(
+        &scope.ctx,
+        Config {
+            mode: ToolPresentationMode::Code,
+        },
+    )
+    .expect("apply");
 
     // The codeRuntime wait stays pending until a runtime service appears:
     // verify the inject fiber exists without demanding a runtime.
@@ -53,7 +70,13 @@ async fn code_row_waits_for_the_code_runtime() {
 async fn code_row_applies_once_the_runtime_publishes() {
     let (ctx, _tools) = setup();
     let scope = create_scope(&ctx, ScopeKey::new(), &CreateScopeOptions::default());
-    apply(&scope.ctx, Config { mode: ToolPresentationMode::Code }).expect("apply");
+    apply(
+        &scope.ctx,
+        Config {
+            mode: ToolPresentationMode::Code,
+        },
+    )
+    .expect("apply");
 
     // Publish a codeRuntime service on the root: the inject fiber activates
     // and calls presentAs for the mounting scope.
@@ -76,7 +99,11 @@ async fn plugin_form_exports_identity_and_injection() {
     assert_eq!(INJECT, ["tools"]);
 
     let (_ctx, _tools) = setup();
-    let plugin = ToolPresentationPlugin { config: Config { mode: ToolPresentationMode::Native } };
+    let plugin = ToolPresentationPlugin {
+        config: Config {
+            mode: ToolPresentationMode::Native,
+        },
+    };
     assert_eq!(plugin.name(), Some("tool-presentation"));
     // INJECT is exercised through the exported constant (InjectSpec exposes
     // no reader; the plugin wires it verbatim).

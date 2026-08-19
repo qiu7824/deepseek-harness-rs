@@ -27,17 +27,13 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use serde_json::Value as JsonValue;
 
-use cordis::{
-    ArcValue, Context, EventOptions, Listener, Service, arc, downcast, make_disposer,
-};
+use cordis::{ArcValue, Context, EventOptions, Listener, Service, arc, downcast, make_disposer};
 use dsh_session::{Session, SessionEvent, SessionHeader, SessionId, SessionStore};
 use dsh_session_persistence::SessionPersistenceApi;
 use dsh_session_projection::{ProjectionCheckpoint, ProjectionSnapshot, SessionProjectionRegistry};
 use dsh_storage_domain::{Domain, DomainFacility, KvTable};
 
-use crate::spec::{
-    CheckpointIdentity, CheckpointRecord, projection_cache_domain_spec, rows_of,
-};
+use crate::spec::{CheckpointIdentity, CheckpointRecord, projection_cache_domain_spec, rows_of};
 
 /// Plugin config (TS `Config`). Both throttle triggers are deployment
 /// choices; the two mandatory write points (`turn/end` and session
@@ -146,7 +142,9 @@ impl SessionProjectionCache {
         let event_service = service.clone();
         let event_listener: Arc<Listener> = Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
             let session = downcast::<Session>(&args[0]).expect("session arg").clone();
-            let event = downcast::<SessionEvent>(&args[1]).expect("event arg").clone();
+            let event = downcast::<SessionEvent>(&args[1])
+                .expect("event arg")
+                .clone();
             let service = event_service.clone();
             Box::pin(async move {
                 if event.type_ == "turn/end" {
@@ -156,7 +154,10 @@ impl SessionProjectionCache {
                 let mut dirty = service.dirty.lock();
                 let entry = dirty
                     .entry(session.identity())
-                    .or_insert_with(|| DirtyState { pending: 0, timer: None });
+                    .or_insert_with(|| DirtyState {
+                        pending: 0,
+                        timer: None,
+                    });
                 entry.pending += 1;
                 if entry.pending >= service.config.write_every_events {
                     drop(dirty);
@@ -176,25 +177,30 @@ impl SessionProjectionCache {
                 None
             })
         });
-        let _ = futures::executor::block_on(
-            ctx.on("session/event", event_listener, EventOptions::default()),
-        );
+        let _ = futures::executor::block_on(ctx.on(
+            "session/event",
+            event_listener,
+            EventOptions::default(),
+        ));
 
         // Detach (the live-to-cold moment): the second mandatory point.
         let disposed_service = service.clone();
-        let disposed_listener: Arc<Listener> = Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
-            let session = downcast::<Session>(&args[0]).expect("session arg").clone();
-            let service = disposed_service.clone();
-            Box::pin(async move {
-                service.spawn_flush(&session, "detach");
-                service.mark_clean(&session);
-                service.dirty.lock().remove(&session.identity());
-                None
-            })
-        });
-        let _ = futures::executor::block_on(
-            ctx.on("session/disposed", disposed_listener, EventOptions::default()),
-        );
+        let disposed_listener: Arc<Listener> =
+            Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
+                let session = downcast::<Session>(&args[0]).expect("session arg").clone();
+                let service = disposed_service.clone();
+                Box::pin(async move {
+                    service.spawn_flush(&session, "detach");
+                    service.mark_clean(&session);
+                    service.dirty.lock().remove(&session.identity());
+                    None
+                })
+            });
+        let _ = futures::executor::block_on(ctx.on(
+            "session/disposed",
+            disposed_listener,
+            EventOptions::default(),
+        ));
 
         // Clear pending timers with the plugin (their sessions outlive the
         // cache).
@@ -296,7 +302,8 @@ impl SessionProjectionCache {
         {
             store.flush(session).await?;
         }
-        self.put(session.id(), &identity_of(session.header()), rows).await
+        self.put(session.id(), &identity_of(session.header()), rows)
+            .await
     }
 
     /// Cold-read one persisted session's projections with zero full-log
@@ -314,7 +321,11 @@ impl SessionProjectionCache {
             // contract must hold in this topology too.
             let probe = self.persistence.read_from(id, 0).await?;
             return Ok(ProjectionSnapshot {
-                as_of_seq: probe.events.last().map(|event| event.seq as i64).unwrap_or(-1),
+                as_of_seq: probe
+                    .events
+                    .last()
+                    .map(|event| event.seq as i64)
+                    .unwrap_or(-1),
                 values: serde_json::Map::new(),
             });
         }
@@ -335,8 +346,13 @@ impl SessionProjectionCache {
             }
         };
         let (snapshot, checkpoint) = restored;
-        self.put_soft(id, &identity_of(&tail.meta), &checkpoint, "cold-read write-back")
-            .await;
+        self.put_soft(
+            id,
+            &identity_of(&tail.meta),
+            &checkpoint,
+            "cold-read write-back",
+        )
+        .await;
         Ok(snapshot)
     }
 
@@ -382,8 +398,14 @@ impl SessionProjectionCache {
         rows: &ProjectionCheckpoint,
     ) -> Result<(), String> {
         let record = JsonValue::Object(serde_json::Map::from_iter([
-            ("identity".to_string(), serde_json::to_value(identity).expect("identity serializes")),
-            ("rows".to_string(), serde_json::to_value(rows).expect("checkpoint serializes")),
+            (
+                "identity".to_string(),
+                serde_json::to_value(identity).expect("identity serializes"),
+            ),
+            (
+                "rows".to_string(),
+                serde_json::to_value(rows).expect("checkpoint serializes"),
+            ),
         ]));
         self.table.put(id.as_str(), record).await
     }

@@ -10,7 +10,7 @@ use dsh_jobs::{
     invariant::validate_snapshot, job_id,
 };
 use dsh_scope::ScopeKey;
-use dsh_session::{SessionId, Session, session_id};
+use dsh_session::{Session, SessionId, session_id};
 
 /// Minimal agent stub for owner-correlation checks.
 struct StubAgent {
@@ -51,7 +51,12 @@ impl Agent for StubAgent {
         &self.scope_key
     }
 
-    fn cancel(&self, _cause: dsh_agent::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_agent::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -64,7 +69,13 @@ impl Agent for StubAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 
@@ -99,7 +110,8 @@ fn running() -> JobSnapshot {
 /// Run `validate_snapshot` with a capturing failure channel and return the
 /// first failure message (None = coherent).
 fn failures(snapshot: &JobSnapshot, owner: Option<&Arc<dyn Agent>>) -> Option<String> {
-    let collected: Arc<parking_lot::Mutex<Vec<String>>> = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let collected: Arc<parking_lot::Mutex<Vec<String>>> =
+        Arc::new(parking_lot::Mutex::new(Vec::new()));
     {
         let collected = collected.clone();
         validate_snapshot(snapshot, owner, &move |message| {
@@ -142,42 +154,67 @@ fn rejects_an_incoherent_registry_snapshot() {
 
     let cases: Vec<(JobSnapshot, Option<&Arc<dyn Agent>>, &str)> = vec![
         (
-            JobSnapshot { id: job_id("-1"), kind: String::new(), ..base() },
+            JobSnapshot {
+                id: job_id("-1"),
+                kind: String::new(),
+                ..base()
+            },
             None,
             "positive ordinal",
         ),
         (
-            JobSnapshot { id: job_id("other-1"), ..base() },
+            JobSnapshot {
+                id: job_id("other-1"),
+                ..base()
+            },
             None,
             "\"bash-\" followed by a positive ordinal",
         ),
         (
-            JobSnapshot { id: job_id("bash-x"), ..base() },
+            JobSnapshot {
+                id: job_id("bash-x"),
+                ..base()
+            },
             None,
             "positive ordinal",
         ),
         (
-            JobSnapshot { id: job_id("bash-0"), ..base() },
+            JobSnapshot {
+                id: job_id("bash-0"),
+                ..base()
+            },
             None,
             "positive ordinal",
         ),
         (
-            JobSnapshot { label: String::new(), ..base() },
+            JobSnapshot {
+                label: String::new(),
+                ..base()
+            },
             None,
             "label must be non-empty",
         ),
         (
-            JobSnapshot { status: JobStatus::Running, ..base() },
+            JobSnapshot {
+                status: JobStatus::Running,
+                ..base()
+            },
             None,
             "finishedAt must be present exactly for a terminal status",
         ),
         (
-            JobSnapshot { finished_at: None, ..base() },
+            JobSnapshot {
+                finished_at: None,
+                ..base()
+            },
             None,
             "finishedAt must be present exactly for a terminal status",
         ),
         (
-            JobSnapshot { finished_at: Some(9), ..base() },
+            JobSnapshot {
+                finished_at: Some(9),
+                ..base()
+            },
             None,
             "no earlier than startedAt",
         ),
@@ -200,7 +237,10 @@ fn rejects_an_incoherent_registry_snapshot() {
 fn rejects_an_incoherent_record_already_present_at_installation() {
     // The installer validates every currently listed unowned record; a
     // captured failure surfaces here directly through the shared validator.
-    let incoherent = JobSnapshot { label: String::new(), ..base() };
+    let incoherent = JobSnapshot {
+        label: String::new(),
+        ..base()
+    };
     let message = failures(&incoherent, None).expect("incoherent record");
     assert!(message.contains("label must be non-empty"), "{message}");
 }

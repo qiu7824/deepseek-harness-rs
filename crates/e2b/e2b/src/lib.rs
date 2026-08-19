@@ -16,8 +16,8 @@ pub mod invariant;
 
 pub use index::{
     Config, E2B_INJECT, E2B_NAME, E2bBackgroundOptions, E2bCommandAbort, E2bCommandHandle,
-    E2bCommandOptions, E2bCommandResult, E2bCreateOptions, E2bEntryInfo, E2bPlugin,
-    E2bReadStream, E2bRuntime, E2bSandbox, E2bSdk, E2bSdkError, E2bSdkErrorKind, FileType,
-    SandboxNotFoundError, e2b_control_envs, quote_e2b_shell_arg,
+    E2bCommandOptions, E2bCommandResult, E2bCreateOptions, E2bEntryInfo, E2bPlugin, E2bReadStream,
+    E2bRuntime, E2bSandbox, E2bSdk, E2bSdkError, E2bSdkErrorKind, FileType, SandboxNotFoundError,
+    e2b_control_envs, quote_e2b_shell_arg,
 };
 pub use invariant::{E2bInvariantPlugin, PACKAGE_NAME as E2B_INVARIANT_PACKAGE_NAME};

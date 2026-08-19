@@ -1,0 +1,23 @@
+[package]
+name = "dsh-tool-lsp"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Model-facing LSP tool for DeepSeek Harness"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-llm = { path = "../../core/llm" }
+dsh-lsp = { path = "../lsp" }
+dsh-scope = { path = "../../core/scope" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-tools = { path = "../../core/tools" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+dsh-session = { path = "../../core/session" }
+parking_lot = { workspace = true }
+tokio = { workspace = true }

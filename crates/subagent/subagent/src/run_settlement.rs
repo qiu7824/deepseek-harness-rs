@@ -45,7 +45,7 @@ fn run_outcome(result: &SubagentResult) -> JobOutcome {
 
 /// Await the child result, dispose the run, then return its task outcome.
 pub async fn settle_run(run: &Arc<dyn SubagentRun>) -> JobOutcome {
-    let mut outcome = match run.result().await {
+    let outcome = match run.result().await {
         Ok(result) => run_outcome(&result),
         Err(error) => JobOutcome {
             status: JobOutcomeStatus::Failed,

@@ -12,13 +12,9 @@ pub mod runtime_types;
 pub mod types;
 
 pub use consumed_work::{ConsumedWork, fold_consumed_work};
-pub use dispatch::{
-    AgentEventDispatch, agent_carrier, assemble_context_for, emit_agent_event,
-};
+pub use dispatch::{AgentEventDispatch, agent_carrier, assemble_context_for, emit_agent_event};
 pub use inbox::{Inbox, InboxNotifications};
-pub use model_selection::{
-    ModelSelection, ModelSelectionRef, install_model_selection,
-};
+pub use model_selection::{ModelSelection, ModelSelectionRef, install_model_selection};
 pub use registry::AgentRegistry;
 pub use runtime_types::{
     Agent, AgentErrorPayload, AgentFactory, AgentHandle, AgentInboxClaimedPayload,

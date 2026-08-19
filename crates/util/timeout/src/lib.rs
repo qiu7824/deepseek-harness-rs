@@ -31,7 +31,10 @@ pub struct TimeoutReason {
 
 impl TimeoutReason {
     pub fn new(code: impl Into<String>, timeout_ms: u64) -> Self {
-        Self { code: code.into(), timeout_ms }
+        Self {
+            code: code.into(),
+            timeout_ms,
+        }
     }
 }
 
@@ -145,7 +148,9 @@ impl DeadlineSignal {
     }
 
     fn clone_signal(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -193,17 +198,16 @@ impl Deadline {
 ///
 /// `timeout_ms == 0` is the internal no-timer sentinel: the result forwards
 /// only the upstream signal (or a never-aborting one).
-pub fn deadline(
-    upstream: Option<&DeadlineSignal>,
-    timeout_ms: u64,
-    code: &str,
-) -> Deadline {
+pub fn deadline(upstream: Option<&DeadlineSignal>, timeout_ms: u64, code: &str) -> Deadline {
     if timeout_ms == 0 {
         let signal = match upstream {
             Some(upstream) => upstream.clone_signal(),
             None => DeadlineSignal::new(),
         };
-        return Deadline { signal, timers: None };
+        return Deadline {
+            signal,
+            timers: None,
+        };
     }
     assert_timer_delay(timeout_ms, "deadline timeoutMs");
 
@@ -279,11 +283,7 @@ pub struct IdleWatchdog {
 }
 
 impl IdleWatchdog {
-    pub fn new(
-        upstream: Option<&DeadlineSignal>,
-        timeout_ms: u64,
-        code: &str,
-    ) -> Self {
+    pub fn new(upstream: Option<&DeadlineSignal>, timeout_ms: u64, code: &str) -> Self {
         assert_timer_delay(timeout_ms, "idleWatchdog timeoutMs");
         let signal = DeadlineSignal::new();
         let upstream_task = upstream.map(|upstream| {
@@ -433,7 +433,9 @@ mod tests {
         assert_eq!(clamp_timeout(None, 100, 500, "timeoutMs"), 100);
         assert_eq!(clamp_timeout(Some(50), 100, 500, "timeoutMs"), 50);
         assert_eq!(clamp_timeout(Some(900), 100, 500, "timeoutMs"), 500);
-        assert!(std::panic::catch_unwind(|| clamp_timeout(Some(0), 100, 500, "timeoutMs")).is_err());
+        assert!(
+            std::panic::catch_unwind(|| clamp_timeout(Some(0), 100, 500, "timeoutMs")).is_err()
+        );
     }
 
     #[tokio::test]
@@ -470,30 +472,27 @@ mod tests {
         let first_signal = std::sync::Arc::clone(&signal);
         let first_observed = std::sync::Arc::clone(&observed);
         let first = std::thread::spawn(move || {
-            first_signal.cancel_after_observation(
-                Some(TimeoutReason::new("FIRST", 10)),
-                || {
-                    first_observed.wait();
-                },
-            );
+            first_signal.cancel_after_observation(Some(TimeoutReason::new("FIRST", 10)), || {
+                first_observed.wait();
+            });
             first_done.send(()).expect("report first cancellation");
         });
 
         let second_signal = std::sync::Arc::clone(&signal);
         let second_observed = std::sync::Arc::clone(&observed);
         let second = std::thread::spawn(move || {
-            second_signal.cancel_after_observation(
-                Some(TimeoutReason::new("SECOND", 20)),
-                || {
-                    second_observed.wait();
-                    wait_for_first.recv().expect("wait for first cancellation");
-                },
-            );
+            second_signal.cancel_after_observation(Some(TimeoutReason::new("SECOND", 20)), || {
+                second_observed.wait();
+                wait_for_first.recv().expect("wait for first cancellation");
+            });
         });
 
         first.join().expect("first cancellation thread");
         second.join().expect("second cancellation thread");
-        assert_eq!(signal.reason().expect("first reason retained").code, "FIRST");
+        assert_eq!(
+            signal.reason().expect("first reason retained").code,
+            "FIRST"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -506,7 +505,9 @@ mod tests {
             waiting_signal
                 .cancelled_after_observation(move || {
                     observed.send(()).expect("report cancellation check");
-                    wait_for_release.recv().expect("release cancellation waiter");
+                    wait_for_release
+                        .recv()
+                        .expect("release cancellation waiter");
                 })
                 .await;
         });
@@ -524,8 +525,7 @@ mod tests {
     #[tokio::test]
     async fn watchdog_times_out_demand() {
         let watchdog = IdleWatchdog::new(None, 30, "IDLE");
-        let result: Result<(), DemandError> =
-            watchdog.next(std::future::pending::<()>()).await;
+        let result: Result<(), DemandError> = watchdog.next(std::future::pending::<()>()).await;
         assert!(matches!(result, Err(DemandError::Timeout(_))));
     }
 

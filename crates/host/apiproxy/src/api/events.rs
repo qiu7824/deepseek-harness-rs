@@ -109,7 +109,10 @@ pub enum MuxFrame {
         view: Option<ToolEventView>,
     },
     #[serde(rename = "session/subscribed")]
-    SessionSubscribed { session_id: SessionId, last_seq: i64 },
+    SessionSubscribed {
+        session_id: SessionId,
+        last_seq: i64,
+    },
     #[serde(rename = "approval/requested")]
     ApprovalRequested {
         session_id: SessionId,
@@ -208,13 +211,17 @@ pub enum HostFrame {
     #[serde(rename = "host/workspace-changed")]
     WorkspaceChanged { workspace: WorkspaceView },
     #[serde(rename = "host/workspace-removed")]
-    WorkspaceRemoved { workspace_id: crate::api::workspace::WorkspaceId },
+    WorkspaceRemoved {
+        workspace_id: crate::api::workspace::WorkspaceId,
+    },
     #[serde(rename = "host/workspace-order-changed")]
     WorkspaceOrderChanged {
         workspace_ids: Vec<crate::api::workspace::WorkspaceId>,
     },
     #[serde(rename = "host/archived-sessions-changed")]
-    ArchivedSessionsChanged { archived_session_ids: Vec<SessionId> },
+    ArchivedSessionsChanged {
+        archived_session_ids: Vec<SessionId>,
+    },
     /// One allowlisted host cordis event forwarded verbatim; no projection,
     /// no redaction, no renaming.
     #[serde(rename = "host/remote-event")]

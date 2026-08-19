@@ -1,8 +1,8 @@
 //! The measurement service's positional surface fold. Rust port of
 //! `packages/llm/token-meter/src/surface-fold.ts`.
 
-use dsh_session::{SessionEvent, derive_event_message};
 use dsh_session::surface::is_surface_event;
+use dsh_session::{SessionEvent, derive_event_message};
 
 use crate::estimate::estimate_message;
 use crate::types::TokenSurfaceNode;
@@ -40,7 +40,10 @@ pub fn fold_surface_tokens(
         }),
         Some(dsh_session::SurfaceOp::Append) => {
             let mut next = nodes.to_vec();
-            next.push(TokenSurfaceNode { seq: event.seq, tokens });
+            next.push(TokenSurfaceNode {
+                seq: event.seq,
+                tokens,
+            });
             Ok(SurfaceTokenFold {
                 tokens,
                 nodes: next,
@@ -62,9 +65,18 @@ pub fn fold_surface_tokens(
                     event.seq
                 ));
             }
-            let removed: u64 = nodes[start_idx..=end_idx].iter().map(|node| node.tokens).sum();
+            let removed: u64 = nodes[start_idx..=end_idx]
+                .iter()
+                .map(|node| node.tokens)
+                .sum();
             let mut next = nodes.to_vec();
-            next.splice(start_idx..=end_idx, [TokenSurfaceNode { seq: event.seq, tokens }]);
+            next.splice(
+                start_idx..=end_idx,
+                [TokenSurfaceNode {
+                    seq: event.seq,
+                    tokens,
+                }],
+            );
             Ok(SurfaceTokenFold {
                 tokens,
                 nodes: next,

@@ -20,6 +20,54 @@ pub trait ScopeLayer {
     fn is_empty(&self) -> bool;
 }
 
+/// A synchronous registry mutation that rolls back on drop until its
+/// ownership is committed to a Cordis fiber.
+pub struct PreparedRegistration {
+    cleanup: Arc<dyn Fn() + Send + Sync>,
+    label: String,
+    prepared: bool,
+}
+
+impl PreparedRegistration {
+    /// Bind this mutation to `ctx`; future disposal runs the same idempotent
+    /// cleanup that protects the pre-commit failure path.
+    pub fn commit(self, ctx: &Context) -> Disposer {
+        let label = self.label.clone();
+        Self::commit_all(ctx, &label, vec![self])
+    }
+
+    /// Bind a complete cross-registry transaction as one Cordis effect.
+    /// If ownership cannot be established, every still-armed registration
+    /// drops and rolls back synchronously; no earlier item can remain committed.
+    pub fn commit_all(ctx: &Context, label: &str, mut registrations: Vec<Self>) -> Disposer {
+        let cleanups: Vec<_> = registrations
+            .iter()
+            .map(|registration| registration.cleanup.clone())
+            .collect();
+        let disposer = make_disposer(move || {
+            let cleanups = cleanups.clone();
+            Box::pin(async move {
+                for cleanup in cleanups.into_iter().rev() {
+                    cleanup();
+                }
+            })
+        });
+        let owned = ctx.effect(label, Box::pin(async move { Some(disposer) }));
+        for registration in &mut registrations {
+            registration.prepared = false;
+        }
+        owned
+    }
+}
+
+impl Drop for PreparedRegistration {
+    fn drop(&mut self) {
+        if self.prepared {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.cleanup)()));
+        }
+    }
+}
+
 /// Insertion-ordered named entries with caller-owned duplicate diagnostics
 /// (TS `NamedEntries`).
 #[derive(Clone)]
@@ -30,7 +78,10 @@ pub struct NamedEntries<V: Clone> {
 
 impl<V: Clone + Send + Sync + 'static> NamedEntries<V> {
     pub fn new(
-        duplicate_error: impl Fn(&str) -> Box<dyn std::error::Error + Send + Sync> + Send + Sync + 'static,
+        duplicate_error: impl Fn(&str) -> Box<dyn std::error::Error + Send + Sync>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         Self {
             data: Arc::new(Mutex::new(IndexMap::new())),
@@ -41,22 +92,33 @@ impl<V: Clone + Send + Sync + 'static> NamedEntries<V> {
     /// Insert one unique name; returns an idempotent undo removing only this
     /// insertion (TS `insert`).
     pub fn insert(&self, name: &str, value: V) -> Box<dyn Fn() + Send + Sync> {
+        self.try_insert(name, value)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Insert without unwinding on a duplicate; used by cross-registry
+    /// transactions that must roll back other prepared contributions.
+    pub fn try_insert(
+        &self,
+        name: &str,
+        value: V,
+    ) -> Result<Box<dyn Fn() + Send + Sync>, Box<dyn std::error::Error + Send + Sync>> {
         {
             let mut data = self.data.lock();
             if data.contains_key(name) {
-                panic!("{}", (self.duplicate_error)(name));
+                return Err((self.duplicate_error)(name));
             }
             data.insert(name.to_string(), value);
         }
         let data = self.data.clone();
         let name = name.to_string();
         let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        Box::new(move || {
+        Ok(Box::new(move || {
             if !active.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
             data.lock().shift_remove(&name);
-        })
+        }))
     }
 
     pub fn get(&self, name: &str) -> Option<V> {
@@ -220,8 +282,7 @@ impl<L: ScopeLayer + Send + Sync + 'static> ScopedLayers<L> {
         scope: Option<&ScopeKey>,
         pick: impl Fn(&L) -> &NamedEntries<V>,
     ) -> IndexMap<String, V> {
-        let mut merged: IndexMap<String, V> =
-            pick(&self.global).entries().into_iter().collect();
+        let mut merged: IndexMap<String, V> = pick(&self.global).entries().into_iter().collect();
         for layer in self.chain_layers(scope) {
             for (name, value) in pick(&layer).entries() {
                 merged.insert(name, value);
@@ -243,6 +304,55 @@ impl<L: ScopeLayer + Send + Sync + 'static> ScopedLayers<L> {
         label: &str,
         notify: bool,
     ) -> Disposer {
+        self.prepare_effect(ctx, action, label, notify).commit(ctx)
+    }
+
+    /// Apply a mutation now, but delay ownership until a cross-registry
+    /// transaction has prepared every related contribution.
+    fn prepare_effect(
+        &self,
+        ctx: &Context,
+        action: impl Fn(&L) -> Box<dyn Fn() + Send + Sync> + Send + Sync + 'static,
+        label: &str,
+        notify: bool,
+    ) -> PreparedRegistration {
+        self.try_prepare_effect(ctx, move |layer| Ok(action(layer)), label, notify)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Prepare one atomic named insertion for a cross-registry transaction.
+    /// Duplicate detection happens before mutation, so every error path is
+    /// rollback-safe by construction.
+    pub fn try_prepare_named<V: Clone + Send + Sync + 'static>(
+        &self,
+        ctx: &Context,
+        pick: impl Fn(&L) -> &NamedEntries<V> + Send + Sync + 'static,
+        name: String,
+        value: V,
+        label: &str,
+        notify: bool,
+    ) -> Result<PreparedRegistration, String> {
+        self.try_prepare_effect(
+            ctx,
+            move |layer| {
+                pick(layer)
+                    .try_insert(&name, value.clone())
+                    .map_err(|error| error.to_string())
+            },
+            label,
+            notify,
+        )
+    }
+
+    /// Internal fallible primitive. Public transaction callers use
+    /// [`Self::try_prepare_named`], which cannot mutate before returning Err.
+    fn try_prepare_effect(
+        &self,
+        ctx: &Context,
+        action: impl Fn(&L) -> Result<Box<dyn Fn() + Send + Sync>, String> + Send + Sync + 'static,
+        label: &str,
+        notify: bool,
+    ) -> Result<PreparedRegistration, String> {
         let scope_key = scope_of(ctx);
         let scope_id = scope_key.as_ref().map(|key| key.key_id() as usize);
         let scoped = self.scoped.clone();
@@ -266,20 +376,17 @@ impl<L: ScopeLayer + Send + Sync + 'static> ScopedLayers<L> {
                 }
             }
         };
-        let undo = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            action(&layer)
-        })) {
-            Ok(undo) => Arc::new(undo),
+        let undo = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(&layer))) {
+            Ok(Ok(undo)) => Arc::new(undo),
+            Ok(Err(error)) => {
+                if created && let Some(id) = scope_id {
+                    scoped.lock().remove(&id);
+                }
+                return Err(error);
+            }
             Err(payload) => {
-                if created {
-                    if let Some(id) = scope_id {
-                        let mut layers = scoped.lock();
-                        let reclaim =
-                            layers.get(&id).is_some_and(|layer| layer.is_empty());
-                        if reclaim {
-                            layers.remove(&id);
-                        }
-                    }
+                if created && let Some(id) = scope_id {
+                    scoped.lock().remove(&id);
                 }
                 std::panic::resume_unwind(payload);
             }
@@ -292,41 +399,37 @@ impl<L: ScopeLayer + Send + Sync + 'static> ScopedLayers<L> {
                 Ok(()) => {}
                 Err(payload) => {
                     undo();
-                    if created {
-                        if let Some(id) = scope_id {
-                            let mut layers = scoped.lock();
-                            let reclaim = layers.get(&id).is_some_and(|layer| layer.is_empty());
-                            if reclaim {
-                                layers.remove(&id);
-                            }
+                    if created && let Some(id) = scope_id {
+                        let mut layers = scoped.lock();
+                        let reclaim = layers.get(&id).is_some_and(|layer| layer.is_empty());
+                        if reclaim {
+                            layers.remove(&id);
                         }
                     }
+                    on_change();
                     std::panic::resume_unwind(payload);
                 }
             }
         }
 
-        let on_change_for_dispose = on_change.clone();
-        let scoped_for_dispose = scoped.clone();
-        let disposer = make_disposer(move || {
-            let undo = undo.clone();
-            let on_change = on_change_for_dispose.clone();
-            let scoped = scoped_for_dispose.clone();
-            Box::pin(async move {
-                undo();
-                if let Some(id) = scope_id {
-                    let mut layers = scoped.lock();
-                    let reclaim = layers.get(&id).is_some_and(|layer| layer.is_empty());
-                    if reclaim {
-                        layers.remove(&id);
-                    }
+        let cleanup: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            undo();
+            if let Some(id) = scope_id {
+                let mut layers = scoped.lock();
+                let reclaim = layers.get(&id).is_some_and(|layer| layer.is_empty());
+                if reclaim {
+                    layers.remove(&id);
                 }
-                if notify {
-                    on_change();
-                }
-            })
+            }
+            if notify {
+                on_change();
+            }
         });
-        ctx.effect(label, Box::pin(async move { Some(disposer) }))
+        Ok(PreparedRegistration {
+            cleanup,
+            label: label.to_string(),
+            prepared: true,
+        })
     }
 }
 
@@ -370,14 +473,110 @@ mod tests {
         assert!(entries.has("a"));
         assert_eq!(entries.get("a"), Some(1));
         assert_eq!(entries.keys(), vec!["a".to_string(), "b".to_string()]);
-        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            entries.insert("a", 9)
-        }))
-        .is_err());
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { entries.insert("a", 9) }))
+                .is_err()
+        );
         undo_a();
         undo_a(); // idempotent
         assert!(!entries.has("a"));
         assert_eq!(entries.values(), vec![2]);
+    }
+
+    #[tokio::test]
+    async fn failed_prepare_does_not_publish_a_partially_mutated_new_scope_layer() {
+        let ctx = Context::root();
+        let key = ScopeKey::new();
+        let scope = create_scope(&ctx, key.clone(), &CreateScopeOptions::default());
+        let store = ScopedLayers::new(|_| Layer::new(), || {});
+
+        let result = store.try_prepare_effect(
+            &scope.ctx,
+            |layer| {
+                let _ = layer.entries.insert("leaked", 1);
+                Err("prepare failed after mutation".to_string())
+            },
+            "failed prepare",
+            false,
+        );
+
+        assert!(result.is_err());
+        assert!(
+            store.peek(Some(&key)).is_none(),
+            "failed prepare published its partially mutated new layer"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_batch_commit_rolls_back_every_prepared_registration() {
+        let ctx = Context::root();
+        let key = ScopeKey::new();
+        let scope = create_scope(&ctx, key.clone(), &CreateScopeOptions::default());
+        let changes = Arc::new(AtomicU32::new(0));
+        let changes_for_store = changes.clone();
+        let store = ScopedLayers::new(
+            |_| Layer::new(),
+            move || {
+                changes_for_store.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        let first = store.prepare_effect(
+            &scope.ctx,
+            |layer| layer.entries.insert("first", 1),
+            "first",
+            true,
+        );
+        let second = store.prepare_effect(
+            &scope.ctx,
+            |layer| layer.entries.insert("second", 2),
+            "second",
+            true,
+        );
+        (scope.dispose)().await;
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            PreparedRegistration::commit_all(&scope.ctx, "batch", vec![first, second])
+        }));
+
+        assert!(outcome.is_err(), "inactive owner must reject the batch");
+        assert!(store.peek(Some(&key)).is_none());
+        assert_eq!(changes.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn prepared_registration_rolls_back_or_transfers_to_fiber_ownership() {
+        let ctx = Context::root();
+        let changes = Arc::new(AtomicU32::new(0));
+        let changes_for_store = changes.clone();
+        let store = ScopedLayers::new(
+            |_| Layer::new(),
+            move || {
+                changes_for_store.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+
+        let prepared = store.prepare_effect(
+            &ctx,
+            |layer| layer.entries.insert("pending", 1),
+            "prepared pending",
+            true,
+        );
+        assert_eq!(store.global.entries.get("pending"), Some(1));
+        drop(prepared);
+        assert_eq!(store.global.entries.get("pending"), None);
+        assert_eq!(changes.load(Ordering::SeqCst), 2);
+
+        let prepared = store.prepare_effect(
+            &ctx,
+            |layer| layer.entries.insert("committed", 2),
+            "prepared committed",
+            true,
+        );
+        let disposer = prepared.commit(&ctx);
+        assert_eq!(store.global.entries.get("committed"), Some(2));
+        disposer().await;
+        assert_eq!(store.global.entries.get("committed"), None);
+        assert_eq!(changes.load(Ordering::SeqCst), 4);
     }
 
     #[test]
@@ -421,15 +620,22 @@ mod tests {
 
         // disposer keeps the layer while it still holds entries
         dispose().await;
-        assert!(layers.peek(Some(&key)).is_some(), "non-empty layer survives dispose");
+        assert!(
+            layers.peek(Some(&key)).is_some(),
+            "non-empty layer survives dispose"
+        );
         assert_eq!(changes.load(Ordering::SeqCst), 2);
 
         // a second, empty scoped layer is reclaimed on dispose
         let empty_key = ScopeKey::new();
         let empty_scope = create_scope(&ctx, empty_key.clone(), &CreateScopeOptions::default());
-        let empty_dispose = layers.effect(&empty_scope.ctx, |_layer| Box::new(|| {}), "empty", true);
+        let empty_dispose =
+            layers.effect(&empty_scope.ctx, |_layer| Box::new(|| {}), "empty", true);
         assert!(layers.peek(Some(&empty_key)).is_some());
         empty_dispose().await;
-        assert!(layers.peek(Some(&empty_key)).is_none(), "empty layer reclaimed");
+        assert!(
+            layers.peek(Some(&empty_key)).is_none(),
+            "empty layer reclaimed"
+        );
     }
 }

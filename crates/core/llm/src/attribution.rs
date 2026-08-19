@@ -26,7 +26,10 @@ pub fn app_identity() -> AppIdentity {
 /// The standard `User-Agent` value: `product/version (+url)` (TS
 /// `userAgent`).
 pub fn user_agent(identity: &AppIdentity) -> String {
-    format!("{}/{}(+{})", identity.product, identity.version, identity.url)
+    format!(
+        "{}/{}(+{})",
+        identity.product, identity.version, identity.url
+    )
 }
 
 /// Build the attribution headers an adapter must send on every provider
@@ -47,6 +50,10 @@ mod tests {
         assert_eq!(headers.len(), 1);
         assert_eq!(headers[0].0, "user-agent");
         assert!(headers[0].1.starts_with("deepseek-harness/"));
-        assert!(headers[0].1.ends_with("(+https://github.com/deepseek-ai/deepseek-harness)"));
+        assert!(
+            headers[0]
+                .1
+                .ends_with("(+https://github.com/deepseek-ai/deepseek-harness)")
+        );
     }
 }

@@ -157,7 +157,8 @@ fn configure_database(
                 "session database at \"{path}\" has schema version {on_disk}, incompatible with this build ({SCHEMA_VERSION})"
             ));
         }
-        if on_disk == SCHEMA_VERSION && application_id != SESSION_PERSISTENCE_SQLITE_APPLICATION_ID {
+        if on_disk == SCHEMA_VERSION && application_id != SESSION_PERSISTENCE_SQLITE_APPLICATION_ID
+        {
             return Err(format!(
                 "session database at \"{path}\" has application id {application_id}, expected {SESSION_PERSISTENCE_SQLITE_APPLICATION_ID}"
             ));
@@ -201,21 +202,28 @@ pub fn row_to_meta(row: &SessionRow) -> Result<SessionHeader, String> {
     if row.created_at < 0 {
         return Err("stored session createdAt must be a non-negative safe integer".to_string());
     }
-    let version = u64::try_from(row.version)
-        .map_err(|_| format!("stored session version must be a non-negative integer, got {}", row.version))?;
+    let version = u64::try_from(row.version).map_err(|_| {
+        format!(
+            "stored session version must be a non-negative integer, got {}",
+            row.version
+        )
+    })?;
     let created_at = row.created_at as u64;
     let seed_length = row
         .seed_length
         .map(|value| {
-            u64::try_from(value)
-                .map_err(|_| format!("stored session seedLength must be a non-negative integer, got {value}"))
+            u64::try_from(value).map_err(|_| {
+                format!("stored session seedLength must be a non-negative integer, got {value}")
+            })
         })
         .transpose()?;
     let delegation_depth = row
         .delegation_depth
         .map(|value| {
             u64::try_from(value).map_err(|_| {
-                format!("stored session delegationDepth must be a non-negative integer, got {value}")
+                format!(
+                    "stored session delegationDepth must be a non-negative integer, got {value}"
+                )
             })
         })
         .transpose()?;
@@ -252,8 +260,12 @@ pub fn row_to_event(row: &EventRow) -> Result<SessionEvent, String> {
                 .map_err(|error| format!("stored surfaceOp is not valid JSON: {error}"))
         })
         .transpose()?;
-    let seq = u64::try_from(row.seq)
-        .map_err(|_| format!("stored session event seq must be a non-negative integer, got {}", row.seq))?;
+    let seq = u64::try_from(row.seq).map_err(|_| {
+        format!(
+            "stored session event seq must be a non-negative integer, got {}",
+            row.seq
+        )
+    })?;
     Ok(SessionEvent {
         type_: row.type_.clone(),
         seq,
@@ -324,13 +336,16 @@ pub fn scan_rows(rows: &[EventRow], base: u64) -> Result<ScanRowsResult, String>
     // Any rows past the preserved prefix are a never-committed torn tail;
     // their first seq is the deletion point for load's physical repair.
     let torn_from = (preserved.len() < rows.len()).then(|| base + preserved.len() as u64);
-    Ok(ScanRowsResult { preserved, torn_from })
+    Ok(ScanRowsResult {
+        preserved,
+        torn_from,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dsh_session::{SurfaceOp, SessionEvent};
+    use dsh_session::{SessionEvent, SurfaceOp};
     use rusqlite::OptionalExtension;
 
     fn event(type_: &str, seq: u64, time: i64, data: serde_json::Value) -> SessionEvent {
@@ -348,21 +363,41 @@ mod tests {
     fn one_turn_log() -> Vec<SessionEvent> {
         vec![
             event("turn/start", 0, 1, serde_json::json!({"turn": 1})),
-            event("user/message", 1, 2, serde_json::json!({
-                "id": "one-turn-user", "role": "user",
-                "content": [{"type": "text", "text": "hi"}], "source": {"kind": "user"},
-            })),
-            event("step/start", 2, 3, serde_json::json!({"turn": 1, "step": 1})),
-            event("assistant/message", 3, 4, serde_json::json!({
-                "turn": 1, "step": 1,
-                "message": {
-                    "id": "one-turn-assistant", "role": "assistant",
-                    "content": [{"type": "text", "text": "hello"}],
-                    "source": {"kind": "model", "provider": "mock", "model": "mock"},
-                },
-            })),
+            event(
+                "user/message",
+                1,
+                2,
+                serde_json::json!({
+                    "id": "one-turn-user", "role": "user",
+                    "content": [{"type": "text", "text": "hi"}], "source": {"kind": "user"},
+                }),
+            ),
+            event(
+                "step/start",
+                2,
+                3,
+                serde_json::json!({"turn": 1, "step": 1}),
+            ),
+            event(
+                "assistant/message",
+                3,
+                4,
+                serde_json::json!({
+                    "turn": 1, "step": 1,
+                    "message": {
+                        "id": "one-turn-assistant", "role": "assistant",
+                        "content": [{"type": "text", "text": "hello"}],
+                        "source": {"kind": "model", "provider": "mock", "model": "mock"},
+                    },
+                }),
+            ),
             event("step/end", 4, 5, serde_json::json!({"turn": 1, "step": 1})),
-            event("turn/end", 5, 6, serde_json::json!({"turn": 1, "reason": {"kind": "completed"}})),
+            event(
+                "turn/end",
+                5,
+                6,
+                serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+            ),
         ]
     }
 
@@ -400,10 +435,18 @@ mod tests {
     fn scan_rows_preserves_real_events_of_interrupted_turn() {
         let mut with_open_turn = one_turn_log();
         with_open_turn.push(event("turn/start", 6, 7, serde_json::json!({"turn": 2})));
-        with_open_turn.push(event("step/start", 7, 8, serde_json::json!({"turn": 2, "step": 1})));
+        with_open_turn.push(event(
+            "step/start",
+            7,
+            8,
+            serde_json::json!({"turn": 2, "step": 1}),
+        ));
         let scan = scan_rows(&rows(&with_open_turn), 0).unwrap();
         assert_eq!(
-            scan.preserved.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            scan.preserved
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
             vec![0, 1, 2, 3, 4, 5, 6, 7]
         );
         assert_eq!(scan.torn_from, None);
@@ -413,7 +456,12 @@ mod tests {
     fn scan_rows_flags_torn_tail_at_seq_gap() {
         let gapped = vec![
             event("turn/start", 0, 1, serde_json::json!({"turn": 1})),
-            event("step/start", 2, 2, serde_json::json!({"turn": 1, "step": 1})), // seq 1 missing
+            event(
+                "step/start",
+                2,
+                2,
+                serde_json::json!({"turn": 1, "step": 1}),
+            ), // seq 1 missing
         ];
         let scan = scan_rows(&rows(&gapped), 0).unwrap();
         assert_eq!(scan.preserved.len(), 1);
@@ -432,8 +480,18 @@ mod tests {
     fn scan_rows_rejects_seq_gap_in_committed_region() {
         let gapped = vec![
             event("turn/start", 0, 1, serde_json::json!({"turn": 1})),
-            event("step/start", 2, 2, serde_json::json!({"turn": 1, "step": 1})), // seq 1 missing
-            event("turn/end", 3, 3, serde_json::json!({"turn": 1, "reason": {"kind": "completed"}})),
+            event(
+                "step/start",
+                2,
+                2,
+                serde_json::json!({"turn": 1, "step": 1}),
+            ), // seq 1 missing
+            event(
+                "turn/end",
+                3,
+                3,
+                serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+            ),
         ];
         let error = scan_rows(&rows(&gapped), 0).unwrap_err();
         assert!(error.contains("seq gap in committed region"), "{error}");
@@ -455,7 +513,10 @@ mod tests {
                 seq: 1,
                 type_: "turn/end".to_string(),
                 time: 2,
-                data: serde_json::to_string(&serde_json::json!({"turn": 1, "reason": {"kind": "completed"}})).unwrap(),
+                data: serde_json::to_string(
+                    &serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+                )
+                .unwrap(),
                 source_event_seqs: None,
                 surface_op: None,
                 ignorable: None,
@@ -552,7 +613,10 @@ mod tests {
         let mut composed = base.clone();
         composed.agent_preset = Some("minimal".to_string());
         composed.origin = None;
-        assert_eq!(row_to_meta(&composed).unwrap().agent_preset.as_deref(), Some("minimal"));
+        assert_eq!(
+            row_to_meta(&composed).unwrap().agent_preset.as_deref(),
+            Some("minimal")
+        );
 
         let mut negative = base.clone();
         negative.created_at = -1;
@@ -562,14 +626,18 @@ mod tests {
 
     fn fresh_db_path(tag: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir()
-            .join(format!("dsh-sqlite-schema-{tag}-{}", uuid::Uuid::new_v4().simple()))
+            .join(format!(
+                "dsh-sqlite-schema-{tag}-{}",
+                uuid::Uuid::new_v4().simple()
+            ))
             .join("sessions.db");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         path
     }
 
     fn pragma(db: &Connection, name: &str) -> i64 {
-        db.query_row(&format!("PRAGMA {name}"), [], |row| row.get(0)).unwrap()
+        db.query_row(&format!("PRAGMA {name}"), [], |row| row.get(0))
+            .unwrap()
     }
 
     #[test]
@@ -578,9 +646,16 @@ mod tests {
         {
             let db = open_database(path.to_str().unwrap(), JournalMode::Wal).unwrap();
             assert_eq!(pragma(&db, "user_version"), SCHEMA_VERSION);
-            assert_eq!(pragma(&db, "application_id"), SESSION_PERSISTENCE_SQLITE_APPLICATION_ID);
+            assert_eq!(
+                pragma(&db, "application_id"),
+                SESSION_PERSISTENCE_SQLITE_APPLICATION_ID
+            );
             let store_id: String = db
-                .query_row("SELECT store_id FROM persistence_state WHERE singleton = 1", [], |row| row.get(0))
+                .query_row(
+                    "SELECT store_id FROM persistence_state WHERE singleton = 1",
+                    [],
+                    |row| row.get(0),
+                )
                 .unwrap();
             assert!(!store_id.is_empty());
         }
@@ -595,7 +670,8 @@ mod tests {
         let path = fresh_db_path("versions");
         {
             let db = open_database(path.to_str().unwrap(), JournalMode::Wal).unwrap();
-            db.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
+            db.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+                .unwrap();
         }
         let error = open_database(path.to_str().unwrap(), JournalMode::Wal).unwrap_err();
         assert!(error.contains("incompatible with this build"), "{error}");
@@ -603,7 +679,8 @@ mod tests {
         let older = fresh_db_path("older");
         {
             let db = open_database(older.to_str().unwrap(), JournalMode::Wal).unwrap();
-            db.pragma_update(None, "user_version", SCHEMA_VERSION - 1).unwrap();
+            db.pragma_update(None, "user_version", SCHEMA_VERSION - 1)
+                .unwrap();
         }
         let error = open_database(older.to_str().unwrap(), JournalMode::Wal).unwrap_err();
         assert!(error.contains("incompatible with this build"), "{error}");
@@ -616,10 +693,15 @@ mod tests {
         let path = fresh_db_path("unversioned");
         {
             let legacy = Connection::open(path.to_str().unwrap()).unwrap();
-            legacy.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY)").unwrap();
+            legacy
+                .execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+                .unwrap();
         }
         let error = open_database(path.to_str().unwrap(), JournalMode::Wal).unwrap_err();
-        assert!(error.contains("unversioned schema or application identity"), "{error}");
+        assert!(
+            error.contains("unversioned schema or application identity"),
+            "{error}"
+        );
 
         let unchanged = Connection::open(path.to_str().unwrap()).unwrap();
         assert_eq!(pragma(&unchanged, "user_version"), 0);
@@ -628,7 +710,11 @@ mod tests {
             .unwrap();
         assert_eq!(journal, "delete");
         let name: String = unchanged
-            .query_row("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'sessions'", [], |row| row.get(0))
+            .query_row(
+                "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'sessions'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(name, "sessions");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -639,11 +725,18 @@ mod tests {
         let path = fresh_db_path("sqliteX");
         {
             let unrelated = Connection::open(path.to_str().unwrap()).unwrap();
-            unrelated.execute_batch("CREATE TABLE sqliteX (value TEXT)").unwrap();
-            unrelated.execute_batch("INSERT INTO sqliteX VALUES ('safe')").unwrap();
+            unrelated
+                .execute_batch("CREATE TABLE sqliteX (value TEXT)")
+                .unwrap();
+            unrelated
+                .execute_batch("INSERT INTO sqliteX VALUES ('safe')")
+                .unwrap();
         }
         let error = open_database(path.to_str().unwrap(), JournalMode::Wal).unwrap_err();
-        assert!(error.contains("unversioned schema or application identity"), "{error}");
+        assert!(
+            error.contains("unversioned schema or application identity"),
+            "{error}"
+        );
 
         let unchanged = Connection::open(path.to_str().unwrap()).unwrap();
         let value: String = unchanged
@@ -660,8 +753,12 @@ mod tests {
         let path = fresh_db_path("foreign");
         {
             let foreign = Connection::open(path.to_str().unwrap()).unwrap();
-            foreign.pragma_update(None, "application_id", 12345).unwrap();
-            foreign.pragma_update(None, "user_version", SCHEMA_VERSION).unwrap();
+            foreign
+                .pragma_update(None, "application_id", 12345)
+                .unwrap();
+            foreign
+                .pragma_update(None, "user_version", SCHEMA_VERSION)
+                .unwrap();
         }
         let error = open_database(path.to_str().unwrap(), JournalMode::Wal).unwrap_err();
         assert!(error.contains("has application id 12345"), "{error}");
@@ -678,18 +775,30 @@ mod tests {
         {
             let conflicting = Connection::open(path.to_str().unwrap()).unwrap();
             conflicting
-                .pragma_update(None, "application_id", SESSION_PERSISTENCE_SQLITE_APPLICATION_ID)
+                .pragma_update(
+                    None,
+                    "application_id",
+                    SESSION_PERSISTENCE_SQLITE_APPLICATION_ID,
+                )
                 .unwrap();
-            conflicting.pragma_update(None, "user_version", SCHEMA_VERSION).unwrap();
             conflicting
-                .execute_batch("CREATE VIEW persistence_state AS SELECT 1 AS singleton, 'foreign' AS store_id")
+                .pragma_update(None, "user_version", SCHEMA_VERSION)
+                .unwrap();
+            conflicting
+                .execute_batch(
+                    "CREATE VIEW persistence_state AS SELECT 1 AS singleton, 'foreign' AS store_id",
+                )
                 .unwrap();
         }
         assert!(open_database(path.to_str().unwrap(), JournalMode::Wal).is_err());
 
         let unchanged = Connection::open(path.to_str().unwrap()).unwrap();
         let view: Option<String> = unchanged
-            .query_row("SELECT type FROM sqlite_schema WHERE name = 'persistence_state'", [], |row| row.get(0))
+            .query_row(
+                "SELECT type FROM sqlite_schema WHERE name = 'persistence_state'",
+                [],
+                |row| row.get(0),
+            )
             .optional()
             .unwrap();
         assert_eq!(view.as_deref(), Some("view"));
@@ -704,7 +813,10 @@ mod tests {
                 .unwrap();
             assert_eq!(row, None, "{table} must not exist after rollback");
         }
-        assert_eq!(pragma(&unchanged, "application_id"), SESSION_PERSISTENCE_SQLITE_APPLICATION_ID);
+        assert_eq!(
+            pragma(&unchanged, "application_id"),
+            SESSION_PERSISTENCE_SQLITE_APPLICATION_ID
+        );
         assert_eq!(pragma(&unchanged, "user_version"), SCHEMA_VERSION);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

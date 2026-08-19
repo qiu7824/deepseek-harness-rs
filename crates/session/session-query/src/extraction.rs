@@ -16,7 +16,12 @@ pub fn extract_session_event_text(event: &SessionEvent) -> String {
             content_text(message.get("content"))
         }
         "tool/call" => join_text(&[
-            event.data.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            event
+                .data
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             event
                 .data
                 .get("arguments")
@@ -55,8 +60,14 @@ pub fn extract_session_event_text(event: &SessionEvent) -> String {
                         .iter()
                         .flat_map(|todo| {
                             vec![
-                                todo.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                todo.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                todo.get("status")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                todo.get("content")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
                             ]
                         })
                         .collect()
@@ -64,12 +75,7 @@ pub fn extract_session_event_text(event: &SessionEvent) -> String {
                 .unwrap_or_default();
             join_text(&parts)
         }
-        "turn/end" => turn_end_text(
-            event
-                .data
-                .get("reason")
-                .unwrap_or(&serde_json::Value::Null),
-        ),
+        "turn/end" => turn_end_text(event.data.get("reason").unwrap_or(&serde_json::Value::Null)),
         "turn/start" | "step/start" | "step/end" | "assistant/chunk" | "request/header" => {
             String::new()
         }
@@ -80,7 +86,10 @@ pub fn extract_session_event_text(event: &SessionEvent) -> String {
 }
 
 fn turn_end_text(reason: &serde_json::Value) -> String {
-    let kind = reason.get("kind").and_then(|value| value.as_str()).unwrap_or("");
+    let kind = reason
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
     match kind {
         "error" => {
             let message = reason
@@ -109,11 +118,25 @@ fn content_text(content: Option<&serde_json::Value>) -> String {
 
 fn block_text(block: &serde_json::Value) -> Vec<String> {
     match block.get("type").and_then(|value| value.as_str()) {
-        Some("text") => vec![block.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string()],
+        Some("text") => vec![
+            block
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        ],
         Some("reasoning") => Vec::new(),
         Some("tool-call") => vec![
-            block.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            block.get("arguments").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            block
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            block
+                .get("arguments")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         ],
         Some("tool-result") => {
             let mut parts: Vec<String> = Vec::new();

@@ -29,7 +29,10 @@ pub struct MemoryMedium {
 
 impl MemoryMedium {
     fn new() -> Self {
-        Self { tables: HashMap::new(), global: JsonValue::Null }
+        Self {
+            tables: HashMap::new(),
+            global: JsonValue::Null,
+        }
     }
 }
 
@@ -79,7 +82,7 @@ impl MemoryMediaPool {
                     return Err(StorageError::new(
                         StorageErrorCode::Closed,
                         "injected write failure",
-                    ))
+                    ));
                 }
                 Err(current) => remaining = current,
             }
@@ -98,7 +101,10 @@ struct MemoryKvUnit {
 impl MemoryKvUnit {
     fn assert_open(&self) -> Result<(), StorageError> {
         if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(closed_error(&format!("memory unit '{}'", self.descriptor.name)));
+            return Err(closed_error(&format!(
+                "memory unit '{}'",
+                self.descriptor.name
+            )));
         }
         Ok(())
     }
@@ -114,7 +120,10 @@ impl KvUnit for MemoryKvUnit {
         for table in &self.descriptor.tables {
             tables.insert(
                 table.clone(),
-                medium.and_then(|m| m.tables.get(table)).cloned().unwrap_or_default(),
+                medium
+                    .and_then(|m| m.tables.get(table))
+                    .cloned()
+                    .unwrap_or_default(),
             );
         }
         Ok(KvUnitSnapshot {
@@ -132,8 +141,14 @@ impl KvUnit for MemoryKvUnit {
         self.assert_open()?;
         self.pool.consume_injected_failure()?;
         let mut media = self.pool.media.lock();
-        let medium = media.entry(self.descriptor.name.clone()).or_insert_with(MemoryMedium::new);
-        medium.tables.entry(table.to_string()).or_default().insert(key.to_string(), value);
+        let medium = media
+            .entry(self.descriptor.name.clone())
+            .or_insert_with(MemoryMedium::new);
+        medium
+            .tables
+            .entry(table.to_string())
+            .or_default()
+            .insert(key.to_string(), value);
         Ok(())
     }
 
@@ -153,7 +168,9 @@ impl KvUnit for MemoryKvUnit {
         self.assert_open()?;
         self.pool.consume_injected_failure()?;
         let mut media = self.pool.media.lock();
-        let medium = media.entry(self.descriptor.name.clone()).or_insert_with(MemoryMedium::new);
+        let medium = media
+            .entry(self.descriptor.name.clone())
+            .or_insert_with(MemoryMedium::new);
         medium.global = value;
         Ok(())
     }
@@ -271,7 +288,9 @@ impl StorageBackend for MemoryStorageBackend {
     }
 
     async fn close(&self) -> Result<(), StorageError> {
-        self.kv_facet.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.kv_facet
+            .closed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.kv_facet.open_units.lock().clear();
         Ok(())
     }

@@ -26,7 +26,12 @@ pub fn validate_event(event: &SessionEvent) -> Result<(), String> {
     if event.type_ != "plan/mode" {
         return Ok(());
     }
-    if event.data.get("active").and_then(|value| value.as_bool()).is_none() {
+    if event
+        .data
+        .get("active")
+        .and_then(|value| value.as_bool())
+        .is_none()
+    {
         return Err(format!(
             "plan/mode carries invalid active state {}; expected a boolean",
             serde_json::to_string(&event.data.get("active")).expect("active")

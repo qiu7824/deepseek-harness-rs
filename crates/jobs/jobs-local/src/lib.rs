@@ -4,4 +4,6 @@
 pub mod index;
 pub mod invariant;
 
-pub use index::{Config, DEFAULT_MAX_CONCURRENT_JOBS_PER_OWNER, LocalJobRegistry, TASK_WAIT_TIMEOUT};
+pub use index::{
+    Config, DEFAULT_MAX_CONCURRENT_JOBS_PER_OWNER, LocalJobRegistry, TASK_WAIT_TIMEOUT,
+};

@@ -55,8 +55,12 @@ fn counter() -> u64 {
 }
 
 fn temp_dir(label: &str) -> std::path::PathBuf {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
     let dir = std::env::temp_dir().join(format!(
-        "dsh-preset-roster-{label}-{}-{}",
+        "dsh-preset-roster-{label}-{}-{}-{nonce}",
         std::process::id(),
         counter()
     ));

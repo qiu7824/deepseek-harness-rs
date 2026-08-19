@@ -53,6 +53,10 @@ async fn install_inner(ctx: &Context, fail: Arc<dyn Fn(&str) + Send + Sync>) {
             None
         })
     });
-    ctx.on("session/event", listener, EventOptions::default().global(true))
-        .await;
+    ctx.on(
+        "session/event",
+        listener,
+        EventOptions::default().global(true),
+    )
+    .await;
 }

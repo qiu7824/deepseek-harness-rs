@@ -1,0 +1,657 @@
+{
+  "candidate": "node_sidecar",
+  "versions": {
+    "node": "22.23.2",
+    "v8": "12.4.254.21-node.56",
+    "uv": "1.51.0",
+    "amaro": "1.1.8",
+    "python": "3.11.15",
+    "platform": "Windows-10-10.0.20348-SP0",
+    "node_executable": "C:\\Users\\Administrator\\AppData\\Local\\hermes\\node\\node.EXE",
+    "protocol": "node-sidecar-ndjson-v1"
+  },
+  "build": {
+    "command": "node --no-warnings --check sidecar.mjs && node --no-warnings --check worker.mjs",
+    "success": true,
+    "elapsed_ms": 193,
+    "artifact_bytes": 43654,
+    "downloaded_binary_payload_bytes": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "run": {
+    "command": "python run.py",
+    "elapsed_ms": 2898,
+    "sidecar_pid": 6736,
+    "node_executable_bytes": 86997320,
+    "script_bytes": {
+      "run.py": 80,
+      "host.py": 28092,
+      "sidecar.mjs": 8726,
+      "worker.mjs": 6756
+    },
+    "command_elapsed_to_report_ms": 3124
+  },
+  "fixtures": [
+    {
+      "id": "typescript_erasable",
+      "status": "PASS",
+      "elapsed_ms": 106,
+      "observed": {
+        "value": 42,
+        "logs": [],
+        "error": null,
+        "serialized_payload_bytes": 35,
+        "termination": "completed",
+        "worker_thread_id": 1,
+        "worker_exit_code": 1,
+        "termination_error": null,
+        "sidecar_elapsed_ms": 102,
+        "host_elapsed_ms": 106,
+        "limits": {
+          "compute_ms": 300,
+          "wall_ms": 2000,
+          "max_output_bytes": 65536,
+          "max_old_generation_mb": 64
+        },
+        "binding_calls": [],
+        "abort_signal": {
+          "requested": false
+        },
+        "assertions": [
+          "value matched",
+          "logs matched",
+          "error matched"
+        ]
+      }
+    },
+    {
+      "id": "top_level_await_binding",
+      "status": "PASS",
+      "elapsed_ms": 114,
+      "observed": {
+        "value": {
+          "nested": [
+            1,
+            {
+              "ok": true
+            }
+          ]
+        },
+        "logs": [
+          "echoed true"
+        ],
+        "error": null,
+        "serialized_payload_bytes": 72,
+        "termination": "completed",
+        "worker_thread_id": 2,
+        "worker_exit_code": 1,
+        "termination_error": null,
+        "sidecar_elapsed_ms": 112,
+        "host_elapsed_ms": 114,
+        "limits": {
+          "compute_ms": 300,
+          "wall_ms": 2000,
+          "max_output_bytes": 65536,
+          "max_old_generation_mb": 64
+        },
+        "binding_calls": [
+          {
+            "name": "tools.echo",
+            "args": [
+              {
+                "nested": [
+                  1,
+                  {
+                    "ok": true
+                  }
+                ]
+              }
+            ],
+            "resolution": {
+              "nested": [
+                1,
+                {
+                  "ok": true
+                }
+              ]
+            }
+          }
+        ],
+        "abort_signal": {
+          "requested": false
+        },
+        "assertions": [
+          "value matched",
+          "logs matched",
+          "error matched"
+        ]
+      }
+    },
+    {
+      "id": "typed_binding_rejection",
+      "status": "PASS",
+      "elapsed_ms": 100,
+      "observed": {
+        "value": {
+          "typed": true,
+          "name": "ToolCallError",
+          "toolName": "fail",
+          "message": "fixture failure"
+        },
+        "logs": [],
+        "error": null,
+        "serialized_payload_bytes": 116,
+        "termination": "completed",
+        "worker_thread_id": 3,
+        "worker_exit_code": 1,
+        "termination_error": null,
+        "sidecar_elapsed_ms": 99,
+        "host_elapsed_ms": 100,
+        "limits": {
+          "compute_ms": 300,
+          "wall_ms": 2000,
+          "max_output_bytes": 65536,
+          "max_old_generation_mb": 64
+        },
+        "binding_calls": [
+          {
+            "name": "tools.fail",
+            "args": [
+              {}
+            ],
+            "rejection": {
+              "kind": "tool-call",
+              "toolName": "fail",
+              "message": "fixture failure"
+            }
+          }
+        ],
+        "abort_signal": {
+          "requested": false
+        },
+        "assertions": [
+          "value matched",
+          "logs matched",
+          "error matched"
+        ]
+      }
+    },
+    {
+      "id": "sync_loop_compute_timeout",
+      "status": "PASS",
+      "elapsed_ms": 231,
+      "observed": {
+        "value": null,
+        "logs": [],
+        "error": {
+          "kind": "timeout",
+          "reason": "compute",
+          "message": "compute timeout exceeded"
+        },
+        "serialized_payload_bytes": 107,
+        "termination": "timeout:compute",
+        "worker_thread_id": 4,
+        "worker_exit_code": 1,
+        "termination_error": null,
+        "sidecar_elapsed_ms": 229,
+        "host_elapsed_ms": 231,
+        "limits": {
+          "compute_ms": 150,
+          "wall_ms": 2000,
+          "max_output_bytes": 65536,
+          "max_old_generation_mb": 64
+        },
+        "binding_calls": [],
+        "abort_signal": {
+          "requested": false
+        },
+        "assertions": [
+          "error kind 'timeout' matched",
+          "elapsed 231 ms <= 3000 ms"
+        ]
+      }
+    },
+    {
+      "id": "binding_dispatch_does_not_pause_busy_compute",
+      "status": "PASS",
+      "elapsed_ms": 218,
+      "observed": {
+        "value": null,
+        "logs": [],
+        "error": {
+          "kind": "timeout",
+          "reason": "compute",
+          "message": "compute timeout exceeded"
+        },
+        "serialized_payload_bytes": 107,
+        "termination": "timeout:compute",
+        "worker_thread_id": 5,
+        "worker_exit_code": 1,
+        "termination_error": null,
+        "sidecar_elapsed_ms": 217,
+        "host_elapsed_ms": 218,
+        "limits": {
+          "compute_ms": 150,
+          "wall_ms": 2000,
+          "max_output_bytes": 65536,
+          "max_old_generation_mb": 64
+        },
+        "binding_calls": [
+          {
+            "name": "tools.never",
+            "args": [
+              {}
+            ],
+            "resolution": "left pending for wall-timeout fixture"
+          }
+        ],
+        "abort_signal": {
+          "requested": false
+        },
+        "assertions": [
+          "error kind 'timeout' matched",
+          "timeout reason 'compute' matched",
+          "elapsed 218 ms <= 3000 ms"
+        ]
+      }
+    },
+    {
+      "id": "sync_loop_abort",
+      "status": "PASS",
+      "elapsed_ms": 160,
+      "observed": {
+        "value": null,
+        "logs": [],
+        "error": {
+          "kind": "abort",
+          "message": "execution aborted by host"
+        },
+        "serialized_payload_bytes": 87,
+        "termination": "abort",
+        "worker_thread_id": 6,
+        "worker_exit_code": 1,
+        "termination_error": null,
+        "sidecar_elapsed_ms": 159,
+        "host_elapsed_ms": 160,
+        "limits": {
+          "compute_ms": 30000,
+          "wall_ms": 30000,
+          "max_output_bytes": 65536,
+          "max_old_generation_mb": 64
+        },
+        "binding_calls": [],
+        "abort_signal": {
+          "requested": true,
+          "sent_after_ms": 151
+        },
+        "assertions": [
+          "error kind 'abort' matched",
+          "elapsed 160 ms <= 3000 ms"
+        ]
+      }
+    },
+    {
+      "id": "dispose_inflight",
+      "status": "PASS",
+      "elapsed_ms": 160,
+      "observed": {
+        "value": null,
+        "logs": [],
+        "error": {
+          "kind": "abort",
+          "reason": "dispose",
+          "message": "execution aborted by host"
+        },
+        "serialized_payload_bytes": 106,
+        "termination": "abort:dispose",
+        "worker_thread_id": 1,
+        "worker_exit_code": 1,
+        "termination_error": null,
+        "sidecar_elapsed_ms": 157,
+        "host_elapsed_ms": 160,
+        "limits": {
+          "compute_ms": 30000,
+          "wall_ms": 30000,
+          "max_output_bytes": 65536,
+          "max_old_generation_mb": 64
+        },
+        "binding_calls": [],
+        "abort_signal": {
+          "requested": false,
+          "dispose_requested": true,
+          "dispose_sent_after_ms": 151
+        },
+        "assertions": [
+          "error kind 'abort' matched",
+          "elapsed 160 ms <= 3000 ms"
+        ],
+        "rejects_followup_run": true,
+        "followup_rejection": "runtime is disposed",
+        "dispose_active_workers": 0,
+        "teardown_clean": true,
+        "sidecar_shutdown": {
+          "type": "shutdown",
+          "active_workers": 0,
+          "exit_code": 0,
+          "stderr": []
+        }
+      }
+    },
+    {
+      "id": "idle_wall_timeout",
+      "status": "PASS",
+      "elapsed_ms": 254,
+      "observed": {
+        "value": null,
+        "logs": [],
+        "error": {
+          "kind": "timeout",
+          "reason": "wall",
+          "message": "wall timeout exceeded"
+        },
+        "serialized_payload_bytes": 101,
+        "termination": "timeout:wall",
+        "worker_thread_id": 7,
+        "worker_exit_code": 1,
+        "termination_error": null,
+        "sidecar_elapsed_ms": 253,
+        "host_elapsed_ms": 254,
+        "limits": {
+          "compute_ms": 30000,
+          "wall_ms": 250,
+          "max_output_bytes": 65536,
+          "max_old_generation_mb": 64
+        },
+        "binding_calls": [
+          {
+            "name": "tools.never",
+            "args": [
+              {}
+            ],
+            "resolution": "left pending for wall-timeout fixture"
+          }
+        ],
+        "abort_signal": {
+          "requested": false
+        },
+        "assertions": [
+          "error kind 'timeout' matched",
+          "elapsed 254 ms <= 3000 ms"
+        ]
+      }
+    },
+    {
+      "id": "slow_binding_not_charged",
+      "status": "PASS",
+      "elapsed_ms": 593,
+      "observed": {
+        "value": "slow-done",
+        "logs": [],
+        "error": null,
+        "serialized_payload_bytes": 44,
+        "termination": "completed",
+        "worker_thread_id": 8,
+        "worker_exit_code": 1,
+        "termination_error": null,
+        "sidecar_elapsed_ms": 592,
+        "host_elapsed_ms": 593,
+        "limits": {
+          "compute_ms": 150,
+          "wall_ms": 2000,
+          "max_output_bytes": 65536,
+          "max_old_generation_mb": 64
+        },
+        "binding_calls": [
+          {
+            "name": "tools.slow",
+            "args": [
+              {}
+            ],
+            "delay_ms": 500,
+            "resolution": "slow-done"
+          }
+        ],
+        "abort_signal": {
+          "requested": false
+        },
+        "assertions": [
+          "value matched",
+          "logs matched",
+          "error matched"
+        ]
+      }
+    },
+    {
+      "id": "heap_limit",
+      "status": "PASS",
+      "elapsed_ms": 119,
+      "observed": {
+        "value": null,
+        "logs": [],
+        "error": {
+          "kind": "worker-exit",
+          "reason": "Worker terminated due to reaching memory limit: JS heap out of memory",
+          "message": "Worker terminated due to reaching memory limit: JS heap out of memory"
+        },
+        "serialized_payload_bytes": 218,
+        "termination": "worker-exit:Worker terminated due to reaching memory limit: JS heap out of memory",
+        "worker_thread_id": 9,
+        "worker_exit_code": null,
+        "termination_error": null,
+        "sidecar_elapsed_ms": 118,
+        "host_elapsed_ms": 119,
+        "limits": {
+          "compute_ms": 30000,
+          "wall_ms": 30000,
+          "max_output_bytes": 65536,
+          "max_old_generation_mb": 32
+        },
+        "binding_calls": [],
+        "abort_signal": {
+          "requested": false
+        },
+        "assertions": [
+          "error kind 'worker-exit' matched",
+          "elapsed 119 ms <= 15000 ms"
+        ],
+        "host_survives_followup": true,
+        "followup": {
+          "value": "healthy-after-oom",
+          "logs": [],
+          "error": null,
+          "serialized_payload_bytes": 52,
+          "termination": "completed",
+          "worker_thread_id": 10,
+          "worker_exit_code": 1,
+          "termination_error": null,
+          "sidecar_elapsed_ms": 101,
+          "host_elapsed_ms": 102,
+          "limits": {
+            "compute_ms": 300,
+            "wall_ms": 2000,
+            "max_output_bytes": 65536,
+            "max_old_generation_mb": 64
+          },
+          "binding_calls": [],
+          "abort_signal": {
+            "requested": false
+          }
+        }
+      }
+    },
+    {
+      "id": "output_limit",
+      "status": "PASS",
+      "elapsed_ms": 113,
+      "observed": {
+        "value": null,
+        "logs": [],
+        "error": {
+          "kind": "output-limit",
+          "message": "max_output_bytes exceeded",
+          "limit": 256
+        },
+        "serialized_payload_bytes": 106,
+        "termination": "output-limit",
+        "worker_thread_id": 11,
+        "worker_exit_code": 1,
+        "termination_error": null,
+        "sidecar_elapsed_ms": 112,
+        "host_elapsed_ms": 113,
+        "limits": {
+          "compute_ms": 300,
+          "wall_ms": 2000,
+          "max_output_bytes": 256,
+          "max_old_generation_mb": 64
+        },
+        "binding_calls": [],
+        "abort_signal": {
+          "requested": false
+        },
+        "assertions": [
+          "error kind 'output-limit' matched",
+          "payload 106 bytes <= 256 bytes"
+        ]
+      }
+    },
+    {
+      "id": "invalid_output",
+      "status": "PASS",
+      "elapsed_ms": 103,
+      "observed": {
+        "value": null,
+        "logs": [],
+        "error": {
+          "kind": "invalid-output",
+          "message": "return value.callable has non-JSON type function"
+        },
+        "serialized_payload_bytes": 119,
+        "termination": "completed",
+        "worker_thread_id": 12,
+        "worker_exit_code": 1,
+        "termination_error": null,
+        "sidecar_elapsed_ms": 102,
+        "host_elapsed_ms": 103,
+        "limits": {
+          "compute_ms": 300,
+          "wall_ms": 2000,
+          "max_output_bytes": 65536,
+          "max_old_generation_mb": 64
+        },
+        "binding_calls": [],
+        "abort_signal": {
+          "requested": false
+        },
+        "assertions": [
+          "error kind 'invalid-output' matched"
+        ]
+      }
+    },
+    {
+      "id": "non_erasable_typescript",
+      "status": "PASS",
+      "elapsed_ms": 117,
+      "observed": {
+        "value": null,
+        "logs": [],
+        "error": {
+          "kind": "exception",
+          "name": "SyntaxError",
+          "message": "TypeScript enum is not supported in strip-only mode"
+        },
+        "serialized_payload_bytes": 138,
+        "termination": "completed",
+        "worker_thread_id": 13,
+        "worker_exit_code": 1,
+        "termination_error": null,
+        "sidecar_elapsed_ms": 116,
+        "host_elapsed_ms": 117,
+        "limits": {
+          "compute_ms": 300,
+          "wall_ms": 2000,
+          "max_output_bytes": 65536,
+          "max_old_generation_mb": 64
+        },
+        "binding_calls": [],
+        "abort_signal": {
+          "requested": false
+        },
+        "assertions": [
+          "error kind 'exception' matched"
+        ]
+      }
+    },
+    {
+      "id": "fresh_realm",
+      "status": "PASS",
+      "elapsed_ms": 247,
+      "observed": {
+        "fresh_per_run": true,
+        "runs": [
+          {
+            "value": 1,
+            "logs": [],
+            "error": null,
+            "serialized_payload_bytes": 34,
+            "termination": "completed",
+            "worker_thread_id": 14,
+            "worker_exit_code": 1,
+            "termination_error": null,
+            "sidecar_elapsed_ms": 137,
+            "host_elapsed_ms": 138,
+            "limits": {
+              "compute_ms": 300,
+              "wall_ms": 2000,
+              "max_output_bytes": 65536,
+              "max_old_generation_mb": 64
+            },
+            "binding_calls": [],
+            "abort_signal": {
+              "requested": false
+            }
+          },
+          {
+            "value": "undefined",
+            "logs": [],
+            "error": null,
+            "serialized_payload_bytes": 44,
+            "termination": "completed",
+            "worker_thread_id": 15,
+            "worker_exit_code": 1,
+            "termination_error": null,
+            "sidecar_elapsed_ms": 108,
+            "host_elapsed_ms": 109,
+            "limits": {
+              "compute_ms": 300,
+              "wall_ms": 2000,
+              "max_output_bytes": 65536,
+              "max_old_generation_mb": 64
+            },
+            "binding_calls": [],
+            "abort_signal": {
+              "requested": false
+            }
+          }
+        ],
+        "assertions": [
+          "sequence[0] value matched",
+          "sequence[1] value matched",
+          "each sequence run used a distinct worker thread"
+        ]
+      }
+    }
+  ],
+  "teardown": {
+    "clean": true,
+    "details": "shutdown reported active_workers=0; sidecar exit_code=0; PID 6736 alive after wait=False; stderr=[]",
+    "sidecar_pid": 6736,
+    "active_workers_at_shutdown": 0,
+    "sidecar_exit_code": 0,
+    "sidecar_alive_after_wait": false,
+    "stderr": []
+  },
+  "verdict": "VALIDATED",
+  "recommendation": "Eligible on the measured semantics: use a persistent Node 22 sidecar with one fresh, resource-limited worker per run and keep host calls on the NDJSON/worker-IPC bridge. Before production, add OS sandboxing and package the pinned Node executable.",
+  "measured_at_utc": "2026-08-18T22:01:54.576950+00:00"
+}

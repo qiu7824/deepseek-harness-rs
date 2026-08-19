@@ -47,7 +47,10 @@ pub struct SessionTrace {
 
 /// Advance one event through the compaction state machine (TS transition
 /// subset; failures carry the exact TS messages).
-pub fn apply_compaction_event(trace: &mut SessionTrace, event: &SessionEvent) -> Result<(), String> {
+pub fn apply_compaction_event(
+    trace: &mut SessionTrace,
+    event: &SessionEvent,
+) -> Result<(), String> {
     match event.type_.as_str() {
         "compaction/start" => {
             if trace.compaction.is_some() {
@@ -58,7 +61,9 @@ pub fn apply_compaction_event(trace: &mut SessionTrace, event: &SessionEvent) ->
                 .get("compactionId")
                 .and_then(|value| value.as_str())
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| "compaction/start compactionId must be a non-empty string".to_string())?;
+                .ok_or_else(|| {
+                    "compaction/start compactionId must be a non-empty string".to_string()
+                })?;
             let source_command_id = event
                 .data
                 .get("sourceCommandId")
@@ -136,7 +141,9 @@ pub fn apply_compaction_event(trace: &mut SessionTrace, event: &SessionEvent) ->
                     == Some("compact");
             if is_checkpoint {
                 let Some(open) = &trace.compaction else {
-                    return Err("compaction checkpoint has no matching compaction/start".to_string());
+                    return Err(
+                        "compaction checkpoint has no matching compaction/start".to_string()
+                    );
                 };
                 let checkpoint_id = source
                     .and_then(|source| source.get("compactionId"))
@@ -186,7 +193,11 @@ pub fn apply_compaction_event(trace: &mut SessionTrace, event: &SessionEvent) ->
 }
 
 fn turn_boundary_error(trace: &SessionTrace, event_type: &str) -> String {
-    let owner = match trace.compaction.as_ref().and_then(|compaction| compaction.turn) {
+    let owner = match trace
+        .compaction
+        .as_ref()
+        .and_then(|compaction| compaction.turn)
+    {
         None => "standalone compaction".to_string(),
         Some(turn) => format!("compaction for turn {turn}"),
     };
@@ -256,9 +267,7 @@ pub fn installer() -> InvariantInstaller {
                             return None;
                         };
                         let mut traces = traces.lock();
-                        let trace = traces
-                            .entry(session.id().as_str().to_string())
-                            .or_default();
+                        let trace = traces.entry(session.id().as_str().to_string()).or_default();
                         if let Err(message) = apply_compaction_event(trace, &event) {
                             fail(&message);
                         }

@@ -4,10 +4,10 @@
 //! receipt.
 
 use dsh_host_apiproxy::{
-    ClientRequest, ClientRequestType, ClientResponse, ClientResponseType, EmptyDetails,
-    RpcError, RpcErrorBody, RpcErrorCode, RpcId, RpcMessage, RpcReceipt, RpcReceiptReason,
-    RpcResult, ServerRequest, ServerRequestType, ServerResponse, ServerResponseType, True,
-    WireRpcResult, rpc_id, transport_error,
+    ClientRequest, ClientRequestType, ClientResponse, ClientResponseType, EmptyDetails, RpcError,
+    RpcErrorBody, RpcErrorCode, RpcId, RpcMessage, RpcReceipt, RpcReceiptReason, RpcResult,
+    ServerRequest, ServerRequestType, ServerResponse, ServerResponseType, True, WireRpcResult,
+    rpc_id, transport_error,
 };
 
 #[test]
@@ -17,7 +17,10 @@ fn brands_a_raw_string_and_roundtrips_through_the_schema() {
     // No min-length: the id is an opaque echo token.
     let empty: RpcId = serde_json::from_str("\"\"").expect("empty id parses");
     assert_eq!(empty.as_str(), "");
-    assert!(serde_json::from_str::<RpcId>("42").is_err(), "non-string id fails");
+    assert!(
+        serde_json::from_str::<RpcId>("42").is_err(),
+        "non-string id fails"
+    );
 }
 
 #[test]
@@ -28,58 +31,186 @@ fn folds_thrown_values_into_the_internal_error_branch() {
         Some(RpcError::Internal(RpcErrorBody { message, .. })) if message == "wire down"
     ));
     let folded: RpcResult<()> = transport_error("raw");
-    assert_eq!(folded.error().map(RpcError::code), Some(RpcErrorCode::Internal));
+    assert_eq!(
+        folded.error().map(RpcError::code),
+        Some(RpcErrorCode::Internal)
+    );
 }
 
 #[test]
 fn accepts_every_error_code_branch_with_its_required_details() {
     let cases: &[(&str, &str)] = &[
-        (r#"{"code":"bad-request","message":"m","details":{"issues":[]}}"#, "bad-request"),
-        (r#"{"code":"cancelled","message":"m","details":{}}"#, "cancelled"),
-        (r#"{"code":"session-not-found","message":"m","details":{"sessionId":"s"}}"#, "session-not-found"),
-        (r#"{"code":"model-unavailable","message":"m","details":{"provider":"p","model":"m"}}"#, "model-unavailable"),
-        (r#"{"code":"session-conflict","message":"m","details":{"sessionId":"s","requestedCwd":"/a","existingCwd":"/b"}}"#, "session-conflict"),
-        (r#"{"code":"session-conflict","message":"m","details":{"sessionId":"s","requestedCwd":"/a"}}"#, "session-conflict"),
-        (r#"{"code":"invalid-time-zone","message":"m","details":{"value":"CST"}}"#, "invalid-time-zone"),
-        (r#"{"code":"workspace-attach-failed","message":"m","details":{"sessionId":"s","workspaceId":"w"}}"#, "workspace-attach-failed"),
-        (r#"{"code":"workspace-not-found","message":"m","details":{"workspaceId":"w"}}"#, "workspace-not-found"),
-        (r#"{"code":"workspace-invalid-path","message":"m","details":{"path":"/x"}}"#, "workspace-invalid-path"),
-        (r#"{"code":"workspace-name-conflict","message":"m","details":{"name":"x"}}"#, "workspace-name-conflict"),
-        (r#"{"code":"workspace-move-invalid","message":"m","details":{"workspaceId":"w","sessionId":"s"}}"#, "workspace-move-invalid"),
-        (r#"{"code":"directory-unreadable","message":"m","details":{"path":"/x"}}"#, "directory-unreadable"),
-        (r#"{"code":"directory-exists","message":"m","details":{"path":"/x"}}"#, "directory-exists"),
-        (r#"{"code":"directory-create-failed","message":"m","details":{"path":"/x"}}"#, "directory-create-failed"),
-        (r#"{"code":"directory-picker-unavailable","message":"m","details":{"capability":"native"}}"#, "directory-picker-unavailable"),
-        (r#"{"code":"agent-preset-read-only","message":"m","details":{"agentPreset":"p","reason":"r"}}"#, "agent-preset-read-only"),
-        (r#"{"code":"agent-preset-locked","message":"m","details":{"sessionId":"s","agentPreset":"p"}}"#, "agent-preset-locked"),
-        (r#"{"code":"agent-preset-conflict","message":"m","details":{"sessionId":"s","requestedPreset":"p"}}"#, "agent-preset-conflict"),
-        (r#"{"code":"agent-preset-not-found","message":"m","details":{"agentPreset":"p","available":[]}}"#, "agent-preset-not-found"),
-        (r#"{"code":"agent-preset-invalid","message":"m","details":{"agentPreset":"p","reason":"r"}}"#, "agent-preset-invalid"),
-        (r#"{"code":"agent-busy","message":"m","details":{"reason":"r"}}"#, "agent-busy"),
-        (r#"{"code":"attachment-error","message":"m","details":{"reason":"r"}}"#, "attachment-error"),
-        (r#"{"code":"queue-item-not-found","message":"m","details":{"itemId":"i"}}"#, "queue-item-not-found"),
-        (r#"{"code":"steer-unavailable","message":"m","details":{"itemId":"i"}}"#, "steer-unavailable"),
-        (r#"{"code":"command-error","message":"m","details":{}}"#, "command-error"),
-        (r#"{"code":"unknown-command","message":"m","details":{}}"#, "unknown-command"),
-        (r#"{"code":"settings-rejected","message":"m","details":{"ns":"n"}}"#, "settings-rejected"),
-        (r#"{"code":"settings-not-exposed","message":"m","details":{"ns":"n"}}"#, "settings-not-exposed"),
-        (r#"{"code":"settings-conflict","message":"m","details":{"ns":"n","expected":1,"actual":2}}"#, "settings-conflict"),
-        (r#"{"code":"credential-rejected","message":"m","details":{"ref":"r"}}"#, "credential-rejected"),
-        (r#"{"code":"model-discovery-failed","message":"m","details":{"settingsNs":"n"}}"#, "model-discovery-failed"),
-        (r#"{"code":"model-discovery-failed","message":"m","details":{"settingsNs":"n","baseURL":"http://x"}}"#, "model-discovery-failed"),
-        (r#"{"code":"title-invalid","message":"m","details":{"sessionId":"s"}}"#, "title-invalid"),
-        (r#"{"code":"fork-unavailable","message":"m","details":{"sessionId":"s"}}"#, "fork-unavailable"),
-        (r#"{"code":"subagent-parent-unavailable","message":"m","details":{"parentSessionId":"p"}}"#, "subagent-parent-unavailable"),
-        (r#"{"code":"subagent-not-found","message":"m","details":{"parentSessionId":"p","childSessionId":"c"}}"#, "subagent-not-found"),
-        (r#"{"code":"subagent-catalog-diagnostic","message":"m","details":{"parentSessionId":"p","childSessionId":"c","reason":"corrupt"}}"#, "subagent-catalog-diagnostic"),
-        (r#"{"code":"subagent-not-resumable","message":"m","details":{"childSessionId":"c"}}"#, "subagent-not-resumable"),
-        (r#"{"code":"subagent-unauthorized","message":"m","details":{"childSessionId":"c"}}"#, "subagent-unauthorized"),
-        (r#"{"code":"subagent-delivery-unavailable","message":"m","details":{"childSessionId":"c"}}"#, "subagent-delivery-unavailable"),
-        (r#"{"code":"internal","message":"m","details":{}}"#, "internal"),
+        (
+            r#"{"code":"bad-request","message":"m","details":{"issues":[]}}"#,
+            "bad-request",
+        ),
+        (
+            r#"{"code":"cancelled","message":"m","details":{}}"#,
+            "cancelled",
+        ),
+        (
+            r#"{"code":"session-not-found","message":"m","details":{"sessionId":"s"}}"#,
+            "session-not-found",
+        ),
+        (
+            r#"{"code":"model-unavailable","message":"m","details":{"provider":"p","model":"m"}}"#,
+            "model-unavailable",
+        ),
+        (
+            r#"{"code":"session-conflict","message":"m","details":{"sessionId":"s","requestedCwd":"/a","existingCwd":"/b"}}"#,
+            "session-conflict",
+        ),
+        (
+            r#"{"code":"session-conflict","message":"m","details":{"sessionId":"s","requestedCwd":"/a"}}"#,
+            "session-conflict",
+        ),
+        (
+            r#"{"code":"invalid-time-zone","message":"m","details":{"value":"CST"}}"#,
+            "invalid-time-zone",
+        ),
+        (
+            r#"{"code":"workspace-attach-failed","message":"m","details":{"sessionId":"s","workspaceId":"w"}}"#,
+            "workspace-attach-failed",
+        ),
+        (
+            r#"{"code":"workspace-not-found","message":"m","details":{"workspaceId":"w"}}"#,
+            "workspace-not-found",
+        ),
+        (
+            r#"{"code":"workspace-invalid-path","message":"m","details":{"path":"/x"}}"#,
+            "workspace-invalid-path",
+        ),
+        (
+            r#"{"code":"workspace-name-conflict","message":"m","details":{"name":"x"}}"#,
+            "workspace-name-conflict",
+        ),
+        (
+            r#"{"code":"workspace-move-invalid","message":"m","details":{"workspaceId":"w","sessionId":"s"}}"#,
+            "workspace-move-invalid",
+        ),
+        (
+            r#"{"code":"directory-unreadable","message":"m","details":{"path":"/x"}}"#,
+            "directory-unreadable",
+        ),
+        (
+            r#"{"code":"directory-exists","message":"m","details":{"path":"/x"}}"#,
+            "directory-exists",
+        ),
+        (
+            r#"{"code":"directory-create-failed","message":"m","details":{"path":"/x"}}"#,
+            "directory-create-failed",
+        ),
+        (
+            r#"{"code":"directory-picker-unavailable","message":"m","details":{"capability":"native"}}"#,
+            "directory-picker-unavailable",
+        ),
+        (
+            r#"{"code":"agent-preset-read-only","message":"m","details":{"agentPreset":"p","reason":"r"}}"#,
+            "agent-preset-read-only",
+        ),
+        (
+            r#"{"code":"agent-preset-locked","message":"m","details":{"sessionId":"s","agentPreset":"p"}}"#,
+            "agent-preset-locked",
+        ),
+        (
+            r#"{"code":"agent-preset-conflict","message":"m","details":{"sessionId":"s","requestedPreset":"p"}}"#,
+            "agent-preset-conflict",
+        ),
+        (
+            r#"{"code":"agent-preset-not-found","message":"m","details":{"agentPreset":"p","available":[]}}"#,
+            "agent-preset-not-found",
+        ),
+        (
+            r#"{"code":"agent-preset-invalid","message":"m","details":{"agentPreset":"p","reason":"r"}}"#,
+            "agent-preset-invalid",
+        ),
+        (
+            r#"{"code":"agent-busy","message":"m","details":{"reason":"r"}}"#,
+            "agent-busy",
+        ),
+        (
+            r#"{"code":"attachment-error","message":"m","details":{"reason":"r"}}"#,
+            "attachment-error",
+        ),
+        (
+            r#"{"code":"queue-item-not-found","message":"m","details":{"itemId":"i"}}"#,
+            "queue-item-not-found",
+        ),
+        (
+            r#"{"code":"steer-unavailable","message":"m","details":{"itemId":"i"}}"#,
+            "steer-unavailable",
+        ),
+        (
+            r#"{"code":"command-error","message":"m","details":{}}"#,
+            "command-error",
+        ),
+        (
+            r#"{"code":"unknown-command","message":"m","details":{}}"#,
+            "unknown-command",
+        ),
+        (
+            r#"{"code":"settings-rejected","message":"m","details":{"ns":"n"}}"#,
+            "settings-rejected",
+        ),
+        (
+            r#"{"code":"settings-not-exposed","message":"m","details":{"ns":"n"}}"#,
+            "settings-not-exposed",
+        ),
+        (
+            r#"{"code":"settings-conflict","message":"m","details":{"ns":"n","expected":1,"actual":2}}"#,
+            "settings-conflict",
+        ),
+        (
+            r#"{"code":"credential-rejected","message":"m","details":{"ref":"r"}}"#,
+            "credential-rejected",
+        ),
+        (
+            r#"{"code":"model-discovery-failed","message":"m","details":{"settingsNs":"n"}}"#,
+            "model-discovery-failed",
+        ),
+        (
+            r#"{"code":"model-discovery-failed","message":"m","details":{"settingsNs":"n","baseURL":"http://x"}}"#,
+            "model-discovery-failed",
+        ),
+        (
+            r#"{"code":"title-invalid","message":"m","details":{"sessionId":"s"}}"#,
+            "title-invalid",
+        ),
+        (
+            r#"{"code":"fork-unavailable","message":"m","details":{"sessionId":"s"}}"#,
+            "fork-unavailable",
+        ),
+        (
+            r#"{"code":"subagent-parent-unavailable","message":"m","details":{"parentSessionId":"p"}}"#,
+            "subagent-parent-unavailable",
+        ),
+        (
+            r#"{"code":"subagent-not-found","message":"m","details":{"parentSessionId":"p","childSessionId":"c"}}"#,
+            "subagent-not-found",
+        ),
+        (
+            r#"{"code":"subagent-catalog-diagnostic","message":"m","details":{"parentSessionId":"p","childSessionId":"c","reason":"corrupt"}}"#,
+            "subagent-catalog-diagnostic",
+        ),
+        (
+            r#"{"code":"subagent-not-resumable","message":"m","details":{"childSessionId":"c"}}"#,
+            "subagent-not-resumable",
+        ),
+        (
+            r#"{"code":"subagent-unauthorized","message":"m","details":{"childSessionId":"c"}}"#,
+            "subagent-unauthorized",
+        ),
+        (
+            r#"{"code":"subagent-delivery-unavailable","message":"m","details":{"childSessionId":"c"}}"#,
+            "subagent-delivery-unavailable",
+        ),
+        (
+            r#"{"code":"internal","message":"m","details":{}}"#,
+            "internal",
+        ),
     ];
     for (json, code) in cases {
-        let parsed: RpcError =
-            serde_json::from_str(json).unwrap_or_else(|e| panic!("{json}: {e}"));
+        let parsed: RpcError = serde_json::from_str(json).unwrap_or_else(|e| panic!("{json}: {e}"));
         assert_eq!(parsed.code().as_str(), *code, "{json}");
         // Every branch roundtrips.
         let back = serde_json::to_string(&parsed).expect("serialize");
@@ -114,13 +245,15 @@ fn result_accepts_both_branches_and_rejects_hybrids() {
         r#"{"ok":false,"error":{"code":"internal","message":"m","details":{}}}"#,
     )
     .expect("err branch");
-    assert_eq!(err.error().map(RpcError::code), Some(RpcErrorCode::Internal));
+    assert_eq!(
+        err.error().map(RpcError::code),
+        Some(RpcErrorCode::Internal)
+    );
 
     // Hybrids: ok true without a value, ok true with an error instead.
-    assert!(serde_json::from_str::<RpcResult<serde_json::Value>>(
-        r#"{"ok":true,"error":{}}"#
-    )
-    .is_err());
+    assert!(
+        serde_json::from_str::<RpcResult<serde_json::Value>>(r#"{"ok":true,"error":{}}"#).is_err()
+    );
     assert!(serde_json::from_str::<RpcResult<serde_json::Value>>(r#"{"ok":true}"#).is_err());
 }
 
@@ -192,8 +325,7 @@ fn narrow_forms_carry_rpc_id_and_payload() {
     };
     let json = serde_json::to_string(&request).expect("serialize");
     assert_eq!(
-        json,
-        r#"{"rpcId":"r1","payload":{"cwd":"/x"}}"#,
+        json, r#"{"rpcId":"r1","payload":{"cwd":"/x"}}"#,
         "rpcId stays explicit, camelCase on the wire"
     );
     let back: dsh_host_apiproxy::RpcRequest<serde_json::Value> =
@@ -209,17 +341,21 @@ fn carrier_receipt_accepts_and_rejects() {
         serde_json::from_str(r#"{"accepted":false,"reason":"not-pending"}"#).expect("rejected");
     assert!(matches!(
         rejected,
-        RpcReceipt::Rejected { reason: RpcReceiptReason::NotPending, .. }
+        RpcReceipt::Rejected {
+            reason: RpcReceiptReason::NotPending,
+            ..
+        }
     ));
     let bad: RpcReceipt =
         serde_json::from_str(r#"{"accepted":false,"reason":"bad-response"}"#).expect("bad");
     assert!(matches!(
         bad,
-        RpcReceipt::Rejected { reason: RpcReceiptReason::BadResponse, .. }
+        RpcReceipt::Rejected {
+            reason: RpcReceiptReason::BadResponse,
+            ..
+        }
     ));
-    assert!(
-        serde_json::from_str::<RpcReceipt>(r#"{"accepted":false,"reason":"nope"}"#).is_err()
-    );
+    assert!(serde_json::from_str::<RpcReceipt>(r#"{"accepted":false,"reason":"nope"}"#).is_err());
     assert!(serde_json::from_str::<RpcReceipt>(r#"{"accepted":false}"#).is_err());
 }
 
@@ -240,7 +376,10 @@ fn typed_standalone_forms_serialize_with_their_literals() {
     let _ = ServerResponse {
         kind: ServerResponseType::ServerResponse,
         rpc_id: rpc_id("r"),
-        result: WireRpcResult::Ok { ok: True, value: None },
+        result: WireRpcResult::Ok {
+            ok: True,
+            value: None,
+        },
     };
     let _ = ServerRequest {
         kind: ServerRequestType::ServerRequest,
@@ -251,7 +390,10 @@ fn typed_standalone_forms_serialize_with_their_literals() {
     let _ = ClientResponse {
         kind: ClientResponseType::ClientResponse,
         rpc_id: rpc_id("r"),
-        result: WireRpcResult::Ok { ok: True, value: None },
+        result: WireRpcResult::Ok {
+            ok: True,
+            value: None,
+        },
     };
     let _ = EmptyDetails {};
 }

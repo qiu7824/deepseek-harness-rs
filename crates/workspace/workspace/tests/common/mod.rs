@@ -29,7 +29,10 @@ use dsh_storage::{
 use dsh_storage_domain::{DomainChanged, DomainFacility, DomainFacilityConfig};
 pub use dsh_storage_test_support::MemoryMediaPool;
 use dsh_storage_test_support::{MemoryMedium, MemoryStorageBackend};
-use dsh_workspace::{LiveSessionStore, SessionDeleteFn, WorkspaceDomainState, WorkspaceId, WorkspaceRecord, WorkspaceRegistry, record_from_value, state_from_value, workspace_id};
+use dsh_workspace::{
+    LiveSessionStore, SessionDeleteFn, WorkspaceDomainState, WorkspaceId, WorkspaceRecord,
+    WorkspaceRegistry, record_from_value, state_from_value, workspace_id,
+};
 use parking_lot::Mutex;
 use serde_json::json;
 
@@ -128,10 +131,15 @@ pub fn stored_pool(
     omit_archived: bool,
 ) -> Arc<MemoryMediaPool> {
     let pool = Arc::new(MemoryMediaPool::new());
-    pool.versions.lock().insert("workspace".to_string(), DOMAIN_VERSION);
+    pool.versions
+        .lock()
+        .insert("workspace".to_string(), DOMAIN_VERSION);
     let mut workspaces = HashMap::new();
     for (id, record) in entries {
-        workspaces.insert(id.to_string(), serde_json::to_value(record).expect("record"));
+        workspaces.insert(
+            id.to_string(),
+            serde_json::to_value(record).expect("record"),
+        );
     }
     let mut tables = HashMap::new();
     tables.insert("workspaces".to_string(), workspaces);
@@ -142,10 +150,9 @@ pub fn stored_pool(
             .expect("state object")
             .remove("archivedSessionIds");
     }
-    pool.media.lock().insert(
-        "workspace".to_string(),
-        MemoryMedium { tables, global },
-    );
+    pool.media
+        .lock()
+        .insert("workspace".to_string(), MemoryMedium { tables, global });
     pool
 }
 
@@ -261,7 +268,9 @@ pub struct FakeLiveSessions {
 impl FakeLiveSessions {
     pub fn new(headers: &[SessionHeader]) -> Arc<Self> {
         let map = headers.iter().map(|h| (h.id.clone(), h.clone())).collect();
-        Arc::new(Self { headers: Mutex::new(map) })
+        Arc::new(Self {
+            headers: Mutex::new(map),
+        })
     }
 
     pub fn remove(&self, id: &SessionId) {
@@ -310,7 +319,10 @@ pub fn selective_failure_backend(
     pool: Arc<MemoryMediaPool>,
     spec: FailureSpec,
 ) -> Arc<dyn StorageBackend> {
-    Arc::new(SelectiveBackend { inner: MemoryStorageBackend::with_shared_pool(pool), spec })
+    Arc::new(SelectiveBackend {
+        inner: MemoryStorageBackend::with_shared_pool(pool),
+        spec,
+    })
 }
 
 struct SelectiveBackend {
@@ -322,7 +334,10 @@ struct SelectiveBackend {
 impl StorageBackend for SelectiveBackend {
     fn kv(&self) -> Option<Arc<dyn KvFacet>> {
         self.inner.kv().map(|inner| {
-            Arc::new(SelectiveFacet { inner, spec: self.spec.clone() }) as Arc<dyn KvFacet>
+            Arc::new(SelectiveFacet {
+                inner,
+                spec: self.spec.clone(),
+            }) as Arc<dyn KvFacet>
         })
     }
 
@@ -349,7 +364,11 @@ impl KvFacet for SelectiveFacet {
         let inner = self.inner.open(descriptor).await?;
         Ok(Arc::new(SelectiveUnit {
             inner,
-            counts: Arc::new(Mutex::new(Counts { puts: 0, deletes: 0, globals: 0 })),
+            counts: Arc::new(Mutex::new(Counts {
+                puts: 0,
+                deletes: 0,
+                globals: 0,
+            })),
             spec: self.spec.clone(),
         }))
     }
@@ -456,10 +475,15 @@ pub async fn harness_with_backend(
     let ctx = Context::root();
     let hub = Storage::install(&ctx);
     let backend = backend.unwrap_or_else(|| MemoryStorageBackend::with_shared_pool(pool.clone()));
-    hub.backend.register("memory", backend).expect("register backend");
+    hub.backend
+        .register("memory", backend)
+        .expect("register backend");
     let facility = DomainFacility::install(
         &ctx,
-        DomainFacilityConfig { backend: "memory".to_string(), routes: Default::default() },
+        DomainFacilityConfig {
+            backend: "memory".to_string(),
+            routes: Default::default(),
+        },
     )
     .expect("domain facility");
 
@@ -511,14 +535,24 @@ pub async fn harness_with_backend(
         })
     });
 
-    let registry = WorkspaceRegistry::install(&ctx, &facility, persistence.clone(), live, session_delete)?;
+    let registry =
+        WorkspaceRegistry::install(&ctx, &facility, persistence.clone(), live, session_delete)?;
 
     // The install boundary emitted its own changes; tests count from a
     // settled post-install snapshot (the TS harness splits initChanges).
     settle().await;
     changes.lock().clear();
 
-    Ok(Harness { ctx, registry, pool, changes, persistence, deleted_sessions, hub, facility })
+    Ok(Harness {
+        ctx,
+        registry,
+        pool,
+        changes,
+        persistence,
+        deleted_sessions,
+        hub,
+        facility,
+    })
 }
 
 /// Yield until every fire-and-forget event task has run.

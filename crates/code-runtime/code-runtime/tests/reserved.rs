@@ -8,7 +8,13 @@ use dsh_code_runtime::{
 
 #[test]
 fn reserved_binding_globals_covers_each_backend_owned_slot() {
-    for name in ["console", "__dsh_main__", "__builtins__", "__name__", "__debug__"] {
+    for name in [
+        "console",
+        "__dsh_main__",
+        "__builtins__",
+        "__name__",
+        "__debug__",
+    ] {
         assert!(reserved_binding_globals().contains(name), "{name} reserved");
     }
     assert!(!reserved_binding_globals().contains("tools"));
@@ -16,7 +22,14 @@ fn reserved_binding_globals_covers_each_backend_owned_slot() {
 
 #[test]
 fn reserved_error_members_covers_the_js_error_and_python_exception_protocol_members() {
-    for name in ["name", "message", "stack", "args", "with_traceback", "add_note"] {
+    for name in [
+        "name",
+        "message",
+        "stack",
+        "args",
+        "with_traceback",
+        "add_note",
+    ] {
         assert!(reserved_error_members().contains(name), "{name} reserved");
     }
     assert!(!reserved_error_members().contains("code"));

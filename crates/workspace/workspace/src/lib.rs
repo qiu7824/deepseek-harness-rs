@@ -16,8 +16,8 @@ pub use index::{
 };
 pub use paths::realpath_normalize;
 pub use spec::{
-    WorkspaceDomainState, WorkspacePendingMutation, WorkspaceRecord,
-    record_from_value, state_from_value, workspace_domain_spec, workspace_domain_state_schema,
+    WorkspaceDomainState, WorkspacePendingMutation, WorkspaceRecord, record_from_value,
+    state_from_value, workspace_domain_spec, workspace_domain_state_schema,
     workspace_record_schema,
 };
 pub use types::{Workspace, WorkspaceId, WorkspaceIdTag, workspace_id};

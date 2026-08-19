@@ -12,9 +12,7 @@ use dsh_message_feedback::{
     MessageFeedbackListRequest, MessageFeedbackPutRequest, MessageFeedbackRating,
     MessageFeedbackService, validate_row,
 };
-use dsh_session::{
-    SessionEvent, SessionHeader, SurfaceOp, assistant_message_data, session_id,
-};
+use dsh_session::{SessionEvent, SessionHeader, SurfaceOp, assistant_message_data, session_id};
 use dsh_session_persistence::{
     SessionInspection, SessionPersistenceApi, SessionPersistenceSnapshot,
     session_persistence_revision,
@@ -44,7 +42,11 @@ impl SessionPersistenceApi for FakePersistence {
     async fn create(&self, _meta: SessionHeader) -> Result<(), String> {
         Ok(())
     }
-    async fn append(&self, _id: &dsh_session::SessionId, _events: &[SessionEvent]) -> Result<(), String> {
+    async fn append(
+        &self,
+        _id: &dsh_session::SessionId,
+        _events: &[SessionEvent],
+    ) -> Result<(), String> {
         Ok(())
     }
     async fn load(&self, id: &dsh_session::SessionId) -> Result<SessionInspection, String> {
@@ -56,7 +58,11 @@ impl SessionPersistenceApi for FakePersistence {
     async fn inspect(&self, id: &dsh_session::SessionId) -> Result<SessionInspection, String> {
         self.load(id).await
     }
-    async fn read_from(&self, id: &dsh_session::SessionId, _from_seq: u64) -> Result<dsh_session_persistence::SessionReadFromResult, String> {
+    async fn read_from(
+        &self,
+        id: &dsh_session::SessionId,
+        _from_seq: u64,
+    ) -> Result<dsh_session_persistence::SessionReadFromResult, String> {
         let inspection = self.load(id).await?;
         Ok(dsh_session_persistence::SessionReadFromResult {
             meta: inspection.meta,
@@ -70,7 +76,9 @@ impl SessionPersistenceApi for FakePersistence {
             .map(|inspection| inspection.meta.clone())
             .collect())
     }
-    async fn list_snapshots(&self) -> Result<Vec<dsh_session_persistence::SessionPersistenceSnapshot>, String> {
+    async fn list_snapshots(
+        &self,
+    ) -> Result<Vec<dsh_session_persistence::SessionPersistenceSnapshot>, String> {
         Ok(self
             .inspections
             .values()
@@ -146,13 +154,8 @@ fn harness(
     let _store = dsh_session::SessionStore::install(&ctx);
     let persistence: Arc<dyn SessionPersistenceApi> = Arc::new(FakePersistence::new(inspections));
     ctx.register_service(persistence);
-    let service = MessageFeedbackService::install(
-        &ctx,
-        &Config {
-            max_note_bytes: 64,
-        },
-    )
-    .expect("install");
+    let service =
+        MessageFeedbackService::install(&ctx, &Config { max_note_bytes: 64 }).expect("install");
     (ctx, service)
 }
 

@@ -2,8 +2,8 @@
 //! the package-owned empty installer registers cleanly and can re-register
 //! after teardown.
 
-use dsh_invariants::{InvariantConfig, InvariantRegistry};
 use dsh_host_plugin_inventory::invariant::apply;
+use dsh_invariants::{InvariantConfig, InvariantRegistry};
 
 fn run<F: std::future::Future>(future: F) -> F::Output {
     let runtime = tokio::runtime::Builder::new_current_thread()

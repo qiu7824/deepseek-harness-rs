@@ -36,9 +36,18 @@ const TITLE_PROVIDER: &str = "test-title-provider";
 
 fn script() -> Vec<StreamChunk> {
     vec![
-        StreamChunk::BlockStart { index: 0, block_type: "text".to_string() },
-        StreamChunk::TextDelta { index: 0, text: "  五个字标题  ".to_string() },
-        StreamChunk::Finish { reason: FinishReason::Stop, replay_state: None },
+        StreamChunk::BlockStart {
+            index: 0,
+            block_type: "text".to_string(),
+        },
+        StreamChunk::TextDelta {
+            index: 0,
+            text: "  五个字标题  ".to_string(),
+        },
+        StreamChunk::Finish {
+            reason: FinishReason::Stop,
+            replay_state: None,
+        },
     ]
 }
 
@@ -74,16 +83,17 @@ impl LlmAdapter for DelayedSuccessAdapter {
     fn stream(&self, _options: &GenerateOptions) -> ChunkStream {
         let delay_ms = self.delay_ms;
         let chunks: std::collections::VecDeque<StreamChunk> = script().into();
-        Box::pin(futures::stream::unfold((chunks, false), move |(mut chunks, delayed)| async move {
-            if !delayed {
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                let first = chunks.pop_front();
-                return Some((first.expect("script chunk"), (chunks, true)));
-            }
-            chunks
-                .pop_front()
-                .map(|chunk| (chunk, (chunks, true)))
-        }))
+        Box::pin(futures::stream::unfold(
+            (chunks, false),
+            move |(mut chunks, delayed)| async move {
+                if !delayed {
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    let first = chunks.pop_front();
+                    return Some((first.expect("script chunk"), (chunks, true)));
+                }
+                chunks.pop_front().map(|chunk| (chunk, (chunks, true)))
+            },
+        ))
     }
 }
 
@@ -94,7 +104,11 @@ async fn harness() -> (Context, Arc<SessionStore>, Arc<LlmRuntime>) {
     (ctx, store, llm)
 }
 
-async fn request(ctx: &Context, store: &SessionStore, signal: SessionTitleSignal) -> SessionTitleProviderRequest {
+async fn request(
+    ctx: &Context,
+    store: &SessionStore,
+    signal: SessionTitleSignal,
+) -> SessionTitleProviderRequest {
     let session = store
         .create(
             ctx,
@@ -119,8 +133,14 @@ async fn request(ctx: &Context, store: &SessionStore, signal: SessionTitleSignal
     SessionTitleProviderRequest {
         session,
         messages: vec![
-            SessionTitleUserMessage { seq: first.seq, text: "first prompt".to_string() },
-            SessionTitleUserMessage { seq: second.seq, text: "第二个问题".to_string() },
+            SessionTitleUserMessage {
+                seq: first.seq,
+                text: "first prompt".to_string(),
+            },
+            SessionTitleUserMessage {
+                seq: second.seq,
+                text: "第二个问题".to_string(),
+            },
         ],
         route: Some(dsh_session_title::SessionTitleModelProvenance {
             provider: "current-route".to_string(),
@@ -190,7 +210,11 @@ async fn uses_the_exact_logged_route_language_targets_full_framed_input_and_outp
     assert_eq!(result.title, "五个字标题");
     assert_eq!(
         result.message_seqs,
-        provider_request.messages.iter().map(|message| message.seq).collect::<Vec<u64>>()
+        provider_request
+            .messages
+            .iter()
+            .map(|message| message.seq)
+            .collect::<Vec<u64>>()
     );
     assert_eq!(
         result.model,
@@ -208,7 +232,10 @@ async fn uses_the_exact_logged_route_language_targets_full_framed_input_and_outp
     assert_eq!(options.provider, "current-route");
     assert_eq!(options.model, "current-model");
     assert_eq!(options.max_tokens, Some(32));
-    assert_eq!(options.session_id.as_deref(), Some(provider_request.session.id().as_str()));
+    assert_eq!(
+        options.session_id.as_deref(),
+        Some(provider_request.session.id().as_str())
+    );
     assert_eq!(options.purpose.as_deref(), Some("session-title"));
     let system = options.system.clone().expect("system");
     assert!(system.contains("5 words"), "{system}");
@@ -227,10 +254,19 @@ async fn uses_the_exact_logged_route_language_targets_full_framed_input_and_outp
         .rev()
         .find(|event| event.type_ == "session/title-llm-request")
         .expect("request event");
-    assert_eq!(event.data["titleProvider"], serde_json::json!(TITLE_PROVIDER));
+    assert_eq!(
+        event.data["titleProvider"],
+        serde_json::json!(TITLE_PROVIDER)
+    );
     assert_eq!(
         event.data["messageSeqs"],
-        serde_json::json!(provider_request.messages.iter().map(|message| message.seq).collect::<Vec<u64>>())
+        serde_json::json!(
+            provider_request
+                .messages
+                .iter()
+                .map(|message| message.seq)
+                .collect::<Vec<u64>>()
+        )
     );
     assert_eq!(
         event.data["route"],
@@ -238,7 +274,10 @@ async fn uses_the_exact_logged_route_language_targets_full_framed_input_and_outp
     );
     assert_eq!(event.data["system"], serde_json::json!(system));
     assert_eq!(event.data["maxTokens"], serde_json::json!(32));
-    assert_eq!(event.data["messages"].as_array().expect("messages").len(), 1);
+    assert_eq!(
+        event.data["messages"].as_array().expect("messages").len(),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -274,11 +313,13 @@ async fn uses_paired_explicit_overrides_and_bounds_the_final_framed_input_before
     assert!(error.message.contains("input"), "{}", error.message);
     assert!(error.message.contains("maxInputBytes"), "{}", error.message);
     assert!(adapter.requests.lock().is_empty());
-    assert!(!oversized
-        .session
-        .events()
-        .iter()
-        .any(|event| event.type_ == "session/title-llm-request"));
+    assert!(
+        !oversized
+            .session
+            .events()
+            .iter()
+            .any(|event| event.type_ == "session/title-llm-request")
+    );
 
     config_value["maxInputBytes"] = serde_json::json!(1000);
     let within = resolve_session_title_llm_config(&config_value).unwrap();
@@ -315,23 +356,35 @@ fn requires_every_deployment_limit_and_a_complete_optional_route_pair() {
 
     let mut provider_only: serde_json::Value = serde_json::from_str(CONFIG).unwrap();
     provider_only["provider"] = serde_json::json!("only-provider");
-    let error = resolve_session_title_llm_config(&provider_only).err().unwrap();
-    assert!(error.contains("provider and model must be supplied together"), "{error}");
+    let error = resolve_session_title_llm_config(&provider_only)
+        .err()
+        .unwrap();
+    assert!(
+        error.contains("provider and model must be supplied together"),
+        "{error}"
+    );
 
     let mut model_only: serde_json::Value = serde_json::from_str(CONFIG).unwrap();
     model_only["model"] = serde_json::json!("only-model");
     let error = resolve_session_title_llm_config(&model_only).err().unwrap();
-    assert!(error.contains("provider and model must be supplied together"), "{error}");
+    assert!(
+        error.contains("provider and model must be supplied together"),
+        "{error}"
+    );
 
     let mut empty_provider: serde_json::Value = serde_json::from_str(CONFIG).unwrap();
     empty_provider["provider"] = serde_json::json!("");
     empty_provider["model"] = serde_json::json!("model");
-    let error = resolve_session_title_llm_config(&empty_provider).err().unwrap();
+    let error = resolve_session_title_llm_config(&empty_provider)
+        .err()
+        .unwrap();
     assert!(error.contains("non-empty strings"), "{error}");
 
     let mut oversized_timeout: serde_json::Value = serde_json::from_str(CONFIG).unwrap();
     oversized_timeout["timeoutMs"] = serde_json::json!(MAX_TIMER_DELAY_MS + 1);
-    let error = resolve_session_title_llm_config(&oversized_timeout).err().unwrap();
+    let error = resolve_session_title_llm_config(&oversized_timeout)
+        .err()
+        .unwrap();
     assert!(error.contains("timeoutMs must not exceed"), "{error}");
 
     assert!(resolve_session_title_llm_config(&serde_json::from_str(CONFIG).unwrap()).is_ok());
@@ -355,13 +408,19 @@ async fn rejects_an_absent_route_empty_selection_and_pre_aborted_caller_before_m
         &ctx,
         &config,
         unrouted,
-        request(&ctx, &store, SessionTitleSignal::new()).await.messages,
+        request(&ctx, &store, SessionTitleSignal::new())
+            .await
+            .messages,
         session_title_provider_id(TITLE_PROVIDER),
     )
     .await
     .err()
     .expect("reject");
-    assert!(error.message.contains("no logged request route"), "{}", error.message);
+    assert!(
+        error.message.contains("no logged request route"),
+        "{}",
+        error.message
+    );
 
     let empty = request(&ctx, &store, SessionTitleSignal::new()).await;
     let error = generate_session_title_with_llm(
@@ -374,7 +433,11 @@ async fn rejects_an_absent_route_empty_selection_and_pre_aborted_caller_before_m
     .await
     .err()
     .expect("reject");
-    assert!(error.message.contains("at least one source message"), "{}", error.message);
+    assert!(
+        error.message.contains("at least one source message"),
+        "{}",
+        error.message
+    );
 
     let signal = SessionTitleSignal::new();
     signal.abort("caller stopped");
@@ -425,7 +488,10 @@ async fn preserves_terminal_failure_details() {
     ] {
         let (ctx, store, llm) = harness().await;
         let adapter = Arc::new(RecordingAdapter {
-            script: vec![StreamChunk::Finish { reason: reason.clone(), replay_state: None }],
+            script: vec![StreamChunk::Finish {
+                reason: reason.clone(),
+                replay_state: None,
+            }],
             requests: parking_lot::Mutex::new(Vec::new()),
             on_dispatch: None,
         });
@@ -444,11 +510,13 @@ async fn preserves_terminal_failure_details() {
         .expect("reject");
         assert_eq!(error.message, message);
         assert_eq!(error.code.as_deref(), Some(code));
-        assert!(provider_request
-            .session
-            .events()
-            .iter()
-            .any(|event| event.type_ == "session/title-llm-request"));
+        assert!(
+            provider_request
+                .session
+                .events()
+                .iter()
+                .any(|event| event.type_ == "session/title-llm-request")
+        );
     }
 }
 
@@ -460,7 +528,10 @@ async fn rejects_the_max_tokens_and_tool_calls_finish_reasons() {
     ] {
         let (ctx, store, llm) = harness().await;
         let adapter = Arc::new(RecordingAdapter {
-            script: vec![StreamChunk::Finish { reason, replay_state: None }],
+            script: vec![StreamChunk::Finish {
+                reason,
+                replay_state: None,
+            }],
             requests: parking_lot::Mutex::new(Vec::new()),
             on_dispatch: None,
         });
@@ -485,14 +556,20 @@ async fn rejects_the_max_tokens_and_tool_calls_finish_reasons() {
 async fn rejects_tool_call_blocks_and_a_successful_response_with_no_text() {
     let (ctx, store, llm) = harness().await;
     let tool_script = vec![
-        StreamChunk::BlockStart { index: 0, block_type: "tool-call".to_string() },
+        StreamChunk::BlockStart {
+            index: 0,
+            block_type: "tool-call".to_string(),
+        },
         StreamChunk::ToolCallDelta {
             index: 0,
             id: CallId::new("title-tool"),
             name: Some("unexpected".to_string()),
             arguments_delta: "{}".to_string(),
         },
-        StreamChunk::Finish { reason: FinishReason::Stop, replay_state: None },
+        StreamChunk::Finish {
+            reason: FinishReason::Stop,
+            replay_state: None,
+        },
     ];
     let tool_adapter = Arc::new(RecordingAdapter {
         script: tool_script,
@@ -512,12 +589,25 @@ async fn rejects_tool_call_blocks_and_a_successful_response_with_no_text() {
     .await
     .err()
     .expect("reject");
-    assert!(error.message.contains("output must contain text only"), "{}", error.message);
+    assert!(
+        error.message.contains("output must contain text only"),
+        "{}",
+        error.message
+    );
 
     let reasoning_script = vec![
-        StreamChunk::BlockStart { index: 0, block_type: "reasoning".to_string() },
-        StreamChunk::ReasoningDelta { index: 0, text: "no final title".to_string() },
-        StreamChunk::Finish { reason: FinishReason::Stop, replay_state: None },
+        StreamChunk::BlockStart {
+            index: 0,
+            block_type: "reasoning".to_string(),
+        },
+        StreamChunk::ReasoningDelta {
+            index: 0,
+            text: "no final title".to_string(),
+        },
+        StreamChunk::Finish {
+            reason: FinishReason::Stop,
+            replay_state: None,
+        },
     ];
     let (ctx, store, llm) = harness().await;
     let reasoning_adapter = Arc::new(RecordingAdapter {
@@ -538,14 +628,22 @@ async fn rejects_tool_call_blocks_and_a_successful_response_with_no_text() {
     .await
     .err()
     .expect("reject");
-    assert!(error.message.contains("produced no text"), "{}", error.message);
+    assert!(
+        error.message.contains("produced no text"),
+        "{}",
+        error.message
+    );
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn aborts_a_cooperative_model_stream_at_the_configured_deadline() {
     let (ctx, store, llm) = harness().await;
-    llm.register_adapter(&ctx, vec!["current-route".to_string()], Arc::new(CooperativeAdapter))
-        .expect("adapter");
+    llm.register_adapter(
+        &ctx,
+        vec!["current-route".to_string()],
+        Arc::new(CooperativeAdapter),
+    )
+    .expect("adapter");
     let provider_request = request(&ctx, &store, SessionTitleSignal::new()).await;
     let mut config_value: serde_json::Value = serde_json::from_str(CONFIG).unwrap();
     config_value["timeoutMs"] = serde_json::json!(10);
@@ -620,8 +718,14 @@ async fn rejects_a_successful_stream_that_completes_after_the_configured_deadlin
 #[test]
 fn framed_messages_keep_user_text_inside_structural_json() {
     let framed = dsh_session_title_llm::frame_messages(&[
-        SessionTitleUserMessage { seq: 1, text: "first prompt".to_string() },
-        SessionTitleUserMessage { seq: 2, text: "第二个问题".to_string() },
+        SessionTitleUserMessage {
+            seq: 1,
+            text: "first prompt".to_string(),
+        },
+        SessionTitleUserMessage {
+            seq: 2,
+            text: "第二个问题".to_string(),
+        },
     ]);
     assert!(framed.contains("first prompt"), "{framed}");
     assert!(framed.contains("第二个问题"), "{framed}");
@@ -639,7 +743,9 @@ fn system_prompt_carries_the_language_targets() {
 #[test]
 fn create_user_message_shapes_the_framed_prompt() {
     let message = create_user_message(
-        vec![ContentBlock::Text { text: "framed".to_string() }],
+        vec![ContentBlock::Text {
+            text: "framed".to_string(),
+        }],
         dsh_llm::MessageSource::Plugin {
             plugin: "dsh-session-title-llm".to_string(),
             form: None,

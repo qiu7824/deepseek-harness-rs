@@ -181,13 +181,20 @@ pub struct ToolArgsError {
 
 impl ToolArgsError {
     pub fn new(violations: Vec<String>) -> Self {
-        Self { code: "INVALID_ARGS", violations }
+        Self {
+            code: "INVALID_ARGS",
+            violations,
+        }
     }
 }
 
 impl std::fmt::Display for ToolArgsError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "invalid arguments: {}", self.violations.join("; "))
+        write!(
+            formatter,
+            "invalid arguments: {}",
+            self.violations.join("; ")
+        )
     }
 }
 
@@ -200,14 +207,23 @@ fn author_error(message: &str) -> JsonSchemaError {
 /// Compile one author node into its raw JSON Schema projection. The
 /// type-closed enum removes most TS runtime author checks; the returned
 /// node is re-asserted by the caller.
-fn compile_value(spec: &ValueSchemaSpec, node: &mut serde_json::Map<String, JsonValue>) -> Result<(), JsonSchemaError> {
+fn compile_value(
+    spec: &ValueSchemaSpec,
+    node: &mut serde_json::Map<String, JsonValue>,
+) -> Result<(), JsonSchemaError> {
     match spec {
-        ValueSchemaSpec::String(StringValueSchemaSpec { annotations, enum_, const_ }) => {
+        ValueSchemaSpec::String(StringValueSchemaSpec {
+            annotations,
+            enum_,
+            const_,
+        }) => {
             node.insert("type".to_string(), json!("string"));
             annotations.apply(node);
             if let Some(entries) = enum_ {
                 if entries.is_empty() {
-                    return Err(author_error("schema.enum must be a non-empty array of string values"));
+                    return Err(author_error(
+                        "schema.enum must be a non-empty array of string values",
+                    ));
                 }
                 node.insert("enum".to_string(), json!(entries));
             }
@@ -215,32 +231,50 @@ fn compile_value(spec: &ValueSchemaSpec, node: &mut serde_json::Map<String, Json
                 node.insert("const".to_string(), json!(value));
             }
         }
-        ValueSchemaSpec::Number(NumberValueSchemaSpec { annotations, enum_, const_ }) => {
+        ValueSchemaSpec::Number(NumberValueSchemaSpec {
+            annotations,
+            enum_,
+            const_,
+        }) => {
             node.insert("type".to_string(), json!("number"));
             annotations.apply(node);
             if let Some(entries) = enum_ {
                 if entries.is_empty() {
-                    return Err(author_error("schema.enum must be a non-empty array of number values"));
+                    return Err(author_error(
+                        "schema.enum must be a non-empty array of number values",
+                    ));
                 }
                 let rendered: Vec<JsonValue> = entries
                     .iter()
-                    .map(|entry| serde_json::Number::from_f64(*entry).map(JsonValue::Number).expect("finite JSON number"))
+                    .map(|entry| {
+                        serde_json::Number::from_f64(*entry)
+                            .map(JsonValue::Number)
+                            .expect("finite JSON number")
+                    })
                     .collect();
                 node.insert("enum".to_string(), JsonValue::Array(rendered));
             }
             if let Some(value) = const_ {
                 node.insert(
                     "const".to_string(),
-                    JsonValue::Number(serde_json::Number::from_f64(*value).expect("finite JSON number")),
+                    JsonValue::Number(
+                        serde_json::Number::from_f64(*value).expect("finite JSON number"),
+                    ),
                 );
             }
         }
-        ValueSchemaSpec::Integer(IntegerValueSchemaSpec { annotations, enum_, const_ }) => {
+        ValueSchemaSpec::Integer(IntegerValueSchemaSpec {
+            annotations,
+            enum_,
+            const_,
+        }) => {
             node.insert("type".to_string(), json!("integer"));
             annotations.apply(node);
             if let Some(entries) = enum_ {
                 if entries.is_empty() {
-                    return Err(author_error("schema.enum must be a non-empty array of integer values"));
+                    return Err(author_error(
+                        "schema.enum must be a non-empty array of integer values",
+                    ));
                 }
                 node.insert("enum".to_string(), json!(entries));
             }
@@ -248,12 +282,18 @@ fn compile_value(spec: &ValueSchemaSpec, node: &mut serde_json::Map<String, Json
                 node.insert("const".to_string(), json!(value));
             }
         }
-        ValueSchemaSpec::Boolean(BooleanValueSchemaSpec { annotations, enum_, const_ }) => {
+        ValueSchemaSpec::Boolean(BooleanValueSchemaSpec {
+            annotations,
+            enum_,
+            const_,
+        }) => {
             node.insert("type".to_string(), json!("boolean"));
             annotations.apply(node);
             if let Some(entries) = enum_ {
                 if entries.is_empty() {
-                    return Err(author_error("schema.enum must be a non-empty array of boolean values"));
+                    return Err(author_error(
+                        "schema.enum must be a non-empty array of boolean values",
+                    ));
                 }
                 node.insert("enum".to_string(), json!(entries));
             }
@@ -274,10 +314,17 @@ fn compile_value(spec: &ValueSchemaSpec, node: &mut serde_json::Map<String, Json
                 node.insert("items".to_string(), JsonValue::Object(item_node));
             }
         }
-        ValueSchemaSpec::Object(ObjectValueSchemaSpec { annotations, properties, additional_properties }) => {
+        ValueSchemaSpec::Object(ObjectValueSchemaSpec {
+            annotations,
+            properties,
+            additional_properties,
+        }) => {
             node.insert("type".to_string(), json!("object"));
             annotations.apply(node);
-            node.insert("additionalProperties".to_string(), json!(additional_properties));
+            node.insert(
+                "additionalProperties".to_string(),
+                json!(additional_properties),
+            );
             if let Some(properties) = properties {
                 let (property_nodes, required) = compile_property_map(properties)?;
                 node.insert("properties".to_string(), JsonValue::Object(property_nodes));
@@ -290,9 +337,14 @@ fn compile_value(spec: &ValueSchemaSpec, node: &mut serde_json::Map<String, Json
             // The author-only `json` node becomes an annotation-only schema.
             annotations.apply(node);
         }
-        ValueSchemaSpec::OneOf(OneOfValueSchemaSpec { annotations, branches }) => {
+        ValueSchemaSpec::OneOf(OneOfValueSchemaSpec {
+            annotations,
+            branches,
+        }) => {
             if branches.len() < 2 {
-                return Err(author_error("schema.oneOf must be an array of at least two value schemas"));
+                return Err(author_error(
+                    "schema.oneOf must be an array of at least two value schemas",
+                ));
             }
             annotations.apply(node);
             let mut rendered = Vec::with_capacity(branches.len());
@@ -326,7 +378,9 @@ fn compile_property_map(
 
 /// Compile one author-facing value schema to the enforced raw JSON Schema
 /// subset. The author-only `json` node becomes an annotation-only schema.
-pub fn value_schema_spec_to_json_schema(spec: &ValueSchemaSpec) -> Result<JsonSchemaNode, JsonSchemaError> {
+pub fn value_schema_spec_to_json_schema(
+    spec: &ValueSchemaSpec,
+) -> Result<JsonSchemaNode, JsonSchemaError> {
     let mut node = serde_json::Map::new();
     compile_value(spec, &mut node)?;
     let schema = JsonValue::Object(node);

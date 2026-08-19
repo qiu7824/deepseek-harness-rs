@@ -175,7 +175,10 @@ fn throw_if_aborted(signal: Option<&FsAbort>, verb: &str) -> Result<(), FsError>
 /// after creation.
 pub async fn resolve_local_target(cwd: &str, path: &str) -> Result<LocalTarget, FsError> {
     if path.trim().is_empty() {
-        return Err(FsError::new("file_path must be a non-empty string", FsErrorCode::FsNotFound));
+        return Err(FsError::new(
+            "file_path must be a non-empty string",
+            FsErrorCode::FsNotFound,
+        ));
     }
     let display_path = {
         let joined = Path::new(cwd).join(path);
@@ -196,9 +199,14 @@ pub async fn resolve_local_target(cwd: &str, path: &str) -> Result<LocalTarget, 
             // neither exist nor be created 鈥?surface the structured taxonomy
             // instead of a raw error.
             if let Some(parent) = Path::new(&display_path).parent() {
-                if tokio::fs::metadata(parent).await.is_ok_and(|meta| !meta.is_dir()) {
+                if tokio::fs::metadata(parent)
+                    .await
+                    .is_ok_and(|meta| !meta.is_dir())
+                {
                     return Err(FsError::new(
-                        format!("cannot resolve \"{display_path}\": a parent path segment is not a directory"),
+                        format!(
+                            "cannot resolve \"{display_path}\": a parent path segment is not a directory"
+                        ),
                         FsErrorCode::FsNotFound,
                     ));
                 }
@@ -210,10 +218,12 @@ pub async fn resolve_local_target(cwd: &str, path: &str) -> Result<LocalTarget, 
     }
     // File absent: realpath the nearest existing ancestor and re-append the
     // missing suffix so the key is stable across creation of those dirs.
-    let mut missing: Vec<String> = vec![Path::new(&display_path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default()];
+    let mut missing: Vec<String> = vec![
+        Path::new(&display_path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    ];
     let mut ancestor = Path::new(&display_path)
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -221,9 +231,14 @@ pub async fn resolve_local_target(cwd: &str, path: &str) -> Result<LocalTarget, 
     loop {
         match tokio::fs::canonicalize(&ancestor).await {
             Ok(real_ancestor) => {
-                if tokio::fs::metadata(&real_ancestor).await.is_ok_and(|meta| !meta.is_dir()) {
+                if tokio::fs::metadata(&real_ancestor)
+                    .await
+                    .is_ok_and(|meta| !meta.is_dir())
+                {
                     return Err(FsError::new(
-                        format!("cannot resolve \"{display_path}\": a parent path segment is not a directory"),
+                        format!(
+                            "cannot resolve \"{display_path}\": a parent path segment is not a directory"
+                        ),
                         FsErrorCode::FsNotFound,
                     ));
                 }
@@ -346,10 +361,16 @@ fn listing_io_error(display_path: &str, error: std::io::Error) -> FsError {
     }
 }
 
-async fn resolve_listed_child_target(parent: &LocalTarget, name: &str) -> Result<LocalTarget, FsError> {
+async fn resolve_listed_child_target(
+    parent: &LocalTarget,
+    name: &str,
+) -> Result<LocalTarget, FsError> {
     let identity = resolve_local_target(parent.target_key.as_str(), name).await?;
     Ok(LocalTarget {
-        display_path: Path::new(&parent.display_path).join(name).to_string_lossy().into_owned(),
+        display_path: Path::new(&parent.display_path)
+            .join(name)
+            .to_string_lossy()
+            .into_owned(),
         target_key: identity.target_key,
     })
 }
@@ -403,7 +424,9 @@ pub async fn list_directory(
             Err(error) => {
                 let io = std::io::Error::other(error.to_string());
                 return Err(listing_io_error(
-                    &Path::new(&target.display_path).join(&name).to_string_lossy(),
+                    &Path::new(&target.display_path)
+                        .join(&name)
+                        .to_string_lossy(),
                     io,
                 ));
             }
@@ -413,14 +436,19 @@ pub async fn list_directory(
             Err(error) => {
                 let io = std::io::Error::other(error.to_string());
                 return Err(listing_io_error(
-                    &Path::new(&target.display_path).join(&name).to_string_lossy(),
+                    &Path::new(&target.display_path)
+                        .join(&name)
+                        .to_string_lossy(),
                     io,
                 ));
             }
         };
         result.push(LocalDirEntry {
             name,
-            kind: child_info.as_ref().map(|info| info.kind).unwrap_or(PathKind::Other),
+            kind: child_info
+                .as_ref()
+                .map(|info| info.kind)
+                .unwrap_or(PathKind::Other),
             target: child_target,
             version: child_info.as_ref().map(|info| info.version.clone()),
             size: child_info
@@ -449,7 +477,10 @@ async fn stat_regular_file(
     match tokio::fs::metadata(target.target_key.as_str()).await {
         Ok(info) if info.is_file() => Ok(info),
         Ok(_) => Err(FsError::new(
-            format!("cannot {verb} \"{}\": not a regular file", target.display_path),
+            format!(
+                "cannot {verb} \"{}\": not a regular file",
+                target.display_path
+            ),
             FsErrorCode::FsNotRegularFile,
         )),
         Err(error) if is_not_found(&error) => Err(FsError::new(
@@ -467,13 +498,18 @@ pub async fn read_whole_text(
     signal: Option<&FsAbort>,
 ) -> Result<String, FsError> {
     stat_regular_file(target, "read", signal).await?;
-    let raw = tokio::fs::read(target.target_key.as_str()).await.map_err(|error| {
-        if is_not_found(&error) {
-            FsError::new(format!("cannot read \"{}\": not found", target.display_path), FsErrorCode::FsNotFound)
-        } else {
-            io_to_fs_error(error)
-        }
-    })?;
+    let raw = tokio::fs::read(target.target_key.as_str())
+        .await
+        .map_err(|error| {
+            if is_not_found(&error) {
+                FsError::new(
+                    format!("cannot read \"{}\": not found", target.display_path),
+                    FsErrorCode::FsNotFound,
+                )
+            } else {
+                io_to_fs_error(error)
+            }
+        })?;
     throw_if_aborted(signal, "read")?;
     if raw.iter().take(BINARY_SAMPLE_BYTES).any(|byte| *byte == 0) {
         return Err(FsError::new(
@@ -507,15 +543,22 @@ pub async fn read_whole_bytes(
         ));
     }
     if let Some(hook) = &internals.inspect_read_bytes_after_stat {
-        (hook)(target).await.map_err(|error| FsError::new(error, FsErrorCode::FsIoError))?;
+        (hook)(target)
+            .await
+            .map_err(|error| FsError::new(error, FsErrorCode::FsIoError))?;
     }
-    let mut file = tokio::fs::File::open(target.target_key.as_str()).await.map_err(|error| {
-        if is_not_found(&error) {
-            FsError::new(format!("cannot read \"{}\": not found", target.display_path), FsErrorCode::FsNotFound)
-        } else {
-            io_to_fs_error(error)
-        }
-    })?;
+    let mut file = tokio::fs::File::open(target.target_key.as_str())
+        .await
+        .map_err(|error| {
+            if is_not_found(&error) {
+                FsError::new(
+                    format!("cannot read \"{}\": not found", target.display_path),
+                    FsErrorCode::FsNotFound,
+                )
+            } else {
+                io_to_fs_error(error)
+            }
+        })?;
     let mut chunks = Vec::new();
     let mut bytes: u64 = 0;
     let mut buffer = vec![0u8; (max_bytes as usize).min(64 * 1024).max(1)];
@@ -550,7 +593,9 @@ struct Utf8StreamDecoder {
 
 impl Utf8StreamDecoder {
     fn new() -> Self {
-        Self { pending: Vec::new() }
+        Self {
+            pending: Vec::new(),
+        }
     }
 
     fn push(&mut self, chunk: &[u8], verb: &str, display_path: &str) -> Result<String, FsError> {
@@ -599,7 +644,7 @@ pub async fn stream_whole_text(
             return Err(FsError::new(
                 format!("cannot read \"{}\": not found", target.display_path),
                 FsErrorCode::FsNotFound,
-            ))
+            ));
         }
         Err(error) => return Err(io_to_fs_error(error)),
     };
@@ -660,7 +705,11 @@ fn detect_line_endings(raw: &str) -> LineEndings {
     let sample: String = raw.chars().take(4096).collect();
     let crlf_count = sample.match_indices("\r\n").count();
     let lf_count = sample.matches('\n').count() - crlf_count;
-    if crlf_count > lf_count { LineEndings::Crlf } else { LineEndings::Lf }
+    if crlf_count > lf_count {
+        LineEndings::Crlf
+    } else {
+        LineEndings::Lf
+    }
 }
 
 /// Convert LF-normalized content back to the line-ending style detected at
@@ -686,7 +735,10 @@ pub async fn read_for_edit(
     throw_if_aborted(signal, "edit")?;
     let buffer = tokio::fs::read(absolute_path).await.map_err(|error| {
         if is_not_found(&error) {
-            FsError::new(format!("cannot edit \"{display_path}\": not found"), FsErrorCode::FsNotFound)
+            FsError::new(
+                format!("cannot edit \"{display_path}\": not found"),
+                FsErrorCode::FsNotFound,
+            )
         } else {
             io_to_fs_error(error)
         }
@@ -774,7 +826,10 @@ pub fn apply_literal_edit(
 ) -> Result<(String, usize), FsError> {
     let old_norm = normalize_line_endings(old_string);
     if old_norm.is_empty() {
-        return Err(FsError::new("old_string must be a non-empty string", FsErrorCode::FsEditNotFound));
+        return Err(FsError::new(
+            "old_string must be a non-empty string",
+            FsErrorCode::FsEditNotFound,
+        ));
     }
     let new_norm = normalize_line_endings(new_string);
     let replacements = count_occurrences(content, &old_norm);
@@ -820,13 +875,17 @@ async fn default_link_file(existing: &Path, new: &Path) -> Result<(), String> {
 }
 
 async fn default_inspect_publication_target(path: &Path) -> Result<(), String> {
-    let meta = tokio::fs::symlink_metadata(path).await.map_err(|error| error.to_string())?;
+    let meta = tokio::fs::symlink_metadata(path)
+        .await
+        .map_err(|error| error.to_string())?;
     let _ = meta;
     Ok(())
 }
 
 async fn default_remove_staging_dir(path: &Path) -> Result<(), String> {
-    tokio::fs::remove_dir_all(path).await.map_err(|error| error.to_string())
+    tokio::fs::remove_dir_all(path)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Atomically replace a file through a private, synced staging file in the
@@ -842,10 +901,12 @@ pub async fn write_file_atomic(
     create_if_absent: Option<&LocalTarget>,
 ) -> Result<(), FsError> {
     throw_if_aborted(signal, "write")?;
-    let directory = Path::new(absolute_path).parent().unwrap_or_else(|| Path::new("."));
-    tokio::fs::create_dir_all(directory).await.map_err(|error| {
-        FsError::new(format!("write failed: {error}"), FsErrorCode::FsIoError)
-    })?;
+    let directory = Path::new(absolute_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    tokio::fs::create_dir_all(directory)
+        .await
+        .map_err(|error| FsError::new(format!("write failed: {error}"), FsErrorCode::FsIoError))?;
 
     throw_if_aborted(signal, "write")?;
     let basename = Path::new(absolute_path)
@@ -854,7 +915,11 @@ pub async fn write_file_atomic(
         .unwrap_or_default();
     let staging_dir_name = match &internals.temp_dir_name {
         Some(hook) => hook(absolute_path),
-        None => format!(".{basename}.{}.{}.tmpdir", std::process::id(), uuid::Uuid::new_v4()),
+        None => format!(
+            ".{basename}.{}.{}.tmpdir",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ),
     };
     let staging_dir = directory.join(staging_dir_name);
     let temp_name = match &internals.temp_name {
@@ -862,20 +927,27 @@ pub async fn write_file_atomic(
         None => format!("{basename}.tmp"),
     };
     let temp_path = staging_dir.join(temp_name);
-    let platform = internals.platform.clone().unwrap_or_else(|| std::env::consts::OS.to_string());
+    let platform = internals
+        .platform
+        .clone()
+        .unwrap_or_else(|| std::env::consts::OS.to_string());
 
     let staging_created = {
         match tokio::fs::create_dir(&staging_dir).await {
             Ok(()) => true,
             Err(error) => {
-                return Err(FsError::new(format!("write failed: {error}"), FsErrorCode::FsIoError))
+                return Err(FsError::new(
+                    format!("write failed: {error}"),
+                    FsErrorCode::FsIoError,
+                ));
             }
         }
     };
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = tokio::fs::set_permissions(&staging_dir, std::fs::Permissions::from_mode(0o700)).await;
+        let _ =
+            tokio::fs::set_permissions(&staging_dir, std::fs::Permissions::from_mode(0o700)).await;
     }
 
     let write_outcome: Result<(), FsError> = async {
@@ -886,12 +958,19 @@ pub async fn write_file_atomic(
             .await
         {
             Ok(file) => file,
-            Err(error) => return Err(FsError::new(format!("write failed: {error}"), FsErrorCode::FsIoError)),
+            Err(error) => {
+                return Err(FsError::new(
+                    format!("write failed: {error}"),
+                    FsErrorCode::FsIoError,
+                ));
+            }
         };
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600)).await;
+            let _ = file
+                .set_permissions(std::fs::Permissions::from_mode(0o600))
+                .await;
         }
         if platform == "windows" && mode.is_some() {
             // Simplified Windows boundary: the DACL copy is a no-op until the
@@ -900,12 +979,12 @@ pub async fn write_file_atomic(
         }
         {
             use tokio::io::AsyncWriteExt;
-            file.write_all(content.as_bytes())
-                .await
-                .map_err(|error| FsError::new(format!("write failed: {error}"), FsErrorCode::FsIoError))?;
-            file.sync_all()
-                .await
-                .map_err(|error| FsError::new(format!("write failed: {error}"), FsErrorCode::FsIoError))?;
+            file.write_all(content.as_bytes()).await.map_err(|error| {
+                FsError::new(format!("write failed: {error}"), FsErrorCode::FsIoError)
+            })?;
+            file.sync_all().await.map_err(|error| {
+                FsError::new(format!("write failed: {error}"), FsErrorCode::FsIoError)
+            })?;
         }
         if let Some(hook) = &internals.inspect_temp {
             (hook)(&StagedPaths {
@@ -919,7 +998,9 @@ pub async fn write_file_atomic(
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = file.set_permissions(std::fs::Permissions::from_mode(mode)).await;
+                let _ = file
+                    .set_permissions(std::fs::Permissions::from_mode(mode))
+                    .await;
             }
         }
         drop(file);
@@ -939,11 +1020,18 @@ pub async fn write_file_atomic(
                 };
                 if inspected.is_ok() {
                     let kind = tokio::fs::metadata(absolute_path).await.ok().map(|meta| {
-                        if meta.is_file() { PathKind::File } else { PathKind::Other }
+                        if meta.is_file() {
+                            PathKind::File
+                        } else {
+                            PathKind::Other
+                        }
                     });
                     if kind != Some(PathKind::File) {
                         return Err(FsError::new(
-                            format!("cannot write \"{}\": not a regular file", create_target.display_path),
+                            format!(
+                                "cannot write \"{}\": not a regular file",
+                                create_target.display_path
+                            ),
                             FsErrorCode::FsNotRegularFile,
                         ));
                     }
@@ -964,16 +1052,25 @@ pub async fn write_file_atomic(
                         FsErrorCode::FsNotObserved,
                     ));
                 }
-                return Err(FsError::new(format!("cannot write \"{}\": {error}", create_target.display_path), FsErrorCode::FsIoError));
+                return Err(FsError::new(
+                    format!("cannot write \"{}\": {error}", create_target.display_path),
+                    FsErrorCode::FsIoError,
+                ));
             }
         } else if platform == "windows" && mode.is_some() {
             // Simplified Windows replacement: remove-then-rename (the ACL
             // preservation lands with the windows-acl milestone).
             if let Err(error) = replace_file_win32(Path::new(absolute_path), &temp_path).await {
-                return Err(FsError::new(format!("write failed: {error}"), FsErrorCode::FsIoError));
+                return Err(FsError::new(
+                    format!("write failed: {error}"),
+                    FsErrorCode::FsIoError,
+                ));
             }
         } else if let Err(error) = tokio::fs::rename(&temp_path, absolute_path).await {
-            return Err(FsError::new(format!("write failed: {error}"), FsErrorCode::FsIoError));
+            return Err(FsError::new(
+                format!("write failed: {error}"),
+                FsErrorCode::FsIoError,
+            ));
         }
         // The target is committed; owner-only staging residue cannot turn
         // that write into a failure.

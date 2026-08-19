@@ -74,7 +74,9 @@ pub fn validate_executor_config(config: &serde_json::Value) -> Result<(), String
     };
     for key in object.keys() {
         if key == "retryPolicy" {
-            return Err("llm-retry: retryPolicy belongs under each provider configuration".to_string());
+            return Err(
+                "llm-retry: retryPolicy belongs under each provider configuration".to_string(),
+            );
         }
         return Err(format!("llm-retry: unknown key \"{key}\""));
     }
@@ -109,7 +111,11 @@ fn retry_policy_key(policy: &ResolvedRetryPolicy) -> String {
             number_token(backoff.jitter_ratio),
         ]))
         .expect("policy key"),
-        ResolvedRetryPolicy::Normal { max_retries, retryable_codes, backoff } => {
+        ResolvedRetryPolicy::Normal {
+            max_retries,
+            retryable_codes,
+            backoff,
+        } => {
             let mut codes = retryable_codes.clone();
             codes.sort();
             serde_json::to_string(&serde_json::json!([
@@ -255,8 +261,10 @@ async fn recover(
         event.type_ == "llm/retry"
             && event.data.get("turn").and_then(|value| value.as_u64()) == Some(*turn)
             && event.data.get("step").and_then(|value| value.as_u64()) == Some(*step)
-            && event.data.get("provider").and_then(|value| value.as_str()) == Some(provider.as_str())
-            && event.data.get("policyKey").and_then(|value| value.as_str()) == Some(policy_key.as_str())
+            && event.data.get("provider").and_then(|value| value.as_str())
+                == Some(provider.as_str())
+            && event.data.get("policyKey").and_then(|value| value.as_str())
+                == Some(policy_key.as_str())
     });
     let previous_retry = prior_policy_retry
         .and_then(|event| event.data.get("retry").and_then(|value| value.as_u64()))
@@ -368,7 +376,11 @@ async fn backoff(
         retry,
     };
     let data = serde_json::to_value(&started).expect("llm/retry-started data is JSON");
-    if agent.session().append("llm/retry-started", data, None).is_err() {
+    if agent
+        .session()
+        .append("llm/retry-started", data, None)
+        .is_err()
+    {
         return None;
     }
     Some(arc(RequestErrorAction::Retry))

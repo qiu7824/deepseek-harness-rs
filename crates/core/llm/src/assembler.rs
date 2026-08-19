@@ -78,7 +78,12 @@ impl BlockAssembler {
                 }
                 partial.text.push_str(text);
             }
-            StreamChunk::ToolCallDelta { index, id, name, arguments_delta } => {
+            StreamChunk::ToolCallDelta {
+                index,
+                id,
+                name,
+                arguments_delta,
+            } => {
                 let partial = self.ensure(*index, "tool-call");
                 if partial.block.is_some() {
                     return;
@@ -100,7 +105,10 @@ impl BlockAssembler {
             StreamChunk::Usage { usage } => {
                 self.usage = Some(usage.clone());
             }
-            StreamChunk::Finish { reason, replay_state } => {
+            StreamChunk::Finish {
+                reason,
+                replay_state,
+            } => {
                 self.finish = Some(reason.clone());
                 self.replay_state = replay_state.clone();
             }
@@ -123,10 +131,17 @@ impl BlockAssembler {
             return block.clone();
         }
         match partial.block_type.as_str() {
-            "text" => ContentBlock::Text { text: partial.text.clone() },
-            "reasoning" => ContentBlock::Reasoning { text: partial.text.clone() },
+            "text" => ContentBlock::Text {
+                text: partial.text.clone(),
+            },
+            "reasoning" => ContentBlock::Reasoning {
+                text: partial.text.clone(),
+            },
             "tool-call" => ContentBlock::ToolCall {
-                id: partial.tool_call_id.clone().unwrap_or_else(|| crate::brand::call_id(format!("call-{index}"))),
+                id: partial
+                    .tool_call_id
+                    .clone()
+                    .unwrap_or_else(|| crate::brand::call_id(format!("call-{index}"))),
                 name: partial.tool_call_name.clone().unwrap_or_default(),
                 arguments: partial.tool_call_arguments.clone(),
             },
@@ -187,20 +202,31 @@ mod tests {
     use super::*;
 
     fn text_delta(index: u64, text: &str) -> StreamChunk {
-        StreamChunk::TextDelta { index, text: text.to_string() }
+        StreamChunk::TextDelta {
+            index,
+            text: text.to_string(),
+        }
     }
 
     #[test]
     fn assembles_text_and_tool_call_blocks_in_order() {
         let mut assembler = BlockAssembler::new();
-        assembler.push(&StreamChunk::BlockStart { index: 0, block_type: "text".to_string() });
+        assembler.push(&StreamChunk::BlockStart {
+            index: 0,
+            block_type: "text".to_string(),
+        });
         assembler.push(&text_delta(0, "hel"));
         assembler.push(&text_delta(0, "lo"));
         assembler.push(&StreamChunk::BlockEnd {
             index: 0,
-            block: ContentBlock::Text { text: "hello".to_string() },
+            block: ContentBlock::Text {
+                text: "hello".to_string(),
+            },
         });
-        assembler.push(&StreamChunk::BlockStart { index: 1, block_type: "tool-call".to_string() });
+        assembler.push(&StreamChunk::BlockStart {
+            index: 1,
+            block_type: "tool-call".to_string(),
+        });
         assembler.push(&StreamChunk::ToolCallDelta {
             index: 1,
             id: crate::brand::call_id("c1"),
@@ -224,11 +250,19 @@ mod tests {
                 reasoning_tokens: None,
             },
         });
-        assembler.push(&StreamChunk::Finish { reason: FinishReason::Stop, replay_state: None });
+        assembler.push(&StreamChunk::Finish {
+            reason: FinishReason::Stop,
+            replay_state: None,
+        });
 
         let blocks = assembler.blocks();
         assert_eq!(blocks.len(), 2);
-        assert_eq!(blocks[0], ContentBlock::Text { text: "hello".to_string() });
+        assert_eq!(
+            blocks[0],
+            ContentBlock::Text {
+                text: "hello".to_string()
+            }
+        );
         assert_eq!(assembler.usage().map(|usage| usage.output_tokens), Some(5));
         assert_eq!(assembler.finish(), FinishReason::Stop);
     }
@@ -244,24 +278,42 @@ mod tests {
             name: Some("danger".to_string()),
             arguments_delta: "{}".to_string(),
         });
-        assembler.push(&StreamChunk::Finish { reason: FinishReason::MaxTokens, replay_state: None });
+        assembler.push(&StreamChunk::Finish {
+            reason: FinishReason::MaxTokens,
+            replay_state: None,
+        });
 
         // max-tokens truncation drops tool calls that cannot execute.
         let blocks = assembler.blocks();
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0], ContentBlock::Text { text: "partial".to_string() });
+        assert_eq!(
+            blocks[0],
+            ContentBlock::Text {
+                text: "partial".to_string()
+            }
+        );
     }
 
     #[test]
     fn stragglers_after_block_end_are_ignored() {
         let mut assembler = BlockAssembler::new();
-        assembler.push(&StreamChunk::BlockStart { index: 0, block_type: "text".to_string() });
+        assembler.push(&StreamChunk::BlockStart {
+            index: 0,
+            block_type: "text".to_string(),
+        });
         assembler.push(&StreamChunk::BlockEnd {
             index: 0,
-            block: ContentBlock::Text { text: "done".to_string() },
+            block: ContentBlock::Text {
+                text: "done".to_string(),
+            },
         });
         assembler.push(&text_delta(0, "STRAY"));
         let blocks = assembler.blocks();
-        assert_eq!(blocks, vec![ContentBlock::Text { text: "done".to_string() }]);
+        assert_eq!(
+            blocks,
+            vec![ContentBlock::Text {
+                text: "done".to_string()
+            }]
+        );
     }
 }

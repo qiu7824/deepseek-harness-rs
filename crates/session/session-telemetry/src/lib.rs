@@ -7,7 +7,7 @@ pub mod invariant;
 
 pub use coordinator::SessionTelemetryCoordinator;
 pub use index::{
-    AttributeValue, SessionTelemetryBackend, SessionTelemetryCapture,
-    SessionTelemetryChannel, SessionTelemetryRecord, SessionTelemetrySeverity,
-    SessionTelemetrySharingStatus, SessionTelemetrySink, install_telemetry_backend,
+    AttributeValue, SessionTelemetryBackend, SessionTelemetryCapture, SessionTelemetryChannel,
+    SessionTelemetryRecord, SessionTelemetrySeverity, SessionTelemetrySharingStatus,
+    SessionTelemetrySink, install_telemetry_backend,
 };

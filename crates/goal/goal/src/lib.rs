@@ -9,8 +9,8 @@ pub mod runtime;
 pub mod types;
 
 pub use domain::{
-    FoldedGoal, GoalChangeMeta, GoalChanged, GoalClearChangeMeta, GoalError, GoalErrorCode,
-    GoalMessageSource, GoalOperation, GoalSnapshotChangeMeta, phase_from_str,
+    FoldedGoal, GoalChangeMeta, GoalChanged, GoalChangedPayload, GoalClearChangeMeta, GoalError,
+    GoalErrorCode, GoalMessageSource, GoalOperation, GoalSnapshotChangeMeta, phase_from_str,
 };
 pub use fold::{
     GoalFoldState, apply_goal_change, apply_goal_event, decode_goal_change, empty_goal_fold_state,

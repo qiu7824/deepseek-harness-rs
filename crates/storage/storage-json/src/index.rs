@@ -24,8 +24,8 @@ use parking_lot::Mutex;
 
 use cordis::{ArcValue, Context, InjectSpec, Plugin, PluginError, Service, arc, downcast};
 use dsh_storage::{
-    KvFacet, KvUnit, KvUnitDescriptor, Storage, StorageBackend, StorageError,
-    StorageErrorCode, closed_error, storage_backend_service_key, unit_name_matches,
+    KvFacet, KvUnit, KvUnitDescriptor, Storage, StorageBackend, StorageError, StorageErrorCode,
+    closed_error, storage_backend_service_key, unit_name_matches,
 };
 
 use crate::unit::open_json_unit;
@@ -73,7 +73,9 @@ impl JsonStorageBackend {
             root,
             open: Arc::new(Mutex::new(HashMap::new())),
             closed: AtomicBool::new(false),
-            kv_facet: Arc::new(JsonKvFacet { backend: weak.clone() }),
+            kv_facet: Arc::new(JsonKvFacet {
+                backend: weak.clone(),
+            }),
         })
     }
 
@@ -133,11 +135,9 @@ impl KvFacet for JsonKvFacet {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = tokio::fs::set_permissions(
-                &backend.root,
-                std::fs::Permissions::from_mode(0o700),
-            )
-            .await;
+            let _ =
+                tokio::fs::set_permissions(&backend.root, std::fs::Permissions::from_mode(0o700))
+                    .await;
         }
         let path = backend.root.join(format!("{}.json", descriptor.name));
         let open_slots = Arc::clone(&backend.open);
@@ -157,7 +157,10 @@ impl KvFacet for JsonKvFacet {
             return Err(closed_error("json backend"));
         }
         let unit: Arc<dyn KvUnit> = Arc::new(unit);
-        backend.open.lock().insert(descriptor.name.clone(), unit.clone());
+        backend
+            .open
+            .lock()
+            .insert(descriptor.name.clone(), unit.clone());
         Ok(unit)
     }
 }
@@ -232,8 +235,12 @@ impl Plugin for JsonStoragePlugin {
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
         let config = downcast::<Config>(&config)
             .cloned()
-            .or_else(|| serde_json::from_value(downcast::<serde_json::Value>(&config)?.clone()).ok())
+            .or_else(|| {
+                serde_json::from_value(downcast::<serde_json::Value>(&config)?.clone()).ok()
+            })
             .unwrap_or_else(|| self.config.clone());
-        apply(ctx, config).map(|_| ()).map_err(|error| PluginError::new(arc(error)))
+        apply(ctx, config)
+            .map(|_| ())
+            .map_err(|error| PluginError::new(arc(error)))
     }
 }

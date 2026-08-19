@@ -9,13 +9,13 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 
+use crate::types::SessionEvent;
+use crate::{Session, SessionStore, TOOL_NOT_STARTED};
 use cordis::{
     ArcValue, BoxFuture, Context, Disposer, EventOptions, InjectSpec, Listener, downcast,
 };
 use dsh_invariants::{InvariantInstaller, InvariantRegistry};
 use parking_lot::Mutex;
-use crate::types::SessionEvent;
-use crate::{Session, SessionStore, TOOL_NOT_STARTED};
 
 const PACKAGE_NAME: &str = "@deepseek-ai/dsh-session";
 
@@ -74,13 +74,7 @@ fn invariant_fail(fail: &dyn Fn(&str), message: String) -> ! {
 }
 
 /// Assert that a step-scoped event names the currently open turn and step.
-fn require_open_step(
-    trace: &SessionTrace,
-    kind: &str,
-    turn: u64,
-    step: u64,
-    fail: &dyn Fn(&str),
-) {
+fn require_open_step(trace: &SessionTrace, kind: &str, turn: u64, step: u64, fail: &dyn Fn(&str)) {
     if trace.open_turn != Some(turn) || trace.open_step != Some(step) {
         invariant_fail(
             fail,
@@ -94,7 +88,9 @@ fn require_open_step(
 }
 
 fn render_option(value: Option<u64>) -> String {
-    value.map(|value| value.to_string()).unwrap_or_else(|| "null".to_string())
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
 }
 
 /// Validate one candidate event without mutating the committed trace
@@ -128,7 +124,10 @@ fn validate_event(
             if trace.open_turn.is_some() {
                 invariant_fail(
                     fail,
-                    format!("turn/start {turn} while turn {} is still open", trace.open_turn.unwrap()),
+                    format!(
+                        "turn/start {turn} while turn {} is still open",
+                        trace.open_turn.unwrap()
+                    ),
                 );
             }
             if turn != trace.next_turn {
@@ -178,7 +177,10 @@ fn validate_event(
             if trace.open_step.is_some() {
                 invariant_fail(
                     fail,
-                    format!("step/start {step} while step {} is still open", trace.open_step.unwrap()),
+                    format!(
+                        "step/start {step} while step {} is still open",
+                        trace.open_step.unwrap()
+                    ),
                 );
             }
             if step != trace.next_step {
@@ -228,7 +230,11 @@ fn validate_event(
             // execution of the original call.
             if !matches!(event.surface_op, Some(crate::types::SurfaceOp::Append)) {
                 if trace.open_turn.is_none() {
-                    invariant_fail(fail, "tool/result surface replacement appended outside any open turn".to_string());
+                    invariant_fail(
+                        fail,
+                        "tool/result surface replacement appended outside any open turn"
+                            .to_string(),
+                    );
                 }
             } else {
                 let turn = data_turn().unwrap_or(0);
@@ -345,28 +351,44 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
             );
         }
     };
-    let trace_for: Arc<dyn Fn(&Session, &dyn Fn(&str)) -> SessionTrace + Send + Sync> = {
+    let trace_for: Arc<
+        dyn Fn(&Session, &[SessionEvent], &dyn Fn(&str)) -> SessionTrace + Send + Sync,
+    > = {
         let traces = Arc::clone(&traces);
-        Arc::new(move |session: &Session, fail: &dyn Fn(&str)| -> SessionTrace {
-            let mut guard = traces.lock();
-            let ptr = session_ptr(session);
-            if let Some((weak, trace)) = guard.get(&ptr) {
-                if weak.upgrade().is_some() {
-                    return trace.clone();
+        Arc::new(
+            move |session: &Session,
+                  durable_prefix: &[SessionEvent],
+                  fail: &dyn Fn(&str)|
+                  -> SessionTrace {
+                let mut guard = traces.lock();
+                let ptr = session_ptr(session);
+                let expected_last_seq = durable_prefix
+                    .last()
+                    .map(|event| event.seq as i64)
+                    .unwrap_or(-1);
+                if let Some((weak, trace)) = guard.get(&ptr) {
+                    if weak.upgrade().is_some() && trace.last_seq == expected_last_seq {
+                        return trace.clone();
+                    }
+                    guard.remove(&ptr);
                 }
-                guard.remove(&ptr);
-            }
-            drop(guard);
-            // Seed on demand by replaying the session's events (TS
-            // `traceFor` → `seedSession`).
-            let mut trace = fresh_trace();
-            for event in session.events().iter() {
-                let transition = validate_event(&trace, event, fail);
-                apply_transition(&mut trace, transition);
-            }
-            traces.lock().insert(ptr, (Arc::downgrade(&session.inner), trace.clone()));
-            trace
-        })
+                drop(guard);
+                // `internal/dispatch` runs while Session::append owns the
+                // session state lock. Re-reading through session.events()
+                // would self-deadlock during the installation window. The
+                // append boundary supplies the exact immutable prefix before
+                // the candidate event, so rebuild from that authority context.
+                let mut trace = fresh_trace();
+                for event in durable_prefix {
+                    let transition = validate_event(&trace, event, fail);
+                    apply_transition(&mut trace, transition);
+                }
+                traces
+                    .lock()
+                    .insert(ptr, (Arc::downgrade(&session.inner), trace.clone()));
+                trace
+            },
+        )
     };
 
     // Seed the live sessions that predate this registration.
@@ -388,15 +410,21 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
                 None
             })
         });
-        ctx.on("session/created", listener, EventOptions::default().global(true))
-            .await;
+        ctx.on(
+            "session/created",
+            listener,
+            EventOptions::default().global(true),
+        )
+        .await;
     }
 
     {
         let staged = Arc::clone(&staged);
         let listener: Arc<Listener> = Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
             let session = downcast::<Session>(&args[0]).expect("session arg").clone();
-            let event = downcast::<SessionEvent>(&args[1]).expect("event arg").clone();
+            let event = downcast::<SessionEvent>(&args[1])
+                .expect("event arg")
+                .clone();
             let staged = Arc::clone(&staged);
             Box::pin(async move {
                 let key = (session_ptr(&session), event.seq);
@@ -410,8 +438,12 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
                 None
             })
         });
-        ctx.on("session/event", listener, EventOptions::default().global(true))
-            .await;
+        ctx.on(
+            "session/event",
+            listener,
+            EventOptions::default().global(true),
+        )
+        .await;
     }
 
     {
@@ -428,7 +460,9 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
             if event_name != "session/event" {
                 return Box::pin(async { None });
             }
-            let dispatch_args = downcast::<Vec<ArcValue>>(&args[2]).cloned().unwrap_or_default();
+            let dispatch_args = downcast::<Vec<ArcValue>>(&args[2])
+                .cloned()
+                .unwrap_or_default();
             let Some(session) = dispatch_args
                 .first()
                 .and_then(|value| downcast::<Session>(value).cloned())
@@ -441,25 +475,37 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
             else {
                 return Box::pin(async { None });
             };
+            let Some(prefix) = dispatch_args
+                .get(2)
+                .and_then(|value| downcast::<Arc<Vec<SessionEvent>>>(value).cloned())
+            else {
+                return Box::pin(async { None });
+            };
             let traces = Arc::clone(&traces);
             let staged = Arc::clone(&staged);
             let trace_for = Arc::clone(&trace_for);
             Box::pin(async move {
-                let mut trace = trace_for(&session, &|message| panic!("{message}"));
+                let mut trace =
+                    trace_for(&session, prefix.as_ref(), &|message| panic!("{message}"));
                 let transition = validate_event(&trace, &event, &|message| panic!("{message}"));
                 apply_transition(&mut trace, transition);
                 traces.lock().insert(
                     session_ptr(&session),
                     (Arc::downgrade(&session.inner), trace),
                 );
-                staged
-                    .lock()
-                    .insert((session_ptr(&session), event.seq), StagedTransition { session });
+                staged.lock().insert(
+                    (session_ptr(&session), event.seq),
+                    StagedTransition { session },
+                );
                 None
             })
         });
-        ctx.on("internal/dispatch", listener, EventOptions::default().global(true))
-            .await;
+        ctx.on(
+            "internal/dispatch",
+            listener,
+            EventOptions::default().global(true),
+        )
+        .await;
     }
 }
 
@@ -509,7 +555,11 @@ mod tests {
             event("turn/start", 0, serde_json::json!({"turn": 1})),
             event("step/start", 1, serde_json::json!({"turn": 1, "step": 1})),
             event("step/end", 2, serde_json::json!({"turn": 1, "step": 1})),
-            event("turn/end", 3, serde_json::json!({"turn": 1, "reason": {"kind": "completed"}})),
+            event(
+                "turn/end",
+                3,
+                serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+            ),
             event("turn/start", 4, serde_json::json!({"turn": 2})),
         ];
         let mut trace = trace;
@@ -517,7 +567,10 @@ mod tests {
             let transition = validate_event(&trace, event, &failing);
             apply_transition(&mut trace, transition);
         }
-        assert_eq!(trace.next_turn, 2, "turn/end advanced the counter; turn/start does not");
+        assert_eq!(
+            trace.next_turn, 2,
+            "turn/end advanced the counter; turn/start does not"
+        );
         assert_eq!(trace.next_step, 1);
         assert_eq!(trace.last_seq, 4);
     }
@@ -630,6 +683,9 @@ mod tests {
                 apply_transition(&mut trace, transition);
             }
         }));
-        assert!(result.is_err(), "step/end cleared the pending call; the second result must abort");
+        assert!(
+            result.is_err(),
+            "step/end cleared the pending call; the second result must abort"
+        );
     }
 }

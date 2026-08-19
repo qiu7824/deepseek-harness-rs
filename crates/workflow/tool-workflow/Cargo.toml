@@ -1,0 +1,26 @@
+[package]
+name = "dsh-tool-workflow"
+version = "0.1.0-rc.5"
+edition = "2024"
+license = "MIT"
+description = "Model-facing workflow tool and durable parent-session projection — Rust port of @deepseek-ai/dsh-tool-workflow"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+cordis = { path = "../../vendor/cordis" }
+dsh-invariants = { path = "../../util/invariants" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-scope = { path = "../../core/scope" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-tools = { path = "../../core/tools" }
+dsh-workflow = { path = "../workflow" }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+dsh-agent = { path = "../../core/agent" }
+tokio = { workspace = true, features = ["test-util"] }

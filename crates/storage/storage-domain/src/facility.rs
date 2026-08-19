@@ -70,7 +70,9 @@ impl DomainFacility {
         // Mount the domain form; unmounting closes every leftover domain
         // (TS effect: close leftovers before unmounting).
         let facility_for_mount = facility.clone();
-        let mount_dispose = storage.mount("domain", arc(facility.clone())).map_err(|e| e.message)?;
+        let mount_dispose = storage
+            .mount("domain", arc(facility.clone()))
+            .map_err(|e| e.message)?;
         let _ = ctx.effect(
             "storageDomain.mount",
             Box::pin(async move {
@@ -117,7 +119,10 @@ impl DomainFacility {
                     spec.name
                 )
             })?;
-            let unit = kv.open(&descriptor_of(spec)).await.map_err(|error| error.message)?;
+            let unit = kv
+                .open(&descriptor_of(spec))
+                .await
+                .map_err(|error| error.message)?;
             match self.build(spec, unit).await {
                 Ok(domain) => Ok(domain),
                 Err(error) => Err(error),
@@ -126,7 +131,9 @@ impl DomainFacility {
         .await;
         match &outcome {
             Ok(domain) => {
-                self.domains.lock().insert(spec.name.clone(), domain.clone());
+                self.domains
+                    .lock()
+                    .insert(spec.name.clone(), domain.clone());
                 Ok(domain.clone())
             }
             Err(_) => {

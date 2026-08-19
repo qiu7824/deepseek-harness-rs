@@ -16,12 +16,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::body::Body;
-use cordis::{
-    ArcValue, Context, InjectSpec, Plugin, PluginError, arc, downcast, make_disposer,
-};
-use dsh_host_webserver::{
-    WebHandlerError, WebRequest, WebResponse, WebRouteHandler, WebServer,
-};
+use cordis::{ArcValue, Context, InjectSpec, Plugin, PluginError, arc, downcast, make_disposer};
+use dsh_host_webserver::{WebHandlerError, WebRequest, WebResponse, WebRouteHandler, WebServer};
 use futures::future::BoxFuture;
 use http::header;
 use http::{Method, Response, StatusCode};
@@ -176,7 +172,9 @@ pub async fn serve_static(
     pathname: &str,
     dist_root: &Path,
     dist_index: &Path,
-    render_index: Arc<dyn Fn() -> BoxFuture<'static, Result<String, WebHandlerError>> + Send + Sync>,
+    render_index: Arc<
+        dyn Fn() -> BoxFuture<'static, Result<String, WebHandlerError>> + Send + Sync,
+    >,
     is_head: bool,
 ) -> Result<WebResponse, WebHandlerError> {
     let Some(target) = resolve_static_target(dist_root, pathname) else {
@@ -187,11 +185,7 @@ pub async fn serve_static(
     }
     match tokio::fs::read(&target).await {
         Ok(bytes) => {
-            let body = if is_head {
-                Vec::new()
-            } else {
-                bytes
-            };
+            let body = if is_head { Vec::new() } else { bytes };
             Ok(Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime_for(&target))
@@ -211,7 +205,9 @@ fn render_index(
     Box::pin(async move {
         let html = tokio::fs::read_to_string(&dist_index)
             .await
-            .map_err(|error| WebHandlerError::new(format!("frontend-static: failed to read index: {error}")))?;
+            .map_err(|error| {
+                WebHandlerError::new(format!("frontend-static: failed to read index: {error}"))
+            })?;
         Ok(server.apply_index_taps(&html))
     })
 }
@@ -244,9 +240,7 @@ pub fn apply(ctx: &Context, config: Config) -> Result<cordis::Disposer, String> 
             let pathname = decode_uri_path(request.uri().path())?;
             let render_server = handler_server.clone();
             let render_path = handler_index.clone();
-            let render = Arc::new(move || {
-                render_index(&render_server, &render_path)
-            });
+            let render = Arc::new(move || render_index(&render_server, &render_path));
             serve_static(
                 &pathname,
                 &handler_root,

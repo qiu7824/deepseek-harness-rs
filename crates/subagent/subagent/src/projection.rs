@@ -78,15 +78,24 @@ pub fn subagent_timing_projection_definition() -> ProjectionDefinition {
         }),
         init: Arc::new(|| timing_state(false, 0, None, None)),
         apply: Arc::new(|state: &ArcValue, event: &SessionEvent| {
-            let value = downcast::<serde_json::Value>(state)
-                .expect("timing state is plain JSON");
+            let value = downcast::<serde_json::Value>(state).expect("timing state is plain JSON");
             if event.type_ == "turn/start" {
                 let descriptor_seen = value["descriptorSeen"].as_bool().unwrap_or(false);
                 let active = serde_json::json!({ "since": event.time, "through": event.time });
                 return if descriptor_seen {
-                    timing_state(true, value["settledMs"].as_u64().unwrap_or(0), Some(active), None)
+                    timing_state(
+                        true,
+                        value["settledMs"].as_u64().unwrap_or(0),
+                        Some(active),
+                        None,
+                    )
                 } else {
-                    timing_state(false, value["settledMs"].as_u64().unwrap_or(0), None, Some(event.time))
+                    timing_state(
+                        false,
+                        value["settledMs"].as_u64().unwrap_or(0),
+                        None,
+                        Some(event.time),
+                    )
                 };
             }
             if event.type_ == "subagent/descriptor" {
@@ -110,14 +119,22 @@ pub fn subagent_timing_projection_definition() -> ProjectionDefinition {
                     if value["pendingTurnStart"].is_null() {
                         return state.clone();
                     }
-                    return timing_state(false, value["settledMs"].as_u64().unwrap_or(0), None, None);
+                    return timing_state(
+                        false,
+                        value["settledMs"].as_u64().unwrap_or(0),
+                        None,
+                        None,
+                    );
                 }
                 let Some(active) = value.get("active") else {
                     return state.clone();
                 };
-                let since = active.get("since").and_then(|v| v.as_i64()).unwrap_or(event.time);
-                let settled = value["settledMs"].as_u64().unwrap_or(0)
-                    + (event.time - since).max(0) as u64;
+                let since = active
+                    .get("since")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(event.time);
+                let settled =
+                    value["settledMs"].as_u64().unwrap_or(0) + (event.time - since).max(0) as u64;
                 return timing_state(true, settled, None, None);
             }
             if let Some(_active) = value.get("active") {
@@ -128,9 +145,9 @@ pub fn subagent_timing_projection_definition() -> ProjectionDefinition {
             state.clone()
         }),
         view: Arc::new(|state: &ArcValue| {
-            let value = downcast::<serde_json::Value>(state)
-                .expect("timing state is plain JSON");
-            let mut out = serde_json::json!({ "settledMs": value["settledMs"].as_u64().unwrap_or(0) });
+            let value = downcast::<serde_json::Value>(state).expect("timing state is plain JSON");
+            let mut out =
+                serde_json::json!({ "settledMs": value["settledMs"].as_u64().unwrap_or(0) });
             if let Some(active) = value.get("active") {
                 out["active"] = active.clone();
             }
@@ -184,8 +201,7 @@ pub fn subagent_identity_projection_definition() -> ProjectionDefinition {
             }
         }),
         view: Arc::new(|state: &ArcValue| {
-            let value = downcast::<serde_json::Value>(state)
-                .expect("identity state is plain JSON");
+            let value = downcast::<serde_json::Value>(state).expect("identity state is plain JSON");
             match value.get("identity") {
                 Some(identity) => arc(identity.clone()),
                 None => arc(serde_json::Value::Null),

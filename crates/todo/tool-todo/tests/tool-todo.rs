@@ -8,16 +8,14 @@ use std::sync::Arc;
 
 use cordis::{Context, arc};
 use dsh_agent::{Agent, AgentOptions, AgentStatus, CancelOptions, Inbox, InboxTarget};
+use dsh_llm::ToolSchema;
 use dsh_llm::{ContentBlock, call_id};
 use dsh_scope::ScopeKey;
 use dsh_session::{
     AgentCancelCause, Session, SessionId, SessionStore, TodoItem, TodoStatus, session_id,
 };
 use dsh_system_prompt::SystemPrompt;
-use dsh_tool_todo::{
-    Config, NAME, ToolTodoPlugin, describe, to_todo_list,
-};
-use dsh_llm::ToolSchema;
+use dsh_tool_todo::{Config, NAME, ToolTodoPlugin, describe, to_todo_list};
 use dsh_tools::{ToolExecutionInput, ToolRuntime};
 
 struct ProbeAgent {
@@ -117,10 +115,7 @@ async fn setup(allow_parallel: bool) -> (Context, Arc<ToolRuntime>, cordis::Disp
     (ctx, tools, disposer)
 }
 
-fn input(
-    agent: Option<Arc<ProbeAgent>>,
-    args: serde_json::Value,
-) -> ToolExecutionInput {
+fn input(agent: Option<Arc<ProbeAgent>>, args: serde_json::Value) -> ToolExecutionInput {
     ToolExecutionInput {
         call_id: call_id("call-todo"),
         root_call_id: None,
@@ -150,8 +145,7 @@ fn last_todos(session: &Session) -> Vec<TodoItem> {
         .rev()
         .find(|event| event.type_ == "todo/write")
         .expect("todo/write");
-    serde_json::from_value(event.data.get("todos").cloned().expect("todos"))
-        .expect("todo items")
+    serde_json::from_value(event.data.get("todos").cloned().expect("todos")).expect("todo items")
 }
 
 fn item(content: &str, status: &str) -> serde_json::Value {
@@ -161,7 +155,10 @@ fn item(content: &str, status: &str) -> serde_json::Value {
 #[test]
 fn description_varies_only_the_active_status_clause() {
     let single = describe(false);
-    assert!(single.contains("Keep AT MOST ONE todo `in_progress`"), "{single}");
+    assert!(
+        single.contains("Keep AT MOST ONE todo `in_progress`"),
+        "{single}"
+    );
     assert!(!single.contains("several at once"));
     let parallel = describe(true);
     assert!(
@@ -185,27 +182,22 @@ fn value_constraints_normalize_and_fail_loud() {
             status: TodoStatus::Pending
         }]
     );
-    assert!(to_todo_list(&[item("   ", "pending")], false)
-        .unwrap_err()
-        .contains("non-empty"));
+    assert!(
+        to_todo_list(&[item("   ", "pending")], false)
+            .unwrap_err()
+            .contains("non-empty")
+    );
     assert!(
         to_todo_list(&[item("dup", "pending"), item("dup", "completed")], false)
             .unwrap_err()
             .contains("duplicate")
     );
     assert!(
-        to_todo_list(
-            &[item("a", "in_progress"), item("b", "in_progress")],
-            false
-        )
-        .unwrap_err()
-        .contains("at most one task may be in_progress")
+        to_todo_list(&[item("a", "in_progress"), item("b", "in_progress")], false)
+            .unwrap_err()
+            .contains("at most one task may be in_progress")
     );
-    to_todo_list(
-        &[item("a", "in_progress"), item("b", "in_progress")],
-        true,
-    )
-    .expect("parallel");
+    to_todo_list(&[item("a", "in_progress"), item("b", "in_progress")], true).expect("parallel");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -220,7 +212,9 @@ async fn registers_the_todo_write_schema() {
     assert_eq!(properties.keys().collect::<Vec<_>>(), vec!["todos"]);
     let todos = &properties["todos"];
     assert_eq!(todos["type"], "array");
-    let item_props = todos["items"]["properties"].as_object().expect("item props");
+    let item_props = todos["items"]["properties"]
+        .as_object()
+        .expect("item props");
     let mut keys: Vec<&String> = item_props.keys().collect();
     keys.sort();
     assert_eq!(keys, vec!["content", "status"]);
@@ -240,7 +234,12 @@ async fn appends_the_whole_list_and_reports_counts() {
         { "content": "plan", "status": "in_progress" },
         { "content": "build", "status": "pending" }
     ]);
-    let result = tools.execute(input(Some(agent.clone()), serde_json::json!({ "todos": todos }))).await;
+    let result = tools
+        .execute(input(
+            Some(agent.clone()),
+            serde_json::json!({ "todos": todos }),
+        ))
+        .await;
     assert!(!result.is_error, "{}", text(&result));
     assert_eq!(
         result.value.clone().expect("value"),
@@ -252,12 +251,22 @@ async fn appends_the_whole_list_and_reports_counts() {
             "counts": { "pending": 1, "inProgress": 1, "completed": 0 }
         })
     );
-    assert!(text(&result).contains("1 pending, 1 in progress, 0 completed"), "{}", text(&result));
+    assert!(
+        text(&result).contains("1 pending, 1 in progress, 0 completed"),
+        "{}",
+        text(&result)
+    );
     assert_eq!(
         last_todos(agent.session()),
         vec![
-            TodoItem { content: "plan".to_string(), status: TodoStatus::InProgress },
-            TodoItem { content: "build".to_string(), status: TodoStatus::Pending },
+            TodoItem {
+                content: "plan".to_string(),
+                status: TodoStatus::InProgress
+            },
+            TodoItem {
+                content: "build".to_string(),
+                status: TodoStatus::Pending
+            },
         ]
     );
     let _ = ctx;
@@ -276,7 +285,10 @@ async fn stores_trimmed_content_and_replaces_on_a_second_call() {
     assert!(!result.is_error);
     assert_eq!(
         last_todos(agent.session()),
-        vec![TodoItem { content: "plan the work".to_string(), status: TodoStatus::Pending }]
+        vec![TodoItem {
+            content: "plan the work".to_string(),
+            status: TodoStatus::Pending
+        }]
     );
 
     let result = tools
@@ -292,8 +304,14 @@ async fn stores_trimmed_content_and_replaces_on_a_second_call() {
     assert_eq!(
         last_todos(agent.session()),
         vec![
-            TodoItem { content: "plan the work".to_string(), status: TodoStatus::Completed },
-            TodoItem { content: "b".to_string(), status: TodoStatus::InProgress },
+            TodoItem {
+                content: "plan the work".to_string(),
+                status: TodoStatus::Completed
+            },
+            TodoItem {
+                content: "b".to_string(),
+                status: TodoStatus::InProgress
+            },
         ]
     );
     let _ = ctx;
@@ -305,7 +323,10 @@ async fn rejects_schema_level_and_value_level_violations() {
 
     // Malformed status.
     let result = tools
-        .execute(input(None, serde_json::json!({ "todos": [{ "content": "x", "status": "doing" }] })))
+        .execute(input(
+            None,
+            serde_json::json!({ "todos": [{ "content": "x", "status": "doing" }] }),
+        ))
         .await;
     assert!(result.is_error, "{}", text(&result));
 
@@ -323,11 +344,18 @@ async fn rejects_schema_level_and_value_level_violations() {
         ))
         .await;
     assert!(result.is_error);
-    assert!(text(&result).contains("not a declared property"), "{}", text(&result));
+    assert!(
+        text(&result).contains("not a declared property"),
+        "{}",
+        text(&result)
+    );
 
     // Empty and duplicate content.
     for (args, fragment) in [
-        (serde_json::json!({ "todos": [{ "content": "   ", "status": "pending" }] }), "non-empty"),
+        (
+            serde_json::json!({ "todos": [{ "content": "   ", "status": "pending" }] }),
+            "non-empty",
+        ),
         (
             serde_json::json!({ "todos": [
                 { "content": "dup", "status": "pending" },
@@ -389,10 +417,17 @@ async fn single_active_policy_rejects_parallel_lists_without_touching_the_log() 
 async fn rejects_a_non_agent_caller() {
     let (ctx, tools, _disposer) = setup(true).await;
     let result = tools
-        .execute(input(None, serde_json::json!({ "todos": [{ "content": "a", "status": "pending" }] })))
+        .execute(input(
+            None,
+            serde_json::json!({ "todos": [{ "content": "a", "status": "pending" }] }),
+        ))
         .await;
     assert!(result.is_error);
-    assert!(text(&result).contains("owning agent session"), "{}", text(&result));
+    assert!(
+        text(&result).contains("owning agent session"),
+        "{}",
+        text(&result)
+    );
     let _ = ctx;
 }
 
@@ -428,7 +463,9 @@ async fn presents_via_the_registered_definition_and_disposes_on_unload() {
     )
     .expect("view");
     match view {
-        dsh_tools::ToolCallView::Generic { title, raw_input, .. } => {
+        dsh_tools::ToolCallView::Generic {
+            title, raw_input, ..
+        } => {
             assert_eq!(title, "Update todo list");
             assert_eq!(
                 raw_input,
@@ -437,10 +474,20 @@ async fn presents_via_the_registered_definition_and_disposes_on_unload() {
         }
         other => panic!("generic view expected, got {other:?}"),
     }
-    assert!(tools.schemas(None).iter().any(|schema| schema.name == "todo_write"));
+    assert!(
+        tools
+            .schemas(None)
+            .iter()
+            .any(|schema| schema.name == "todo_write")
+    );
 
     fiber.dispose().await;
-    assert!(!tools.schemas(None).iter().any(|schema| schema.name == "todo_write"));
+    assert!(
+        !tools
+            .schemas(None)
+            .iter()
+            .any(|schema| schema.name == "todo_write")
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -555,7 +602,10 @@ async fn invariant_companion_installs_and_rejects_malformed_snapshots() {
             package_blocklist: vec![],
         },
     );
-    let fiber = ctx.plugin(Arc::new(dsh_tool_todo::invariant::ToolTodoInvariantPlugin), arc(()));
+    let fiber = ctx.plugin(
+        Arc::new(dsh_tool_todo::invariant::ToolTodoInvariantPlugin),
+        arc(()),
+    );
     fiber.settle().await.expect("settle");
     let session = _store
         .create(

@@ -83,11 +83,21 @@ pub struct MessageFeedbackRow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "code", rename_all = "kebab-case")]
 pub enum MessageFeedbackFailure {
-    SessionNotFound { session_id: SessionId },
-    TargetNotFound { session_id: SessionId, message_id: dsh_llm::MessageId },
-    VersionConflict { current: Option<MessageFeedbackItem> },
+    SessionNotFound {
+        session_id: SessionId,
+    },
+    TargetNotFound {
+        session_id: SessionId,
+        message_id: dsh_llm::MessageId,
+    },
+    VersionConflict {
+        current: Option<MessageFeedbackItem>,
+    },
     NoteBlank,
-    NoteTooLarge { max_bytes: u64, actual_bytes: u64 },
+    NoteTooLarge {
+        max_bytes: u64,
+        actual_bytes: u64,
+    },
 }
 
 /// Successful public operation result.
@@ -265,10 +275,7 @@ pub fn message_feedback_domain_spec() -> DomainSpec {
         "message_feedback",
         0,
         None,
-        indexmap::IndexMap::from([(
-            "sessions".to_string(),
-            domain_table(Arc::new(validate_row)),
-        )]),
+        indexmap::IndexMap::from([("sessions".to_string(), domain_table(Arc::new(validate_row)))]),
     )
     .expect("static spec")
 }
@@ -323,10 +330,7 @@ impl MessageFeedbackService {
     }
 
     /// Read feedback belonging to the current persisted Session lifecycle.
-    pub async fn list(
-        &self,
-        request: &MessageFeedbackListRequest,
-    ) -> MessageFeedbackListResult {
+    pub async fn list(&self, request: &MessageFeedbackListRequest) -> MessageFeedbackListResult {
         let known = self.inspect_session(&request.session_id).await?;
         let row = self
             .table
@@ -339,7 +343,9 @@ impl MessageFeedbackService {
             Some(row) if same_identity(row, &known.meta) => row.items.clone(),
             _ => Vec::new(),
         };
-        Ok(MessageFeedbackSuccess::of(MessageFeedbackListValue { items }))
+        Ok(MessageFeedbackSuccess::of(MessageFeedbackListValue {
+            items,
+        }))
     }
 
     /// Create or replace feedback for one derived append-origin assistant
@@ -401,7 +407,10 @@ impl MessageFeedbackService {
                 rating: request.rating,
                 note: note.clone(),
                 version: dsh_brand::Branded::new(uuid::Uuid::new_v4().to_string()),
-                created_at: existing.as_ref().map(|existing| existing.created_at).unwrap_or(now),
+                created_at: existing
+                    .as_ref()
+                    .map(|existing| existing.created_at)
+                    .unwrap_or(now),
                 updated_at: match &existing {
                     None => now,
                     Some(existing) => now.max(existing.updated_at),
@@ -429,7 +438,10 @@ impl MessageFeedbackService {
     }
 
     /// Delete one feedback item.
-    pub async fn delete(&self, request: &MessageFeedbackDeleteRequest) -> MessageFeedbackDeleteResult {
+    pub async fn delete(
+        &self,
+        request: &MessageFeedbackDeleteRequest,
+    ) -> MessageFeedbackDeleteResult {
         self.enqueue(&request.session_id, async {
             let known = self.inspect_session(&request.session_id).await?;
             let table = self.table.lock().as_ref().expect("table").clone();
@@ -447,7 +459,9 @@ impl MessageFeedbackService {
                 .iter()
                 .find(|item| item.message_id == request.message_id);
             let Some(existing) = existing else {
-                return Ok(MessageFeedbackSuccess::of(MessageFeedbackDeleteValue { absent: true }));
+                return Ok(MessageFeedbackSuccess::of(MessageFeedbackDeleteValue {
+                    absent: true,
+                }));
             };
             if request.if_version != existing.version {
                 return Err(MessageFeedbackRejected::of(
@@ -471,7 +485,9 @@ impl MessageFeedbackService {
                 )
                 .await
                 .expect("put");
-            Ok(MessageFeedbackSuccess::of(MessageFeedbackDeleteValue { absent: true }))
+            Ok(MessageFeedbackSuccess::of(MessageFeedbackDeleteValue {
+                absent: true,
+            }))
         })
         .await
     }
@@ -495,7 +511,10 @@ impl MessageFeedbackService {
             .ctx
             .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
             .map(|slot| slot.as_ref().clone());
-        if live.as_ref().is_none_or(|store| store.get(session_id).is_none()) {
+        if live
+            .as_ref()
+            .is_none_or(|store| store.get(session_id).is_none())
+        {
             let snapshots = persistence
                 .list_snapshots()
                 .await
@@ -503,7 +522,9 @@ impl MessageFeedbackService {
             if !snapshots
                 .iter()
                 .any(|snapshot| snapshot.header.id == *session_id)
-                && live.as_ref().is_none_or(|store| store.get(session_id).is_none())
+                && live
+                    .as_ref()
+                    .is_none_or(|store| store.get(session_id).is_none())
             {
                 return Err(MessageFeedbackRejected::of(
                     MessageFeedbackFailure::SessionNotFound {
@@ -528,7 +549,9 @@ impl MessageFeedbackService {
             .ctx
             .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
             .map(|slot| slot.as_ref().clone());
-        let live = store.as_ref().and_then(|store| store.get(&inspection.meta.id));
+        let live = store
+            .as_ref()
+            .and_then(|store| store.get(&inspection.meta.id));
         if let Some(live) = &live {
             if same_header_identity(live.header(), &inspection.meta) {
                 let flushed = store
@@ -574,7 +597,11 @@ impl MessageFeedbackService {
 
     /// Queue a complete read/compare/write mutation behind this Session's
     /// prior mutation.
-    async fn enqueue<F, T>(&self, session_id: &SessionId, operation: F) -> Result<T, MessageFeedbackRejected>
+    async fn enqueue<F, T>(
+        &self,
+        session_id: &SessionId,
+        operation: F,
+    ) -> Result<T, MessageFeedbackRejected>
     where
         F: std::future::Future<Output = Result<T, MessageFeedbackRejected>>,
     {
@@ -610,7 +637,9 @@ fn has_feedback_target(inspection: &SessionInspection, message_id: &dsh_llm::Mes
             return false;
         }
         let message = derive_event_message(event);
-        message.is_some_and(|message| message.role == dsh_llm::Role::Assistant && message.id == *message_id)
+        message.is_some_and(|message| {
+            message.role == dsh_llm::Role::Assistant && message.id == *message_id
+        })
     })
 }
 
@@ -644,14 +673,17 @@ impl Plugin for MessageFeedbackPlugin {
     async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
         let service = MessageFeedbackService::install(ctx, &self.config)
             .map_err(|error| PluginError::from(anyhow::anyhow!(error)))?;
-        let _ = ctx.effect("message-feedback", Box::pin(async move {
-            Some(cordis::make_disposer(move || {
-                let service = service.clone();
-                Box::pin(async move {
-                    service.dispose();
-                })
-            }))
-        }));
+        let _ = ctx.effect(
+            "message-feedback",
+            Box::pin(async move {
+                Some(cordis::make_disposer(move || {
+                    let service = service.clone();
+                    Box::pin(async move {
+                        service.dispose();
+                    })
+                }))
+            }),
+        );
         Ok(())
     }
 }

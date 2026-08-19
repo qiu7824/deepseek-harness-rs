@@ -40,11 +40,11 @@ use dsh_llm::{ContentBlock, MessageSource, UserMessage, call_id, create_user_mes
 use dsh_scope::{ScopeKey, create_scope, scope_of};
 use dsh_session::{Session, SessionId, session_id};
 use dsh_system_prompt::SystemPrompt;
+use dsh_tool_jobs::{CompletionDelivery, Config, ToolJobsPlugin, apply, status_line};
 use dsh_tools::{
     PostToolDecision, PreToolDecision, ToolCallKind, ToolCallView, ToolExecution,
     ToolExecutionInput, ToolExecutionResult, ToolRuntime,
 };
-use dsh_tool_jobs::{CompletionDelivery, Config, ToolJobsPlugin, apply, status_line};
 
 fn never_abort() -> Arc<dyn Fn() -> bool + Send + Sync> {
     Arc::new(|| false)
@@ -271,7 +271,12 @@ impl Agent for StubAgent {
         &self.scope_key
     }
 
-    fn cancel(&self, _cause: dsh_session::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_session::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -308,7 +313,12 @@ async fn fake_agent(
     registry: &Arc<AgentRegistry>,
     raw_id: &str,
     status: AgentStatus,
-) -> (Arc<dyn Agent>, Arc<StubAgent>, Arc<FiberCore>, cordis::Disposer) {
+) -> (
+    Arc<dyn Agent>,
+    Arc<StubAgent>,
+    Arc<FiberCore>,
+    cordis::Disposer,
+) {
     let fiber = ctx.plugin(Arc::new(NoopPlugin), arc(()));
     let agent_ctx = fiber.ctx().expect("plugin ctx bound at load");
     let stub = StubAgent::new(raw_id, agent_ctx, status);
@@ -342,7 +352,13 @@ async fn setup_with(config: serde_json::Value) -> World {
         .get_typed::<Arc<dyn JobRegistry>>("jobs", false)
         .map(|slot| slot.as_ref().clone())
         .expect("jobs");
-    World { ctx, tools_fiber: fiber, registry, tools, jobs }
+    World {
+        ctx,
+        tools_fiber: fiber,
+        registry,
+        tools,
+        jobs,
+    }
 }
 
 async fn setup() -> World {
@@ -438,7 +454,10 @@ async fn attaches_the_controller_on_load_and_detaches_it_with_the_fiber() {
     let producer = Producer::new("bash", "sleep 60", None, None, |_| {});
     producer.start(world.jobs.as_ref()).expect("start");
     world.tools_fiber.dispose().await;
-    let error = producer.start(world.jobs.as_ref()).err().expect("no controller");
+    let error = producer
+        .start(world.jobs.as_ref())
+        .err()
+        .expect("no controller");
     assert!(error.contains("no job controller"), "{error}");
 }
 
@@ -453,7 +472,10 @@ async fn rejects_a_config_whose_default_wait_exceeds_the_cap() {
         arc(serde_json::json!({ "waitTimeoutMs": 100, "maxWaitTimeoutMs": 50 })),
     );
     let error = fiber.settle().await.err().expect("config rejected");
-    assert!(error.to_string().contains("exceeds maxWaitTimeoutMs"), "{error}");
+    assert!(
+        error.to_string().contains("exceeds maxWaitTimeoutMs"),
+        "{error}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -557,7 +579,13 @@ async fn reads_a_consuming_delta_with_a_trailing_status_line() {
     });
     producer.start(world.jobs.as_ref()).expect("start");
 
-    let first = call(&world, "job_output", serde_json::json!({ "job_id": "bash-1" }), None).await;
+    let first = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "bash-1" }),
+        None,
+    )
+    .await;
     assert!(!first.is_error);
     let first_value = first.value.as_ref().expect("value");
     assert_eq!(first_value["text"], "line one\n");
@@ -569,7 +597,13 @@ async fn reads_a_consuming_delta_with_a_trailing_status_line() {
     assert!(first_value["job"].get("reported").is_none());
     assert_eq!(text(&first), "line one\n[status: running]");
 
-    let second = call(&world, "job_output", serde_json::json!({ "job_id": "bash-1" }), None).await;
+    let second = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "bash-1" }),
+        None,
+    )
+    .await;
     assert_eq!(text(&second), "(no new output)\n[status: running]");
 }
 
@@ -578,12 +612,24 @@ async fn returns_the_final_output_of_a_settled_final_output_job() {
     let world = setup().await;
     let producer = Producer::new("subagent", "research", None, None, |_| {});
     producer.start(world.jobs.as_ref()).expect("start");
-    let pending = call(&world, "job_output", serde_json::json!({ "job_id": "subagent-1" }), None).await;
+    let pending = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "subagent-1" }),
+        None,
+    )
+    .await;
     assert_eq!(text(&pending), "(no new output)\n[status: running]");
 
     producer.settle(completed(Some("completed"), Some("the answer")));
     tick().await;
-    let result = call(&world, "job_output", serde_json::json!({ "job_id": "subagent-1" }), None).await;
+    let result = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "subagent-1" }),
+        None,
+    )
+    .await;
     assert_eq!(text(&result), "the answer\n[status: completed, completed]");
 }
 
@@ -596,7 +642,15 @@ async fn applies_a_producer_limit_to_the_complete_body_and_status_result() {
     });
     producer.start(world.jobs.as_ref()).expect("start");
 
-    let output = text(&call(&world, "job_output", serde_json::json!({ "job_id": "bash-1" }), None).await);
+    let output = text(
+        &call(
+            &world,
+            "job_output",
+            serde_json::json!({ "job_id": "bash-1" }),
+            None,
+        )
+        .await,
+    );
     assert!(output.as_bytes().len() <= 48, "{output}");
     assert!(output.contains("[status: running]"), "{output}");
 }
@@ -611,9 +665,21 @@ async fn preserves_empty_and_newline_terminated_output_under_a_producer_limit() 
     });
     producer.start(world.jobs.as_ref()).expect("start");
 
-    let first = call(&world, "job_output", serde_json::json!({ "job_id": "bash-1" }), None).await;
+    let first = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "bash-1" }),
+        None,
+    )
+    .await;
     assert_eq!(text(&first), "(no new output)\n[status: running]");
-    let second = call(&world, "job_output", serde_json::json!({ "job_id": "bash-1" }), None).await;
+    let second = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "bash-1" }),
+        None,
+    )
+    .await;
     assert_eq!(text(&second), "line\n[status: running]");
 }
 
@@ -622,7 +688,10 @@ async fn bounds_post_policy_output_without_restoring_the_canonical_status_render
     let world = setup().await;
     let producer = Producer::new("bash", "sleep 60", None, Some(64), |hooks| {
         hooks.stream_mode.store(true, SeqCst);
-        hooks.stream.lock().push_back("canonical output".to_string());
+        hooks
+            .stream
+            .lock()
+            .push_back("canonical output".to_string());
     });
     producer.start(world.jobs.as_ref()).expect("start");
 
@@ -637,7 +706,9 @@ async fn bounds_post_policy_output_without_restoring_the_canonical_status_render
         Box::pin(async move {
             if job_id.as_deref() == Some("bash-1") {
                 return Some(arc(PostToolDecision::Accept {
-                    content: Some(vec![ContentBlock::Text { text: "p".repeat(1_000) }]),
+                    content: Some(vec![ContentBlock::Text {
+                        text: "p".repeat(1_000),
+                    }]),
                     value: None,
                     additional_contexts: None,
                 }));
@@ -646,9 +717,18 @@ async fn bounds_post_policy_output_without_restoring_the_canonical_status_render
             Some(value)
         })
     });
-    world.ctx.on("tools/post-execute", listener, Default::default()).await;
+    world
+        .ctx
+        .on("tools/post-execute", listener, Default::default())
+        .await;
 
-    let result = call(&world, "job_output", serde_json::json!({ "job_id": "bash-1" }), None).await;
+    let result = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "bash-1" }),
+        None,
+    )
+    .await;
     assert!(text(&result).as_bytes().len() <= 64);
     assert!(text(&result).contains("[result truncated]"));
     assert!(!text(&result).contains("[status: running]"));
@@ -662,7 +742,13 @@ async fn applies_a_producer_limit_to_a_normalized_read_failure() {
     });
     producer.start(world.jobs.as_ref()).expect("start");
 
-    let result = call(&world, "job_output", serde_json::json!({ "job_id": "bash-1" }), None).await;
+    let result = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "bash-1" }),
+        None,
+    )
+    .await;
     assert!(result.is_error);
     assert!(text(&result).as_bytes().len() <= 64, "{}", text(&result));
     assert!(text(&result).contains("[result truncated]"));
@@ -686,7 +772,9 @@ async fn bounds_pre_around_and_post_execute_policy_outcomes_and_failures() {
         let next = downcast_arc::<NextFn>(args.last().expect("next")).expect("next");
         Box::pin(async move {
             match job_id.as_deref() {
-                Some("bash-1") => Some(arc(PreToolDecision::Deny { reason: "d".repeat(1_000) })),
+                Some("bash-1") => Some(arc(PreToolDecision::Deny {
+                    reason: "d".repeat(1_000),
+                })),
                 Some("bash-3") => panic!("pre failed: {}", "p".repeat(1_000)),
                 _ => {
                     let value = next.call().await;
@@ -695,7 +783,10 @@ async fn bounds_pre_around_and_post_execute_policy_outcomes_and_failures() {
             }
         })
     });
-    world.ctx.on("tools/pre-execute", pre, Default::default()).await;
+    world
+        .ctx
+        .on("tools/pre-execute", pre, Default::default())
+        .await;
 
     let around: Arc<Listener> = Arc::new(move |_ctx, args| {
         let job_id = args
@@ -734,7 +825,10 @@ async fn bounds_pre_around_and_post_execute_policy_outcomes_and_failures() {
             }
         })
     });
-    world.ctx.on("tools/execute", around, Default::default()).await;
+    world
+        .ctx
+        .on("tools/execute", around, Default::default())
+        .await;
 
     let post: Arc<Listener> = Arc::new(move |_ctx, args| {
         let job_id = args
@@ -752,22 +846,55 @@ async fn bounds_pre_around_and_post_execute_policy_outcomes_and_failures() {
             Some(value)
         })
     });
-    world.ctx.on("tools/post-execute", post, Default::default()).await;
+    world
+        .ctx
+        .on("tools/post-execute", post, Default::default())
+        .await;
 
-    let denied = call(&world, "job_output", serde_json::json!({ "job_id": "bash-1" }), None).await;
+    let denied = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "bash-1" }),
+        None,
+    )
+    .await;
     assert!(denied.is_error);
     assert!(text(&denied).as_bytes().len() <= 64);
     assert!(text(&denied).contains("[result truncated]"));
 
-    let short_circuited = call(&world, "job_output", serde_json::json!({ "job_id": "bash-2" }), None).await;
+    let short_circuited = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "bash-2" }),
+        None,
+    )
+    .await;
     assert!(!short_circuited.is_error);
     assert!(text(&short_circuited).as_bytes().len() <= 64);
     assert!(text(&short_circuited).contains("[output truncated]"));
 
     let failures = [
-        call(&world, "job_output", serde_json::json!({ "job_id": "bash-3" }), None).await,
-        call(&world, "job_output", serde_json::json!({ "job_id": "bash-4" }), None).await,
-        call(&world, "job_output", serde_json::json!({ "job_id": "bash-5" }), None).await,
+        call(
+            &world,
+            "job_output",
+            serde_json::json!({ "job_id": "bash-3" }),
+            None,
+        )
+        .await,
+        call(
+            &world,
+            "job_output",
+            serde_json::json!({ "job_id": "bash-4" }),
+            None,
+        )
+        .await,
+        call(
+            &world,
+            "job_output",
+            serde_json::json!({ "job_id": "bash-5" }),
+            None,
+        )
+        .await,
     ];
     for failure in failures {
         assert!(failure.is_error);
@@ -782,7 +909,12 @@ async fn wait_true_blocks_until_settlement_and_reports_the_terminal_state() {
     let producer = Producer::new("subagent", "research", None, None, |_| {});
     producer.start(world.jobs.as_ref()).expect("start");
 
-    let pending = call(&world, "job_output", serde_json::json!({ "job_id": "subagent-1", "wait": true }), None);
+    let pending = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "subagent-1", "wait": true }),
+        None,
+    );
     // Drive the wait's synchronous prefix (waiter registration) before the
     // settlement, like the TS async call reaching its first await.
     tokio::pin!(pending);
@@ -794,7 +926,8 @@ async fn wait_true_blocks_until_settlement_and_reports_the_terminal_state() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wait_true_times_out_against_the_configured_cap_and_leaves_the_job_alive() {
-    let world = setup_with(serde_json::json!({ "waitTimeoutMs": 10, "maxWaitTimeoutMs": 20 })).await;
+    let world =
+        setup_with(serde_json::json!({ "waitTimeoutMs": 10, "maxWaitTimeoutMs": 20 })).await;
     let producer = Producer::new("bash", "sleep 60", None, None, |_| {});
     producer.start(world.jobs.as_ref()).expect("start");
 
@@ -811,11 +944,27 @@ async fn wait_true_times_out_against_the_configured_cap_and_leaves_the_job_alive
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejects_an_empty_or_unknown_job_id_as_an_errored_result() {
     let world = setup().await;
-    let empty = call(&world, "job_output", serde_json::json!({ "job_id": "" }), None).await;
+    let empty = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "" }),
+        None,
+    )
+    .await;
     assert!(empty.is_error);
-    let unknown = call(&world, "job_output", serde_json::json!({ "job_id": "bash-99" }), None).await;
+    let unknown = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "bash-99" }),
+        None,
+    )
+    .await;
     assert!(unknown.is_error);
-    assert!(text(&unknown).contains("unknown job bash-99"), "{}", text(&unknown));
+    assert!(
+        text(&unknown).contains("unknown job bash-99"),
+        "{}",
+        text(&unknown)
+    );
 }
 
 // ---- job_list ----
@@ -826,8 +975,13 @@ async fn lists_caller_visible_jobs_and_renders_the_empty_case() {
     let empty = call(&world, "job_list", serde_json::json!({}), None).await;
     assert_eq!(text(&empty), "(no background jobs)");
 
-    let (alice, _stub, _fiber, _detach) =
-        fake_agent(&world.ctx, &world.registry, "sess-alice", AgentStatus::Running).await;
+    let (alice, _stub, _fiber, _detach) = fake_agent(
+        &world.ctx,
+        &world.registry,
+        "sess-alice",
+        AgentStatus::Running,
+    )
+    .await;
     let alice_job = Producer::new("bash", "pnpm test", Some(alice.clone()), None, |_| {});
     alice_job.start(world.jobs.as_ref()).expect("start");
     let unowned = Producer::new("subagent", "open research", None, None, |_| {});
@@ -837,9 +991,20 @@ async fn lists_caller_visible_jobs_and_renders_the_empty_case() {
     build.settle(completed(Some("exit code: 0"), None));
     tick().await;
 
-    let listed = call(&world, "job_list", serde_json::json!({}), Some(alice.clone())).await;
+    let listed = call(
+        &world,
+        "job_list",
+        serde_json::json!({}),
+        Some(alice.clone()),
+    )
+    .await;
     assert!(!listed.is_error);
-    let listed_value = listed.value.as_ref().expect("value").as_array().expect("array");
+    let listed_value = listed
+        .value
+        .as_ref()
+        .expect("value")
+        .as_array()
+        .expect("array");
     assert_eq!(listed_value.len(), 3);
     assert_eq!(listed_value[0]["id"], "bash-1");
     assert_eq!(listed_value[0]["kind"], "bash");
@@ -863,10 +1028,18 @@ async fn lists_caller_visible_jobs_and_renders_the_empty_case() {
         .join("\n")
     );
 
-    let (bob, _stub, _fiber, _detach) =
-        fake_agent(&world.ctx, &world.registry, "sess-bob", AgentStatus::Running).await;
+    let (bob, _stub, _fiber, _detach) = fake_agent(
+        &world.ctx,
+        &world.registry,
+        "sess-bob",
+        AgentStatus::Running,
+    )
+    .await;
     let listed = call(&world, "job_list", serde_json::json!({}), Some(bob)).await;
-    assert_eq!(text(&listed), "subagent-1 [subagent] running — open research");
+    assert_eq!(
+        text(&listed),
+        "subagent-1 [subagent] running — open research"
+    );
 }
 
 // ---- job_kill ----
@@ -901,7 +1074,13 @@ async fn applies_the_producer_output_limit_to_a_cancellation_acknowledgement() {
     let producer = Producer::new("bash", "sleep 60", None, Some(8), |_| {});
     producer.start(world.jobs.as_ref()).expect("start");
 
-    let result = call(&world, "job_kill", serde_json::json!({ "job_id": "bash-1" }), None).await;
+    let result = call(
+        &world,
+        "job_kill",
+        serde_json::json!({ "job_id": "bash-1" }),
+        None,
+    )
+    .await;
     assert!(text(&result).as_bytes().len() <= 8, "{}", text(&result));
     assert_eq!(producer.cancels(), vec![None]);
 }
@@ -914,7 +1093,13 @@ async fn applies_the_producer_output_limit_to_a_normalized_cancellation_failure(
     });
     producer.start(world.jobs.as_ref()).expect("start");
 
-    let result = call(&world, "job_kill", serde_json::json!({ "job_id": "bash-1" }), None).await;
+    let result = call(
+        &world,
+        "job_kill",
+        serde_json::json!({ "job_id": "bash-1" }),
+        None,
+    )
+    .await;
     assert!(result.is_error);
     assert!(text(&result).as_bytes().len() <= 64, "{}", text(&result));
     assert!(text(&result).contains("[result truncated]"));
@@ -942,23 +1127,33 @@ async fn bounds_single_text_post_policy_while_preserving_structured_policy_resul
         Box::pin(async move {
             match reason.as_deref() {
                 Some("replace") => Some(arc(PostToolDecision::Accept {
-                    content: Some(vec![ContentBlock::Text { text: "r".repeat(1_000) }]),
+                    content: Some(vec![ContentBlock::Text {
+                        text: "r".repeat(1_000),
+                    }]),
                     value: None,
                     additional_contexts: None,
                 })),
                 Some("block") => Some(arc(PostToolDecision::Block {
-                    feedback: vec![ContentBlock::Text { text: "b".repeat(1_000) }],
+                    feedback: vec![ContentBlock::Text {
+                        text: "b".repeat(1_000),
+                    }],
                     additional_contexts: None,
                 })),
                 Some("multi") => Some(arc(PostToolDecision::Block {
                     feedback: vec![
-                        ContentBlock::Text { text: "first".to_string() },
-                        ContentBlock::Text { text: "second".to_string() },
+                        ContentBlock::Text {
+                            text: "first".to_string(),
+                        },
+                        ContentBlock::Text {
+                            text: "second".to_string(),
+                        },
                     ],
                     additional_contexts: None,
                 })),
                 Some("reasoning") => Some(arc(PostToolDecision::Block {
-                    feedback: vec![ContentBlock::Reasoning { text: "policy detail".to_string() }],
+                    feedback: vec![ContentBlock::Reasoning {
+                        text: "policy detail".to_string(),
+                    }],
                     additional_contexts: None,
                 })),
                 _ => {
@@ -968,7 +1163,10 @@ async fn bounds_single_text_post_policy_while_preserving_structured_policy_resul
             }
         })
     });
-    world.ctx.on("tools/post-execute", listener, Default::default()).await;
+    world
+        .ctx
+        .on("tools/post-execute", listener, Default::default())
+        .await;
 
     let replaced = call(
         &world,
@@ -1002,8 +1200,12 @@ async fn bounds_single_text_post_policy_while_preserving_structured_policy_resul
     assert_eq!(
         multi.content,
         vec![
-            ContentBlock::Text { text: "first".to_string() },
-            ContentBlock::Text { text: "second".to_string() },
+            ContentBlock::Text {
+                text: "first".to_string()
+            },
+            ContentBlock::Text {
+                text: "second".to_string()
+            },
         ]
     );
 
@@ -1016,7 +1218,9 @@ async fn bounds_single_text_post_policy_while_preserving_structured_policy_resul
     .await;
     assert_eq!(
         reasoning.content,
-        vec![ContentBlock::Reasoning { text: "policy detail".to_string() }]
+        vec![ContentBlock::Reasoning {
+            text: "policy detail".to_string()
+        }]
     );
 }
 
@@ -1031,22 +1235,46 @@ async fn reports_an_already_finished_job_without_consuming_its_pending_delta() {
     producer.settle(completed(Some("exit code: 0"), None));
     tick().await;
 
-    let killed = call(&world, "job_kill", serde_json::json!({ "job_id": "bash-1" }), None).await;
+    let killed = call(
+        &world,
+        "job_kill",
+        serde_json::json!({ "job_id": "bash-1" }),
+        None,
+    )
+    .await;
     assert!(!killed.is_error);
     let value = killed.value.as_ref().expect("value");
     assert_eq!(value["outcome"], "already-finished");
     assert_eq!(value["job"]["status"], "completed");
     assert_eq!(value["job"]["detail"], "exit code: 0");
-    assert_eq!(text(&killed), "job bash-1 had already finished [status: completed, exit code: 0]");
+    assert_eq!(
+        text(&killed),
+        "job bash-1 had already finished [status: completed, exit code: 0]"
+    );
 
-    let read = call(&world, "job_output", serde_json::json!({ "job_id": "bash-1" }), None).await;
-    assert_eq!(text(&read), "unread tail\n[status: completed, exit code: 0]");
+    let read = call(
+        &world,
+        "job_output",
+        serde_json::json!({ "job_id": "bash-1" }),
+        None,
+    )
+    .await;
+    assert_eq!(
+        text(&read),
+        "unread tail\n[status: completed, exit code: 0]"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejects_an_empty_job_id_as_an_errored_result() {
     let world = setup().await;
-    let empty = call(&world, "job_kill", serde_json::json!({ "job_id": "" }), None).await;
+    let empty = call(
+        &world,
+        "job_kill",
+        serde_json::json!({ "job_id": "" }),
+        None,
+    )
+    .await;
     assert!(empty.is_error);
 }
 
@@ -1056,7 +1284,9 @@ async fn rejects_an_empty_job_id_as_an_errored_result() {
 async fn renders_generic_cards_for_all_three_control_tools() {
     let world = setup().await;
     let output = world.tools.get("job_output", None).expect("job_output");
-    let view = (output.present_call.as_ref().expect("present"))(&serde_json::json!({ "job_id": "bash-1" }));
+    let view = (output.present_call.as_ref().expect("present"))(
+        &serde_json::json!({ "job_id": "bash-1" }),
+    );
     assert_eq!(
         view,
         Some(ToolCallView::Generic {
@@ -1080,7 +1310,9 @@ async fn renders_generic_cards_for_all_three_control_tools() {
         })
     );
     let kill = world.tools.get("job_kill", None).expect("job_kill");
-    let view = (kill.present_call.as_ref().expect("present"))(&serde_json::json!({ "job_id": "subagent-2" }));
+    let view = (kill.present_call.as_ref().expect("present"))(
+        &serde_json::json!({ "job_id": "subagent-2" }),
+    );
     assert_eq!(
         view,
         Some(ToolCallView::Generic {
@@ -1105,9 +1337,13 @@ async fn delivers_one_notice_from_the_owning_scope_when_two_mounts_share_the_reg
 
     let standing_a = create_scope(&ctx, ScopeKey::new(), &Default::default());
     let standing_b = create_scope(&ctx, ScopeKey::new(), &Default::default());
-    let fiber_a = standing_a.ctx.plugin(Arc::new(ToolJobsPlugin::new()), arc(serde_json::json!({})));
+    let fiber_a = standing_a
+        .ctx
+        .plugin(Arc::new(ToolJobsPlugin::new()), arc(serde_json::json!({})));
     fiber_a.settle().await.expect("mount a");
-    let fiber_b = standing_b.ctx.plugin(Arc::new(ToolJobsPlugin::new()), arc(serde_json::json!({})));
+    let fiber_b = standing_b
+        .ctx
+        .plugin(Arc::new(ToolJobsPlugin::new()), arc(serde_json::json!({})));
     fiber_b.settle().await.expect("mount b");
 
     // The agent joins preset A exactly as `agentPresets.compose` binds it.
@@ -1184,8 +1420,13 @@ async fn restores_the_wake_budget_when_the_owner_claims_a_user_message() {
         arc(AgentInboxClaimedPayload {
             agent: owner.clone(),
             message: create_user_message(
-                vec![ContentBlock::Text { text: "carry on".to_string() }],
-                MessageSource::User { rpc_id: None, client_time_zone: None },
+                vec![ContentBlock::Text {
+                    text: "carry on".to_string(),
+                }],
+                MessageSource::User {
+                    rpc_id: None,
+                    client_time_zone: None,
+                },
             ),
             turn: 1,
         })
@@ -1219,7 +1460,9 @@ async fn neither_wakes_nor_injects_into_an_owner_its_own_teardown_is_draining() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn neither_wakes_nor_injects_when_the_teardown_cancel_itself_threw() {
     let world = setup().await;
-    let exporter = Arc::new(CaptureExporter { messages: Arc::new(Mutex::new(Vec::new())) });
+    let exporter = Arc::new(CaptureExporter {
+        messages: Arc::new(Mutex::new(Vec::new())),
+    });
     let messages = exporter.messages.clone();
     world.ctx.logger.exporter(&world.ctx, exporter);
 
@@ -1261,7 +1504,9 @@ async fn keeps_the_budget_spent_when_the_owner_only_claims_plugin_notices() {
         arc(AgentInboxClaimedPayload {
             agent: owner.clone(),
             message: create_user_message(
-                vec![ContentBlock::Text { text: "background job bash-1 finished".to_string() }],
+                vec![ContentBlock::Text {
+                    text: "background job bash-1 finished".to_string(),
+                }],
                 MessageSource::Plugin {
                     plugin: "tool-jobs".to_string(),
                     form: Some(dsh_llm::ContextForm::Notice),
@@ -1320,19 +1565,34 @@ async fn preserves_job_ids_and_collection_guidance_in_bounded_completion_notices
     let (owner, stub, _fiber, _detach) =
         fake_agent(&world.ctx, &world.registry, "sess-1", AgentStatus::Running).await;
 
-    let first = Producer::new("subagent", &"x".repeat(1_000), Some(owner.clone()), Some(61), |_| {});
+    let first = Producer::new(
+        "subagent",
+        &"x".repeat(1_000),
+        Some(owner.clone()),
+        Some(61),
+        |_| {},
+    );
     first.start(world.jobs.as_ref()).expect("start");
     first.settle(completed(Some(&"d".repeat(1_000)), None));
     tick().await;
 
-    let second = Producer::new("subagent", &"x".repeat(1_000), Some(owner), Some(80), |_| {});
+    let second = Producer::new(
+        "subagent",
+        &"x".repeat(1_000),
+        Some(owner),
+        Some(80),
+        |_| {},
+    );
     second.start(world.jobs.as_ref()).expect("start");
     second.settle(completed(Some(&"d".repeat(1_000)), None));
     tick().await;
 
     let delivered = stub.injects();
     assert_eq!(delivered.len(), 2);
-    assert_eq!(texts_of(&delivered[0]), "background job subagent-1\nDone; job_output.");
+    assert_eq!(
+        texts_of(&delivered[0]),
+        "background job subagent-1\nDone; job_output."
+    );
     assert_eq!(
         delivered[0].source,
         MessageSource::Plugin {
@@ -1347,8 +1607,14 @@ async fn preserves_job_ids_and_collection_guidance_in_bounded_completion_notices
 
     let notice = texts_of(&delivered[1]);
     assert!(notice.as_bytes().len() <= 80, "{notice}");
-    assert!(notice.contains("background job subagent-2 (subagent: xxxx"), "{notice}");
-    assert!(notice.contains("[notice truncated]\nDone; job_output."), "{notice}");
+    assert!(
+        notice.contains("background job subagent-2 (subagent: xxxx"),
+        "{notice}"
+    );
+    assert!(
+        notice.contains("[notice truncated]\nDone; job_output."),
+        "{notice}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1364,7 +1630,13 @@ async fn keeps_the_complete_pty_job_id_and_collection_action_at_the_minimum_pty_
     let (owner, stub, _fiber, _detach) =
         fake_agent(&world.ctx, &world.registry, "sess-1", AgentStatus::Running).await;
 
-    let target = Producer::new("pty-send", &"x".repeat(1_000), Some(owner), Some(64), |_| {});
+    let target = Producer::new(
+        "pty-send",
+        &"x".repeat(1_000),
+        Some(owner),
+        Some(64),
+        |_| {},
+    );
     target.start(world.jobs.as_ref()).expect("start");
     target.settle(completed(Some(&"d".repeat(1_000)), None));
     tick().await;
@@ -1373,7 +1645,10 @@ async fn keeps_the_complete_pty_job_id_and_collection_action_at_the_minimum_pty_
     assert_eq!(delivered.len(), 1);
     let notice = texts_of(&delivered[0]);
     assert!(notice.as_bytes().len() <= 64, "{notice}");
-    assert_eq!(notice, "background job pty-send-100\n[notice truncated]\nDone; job_output.");
+    assert_eq!(
+        notice,
+        "background job pty-send-100\n[notice truncated]\nDone; job_output."
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1382,7 +1657,13 @@ async fn reserves_the_collection_action_tail_when_a_producer_supplies_a_smaller_
     let (owner, stub, _fiber, _detach) =
         fake_agent(&world.ctx, &world.registry, "sess-1", AgentStatus::Running).await;
 
-    let tiny = Producer::new("pty-send", &"x".repeat(100), Some(owner.clone()), Some(8), |_| {});
+    let tiny = Producer::new(
+        "pty-send",
+        &"x".repeat(100),
+        Some(owner.clone()),
+        Some(8),
+        |_| {},
+    );
     tiny.start(world.jobs.as_ref()).expect("start");
     tiny.settle(completed(None, None));
     tick().await;
@@ -1410,7 +1691,13 @@ async fn suppresses_the_notice_for_a_job_the_model_already_killed() {
 
     let producer = Producer::new("bash", "sleep 60", Some(owner.clone()), None, |_| {});
     producer.start(world.jobs.as_ref()).expect("start");
-    call(&world, "job_kill", serde_json::json!({ "job_id": "bash-1" }), Some(owner)).await;
+    call(
+        &world,
+        "job_kill",
+        serde_json::json!({ "job_id": "bash-1" }),
+        Some(owner),
+    )
+    .await;
     producer.settle(JobOutcome {
         status: JobOutcomeStatus::Killed,
         detail: None,
@@ -1467,8 +1754,15 @@ async fn does_not_route_an_old_owner_completion_notice_to_a_same_session_replace
     (detach)().await;
     let replacement = StubAgent::new("shared", world.ctx.clone(), AgentStatus::Running);
     let replacement_arc: Arc<dyn Agent> = replacement.clone();
-    world.registry.enter(replacement_arc.clone(), None).expect("enter replacement");
-    world.registry.announce(&replacement_arc).await.expect("announce replacement");
+    world
+        .registry
+        .enter(replacement_arc.clone(), None)
+        .expect("enter replacement");
+    world
+        .registry
+        .announce(&replacement_arc)
+        .await
+        .expect("announce replacement");
 
     producer.settle(completed(None, None));
     tick().await;
@@ -1480,7 +1774,9 @@ async fn does_not_route_an_old_owner_completion_notice_to_a_same_session_replace
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn surfaces_an_inject_failure_through_listener_containment() {
     let world = setup().await;
-    let exporter = Arc::new(CaptureExporter { messages: Arc::new(Mutex::new(Vec::new())) });
+    let exporter = Arc::new(CaptureExporter {
+        messages: Arc::new(Mutex::new(Vec::new())),
+    });
     let messages = exporter.messages.clone();
     world.ctx.logger.exporter(&world.ctx, exporter);
 

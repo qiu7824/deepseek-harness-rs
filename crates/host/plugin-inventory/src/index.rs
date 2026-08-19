@@ -60,9 +60,7 @@ impl PluginInventoryGateway {
         let loader = ctx
             .get_typed::<Arc<LoaderService>>("loader", false)
             .map(|slot| slot.as_ref().clone())
-            .ok_or_else(|| {
-                "plugin-inventory requires the loader service".to_string()
-            })?;
+            .ok_or_else(|| "plugin-inventory requires the loader service".to_string())?;
         let gateway = Arc::new(Self { loader });
         ctx.register_service(gateway.clone());
         Ok(gateway)

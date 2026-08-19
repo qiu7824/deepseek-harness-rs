@@ -167,6 +167,27 @@ async fn rejects_agents_that_are_not_live() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn session_start_disarms_the_live_goal() {
+    let harness = setup(Config::default()).await;
+    let (agent, _fiber) = StubAgent::new(&harness.ctx, "session-start-disarm");
+    register_agent(&harness, &agent).await;
+    harness
+        .goals
+        .create(&agent, create_request("restart safely"))
+        .expect("create");
+
+    dsh_agent::emit_agent_event(&harness.ctx, &agent, "agent/session-start", |agent| {
+        cordis::arc(dsh_agent::AgentSessionStartPayload {
+            agent: agent.clone(),
+            source: dsh_agent::SessionStartSource::Resume,
+        })
+    });
+
+    let current = harness.goals.get(&agent).expect("get").expect("goal");
+    assert_eq!(current.activation, GoalActivation::Disarmed);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn creates_an_armed_active_goal_and_rejects_a_second() {
     let harness = setup(Config::default()).await;
     let (agent, _fiber) = StubAgent::new(&harness.ctx, "owner");
@@ -616,5 +637,79 @@ async fn failed_durable_append_does_not_commit_or_publish_a_goal_mutation() {
     assert!(
         published.lock().is_empty(),
         "a failed mutation must not publish goal/changed"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn disarm_during_a_durable_mutation_wins_over_local_activation() {
+    let harness = setup(Config::default()).await;
+    let sessions = SessionStore::install(&harness.ctx);
+    let session = sessions
+        .create(&harness.ctx, Some(session_id("disarm-race")), None)
+        .await
+        .expect("attached session");
+    let (agent, _fiber) = StubAgent::with_session(&harness.ctx, session);
+    register_agent(&harness, &agent).await;
+    let created = harness
+        .goals
+        .create(&agent, create_request("keep the disarm edge"))
+        .expect("create");
+
+    let disarm_seen = Arc::new(Mutex::new(false));
+    let disarm_seen_for_listener = disarm_seen.clone();
+    let goals = harness.goals.clone();
+    let agent_for_listener = agent.clone();
+    harness
+        .ctx
+        .on(
+            "session/event",
+            Arc::new(move |_ctx, args| {
+                let is_edit = args
+                    .get(1)
+                    .and_then(|value| downcast::<dsh_session::SessionEvent>(value))
+                    .is_some_and(|event| {
+                        event.type_ == "goal/change"
+                            && event.data.get("operation").and_then(|value| value.as_str())
+                                == Some("edit")
+                    });
+                if is_edit {
+                    goals
+                        .disarm(&agent_for_listener)
+                        .expect("disarm during append");
+                    *disarm_seen_for_listener.lock() = true;
+                }
+                Box::pin(async { None })
+            }),
+            cordis::EventOptions::default().global(true),
+        )
+        .await;
+
+    let edited = harness
+        .goals
+        .edit(
+            &agent,
+            &GoalRef {
+                id: created.id,
+                revision: created.revision,
+            },
+            &EditGoalRequest {
+                objective: Some("edited while disarming".to_string()),
+                max_goal_rounds: None,
+            },
+        )
+        .expect("edit");
+
+    assert!(*disarm_seen.lock(), "the append observer must run");
+    assert_eq!(edited.revision, 2);
+    assert_eq!(edited.phase, GoalPhase::Active);
+    assert_eq!(edited.activation, GoalActivation::Disarmed);
+    assert_eq!(
+        harness
+            .goals
+            .get(&agent)
+            .expect("get")
+            .expect("goal")
+            .activation,
+        GoalActivation::Disarmed
     );
 }

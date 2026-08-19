@@ -9,8 +9,7 @@ use std::sync::Arc;
 use cordis::Context;
 use dsh_storage::Storage;
 use dsh_storage_domain::{
-    DomainChanged, DomainFacility, DomainFacilityConfig, define_domain, domain_global,
-    domain_table,
+    DomainChanged, DomainFacility, DomainFacilityConfig, define_domain, domain_global, domain_table,
 };
 use dsh_storage_test_support::{MemoryMediaPool, MemoryStorageBackend};
 use serde_json::{Value as JsonValue, json};
@@ -20,24 +19,24 @@ fn accept_all() -> dsh_storage_domain::RecordSchema {
 }
 
 fn marks_schema() -> dsh_storage_domain::RecordSchema {
-    Arc::new(|value: &JsonValue| {
-        match value {
-            JsonValue::Object(object) if object.contains_key("marks") => Ok(()),
-            other => Err(format!("expected an object with marks, got {other}")),
-        }
+    Arc::new(|value: &JsonValue| match value {
+        JsonValue::Object(object) if object.contains_key("marks") => Ok(()),
+        other => Err(format!("expected an object with marks, got {other}")),
     })
 }
 
-fn install_hub(
-    ctx: &Context,
-    pool: Arc<MemoryMediaPool>,
-) -> (Arc<Storage>, Arc<DomainFacility>) {
+fn install_hub(ctx: &Context, pool: Arc<MemoryMediaPool>) -> (Arc<Storage>, Arc<DomainFacility>) {
     let hub = Storage::install(ctx);
     let backend = MemoryStorageBackend::with_shared_pool(pool);
-    hub.backend.register("memory", backend).expect("register backend");
+    hub.backend
+        .register("memory", backend)
+        .expect("register backend");
     let facility = DomainFacility::install(
         ctx,
-        DomainFacilityConfig { backend: "memory".to_string(), routes: Default::default() },
+        DomainFacilityConfig {
+            backend: "memory".to_string(),
+            routes: Default::default(),
+        },
     )
     .expect("facility");
     (hub, facility)
@@ -103,10 +102,13 @@ async fn open_puts_and_reads_round_trip_with_change_events() {
     );
 
     let updated = table
-        .update("a", Arc::new(|mut current| {
-            current["marks"] = json!(["x", "y"]);
-            current
-        }))
+        .update(
+            "a",
+            Arc::new(|mut current| {
+                current["marks"] = json!(["x", "y"]);
+                current
+            }),
+        )
         .await
         .expect("update");
     assert_eq!(updated["marks"], json!(["x", "y"]));
@@ -115,7 +117,10 @@ async fn open_puts_and_reads_round_trip_with_change_events() {
         .await
         .err()
         .expect("missing-key");
-    assert!(missing.contains("no record 'absent' to update"), "{missing}");
+    assert!(
+        missing.contains("no record 'absent' to update"),
+        "{missing}"
+    );
 
     assert!(table.delete("a").await.expect("delete"));
     assert!(!table.delete("a").await.expect("delete idempotent"));
@@ -155,7 +160,11 @@ async fn global_slot_round_trips_initial_then_set() {
     .expect("spec");
     let domain = facility.open(&spec).await.expect("open");
     assert_eq!(domain.global().get(), json!({"marks": []}));
-    domain.global().set(json!({"marks": ["g"]})).await.expect("set");
+    domain
+        .global()
+        .set(json!({"marks": ["g"]}))
+        .await
+        .expect("set");
     assert_eq!(domain.global().get(), json!({"marks": ["g"]}));
     domain.close().await;
 
@@ -226,7 +235,11 @@ async fn version_mismatch_and_invalid_records_reject_at_open() {
         indexmap::IndexMap::from([("rows".to_string(), domain_table(marks_schema()))]),
     )
     .expect("spec");
-    let error = facility2.open(&validated).await.err().expect("invalid-record");
+    let error = facility2
+        .open(&validated)
+        .await
+        .err()
+        .expect("invalid-record");
     assert!(
         error.contains("stored record 'bad' in table 'rows' does not match its schema"),
         "{error}"

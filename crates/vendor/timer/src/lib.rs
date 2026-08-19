@@ -218,7 +218,8 @@ impl TimerService {
             &label,
             Box::pin(async move {
                 Some(make_disposer(move || {
-                    let (timer, disposed) = (timer_for_dispose.clone(), disposed_for_dispose.clone());
+                    let (timer, disposed) =
+                        (timer_for_dispose.clone(), disposed_for_dispose.clone());
                     Box::pin(async move {
                         disposed.store(true, Ordering::SeqCst);
                         if let Some(handle) = timer.lock().unwrap().take() {
@@ -228,13 +229,14 @@ impl TimerService {
                 }))
             }),
         );
-        let call: Arc<dyn Fn(Vec<ArcValue>) + Send + Sync> = Arc::new(move |args: Vec<ArcValue>| {
-            // TS clears the pending timer before rescheduling.
-            if let Some(old) = timer.lock().unwrap().take() {
-                old.abort();
-            }
-            *timer.lock().unwrap() = trigger(args, &disposed);
-        });
+        let call: Arc<dyn Fn(Vec<ArcValue>) + Send + Sync> =
+            Arc::new(move |args: Vec<ArcValue>| {
+                // TS clears the pending timer before rescheduling.
+                if let Some(old) = timer.lock().unwrap().take() {
+                    old.abort();
+                }
+                *timer.lock().unwrap() = trigger(args, &disposed);
+            });
         Throttled { call, dispose }
     }
 
@@ -255,23 +257,24 @@ impl TimerService {
         });
         let execute_for_trigger = execute.clone();
         let last_call_for_trigger = last_call.clone();
-        let trigger: Arc<dyn Fn(Vec<ArcValue>, &AtomicBool) -> Option<JoinHandle<()>> + Send + Sync> =
-            Arc::new(move |args, is_disposed| {
-                let now = now_ms();
-                let remaining = delay_ms as i64 - now + last_call_for_trigger.load(Ordering::SeqCst);
-                if remaining <= 0 {
-                    execute_for_trigger(args);
-                    None
-                } else if !is_disposed.load(Ordering::SeqCst) {
-                    let execute = execute_for_trigger.clone();
-                    Some(tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_millis(remaining.max(0) as u64)).await;
-                        execute(args);
-                    }))
-                } else {
-                    None
-                }
-            });
+        let trigger: Arc<
+            dyn Fn(Vec<ArcValue>, &AtomicBool) -> Option<JoinHandle<()>> + Send + Sync,
+        > = Arc::new(move |args, is_disposed| {
+            let now = now_ms();
+            let remaining = delay_ms as i64 - now + last_call_for_trigger.load(Ordering::SeqCst);
+            if remaining <= 0 {
+                execute_for_trigger(args);
+                None
+            } else if !is_disposed.load(Ordering::SeqCst) {
+                let execute = execute_for_trigger.clone();
+                Some(tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(remaining.max(0) as u64)).await;
+                    execute(args);
+                }))
+            } else {
+                None
+            }
+        });
         self.schedule(caller, "ctx.throttle()", trigger, no_trailing)
     }
 
@@ -284,17 +287,18 @@ impl TimerService {
         delay_ms: u64,
     ) -> Throttled {
         let callback_for_trigger = callback.clone();
-        let trigger: Arc<dyn Fn(Vec<ArcValue>, &AtomicBool) -> Option<JoinHandle<()>> + Send + Sync> =
-            Arc::new(move |args, is_disposed| {
-                if is_disposed.load(Ordering::SeqCst) {
-                    return None;
-                }
-                let callback = callback_for_trigger.clone();
-                Some(tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                    callback(args);
-                }))
-            });
+        let trigger: Arc<
+            dyn Fn(Vec<ArcValue>, &AtomicBool) -> Option<JoinHandle<()>> + Send + Sync,
+        > = Arc::new(move |args, is_disposed| {
+            if is_disposed.load(Ordering::SeqCst) {
+                return None;
+            }
+            let callback = callback_for_trigger.clone();
+            Some(tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                callback(args);
+            }))
+        });
         self.schedule(caller, "ctx.debounce()", trigger, false)
     }
 }
@@ -356,7 +360,13 @@ mod tests {
         let ctx = timer_ctx().await;
         let hits = Arc::new(AtomicU32::new(0));
         let h = hits.clone();
-        service(&ctx).timeout(&ctx, Arc::new(move || { h.fetch_add(1, Ordering::SeqCst); }), 30);
+        service(&ctx).timeout(
+            &ctx,
+            Arc::new(move || {
+                h.fetch_add(1, Ordering::SeqCst);
+            }),
+            30,
+        );
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
@@ -368,7 +378,9 @@ mod tests {
         let h = hits.clone();
         let dispose = service(&ctx).timeout(
             &ctx,
-            Arc::new(move || { h.fetch_add(1, Ordering::SeqCst); }),
+            Arc::new(move || {
+                h.fetch_add(1, Ordering::SeqCst);
+            }),
             30,
         );
         dispose().await;
@@ -383,11 +395,15 @@ mod tests {
         assert_eq!(ok, Ok(()));
 
         // A fiber-owned future rejects when the owning plugin unloads.
-        struct Capturer(Arc<std::sync::Mutex<Option<cordis::BoxFuture<'static, Result<(), TimerError>>>>>);
+        struct Capturer(
+            Arc<std::sync::Mutex<Option<cordis::BoxFuture<'static, Result<(), TimerError>>>>>,
+        );
         #[async_trait::async_trait]
         impl Plugin for Capturer {
             async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
-                let timer = ctx.get_typed::<Arc<TimerService>>("timer", true).expect("timer");
+                let timer = ctx
+                    .get_typed::<Arc<TimerService>>("timer", true)
+                    .expect("timer");
                 let future = timer.timeout_future(ctx, 10_000);
                 *self.0.lock().unwrap() = Some(future);
                 Ok(())
@@ -409,7 +425,9 @@ mod tests {
         let h = hits.clone();
         let dispose = service(&ctx).interval(
             &ctx,
-            Arc::new(move || { h.fetch_add(1, Ordering::SeqCst); }),
+            Arc::new(move || {
+                h.fetch_add(1, Ordering::SeqCst);
+            }),
             20,
         );
         tokio::time::sleep(Duration::from_millis(90)).await;
@@ -417,7 +435,11 @@ mod tests {
         assert!(count >= 3, "expected >=3 ticks, got {count}");
         dispose().await;
         tokio::time::sleep(Duration::from_millis(60)).await;
-        assert_eq!(hits.load(Ordering::SeqCst), count, "ticks continue after dispose");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            count,
+            "ticks continue after dispose"
+        );
     }
 
     #[tokio::test]
@@ -437,13 +459,19 @@ mod tests {
         let h = hits.clone();
         let throttled = service(&ctx).throttle(
             &ctx,
-            Arc::new(move |_args: Vec<ArcValue>| { h.fetch_add(1, Ordering::SeqCst); }),
+            Arc::new(move |_args: Vec<ArcValue>| {
+                h.fetch_add(1, Ordering::SeqCst);
+            }),
             40,
             false,
         );
         (throttled.call)(vec![]);
         (throttled.call)(vec![]);
-        assert_eq!(hits.load(Ordering::SeqCst), 1, "leading call fires immediately");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "leading call fires immediately"
+        );
         tokio::time::sleep(Duration::from_millis(60)).await;
         assert_eq!(hits.load(Ordering::SeqCst), 2, "trailing call fires once");
         tokio::time::sleep(Duration::from_millis(60)).await;
@@ -457,14 +485,20 @@ mod tests {
         let h = hits.clone();
         let throttled = service(&ctx).throttle(
             &ctx,
-            Arc::new(move |_args: Vec<ArcValue>| { h.fetch_add(1, Ordering::SeqCst); }),
+            Arc::new(move |_args: Vec<ArcValue>| {
+                h.fetch_add(1, Ordering::SeqCst);
+            }),
             40,
             true,
         );
         (throttled.call)(vec![]);
         (throttled.call)(vec![]);
         tokio::time::sleep(Duration::from_millis(80)).await;
-        assert_eq!(hits.load(Ordering::SeqCst), 1, "no trailing call with noTrailing");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "no trailing call with noTrailing"
+        );
     }
 
     #[tokio::test]
@@ -474,7 +508,9 @@ mod tests {
         let h = hits.clone();
         let debounced = service(&ctx).debounce(
             &ctx,
-            Arc::new(move |_args: Vec<ArcValue>| { h.fetch_add(1, Ordering::SeqCst); }),
+            Arc::new(move |_args: Vec<ArcValue>| {
+                h.fetch_add(1, Ordering::SeqCst);
+            }),
             40,
         );
         for _ in 0..3 {
@@ -492,7 +528,9 @@ mod tests {
         let h = hits.clone();
         let debounced = service(&ctx).debounce(
             &ctx,
-            Arc::new(move |_args: Vec<ArcValue>| { h.fetch_add(1, Ordering::SeqCst); }),
+            Arc::new(move |_args: Vec<ArcValue>| {
+                h.fetch_add(1, Ordering::SeqCst);
+            }),
             40,
         );
         (debounced.call)(vec![]);

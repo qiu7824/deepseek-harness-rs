@@ -158,16 +158,21 @@ impl CommandLayer {
     fn new(scope: Option<&ScopeKey>) -> Self {
         let scoped = scope.is_some();
         Self {
-            commands: NamedEntries::new(move |name: &str| -> Box<dyn std::error::Error + Send + Sync> {
-                let message = if scoped {
-                    format!("command \"{name}\" is already registered in this scope")
-                } else {
-                    format!(
-                        "command \"{name}\" is already registered (for a per-agent variant, mount a command-injected plugin under that agent's `agent.ctx`)"
-                    )
-                };
-                Box::new(std::io::Error::new(std::io::ErrorKind::AlreadyExists, message))
-            }),
+            commands: NamedEntries::new(
+                move |name: &str| -> Box<dyn std::error::Error + Send + Sync> {
+                    let message = if scoped {
+                        format!("command \"{name}\" is already registered in this scope")
+                    } else {
+                        format!(
+                            "command \"{name}\" is already registered (for a per-agent variant, mount a command-injected plugin under that agent's `agent.ctx`)"
+                        )
+                    };
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        message,
+                    ))
+                },
+            ),
         }
     }
 }
@@ -214,7 +219,11 @@ impl CommandRuntime {
         let registered = normalize_definition(definition)?;
         Ok(self.layers.effect(
             caller,
-            move |layer| layer.commands.insert(&registered.definition.name, registered.clone()),
+            move |layer| {
+                layer
+                    .commands
+                    .insert(&registered.definition.name, registered.clone())
+            },
             "commands.register()",
             true,
         ))
@@ -308,7 +317,10 @@ impl CommandRuntime {
             },
         });
         match &result {
-            CommandResult::Success { text, source_event_seq } => {
+            CommandResult::Success {
+                text,
+                source_event_seq,
+            } => {
                 if let Some(text) = text {
                     done_data["text"] = serde_json::Value::String(text.clone());
                 }
@@ -327,7 +339,10 @@ impl CommandRuntime {
     /// Mint the next pairing id (monotonic; instance-token-prefixed so a
     /// resumed log never repeats one).
     fn mint_command_id(&self) -> CommandId {
-        let seq = self.command_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let seq = self
+            .command_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
         command_id(format!("cmd-{}-{seq}", self.instance_token))
     }
 
@@ -360,9 +375,7 @@ impl cordis::Service for CommandRuntime {
     }
 }
 
-fn normalize_definition(
-    definition: CommandDefinition,
-) -> Result<RegisteredCommand, String> {
+fn normalize_definition(definition: CommandDefinition) -> Result<RegisteredCommand, String> {
     let pattern = regex::Regex::new(COMMAND_NAME).expect("static pattern");
     if !pattern.is_match(&definition.name) {
         return Err(format!(
@@ -397,7 +410,10 @@ fn normalize_definition(
 
 fn normalize_result(command: &str, value: &CommandResult) -> Result<CommandResult, String> {
     match value {
-        CommandResult::Success { text, source_event_seq } => Ok(CommandResult::Success {
+        CommandResult::Success {
+            text,
+            source_event_seq,
+        } => Ok(CommandResult::Success {
             text: text.clone(),
             source_event_seq: *source_event_seq,
         }),

@@ -15,10 +15,9 @@ pub struct RequestHeaderPayload {
 /// Normalize a header to canonical form: an empty system prompt and empty
 /// tool list become absent fields, matching how requests are built.
 pub fn canonical_header(header: &EpochHeader) -> EpochHeader {
-    let keep_defaults = header
-        .adapter_defaults
-        .as_ref()
-        .is_some_and(|defaults| defaults.reasoning_effort == Some(true) || defaults.max_tokens == Some(true));
+    let keep_defaults = header.adapter_defaults.as_ref().is_some_and(|defaults| {
+        defaults.reasoning_effort == Some(true) || defaults.max_tokens == Some(true)
+    });
     EpochHeader {
         config: header.config.clone(),
         adapter_defaults: if keep_defaults {
@@ -53,10 +52,10 @@ pub fn header_equals(a: &EpochHeader, b: &EpochHeader) -> bool {
     }
     let a_defaults = a.adapter_defaults.as_ref();
     let b_defaults = b.adapter_defaults.as_ref();
-    let reasoning_matches = a_defaults.and_then(|d| d.reasoning_effort)
-        == b_defaults.and_then(|d| d.reasoning_effort);
-    let max_tokens_matches = a_defaults.and_then(|d| d.max_tokens)
-        == b_defaults.and_then(|d| d.max_tokens);
+    let reasoning_matches =
+        a_defaults.and_then(|d| d.reasoning_effort) == b_defaults.and_then(|d| d.reasoning_effort);
+    let max_tokens_matches =
+        a_defaults.and_then(|d| d.max_tokens) == b_defaults.and_then(|d| d.max_tokens);
     if !reasoning_matches || !max_tokens_matches || a.system != b.system {
         return false;
     }
@@ -134,7 +133,10 @@ mod tests {
 
         let with_system = header(Some(""), 0);
         let canonical = canonical_header(&with_system);
-        assert!(canonical.system.is_none(), "empty system prompt becomes absent");
+        assert!(
+            canonical.system.is_none(),
+            "empty system prompt becomes absent"
+        );
 
         let with_content = header(Some("be helpful"), 2);
         let canonical = canonical_header(&with_content);
@@ -202,6 +204,9 @@ mod tests {
         ];
         let folded = fold_request_header(&events, None).unwrap();
         assert_eq!(folded.config.model, "second");
-        assert!(folded.system.is_none(), "second header drops the system prompt");
+        assert!(
+            folded.system.is_none(),
+            "second header drops the system prompt"
+        );
     }
 }

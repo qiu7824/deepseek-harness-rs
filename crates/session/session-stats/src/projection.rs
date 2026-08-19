@@ -51,7 +51,8 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
     });
     let apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync> =
         Arc::new(move |state_value: &ArcValue, event: &SessionEvent| {
-            let state: &serde_json::Value = cordis::downcast(state_value).expect("sessionStats state");
+            let state: &serde_json::Value =
+                cordis::downcast(state_value).expect("sessionStats state");
             let data = &event.data;
             match event.type_.as_str() {
                 "step/start" => {
@@ -74,10 +75,12 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                         return Arc::clone(state_value);
                     }
                     let chunk = match data.get("chunk").cloned() {
-                        Some(chunk) => match serde_json::from_value::<dsh_llm::StreamChunk>(chunk) {
-                            Ok(chunk) => chunk,
-                            Err(_) => return Arc::clone(state_value),
-                        },
+                        Some(chunk) => {
+                            match serde_json::from_value::<dsh_llm::StreamChunk>(chunk) {
+                                Ok(chunk) => chunk,
+                                Err(_) => return Arc::clone(state_value),
+                            }
+                        }
                         None => return Arc::clone(state_value),
                     };
                     if !dsh_llm::is_token_delta(&chunk) {
@@ -99,15 +102,23 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                     }
                     let start_time = open.get("startTime").and_then(|t| t.as_i64()).unwrap_or(0);
                     let mut next = state.clone();
-                    next["llmMs"] = serde_json::json!(number(state, "llmMs") + (event.time - start_time).max(0) as u64);
+                    next["llmMs"] = serde_json::json!(
+                        number(state, "llmMs") + (event.time - start_time).max(0) as u64
+                    );
                     next["openStep"] = serde_json::Value::Null;
                     let first_token = open.get("firstTokenTime").and_then(|t| t.as_i64());
                     if let Some(first_token) = first_token {
-                        next["ttftMs"] = serde_json::json!(number(state, "ttftMs") + (first_token - start_time).max(0) as u64);
+                        next["ttftMs"] = serde_json::json!(
+                            number(state, "ttftMs") + (first_token - start_time).max(0) as u64
+                        );
                         next["ttftSteps"] = serde_json::json!(number(state, "ttftSteps") + 1);
                         if let Some(output) = usage_output_tokens(data.get("usage")) {
-                            next["decodeMs"] = serde_json::json!(number(state, "decodeMs") + (event.time - first_token).max(0) as u64);
-                            next["decodeTokens"] = serde_json::json!(number(state, "decodeTokens") + output);
+                            next["decodeMs"] = serde_json::json!(
+                                number(state, "decodeMs")
+                                    + (event.time - first_token).max(0) as u64
+                            );
+                            next["decodeTokens"] =
+                                serde_json::json!(number(state, "decodeTokens") + output);
                         }
                     }
                     cordis::arc(next)
@@ -137,7 +148,9 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                         return Arc::clone(state_value);
                     };
                     let mut next = state.clone();
-                    next["toolMs"] = serde_json::json!(number(state, "toolMs") + (event.time - dispatched).max(0) as u64);
+                    next["toolMs"] = serde_json::json!(
+                        number(state, "toolMs") + (event.time - dispatched).max(0) as u64
+                    );
                     next["pendingCalls"]
                         .as_object_mut()
                         .expect("pendingCalls object")
@@ -173,25 +186,34 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                 _ => Arc::clone(state_value),
             }
         });
-    let view: Arc<dyn Fn(&ArcValue) -> ArcValue + Send + Sync> = Arc::new(|state_value: &ArcValue| {
-        let state: &serde_json::Value = cordis::downcast(state_value).expect("sessionStats state");
-        cordis::arc(serde_json::json!({
-            "turns": state.get("turns"),
-            "steps": state.get("steps"),
-            "llmMs": state.get("llmMs"),
-            "toolMs": state.get("toolMs"),
-            "ttftMs": state.get("ttftMs"),
-            "ttftSteps": state.get("ttftSteps"),
-            "decodeMs": state.get("decodeMs"),
-            "decodeTokens": state.get("decodeTokens"),
-        }))
-    });
+    let view: Arc<dyn Fn(&ArcValue) -> ArcValue + Send + Sync> =
+        Arc::new(|state_value: &ArcValue| {
+            let state: &serde_json::Value =
+                cordis::downcast(state_value).expect("sessionStats state");
+            cordis::arc(serde_json::json!({
+                "turns": state.get("turns"),
+                "steps": state.get("steps"),
+                "llmMs": state.get("llmMs"),
+                "toolMs": state.get("toolMs"),
+                "ttftMs": state.get("ttftMs"),
+                "ttftSteps": state.get("ttftSteps"),
+                "decodeMs": state.get("decodeMs"),
+                "decodeTokens": state.get("decodeTokens"),
+            }))
+        });
     let schema: Arc<dyn Fn(&ArcValue) -> Result<serde_json::Value, String> + Send + Sync> =
         Arc::new(|value: &ArcValue| {
-            let value: &serde_json::Value =
-                cordis::downcast(value).ok_or_else(|| "view must produce a JSON value".to_string())?;
+            let value: &serde_json::Value = cordis::downcast(value)
+                .ok_or_else(|| "view must produce a JSON value".to_string())?;
             let expected = [
-                "turns", "steps", "llmMs", "toolMs", "ttftMs", "ttftSteps", "decodeMs", "decodeTokens",
+                "turns",
+                "steps",
+                "llmMs",
+                "toolMs",
+                "ttftMs",
+                "ttftSteps",
+                "decodeMs",
+                "decodeTokens",
             ];
             for key in expected {
                 let field = value
@@ -199,13 +221,19 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                     .ok_or_else(|| format!("sessionStats view missing {key}"))?;
                 if key == "ttftSteps" || key == "steps" || key == "turns" || key == "decodeTokens" {
                     if field.as_u64().is_none() {
-                        return Err(format!("sessionStats view field {key} must be a non-negative integer"));
+                        return Err(format!(
+                            "sessionStats view field {key} must be a non-negative integer"
+                        ));
                     }
                 } else if field.as_u64().is_none() {
-                    return Err(format!("sessionStats view field {key} must be a non-negative number"));
+                    return Err(format!(
+                        "sessionStats view field {key} must be a non-negative number"
+                    ));
                 }
             }
-            if !value.is_object() || value.as_object().map(|object| object.len()).unwrap_or(0) != expected.len() {
+            if !value.is_object()
+                || value.as_object().map(|object| object.len()).unwrap_or(0) != expected.len()
+            {
                 return Err("sessionStats view carries unexpected keys".to_string());
             }
             let _ = SessionStatsProjection::from_wire(value)?;

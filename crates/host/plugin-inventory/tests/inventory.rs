@@ -13,9 +13,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cordis::{ArcValue, Context, InjectSpec, Plugin, PluginError};
 use dsh_cordis_loader::{EntryOptions, LoaderService};
-use dsh_host_plugin_inventory::{
-    PluginFiberPhase, PluginInventoryGateway,
-};
+use dsh_host_plugin_inventory::{PluginFiberPhase, PluginInventoryGateway};
 
 struct ActivePlugin;
 
@@ -150,10 +148,7 @@ fn projects_current_non_group_loader_entries_without_a_second_cache() {
         // Disabling a live entry disposes its fiber: enabled false, phase
         // null.
         let mut patch = indexmap::IndexMap::new();
-        patch.insert(
-            "disabled".to_string(),
-            serde_json::Value::Bool(true),
-        );
+        patch.insert("disabled".to_string(), serde_json::Value::Bool(true));
         loader
             .tree
             .resolve(&active_id)

@@ -159,7 +159,11 @@ pub struct E2bSdkError {
 
 impl E2bSdkError {
     pub fn not_found(message: impl Into<String>) -> Self {
-        Self { kind: E2bSdkErrorKind::NotFound, message: message.into(), stderr: None }
+        Self {
+            kind: E2bSdkErrorKind::NotFound,
+            message: message.into(),
+            stderr: None,
+        }
     }
 
     pub fn command_exit(exit_code: i32, stderr: impl Into<String>) -> Self {
@@ -172,7 +176,11 @@ impl E2bSdkError {
     }
 
     pub fn other(message: impl Into<String>) -> Self {
-        Self { kind: E2bSdkErrorKind::Other, message: message.into(), stderr: None }
+        Self {
+            kind: E2bSdkErrorKind::Other,
+            message: message.into(),
+            stderr: None,
+        }
     }
 
     pub fn is_not_found(&self) -> bool {
@@ -180,8 +188,7 @@ impl E2bSdkError {
     }
 
     pub fn is_abort(&self) -> bool {
-        matches!(self.kind, E2bSdkErrorKind::Other)
-            && self.message.eq_ignore_ascii_case("aborted")
+        matches!(self.kind, E2bSdkErrorKind::Other) && self.message.eq_ignore_ascii_case("aborted")
     }
 }
 
@@ -261,7 +268,10 @@ pub fn quote_e2b_shell_arg(value: &str) -> String {
 /// (TS `e2bControlEnvs`).
 pub fn e2b_control_envs(overrides: HashMap<String, String>) -> HashMap<String, String> {
     let mut envs = overrides;
-    envs.insert("HOME".to_string(), format!("/.dsh-e2b-control-{}", uuid::Uuid::new_v4()));
+    envs.insert(
+        "HOME".to_string(),
+        format!("/.dsh-e2b-control-{}", uuid::Uuid::new_v4()),
+    );
     envs
 }
 
@@ -317,13 +327,17 @@ impl E2bRuntime {
             .clone()
             .or_else(|| env_lookup("E2B_API_KEY"))
             .unwrap_or_default();
-        let cwd = config.cwd.unwrap_or_else(|| "/home/user/workspace".to_string());
+        let cwd = config
+            .cwd
+            .unwrap_or_else(|| "/home/user/workspace".to_string());
         let timeout_ms = config.timeout_ms.unwrap_or(300_000);
         if api_key.is_empty() {
             return Err("dsh-e2b: configure apiKey or set E2B_API_KEY".to_string());
         }
         if !cwd.starts_with('/') {
-            return Err(format!("dsh-e2b: cwd must be an absolute Linux path: {cwd}"));
+            return Err(format!(
+                "dsh-e2b: cwd must be an absolute Linux path: {cwd}"
+            ));
         }
         if timeout_ms == 0 {
             return Err("dsh-e2b: timeoutMs must be a positive finite number".to_string());
@@ -332,7 +346,10 @@ impl E2bRuntime {
         let runtime = Arc::new(Self {
             cwd,
             runtime_root,
-            config: ResolvedConfig { api_key, timeout_ms },
+            config: ResolvedConfig {
+                api_key,
+                timeout_ms,
+            },
             sdk,
             ready: tokio::sync::OnceCell::new(),
             disposed: AtomicBool::new(false),
@@ -492,15 +509,25 @@ fn config_from_value(config: &ArcValue) -> Result<Config, String> {
             if let Some(integer) = v.as_u64() {
                 return Ok(Some(integer));
             }
-            let number = v.as_f64().ok_or_else(|| "dsh-e2b: timeoutMs must be a number".to_string())?;
-            if !number.is_finite() || number.fract() != 0.0 || number <= 0.0 || number > 9_007_199_254_740_991.0 {
+            let number = v
+                .as_f64()
+                .ok_or_else(|| "dsh-e2b: timeoutMs must be a number".to_string())?;
+            if !number.is_finite()
+                || number.fract() != 0.0
+                || number <= 0.0
+                || number > 9_007_199_254_740_991.0
+            {
                 return Err("dsh-e2b: timeoutMs must be a positive finite number".to_string());
             }
             Ok(Some(number as u64))
         })
         .transpose()?
         .flatten();
-    Ok(Config { api_key, cwd, timeout_ms })
+    Ok(Config {
+        api_key,
+        cwd,
+        timeout_ms,
+    })
 }
 
 #[async_trait::async_trait]
@@ -514,8 +541,8 @@ impl Plugin for E2bPlugin {
     }
 
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
-        let config =
-            config_from_value(&config).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
+        let config = config_from_value(&config)
+            .map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
         E2bRuntime::install(ctx, self.sdk.clone(), config, self.env_lookup.clone())
             .map(|_| ())
             .map_err(|message| PluginError::from(anyhow::anyhow!(message)))

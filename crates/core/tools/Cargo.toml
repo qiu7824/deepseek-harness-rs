@@ -10,6 +10,7 @@ dsh-llm = { path = "../llm" }
 dsh-agent = { path = "../agent" }
 dsh-scope = { path = "../scope" }
 dsh-system-prompt = { path = "../system-prompt" }
+dsh-code-runtime = { path = "../../code-runtime/code-runtime" }
 cordis = { path = "../../vendor/cordis" }
 futures = { workspace = true }
 parking_lot = { workspace = true }

@@ -26,7 +26,11 @@ impl InboxTarget {
 pub struct InboxSplice {
     pub target: InboxTarget,
     pub start: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "removedCount")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "removedCount"
+    )]
     pub removed_count: Option<u64>,
     pub inserted: Vec<dsh_llm::Message>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,7 +74,10 @@ mod tests {
     fn splice_wire_shape() {
         let message = dsh_llm::create_user_message(
             vec![dsh_llm::ContentBlock::Text { text: "hi".into() }],
-            dsh_llm::MessageSource::User { rpc_id: None, client_time_zone: None },
+            dsh_llm::MessageSource::User {
+                rpc_id: None,
+                client_time_zone: None,
+            },
         );
         let splice = InboxSplice {
             target: InboxTarget::NextStep,

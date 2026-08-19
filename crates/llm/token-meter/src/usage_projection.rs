@@ -59,7 +59,9 @@ fn validate_projection_schema(value: &Value) -> Result<Value, String> {
         "cacheWriteTokens",
     ] {
         if value.get(key).and_then(|v| v.as_u64()).is_none() {
-            return Err(format!("tokenUsage view field {key} must be a non-negative integer"));
+            return Err(format!(
+                "tokenUsage view field {key} must be a non-negative integer"
+            ));
         }
     }
     if !value.is_object() || value.as_object().map(|o| o.len()).unwrap_or(0) != 4 {
@@ -70,9 +72,8 @@ fn validate_projection_schema(value: &Value) -> Result<Value, String> {
 
 /// Token-meter's session projection unit (TS `tokenUsageProjectionDefinition`).
 pub fn token_usage_projection_definition() -> ProjectionDefinition {
-    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> = Arc::new(|| {
-        arc(serde_json::json!({"totals": zero_buckets(), "last": Value::Null}))
-    });
+    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> =
+        Arc::new(|| arc(serde_json::json!({"totals": zero_buckets(), "last": Value::Null})));
     let apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync> =
         Arc::new(|state_value: &ArcValue, event: &SessionEvent| {
             let state: &Value = cordis::downcast(state_value).expect("tokenUsage state");
@@ -129,7 +130,8 @@ pub fn token_usage_projection_definition() -> ProjectionDefinition {
     ProjectionDefinition {
         key: "tokenUsage".to_string(),
         schema: Arc::new(|value: &ArcValue| {
-            let value: &Value = cordis::downcast(value).ok_or_else(|| "view must be JSON".to_string())?;
+            let value: &Value =
+                cordis::downcast(value).ok_or_else(|| "view must be JSON".to_string())?;
             validate_projection_schema(value)
         }),
         init,
@@ -141,9 +143,18 @@ pub fn token_usage_projection_definition() -> ProjectionDefinition {
 
 /// Prompt-side pressure of one request: input plus cache traffic, no output.
 fn pressure_from(usage: &Value) -> u64 {
-    usage.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0)
-        + usage.get("cacheReadTokens").and_then(|v| v.as_u64()).unwrap_or(0)
-        + usage.get("cacheWriteTokens").and_then(|v| v.as_u64()).unwrap_or(0)
+    usage
+        .get("inputTokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        + usage
+            .get("cacheReadTokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+        + usage
+            .get("cacheWriteTokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
 }
 
 /// The usage a chunk or finalized message reports for its step, if any.
@@ -169,7 +180,9 @@ fn validate_pressure_schema(value: &Value) -> Result<Value, String> {
         match key.as_str() {
             "pressureTokens" | "projectedTokens" | "contextWindow" => {
                 if field.as_u64().is_none() {
-                    return Err(format!("contextPressure view field {key} must be a non-negative integer"));
+                    return Err(format!(
+                        "contextPressure view field {key} must be a non-negative integer"
+                    ));
                 }
             }
             _ => return Err(format!("contextPressure view carries unexpected key {key}")),
@@ -186,9 +199,8 @@ fn validate_pressure_schema(value: &Value) -> Result<Value, String> {
 /// Token-meter's context-occupancy projection unit (TS
 /// `contextPressureProjectionDefinition`).
 pub fn context_pressure_projection_definition() -> ProjectionDefinition {
-    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> = Arc::new(|| {
-        arc(serde_json::json!({"surfaceTokens": 0}))
-    });
+    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> =
+        Arc::new(|| arc(serde_json::json!({"surfaceTokens": 0})));
     let apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync> =
         Arc::new(|state_value: &ArcValue, event: &SessionEvent| {
             let state: &Value = cordis::downcast(state_value).expect("contextPressure state");
@@ -208,14 +220,19 @@ pub fn context_pressure_projection_definition() -> ProjectionDefinition {
                             next["contextWindow"] = serde_json::json!(window);
                         }
                         None => {
-                            next.as_object_mut().expect("object").remove("contextWindow");
+                            next.as_object_mut()
+                                .expect("object")
+                                .remove("contextWindow");
                         }
                     }
                 }
             }
             if let Some(usage) = usage_of(event) {
                 let pressure = pressure_from(usage);
-                let surface_tokens = state.get("surfaceTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let surface_tokens = state
+                    .get("surfaceTokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let sampled = state.get("sampledSurfaceTokens").and_then(|v| v.as_u64());
                 if state.get("pressureTokens").and_then(|v| v.as_u64()) != Some(pressure)
                     || sampled != Some(surface_tokens)
@@ -225,7 +242,10 @@ pub fn context_pressure_projection_definition() -> ProjectionDefinition {
                 }
             }
             if fold.delta_tokens != 0 {
-                let surface_tokens = next.get("surfaceTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let surface_tokens = next
+                    .get("surfaceTokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 next["surfaceTokens"] =
                     serde_json::json!((surface_tokens as i64 + fold.delta_tokens).max(0) as u64);
             }
@@ -246,8 +266,14 @@ pub fn context_pressure_projection_definition() -> ProjectionDefinition {
         }
         if let Some(pressure) = state.get("pressureTokens").and_then(|v| v.as_u64()) {
             view.insert("pressureTokens".to_string(), serde_json::json!(pressure));
-            let surface = state.get("surfaceTokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            let sampled = state.get("sampledSurfaceTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let surface = state
+                .get("surfaceTokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sampled = state
+                .get("sampledSurfaceTokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             view.insert(
                 "projectedTokens".to_string(),
                 serde_json::json!((pressure as i64 + surface as i64 - sampled as i64).max(0) as u64),
@@ -258,7 +284,8 @@ pub fn context_pressure_projection_definition() -> ProjectionDefinition {
     ProjectionDefinition {
         key: "contextPressure".to_string(),
         schema: Arc::new(|value: &ArcValue| {
-            let value: &Value = cordis::downcast(value).ok_or_else(|| "view must be JSON".to_string())?;
+            let value: &Value =
+                cordis::downcast(value).ok_or_else(|| "view must be JSON".to_string())?;
             validate_pressure_schema(value)
         }),
         init,

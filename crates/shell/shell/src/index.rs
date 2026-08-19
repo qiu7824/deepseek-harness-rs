@@ -12,8 +12,8 @@ use futures::future::BoxFuture;
 
 use crate::types::{ShellExecRequest, ShellExecSpec, ShellProcess, ShellRunResult};
 
-pub use crate::types::{DSH_ENV_PREFIX, DshEnvironment, DshEnvironmentKey};
 pub use crate::render::{ParsedExitStatus, parse_exit_status};
+pub use crate::types::{DSH_ENV_PREFIX, DshEnvironment, DshEnvironmentKey};
 pub use dsh_subprocess::CollectedOutput;
 
 /// Settings namespace of this capability, owned here rather than by either

@@ -9,7 +9,12 @@ use dsh_session::{Session, SessionStore, session_id};
 use dsh_session_projection::SessionProjectionRegistry;
 use dsh_token_meter::TokenMeter;
 
-async fn harness() -> (Context, Arc<SessionStore>, Arc<SessionProjectionRegistry>, Arc<TokenMeter>) {
+async fn harness() -> (
+    Context,
+    Arc<SessionStore>,
+    Arc<SessionProjectionRegistry>,
+    Arc<TokenMeter>,
+) {
     let ctx = Context::root();
     let store = SessionStore::install(&ctx);
     let registry = SessionProjectionRegistry::install(&ctx);
@@ -75,7 +80,10 @@ async fn measures_zero_pressure_for_an_empty_log() {
     assert_eq!(measurement.surface_tokens, 0);
     assert_eq!(measurement.total_tokens, 0);
     assert!(measurement.nodes.is_empty());
-    assert!(matches!(measurement.baseline, dsh_token_meter::TokenMeasurementBaseline::None { .. }));
+    assert!(matches!(
+        measurement.baseline,
+        dsh_token_meter::TokenMeasurementBaseline::None { .. }
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -84,7 +92,11 @@ async fn anchors_measurement_on_provider_usage_and_tracks_surface_delta() {
     let session = session(&store, "metered");
     append(&session, "turn/start", serde_json::json!({"turn": 1}));
     append(&session, "request/header", header_data("mock"));
-    append(&session, "step/start", serde_json::json!({"turn": 1, "step": 1}));
+    append(
+        &session,
+        "step/start",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
     let user = append(&session, "user/message", user_message("u1", "hello"));
     assert_eq!(user.seq, 3);
     let assistant = append(
@@ -96,8 +108,16 @@ async fn anchors_measurement_on_provider_usage_and_tracks_surface_delta() {
             "usage": {"inputTokens": 100, "outputTokens": 50},
         }),
     );
-    append(&session, "step/end", serde_json::json!({"turn": 1, "step": 1}));
-    append(&session, "turn/end", serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}));
+    append(
+        &session,
+        "step/end",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
+    append(
+        &session,
+        "turn/end",
+        serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+    );
 
     let measurement = meter.measure(&session, None);
     // The anchor uses provider usage (100+50) which exceeds the heuristic
@@ -109,14 +129,21 @@ async fn anchors_measurement_on_provider_usage_and_tracks_surface_delta() {
         dsh_token_meter::TokenMeasurementBaseline::Usage { tokens: 150, .. }
     ));
     assert!(measurement.total_tokens >= 150);
-    assert_eq!(measurement.surface_tokens, measurement.nodes.iter().map(|n| n.tokens).sum::<u64>());
+    assert_eq!(
+        measurement.surface_tokens,
+        measurement.nodes.iter().map(|n| n.tokens).sum::<u64>()
+    );
     assert!(measurement.log_revision >= assistant.seq + 1);
     assert!(measurement.surface_delta_tokens >= 0);
 
     // Appending a surface message after the anchor moves the delta.
     append(&session, "turn/start", serde_json::json!({"turn": 2}));
     append(&session, "request/header", header_data("mock"));
-    append(&session, "step/start", serde_json::json!({"turn": 2, "step": 1}));
+    append(
+        &session,
+        "step/start",
+        serde_json::json!({"turn": 2, "step": 1}),
+    );
     let _user2 = append(&session, "user/message", user_message("u2", "again"));
     let measurement2 = meter.measure(&session, None);
     assert!(measurement2.total_tokens > measurement.total_tokens);
@@ -128,15 +155,27 @@ async fn heuristic_baseline_when_usage_is_absent_or_below_anchor() {
     let session = session(&store, "heuristic");
     append(&session, "turn/start", serde_json::json!({"turn": 1}));
     append(&session, "request/header", header_data("mock"));
-    append(&session, "step/start", serde_json::json!({"turn": 1, "step": 1}));
-    append(&session, "user/message", user_message("u1", "hello world, this is long"));
+    append(
+        &session,
+        "step/start",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
+    append(
+        &session,
+        "user/message",
+        user_message("u1", "hello world, this is long"),
+    );
     // No usage report: the baseline is the full heuristic estimate.
     append(
         &session,
         "assistant/message",
         serde_json::json!({"turn": 1, "step": 1, "message": assistant_message("a1", "hi")}),
     );
-    append(&session, "step/end", serde_json::json!({"turn": 1, "step": 1}));
+    append(
+        &session,
+        "step/end",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
     let measurement = meter.measure(&session, None);
     assert!(matches!(
         measurement.baseline,
@@ -188,7 +227,11 @@ async fn token_usage_projection_accumulates_and_replaces_samples() {
         .await
         .unwrap();
     append(&session, "turn/start", serde_json::json!({"turn": 1}));
-    append(&session, "step/start", serde_json::json!({"turn": 1, "step": 1}));
+    append(
+        &session,
+        "step/start",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
     append(
         &session,
         "assistant/chunk",
@@ -207,21 +250,42 @@ async fn token_usage_projection_accumulates_and_replaces_samples() {
             "usage": {"inputTokens": 10, "outputTokens": 4},
         }),
     );
-    append(&session, "step/end", serde_json::json!({"turn": 1, "step": 1}));
-    append(&session, "turn/end", serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}));
+    append(
+        &session,
+        "step/end",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
+    append(
+        &session,
+        "turn/end",
+        serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+    );
 
     let snapshot = registry.snapshot(&session);
-    let usage = snapshot.values.get("tokenUsage").cloned().expect("tokenUsage");
-    assert_eq!(usage.get("uncachedInputTokens").and_then(|v| v.as_u64()), Some(10));
+    let usage = snapshot
+        .values
+        .get("tokenUsage")
+        .cloned()
+        .expect("tokenUsage");
+    assert_eq!(
+        usage.get("uncachedInputTokens").and_then(|v| v.as_u64()),
+        Some(10)
+    );
     assert_eq!(usage.get("outputTokens").and_then(|v| v.as_u64()), Some(4));
-    assert_eq!(usage.get("cacheReadTokens").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(
+        usage.get("cacheReadTokens").and_then(|v| v.as_u64()),
+        Some(0)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn context_breakdown_projection_prices_envelope_and_surface() {
     let (ctx, store, registry, _meter) = harness().await;
     registry
-        .register(&ctx, dsh_token_meter::context_breakdown_projection_definition())
+        .register(
+            &ctx,
+            dsh_token_meter::context_breakdown_projection_definition(),
+        )
         .unwrap();
     let session = store
         .create(
@@ -233,23 +297,60 @@ async fn context_breakdown_projection_prices_envelope_and_surface() {
         .unwrap();
     append(&session, "turn/start", serde_json::json!({"turn": 1}));
     append(&session, "request/header", header_data("mock"));
-    append(&session, "step/start", serde_json::json!({"turn": 1, "step": 1}));
+    append(
+        &session,
+        "step/start",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
     append(&session, "user/message", user_message("u1", "hello"));
-    append(&session, "step/end", serde_json::json!({"turn": 1, "step": 1}));
-    append(&session, "turn/end", serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}));
+    append(
+        &session,
+        "step/end",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
+    append(
+        &session,
+        "turn/end",
+        serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+    );
 
     let snapshot = registry.snapshot(&session);
-    let breakdown = snapshot.values.get("contextBreakdown").cloned().expect("contextBreakdown");
-    assert!(breakdown.get("systemTokens").and_then(|v| v.as_u64()).unwrap_or(0) > 0);
-    assert!(breakdown.get("toolsTokens").and_then(|v| v.as_u64()).unwrap_or(0) > 0);
-    assert!(breakdown.get("messageTokens").and_then(|v| v.as_u64()).unwrap_or(0) > 0);
+    let breakdown = snapshot
+        .values
+        .get("contextBreakdown")
+        .cloned()
+        .expect("contextBreakdown");
+    assert!(
+        breakdown
+            .get("systemTokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            > 0
+    );
+    assert!(
+        breakdown
+            .get("toolsTokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            > 0
+    );
+    assert!(
+        breakdown
+            .get("messageTokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            > 0
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn context_pressure_projection_publishes_projected_tokens() {
     let (ctx, store, registry, _meter) = harness().await;
     registry
-        .register(&ctx, dsh_token_meter::context_pressure_projection_definition())
+        .register(
+            &ctx,
+            dsh_token_meter::context_pressure_projection_definition(),
+        )
         .unwrap();
     let session = store
         .create(
@@ -266,7 +367,11 @@ async fn context_pressure_projection_publishes_projected_tokens() {
         serde_json::json!({"contextWindow": 128000}),
     );
     append(&session, "request/header", header_data("mock"));
-    append(&session, "step/start", serde_json::json!({"turn": 1, "step": 1}));
+    append(
+        &session,
+        "step/start",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
     append(&session, "user/message", user_message("u1", "hello"));
     append(
         &session,
@@ -277,12 +382,26 @@ async fn context_pressure_projection_publishes_projected_tokens() {
             "usage": {"inputTokens": 120, "outputTokens": 10},
         }),
     );
-    append(&session, "step/end", serde_json::json!({"turn": 1, "step": 1}));
+    append(
+        &session,
+        "step/end",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
 
     let snapshot = registry.snapshot(&session);
-    let pressure = snapshot.values.get("contextPressure").cloned().expect("contextPressure");
-    assert_eq!(pressure.get("contextWindow").and_then(|v| v.as_u64()), Some(128000));
-    assert_eq!(pressure.get("pressureTokens").and_then(|v| v.as_u64()), Some(120));
+    let pressure = snapshot
+        .values
+        .get("contextPressure")
+        .cloned()
+        .expect("contextPressure");
+    assert_eq!(
+        pressure.get("contextWindow").and_then(|v| v.as_u64()),
+        Some(128000)
+    );
+    assert_eq!(
+        pressure.get("pressureTokens").and_then(|v| v.as_u64()),
+        Some(120)
+    );
     assert!(pressure.get("projectedTokens").is_some());
 }
 
@@ -290,7 +409,10 @@ async fn context_pressure_projection_publishes_projected_tokens() {
 async fn shadow_price_replacement_folds_the_logged_delta() {
     let (ctx, store, registry, _meter) = harness().await;
     registry
-        .register(&ctx, dsh_token_meter::context_breakdown_projection_definition())
+        .register(
+            &ctx,
+            dsh_token_meter::context_breakdown_projection_definition(),
+        )
         .unwrap();
     let session = store
         .create(
@@ -302,10 +424,26 @@ async fn shadow_price_replacement_folds_the_logged_delta() {
         .unwrap();
     append(&session, "turn/start", serde_json::json!({"turn": 1}));
     append(&session, "request/header", header_data("mock"));
-    append(&session, "step/start", serde_json::json!({"turn": 1, "step": 1}));
-    append(&session, "user/message", user_message("u1", "before compaction this is long"));
-    append(&session, "step/end", serde_json::json!({"turn": 1, "step": 1}));
-    append(&session, "turn/end", serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}));
+    append(
+        &session,
+        "step/start",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
+    append(
+        &session,
+        "user/message",
+        user_message("u1", "before compaction this is long"),
+    );
+    append(
+        &session,
+        "step/end",
+        serde_json::json!({"turn": 1, "step": 1}),
+    );
+    append(
+        &session,
+        "turn/end",
+        serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+    );
 
     let before = registry.snapshot(&session);
     let before_tokens = before
@@ -319,7 +457,11 @@ async fn shadow_price_replacement_folds_the_logged_delta() {
     // range and its heuristic price; the replace consumes it.
     append(&session, "turn/start", serde_json::json!({"turn": 2}));
     append(&session, "request/header", header_data("mock"));
-    append(&session, "step/start", serde_json::json!({"turn": 2, "step": 1}));
+    append(
+        &session,
+        "step/start",
+        serde_json::json!({"turn": 2, "step": 1}),
+    );
     append(
         &session,
         "compaction/summary",
@@ -351,14 +493,22 @@ async fn shadow_price_replacement_folds_the_logged_delta() {
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     // The summary node price minus the shadowed range price is applied.
-    assert!(after_tokens < before_tokens, "compaction shrank the message figure");
+    assert!(
+        after_tokens < before_tokens,
+        "compaction shrank the message figure"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn estimate_matches_the_shared_pricing_vocabulary() {
     let message = dsh_llm::create_user_message(
-        vec![dsh_llm::ContentBlock::Text { text: "12345678".to_string() }],
-        dsh_llm::MessageSource::User { rpc_id: None, client_time_zone: None },
+        vec![dsh_llm::ContentBlock::Text {
+            text: "12345678".to_string(),
+        }],
+        dsh_llm::MessageSource::User {
+            rpc_id: None,
+            client_time_zone: None,
+        },
     );
     // ceil(8/4)=2 + block overhead 4 + role overhead 4 = 10.
     assert_eq!(dsh_token_meter::estimate_message(&message), 10);
@@ -377,5 +527,8 @@ async fn estimate_matches_the_shared_pricing_vocabulary() {
         tools: Some(vec![]),
     };
     assert_eq!(dsh_token_meter::estimate_tools_tokens(Some(&header)), 0);
-    assert_eq!(dsh_token_meter::estimate_system_tokens(Some(&header)), 2 + 4);
+    assert_eq!(
+        dsh_token_meter::estimate_system_tokens(Some(&header)),
+        2 + 4
+    );
 }

@@ -7,9 +7,8 @@ use std::sync::Arc;
 
 use cordis::Context;
 use dsh_user_questions::{
-    AskUserQuestionAnswer, AskUserQuestionAnswerItem, AskUserQuestionIntent,
-    AskUserQuestionItem, AskUserQuestionOption, AskUserQuestionRequest, UserQuestionError,
-    UserQuestionService,
+    AskUserQuestionAnswer, AskUserQuestionAnswerItem, AskUserQuestionIntent, AskUserQuestionItem,
+    AskUserQuestionOption, AskUserQuestionRequest, UserQuestionError, UserQuestionService,
 };
 
 struct EchoProvider;
@@ -173,7 +172,8 @@ async fn tool_projects_questions_into_the_answer_shape() {
     let _provider = questions
         .register_provider(Arc::new(EchoProvider))
         .expect("register");
-    let system_prompt = dsh_system_prompt::SystemPrompt::install(&ctx, Default::default()).expect("system prompt");
+    let system_prompt =
+        dsh_system_prompt::SystemPrompt::install(&ctx, Default::default()).expect("system prompt");
     let tools = dsh_tools::ToolRuntime::install(
         &ctx,
         dsh_tools::Config {

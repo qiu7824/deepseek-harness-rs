@@ -83,8 +83,7 @@ pub fn preparation_position(history: &[SessionEvent]) -> Result<(u64, u64), &'st
             _ => {}
         }
     }
-    let turn = open_turn
-        .ok_or("time-context reading must be appended inside an open turn")?;
+    let turn = open_turn.ok_or("time-context reading must be appended inside an open turn")?;
     let step = open_step.ok_or("time-context reading must follow step/start")?;
     if request_started {
         return Err("time-context reading must precede request/header");
@@ -167,8 +166,7 @@ pub fn validate_reading(history: &[SessionEvent], event: &SessionEvent) -> Resul
         .map_err(|error| error.message())?;
     if rendered_browser_context != render_browser_time_zone_context(&browser_context) {
         return Err(
-            "time-context browser-zone text does not match current-turn user messages"
-                .to_string(),
+            "time-context browser-zone text does not match current-turn user messages".to_string(),
         );
     }
 
@@ -243,8 +241,8 @@ pub fn installer() -> InvariantInstaller {
 
                 let seed = |session: &Session,
                             histories: &parking_lot::Mutex<
-                                std::collections::HashMap<String, Vec<SessionEvent>>,
-                            >,
+                    std::collections::HashMap<String, Vec<SessionEvent>>,
+                >,
                             fail: &Arc<dyn Fn(&str) + Send + Sync>| {
                     if let Err(message) = validate_session(session) {
                         fail(&message);

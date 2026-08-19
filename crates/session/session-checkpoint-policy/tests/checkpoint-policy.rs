@@ -8,9 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 
 use futures::StreamExt;
 
-use dsh_llm::{
-    ContentBlock, FinishReason, GenerateOptions, StreamChunk, StreamFactory,
-};
+use dsh_llm::{ContentBlock, FinishReason, GenerateOptions, StreamChunk, StreamFactory};
 use dsh_session_checkpoint_policy::{
     aborted_before_dispatch_result, after_checkpoint, needs_tool_checkpoint,
 };
@@ -39,7 +37,11 @@ fn execution_with(agent: bool, parent: bool) -> ToolExecution {
         root_call_id: dsh_llm::call_id("call-1"),
         name: "probe".to_string(),
         arguments: serde_json::Value::Null,
-        agent: if agent { Some(Arc::new(ProbeAgent)) } else { None },
+        agent: if agent {
+            Some(Arc::new(ProbeAgent))
+        } else {
+            None
+        },
         parent: if parent { Some(1) } else { None },
         signal: parking_lot::Mutex::new(Arc::new(|| false)),
     }
@@ -92,7 +94,12 @@ impl dsh_agent::Agent for ProbeAgent {
         KEY.get_or_init(dsh_scope::ScopeKey::new)
     }
 
-    fn cancel(&self, _cause: dsh_agent::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_agent::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -105,7 +112,13 @@ impl dsh_agent::Agent for ProbeAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 
@@ -117,8 +130,14 @@ impl dsh_agent::Agent for ProbeAgent {
 #[test]
 fn tool_checkpoint_applies_to_top_level_owned_calls_only() {
     assert!(needs_tool_checkpoint(&execution_with(true, false)));
-    assert!(!needs_tool_checkpoint(&execution_with(true, true)), "nested");
-    assert!(!needs_tool_checkpoint(&execution_with(false, false)), "unowned");
+    assert!(
+        !needs_tool_checkpoint(&execution_with(true, true)),
+        "nested"
+    );
+    assert!(
+        !needs_tool_checkpoint(&execution_with(false, false)),
+        "unowned"
+    );
 }
 
 fn options() -> GenerateOptions {
@@ -210,10 +229,17 @@ async fn stream_wrapper_fails_closed_on_a_checkpoint_rejection() {
             reason: FinishReason::Error { failure },
             ..
         } => {
-            assert!(failure.message.contains("flush blew up"), "{}", failure.message);
+            assert!(
+                failure.message.contains("flush blew up"),
+                "{}",
+                failure.message
+            );
         }
         other => panic!("expected an error finish, got {other:?}"),
     }
     assert!(stream.next().await.is_none(), "no downstream chunks");
-    assert!(!downstream_called.load(SeqCst), "adapter dispatch must be prevented");
+    assert!(
+        !downstream_called.load(SeqCst),
+        "adapter dispatch must be prevented"
+    );
 }

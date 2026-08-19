@@ -1,0 +1,22 @@
+[package]
+name = "dsh-acp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Automation-only Agent Client Protocol server over NDJSON stdio"
+
+[dependencies]
+dsh-jsonrpc-runtime = { path = "../../sdk/jsonrpc-runtime" }
+parking_lot.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[[bin]]
+name = "acp-fixture"
+path = "tests/fixtures/server.rs"
+test = false
+bench = false
+
+[[test]]
+name = "stdio"
+path = "tests/stdio.rs"

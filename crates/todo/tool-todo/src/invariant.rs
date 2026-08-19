@@ -67,12 +67,7 @@ pub fn validate_todos(value: &serde_json::Value) -> Result<(), String> {
 /// `validateEvent`).
 pub fn validate_event(event: &SessionEvent) -> Result<(), String> {
     if event.type_ == "todo/write" {
-        validate_todos(
-            event
-                .data
-                .get("todos")
-                .unwrap_or(&serde_json::Value::Null),
-        )?;
+        validate_todos(event.data.get("todos").unwrap_or(&serde_json::Value::Null))?;
     }
     Ok(())
 }

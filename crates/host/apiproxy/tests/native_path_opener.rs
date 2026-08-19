@@ -1,4 +1,4 @@
-﻿//! Rust port of the core `packages/host/apiproxy/tests/native-path-opener
+//! Rust port of the core `packages/host/apiproxy/tests/native-path-opener
 //! .spec.ts` behaviors: command construction per platform, the browser
 //! intent, WSL translation, and the desktop-reachability matrix.
 
@@ -9,9 +9,7 @@ use dsh_host_apiproxy::native_path_opener::{
     PathOpenerInternals, PathOpenerRunner, can_open_native_path, open_native_path,
     open_native_text_file,
 };
-use dsh_native_command::{
-    NativeCommandAbort, NativeCommandFailure, NativeCommandOutput,
-};
+use dsh_native_command::{NativeCommandAbort, NativeCommandFailure, NativeCommandOutput};
 use futures::future::BoxFuture;
 
 fn run<F: std::future::Future>(future: F) -> F::Output {
@@ -37,9 +35,7 @@ impl RecordingRunner {
     fn runner(&self) -> PathOpenerRunner {
         let calls = self.calls.clone();
         Arc::new(
-            move |command: &str,
-                  args: Vec<String>,
-                  _signal: Option<NativeCommandAbort>| {
+            move |command: &str, args: Vec<String>, _signal: Option<NativeCommandAbort>| {
                 let calls = calls.clone();
                 let command = command.to_string();
                 Box::pin(async move {
@@ -51,10 +47,8 @@ impl RecordingRunner {
                         },
                         stderr: String::new(),
                     })
-                }) as BoxFuture<
-                    'static,
-                    Result<NativeCommandOutput, NativeCommandFailure>,
-                >
+                })
+                    as BoxFuture<'static, Result<NativeCommandOutput, NativeCommandFailure>>
             },
         )
     }
@@ -64,10 +58,7 @@ impl RecordingRunner {
     }
 }
 
-fn build_internals(
-    platform: &'static str,
-    runner: &RecordingRunner,
-) -> PathOpenerInternals {
+fn build_internals(platform: &'static str, runner: &RecordingRunner) -> PathOpenerInternals {
     PathOpenerInternals {
         platform: Some(platform),
         os_release: None,
@@ -176,16 +167,20 @@ fn wsl_translates_paths_before_the_windows_desktop() {
     run(async {
         let recorder = RecordingRunner::new();
         let mut internals = build_internals("linux", &recorder);
-        internals.env = Some(HashMap::from([
-            ("WSL_DISTRO_NAME".to_string(), "Ubuntu".to_string()),
-        ]));
+        internals.env = Some(HashMap::from([(
+            "WSL_DISTRO_NAME".to_string(),
+            "Ubuntu".to_string(),
+        )]));
         open_native_path("/mnt/c/host/file.txt", None, &internals)
             .await
             .expect("open");
         let calls = recorder.calls();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].0, "wslpath");
-        assert_eq!(calls[0].1, vec!["-w".to_string(), "/mnt/c/host/file.txt".to_string()]);
+        assert_eq!(
+            calls[0].1,
+            vec!["-w".to_string(), "/mnt/c/host/file.txt".to_string()]
+        );
         assert_eq!(calls[1].0, "powershell.exe");
         assert_eq!(
             calls[1].1[2],
@@ -196,13 +191,11 @@ fn wsl_translates_paths_before_the_windows_desktop() {
 
 #[test]
 fn desktop_reachability_follows_the_platform_matrix() {
-    let desktop = |platform: &'static str, env: HashMap<String, String>| {
-        PathOpenerInternals {
-            platform: Some(platform),
-            os_release: None,
-            env: Some(env),
-            run: None,
-        }
+    let desktop = |platform: &'static str, env: HashMap<String, String>| PathOpenerInternals {
+        platform: Some(platform),
+        os_release: None,
+        env: Some(env),
+        run: None,
     };
     assert!(can_open_native_path(&desktop("darwin", HashMap::new())));
     assert!(can_open_native_path(&desktop("win32", HashMap::new())));

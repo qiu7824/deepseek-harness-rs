@@ -20,7 +20,10 @@ fn main() {
             let _ = std::io::stderr().write_all(args[1..].join(" ").as_bytes());
         }
         "exit" => {
-            let code: i32 = args.get(1).and_then(|value| value.parse().ok()).unwrap_or(0);
+            let code: i32 = args
+                .get(1)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
             exit(code);
         }
         "sleep-forever" => loop {

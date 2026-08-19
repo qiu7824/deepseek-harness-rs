@@ -12,7 +12,11 @@
 use std::path::Path;
 
 fn comparable_path(path: &str, case_sensitive: bool) -> String {
-    if case_sensitive { path.to_string() } else { path.to_lowercase() }
+    if case_sensitive {
+        path.to_string()
+    } else {
+        path.to_lowercase()
+    }
 }
 
 fn is_lexically_under(path: &str, root: &str, case_sensitive: bool) -> bool {
@@ -117,11 +121,26 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn accepts_equal_paths_descendants_and_a_filesystem_root_boundary() {
         let base = temp_root("equal");
-        assert!(is_path_under(base.to_str().unwrap(), base.to_str().unwrap(), None).await.expect("under"));
+        assert!(
+            is_path_under(base.to_str().unwrap(), base.to_str().unwrap(), None)
+                .await
+                .expect("under")
+        );
         let child = base.join("child").to_string_lossy().into_owned();
-        assert!(is_path_under(&child, base.to_str().unwrap(), None).await.expect("under"));
-        let root = Path::new(base.to_str().unwrap()).ancestors().last().expect("fs root");
-        assert!(is_path_under(base.to_str().unwrap(), root.to_str().unwrap(), None).await.expect("under"));
+        assert!(
+            is_path_under(&child, base.to_str().unwrap(), None)
+                .await
+                .expect("under")
+        );
+        let root = Path::new(base.to_str().unwrap())
+            .ancestors()
+            .last()
+            .expect("fs root");
+        assert!(
+            is_path_under(base.to_str().unwrap(), root.to_str().unwrap(), None)
+                .await
+                .expect("under")
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -130,14 +149,20 @@ mod tests {
         let base = temp_root("case");
         let upper = base.join("child").to_string_lossy().to_uppercase();
         let lower = base.to_string_lossy().to_lowercase();
-        assert!(is_path_under(&upper, &lower, Some(false)).await.expect("under"));
-        assert!(is_path_under(
-            &base.join("case-sensitive-child").to_string_lossy(),
-            &base.to_string_lossy(),
-            Some(true),
-        )
-        .await
-        .expect("under"));
+        assert!(
+            is_path_under(&upper, &lower, Some(false))
+                .await
+                .expect("under")
+        );
+        assert!(
+            is_path_under(
+                &base.join("case-sensitive-child").to_string_lossy(),
+                &base.to_string_lossy(),
+                Some(true),
+            )
+            .await
+            .expect("under")
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -152,8 +177,16 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&real_root, &alias_root).expect("symlink");
         let canonical = std::fs::canonicalize(&real_root).expect("canonical");
-        let missing = canonical.join("missing").join("file.txt").to_string_lossy().into_owned();
-        assert!(is_path_under(&missing, alias_root.to_str().unwrap(), None).await.expect("under"));
+        let missing = canonical
+            .join("missing")
+            .join("file.txt")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            is_path_under(&missing, alias_root.to_str().unwrap(), None)
+                .await
+                .expect("under")
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -165,8 +198,16 @@ mod tests {
         std::fs::create_dir_all(&allowed).expect("allowed");
         std::fs::create_dir_all(&outside).expect("outside");
         let target = outside.join("file.txt").to_string_lossy().into_owned();
-        assert!(!is_path_under(&target, allowed.to_str().unwrap(), None).await.expect("under"));
-        assert!(!is_path_under(&target, &base.join("missing-root").to_string_lossy(), None).await.expect("under"));
+        assert!(
+            !is_path_under(&target, allowed.to_str().unwrap(), None)
+                .await
+                .expect("under")
+        );
+        assert!(
+            !is_path_under(&target, &base.join("missing-root").to_string_lossy(), None)
+                .await
+                .expect("under")
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -178,7 +219,11 @@ mod tests {
         let blocker = base.join("blocker");
         std::fs::write(&blocker, "not a directory").expect("blocker");
         let target = blocker.join("child.txt").to_string_lossy().into_owned();
-        assert!(!is_path_under(&target, allowed.to_str().unwrap(), None).await.expect("under"));
+        assert!(
+            !is_path_under(&target, allowed.to_str().unwrap(), None)
+                .await
+                .expect("under")
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 }

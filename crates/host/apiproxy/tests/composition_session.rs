@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use cordis::Context;
 use dsh_agent::{
-    Agent, AgentCancelCause, AgentFactory, AgentHandle, AgentOptions, AgentRegistry,
-    AgentStatus, CancelOptions, CreateAgentOptions, Inbox, InboxTarget, ResumeAgentOptions,
+    Agent, AgentCancelCause, AgentFactory, AgentHandle, AgentOptions, AgentRegistry, AgentStatus,
+    CancelOptions, CreateAgentOptions, Inbox, InboxTarget, ResumeAgentOptions,
 };
 use dsh_host_apiproxy::{
     ApiProxyDefaults, ApiProxyService, Body, CarrierRequest, to_fetch_handler,
@@ -111,12 +111,8 @@ impl AgentFactory for StubFactory {
         options: CreateAgentOptions,
     ) -> Result<AgentHandle, String> {
         let session_id = options.session_id.expect("session id");
-        let session = Session::create(
-            session_id.clone(),
-            None,
-            None,
-        )
-        .map_err(|error| error.to_string())?;
+        let session =
+            Session::create(session_id.clone(), None, None).map_err(|error| error.to_string())?;
         let inbox = Inbox::new(&session, Default::default()).map_err(|error| error.to_string())?;
         let agent: Arc<dyn Agent> = Arc::new(StubAgent {
             id: session_id,
@@ -212,7 +208,9 @@ fn create_publishes_a_session_with_an_idle_agent() {
         assert_eq!(created["result"]["value"]["sessionId"], "s-new");
 
         let listed = harness.post("session.list", serde_json::json!({})).await;
-        let items = listed["result"]["value"]["items"].as_array().expect("items");
+        let items = listed["result"]["value"]["items"]
+            .as_array()
+            .expect("items");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["sessionId"], "s-new");
         assert_eq!(items[0]["running"], false);
@@ -290,7 +288,9 @@ fn list_merges_attached_and_cold_sessions_sorted_by_updated_at() {
             .expect("append");
 
         let listed = harness.post("session.list", serde_json::json!({})).await;
-        let items = listed["result"]["value"]["items"].as_array().expect("items");
+        let items = listed["result"]["value"]["items"]
+            .as_array()
+            .expect("items");
         assert_eq!(items.len(), 2, "{listed}");
         // cold-1 (updatedAt 200) sorts before attached-1 (100).
         assert_eq!(items[0]["sessionId"], "cold-1");

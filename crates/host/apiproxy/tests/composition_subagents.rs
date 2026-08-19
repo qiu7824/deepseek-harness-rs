@@ -169,7 +169,10 @@ fn list_reports_an_empty_catalog_and_parent_availability() {
             .await;
         assert_eq!(listed["result"]["ok"], true, "{listed}");
         assert_eq!(
-            listed["result"]["value"]["entries"].as_array().expect("entries").len(),
+            listed["result"]["value"]["entries"]
+                .as_array()
+                .expect("entries")
+                .len(),
             0
         );
         assert_eq!(listed["result"]["value"]["parentAvailable"], false);

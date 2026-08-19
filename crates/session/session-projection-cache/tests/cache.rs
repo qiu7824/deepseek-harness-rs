@@ -70,7 +70,10 @@ struct FakePersistence {
 
 impl FakePersistence {
     fn new(logs: HashMap<String, Vec<SessionEvent>>) -> Self {
-        Self { logs: Mutex::new(logs), read_from_calls: Mutex::new(Vec::new()) }
+        Self {
+            logs: Mutex::new(logs),
+            read_from_calls: Mutex::new(Vec::new()),
+        }
     }
 }
 
@@ -88,7 +91,11 @@ impl SessionPersistenceApi for FakePersistence {
         unimplemented!("fake read-only persistence")
     }
 
-    async fn append(&self, _id: &dsh_session::SessionId, _events: &[SessionEvent]) -> Result<(), String> {
+    async fn append(
+        &self,
+        _id: &dsh_session::SessionId,
+        _events: &[SessionEvent],
+    ) -> Result<(), String> {
         unimplemented!("fake read-only persistence")
     }
 
@@ -156,7 +163,9 @@ impl SessionPersistenceApi for FakePersistence {
         unimplemented!("fake read-only persistence")
     }
 
-    async fn list_snapshots(&self) -> Result<Vec<dsh_session_persistence::SessionPersistenceSnapshot>, String> {
+    async fn list_snapshots(
+        &self,
+    ) -> Result<Vec<dsh_session_persistence::SessionPersistenceSnapshot>, String> {
         unimplemented!("fake read-only persistence")
     }
 
@@ -202,10 +211,15 @@ async fn harness(
     let ctx = Context::root();
     let hub = Storage::install(&ctx);
     let backend = MemoryStorageBackend::with_shared_pool(pool.clone());
-    hub.backend.register("memory", backend).expect("register backend");
+    hub.backend
+        .register("memory", backend)
+        .expect("register backend");
     let facility = DomainFacility::install(
         &ctx,
-        DomainFacilityConfig { backend: "memory".to_string(), routes: Default::default() },
+        DomainFacilityConfig {
+            backend: "memory".to_string(),
+            routes: Default::default(),
+        },
     )
     .expect("facility");
     let store = SessionStore::install(&ctx);
@@ -216,11 +230,20 @@ async fn harness(
     let persistence = Arc::new(FakePersistence::new(logs));
     let cache = SessionProjectionCache::install(&ctx, config, &facility, persistence.clone())
         .expect("install cache");
-    Harness { ctx, pool, logs: persistence, store, cache }
+    Harness {
+        ctx,
+        pool,
+        logs: persistence,
+        store,
+        cache,
+    }
 }
 
 fn default_config() -> Config {
-    Config { write_every_events: 100, write_interval_ms: 60_000 }
+    Config {
+        write_every_events: 100,
+        write_interval_ms: 60_000,
+    }
 }
 
 async fn settle() {
@@ -231,11 +254,7 @@ async fn settle() {
 
 fn mark(session: &Session, marks: &[&str]) -> SessionEvent {
     session
-        .append(
-            "cache-test/mark",
-            json!({ "marks": marks }),
-            None,
-        )
+        .append("cache-test/mark", json!({ "marks": marks }), None)
         .expect("append")
 }
 
@@ -323,7 +342,9 @@ async fn writes_at_session_disposal() {
             Ok(())
         }
     }
-    let owner = Arc::new(Owner { session: Mutex::new(None) });
+    let owner = Arc::new(Owner {
+        session: Mutex::new(None),
+    });
     let fiber = h.ctx.plugin(owner.clone(), arc(()));
     fiber.settle().await.expect("settle");
     let session = owner.session.lock().take().expect("session");
@@ -340,7 +361,10 @@ async fn flushes_when_the_in_turn_event_count_reaches_the_configured_threshold()
     let h = harness(
         pool.clone(),
         HashMap::new(),
-        Config { write_every_events: 3, write_interval_ms: 60_000 },
+        Config {
+            write_every_events: 3,
+            write_interval_ms: 60_000,
+        },
         1,
     )
     .await;
@@ -361,7 +385,10 @@ async fn coalesces_count_threshold_flushes_before_spawned_tasks_are_polled() {
     let h = harness(
         pool,
         HashMap::new(),
-        Config { write_every_events: 100, write_interval_ms: 60_000 },
+        Config {
+            write_every_events: 100,
+            write_interval_ms: 60_000,
+        },
         1,
     )
     .await;
@@ -400,7 +427,10 @@ async fn flushes_on_the_configured_interval_when_the_count_threshold_is_not_reac
     let h = harness(
         pool.clone(),
         HashMap::new(),
-        Config { write_every_events: 100, write_interval_ms: 250 },
+        Config {
+            write_every_events: 100,
+            write_interval_ms: 250,
+        },
         1,
     )
     .await;
@@ -464,10 +494,15 @@ async fn plugin_disposal_clears_armed_interval_timers() {
     let ctx = Context::root();
     let hub = Storage::install(&ctx);
     let backend = MemoryStorageBackend::with_shared_pool(pool.clone());
-    hub.backend.register("memory", backend).expect("register backend");
+    hub.backend
+        .register("memory", backend)
+        .expect("register backend");
     let facility = DomainFacility::install(
         &ctx,
-        DomainFacilityConfig { backend: "memory".to_string(), routes: Default::default() },
+        DomainFacilityConfig {
+            backend: "memory".to_string(),
+            routes: Default::default(),
+        },
     )
     .expect("facility");
     let store = SessionStore::install(&ctx);
@@ -476,7 +511,10 @@ async fn plugin_disposal_clears_armed_interval_timers() {
     let persistence = Arc::new(FakePersistence::new(HashMap::new()));
     ctx.register_service(persistence.clone());
     let plugin = dsh_session_projection_cache::SessionProjectionCachePlugin {
-        config: Config { write_every_events: 100, write_interval_ms: 5000 },
+        config: Config {
+            write_every_events: 100,
+            write_interval_ms: 5000,
+        },
         facility,
         persistence,
     };
@@ -504,7 +542,8 @@ async fn contains_a_durable_write_failure_and_the_next_write_self_heals() {
     let h = harness(pool.clone(), HashMap::new(), default_config(), 1).await;
     let session = live_session(&h.store, &h.ctx, "fail-soft").await;
     mark(&session, &["x"]);
-    pool.fail_next_writes.store(1, std::sync::atomic::Ordering::SeqCst);
+    pool.fail_next_writes
+        .store(1, std::sync::atomic::Ordering::SeqCst);
     end_turn(&session);
     settle().await;
     assert!(stored_rows(&pool, "fail-soft").is_none());
@@ -550,13 +589,10 @@ fn stored_log(marks: &[Vec<&str>]) -> Vec<SessionEvent> {
     events
 }
 
-fn seed_row(
-    pool: &MemoryMediaPool,
-    id: &str,
-    row: JsonValue,
-    identity: JsonValue,
-) {
-    pool.versions.lock().insert("session_projcache".to_string(), 3);
+fn seed_row(pool: &MemoryMediaPool, id: &str, row: JsonValue, identity: JsonValue) {
+    pool.versions
+        .lock()
+        .insert("session_projcache".to_string(), 3);
     let mut tables = HashMap::new();
     let mut sessions = HashMap::new();
     sessions.insert(
@@ -566,7 +602,10 @@ fn seed_row(
     tables.insert("sessions".to_string(), sessions);
     pool.media.lock().insert(
         "session_projcache".to_string(),
-        dsh_storage_test_support::MemoryMedium { tables, global: JsonValue::Null },
+        dsh_storage_test_support::MemoryMedium {
+            tables,
+            global: JsonValue::Null,
+        },
     );
 }
 
@@ -575,11 +614,19 @@ async fn serves_a_cold_session_from_the_cache_row_plus_a_bounded_tail_read_and_w
     let pool = Arc::new(MemoryMediaPool::new());
     let mut logs = HashMap::new();
     logs.insert("cold".to_string(), stored_log(&[vec!["a"], vec!["a", "b"]]));
-    seed_row(&pool, "cold", json!({"ver": 1, "seq": 1, "val": {"marks": ["a"]}}), json!({"createdAt": 0}));
+    seed_row(
+        &pool,
+        "cold",
+        json!({"ver": 1, "seq": 1, "val": {"marks": ["a"]}}),
+        json!({"createdAt": 0}),
+    );
     let h = harness(pool.clone(), logs, default_config(), 1).await;
     let id = session_id("cold");
     let snapshot = h.cache.cold_snapshot(&id).await.expect("cold snapshot");
-    assert_eq!(snapshot.values.get("cache-test/marks"), Some(&json!({"marks": ["a", "b"]})));
+    assert_eq!(
+        snapshot.values.get("cache-test/marks"),
+        Some(&json!({"marks": ["a", "b"]}))
+    );
     assert_eq!(snapshot.as_of_seq, 3);
     let calls = h.logs.read_from_calls.lock();
     assert_eq!(*calls, vec![("cold".to_string(), 1)]);
@@ -596,10 +643,22 @@ async fn discards_a_version_mismatched_row_and_refolds_the_full_log() {
     let pool = Arc::new(MemoryMediaPool::new());
     let mut logs = HashMap::new();
     logs.insert("bumped".to_string(), stored_log(&[vec!["a"]]));
-    seed_row(&pool, "bumped", json!({"ver": 1, "seq": 2, "val": {"marks": ["stale"]}}), json!({"createdAt": 0}));
+    seed_row(
+        &pool,
+        "bumped",
+        json!({"ver": 1, "seq": 2, "val": {"marks": ["stale"]}}),
+        json!({"createdAt": 0}),
+    );
     let h = harness(pool.clone(), logs, default_config(), 2).await;
-    let snapshot = h.cache.cold_snapshot(&session_id("bumped")).await.expect("cold snapshot");
-    assert_eq!(snapshot.values.get("cache-test/marks"), Some(&json!({"marks": ["a"]})));
+    let snapshot = h
+        .cache
+        .cold_snapshot(&session_id("bumped"))
+        .await
+        .expect("cold snapshot");
+    assert_eq!(
+        snapshot.values.get("cache-test/marks"),
+        Some(&json!({"marks": ["a"]}))
+    );
     let calls = h.logs.read_from_calls.lock();
     assert_eq!(*calls, vec![("bumped".to_string(), 0)]);
 }
@@ -609,10 +668,22 @@ async fn detects_a_log_shrunk_below_the_row_watermark_and_degrades_to_one_full_r
     let pool = Arc::new(MemoryMediaPool::new());
     let mut logs = HashMap::new();
     logs.insert("shrunk".to_string(), stored_log(&[vec!["a"]]));
-    seed_row(&pool, "shrunk", json!({"ver": 1, "seq": 9, "val": {"marks": ["ghost"]}}), json!({"createdAt": 0}));
+    seed_row(
+        &pool,
+        "shrunk",
+        json!({"ver": 1, "seq": 9, "val": {"marks": ["ghost"]}}),
+        json!({"createdAt": 0}),
+    );
     let h = harness(pool.clone(), logs, default_config(), 1).await;
-    let snapshot = h.cache.cold_snapshot(&session_id("shrunk")).await.expect("cold snapshot");
-    assert_eq!(snapshot.values.get("cache-test/marks"), Some(&json!({"marks": ["a"]})));
+    let snapshot = h
+        .cache
+        .cold_snapshot(&session_id("shrunk"))
+        .await
+        .expect("cold snapshot");
+    assert_eq!(
+        snapshot.values.get("cache-test/marks"),
+        Some(&json!({"marks": ["a"]}))
+    );
     assert_eq!(snapshot.as_of_seq, 2);
     let calls = h.logs.read_from_calls.lock();
     assert_eq!(
@@ -627,9 +698,17 @@ async fn write_back_failure_is_contained_and_the_snapshot_is_still_served() {
     let mut logs = HashMap::new();
     logs.insert("soft".to_string(), stored_log(&[vec!["a"]]));
     let h = harness(pool.clone(), logs, default_config(), 1).await;
-    pool.fail_next_writes.store(1, std::sync::atomic::Ordering::SeqCst);
-    let snapshot = h.cache.cold_snapshot(&session_id("soft")).await.expect("cold snapshot");
-    assert_eq!(snapshot.values.get("cache-test/marks"), Some(&json!({"marks": ["a"]})));
+    pool.fail_next_writes
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    let snapshot = h
+        .cache
+        .cold_snapshot(&session_id("soft"))
+        .await
+        .expect("cold snapshot");
+    assert_eq!(
+        snapshot.values.get("cache-test/marks"),
+        Some(&json!({"marks": ["a"]}))
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -657,8 +736,15 @@ async fn discards_a_record_bound_to_a_different_log_lifecycle_and_refolds() {
         json!({"createdAt": 999}),
     );
     let h = harness(pool.clone(), logs, default_config(), 1).await;
-    let snapshot = h.cache.cold_snapshot(&session_id("reborn")).await.expect("cold snapshot");
-    assert_eq!(snapshot.values.get("cache-test/marks"), Some(&json!({"marks": ["real"]})));
+    let snapshot = h
+        .cache
+        .cold_snapshot(&session_id("reborn"))
+        .await
+        .expect("cold snapshot");
+    assert_eq!(
+        snapshot.values.get("cache-test/marks"),
+        Some(&json!({"marks": ["real"]}))
+    );
     let stored = stored_record(&pool, "reborn").expect("write-back");
     assert_eq!(stored["identity"], json!({"createdAt": 0}));
 }
@@ -666,9 +752,18 @@ async fn discards_a_record_bound_to_a_different_log_lifecycle_and_refolds() {
 #[tokio::test(flavor = "current_thread")]
 async fn cached_snapshot_returns_undefined_when_every_stored_row_is_version_mismatched() {
     let pool = Arc::new(MemoryMediaPool::new());
-    seed_row(&pool, "all-stale", json!({"ver": 99, "seq": 4, "val": {"marks": ["old"]}}), json!({"createdAt": 0}));
+    seed_row(
+        &pool,
+        "all-stale",
+        json!({"ver": 99, "seq": 4, "val": {"marks": ["old"]}}),
+        json!({"createdAt": 0}),
+    );
     let h = harness(pool.clone(), HashMap::new(), default_config(), 1).await;
-    assert!(h.cache.cached_snapshot(&header_of("all-stale", 0, None)).is_none());
+    assert!(
+        h.cache
+            .cached_snapshot(&header_of("all-stale", 0, None))
+            .is_none()
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -689,8 +784,16 @@ async fn binds_identity_on_cwd_too() {
             .get("cache-test/marks"),
         Some(&json!({"marks": ["w"]}))
     );
-    assert!(h.cache.cached_snapshot(&header_of("homed", 0, Some("/elsewhere"))).is_none());
-    assert!(h.cache.cached_snapshot(&header_of("homed", 0, None)).is_none());
+    assert!(
+        h.cache
+            .cached_snapshot(&header_of("homed", 0, Some("/elsewhere")))
+            .is_none()
+    );
+    assert!(
+        h.cache
+            .cached_snapshot(&header_of("homed", 0, None))
+            .is_none()
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -699,10 +802,15 @@ async fn dates_an_empty_stored_log_at_minus_one_in_the_zero_units_topology() {
     let ctx = Context::root();
     let hub = Storage::install(&ctx);
     let backend = MemoryStorageBackend::with_shared_pool(pool.clone());
-    hub.backend.register("memory", backend).expect("register backend");
+    hub.backend
+        .register("memory", backend)
+        .expect("register backend");
     let facility = DomainFacility::install(
         &ctx,
-        DomainFacilityConfig { backend: "memory".to_string(), routes: Default::default() },
+        DomainFacilityConfig {
+            backend: "memory".to_string(),
+            routes: Default::default(),
+        },
     )
     .expect("facility");
     let _store = SessionStore::install(&ctx);
@@ -712,7 +820,10 @@ async fn dates_an_empty_stored_log_at_minus_one_in_the_zero_units_topology() {
     let persistence = Arc::new(FakePersistence::new(logs));
     let cache = SessionProjectionCache::install(&ctx, default_config(), &facility, persistence)
         .expect("install");
-    let snapshot = cache.cold_snapshot(&session_id("empty")).await.expect("cold snapshot");
+    let snapshot = cache
+        .cold_snapshot(&session_id("empty"))
+        .await
+        .expect("cold snapshot");
     assert_eq!(snapshot.as_of_seq, -1);
     assert!(snapshot.values.is_empty());
 }
@@ -720,13 +831,32 @@ async fn dates_an_empty_stored_log_at_minus_one_in_the_zero_units_topology() {
 #[tokio::test(flavor = "current_thread")]
 async fn cached_snapshot_serves_identity_matching_rows_and_refuses_unrelated_ones() {
     let pool = Arc::new(MemoryMediaPool::new());
-    seed_row(&pool, "listed", json!({"ver": 1, "seq": 4, "val": {"marks": ["t"]}}), json!({"createdAt": 0}));
+    seed_row(
+        &pool,
+        "listed",
+        json!({"ver": 1, "seq": 4, "val": {"marks": ["t"]}}),
+        json!({"createdAt": 0}),
+    );
     let h = harness(pool.clone(), HashMap::new(), default_config(), 1).await;
-    let snapshot = h.cache.cached_snapshot(&header_of("listed", 0, None)).expect("matching");
+    let snapshot = h
+        .cache
+        .cached_snapshot(&header_of("listed", 0, None))
+        .expect("matching");
     assert_eq!(snapshot.as_of_seq, 4);
-    assert_eq!(snapshot.values.get("cache-test/marks"), Some(&json!({"marks": ["t"]})));
-    assert!(h.cache.cached_snapshot(&header_of("listed", 777, None)).is_none());
-    assert!(h.cache.cached_snapshot(&header_of("never-cached", 0, None)).is_none());
+    assert_eq!(
+        snapshot.values.get("cache-test/marks"),
+        Some(&json!({"marks": ["t"]}))
+    );
+    assert!(
+        h.cache
+            .cached_snapshot(&header_of("listed", 777, None))
+            .is_none()
+    );
+    assert!(
+        h.cache
+            .cached_snapshot(&header_of("never-cached", 0, None))
+            .is_none()
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -735,10 +865,15 @@ async fn holds_the_not_found_contract_with_zero_registered_units() {
     let ctx = Context::root();
     let hub = Storage::install(&ctx);
     let backend = MemoryStorageBackend::with_shared_pool(pool.clone());
-    hub.backend.register("memory", backend).expect("register backend");
+    hub.backend
+        .register("memory", backend)
+        .expect("register backend");
     let facility = DomainFacility::install(
         &ctx,
-        DomainFacilityConfig { backend: "memory".to_string(), routes: Default::default() },
+        DomainFacilityConfig {
+            backend: "memory".to_string(),
+            routes: Default::default(),
+        },
     )
     .expect("facility");
     let _store = SessionStore::install(&ctx);
@@ -754,7 +889,10 @@ async fn holds_the_not_found_contract_with_zero_registered_units() {
         .err()
         .expect("not found");
     assert!(error.contains("not found"), "{error}");
-    let snapshot = cache.cold_snapshot(&session_id("bare")).await.expect("cold snapshot");
+    let snapshot = cache
+        .cold_snapshot(&session_id("bare"))
+        .await
+        .expect("cold snapshot");
     assert_eq!(snapshot.as_of_seq, 2);
     assert!(snapshot.values.is_empty());
 }

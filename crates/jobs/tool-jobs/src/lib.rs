@@ -17,7 +17,6 @@ pub mod index;
 pub mod invariant;
 
 pub use index::{
-    CompletionDelivery, Config, INJECT, NAME, ToolJobsPlugin, ToolJobsService, apply,
-    status_line,
+    CompletionDelivery, Config, INJECT, NAME, ToolJobsPlugin, ToolJobsService, apply, status_line,
 };
-pub use invariant::{ToolJobsInvariantPlugin, PACKAGE_NAME as INVARIANT_PACKAGE_NAME};
+pub use invariant::{PACKAGE_NAME as INVARIANT_PACKAGE_NAME, ToolJobsInvariantPlugin};

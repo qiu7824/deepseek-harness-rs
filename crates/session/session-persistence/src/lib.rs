@@ -20,12 +20,10 @@ pub use index::{
     SessionPersistenceSnapshot, SessionRawArtifact, SessionReadFromResult,
 };
 pub use preparations::{
-    DiscardOutcome, PreparedSource, PreparedSourceLoader, PreparationEntry,
+    DiscardOutcome, PreparationEntry, PreparedSource, PreparedSourceLoader,
     SessionPreparationReservation, SessionPreparations,
 };
 pub use revision::{
     SessionPersistenceRevision, SessionPersistenceRevisionTag, session_persistence_revision,
 };
-pub use write_behind::{
-    SessionWriteBehind, SessionWriteBehindOptions,
-};
+pub use write_behind::{SessionWriteBehind, SessionWriteBehindOptions};

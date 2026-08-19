@@ -56,9 +56,12 @@ pub fn installer() -> InvariantInstaller {
                     }
                 }
                 let fail_for_listener = fail.clone();
-                let listener: Arc<cordis::Listener> = Arc::new(
-                    move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
-                        let event = args.get(1).and_then(|value| downcast::<SessionEvent>(value)).cloned();
+                let listener: Arc<cordis::Listener> =
+                    Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+                        let event = args
+                            .get(1)
+                            .and_then(|value| downcast::<SessionEvent>(value))
+                            .cloned();
                         let fail = fail_for_listener.clone();
                         Box::pin(async move {
                             if let Some(event) = event {
@@ -66,8 +69,7 @@ pub fn installer() -> InvariantInstaller {
                             }
                             None
                         })
-                    },
-                );
+                    });
                 ctx.on(
                     "internal/dispatch",
                     listener,

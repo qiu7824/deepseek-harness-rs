@@ -15,7 +15,7 @@ use cordis::{Context, Listener};
 use dsh_agent::{Agent, AgentOptions, AgentRegistry, Inbox};
 use dsh_llm::call_id;
 use dsh_session::{
-    CreateSessionMeta, CreateSessionOptions, Session, SessionStore, SessionEvent, UserMessage,
+    CreateSessionMeta, CreateSessionOptions, Session, SessionEvent, SessionStore, UserMessage,
     session_id,
 };
 use dsh_system_prompt::SystemPrompt;
@@ -109,7 +109,12 @@ impl dsh_agent::Agent for ProbeAgent {
         &self.scope_key
     }
 
-    fn cancel(&self, _cause: dsh_session::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_session::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -139,8 +144,8 @@ fn never_abort() -> Arc<dyn Fn() -> bool + Send + Sync> {
 
 async fn setup() -> Context {
     let ctx = Context::root();
-    let _system_prompt = SystemPrompt::install(&ctx, dsh_system_prompt::Config::default())
-        .expect("systemPrompt");
+    let _system_prompt =
+        SystemPrompt::install(&ctx, dsh_system_prompt::Config::default()).expect("systemPrompt");
     let _tools = ToolRuntime::install(&ctx, dsh_tools::Config::default()).expect("tools");
     let _agents = AgentRegistry::install(&ctx);
     let _store = SessionStore::install(&ctx);
@@ -204,7 +209,11 @@ async fn drives_one_shot_dispatch_through_maintenance() {
     let probe = agent_with_schedule(
         &ctx,
         "one-shot",
-        vec![create_event("schedule-1", "after", "2000-01-01T00:00:00.000Z")],
+        vec![create_event(
+            "schedule-1",
+            "after",
+            "2000-01-01T00:00:00.000Z",
+        )],
     )
     .await;
     let runtime = ScheduleRuntime::new(&ctx, probe.clone());
@@ -239,7 +248,11 @@ async fn dispatches_every_batch_with_accepted_at_and_advances_the_record() {
     let probe = agent_with_schedule(
         &ctx,
         "every",
-        vec![create_event("schedule-every", "every", "2000-01-01T00:00:00.000Z")],
+        vec![create_event(
+            "schedule-every",
+            "every",
+            "2000-01-01T00:00:00.000Z",
+        )],
     )
     .await;
     let runtime = ScheduleRuntime::new(&ctx, probe.clone());
@@ -309,10 +322,16 @@ async fn creates_lists_and_deletes_reminders_through_the_tools() {
 
     // Validation errors never touch the session.
     let too_fast = tools
-        .execute(input("schedule_create", serde_json::json!({ "prompt": "x", "every_seconds": 299 })))
+        .execute(input(
+            "schedule_create",
+            serde_json::json!({ "prompt": "x", "every_seconds": 299 }),
+        ))
         .await;
     assert!(!too_fast.is_error);
-    assert_eq!(too_fast.value.as_ref().expect("value")["code"], "frequency_too_high");
+    assert_eq!(
+        too_fast.value.as_ref().expect("value")["code"],
+        "frequency_too_high"
+    );
     let two_selectors = tools
         .execute(input(
             "schedule_create",
@@ -324,9 +343,15 @@ async fn creates_lists_and_deletes_reminders_through_the_tools() {
         "invalid_selector"
     );
     let blank = tools
-        .execute(input("schedule_create", serde_json::json!({ "prompt": "  ", "after_seconds": 10 })))
+        .execute(input(
+            "schedule_create",
+            serde_json::json!({ "prompt": "  ", "after_seconds": 10 }),
+        ))
         .await;
-    assert_eq!(blank.value.as_ref().expect("value")["code"], "invalid_prompt");
+    assert_eq!(
+        blank.value.as_ref().expect("value")["code"],
+        "invalid_prompt"
+    );
 
     // A valid after create returns a scheduled view and appends the change.
     let created = tools
@@ -348,13 +373,21 @@ async fn creates_lists_and_deletes_reminders_through_the_tools() {
         .execute(input("schedule_list", serde_json::json!({})))
         .await;
     assert!(!listed.is_error);
-    let views = listed.value.as_ref().expect("value").as_array().expect("array");
+    let views = listed
+        .value
+        .as_ref()
+        .expect("value")
+        .as_array()
+        .expect("array");
     assert_eq!(views.len(), 1);
     assert_eq!(views[0]["id"], view["id"]);
 
     // Delete removes it once and reports not-found afterward.
     let deleted = tools
-        .execute(input("schedule_delete", serde_json::json!({ "id": id.clone() })))
+        .execute(input(
+            "schedule_delete",
+            serde_json::json!({ "id": id.clone() }),
+        ))
         .await;
     let deleted_value = deleted.value.as_ref().expect("value");
     assert_eq!(deleted_value["deleted"], true);
@@ -368,7 +401,10 @@ async fn creates_lists_and_deletes_reminders_through_the_tools() {
     let bad_id = tools
         .execute(input("schedule_delete", serde_json::json!({ "id": " x" })))
         .await;
-    assert_eq!(bad_id.value.as_ref().expect("value")["code"], "invalid_rule");
+    assert_eq!(
+        bad_id.value.as_ref().expect("value")["code"],
+        "invalid_rule"
+    );
 
     // A foreign agent cannot drive this agent's tools.
     let other_session = store_of(&ctx)
@@ -377,7 +413,10 @@ async fn creates_lists_and_deletes_reminders_through_the_tools() {
             Some(session_id("other")),
             Some(CreateSessionOptions {
                 seed: None,
-                meta: Some(CreateSessionMeta { created_at: Some(1), ..Default::default() }),
+                meta: Some(CreateSessionMeta {
+                    created_at: Some(1),
+                    ..Default::default()
+                }),
             }),
         )
         .await
@@ -396,5 +435,8 @@ async fn creates_lists_and_deletes_reminders_through_the_tools() {
             signal: never_abort(),
         })
         .await;
-    assert_eq!(foreign.value.as_ref().expect("value")["code"], "internal_error");
+    assert_eq!(
+        foreign.value.as_ref().expect("value")["code"],
+        "internal_error"
+    );
 }

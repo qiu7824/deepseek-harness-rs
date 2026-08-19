@@ -52,9 +52,15 @@ pub struct SessionProjectionsBlock {
 /// Browser-submitted prompt content; the host promotes image bytes to
 /// durable references.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PromptContentPart {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     Image {
         media_type: ImageMediaType,
         /// Base64-encoded image bytes.
@@ -157,7 +163,11 @@ pub struct SessionModels {
 
 /// A client-requested mutation of one still-pending queue item.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
 pub enum QueueAction {
     Edit { content: Vec<dsh_llm::ContentBlock> },
     Remove,
@@ -419,7 +429,8 @@ pub struct AcceptedResult {
 pub trait SessionsApi: Send + Sync {
     /// Lists persisted sessions (updatedAt descending). v1 returns
     /// everything; cursor is a reserved seat, unimplemented.
-    async fn list(&self, request: RpcRequest<SessionListRequest>) -> RpcResponse<SessionListResult>;
+    async fn list(&self, request: RpcRequest<SessionListRequest>)
+    -> RpcResponse<SessionListResult>;
 
     /// Searches the current message surface across sessions visible to
     /// `list`. Results contain at most 20 sessions and carry no
@@ -444,10 +455,7 @@ pub trait SessionsApi: Send + Sync {
     ) -> RpcResponse<SessionHistoryResult>;
 
     /// Reads a fresh advisory model directory for an ordinary session.
-    async fn models(
-        &self,
-        request: RpcRequest<SessionRefRequest>,
-    ) -> RpcResponse<SessionModels>;
+    async fn models(&self, request: RpcRequest<SessionRefRequest>) -> RpcResponse<SessionModels>;
 
     /// Selects the complete model selection for this session.
     async fn select_model(
@@ -463,7 +471,8 @@ pub trait SessionsApi: Send + Sync {
     ) -> RpcResponse<SessionRenameResult>;
 
     /// Forks a new session from a completed-turn prefix of the source.
-    async fn fork(&self, request: RpcRequest<SessionForkRequest>) -> RpcResponse<SessionForkResult>;
+    async fn fork(&self, request: RpcRequest<SessionForkRequest>)
+    -> RpcResponse<SessionForkResult>;
 
     /// Sends text and temporary image bytes to an ordinary session Agent
     /// after durable host admission.

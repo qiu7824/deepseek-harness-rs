@@ -180,11 +180,7 @@ impl Harness {
     }
 
     fn agent(&self) -> Arc<StubAgent> {
-        self.agent
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("attached agent")
+        self.agent.lock().unwrap().clone().expect("attached agent")
     }
 
     async fn post(&self, method: &str, payload: serde_json::Value) -> serde_json::Value {
@@ -236,7 +232,10 @@ fn cancel_delivers_the_user_cancel_and_unknown_sessions_are_session_not_found() 
         let harness = Harness::new();
         harness.attach_owner().await;
         let cancelled = harness
-            .post("session.cancel", serde_json::json!({ "sessionId": "owner" }))
+            .post(
+                "session.cancel",
+                serde_json::json!({ "sessionId": "owner" }),
+            )
             .await;
         assert_eq!(cancelled["result"]["ok"], true, "{cancelled}");
         assert_eq!(cancelled["result"]["value"]["accepted"], true);
@@ -249,7 +248,10 @@ fn cancel_delivers_the_user_cancel_and_unknown_sessions_are_session_not_found() 
         );
 
         let missing = harness
-            .post("session.cancel", serde_json::json!({ "sessionId": "ghost" }))
+            .post(
+                "session.cancel",
+                serde_json::json!({ "sessionId": "ghost" }),
+            )
             .await;
         assert_eq!(missing["result"]["ok"], false);
         assert_eq!(missing["result"]["error"]["code"], "session-not-found");

@@ -130,7 +130,11 @@ fn render_panic(payload: Box<dyn std::any::Any + Send>) -> String {
     payload
         .downcast_ref::<&'static str>()
         .map(|message| (*message).to_string())
-        .or_else(|| payload.downcast_ref::<String>().map(|message| message.clone()))
+        .or_else(|| {
+            payload
+                .downcast_ref::<String>()
+                .map(|message| message.clone())
+        })
         .unwrap_or_else(|| "<non-string panic>".to_string())
 }
 
@@ -232,7 +236,11 @@ impl LocalJobRegistry {
             .ok_or_else(|| format!("unknown job {id}"))
     }
 
-    fn assert_access(&self, job: &TrackedJob, caller: Option<&Arc<dyn Agent>>) -> Result<(), String> {
+    fn assert_access(
+        &self,
+        job: &TrackedJob,
+        caller: Option<&Arc<dyn Agent>>,
+    ) -> Result<(), String> {
         if let Some(owner) = &job.owner {
             if caller.map(|caller| caller.id()) != Some(owner.id()) {
                 return Err(format!("job {} belongs to another session", job.id));
@@ -263,9 +271,9 @@ impl LocalJobRegistry {
 
     fn notify_changed(&self, owner: Option<&Arc<dyn Agent>>) {
         for listener in self.changed_for(owner) {
-            if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                listener(owner.cloned())
-            })) {
+            if let Err(error) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| listener(owner.cloned())))
+            {
                 self.ctx.logger.warn(
                     &self.ctx,
                     vec![cordis::arc(format!(
@@ -333,7 +341,10 @@ impl LocalJobRegistry {
             );
         };
         let live = registry.get(owner.id());
-        if !live.as_ref().is_some_and(|registered| Arc::ptr_eq(registered, owner)) {
+        if !live
+            .as_ref()
+            .is_some_and(|registered| Arc::ptr_eq(registered, owner))
+        {
             return Err(format!(
                 "agent \"{}\" is not the registered agent instance (background job owner must be live)",
                 owner.id()
@@ -411,7 +422,12 @@ impl LocalJobRegistry {
         }
         // Detach cross-fiber owner effects after the shared store is
         // quiescent.
-        let cleanups: Vec<Disposer> = self.owner_cleanups.lock().drain().map(|(_, disposer)| disposer).collect();
+        let cleanups: Vec<Disposer> = self
+            .owner_cleanups
+            .lock()
+            .drain()
+            .map(|(_, disposer)| disposer)
+            .collect();
         for cleanup in cleanups {
             (cleanup)().await;
         }
@@ -436,9 +452,8 @@ impl LocalJobRegistry {
                 }
                 Err(error) => {
                     let rendered = render_panic(error);
-                    let detail = format!(
-                        "cancel threw during teardown; work may be orphaned: {rendered}"
-                    );
+                    let detail =
+                        format!("cancel threw during teardown; work may be orphaned: {rendered}");
                     self.ctx.logger.warn(
                         &self.ctx,
                         vec![cordis::arc(format!(

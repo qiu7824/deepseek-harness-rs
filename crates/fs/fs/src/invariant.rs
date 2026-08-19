@@ -43,7 +43,9 @@ pub fn check_dispatch(event_name: &str, args: &[ArcValue], fail: &dyn Fn(&str)) 
     };
     validate_target(target, fail);
     if event_name == "fs/observed" {
-        let Some(observation) = args.get(1).and_then(|value| downcast::<FsObservation>(value))
+        let Some(observation) = args
+            .get(1)
+            .and_then(|value| downcast::<FsObservation>(value))
         else {
             return;
         };
@@ -66,11 +68,17 @@ pub fn installer() -> InvariantInstaller {
             let ctx = ctx.clone();
             Box::pin(async move {
                 let fail_for_listener = fail.clone();
-                let listener: Arc<cordis::Listener> = Arc::new(
-                    move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+                let listener: Arc<cordis::Listener> =
+                    Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
                         // internal/dispatch args: [mode, eventName, eventArgs, ctx]
-                        let event_name = args.get(1).and_then(|value| downcast::<String>(value)).cloned();
-                        let event_args = args.get(2).and_then(|value| downcast::<Vec<ArcValue>>(value)).cloned();
+                        let event_name = args
+                            .get(1)
+                            .and_then(|value| downcast::<String>(value))
+                            .cloned();
+                        let event_args = args
+                            .get(2)
+                            .and_then(|value| downcast::<Vec<ArcValue>>(value))
+                            .cloned();
                         let fail = fail_for_listener.clone();
                         Box::pin(async move {
                             let (Some(event_name), Some(event_args)) = (event_name, event_args)
@@ -80,10 +88,13 @@ pub fn installer() -> InvariantInstaller {
                             check_dispatch(&event_name, &event_args, &|message| fail(message));
                             None
                         })
-                    },
-                );
-                ctx.on("internal/dispatch", listener, EventOptions::default().global(true))
-                    .await;
+                    });
+                ctx.on(
+                    "internal/dispatch",
+                    listener,
+                    EventOptions::default().global(true),
+                )
+                .await;
             })
         }),
     }

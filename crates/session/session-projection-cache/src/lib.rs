@@ -5,7 +5,7 @@ pub mod index;
 pub mod spec;
 
 pub use index::{
-    INJECT, NAME, Config, PACKAGE_NAME, SessionProjectionCache, SessionProjectionCachePlugin,
+    Config, INJECT, NAME, PACKAGE_NAME, SessionProjectionCache, SessionProjectionCachePlugin,
     identity_matches, identity_of,
 };
 pub use spec::{

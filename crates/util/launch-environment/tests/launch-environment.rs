@@ -36,7 +36,11 @@ fn layered() -> std::sync::Arc<dsh_launch_environment::LaunchEnvironmentSnapshot
     ])
 }
 
-fn entry(value: &str, source: LaunchEnvironmentSource, path: Option<&str>) -> LaunchEnvironmentEntry {
+fn entry(
+    value: &str,
+    source: LaunchEnvironmentSource,
+    path: Option<&str>,
+) -> LaunchEnvironmentEntry {
     LaunchEnvironmentEntry {
         value: value.to_string(),
         source,
@@ -47,14 +51,29 @@ fn entry(value: &str, source: LaunchEnvironmentSource, path: Option<&str>) -> La
 #[test]
 fn resolves_across_every_layer_most_trusted_first_and_reports_the_winning_source() {
     let layered = layered();
-    assert_eq!(layered.get("SHARED"), Some(entry("from-process", LaunchEnvironmentSource::Process, None)));
+    assert_eq!(
+        layered.get("SHARED"),
+        Some(entry(
+            "from-process",
+            LaunchEnvironmentSource::Process,
+            None
+        ))
+    );
     assert_eq!(
         layered.get("ONLY_PROJECT"),
-        Some(entry("j", LaunchEnvironmentSource::ProjectEnv, Some("/work/.env")))
+        Some(entry(
+            "j",
+            LaunchEnvironmentSource::ProjectEnv,
+            Some("/work/.env")
+        ))
     );
     assert_eq!(
         layered.get("ONLY_USER"),
-        Some(entry("u", LaunchEnvironmentSource::UserEnv, Some("/home/.dsh/.env")))
+        Some(entry(
+            "u",
+            LaunchEnvironmentSource::UserEnv,
+            Some("/home/.dsh/.env")
+        ))
     );
     assert_eq!(layered.get("ABSENT"), None);
 }
@@ -63,12 +82,28 @@ fn resolves_across_every_layer_most_trusted_first_and_reports_the_winning_source
 fn filters_layers_without_changing_their_trust_order() {
     let layered = layered();
     assert_eq!(
-        layered.get_from("ONLY_PROJECT", &[LaunchEnvironmentSource::Process, LaunchEnvironmentSource::UserEnv]),
+        layered.get_from(
+            "ONLY_PROJECT",
+            &[
+                LaunchEnvironmentSource::Process,
+                LaunchEnvironmentSource::UserEnv
+            ]
+        ),
         None
     );
     assert_eq!(
-        layered.get_from("SHARED", &[LaunchEnvironmentSource::UserEnv, LaunchEnvironmentSource::Process]),
-        Some(entry("from-process", LaunchEnvironmentSource::Process, None))
+        layered.get_from(
+            "SHARED",
+            &[
+                LaunchEnvironmentSource::UserEnv,
+                LaunchEnvironmentSource::Process
+            ]
+        ),
+        Some(entry(
+            "from-process",
+            LaunchEnvironmentSource::Process,
+            None
+        ))
     );
     assert_eq!(layered.get_from("SHARED", &[]), None);
 }

@@ -28,7 +28,9 @@ pub fn validate_snapshot(
 ) {
     let id = snapshot.id.as_str();
     let prefix = format!("{}-", snapshot.kind);
-    let ordinal = id.strip_prefix(&prefix).and_then(|rest| rest.parse::<u64>().ok());
+    let ordinal = id
+        .strip_prefix(&prefix)
+        .and_then(|rest| rest.parse::<u64>().ok());
     if snapshot.kind.is_empty() || ordinal.is_none() || ordinal == Some(0) {
         fail(&format!(
             "job snapshot id {:?} must be {:?} followed by a positive ordinal",
@@ -55,7 +57,9 @@ pub fn validate_snapshot(
     }
     let expected_owner = owner.map(|agent| agent.id().clone());
     if snapshot.owner_session != expected_owner {
-        fail(&format!("job {id:?} ownerSession does not match its completion owner"));
+        fail(&format!(
+            "job {id:?} ownerSession does not match its completion owner"
+        ));
     }
 }
 

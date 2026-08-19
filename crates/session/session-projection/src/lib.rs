@@ -6,6 +6,6 @@ pub mod invariant;
 pub mod types;
 
 pub use index::{
-    ProjectionCheckpoint, ProjectionCheckpointRow, ProjectionChangeListener,
-    ProjectionDefinition, ProjectionSnapshot, SessionProjectionRegistry,
+    ProjectionChangeListener, ProjectionCheckpoint, ProjectionCheckpointRow, ProjectionDefinition,
+    ProjectionSnapshot, SessionProjectionRegistry,
 };

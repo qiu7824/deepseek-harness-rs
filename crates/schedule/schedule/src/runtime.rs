@@ -34,9 +34,16 @@ struct EveryDue {
 }
 
 enum DueDecision {
-    OneShot { record: ScheduleRecord },
-    Every { reminders: Vec<EveryDue>, accepted_at: String },
-    Wait { target: Option<i64> },
+    OneShot {
+        record: ScheduleRecord,
+    },
+    Every {
+        reminders: Vec<EveryDue>,
+        accepted_at: String,
+    },
+    Wait {
+        target: Option<i64>,
+    },
 }
 
 /// Select one due one-shot, one complete fixed-rate batch, or the next wake.
@@ -103,10 +110,7 @@ fn render_thrown(message: &str) -> String {
     message.to_string()
 }
 
-fn install_if_vacant<T>(
-    slot: &parking_lot::Mutex<Option<T>>,
-    create: impl FnOnce() -> T,
-) -> bool {
+fn install_if_vacant<T>(slot: &parking_lot::Mutex<Option<T>>, create: impl FnOnce() -> T) -> bool {
     let mut slot = slot.lock();
     if slot.is_some() {
         return false;
@@ -287,11 +291,14 @@ impl ScheduleRuntime {
             Ok(folded) => Some(folded),
             Err(error) => {
                 self.faulted.store(true, Ordering::SeqCst);
-                self.ctx.logger.warn(&self.ctx, vec![arc(format!(
-                    "schedule: corrupt schedule log for agent \"{}\": {}",
-                    self.agent.id().as_str(),
-                    error.message
-                ))]);
+                self.ctx.logger.warn(
+                    &self.ctx,
+                    vec![arc(format!(
+                        "schedule: corrupt schedule log for agent \"{}\": {}",
+                        self.agent.id().as_str(),
+                        error.message
+                    ))],
+                );
                 None
             }
         }
@@ -312,11 +319,14 @@ impl ScheduleRuntime {
         }
         if let Err(error) = flush_schedule_persistence(&self.ctx, self.agent.session()).await {
             if self.is_live() {
-                self.ctx.logger.warn(&self.ctx, vec![arc(format!(
-                    "schedule: preflight failed for agent \"{}\": {}",
-                    self.agent.id().as_str(),
-                    render_thrown(&error.message)
-                ))]);
+                self.ctx.logger.warn(
+                    &self.ctx,
+                    vec![arc(format!(
+                        "schedule: preflight failed for agent \"{}\": {}",
+                        self.agent.id().as_str(),
+                        render_thrown(&error.message)
+                    ))],
+                );
             }
             return;
         }
@@ -330,7 +340,10 @@ impl ScheduleRuntime {
         let Some(wake_decision) = self.decide(&folded, wake_now) else {
             return;
         };
-        if let DueDecision::Wait { target: Some(target) } = wake_decision {
+        if let DueDecision::Wait {
+            target: Some(target),
+        } = wake_decision
+        {
             self.arm(target, wake_now);
             return;
         }
@@ -342,14 +355,15 @@ impl ScheduleRuntime {
         let outcome = Arc::new(parking_lot::Mutex::new(None));
         let task_outcome = outcome.clone();
         let runtime = self.self_arc();
-        let task: Arc<dyn Fn() -> cordis::BoxFuture<'static, ()> + Send + Sync> = Arc::new(move || {
-            let runtime = runtime.clone();
-            let task_outcome = task_outcome.clone();
-            Box::pin(async move {
-                let outcome = runtime.maintenance_decision().await;
-                *task_outcome.lock() = Some(outcome);
-            })
-        });
+        let task: Arc<dyn Fn() -> cordis::BoxFuture<'static, ()> + Send + Sync> =
+            Arc::new(move || {
+                let runtime = runtime.clone();
+                let task_outcome = task_outcome.clone();
+                Box::pin(async move {
+                    let outcome = runtime.maintenance_decision().await;
+                    *task_outcome.lock() = Some(outcome);
+                })
+            });
         self.agent.run_maintenance(task).await;
         let Some(dispatched) = *outcome.lock() else {
             // The maintenance task never ran (the Rust trait erases its
@@ -365,11 +379,14 @@ impl ScheduleRuntime {
         }
         if let Err(error) = flush_schedule_persistence(&self.ctx, self.agent.session()).await {
             if self.is_live() {
-                self.ctx.logger.warn(&self.ctx, vec![arc(format!(
-                    "schedule: dispatch barrier failed for agent \"{}\": {}",
-                    self.agent.id().as_str(),
-                    render_thrown(&error.message)
-                ))]);
+                self.ctx.logger.warn(
+                    &self.ctx,
+                    vec![arc(format!(
+                        "schedule: dispatch barrier failed for agent \"{}\": {}",
+                        self.agent.id().as_str(),
+                        render_thrown(&error.message)
+                    ))],
+                );
             }
             return;
         }
@@ -391,7 +408,10 @@ impl ScheduleRuntime {
         let Some(decision) = self.decide(&claimed, decision_now) else {
             return false;
         };
-        if let DueDecision::Wait { target: Some(target) } = decision {
+        if let DueDecision::Wait {
+            target: Some(target),
+        } = decision
+        {
             self.arm(target, decision_now);
             return false;
         }
@@ -400,14 +420,12 @@ impl ScheduleRuntime {
         }
         let text = match &decision {
             DueDecision::OneShot { record } => render_reminder_framing(record),
-            DueDecision::Every { reminders, .. } => {
-                render_every_reminder_batch_framing(
-                    &reminders
-                        .iter()
-                        .map(|due| (due.record.clone(), due.occurrence_at.clone()))
-                        .collect::<Vec<_>>(),
-                )
-            }
+            DueDecision::Every { reminders, .. } => render_every_reminder_batch_framing(
+                &reminders
+                    .iter()
+                    .map(|due| (due.record.clone(), due.occurrence_at.clone()))
+                    .collect::<Vec<_>>(),
+            ),
             DueDecision::Wait { .. } => unreachable!("handled above"),
         };
         let message = create_user_message(
@@ -423,22 +441,24 @@ impl ScheduleRuntime {
         );
         self.agent.followup(message);
         let appended = match &decision {
-            DueDecision::OneShot { record } => {
-                self.agent
-                    .session()
-                    .append(
-                        "schedule/change",
-                        serde_json::to_value(&ScheduleChange::Dispatch {
-                            version: 1,
-                            id: record.id().clone(),
-                            accepted_at: None,
-                        })
-                        .expect("dispatch json"),
-                        None,
-                    )
-                    .map(|_| ())
-            }
-            DueDecision::Every { reminders, accepted_at } => {
+            DueDecision::OneShot { record } => self
+                .agent
+                .session()
+                .append(
+                    "schedule/change",
+                    serde_json::to_value(&ScheduleChange::Dispatch {
+                        version: 1,
+                        id: record.id().clone(),
+                        accepted_at: None,
+                    })
+                    .expect("dispatch json"),
+                    None,
+                )
+                .map(|_| ()),
+            DueDecision::Every {
+                reminders,
+                accepted_at,
+            } => {
                 let mut result = Ok(());
                 for due in reminders {
                     if result.is_ok() {
@@ -465,11 +485,14 @@ impl ScheduleRuntime {
         if let Err(error) = appended {
             self.faulted.store(true, Ordering::SeqCst);
             self.clear_timer();
-            self.ctx.logger.warn(&self.ctx, vec![arc(format!(
-                "schedule: dispatch append failed for agent \"{}\": {}",
-                self.agent.id().as_str(),
-                render_thrown(&error)
-            ))]);
+            self.ctx.logger.warn(
+                &self.ctx,
+                vec![arc(format!(
+                    "schedule: dispatch append failed for agent \"{}\": {}",
+                    self.agent.id().as_str(),
+                    render_thrown(&error)
+                ))],
+            );
             return false;
         }
         true

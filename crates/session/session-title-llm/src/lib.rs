@@ -7,7 +7,6 @@ pub mod invariant;
 
 pub use index::{
     SESSION_TITLE_TIMEOUT_CODE, SessionTitleLlmConfig, SessionTitleLlmError,
-    SessionTitleLlmMessageSelector, config_schema, frame_messages,
-    generate_session_title_with_llm, register_session_title_llm_provider,
-    resolve_session_title_llm_config, system_prompt,
+    SessionTitleLlmMessageSelector, config_schema, frame_messages, generate_session_title_with_llm,
+    register_session_title_llm_provider, resolve_session_title_llm_config, system_prompt,
 };

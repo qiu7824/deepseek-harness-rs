@@ -25,7 +25,8 @@ use tokio::sync::{oneshot, watch};
 
 use dsh_agent::{Agent, AgentOptions, AgentRegistry, AgentStatus, Inbox};
 use dsh_scope::ScopeKey;
-use dsh_session::{Session, SessionId, session_id};use dsh_terminal::{
+use dsh_session::{Session, SessionId, session_id};
+use dsh_terminal::{
     TerminalAbort, TerminalBackend, TerminalBackendSession, TerminalBackendSpawnError,
     TerminalBackendSpawnSpec, TerminalErrorCode, TerminalFailure, TerminalReadRequest,
     TerminalReadResult, TerminalSendOperation, TerminalSendRequest, TerminalSessionStatus,
@@ -39,7 +40,11 @@ struct NoopPlugin;
 
 #[async_trait::async_trait]
 impl Plugin for NoopPlugin {
-    async fn apply(&self, _ctx: &Context, _config: cordis::ArcValue) -> Result<(), cordis::PluginError> {
+    async fn apply(
+        &self,
+        _ctx: &Context,
+        _config: cordis::ArcValue,
+    ) -> Result<(), cordis::PluginError> {
         Ok(())
     }
 }
@@ -49,7 +54,11 @@ struct TerminalsPlugin;
 
 #[async_trait::async_trait]
 impl Plugin for TerminalsPlugin {
-    async fn apply(&self, ctx: &Context, _config: cordis::ArcValue) -> Result<(), cordis::PluginError> {
+    async fn apply(
+        &self,
+        ctx: &Context,
+        _config: cordis::ArcValue,
+    ) -> Result<(), cordis::PluginError> {
         let _ = dsh_terminal::TerminalSessionService::install(ctx);
         Ok(())
     }
@@ -111,7 +120,12 @@ impl Agent for StubAgent {
         &self.scope_key
     }
 
-    fn cancel(&self, _cause: dsh_agent::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_agent::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -124,7 +138,13 @@ impl Agent for StubAgent {
         Box::pin(async {})
     }
 
-    fn send(&self, _message: dsh_session::UserMessage, _target: dsh_agent::InboxTarget, _wakeup: bool) {}
+    fn send(
+        &self,
+        _message: dsh_session::UserMessage,
+        _target: dsh_agent::InboxTarget,
+        _wakeup: bool,
+    ) {
+    }
 
     fn followup(&self, _message: dsh_session::UserMessage) {}
 
@@ -137,13 +157,18 @@ impl Agent for StubAgent {
 /// `StubSession.startSend` shape).
 struct StubSendOperation {
     reject: bool,
-    done: futures::future::Shared<futures::future::BoxFuture<'static, dsh_terminal::TerminalSendResult>>,
+    done: futures::future::Shared<
+        futures::future::BoxFuture<'static, dsh_terminal::TerminalSendResult>,
+    >,
     settled: AtomicBool,
     cancel_tx: watch::Sender<bool>,
 }
 
 impl StubSendOperation {
-    fn new(reject: bool, status: Arc<Mutex<TerminalSessionStatus>>) -> Arc<dyn TerminalSendOperation> {
+    fn new(
+        reject: bool,
+        status: Arc<Mutex<TerminalSessionStatus>>,
+    ) -> Arc<dyn TerminalSendOperation> {
         let (cancel_tx, mut cancel_rx) = watch::channel(false);
         let done = async move {
             if reject {
@@ -232,14 +257,19 @@ impl TerminalBackendSession for StubSession {
     }
 
     fn start_send(&self, _request: &TerminalSendRequest) -> Arc<dyn TerminalSendOperation> {
-        let operation = StubSendOperation::new(self.reject_send.load(SeqCst), self.status_value.clone());
+        let operation =
+            StubSendOperation::new(self.reject_send.load(SeqCst), self.status_value.clone());
         *self.operation.lock() = Some(operation.clone());
         operation
     }
 
     fn read(&self, request: &TerminalReadRequest) -> TerminalReadResult {
         TerminalReadResult {
-            text: format!("{}:{}", request.offset.unwrap_or(0), request.count.unwrap_or(0)),
+            text: format!(
+                "{}:{}",
+                request.offset.unwrap_or(0),
+                request.count.unwrap_or(0)
+            ),
             total_lines: 1,
             line_begin: 0,
             line_end: 1,
@@ -247,11 +277,18 @@ impl TerminalBackendSession for StubSession {
         }
     }
 
-    fn signal(&self, signal: TerminalSignal) -> futures::future::BoxFuture<'static, Result<TerminalSignalResult, String>> {
+    fn signal(
+        &self,
+        signal: TerminalSignal,
+    ) -> futures::future::BoxFuture<'static, Result<TerminalSignalResult, String>> {
         Box::pin(async move {
             Ok(TerminalSignalResult {
                 delivered: true,
-                target_pgid: if signal == TerminalSignal::SigInt { 12 } else { 13 },
+                target_pgid: if signal == TerminalSignal::SigInt {
+                    12
+                } else {
+                    13
+                },
             })
         })
     }
@@ -334,8 +371,7 @@ pub struct FnBackend {
     spawn: Arc<
         dyn Fn(
                 TerminalBackendSpawnSpec,
-            )
-                -> futures::future::BoxFuture<
+            ) -> futures::future::BoxFuture<
                 'static,
                 Result<Arc<dyn TerminalBackendSession>, TerminalBackendSpawnError>,
             > + Send
@@ -347,14 +383,13 @@ impl FnBackend {
     pub fn new(
         type_: &str,
         spawn: impl Fn(
-                TerminalBackendSpawnSpec,
-            )
-                -> futures::future::BoxFuture<
-                'static,
-                Result<Arc<dyn TerminalBackendSession>, TerminalBackendSpawnError>,
-            > + Send
-            + Sync
-            + 'static,
+            TerminalBackendSpawnSpec,
+        ) -> futures::future::BoxFuture<
+            'static,
+            Result<Arc<dyn TerminalBackendSession>, TerminalBackendSpawnError>,
+        > + Send
+        + Sync
+        + 'static,
     ) -> Arc<dyn TerminalBackend> {
         Arc::new(Self {
             type_: type_.to_string(),
@@ -383,7 +418,10 @@ impl TerminalBackend for FnBackend {
 /// `Promise.withResolvers` gates).
 fn gated_session(
     rx: oneshot::Receiver<Arc<StubSession>>,
-) -> futures::future::BoxFuture<'static, Result<Arc<dyn TerminalBackendSession>, TerminalBackendSpawnError>> {
+) -> futures::future::BoxFuture<
+    'static,
+    Result<Arc<dyn TerminalBackendSession>, TerminalBackendSpawnError>,
+> {
     Box::pin(async move {
         let session = rx.await.expect("gate resolved");
         Ok(session as Arc<dyn TerminalBackendSession>)
@@ -469,7 +507,10 @@ async fn harness() -> Harness {
     let ctx = Context::root();
     let agents = AgentRegistry::install(&ctx);
     let terminals_fiber = ctx.plugin(Arc::new(TerminalsPlugin), cordis::arc(()));
-    terminals_fiber.settle().await.expect("terminals service loads");
+    terminals_fiber
+        .settle()
+        .await
+        .expect("terminals service loads");
     Harness {
         ctx,
         terminals_fiber,
@@ -554,10 +595,16 @@ async fn preserves_the_id_brand_and_disposes_exact_backend_contributions() {
         .expect("first registration");
     assert_eq!(service.list_backends(), vec!["stub"]);
     let duplicate = service.register_backend(StubBackend::new("stub"));
-    assert_code(duplicate.err().as_ref().expect("duplicate"), TerminalErrorCode::DuplicateBackend);
+    assert_code(
+        duplicate.err().as_ref().expect("duplicate"),
+        TerminalErrorCode::DuplicateBackend,
+    );
     // An internal replacement is NOT removed by the original contribution's
     // disposer (exact-contribution cleanup).
-    *service.backends().lock() = vec![("stub".to_string(), StubBackend::new("replacement") as Arc<dyn TerminalBackend>)];
+    *service.backends().lock() = vec![(
+        "stub".to_string(),
+        StubBackend::new("replacement") as Arc<dyn TerminalBackend>,
+    )];
     (dispose)().await;
     assert_eq!(service.list_backends(), vec!["stub"]);
     service.backends().lock().clear();
@@ -606,21 +653,34 @@ async fn publishes_only_after_spawn_and_fences_every_operation_to_the_exact_owne
     assert!(service.list(&foreign).is_empty());
 
     let read = service
-        .read(&foreign, &created.session_id, TerminalReadRequest::default())
+        .read(
+            &foreign,
+            &created.session_id,
+            TerminalReadRequest::default(),
+        )
         .err()
         .expect("foreign read rejected");
-    assert!(read.message().contains("belongs to another agent"), "{read}");
+    assert!(
+        read.message().contains("belongs to another agent"),
+        "{read}"
+    );
     assert_code(&read, TerminalErrorCode::ForeignSession);
     let signal = service
         .signal(&foreign, &created.session_id, TerminalSignal::SigInt)
         .err()
         .expect("foreign signal rejected");
-    assert!(signal.message().contains("belongs to another agent"), "{signal}");
+    assert!(
+        signal.message().contains("belongs to another agent"),
+        "{signal}"
+    );
     let kill = service
         .kill(&foreign, &created.session_id, "model request".to_string())
         .err()
         .expect("foreign kill rejected");
-    assert!(kill.message().contains("belongs to another agent"), "{kill}");
+    assert!(
+        kill.message().contains("belongs to another agent"),
+        "{kill}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -645,7 +705,11 @@ async fn rejects_unknown_backends_non_live_owners_duplicate_names_and_active_sen
     let stub = StubBackend::new("stub");
     service.register_backend(stub.clone()).expect("backend");
     let created = service
-        .spawn(owner.clone(), spawn_request("stub", Some("main"), None), None)
+        .spawn(
+            owner.clone(),
+            spawn_request("stub", Some("main"), None),
+            None,
+        )
         .expect("spawn starts")
         .await
         .expect("published");
@@ -658,13 +722,21 @@ async fn rejects_unknown_backends_non_live_owners_duplicate_names_and_active_sen
 
     let caller_aborted: TerminalAbort = Arc::new(|| true);
     let error = service
-        .spawn(owner.clone(), spawn_request("stub", None, None), Some(caller_aborted))
+        .spawn(
+            owner.clone(),
+            spawn_request("stub", None, None),
+            Some(caller_aborted),
+        )
         .err()
         .expect("aborted spawn rejected");
     assert!(matches!(error, TerminalFailure::Aborted), "{error}");
 
     let error = service
-        .spawn(owner.clone(), spawn_request("stub", Some("main"), None), None)
+        .spawn(
+            owner.clone(),
+            spawn_request("stub", Some("main"), None),
+            None,
+        )
         .err()
         .expect("duplicate name rejected");
     assert_code(&error, TerminalErrorCode::DuplicateName);
@@ -721,10 +793,18 @@ async fn reserves_concurrent_names_and_rolls_back_a_spawn_whose_owner_disappears
     register_agent(&harness, &owner).await;
 
     let pending = service
-        .spawn(owner.clone(), spawn_request("slow", Some("main"), None), None)
+        .spawn(
+            owner.clone(),
+            spawn_request("slow", Some("main"), None),
+            None,
+        )
         .expect("spawn starts");
     let error = service
-        .spawn(owner.clone(), spawn_request("slow", Some("main"), None), None)
+        .spawn(
+            owner.clone(),
+            spawn_request("slow", Some("main"), None),
+            None,
+        )
         .err()
         .expect("concurrent duplicate rejected");
     assert_code(&error, TerminalErrorCode::DuplicateName);
@@ -763,7 +843,11 @@ async fn preserves_caller_cancellation_when_a_pending_backend_spawn_completes() 
         move || aborted.load(SeqCst)
     });
     let pending = service
-        .spawn(owner.clone(), spawn_request("slow", None, None), Some(caller))
+        .spawn(
+            owner.clone(),
+            spawn_request("slow", None, None),
+            Some(caller),
+        )
         .expect("spawn starts");
     aborted.store(true, SeqCst);
     let session = Arc::new(StubSession::default());
@@ -796,7 +880,11 @@ async fn preserves_caller_cancellation_when_unpublished_rollback_fails() {
         move || aborted.load(SeqCst)
     });
     let pending = service
-        .spawn(owner.clone(), spawn_request("slow", None, None), Some(caller))
+        .spawn(
+            owner.clone(),
+            spawn_request("slow", None, None),
+            Some(caller),
+        )
         .expect("spawn starts");
     aborted.store(true, SeqCst);
     let session = Arc::new(StubSession::default());
@@ -807,7 +895,10 @@ async fn preserves_caller_cancellation_when_unpublished_rollback_fails() {
     assert!(matches!(failure, TerminalFailure::Aborted), "{failure}");
     assert!(service.has_owner_activity(&owner));
     let disposal = service.dispose_all();
-    let error = disposal.await.err().expect("disposal reports the retained cleanup failure");
+    let error = disposal
+        .await
+        .err()
+        .expect("disposal reports the retained cleanup failure");
     assert_eq!(error.message(), "failed to clean up PTY lifecycle");
     assert!(!service.has_owner_activity(&owner));
     assert_eq!(*session.closed.lock(), vec!["PTY spawn rolled back"]);
@@ -832,13 +923,23 @@ async fn preserves_caller_cancellation_when_a_backend_rejects_in_response_to_it(
         let aborted = aborted.clone();
         move || aborted.load(SeqCst)
     });
-    let pending = drive(service
-        .spawn(owner.clone(), spawn_request("abortable", None, None), Some(caller))
-        .expect("spawn starts"));
+    let pending = drive(
+        service
+            .spawn(
+                owner.clone(),
+                spawn_request("abortable", None, None),
+                Some(caller),
+            )
+            .expect("spawn starts"),
+    );
     started_rx.await.expect("backend started");
     aborted.store(true, SeqCst);
 
-    let failure = pending.await.expect("spawn task").err().expect("pending rejected");
+    let failure = pending
+        .await
+        .expect("spawn task")
+        .err()
+        .expect("pending rejected");
     assert!(matches!(failure, TerminalFailure::Aborted), "{failure}");
 }
 
@@ -859,7 +960,10 @@ async fn retains_caller_triggered_cleanup_failure_until_disposal(scope: &str) {
     service
         .register_backend(FnBackend::new(
             "cleanup-failing",
-            observing_backend_spawn(Some(Arc::new(Mutex::new(Some(started_tx)))), Some("backend cleanup failed")),
+            observing_backend_spawn(
+                Some(Arc::new(Mutex::new(Some(started_tx)))),
+                Some("backend cleanup failed"),
+            ),
         ))
         .expect("backend");
     let (owner, _owner_fiber) = StubAgent::new(&harness.ctx, "owner");
@@ -870,17 +974,23 @@ async fn retains_caller_triggered_cleanup_failure_until_disposal(scope: &str) {
         let aborted = aborted.clone();
         move || aborted.load(SeqCst)
     });
-    let pending = drive(service
-        .spawn(
-            owner.clone(),
-            spawn_request("cleanup-failing", None, None),
-            Some(caller),
-        )
-        .expect("spawn starts"));
+    let pending = drive(
+        service
+            .spawn(
+                owner.clone(),
+                spawn_request("cleanup-failing", None, None),
+                Some(caller),
+            )
+            .expect("spawn starts"),
+    );
     started_rx.await.expect("backend started");
     aborted.store(true, SeqCst);
 
-    let failure = pending.await.expect("spawn task").err().expect("pending rejected");
+    let failure = pending
+        .await
+        .expect("spawn task")
+        .err()
+        .expect("pending rejected");
     assert!(matches!(failure, TerminalFailure::Aborted), "{failure}");
     assert!(service.has_owner_activity(&owner));
 
@@ -889,7 +999,10 @@ async fn retains_caller_triggered_cleanup_failure_until_disposal(scope: &str) {
     } else {
         service.dispose_all()
     };
-    let error = disposal.await.err().expect("disposal reports the retained cleanup failure");
+    let error = disposal
+        .await
+        .err()
+        .expect("disposal reports the retained cleanup failure");
     assert_eq!(error.message(), "failed to clean up PTY lifecycle");
     assert!(!service.has_owner_activity(&owner));
 }
@@ -931,9 +1044,11 @@ async fn disposal_aborts_and_awaits_unpublished_setup(scope: &str) {
     let (owner, owner_fiber) = StubAgent::new(&harness.ctx, "owner");
     register_agent(&harness, &owner).await;
 
-    let pending = drive(service
-        .spawn(owner.clone(), spawn_request("slow", None, None), None)
-        .expect("spawn starts"));
+    let pending = drive(
+        service
+            .spawn(owner.clone(), spawn_request("slow", None, None), None)
+            .expect("spawn starts"),
+    );
     started_rx.await.expect("backend started");
 
     let expected_code = if scope == "owner" {
@@ -952,7 +1067,10 @@ async fn disposal_aborts_and_awaits_unpublished_setup(scope: &str) {
         })
     };
     yield_until(|| service.pending_aborted(&owner)).await;
-    assert!(!disposal.is_finished(), "disposal must wait for backend settlement");
+    assert!(
+        !disposal.is_finished(),
+        "disposal must wait for backend settlement"
+    );
     assert_eq!(
         service.pending_abort_error(&owner).map(|error| error.code),
         Some(expected_code)
@@ -960,7 +1078,11 @@ async fn disposal_aborts_and_awaits_unpublished_setup(scope: &str) {
     let session = Arc::new(StubSession::default());
     assert!(gate_tx.send(session.clone()).is_ok());
 
-    let failure = pending.await.expect("spawn task").err().expect("pending rejected");
+    let failure = pending
+        .await
+        .expect("spawn task")
+        .err()
+        .expect("pending rejected");
     assert_code(&failure, expected_code);
     disposal.await.expect("disposal settles");
     assert_eq!(*session.closed.lock(), vec!["PTY spawn rolled back"]);
@@ -992,7 +1114,10 @@ async fn reports_unpublished_rollback_failure_through_service_disposal() {
 
     let failure = pending.await.err().expect("pending rejected");
     assert_eq!(failure.message(), "PTY spawn and rollback both failed");
-    let error = disposal.await.err().expect("disposal reports the cleanup failure");
+    let error = disposal
+        .await
+        .err()
+        .expect("disposal reports the cleanup failure");
     assert_eq!(error.message(), "failed to clean up PTY lifecycle");
     assert_eq!(*session.closed.lock(), vec!["PTY spawn rolled back"]);
 }
@@ -1014,15 +1139,24 @@ async fn backend_side_cleanup_failure(scope: &str) {
     service
         .register_backend(FnBackend::new(
             "cleanup-failing",
-            observing_backend_spawn(Some(Arc::new(Mutex::new(Some(started_tx)))), Some("backend cleanup failed")),
+            observing_backend_spawn(
+                Some(Arc::new(Mutex::new(Some(started_tx)))),
+                Some("backend cleanup failed"),
+            ),
         ))
         .expect("backend");
     let (owner, _owner_fiber) = StubAgent::new(&harness.ctx, "owner");
     register_agent(&harness, &owner).await;
 
-    let pending = drive(service
-        .spawn(owner.clone(), spawn_request("cleanup-failing", None, None), None)
-        .expect("spawn starts"));
+    let pending = drive(
+        service
+            .spawn(
+                owner.clone(),
+                spawn_request("cleanup-failing", None, None),
+                None,
+            )
+            .expect("spawn starts"),
+    );
     started_rx.await.expect("backend started");
 
     let expected_code = if scope == "owner" {
@@ -1038,15 +1172,29 @@ async fn backend_side_cleanup_failure(scope: &str) {
         service.dispose_all()
     };
 
-    let failure = pending.await.expect("spawn task").err().expect("pending rejected");
+    let failure = pending
+        .await
+        .expect("spawn task")
+        .err()
+        .expect("pending rejected");
     assert_code(&failure, expected_code);
-    let error = disposal.await.err().expect("disposal reports the cleanup failure");
+    let error = disposal
+        .await
+        .err()
+        .expect("disposal reports the cleanup failure");
     assert_eq!(error.message(), "failed to clean up PTY lifecycle");
     // The aggregate nests: lifecycle 閳?unpublished-setup 閳?cleanup failure.
-    let TerminalFailure::Aggregate { failures: lifecycle, .. } = &error else {
+    let TerminalFailure::Aggregate {
+        failures: lifecycle,
+        ..
+    } = &error
+    else {
         panic!("expected lifecycle aggregate: {error}");
     };
-    let TerminalFailure::Aggregate { failures: rollback, .. } = &lifecycle[0] else {
+    let TerminalFailure::Aggregate {
+        failures: rollback, ..
+    } = &lifecycle[0]
+    else {
         panic!("expected rollback aggregate: {:?}", lifecycle[0]);
     };
     assert_eq!(rollback.len(), 1);
@@ -1079,10 +1227,18 @@ async fn keeps_independent_reservations_and_handles_provider_failure_before_publ
     register_agent(&harness, &owner).await;
 
     let first = service
-        .spawn(owner.clone(), spawn_request("slow", Some("one"), None), None)
+        .spawn(
+            owner.clone(),
+            spawn_request("slow", Some("one"), None),
+            None,
+        )
         .expect("spawn starts");
     let second = service
-        .spawn(owner.clone(), spawn_request("slow", Some("two"), None), None)
+        .spawn(
+            owner.clone(),
+            spawn_request("slow", Some("two"), None),
+            None,
+        )
         .expect("spawn starts");
     first_tx
         .send(Arc::new(StubSession::default()))
@@ -1107,9 +1263,15 @@ async fn keeps_independent_reservations_and_handles_provider_failure_before_publ
     assert_eq!(failure.message(), "provider failed");
 
     let caller: TerminalAbort = Arc::new(|| false);
-    service.register_backend(StubBackend::new("signaled")).expect("backend");
+    service
+        .register_backend(StubBackend::new("signaled"))
+        .expect("backend");
     let created = service
-        .spawn(owner.clone(), spawn_request("signaled", None, None), Some(caller))
+        .spawn(
+            owner.clone(),
+            spawn_request("signaled", None, None),
+            Some(caller),
+        )
         .expect("spawn starts")
         .await
         .expect("publishes under a live signal");
@@ -1147,9 +1309,8 @@ async fn reports_rollback_and_close_failures_without_publishing_false_success() 
 
     let failed_spawn = Arc::new(StubSession::default());
     failed_spawn.reject_close.store(true, SeqCst);
-    let (disposal_tx, disposal_rx) = oneshot::channel::<
-        futures::future::BoxFuture<'static, Result<(), TerminalFailure>>,
-    >();
+    let (disposal_tx, disposal_rx) =
+        oneshot::channel::<futures::future::BoxFuture<'static, Result<(), TerminalFailure>>>();
     let disposal_slot = Arc::new(Mutex::new(Some(disposal_tx)));
     let service_hook = service.clone();
     let owner_hook = owner.clone();
@@ -1199,15 +1360,27 @@ async fn reports_rollback_and_close_failures_without_publishing_false_success() 
     let (next_owner, _next_fiber) = StubAgent::new(&harness.ctx, "next");
     register_agent(&harness, &next_owner).await;
     let bad_close = StubBackend::new("bad-close");
-    service.register_backend(bad_close.clone()).expect("backend");
+    service
+        .register_backend(bad_close.clone())
+        .expect("backend");
     let created = service
-        .spawn(next_owner.clone(), spawn_request("bad-close", None, None), None)
+        .spawn(
+            next_owner.clone(),
+            spawn_request("bad-close", None, None),
+            None,
+        )
         .expect("spawn starts")
         .await
         .expect("published");
-    bad_close.sessions.lock()[0].reject_close.store(true, SeqCst);
+    bad_close.sessions.lock()[0]
+        .reject_close
+        .store(true, SeqCst);
     let failure = service
-        .kill(&next_owner, &created.session_id, "model request".to_string())
+        .kill(
+            &next_owner,
+            &created.session_id,
+            "model request".to_string(),
+        )
         .expect("kill starts")
         .await
         .err()
@@ -1275,7 +1448,10 @@ async fn awaits_owner_cleanup_and_removes_sessions_while_backend_registration_ma
     assert_eq!(read.text, "0:0");
 
     owner_fiber.dispose().await;
-    assert_eq!(*stub.sessions.lock()[0].closed.lock(), vec!["PTY owner disposed"]);
+    assert_eq!(
+        *stub.sessions.lock()[0].closed.lock(),
+        vec!["PTY owner disposed"]
+    );
     assert!(service.list(&owner).is_empty());
 }
 
@@ -1295,7 +1471,11 @@ async fn kills_idempotently_and_service_disposal_closes_all_owners() {
         .await
         .expect("published");
     service
-        .spawn(second_owner.clone(), spawn_request("stub", None, None), None)
+        .spawn(
+            second_owner.clone(),
+            spawn_request("stub", None, None),
+            None,
+        )
         .expect("spawn starts")
         .await
         .expect("published");
@@ -1308,7 +1488,10 @@ async fn kills_idempotently_and_service_disposal_closes_all_owners() {
             .expect("killed"),
         true
     );
-    assert_eq!(*stub.sessions.lock()[0].closed.lock(), vec!["model request"]);
+    assert_eq!(
+        *stub.sessions.lock()[0].closed.lock(),
+        vec!["model request"]
+    );
 
     dispose_terminal_session_service(&harness).await;
     assert_eq!(
@@ -1385,7 +1568,10 @@ async fn clears_registries_and_runs_owner_cleanups_even_when_a_session_close_fai
     // Teardown surfaces the close failure, but still clears the backend and
     // owner-cleanup registries instead of orphaning them.
     let disposal = service.dispose_all();
-    let error = disposal.await.err().expect("disposal reports the close failure");
+    let error = disposal
+        .await
+        .err()
+        .expect("disposal reports the close failure");
     assert_eq!(error.message(), "failed to clean up PTY lifecycle");
     assert_eq!(service.backends_len(), 0);
     assert_eq!(service.owner_cleanup_len(), 0);

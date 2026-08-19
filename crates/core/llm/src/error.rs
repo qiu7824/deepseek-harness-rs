@@ -19,7 +19,11 @@ pub struct HarnessError {
 
 impl HarnessError {
     pub fn new(message: impl Into<String>, code: impl Into<String>) -> Self {
-        Self { code: code.into(), message: message.into(), cause: None }
+        Self {
+            code: code.into(),
+            message: message.into(),
+            cause: None,
+        }
     }
 
     pub fn with_cause(
@@ -27,7 +31,11 @@ impl HarnessError {
         code: impl Into<String>,
         cause: Box<dyn std::error::Error + Send + Sync>,
     ) -> Self {
-        Self { code: code.into(), message: message.into(), cause: Some(cause) }
+        Self {
+            code: code.into(),
+            message: message.into(),
+            cause: Some(cause),
+        }
     }
 }
 
@@ -39,7 +47,9 @@ impl fmt::Display for HarnessError {
 
 impl std::error::Error for HarnessError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.cause.as_ref().map(|cause| cause.as_ref() as &(dyn std::error::Error + 'static))
+        self.cause
+            .as_ref()
+            .map(|cause| cause.as_ref() as &(dyn std::error::Error + 'static))
     }
 }
 

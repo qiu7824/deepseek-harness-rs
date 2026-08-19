@@ -8,14 +8,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use cordis::{Context, LoggerLevel, Message, downcast, arc};
+use cordis::{Context, LoggerLevel, Message, arc, downcast};
 use dsh_scope::{CreateScopeOptions, ScopeKey, bind_scope_parent, create_scope};
 use dsh_skill::{
-    BUNDLED_SKILL_RANK, Config, SKILL_ABORTED_MESSAGE, SkillAbort, SkillCandidate,
-    SkillDefinition, SkillInvocationPolicy, SkillLookupOptions, SkillProvider,
-    SkillProviderControl, SkillProviderObservation, SkillRegistration, SkillRegistry,
-    SkillResourceBase, SkillViewOptions, escape_text, is_model_invocable, is_skill_name,
-    is_user_invocable, render_skill_content,
+    BUNDLED_SKILL_RANK, Config, SKILL_ABORTED_MESSAGE, SkillAbort, SkillCandidate, SkillDefinition,
+    SkillInvocationPolicy, SkillLookupOptions, SkillProvider, SkillProviderControl,
+    SkillProviderObservation, SkillRegistration, SkillRegistry, SkillResourceBase,
+    SkillViewOptions, escape_text, is_model_invocable, is_skill_name, is_user_invocable,
+    render_skill_content,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,7 +67,10 @@ impl SkillProvider for MemoryProvider {
         self.name
     }
 
-    async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+    async fn list(
+        &self,
+        _options: &SkillLookupOptions,
+    ) -> Result<SkillProviderObservation, String> {
         self.list_calls.fetch_add(1, Ordering::SeqCst);
         Ok(SkillProviderObservation {
             candidates: self.candidates.lock().clone(),
@@ -190,7 +193,10 @@ async fn registers_providers_resolves_duplicates_first_wins_and_disposes() {
         fn name(&self) -> &str {
             "override"
         }
-        async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            _options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             Ok(SkillProviderObservation {
                 candidates: vec![SkillCandidate {
                     name: "shadowed".to_string(),
@@ -201,7 +207,9 @@ async fn registers_providers_resolves_duplicates_first_wins_and_disposes() {
                     source: "override".to_string(),
                     resource_base: None,
                     rank: 5,
-                    locator: arc(Locator { content: "Override body.".to_string() }),
+                    locator: arc(Locator {
+                        content: "Override body.".to_string(),
+                    }),
                     path: None,
                     metadata: None,
                 }],
@@ -231,7 +239,10 @@ async fn registers_providers_resolves_duplicates_first_wins_and_disposes() {
     let dispose_memory = register_provider(&ctx, provider.clone());
     register_provider(&ctx, Arc::new(OverrideProvider));
 
-    let listed = registry.list(SkillViewOptions::default()).await.expect("list");
+    let listed = registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect("list");
     let shapes: Vec<(String, String, String)> = listed
         .into_iter()
         .map(|skill| (skill.name, skill.description, skill.provider))
@@ -239,12 +250,27 @@ async fn registers_providers_resolves_duplicates_first_wins_and_disposes() {
     assert_eq!(
         shapes,
         vec![
-            ("a-skill".to_string(), "A skill".to_string(), "memory".to_string()),
-            ("shadowed".to_string(), "Higher priority".to_string(), "override".to_string()),
-            ("z-skill".to_string(), "Z skill".to_string(), "memory".to_string()),
+            (
+                "a-skill".to_string(),
+                "A skill".to_string(),
+                "memory".to_string()
+            ),
+            (
+                "shadowed".to_string(),
+                "Higher priority".to_string(),
+                "override".to_string()
+            ),
+            (
+                "z-skill".to_string(),
+                "Z skill".to_string(),
+                "memory".to_string()
+            ),
         ]
     );
-    let shadowed = registry.get("shadowed", SkillViewOptions::default()).await.expect("get");
+    let shadowed = registry
+        .get("shadowed", SkillViewOptions::default())
+        .await
+        .expect("get");
     assert_eq!(shadowed.expect("some").content, "Override body.");
 
     let same_rank = {
@@ -253,7 +279,10 @@ async fn registers_providers_resolves_duplicates_first_wins_and_disposes() {
         MemoryProvider::new("same-rank", vec![candidate])
     };
     register_provider(&ctx, same_rank.clone());
-    let listed = registry.list(SkillViewOptions::default()).await.expect("list");
+    let listed = registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect("list");
     assert_eq!(
         listed
             .iter()
@@ -299,7 +328,10 @@ async fn registers_providers_resolves_duplicates_first_wins_and_disposes() {
 
     // Disposing the memory provider drops its skills.
     (dispose_memory)().await;
-    let listed = registry.list(SkillViewOptions::default()).await.expect("list");
+    let listed = registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect("list");
     let names: Vec<&str> = listed.iter().map(|skill| skill.name.as_str()).collect();
     assert_eq!(names, vec!["same-rank-skill", "shadowed"]);
 }
@@ -309,9 +341,27 @@ async fn returns_invocation_neutral_catalog_and_resolves_policies_independently(
     let (ctx, registry) = installed(None);
     let registrations = [
         ("both", None),
-        ("model-only", Some(SkillInvocationPolicy { model_invocable: true, user_invocable: false })),
-        ("user-only", Some(SkillInvocationPolicy { model_invocable: false, user_invocable: true })),
-        ("trusted-only", Some(SkillInvocationPolicy { model_invocable: false, user_invocable: false })),
+        (
+            "model-only",
+            Some(SkillInvocationPolicy {
+                model_invocable: true,
+                user_invocable: false,
+            }),
+        ),
+        (
+            "user-only",
+            Some(SkillInvocationPolicy {
+                model_invocable: false,
+                user_invocable: true,
+            }),
+        ),
+        (
+            "trusted-only",
+            Some(SkillInvocationPolicy {
+                model_invocable: false,
+                user_invocable: false,
+            }),
+        ),
     ];
     for (name, invocation) in registrations {
         let mut registration = runtime_registration(name, name);
@@ -319,11 +369,21 @@ async fn returns_invocation_neutral_catalog_and_resolves_policies_independently(
         let _ = registry.register(&ctx, registration);
     }
 
-    let listed = registry.list(SkillViewOptions::default()).await.expect("list");
+    let listed = registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect("list");
     let names: Vec<&str> = listed.iter().map(|skill| skill.name.as_str()).collect();
-    assert_eq!(names, vec!["both", "model-only", "trusted-only", "user-only"]);
     assert_eq!(
-        listed.iter().find(|skill| skill.name == "both").expect("both").invocation,
+        names,
+        vec!["both", "model-only", "trusted-only", "user-only"]
+    );
+    assert_eq!(
+        listed
+            .iter()
+            .find(|skill| skill.name == "both")
+            .expect("both")
+            .invocation,
         SkillInvocationPolicy::BOTH
     );
     let model: Vec<&str> = listed
@@ -338,9 +398,15 @@ async fn returns_invocation_neutral_catalog_and_resolves_policies_independently(
         .map(|skill| skill.name.as_str())
         .collect();
     assert_eq!(user, vec!["both", "user-only"]);
-    let loaded = registry.get("trusted-only", SkillViewOptions::default()).await.expect("get");
+    let loaded = registry
+        .get("trusted-only", SkillViewOptions::default())
+        .await
+        .expect("get");
     assert_eq!(loaded.expect("some").content, "trusted-only body.");
-    let both = registry.get("both", SkillViewOptions::default()).await.expect("get");
+    let both = registry
+        .get("both", SkillViewOptions::default())
+        .await
+        .expect("get");
     assert_eq!(both.expect("some").invocation, SkillInvocationPolicy::BOTH);
 }
 
@@ -353,8 +419,14 @@ async fn validates_candidate_name_description_and_provider_ownership() {
         fn name(&self) -> &str {
             self.0
         }
-        async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
-            Ok(SkillProviderObservation { candidates: vec![self.1.clone()], complete: true })
+        async fn list(
+            &self,
+            _options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
+            Ok(SkillProviderObservation {
+                candidates: vec![self.1.clone()],
+                complete: true,
+            })
         }
         async fn get(
             &self,
@@ -367,22 +439,37 @@ async fn validates_candidate_name_description_and_provider_ownership() {
 
     let bad_name = memory_skill("Bad_Name", "bad", 1, None);
     register_provider(&ctx, Arc::new(BadProvider("bad-name", bad_name)));
-    let error = registry.list(SkillViewOptions::default()).await.expect_err("invalid name");
+    let error = registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect_err("invalid name");
     assert!(error.contains("invalid skill name"), "{error}");
 
     let (empty_ctx, empty_registry) = installed(None);
     let mut empty_desc = memory_skill("empty-description", "x", 1, None);
     empty_desc.description = String::new();
     empty_desc.provider = "empty-description".to_string();
-    register_provider(&empty_ctx, Arc::new(BadProvider("empty-description", empty_desc)));
-    let error = empty_registry.list(SkillViewOptions::default()).await.expect_err("empty desc");
+    register_provider(
+        &empty_ctx,
+        Arc::new(BadProvider("empty-description", empty_desc)),
+    );
+    let error = empty_registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect_err("empty desc");
     assert!(error.contains("without a description"), "{error}");
 
     let (foreign_ctx, foreign_registry) = installed(None);
     let mut foreign = memory_skill("wrong-provider", "Wrong provider", 1, None);
     foreign.provider = "different".to_string();
-    register_provider(&foreign_ctx, Arc::new(BadProvider("wrong-provider", foreign)));
-    let error = foreign_registry.list(SkillViewOptions::default()).await.expect_err("foreign");
+    register_provider(
+        &foreign_ctx,
+        Arc::new(BadProvider("wrong-provider", foreign)),
+    );
+    let error = foreign_registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect_err("foreign");
     assert!(error.contains("for provider"), "{error}");
 }
 
@@ -398,7 +485,10 @@ async fn borrows_the_exact_lookup_options_through_discovery_and_loading() {
         fn name(&self) -> &str {
             "contextual"
         }
-        async fn list(&self, options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             *self.listed_with.lock() = Some((options.cwd.clone(), options.signal.clone()));
             Ok(SkillProviderObservation {
                 candidates: vec![SkillCandidate {
@@ -410,7 +500,9 @@ async fn borrows_the_exact_lookup_options_through_discovery_and_loading() {
                     source: "test".to_string(),
                     resource_base: None,
                     rank: 1,
-                    locator: arc(Locator { content: "Skill A body.".to_string() }),
+                    locator: arc(Locator {
+                        content: "Skill A body.".to_string(),
+                    }),
                     path: None,
                     metadata: None,
                 }],
@@ -444,7 +536,11 @@ async fn borrows_the_exact_lookup_options_through_discovery_and_loading() {
         loaded_with: parking_lot::Mutex::new(None),
     });
     register_provider(&ctx, provider.clone());
-    let options = SkillViewOptions { cwd: Some("/workspace/a".to_string()), signal: Some(signal.clone()), scope: None };
+    let options = SkillViewOptions {
+        cwd: Some("/workspace/a".to_string()),
+        signal: Some(signal.clone()),
+        scope: None,
+    };
 
     let listed = registry.list(options.clone()).await.expect("list");
     assert_eq!(listed[0].name, "skill-a");
@@ -452,10 +548,16 @@ async fn borrows_the_exact_lookup_options_through_discovery_and_loading() {
     assert_eq!(loaded.expect("some").content, "Skill A body.");
     let listed_with = provider.listed_with.lock().clone().expect("listed");
     assert_eq!(listed_with.0.as_deref(), Some("/workspace/a"));
-    assert!(Arc::ptr_eq(listed_with.1.as_ref().expect("signal"), &signal));
+    assert!(Arc::ptr_eq(
+        listed_with.1.as_ref().expect("signal"),
+        &signal
+    ));
     let loaded_with = provider.loaded_with.lock().clone().expect("loaded");
     assert_eq!(loaded_with.0.as_deref(), Some("/workspace/a"));
-    assert!(Arc::ptr_eq(loaded_with.1.as_ref().expect("signal"), &signal));
+    assert!(Arc::ptr_eq(
+        loaded_with.1.as_ref().expect("signal"),
+        &signal
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -474,7 +576,10 @@ async fn rechecks_cancellation_after_cached_discovery_before_provider_loading() 
         fn name(&self) -> &str {
             "cached"
         }
-        async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            _options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             Ok(SkillProviderObservation {
                 candidates: vec![SkillCandidate {
                     name: "cached-skill".to_string(),
@@ -485,7 +590,9 @@ async fn rechecks_cancellation_after_cached_discovery_before_provider_loading() 
                     source: "test".to_string(),
                     resource_base: None,
                     rank: 1,
-                    locator: arc(Locator { content: "Cached body.".to_string() }),
+                    locator: arc(Locator {
+                        content: "Cached body.".to_string(),
+                    }),
                     path: None,
                     metadata: None,
                 }],
@@ -519,10 +626,17 @@ async fn rechecks_cancellation_after_cached_discovery_before_provider_loading() 
     }
     register_provider(
         &ctx,
-        Arc::new(CachedProvider { get_calls: get_calls_for_provider, gate: gate_for_provider }),
+        Arc::new(CachedProvider {
+            get_calls: get_calls_for_provider,
+            gate: gate_for_provider,
+        }),
     );
     registry
-        .list(SkillViewOptions { cwd: Some("/workspace/cache".to_string()), signal: None, scope: None })
+        .list(SkillViewOptions {
+            cwd: Some("/workspace/cache".to_string()),
+            signal: None,
+            scope: None,
+        })
         .await
         .expect("warm");
 
@@ -557,29 +671,46 @@ async fn rechecks_cancellation_after_cached_discovery_before_provider_loading() 
 
 #[tokio::test(flavor = "current_thread")]
 async fn caches_provider_discovery_skips_failing_providers_and_invalidates_on_runtime_skills() {
-    let (ctx, registry) = installed(Some(Config { collect_cache_max_entries: Some(1) }));
+    let (ctx, registry) = installed(Some(Config {
+        collect_cache_max_entries: Some(1),
+    }));
     let warns = capture_warns(&ctx);
-    let provider = MemoryProvider::new("memory", vec![memory_skill("first-skill", "First", 10, None)]);
+    let provider = MemoryProvider::new(
+        "memory",
+        vec![memory_skill("first-skill", "First", 10, None)],
+    );
     register_provider(&ctx, provider.clone());
 
     let names = |skills: Vec<dsh_skill::SkillSummary>| -> Vec<String> {
         skills.into_iter().map(|skill| skill.name).collect()
     };
     assert_eq!(
-        names(registry.list(SkillViewOptions::default()).await.expect("list")),
+        names(
+            registry
+                .list(SkillViewOptions::default())
+                .await
+                .expect("list")
+        ),
         vec!["first-skill"]
     );
     provider.replace(vec![memory_skill("second-skill", "Second", 10, None)]);
     // Cached catalog still serves the old entry.
     assert_eq!(
-        names(registry.list(SkillViewOptions::default()).await.expect("list")),
+        names(
+            registry
+                .list(SkillViewOptions::default())
+                .await
+                .expect("list")
+        ),
         vec!["first-skill"]
     );
 
     let dispose_runtime = registry.register(
         &ctx,
         SkillRegistration {
-            resource_base: Some(SkillResourceBase::Opaque { description: "runtime memory".to_string() }),
+            resource_base: Some(SkillResourceBase::Opaque {
+                description: "runtime memory".to_string(),
+            }),
             path: Some("memory://runtime-skill".to_string()),
             metadata: Some(serde_json::json!({ "owner": "tests" })),
             content: "Runtime body.".to_string(),
@@ -587,14 +718,25 @@ async fn caches_provider_discovery_skips_failing_providers_and_invalidates_on_ru
         },
     );
     assert_eq!(
-        names(registry.list(SkillViewOptions::default()).await.expect("list")),
+        names(
+            registry
+                .list(SkillViewOptions::default())
+                .await
+                .expect("list")
+        ),
         vec!["runtime-skill", "second-skill"]
     );
-    let loaded = registry.get("runtime-skill", SkillViewOptions::default()).await.expect("get");
+    let loaded = registry
+        .get("runtime-skill", SkillViewOptions::default())
+        .await
+        .expect("get");
     let loaded = loaded.expect("some");
     assert_eq!(loaded.content, "Runtime body.");
     assert_eq!(loaded.path.as_deref(), Some("memory://runtime-skill"));
-    assert_eq!(loaded.metadata, Some(serde_json::json!({ "owner": "tests" })));
+    assert_eq!(
+        loaded.metadata,
+        Some(serde_json::json!({ "owner": "tests" }))
+    );
     (dispose_runtime)().await;
 
     struct FlakyProvider {
@@ -606,7 +748,10 @@ async fn caches_provider_discovery_skips_failing_providers_and_invalidates_on_ru
         fn name(&self) -> &str {
             "flaky"
         }
-        async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            _options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail.load(Ordering::SeqCst) {
                 return Err("transient discovery failure".to_string());
@@ -628,33 +773,56 @@ async fn caches_provider_discovery_skips_failing_providers_and_invalidates_on_ru
             Ok(None)
         }
     }
-    let flaky = Arc::new(FlakyProvider { calls: AtomicU64::new(0), fail: AtomicBool::new(true) });
+    let flaky = Arc::new(FlakyProvider {
+        calls: AtomicU64::new(0),
+        fail: AtomicBool::new(true),
+    });
     register_provider(&ctx, flaky.clone());
-    let incomplete = registry.snapshot(SkillViewOptions::default()).await.expect("snapshot");
+    let incomplete = registry
+        .snapshot(SkillViewOptions::default())
+        .await
+        .expect("snapshot");
     assert_eq!(names(incomplete.skills), vec!["second-skill"]);
     assert!(!incomplete.complete);
     assert_eq!(flaky.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
-        names(registry.list(SkillViewOptions::default()).await.expect("list")),
+        names(
+            registry
+                .list(SkillViewOptions::default())
+                .await
+                .expect("list")
+        ),
         vec!["second-skill"]
     );
     assert_eq!(flaky.calls.load(Ordering::SeqCst), 2);
     flaky.fail.store(false, Ordering::SeqCst);
     assert_eq!(
-        names(registry.list(SkillViewOptions::default()).await.expect("list")),
+        names(
+            registry
+                .list(SkillViewOptions::default())
+                .await
+                .expect("list")
+        ),
         vec!["flaky-skill", "second-skill"]
     );
     assert_eq!(flaky.calls.load(Ordering::SeqCst), 3);
     assert_eq!(
-        names(registry.list(SkillViewOptions::default()).await.expect("list")),
+        names(
+            registry
+                .list(SkillViewOptions::default())
+                .await
+                .expect("list")
+        ),
         vec!["flaky-skill", "second-skill"]
     );
     assert_eq!(flaky.calls.load(Ordering::SeqCst), 3);
-    assert!(warns
-        .warns
-        .lock()
-        .iter()
-        .any(|message| message.contains("transient discovery failure")));
+    assert!(
+        warns
+            .warns
+            .lock()
+            .iter()
+            .any(|message| message.contains("transient discovery failure"))
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -670,7 +838,10 @@ async fn keeps_candidates_from_incomplete_provider_observations_loadable_without
         fn name(&self) -> &str {
             "incomplete-candidates"
         }
-        async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            _options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(SkillProviderObservation {
                 candidates: vec![{
@@ -701,14 +872,28 @@ async fn keeps_candidates_from_incomplete_provider_observations_loadable_without
             }))
         }
     }
-    register_provider(&ctx, Arc::new(IncompleteProvider { calls: list_calls_for_provider }));
+    register_provider(
+        &ctx,
+        Arc::new(IncompleteProvider {
+            calls: list_calls_for_provider,
+        }),
+    );
 
-    let snapshot = registry.snapshot(SkillViewOptions::default()).await.expect("snapshot");
+    let snapshot = registry
+        .snapshot(SkillViewOptions::default())
+        .await
+        .expect("snapshot");
     assert_eq!(snapshot.skills[0].name, "available-skill");
     assert!(!snapshot.complete);
-    let loaded = registry.get("available-skill", SkillViewOptions::default()).await.expect("get");
+    let loaded = registry
+        .get("available-skill", SkillViewOptions::default())
+        .await
+        .expect("get");
     assert_eq!(loaded.expect("some").content, "available-skill body.");
-    let listed = registry.list(SkillViewOptions::default()).await.expect("list");
+    let listed = registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect("list");
     assert_eq!(listed[0].name, "available-skill");
     assert_eq!(list_calls.load(Ordering::SeqCst), 3);
 }
@@ -716,11 +901,15 @@ async fn keeps_candidates_from_incomplete_provider_observations_loadable_without
 #[tokio::test(flavor = "current_thread")]
 async fn invalidates_only_the_exact_registered_provider_and_ignores_its_late_callbacks() {
     let (ctx, registry) = installed(None);
-    let provider = MemoryProvider::new("memory", vec![memory_skill("first-skill", "First", 10, None)]);
+    let provider = MemoryProvider::new(
+        "memory",
+        vec![memory_skill("first-skill", "First", 10, None)],
+    );
     let provider_for_replace = provider.clone();
     let invalidate: Arc<parking_lot::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>> =
         Arc::new(parking_lot::Mutex::new(None));
-    let signal_seen: Arc<parking_lot::Mutex<Option<SkillAbort>>> = Arc::new(parking_lot::Mutex::new(None));
+    let signal_seen: Arc<parking_lot::Mutex<Option<SkillAbort>>> =
+        Arc::new(parking_lot::Mutex::new(None));
     let invalidate_for_factory = invalidate.clone();
     let signal_for_factory = signal_seen.clone();
     let dispose = registry.register_provider(
@@ -732,24 +921,45 @@ async fn invalidates_only_the_exact_registered_provider_and_ignores_its_late_cal
         }),
     );
 
-    assert!(registry.snapshot(SkillViewOptions::default()).await.expect("snapshot").complete);
+    assert!(
+        registry
+            .snapshot(SkillViewOptions::default())
+            .await
+            .expect("snapshot")
+            .complete
+    );
     provider_for_replace.replace(vec![memory_skill("second-skill", "Second", 10, None)]);
-    let listed = registry.list(SkillViewOptions::default()).await.expect("list");
+    let listed = registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect("list");
     assert_eq!(listed[0].name, "first-skill");
 
     (invalidate.lock().as_ref().expect("control").clone())();
-    let listed = registry.list(SkillViewOptions::default()).await.expect("list");
+    let listed = registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect("list");
     assert_eq!(listed[0].name, "second-skill");
     (dispose)().await;
     assert!(signal_seen.lock().as_ref().expect("signal")());
 
-    let replacement = MemoryProvider::new("memory", vec![memory_skill("replacement-skill", "Replacement", 10, None)]);
+    let replacement = MemoryProvider::new(
+        "memory",
+        vec![memory_skill("replacement-skill", "Replacement", 10, None)],
+    );
     register_provider(&ctx, replacement.clone());
-    let listed = registry.list(SkillViewOptions::default()).await.expect("list");
+    let listed = registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect("list");
     assert_eq!(listed[0].name, "replacement-skill");
     // The stale control no longer invalidates the new registration.
     (invalidate.lock().as_ref().expect("control").clone())();
-    let listed = registry.list(SkillViewOptions::default()).await.expect("list");
+    let listed = registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect("list");
     assert_eq!(listed[0].name, "replacement-skill");
     assert_eq!(replacement.list_calls.load(Ordering::SeqCst), 1);
 }
@@ -770,7 +980,10 @@ async fn emits_catalog_invalidations_for_live_provider_and_runtime_mutations() {
         }),
         cordis::EventOptions::default(),
     ));
-    let provider = MemoryProvider::new("memory", vec![memory_skill("provider-skill", "Provider", 10, None)]);
+    let provider = MemoryProvider::new(
+        "memory",
+        vec![memory_skill("provider-skill", "Provider", 10, None)],
+    );
     let invalidate: Arc<parking_lot::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>> =
         Arc::new(parking_lot::Mutex::new(None));
     let invalidate_for_factory = invalidate.clone();
@@ -803,9 +1016,7 @@ async fn contains_synchronous_catalog_observer_failures() {
     let observed_for_listener = observed.clone();
     let _ = futures::executor::block_on(ctx.on(
         "skills/change",
-        Arc::new(|_ctx, _args| {
-            panic!("observer threw")
-        }),
+        Arc::new(|_ctx, _args| panic!("observer threw")),
         cordis::EventOptions::default(),
     ));
     let _ = futures::executor::block_on(ctx.on(
@@ -823,11 +1034,13 @@ async fn contains_synchronous_catalog_observer_failures() {
     let provider = MemoryProvider::new("memory", Vec::new());
     register_provider(&ctx, provider);
     assert_eq!(observed.load(Ordering::SeqCst), 1);
-    assert!(warns
-        .warns
-        .lock()
-        .iter()
-        .any(|message| message.contains("skills/change listener threw")));
+    assert!(
+        warns
+            .warns
+            .lock()
+            .iter()
+            .any(|message| message.contains("skills/change listener threw"))
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -846,13 +1059,19 @@ async fn retries_an_in_flight_catalog_invalidated_by_its_provider() {
         fn name(&self) -> &str {
             "memory"
         }
-        async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            _options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             if call == 1 {
                 self.started.notify_waiters();
                 self.gate.notified().await;
             }
-            Ok(SkillProviderObservation { candidates: self.candidates.lock().clone(), complete: true })
+            Ok(SkillProviderObservation {
+                candidates: self.candidates.lock().clone(),
+                complete: true,
+            })
         }
         async fn get(
             &self,
@@ -881,7 +1100,8 @@ async fn retries_an_in_flight_catalog_invalidated_by_its_provider() {
     );
 
     let registry_for_task = registry.clone();
-    let task = tokio::spawn(async move { registry_for_task.list(SkillViewOptions::default()).await });
+    let task =
+        tokio::spawn(async move { registry_for_task.list(SkillViewOptions::default()).await });
     started.notified().await;
     *provider_for_replace.candidates.lock() = vec![memory_skill("fresh-skill", "Fresh", 10, None)];
     (invalidate.lock().as_ref().expect("control").clone())();
@@ -906,14 +1126,18 @@ async fn bounds_repeated_in_flight_invalidation_and_leaves_the_result_uncached()
         fn name(&self) -> &str {
             "self-invalidating"
         }
-        async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            _options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             if let Some(invalidate) = self.invalidate.lock().as_ref().cloned() {
                 invalidate();
             }
             Ok(SkillProviderObservation {
                 candidates: vec![{
-                    let mut candidate = memory_skill("bounded-skill", &format!("Attempt {call}"), 10, None);
+                    let mut candidate =
+                        memory_skill("bounded-skill", &format!("Attempt {call}"), 10, None);
                     candidate.provider = "self-invalidating".to_string();
                     candidate
                 }],
@@ -928,7 +1152,10 @@ async fn bounds_repeated_in_flight_invalidation_and_leaves_the_result_uncached()
             Ok(None)
         }
     }
-    let provider = Arc::new(SelfInvalidating { calls: calls_for_provider, invalidate: parking_lot::Mutex::new(None) });
+    let provider = Arc::new(SelfInvalidating {
+        calls: calls_for_provider,
+        invalidate: parking_lot::Mutex::new(None),
+    });
     let provider_for_factory = provider.clone();
     registry.register_provider(
         &ctx,
@@ -938,12 +1165,18 @@ async fn bounds_repeated_in_flight_invalidation_and_leaves_the_result_uncached()
         }),
     );
 
-    let snapshot = registry.snapshot(SkillViewOptions::default()).await.expect("snapshot");
+    let snapshot = registry
+        .snapshot(SkillViewOptions::default())
+        .await
+        .expect("snapshot");
     assert_eq!(snapshot.skills[0].description, "Attempt 2");
     assert!(!snapshot.complete);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 
-    let snapshot = registry.snapshot(SkillViewOptions::default()).await.expect("snapshot");
+    let snapshot = registry
+        .snapshot(SkillViewOptions::default())
+        .await
+        .expect("snapshot");
     assert_eq!(snapshot.skills[0].description, "Attempt 4");
     assert_eq!(calls.load(Ordering::SeqCst), 4);
 }
@@ -961,7 +1194,10 @@ async fn invalidates_a_provider_whose_loaded_definition_changed_identity() {
         fn name(&self) -> &str {
             "renamed"
         }
-        async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            _options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(SkillProviderObservation {
                 candidates: vec![SkillCandidate {
@@ -973,7 +1209,9 @@ async fn invalidates_a_provider_whose_loaded_definition_changed_identity() {
                     source: "test".to_string(),
                     resource_base: None,
                     rank: 1,
-                    locator: arc(Locator { content: "body".to_string() }),
+                    locator: arc(Locator {
+                        content: "body".to_string(),
+                    }),
                     path: None,
                     metadata: None,
                 }],
@@ -999,10 +1237,24 @@ async fn invalidates_a_provider_whose_loaded_definition_changed_identity() {
             }))
         }
     }
-    register_provider(&ctx, Arc::new(RenamedProvider { calls: calls_for_provider }));
+    register_provider(
+        &ctx,
+        Arc::new(RenamedProvider {
+            calls: calls_for_provider,
+        }),
+    );
 
-    assert!(registry.get("old-name", SkillViewOptions::default()).await.expect("get").is_none());
-    let _ = registry.list(SkillViewOptions::default()).await.expect("list");
+    assert!(
+        registry
+            .get("old-name", SkillViewOptions::default())
+            .await
+            .expect("get")
+            .is_none()
+    );
+    let _ = registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect("list");
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
@@ -1015,7 +1267,10 @@ async fn returns_none_when_a_discovered_candidate_disappears_before_loading() {
         fn name(&self) -> &str {
             "vanished-body"
         }
-        async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            _options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             Ok(SkillProviderObservation {
                 candidates: vec![{
                     let mut candidate = memory_skill("vanished-skill", "Vanished", 10, None);
@@ -1035,7 +1290,13 @@ async fn returns_none_when_a_discovered_candidate_disappears_before_loading() {
     }
     register_provider(&ctx, Arc::new(VanishedProvider));
 
-    assert!(registry.get("vanished-skill", SkillViewOptions::default()).await.expect("get").is_none());
+    assert!(
+        registry
+            .get("vanished-skill", SkillViewOptions::default())
+            .await
+            .expect("get")
+            .is_none()
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1047,7 +1308,10 @@ async fn propagates_a_load_failure_raced_against_an_armed_abort_signal() {
         fn name(&self) -> &str {
             "failing-loader"
         }
-        async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            _options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             Ok(SkillProviderObservation {
                 candidates: vec![SkillCandidate {
                     name: "failing-skill".to_string(),
@@ -1058,7 +1322,9 @@ async fn propagates_a_load_failure_raced_against_an_armed_abort_signal() {
                     source: "test".to_string(),
                     resource_base: None,
                     rank: 10,
-                    locator: arc(Locator { content: "x".to_string() }),
+                    locator: arc(Locator {
+                        content: "x".to_string(),
+                    }),
                     path: None,
                     metadata: None,
                 }],
@@ -1078,7 +1344,11 @@ async fn propagates_a_load_failure_raced_against_an_armed_abort_signal() {
     let error = registry
         .get(
             "failing-skill",
-            SkillViewOptions { cwd: None, signal: Some(never_abort()), scope: None },
+            SkillViewOptions {
+                cwd: None,
+                signal: Some(never_abort()),
+                scope: None,
+            },
         )
         .await
         .expect_err("load failure");
@@ -1099,7 +1369,10 @@ async fn abandons_an_in_flight_catalog_when_provider_registrations_change() {
         fn name(&self) -> &str {
             "delayed"
         }
-        async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            _options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             self.started.notify_waiters();
             self.gate.notified().await;
             Ok(SkillProviderObservation {
@@ -1119,10 +1392,17 @@ async fn abandons_an_in_flight_catalog_when_provider_registrations_change() {
             Ok(None)
         }
     }
-    let dispose = register_provider(&ctx, Arc::new(DelayedProvider { gate: gate.clone(), started: started.clone() }));
+    let dispose = register_provider(
+        &ctx,
+        Arc::new(DelayedProvider {
+            gate: gate.clone(),
+            started: started.clone(),
+        }),
+    );
 
     let registry_for_task = registry.clone();
-    let task = tokio::spawn(async move { registry_for_task.list(SkillViewOptions::default()).await });
+    let task =
+        tokio::spawn(async move { registry_for_task.list(SkillViewOptions::default()).await });
     started.notified().await;
     (dispose)().await;
     gate.notify_waiters();
@@ -1136,7 +1416,8 @@ async fn stops_waiting_for_discovery_when_its_lookup_signal_aborts() {
     let (ctx, registry) = installed(None);
     let gate = Arc::new(tokio::sync::Notify::new());
     let started = Arc::new(tokio::sync::Notify::new());
-    let seen_signal: Arc<parking_lot::Mutex<Option<SkillAbort>>> = Arc::new(parking_lot::Mutex::new(None));
+    let seen_signal: Arc<parking_lot::Mutex<Option<SkillAbort>>> =
+        Arc::new(parking_lot::Mutex::new(None));
     let seen_for_provider = seen_signal.clone();
     struct UncooperativeProvider {
         gate: Arc<tokio::sync::Notify>,
@@ -1148,7 +1429,10 @@ async fn stops_waiting_for_discovery_when_its_lookup_signal_aborts() {
         fn name(&self) -> &str {
             "uncooperative"
         }
-        async fn list(&self, options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             *self.seen.lock() = options.signal.clone();
             self.started.notify_waiters();
             self.gate.notified().await;
@@ -1164,7 +1448,11 @@ async fn stops_waiting_for_discovery_when_its_lookup_signal_aborts() {
     }
     register_provider(
         &ctx,
-        Arc::new(UncooperativeProvider { gate: gate.clone(), started: started.clone(), seen: seen_for_provider }),
+        Arc::new(UncooperativeProvider {
+            gate: gate.clone(),
+            started: started.clone(),
+            seen: seen_for_provider,
+        }),
     );
 
     let flag = Arc::new(AtomicBool::new(false));
@@ -1174,7 +1462,11 @@ async fn stops_waiting_for_discovery_when_its_lookup_signal_aborts() {
     let signal_for_task = signal.clone();
     let task = tokio::spawn(async move {
         registry_for_task
-            .list(SkillViewOptions { cwd: None, signal: Some(signal_for_task), scope: None })
+            .list(SkillViewOptions {
+                cwd: None,
+                signal: Some(signal_for_task),
+                scope: None,
+            })
             .await
     });
     started.notified().await;
@@ -1182,7 +1474,10 @@ async fn stops_waiting_for_discovery_when_its_lookup_signal_aborts() {
     let outcome = task.await.expect("join");
     assert_eq!(outcome.expect_err("aborted"), SKILL_ABORTED_MESSAGE);
     gate.notify_waiters();
-    assert!(Arc::ptr_eq(seen_signal.lock().as_ref().expect("seen"), &signal));
+    assert!(Arc::ptr_eq(
+        seen_signal.lock().as_ref().expect("seen"),
+        &signal
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1197,21 +1492,44 @@ async fn rejects_invalid_runtime_skill_registrations_and_ignores_duplicates() {
         registry.register(&ctx, runtime_registration("no-description", ""));
     }));
     assert!(no_description.is_err(), "empty description fails loud");
-    assert!(registry.get("missing-skill", SkillViewOptions::default()).await.expect("get").is_none());
-    assert!(registry.get("Bad_Name", SkillViewOptions::default()).await.expect("get").is_none());
+    assert!(
+        registry
+            .get("missing-skill", SkillViewOptions::default())
+            .await
+            .expect("get")
+            .is_none()
+    );
+    assert!(
+        registry
+            .get("Bad_Name", SkillViewOptions::default())
+            .await
+            .expect("get")
+            .is_none()
+    );
 
     let dispose_first = registry.register(&ctx, runtime_registration("same-skill", "First"));
     let dispose_second = registry.register(&ctx, runtime_registration("same-skill", "Second"));
     (dispose_second)().await;
-    let loaded = registry.get("same-skill", SkillViewOptions::default()).await.expect("get");
+    let loaded = registry
+        .get("same-skill", SkillViewOptions::default())
+        .await
+        .expect("get");
     assert_eq!(loaded.expect("some").description, "First");
     (dispose_first)().await;
-    assert!(registry.get("same-skill", SkillViewOptions::default()).await.expect("get").is_none());
-    assert!(warns
-        .warns
-        .lock()
-        .iter()
-        .any(|message| message.contains("ignored because it is already registered")));
+    assert!(
+        registry
+            .get("same-skill", SkillViewOptions::default())
+            .await
+            .expect("get")
+            .is_none()
+    );
+    assert!(
+        warns
+            .warns
+            .lock()
+            .iter()
+            .any(|message| message.contains("ignored because it is already registered"))
+    );
 }
 
 // ---- renderSkillContent ----
@@ -1221,7 +1539,9 @@ fn renders_a_directory_based_skill_with_the_shared_wrapper() {
     let text = render_skill_content(
         "demo-skill",
         "memory",
-        Some(&SkillResourceBase::Directory { path: "/tmp/demo".to_string() }),
+        Some(&SkillResourceBase::Directory {
+            path: "/tmp/demo".to_string(),
+        }),
         "Do the thing.",
     );
     assert_eq!(
@@ -1247,16 +1567,22 @@ fn renders_url_and_opaque_resource_hints() {
     let url = render_skill_content(
         "url-skill",
         "memory",
-        Some(&SkillResourceBase::Url { url: "https://example.test/base/".to_string() }),
+        Some(&SkillResourceBase::Url {
+            url: "https://example.test/base/".to_string(),
+        }),
         "Body.",
     );
     assert!(url.contains("Base URL for this skill: https://example.test/base/"));
-    assert!(url.contains("Resolve relative URLs mentioned by this skill against the base URL before using them."));
+    assert!(url.contains(
+        "Resolve relative URLs mentioned by this skill against the base URL before using them."
+    ));
 
     let opaque = render_skill_content(
         "opaque-skill",
         "memory",
-        Some(&SkillResourceBase::Opaque { description: "archive <bundle>".to_string() }),
+        Some(&SkillResourceBase::Opaque {
+            description: "archive <bundle>".to_string(),
+        }),
         "Body.",
     );
     assert!(opaque.contains("Resources for this skill: archive &lt;bundle&gt;"));
@@ -1265,7 +1591,9 @@ fn renders_url_and_opaque_resource_hints() {
 #[test]
 fn falls_back_to_the_provider_hint_without_a_resource_base() {
     let text = render_skill_content("provider-skill", "remote <hub>", None, "Body.");
-    assert!(text.contains("Resources for this skill are managed by provider \"remote &lt;hub&gt;\"."));
+    assert!(
+        text.contains("Resources for this skill are managed by provider \"remote &lt;hub&gt;\".")
+    );
 }
 
 #[test]
@@ -1273,7 +1601,9 @@ fn escapes_hostile_attribute_names_and_keeps_the_body_verbatim() {
     let text = render_skill_content(
         "x\"&<y",
         "memory",
-        Some(&SkillResourceBase::Directory { path: "/tmp".to_string() }),
+        Some(&SkillResourceBase::Directory {
+            path: "/tmp".to_string(),
+        }),
         "Keep </skill_content> and <tags> as-is.",
     );
     assert!(text.contains("<skill_content name=\"x&quot;&amp;&lt;y\">"));
@@ -1289,7 +1619,13 @@ fn escapes_hostile_attribute_names_and_keeps_the_body_verbatim() {
 #[tokio::test(flavor = "current_thread")]
 async fn files_a_scoped_provider_into_its_layer_and_merges_it_into_that_scope_view_only() {
     let (ctx, registry) = installed(None);
-    register_provider(&ctx, MemoryProvider::new("memory", vec![memory_skill("global-skill", "Global", 100, None)]));
+    register_provider(
+        &ctx,
+        MemoryProvider::new(
+            "memory",
+            vec![memory_skill("global-skill", "Global", 100, None)],
+        ),
+    );
     let preset = create_scope(&ctx, ScopeKey::new(), &CreateScopeOptions::default());
     struct PresetProvider;
     #[async_trait::async_trait]
@@ -1297,7 +1633,10 @@ async fn files_a_scoped_provider_into_its_layer_and_merges_it_into_that_scope_vi
         fn name(&self) -> &str {
             "preset-local"
         }
-        async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            _options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             Ok(SkillProviderObservation {
                 candidates: vec![SkillCandidate {
                     name: "preset-skill".to_string(),
@@ -1308,7 +1647,9 @@ async fn files_a_scoped_provider_into_its_layer_and_merges_it_into_that_scope_vi
                     source: "preset".to_string(),
                     resource_base: None,
                     rank: 300,
-                    locator: arc(Locator { content: "Preset body.".to_string() }),
+                    locator: arc(Locator {
+                        content: "Preset body.".to_string(),
+                    }),
                     path: None,
                     metadata: None,
                 }],
@@ -1335,32 +1676,61 @@ async fn files_a_scoped_provider_into_its_layer_and_merges_it_into_that_scope_vi
             }))
         }
     }
-    let _ = registry.register_provider(&preset.ctx, Arc::new(move |_control| Arc::new(PresetProvider)));
+    let _ = registry.register_provider(
+        &preset.ctx,
+        Arc::new(move |_control| Arc::new(PresetProvider)),
+    );
 
-    let global = registry.list(SkillViewOptions::default()).await.expect("list");
+    let global = registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect("list");
     let global_names: Vec<&str> = global.iter().map(|skill| skill.name.as_str()).collect();
     assert_eq!(global_names, vec!["global-skill"]);
     let scope = dsh_scope::scope_of(&preset.ctx);
     let scoped = registry
-        .list(SkillViewOptions { cwd: None, signal: None, scope })
+        .list(SkillViewOptions {
+            cwd: None,
+            signal: None,
+            scope,
+        })
         .await
         .expect("list");
     let scoped_names: Vec<&str> = scoped.iter().map(|skill| skill.name.as_str()).collect();
     assert_eq!(scoped_names, vec!["global-skill", "preset-skill"]);
     let scope = dsh_scope::scope_of(&preset.ctx);
     let loaded = registry
-        .get("preset-skill", SkillViewOptions { cwd: None, signal: None, scope })
+        .get(
+            "preset-skill",
+            SkillViewOptions {
+                cwd: None,
+                signal: None,
+                scope,
+            },
+        )
         .await
         .expect("get");
     assert_eq!(loaded.expect("some").content, "Preset body.");
-    assert!(registry.get("preset-skill", SkillViewOptions::default()).await.expect("get").is_none());
+    assert!(
+        registry
+            .get("preset-skill", SkillViewOptions::default())
+            .await
+            .expect("get")
+            .is_none()
+    );
     (preset.dispose)().await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn lets_the_nearest_layer_win_a_duplicate_name_regardless_of_rank() {
     let (ctx, registry) = installed(None);
-    register_provider(&ctx, MemoryProvider::new("memory", vec![memory_skill("shared-name", "Global wins ranks", 10, None)]));
+    register_provider(
+        &ctx,
+        MemoryProvider::new(
+            "memory",
+            vec![memory_skill("shared-name", "Global wins ranks", 10, None)],
+        ),
+    );
     let preset = create_scope(&ctx, ScopeKey::new(), &CreateScopeOptions::default());
     struct ShadowProvider;
     #[async_trait::async_trait]
@@ -1368,7 +1738,10 @@ async fn lets_the_nearest_layer_win_a_duplicate_name_regardless_of_rank() {
         fn name(&self) -> &str {
             "preset-local"
         }
-        async fn list(&self, _options: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+        async fn list(
+            &self,
+            _options: &SkillLookupOptions,
+        ) -> Result<SkillProviderObservation, String> {
             Ok(SkillProviderObservation {
                 candidates: vec![SkillCandidate {
                     name: "shared-name".to_string(),
@@ -1379,7 +1752,9 @@ async fn lets_the_nearest_layer_win_a_duplicate_name_regardless_of_rank() {
                     source: "preset".to_string(),
                     resource_base: None,
                     rank: 900,
-                    locator: arc(Locator { content: "Preset shadow body.".to_string() }),
+                    locator: arc(Locator {
+                        content: "Preset shadow body.".to_string(),
+                    }),
                     path: None,
                     metadata: None,
                 }],
@@ -1406,21 +1781,38 @@ async fn lets_the_nearest_layer_win_a_duplicate_name_regardless_of_rank() {
             }))
         }
     }
-    let _ = registry.register_provider(&preset.ctx, Arc::new(move |_control| Arc::new(ShadowProvider)));
+    let _ = registry.register_provider(
+        &preset.ctx,
+        Arc::new(move |_control| Arc::new(ShadowProvider)),
+    );
 
     let scope = dsh_scope::scope_of(&preset.ctx);
     let scoped = registry
-        .list(SkillViewOptions { cwd: None, signal: None, scope: scope.clone() })
+        .list(SkillViewOptions {
+            cwd: None,
+            signal: None,
+            scope: scope.clone(),
+        })
         .await
         .expect("list");
     assert_eq!(scoped.len(), 1);
     assert_eq!(scoped[0].description, "Preset shadow");
     let loaded = registry
-        .get("shared-name", SkillViewOptions { cwd: None, signal: None, scope })
+        .get(
+            "shared-name",
+            SkillViewOptions {
+                cwd: None,
+                signal: None,
+                scope,
+            },
+        )
         .await
         .expect("get");
     assert_eq!(loaded.expect("some").content, "Preset shadow body.");
-    let global = registry.list(SkillViewOptions::default()).await.expect("list");
+    let global = registry
+        .list(SkillViewOptions::default())
+        .await
+        .expect("list");
     assert_eq!(global[0].description, "Global wins ranks");
     (preset.dispose)().await;
 }
@@ -1433,16 +1825,27 @@ async fn resolves_the_scope_chain_and_recompose_follows_the_new_parent() {
     let _ = registry.register(&preset_a.ctx, runtime_registration("skill-a", "Skill a"));
     let _ = registry.register(&preset_b.ctx, runtime_registration("skill-b", "Skill b"));
     let agent_key = ScopeKey::new();
-    let binding = bind_scope_parent(&agent_key, &dsh_scope::scope_of(&preset_a.ctx).expect("key a"));
+    let binding = bind_scope_parent(
+        &agent_key,
+        &dsh_scope::scope_of(&preset_a.ctx).expect("key a"),
+    );
     let listed = registry
-        .list(SkillViewOptions { cwd: None, signal: None, scope: Some(agent_key.clone()) })
+        .list(SkillViewOptions {
+            cwd: None,
+            signal: None,
+            scope: Some(agent_key.clone()),
+        })
         .await
         .expect("list");
     let names: Vec<&str> = listed.iter().map(|skill| skill.name.as_str()).collect();
     assert_eq!(names, vec!["skill-a"]);
     binding.rebind(&dsh_scope::scope_of(&preset_b.ctx).expect("key b"));
     let listed = registry
-        .list(SkillViewOptions { cwd: None, signal: None, scope: Some(agent_key) })
+        .list(SkillViewOptions {
+            cwd: None,
+            signal: None,
+            scope: Some(agent_key),
+        })
         .await
         .expect("list");
     let names: Vec<&str> = listed.iter().map(|skill| skill.name.as_str()).collect();
@@ -1459,11 +1862,15 @@ async fn scopes_provider_name_uniqueness_per_layer_and_reports_scoped_duplicates
     let preset_b = create_scope(&ctx, ScopeKey::new(), &CreateScopeOptions::default());
     let _ = registry.register_provider(
         &preset_a.ctx,
-        Arc::new(|_control| MemoryProvider::new("memory", vec![memory_skill("a-only", "A", 100, None)])),
+        Arc::new(|_control| {
+            MemoryProvider::new("memory", vec![memory_skill("a-only", "A", 100, None)])
+        }),
     );
     let _ = registry.register_provider(
         &preset_b.ctx,
-        Arc::new(|_control| MemoryProvider::new("memory", vec![memory_skill("b-only", "B", 100, None)])),
+        Arc::new(|_control| {
+            MemoryProvider::new("memory", vec![memory_skill("b-only", "B", 100, None)])
+        }),
     );
     let duplicate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = registry.register_provider(
@@ -1474,13 +1881,21 @@ async fn scopes_provider_name_uniqueness_per_layer_and_reports_scoped_duplicates
     assert!(duplicate.is_err(), "scoped duplicate fails loud");
     let scope = dsh_scope::scope_of(&preset_a.ctx);
     let listed_a = registry
-        .list(SkillViewOptions { cwd: None, signal: None, scope })
+        .list(SkillViewOptions {
+            cwd: None,
+            signal: None,
+            scope,
+        })
         .await
         .expect("list");
     assert_eq!(listed_a[0].name, "a-only");
     let scope = dsh_scope::scope_of(&preset_b.ctx);
     let listed_b = registry
-        .list(SkillViewOptions { cwd: None, signal: None, scope })
+        .list(SkillViewOptions {
+            cwd: None,
+            signal: None,
+            scope,
+        })
         .await
         .expect("list");
     assert_eq!(listed_b[0].name, "b-only");
@@ -1510,7 +1925,13 @@ async fn keeps_runtime_duplicate_handling_per_layer_and_shadows_a_global_runtime
             ..runtime_registration("told-twice", "Preset runtime")
         },
     );
-    assert!(!warns.warns.lock().iter().any(|message| message.contains("told-twice")));
+    assert!(
+        !warns
+            .warns
+            .lock()
+            .iter()
+            .any(|message| message.contains("told-twice"))
+    );
     let _ = registry.register(
         &preset.ctx,
         SkillRegistration {
@@ -1520,23 +1941,37 @@ async fn keeps_runtime_duplicate_handling_per_layer_and_shadows_a_global_runtime
             ..runtime_registration("told-twice", "Ignored")
         },
     );
-    assert!(warns
-        .warns
-        .lock()
-        .iter()
-        .any(|message| message == "runtime skill \"told-twice\" ignored because it is already registered"));
+    assert!(warns.warns.lock().iter().any(|message| message
+        == "runtime skill \"told-twice\" ignored because it is already registered"));
     let scope = dsh_scope::scope_of(&preset.ctx);
     let scoped = registry
-        .get("told-twice", SkillViewOptions { cwd: None, signal: None, scope })
+        .get(
+            "told-twice",
+            SkillViewOptions {
+                cwd: None,
+                signal: None,
+                scope,
+            },
+        )
         .await
         .expect("get");
     assert_eq!(scoped.expect("some").content, "Preset body.");
-    let global = registry.get("told-twice", SkillViewOptions::default()).await.expect("get");
+    let global = registry
+        .get("told-twice", SkillViewOptions::default())
+        .await
+        .expect("get");
     assert_eq!(global.expect("some").content, "Global body.");
     (dispose_shadow)().await;
     let scope = dsh_scope::scope_of(&preset.ctx);
     let scoped = registry
-        .get("told-twice", SkillViewOptions { cwd: None, signal: None, scope })
+        .get(
+            "told-twice",
+            SkillViewOptions {
+                cwd: None,
+                signal: None,
+                scope,
+            },
+        )
         .await
         .expect("get");
     assert_eq!(scoped.expect("some").content, "Global body.");
@@ -1562,11 +1997,20 @@ async fn drops_a_disposed_scoped_registration_from_its_scope_view_and_notifies_c
     let preset = create_scope(&ctx, ScopeKey::new(), &CreateScopeOptions::default());
     let _ = registry.register_provider(
         &preset.ctx,
-        Arc::new(|_control| MemoryProvider::new("memory", vec![memory_skill("scoped-skill", "Scoped", 100, None)])),
+        Arc::new(|_control| {
+            MemoryProvider::new(
+                "memory",
+                vec![memory_skill("scoped-skill", "Scoped", 100, None)],
+            )
+        }),
     );
     let scope = dsh_scope::scope_of(&preset.ctx);
     let listed = registry
-        .list(SkillViewOptions { cwd: None, signal: None, scope: scope.clone() })
+        .list(SkillViewOptions {
+            cwd: None,
+            signal: None,
+            scope: scope.clone(),
+        })
         .await
         .expect("list");
     assert_eq!(listed[0].name, "scoped-skill");
@@ -1578,7 +2022,11 @@ async fn drops_a_disposed_scoped_registration_from_its_scope_view_and_notifies_c
     (preset.dispose)().await;
     assert!(changes.load(Ordering::SeqCst) > notified);
     let listed = registry
-        .list(SkillViewOptions { cwd: None, signal: None, scope })
+        .list(SkillViewOptions {
+            cwd: None,
+            signal: None,
+            scope,
+        })
         .await
         .expect("list");
     assert!(listed.is_empty());
@@ -1588,7 +2036,10 @@ async fn drops_a_disposed_scoped_registration_from_its_scope_view_and_notifies_c
 async fn invalidates_through_a_scoped_provider_control_only_while_its_exact_registration_is_live() {
     let (ctx, registry) = installed(None);
     let preset = create_scope(&ctx, ScopeKey::new(), &CreateScopeOptions::default());
-    let provider = MemoryProvider::new("memory", vec![memory_skill("watched", "Watched", 100, None)]);
+    let provider = MemoryProvider::new(
+        "memory",
+        vec![memory_skill("watched", "Watched", 100, None)],
+    );
     let control: Arc<parking_lot::Mutex<Option<SkillProviderControl>>> =
         Arc::new(parking_lot::Mutex::new(None));
     let control_for_factory = control.clone();
@@ -1602,14 +2053,22 @@ async fn invalidates_through_a_scoped_provider_control_only_while_its_exact_regi
     );
     let scope = dsh_scope::scope_of(&preset.ctx);
     let listed = registry
-        .list(SkillViewOptions { cwd: None, signal: None, scope: scope.clone() })
+        .list(SkillViewOptions {
+            cwd: None,
+            signal: None,
+            scope: scope.clone(),
+        })
         .await
         .expect("list");
     assert_eq!(listed[0].name, "watched");
     provider.replace(vec![memory_skill("replaced", "Replaced", 100, None)]);
     (control.lock().as_ref().expect("control").invalidate)();
     let listed = registry
-        .list(SkillViewOptions { cwd: None, signal: None, scope: scope.clone() })
+        .list(SkillViewOptions {
+            cwd: None,
+            signal: None,
+            scope: scope.clone(),
+        })
         .await
         .expect("list");
     assert_eq!(listed[0].name, "replaced");
@@ -1617,7 +2076,11 @@ async fn invalidates_through_a_scoped_provider_control_only_while_its_exact_regi
     provider.replace(vec![memory_skill("ignored", "Ignored", 100, None)]);
     (control.lock().as_ref().expect("control").invalidate)();
     let listed = registry
-        .list(SkillViewOptions { cwd: None, signal: None, scope })
+        .list(SkillViewOptions {
+            cwd: None,
+            signal: None,
+            scope,
+        })
         .await
         .expect("list");
     assert!(listed.is_empty());
@@ -1627,8 +2090,13 @@ async fn invalidates_through_a_scoped_provider_control_only_while_its_exact_regi
 #[test]
 fn rejects_invalid_registry_caps() {
     let ctx = Context::root();
-    let error = SkillRegistry::install(&ctx, Config { collect_cache_max_entries: Some(0) })
-        .err()
-        .expect("invalid cap");
+    let error = SkillRegistry::install(
+        &ctx,
+        Config {
+            collect_cache_max_entries: Some(0),
+        },
+    )
+    .err()
+    .expect("invalid cap");
     assert!(error.contains("collectCacheMaxEntries"), "{error}");
 }

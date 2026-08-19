@@ -56,7 +56,10 @@ impl TerminalBackendSpawnError {
         }
     }
 
-    pub fn cleanup_failed(spawn_error: impl Into<String>, cleanup_error: impl Into<String>) -> Self {
+    pub fn cleanup_failed(
+        spawn_error: impl Into<String>,
+        cleanup_error: impl Into<String>,
+    ) -> Self {
         Self {
             spawn_error: spawn_error.into(),
             cleanup_error: Some(cleanup_error.into()),

@@ -17,8 +17,8 @@ use dsh_tools::schema::{
     ValueSchemaSpec,
 };
 use dsh_tools::{
-    Config, ToolDefinition, ToolOutputDefinition, ToolRuntime, parameter_schema_spec_to_json_schema,
-    value_schema_spec_to_json_schema,
+    Config, ToolDefinition, ToolOutputDefinition, ToolRuntime,
+    parameter_schema_spec_to_json_schema, value_schema_spec_to_json_schema,
 };
 
 struct TestAgent {
@@ -64,7 +64,12 @@ impl Agent for TestAgent {
         KEY.get_or_init(ScopeKey::new)
     }
 
-    fn cancel(&self, _cause: dsh_agent::AgentCancelCause, _options: Option<&dsh_agent::CancelOptions>) {}
+    fn cancel(
+        &self,
+        _cause: dsh_agent::AgentCancelCause,
+        _options: Option<&dsh_agent::CancelOptions>,
+    ) {
+    }
 
     fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
         Box::pin(async {})
@@ -121,16 +126,16 @@ fn echo_tool(
             ))
             .expect("output schema"),
             render: Arc::new(|_args, value| {
-                Ok(vec![ContentBlock::Text { text: value.as_str().expect("string").to_string() }])
+                Ok(vec![ContentBlock::Text {
+                    text: value.as_str().expect("string").to_string(),
+                }])
             }),
             presentation_meta: None,
         },
         timeout_ms: None,
         is_concurrency_safe: if parallel {
-            Some(
-                Arc::new(|_args: &serde_json::Value| true)
-                    as Arc<dyn Fn(&serde_json::Value) -> bool + Send + Sync>,
-            )
+            Some(Arc::new(|_args: &serde_json::Value| true)
+                as Arc<dyn Fn(&serde_json::Value) -> bool + Send + Sync>)
         } else {
             None
         },
@@ -173,16 +178,16 @@ fn tool_call_events(session: &Session) -> Vec<String> {
         .events()
         .iter()
         .filter(|event| event.type_ == "tool/call")
-        .map(|event| {
-            format!("{}", event.data["name"].as_str().unwrap_or("?"))
-        })
+        .map(|event| format!("{}", event.data["name"].as_str().unwrap_or("?")))
         .collect()
 }
 
 #[tokio::test]
 async fn exclusive_calls_commit_in_model_order() {
     let (ctx, tools, _store, session) = harness().await;
-    let dispose = tools.register(&ctx, echo_tool("exclusive", false, None)).expect("register");
+    let dispose = tools
+        .register(&ctx, echo_tool("exclusive", false, None))
+        .expect("register");
     let agent = Arc::new(TestAgent::new(session.clone()));
 
     let calls = vec![block("exclusive", "c1"), block("exclusive", "c2")];
@@ -201,7 +206,10 @@ async fn exclusive_calls_commit_in_model_order() {
     assert!(!concluded);
 
     // One tool/call + one tool/result per model call, in model order.
-    assert_eq!(tool_call_events(&session), vec!["exclusive".to_string(), "exclusive".to_string()]);
+    assert_eq!(
+        tool_call_events(&session),
+        vec!["exclusive".to_string(), "exclusive".to_string()]
+    );
     let events = session.events();
     let results: Vec<&dsh_session::SessionEvent> = events
         .iter()
@@ -210,7 +218,12 @@ async fn exclusive_calls_commit_in_model_order() {
     assert_eq!(results.len(), 2);
     for result in results {
         assert_eq!(result.data["step"], 1);
-        assert!(result.source_event_seqs.as_ref().is_some_and(|seqs| seqs.len() == 1));
+        assert!(
+            result
+                .source_event_seqs
+                .as_ref()
+                .is_some_and(|seqs| seqs.len() == 1)
+        );
     }
     dispose().await;
     let _ = ctx;
@@ -325,7 +338,9 @@ async fn additional_contexts_and_concludes_turn_are_forwarded() {
     tool.execute = Arc::new(|args, run_ctx| {
         let text = args["message"].as_str().expect("message").to_string();
         run_ctx.defer_context(dsh_llm::create_user_message(
-            vec![ContentBlock::Text { text: "context".to_string() }],
+            vec![ContentBlock::Text {
+                text: "context".to_string(),
+            }],
             dsh_llm::MessageSource::Plugin {
                 plugin: "test".to_string(),
                 form: None,
@@ -362,7 +377,10 @@ async fn additional_contexts_and_concludes_turn_are_forwarded() {
     .await
     .expect("execute");
     assert!(concluded);
-    assert_eq!(*accepted.lock().expect("accepted"), vec!["context".to_string()]);
+    assert_eq!(
+        *accepted.lock().expect("accepted"),
+        vec!["context".to_string()]
+    );
     dispose().await;
     let _ = ctx;
 }

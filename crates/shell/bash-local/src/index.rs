@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cordis::{Context, FiberCore, Service};
+use dsh_schemastery::{Data, Schema};
 use dsh_settings::{SettingsSectionHooks, install_settings_section};
 use dsh_shell::{
     ShellExecRequest, ShellExecSpec, ShellExecutor, ShellProcess, ShellProcessRead,
@@ -34,7 +35,6 @@ use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
-use dsh_schemastery::{Data, Schema};
 
 /// Model-friendly environment overrides: disable colors, pagers, and
 /// interactive terminal features that would garble tool output (TS
@@ -130,10 +130,22 @@ impl ResolvedConfig {
         if let Some(cwd) = &self.cwd {
             object.insert("cwd".to_string(), Data::String(cwd.clone()));
         }
-        object.insert("timeoutMs".to_string(), Data::Number(self.timeout_ms as f64));
-        object.insert("maxTimeoutMs".to_string(), Data::Number(self.max_timeout_ms as f64));
-        object.insert("maxOutputBytes".to_string(), Data::Number(self.max_output_bytes as f64));
-        object.insert("maxSpillBytes".to_string(), Data::Number(self.max_spill_bytes as f64));
+        object.insert(
+            "timeoutMs".to_string(),
+            Data::Number(self.timeout_ms as f64),
+        );
+        object.insert(
+            "maxTimeoutMs".to_string(),
+            Data::Number(self.max_timeout_ms as f64),
+        );
+        object.insert(
+            "maxOutputBytes".to_string(),
+            Data::Number(self.max_output_bytes as f64),
+        );
+        object.insert(
+            "maxSpillBytes".to_string(),
+            Data::Number(self.max_spill_bytes as f64),
+        );
         object.insert("graceMs".to_string(), Data::Number(self.grace_ms as f64));
         Data::Object(object)
     }
@@ -141,7 +153,9 @@ impl ResolvedConfig {
 
 fn assert_positive_finite(name: &str, value: u64) -> Result<(), String> {
     if value == 0 {
-        return Err(format!("bash-local: {name} must be a positive finite number"));
+        return Err(format!(
+            "bash-local: {name} must be a positive finite number"
+        ));
     }
     Ok(())
 }
@@ -394,9 +408,8 @@ pub struct LocalBashExecutor {
     /// attaches; the provider detach falls back to the entry).
     source: Arc<Mutex<Option<Arc<dyn Fn() -> Data + Send + Sync>>>>,
     /// The TS `protected onProcessDone` settlement hook (injectable).
-    on_process_done: Mutex<
-        Arc<dyn Fn(&BashProcessFacts, String, bool, Option<String>) + Send + Sync>,
-    >,
+    on_process_done:
+        Mutex<Arc<dyn Fn(&BashProcessFacts, String, bool, Option<String>) + Send + Sync>>,
     /// The settings-wiring inject fiber; `ready()` awaits its settle.
     wiring: Mutex<Option<Arc<FiberCore>>>,
 }
@@ -413,8 +426,7 @@ impl LocalBashExecutor {
     /// entry or a missing `subprocess` service (TS constructor throw + static
     /// inject).
     pub fn install(ctx: &Context, config: Config) -> Arc<Self> {
-        let resolved = ResolvedConfig::resolve(&config)
-            .unwrap_or_else(|error| panic!("{error}"));
+        let resolved = ResolvedConfig::resolve(&config).unwrap_or_else(|error| panic!("{error}"));
         let subprocess = ctx
             .get_typed::<Arc<dyn SubprocessRuntime>>("subprocess", false)
             .map(|slot| slot.as_ref().clone())
@@ -480,7 +492,9 @@ impl LocalBashExecutor {
     pub fn config(&self) -> ResolvedConfig {
         let source = { self.source.lock().clone() };
         match source {
-            Some(source) => ResolvedConfig::from_data(&source()).unwrap_or_else(|| self.fallback.clone()),
+            Some(source) => {
+                ResolvedConfig::from_data(&source()).unwrap_or_else(|| self.fallback.clone())
+            }
             None => self.fallback.clone(),
         }
     }
@@ -507,10 +521,20 @@ impl LocalBashExecutor {
             .map(|(key, value)| (key.to_string(), Some(value.to_string())))
             .collect();
         if let Some(entries) = &spec.env {
-            env.extend(entries.iter().cloned().map(|(key, value)| (key, Some(value))));
+            env.extend(
+                entries
+                    .iter()
+                    .cloned()
+                    .map(|(key, value)| (key, Some(value))),
+            );
         }
         if let Some(dsh_env) = &spec.dsh_env {
-            env.extend(dsh_env.iter().cloned().map(|(key, value)| (key, Some(value))));
+            env.extend(
+                dsh_env
+                    .iter()
+                    .cloned()
+                    .map(|(key, value)| (key, Some(value))),
+            );
         }
         SubprocessSpawnSpec {
             argv,
@@ -577,12 +601,14 @@ impl LocalBashExecutor {
                 poller.abort();
             }
             let collected = handle.collected();
-            let stdout = collected
-                .stdout
-                .ok_or_else(|| "bash-local: subprocess implementation dropped a requested collect stream".to_string())?;
-            let stderr = collected
-                .stderr
-                .ok_or_else(|| "bash-local: subprocess implementation dropped a requested collect stream".to_string())?;
+            let stdout = collected.stdout.ok_or_else(|| {
+                "bash-local: subprocess implementation dropped a requested collect stream"
+                    .to_string()
+            })?;
+            let stderr = collected.stderr.ok_or_else(|| {
+                "bash-local: subprocess implementation dropped a requested collect stream"
+                    .to_string()
+            })?;
             // Only this executor's timeout reason counts as timedOut; outer
             // deadlines count as aborts.
             let timed_out = timeout_of(fused.reason().as_ref(), Some("BASH_TIMEOUT")).is_some();
@@ -659,14 +685,13 @@ impl LocalBashExecutor {
                         {
                             let mut status = state.status.lock();
                             if *status == ShellProcessStatus::Running {
-                                *status =
-                                    if abort_predicate.as_ref().is_some_and(|abort| abort())
-                                        || outcome.signal.is_some()
-                                    {
-                                        ShellProcessStatus::Killed
-                                    } else {
-                                        ShellProcessStatus::Completed
-                                    };
+                                *status = if abort_predicate.as_ref().is_some_and(|abort| abort())
+                                    || outcome.signal.is_some()
+                                {
+                                    ShellProcessStatus::Killed
+                                } else {
+                                    ShellProcessStatus::Completed
+                                };
                             }
                         }
                         *state.exit_code.lock() = outcome.exit_code;
@@ -732,10 +757,11 @@ impl ShellExecutor for LocalBashExecutor {
         }
         ShellExecSpec {
             command: request.command,
-            workdir: request
-                .workdir
-                .or(config.cwd)
-                .unwrap_or_else(|| std::env::current_dir().map(|cwd| cwd.to_string_lossy().into_owned()).unwrap_or_else(|_| ".".to_string())),
+            workdir: request.workdir.or(config.cwd).unwrap_or_else(|| {
+                std::env::current_dir()
+                    .map(|cwd| cwd.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| ".".to_string())
+            }),
             timeout_ms,
             stdout_max_bytes,
             signal: request.signal,
@@ -747,20 +773,12 @@ impl ShellExecutor for LocalBashExecutor {
     }
 
     fn run(&self, spec: ShellExecSpec) -> BoxFuture<'static, Result<ShellRunResult, String>> {
-        let argv = vec![
-            "bash".to_string(),
-            "-c".to_string(),
-            spec.command.clone(),
-        ];
+        let argv = vec!["bash".to_string(), "-c".to_string(), spec.command.clone()];
         self.run_argv(spec, argv)
     }
 
     fn start(&self, spec: ShellExecSpec) -> Arc<dyn ShellProcess> {
-        let argv = vec![
-            "bash".to_string(),
-            "-c".to_string(),
-            spec.command.clone(),
-        ];
+        let argv = vec!["bash".to_string(), "-c".to_string(), spec.command.clone()];
         self.start_argv(spec, argv)
     }
 }

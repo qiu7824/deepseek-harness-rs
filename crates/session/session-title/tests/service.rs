@@ -7,8 +7,7 @@ use std::sync::Arc;
 use cordis::Context;
 use dsh_session::{Session, SessionStore, session_id};
 use dsh_session_title::{
-    Config, SessionTitleService, SessionTitleSource, fold_session_title,
-    session_title_provider_id,
+    Config, SessionTitleService, SessionTitleSource, fold_session_title, session_title_provider_id,
 };
 
 fn config() -> Config {
@@ -50,7 +49,11 @@ fn user_message_data(id: &str, text: &str) -> serde_json::Value {
 
 fn append_human(session: &Session, id: &str, text: &str) -> dsh_session::SessionEvent {
     session
-        .append("user/message", user_message_data(id, text), Some(append_intent()))
+        .append(
+            "user/message",
+            user_message_data(id, text),
+            Some(append_intent()),
+        )
         .expect("append")
 }
 
@@ -73,7 +76,11 @@ async fn start_session(store: &SessionStore, ctx: &Context, id: &str) -> Session
 async fn logs_and_folds_an_immediate_fallback_after_the_first_eligible_human_text_message() {
     let (ctx, store, service) = setup().await;
     let session = start_session(&store, &ctx, "fresh").await;
-    let message = append_human(&session, "m1", "  Build\nlog-backed session titles please  ");
+    let message = append_human(
+        &session,
+        "m1",
+        "  Build\nlog-backed session titles please  ",
+    );
 
     settle().await;
 
@@ -84,9 +91,18 @@ async fn logs_and_folds_an_immediate_fallback_after_the_first_eligible_human_tex
         .find(|event| event.type_ == "session/title")
         .expect("title event");
     assert_eq!(title_event.seq, 2);
-    assert_eq!(title_event.data["title"], "Build log-backed session titles please");
-    assert_eq!(title_event.data["messageSeqs"], serde_json::json!([message.seq]));
-    assert_eq!(title_event.data["source"], serde_json::json!({"kind": "fallback"}));
+    assert_eq!(
+        title_event.data["title"],
+        "Build log-backed session titles please"
+    );
+    assert_eq!(
+        title_event.data["messageSeqs"],
+        serde_json::json!([message.seq])
+    );
+    assert_eq!(
+        title_event.data["source"],
+        serde_json::json!({"kind": "fallback"})
+    );
 
     let snapshot = service.get(&session).expect("title");
     assert_eq!(snapshot.title, "Build log-backed session titles please");
@@ -214,11 +230,21 @@ fn requires_explicit_positive_limits_with_a_fallback_cap_no_larger_than_the_acce
     let ctx = Context::root();
     let mut bad_words = config();
     bad_words.fallback_max_words = 0;
-    let error = SessionTitleService::install(&ctx, bad_words).err().expect("reject");
-    assert!(error.contains("fallbackMaxWords must be a positive integer"), "{error}");
+    let error = SessionTitleService::install(&ctx, bad_words)
+        .err()
+        .expect("reject");
+    assert!(
+        error.contains("fallbackMaxWords must be a positive integer"),
+        "{error}"
+    );
 
     let mut oversized = config();
     oversized.fallback_max_bytes = 81;
-    let error = SessionTitleService::install(&ctx, oversized).err().expect("reject");
-    assert!(error.contains("fallbackMaxBytes must not exceed maxTitleBytes"), "{error}");
+    let error = SessionTitleService::install(&ctx, oversized)
+        .err()
+        .expect("reject");
+    assert!(
+        error.contains("fallbackMaxBytes must not exceed maxTitleBytes"),
+        "{error}"
+    );
 }

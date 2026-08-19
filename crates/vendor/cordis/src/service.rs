@@ -31,7 +31,10 @@ impl Context {
     /// The service becomes visible to dependents in the same isolation scope
     /// once the fiber is active; it is unregistered (waking dependents) when
     /// the returned disposer runs or the fiber unloads.
-    pub fn register_service<S: Service + ?Sized>(&self, service: Arc<S>) -> crate::events::Disposer {
+    pub fn register_service<S: Service + ?Sized>(
+        &self,
+        service: Arc<S>,
+    ) -> crate::events::Disposer {
         let check: CheckFn = Arc::new({
             let service = service.clone();
             move |ctx: &Context| service.service_check(ctx)

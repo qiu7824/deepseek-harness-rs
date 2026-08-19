@@ -9,9 +9,7 @@
 
 use std::sync::Arc;
 
-use dsh_native_command::{
-    NativeCommandAbort, NativeCommandFailure, NativeCommandOutput,
-};
+use dsh_native_command::{NativeCommandAbort, NativeCommandFailure, NativeCommandOutput};
 use futures::future::BoxFuture;
 
 /// Testable command boundary; native implementations never invoke a shell.
@@ -67,12 +65,14 @@ pub fn current_platform() -> &'static str {
 
 /// The production runner (the TS `runNativeCommand` default).
 fn native_runner() -> PathOpenerRunner {
-    Arc::new(|command: &str, args: Vec<String>, signal: Option<NativeCommandAbort>| {
-        let command = command.to_string();
-        Box::pin(async move {
-            dsh_native_command::run_native_command(&command, &args, signal).await
-        })
-    })
+    Arc::new(
+        |command: &str, args: Vec<String>, signal: Option<NativeCommandAbort>| {
+            let command = command.to_string();
+            Box::pin(async move {
+                dsh_native_command::run_native_command(&command, &args, signal).await
+            })
+        },
+    )
 }
 
 /// Documents a browser renders, as opposed to ones an editor merely edits.
@@ -125,12 +125,9 @@ fn is_wsl(internals: &PathOpenerInternals) -> bool {
     {
         return true;
     }
-    let release = internals
-        .os_release
-        .clone()
-        .unwrap_or_else(|| {
-            std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default()
-        });
+    let release = internals.os_release.clone().unwrap_or_else(|| {
+        std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default()
+    });
     release.to_lowercase().contains("microsoft")
 }
 
@@ -160,7 +157,12 @@ async fn open_wsl_path(
     run: &PathOpenerRunner,
     signal: Option<NativeCommandAbort>,
 ) -> Result<(), NativeCommandFailure> {
-    let translated = run("wslpath", vec!["-w".to_string(), path.to_string()], signal.clone()).await?;
+    let translated = run(
+        "wslpath",
+        vec!["-w".to_string(), path.to_string()],
+        signal.clone(),
+    )
+    .await?;
     let windows_path = translated.stdout.trim_end_matches(['\r', '\n']);
     if windows_path.is_empty() {
         return Err(NativeCommandFailure {
@@ -192,18 +194,16 @@ async fn open_native_path_with_intent(
     }
 
     match platform {
-        "darwin" => {
-            run(
-                "open",
-                match intent {
-                    PathOpenIntent::TextEditor => vec!["-t".to_string(), path.to_string()],
-                    PathOpenIntent::Default => vec![path.to_string()],
-                },
-                signal,
-            )
-            .await
-            .map(|_| ())
-        }
+        "darwin" => run(
+            "open",
+            match intent {
+                PathOpenIntent::TextEditor => vec!["-t".to_string(), path.to_string()],
+                PathOpenIntent::Default => vec![path.to_string()],
+            },
+            signal,
+        )
+        .await
+        .map(|_| ()),
         "win32" => open_windows_path(path, &run, signal).await,
         "linux" => {
             if wsl {
@@ -263,7 +263,12 @@ async fn open_in_browser(
             let Some(bundle) = bundle else {
                 return Ok(false);
             };
-            run("open", vec!["-b".to_string(), bundle, path.to_string()], signal).await?;
+            run(
+                "open",
+                vec!["-b".to_string(), bundle, path.to_string()],
+                signal,
+            )
+            .await?;
             Ok(true)
         }
         "linux" => {

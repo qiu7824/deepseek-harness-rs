@@ -115,7 +115,9 @@ fn set_dir_mode(dir: &std::path::Path) {
 #[cfg(unix)]
 fn set_file_mode(file: &tokio::fs::File) {
     use std::os::unix::fs::PermissionsExt;
-    let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600)).await;
+    let _ = file
+        .set_permissions(std::fs::Permissions::from_mode(0o600))
+        .await;
 }
 
 /// Write `content` to a fresh file under the session-scoped directory and
@@ -144,5 +146,8 @@ pub async fn save_text_file(options: SaveTextOptions) -> Result<SavedText, std::
     // Flush before returning: the caller reads the artifact back (and other
     // processes may list it) as soon as `save_text` resolves.
     tokio::io::AsyncWriteExt::flush(&mut file).await?;
-    Ok(SavedText { path: path.to_string_lossy().into_owned(), bytes })
+    Ok(SavedText {
+        path: path.to_string_lossy().into_owned(),
+        bytes,
+    })
 }

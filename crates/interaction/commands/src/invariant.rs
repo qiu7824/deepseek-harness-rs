@@ -80,13 +80,11 @@ pub fn validate_event(
                 let valid_source = kind == "success"
                     && source < event.seq
                     && histories.lock().get(session_id).is_some_and(|history| {
-                        history
-                            .get(source as usize)
-                            .is_some_and(|source_event| {
-                                source_event.seq == source
-                                    && source_event.type_ != "command/run"
-                                    && source_event.type_ != "command/done"
-                            })
+                        history.get(source as usize).is_some_and(|source_event| {
+                            source_event.seq == source
+                                && source_event.type_ != "command/run"
+                                && source_event.type_ != "command/done"
+                        })
                     });
                 if !valid_source {
                     return Err(format!(
@@ -118,12 +116,9 @@ pub fn installer() -> InvariantInstaller {
                             fail: &Arc<dyn Fn(&str) + Send + Sync>| {
                     let events: Vec<SessionEvent> = session.events().iter().cloned().collect();
                     for event in &events {
-                        if let Err(message) = validate_event(
-                            histories,
-                            run_ids,
-                            session.id().as_str(),
-                            event,
-                        ) {
+                        if let Err(message) =
+                            validate_event(histories, run_ids, session.id().as_str(), event)
+                        {
                             fail(&message);
                         }
                     }
@@ -181,12 +176,9 @@ pub fn installer() -> InvariantInstaller {
                         if event.type_ != "command/run" && event.type_ != "command/done" {
                             return None;
                         }
-                        if let Err(message) = validate_event(
-                            &histories,
-                            &run_ids,
-                            session.id().as_str(),
-                            &event,
-                        ) {
+                        if let Err(message) =
+                            validate_event(&histories, &run_ids, session.id().as_str(), &event)
+                        {
                             fail(&message);
                         }
                         histories

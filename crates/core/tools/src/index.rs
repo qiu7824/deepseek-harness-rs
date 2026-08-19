@@ -26,13 +26,12 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cordis::{
-    ArcValue, BoxFuture, Context, DispatchMode, Disposer, Service, arc, downcast_arc,
-};
+use cordis::{ArcValue, BoxFuture, Context, DispatchMode, Disposer, Service, arc, downcast_arc};
 use dsh_agent::Agent;
 use dsh_llm::{CallId, ContentBlock, ToolSchema, UserMessage};
 use dsh_scope::{
-    AnonymousEntries, NamedEntries, ScopeKey, ScopeLayer, ScopedLayers, scope_of, scope_target,
+    AnonymousEntries, NamedEntries, PreparedRegistration, ScopeKey, ScopeLayer, ScopedLayers,
+    scope_of, scope_target,
 };
 use dsh_system_prompt::{AssembleContext, ToolProvider, ToolProviderResult};
 use futures::FutureExt;
@@ -79,13 +78,19 @@ pub struct ToolBodyError {
 
 impl ToolBodyError {
     pub fn plain(message: impl Into<String>) -> Self {
-        Self { message: message.into(), info: None }
+        Self {
+            message: message.into(),
+            info: None,
+        }
     }
 
     pub fn coded(message: impl Into<String>, name: &str, code: &str) -> Self {
         Self {
             message: message.into(),
-            info: Some(ToolErrorInfo { name: name.to_string(), code: code.to_string() }),
+            info: Some(ToolErrorInfo {
+                name: name.to_string(),
+                code: code.to_string(),
+            }),
         }
     }
 }
@@ -123,7 +128,11 @@ impl std::fmt::Display for ToolNotFoundError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.reachable_from {
             Some(reachable_from) => {
-                write!(formatter, "unknown tool \"{}\": {}", self.tool_name, reachable_from)
+                write!(
+                    formatter,
+                    "unknown tool \"{}\": {}",
+                    self.tool_name, reachable_from
+                )
             }
             None => write!(formatter, "unknown tool \"{}\"", self.tool_name),
         }
@@ -197,15 +206,15 @@ struct CompiledToolRestriction {
 
 impl CompiledToolRestriction {
     fn admits(&self, name: &str) -> bool {
-        if let Some(allow) = &self.allow {
-            if !allow.iter().any(|entry| entry == name) {
-                return false;
-            }
+        if let Some(allow) = &self.allow
+            && !allow.iter().any(|entry| entry == name)
+        {
+            return false;
         }
-        if let Some(deny) = &self.deny {
-            if deny.iter().any(|entry| entry == name) {
-                return false;
-            }
+        if let Some(deny) = &self.deny
+            && deny.iter().any(|entry| entry == name)
+        {
+            return false;
         }
         true
     }
@@ -215,6 +224,22 @@ impl CompiledToolRestriction {
 /// listener and before the tool body.
 pub type ToolGuard = Arc<dyn Fn(&ToolExecution) -> Option<String> + Send + Sync>;
 
+pub type ToolOutputRenderer =
+    Arc<dyn Fn(&JsonValue, &JsonValue) -> Result<Vec<ContentBlock>, String> + Send + Sync>;
+pub type ToolPresentationMeta =
+    Arc<dyn Fn(&JsonValue, &JsonValue) -> Result<JsonValue, String> + Send + Sync>;
+pub type ToolConcurrencyPredicate = Arc<dyn Fn(&JsonValue) -> bool + Send + Sync>;
+pub type ToolBody = Arc<
+    dyn Fn(&JsonValue, &ToolRunContext) -> BoxFuture<'static, Result<JsonValue, ToolBodyError>>
+        + Send
+        + Sync,
+>;
+pub type ToolContentFinalizer =
+    Arc<dyn Fn(&ToolExecution, &ToolExecutionResult) -> Option<Vec<ContentBlock>> + Send + Sync>;
+pub type ToolCallPresenter = Arc<dyn Fn(&JsonValue) -> Option<ToolCallView> + Send + Sync>;
+pub type ToolResultPresenter =
+    Arc<dyn Fn(&JsonValue, &ToolResult) -> Option<ToolResultView> + Send + Sync>;
+
 /// Tool-owned canonical output contract used after the body returns a JSON
 /// value.
 pub struct ToolOutputDefinition {
@@ -223,10 +248,10 @@ pub struct ToolOutputDefinition {
     pub schema: JsonValue,
     /// Pure projection from validated arguments and value to Native/model
     /// content. A returned `Err` becomes `output.render failed: <message>`.
-    pub render: Arc<dyn Fn(&JsonValue, &JsonValue) -> Result<Vec<ContentBlock>, String> + Send + Sync>,
+    pub render: ToolOutputRenderer,
     /// Pure replayable presentation projection, computed only for top-level
     /// calls.
-    pub presentation_meta: Option<Arc<dyn Fn(&JsonValue, &JsonValue) -> Result<JsonValue, String> + Send + Sync>>,
+    pub presentation_meta: Option<ToolPresentationMeta>,
 }
 
 /// A registered tool: its schema plus the execution function.
@@ -241,23 +266,16 @@ pub struct ToolDefinition {
     pub timeout_ms: Option<u64>,
     /// Whether this call may join a parallel group; only an exact `true`
     /// opts in.
-    pub is_concurrency_safe: Option<Arc<dyn Fn(&JsonValue) -> bool + Send + Sync>>,
+    pub is_concurrency_safe: Option<ToolConcurrencyPredicate>,
     /// Run one accepted call and return only its canonical lossless-JSON
     /// value.
-    pub execute: Arc<
-        dyn Fn(&JsonValue, &ToolRunContext) -> BoxFuture<'static, Result<JsonValue, ToolBodyError>>
-            + Send
-            + Sync,
-    >,
+    pub execute: ToolBody,
     /// Synchronous last-mile transform for model-facing content.
-    pub finalize_content: Option<
-        Arc<dyn Fn(&ToolExecution, &ToolExecutionResult) -> Option<Vec<ContentBlock>> + Send + Sync>,
-    >,
+    pub finalize_content: Option<ToolContentFinalizer>,
     /// How to present the PENDING state of one call in a UI.
-    pub present_call: Option<Arc<dyn Fn(&JsonValue) -> Option<ToolCallView> + Send + Sync>>,
+    pub present_call: Option<ToolCallPresenter>,
     /// How to present the COMPLETED state of one call in a UI.
-    pub present_result:
-        Option<Arc<dyn Fn(&JsonValue, &ToolResult) -> Option<ToolResultView> + Send + Sync>>,
+    pub present_result: Option<ToolResultPresenter>,
 }
 
 /// Caller-supplied description of one tool call.
@@ -382,9 +400,7 @@ struct ExecutionState {
     concluded: bool,
     body_invoked: bool,
     caller_signal: AbortPredicate,
-    finalizer: Option<
-        Arc<dyn Fn(&ToolExecution, &ToolExecutionResult) -> Option<Vec<ContentBlock>> + Send + Sync>,
-    >,
+    finalizer: Option<ToolContentFinalizer>,
 }
 
 /// One scope's complete tool-registry contribution.
@@ -414,7 +430,10 @@ impl ToolLayer {
     /// Whether every compiled restriction in this layer admits a global tool
     /// name.
     fn admits(&self, name: &str) -> bool {
-        self.restrictions.values().iter().all(|filter| filter.admits(name))
+        self.restrictions
+            .values()
+            .iter()
+            .all(|filter| filter.admits(name))
     }
 
     /// First monotonic denial from this layer's live guard registrations.
@@ -438,17 +457,30 @@ impl ScopeLayer for ToolLayer {
 }
 
 enum CreatedExecution {
-    Ready { run_ctx: Arc<ToolRunContext> },
-    Final { run_ctx: Arc<ToolRunContext>, result: Arc<ToolExecutionResult> },
+    Ready {
+        run_ctx: Arc<ToolRunContext>,
+    },
+    Final {
+        run_ctx: Arc<ToolRunContext>,
+        result: Arc<ToolExecutionResult>,
+    },
 }
 
 /// Scheduler-only result after ordered pre-execute and guards (the TS
 /// `ScheduledToolPreparation`): a `PostResult` still receives post-execute;
 /// a `FinalResult` bypasses it.
 pub enum Preparation {
-    Dispatch { run_ctx: Arc<ToolRunContext> },
-    PostResult { run_ctx: Arc<ToolRunContext>, result: Arc<ToolExecutionResult> },
-    FinalResult { run_ctx: Arc<ToolRunContext>, result: Arc<ToolExecutionResult> },
+    Dispatch {
+        run_ctx: Arc<ToolRunContext>,
+    },
+    PostResult {
+        run_ctx: Arc<ToolRunContext>,
+        result: Arc<ToolExecutionResult>,
+    },
+    FinalResult {
+        run_ctx: Arc<ToolRunContext>,
+        result: Arc<ToolExecutionResult>,
+    },
 }
 
 /// Scheduler-only dispatch result (the TS `ScheduledToolDispatch`): a
@@ -471,6 +503,7 @@ pub struct ToolRuntime {
     max_parallel_sub_calls: u64,
     next_token: AtomicU64,
     executions: Mutex<HashMap<u64, Arc<Mutex<ExecutionState>>>>,
+    code_transport: Mutex<Option<Arc<ToolDefinition>>>,
 }
 
 impl Service for ToolRuntime {
@@ -503,6 +536,7 @@ impl ToolRuntime {
                 max_parallel_sub_calls,
                 next_token: AtomicU64::new(1),
                 executions: Mutex::new(HashMap::new()),
+                code_transport: Mutex::new(None),
             })
         };
         ctx.register_service(runtime.clone());
@@ -529,7 +563,11 @@ impl ToolRuntime {
 
     /// Present the calling scope's tools in `mode` instead of the
     /// deployment default.
-    pub fn present_as(&self, caller: &Context, mode: ToolPresentationMode) -> Result<Disposer, String> {
+    pub fn present_as(
+        &self,
+        caller: &Context,
+        mode: ToolPresentationMode,
+    ) -> Result<Disposer, String> {
         if scope_of(caller).is_none() {
             return Err("tools.presentAs() requires a scoped context (agent.ctx): a context-global presentation is the `mode` config field on the tools row".to_string());
         }
@@ -551,7 +589,11 @@ impl ToolRuntime {
     }
 
     /// Register globally or in the calling agent scope.
-    pub fn register(&self, caller: &Context, definition: ToolDefinition) -> Result<Disposer, String> {
+    pub fn register(
+        &self,
+        caller: &Context,
+        definition: ToolDefinition,
+    ) -> Result<Disposer, String> {
         self.register_arc(caller, Arc::new(definition))
     }
 
@@ -563,6 +605,20 @@ impl ToolRuntime {
         caller: &Context,
         definition: Arc<ToolDefinition>,
     ) -> Result<Disposer, String> {
+        match self.prepare_register_arc(caller, definition) {
+            Ok(prepared) => Ok(prepared.commit(caller)),
+            Err(error) if error.contains("already registered") => panic!("{error}"),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Prepare one definition synchronously without binding it to the caller's
+    /// fiber yet. Dropping the handle rolls the insertion back.
+    pub fn prepare_register_arc(
+        &self,
+        caller: &Context,
+        definition: Arc<ToolDefinition>,
+    ) -> Result<PreparedRegistration, String> {
         if definition.name == RUN_CODE_NAME {
             return Err(format!(
                 "tool name \"{RUN_CODE_NAME}\" is reserved for the Code Mode presentation transport and cannot be registered or shadowed"
@@ -576,12 +632,14 @@ impl ToolRuntime {
                 definition.name
             ));
         }
-        Ok(self.layers.effect(
+        self.layers.try_prepare_named(
             caller,
-            move |layer| layer.tools.insert(&definition.name, Arc::clone(&definition)),
+            |layer| &layer.tools,
+            definition.name.clone(),
+            definition,
             "tools.register()",
             true,
-        ))
+        )
     }
 
     /// Restrict global tools for the calling agent scope.
@@ -669,7 +727,19 @@ impl ToolRuntime {
 
     /// Look up a tool as one scope sees it.
     pub fn get(&self, name: &str, scope: Option<&ScopeKey>) -> Option<Arc<ToolDefinition>> {
+        if name == RUN_CODE_NAME && self.mode_for(scope) != ToolPresentationMode::Native {
+            return Some(self.require_code_transport());
+        }
         self.view(scope).visible.get(name).cloned()
+    }
+
+    pub(crate) fn code_runtime(&self) -> Result<Arc<dyn dsh_code_runtime::CodeRuntime>, String> {
+        self.ctx
+            .get_typed::<Arc<dyn dsh_code_runtime::CodeRuntime>>("codeRuntime", false)
+            .map(|slot| slot.as_ref().clone())
+            .ok_or_else(|| {
+                "dsh-tools: code mode requires a code runtime — load a ctx.codeRuntime implementation or set tools mode to \"native\"".to_string()
+            })
     }
 
     /// Project visible definitions onto the allowlisted model-facing schema
@@ -684,7 +754,9 @@ impl ToolRuntime {
 
     /// Classify a pending call through the caller's visible tool definition.
     pub fn execution_mode(&self, input: &ToolExecutionInput) -> ToolExecutionMode {
-        let Some(tool) = self.resolve_execution(&input.name, input.agent.as_ref(), input.parent.is_some()) else {
+        let Some(tool) =
+            self.resolve_execution(&input.name, input.agent.as_ref(), input.parent.is_some())
+        else {
             return ToolExecutionMode::Exclusive;
         };
         let Some(classifier) = &tool.is_concurrency_safe else {
@@ -705,17 +777,13 @@ impl ToolRuntime {
                     DispatchOutcome::PostResult(result) => {
                         self.finalize_scheduled(run_ctx, result).await
                     }
-                    DispatchOutcome::FinalResult(result) => {
-                        self.finish_scheduled(run_ctx, result)
-                    }
+                    DispatchOutcome::FinalResult(result) => self.finish_scheduled(run_ctx, result),
                 }
             }
             Preparation::PostResult { run_ctx, result } => {
                 self.finalize_scheduled(run_ctx, result).await
             }
-            Preparation::FinalResult { run_ctx, result } => {
-                self.finish_scheduled(run_ctx, result)
-            }
+            Preparation::FinalResult { run_ctx, result } => self.finish_scheduled(run_ctx, result),
         }
     }
 
@@ -730,9 +798,12 @@ impl ToolRuntime {
         let parent = input.parent;
         let signal = input.signal;
         let visible = self.get(&name, agent.as_ref().map(|agent| agent.scope_key()));
-        let collapsed = visible.is_some() && self.collapses(&name, agent.as_ref(), parent.is_some());
+        let collapsed =
+            visible.is_some() && self.collapses(&name, agent.as_ref(), parent.is_some());
         // Capture the finalizer BEFORE anything else can replace it.
-        let captured_finalizer = visible.as_ref().and_then(|tool| tool.finalize_content.clone());
+        let captured_finalizer = visible
+            .as_ref()
+            .and_then(|tool| tool.finalize_content.clone());
         let finalizer_for = if collapsed && signal() {
             None
         } else {
@@ -756,14 +827,20 @@ impl ToolRuntime {
             finalizer: finalizer_for.clone(),
         }));
         self.executions.lock().insert(token, Arc::clone(&state));
-        let run_ctx = Arc::new(ToolRunContext { execution: Arc::clone(&execution), state });
+        let run_ctx = Arc::new(ToolRunContext {
+            execution: Arc::clone(&execution),
+            state,
+        });
         if collapsed {
             // The collapse denies the call before the policy pipeline; a
             // pre-dispatch abort still keeps the cancellation contract.
             let signal = run_ctx.signal.lock().clone();
             if signal() {
                 let result = Arc::new(tool_aborted_before_dispatch_result(None));
-                return CreatedExecution::Final { run_ctx: Arc::clone(&run_ctx), result };
+                return CreatedExecution::Final {
+                    run_ctx: Arc::clone(&run_ctx),
+                    result,
+                };
             }
             let error = ToolNotFoundError::new(
                 &name,
@@ -783,7 +860,11 @@ impl ToolRuntime {
         signal()
     }
 
-    fn cancellation_result(&self, run_ctx: &ToolRunContext, prior: Option<Arc<ToolExecutionResult>>) -> Arc<ToolExecutionResult> {
+    fn cancellation_result(
+        &self,
+        run_ctx: &ToolRunContext,
+        prior: Option<Arc<ToolExecutionResult>>,
+    ) -> Arc<ToolExecutionResult> {
         let body_invoked = run_ctx.state.lock().body_invoked;
         if body_invoked {
             Arc::new(tool_aborted_result(prior.as_deref()))
@@ -797,10 +878,7 @@ impl ToolRuntime {
     /// pairs it with [`ToolRuntime::dispatch_scheduled`] and
     /// [`ToolRuntime::finalize_scheduled`]/[`ToolRuntime::finish_scheduled`]
     /// for the parallel scheduler's overlapping dispatch.
-    pub async fn prepare_scheduled(
-        self: &Arc<Self>,
-        input: ToolExecutionInput,
-    ) -> Preparation {
+    pub async fn prepare_scheduled(self: &Arc<Self>, input: ToolExecutionInput) -> Preparation {
         let created = self.create_execution(input);
         let run_ctx = match created {
             CreatedExecution::Final { run_ctx, result } => {
@@ -808,7 +886,10 @@ impl ToolRuntime {
             }
             CreatedExecution::Ready { run_ctx } => run_ctx,
         };
-        let scope_key = run_ctx.agent.as_ref().map(|agent| agent.scope_key().clone());
+        let scope_key = run_ctx
+            .agent
+            .as_ref()
+            .map(|agent| agent.scope_key().clone());
         let outcome = AssertUnwindSafe(async {
             if self.caller_cancelled(&run_ctx) {
                 return Preparation::FinalResult {
@@ -827,17 +908,17 @@ impl ToolRuntime {
                     Box::pin(async { arc(PreToolDecision::Allow) }),
                 )
                 .await;
-            let gate = downcast_arc::<PreToolDecision>(&gate).unwrap_or_else(|| {
-                panic!("tools/pre-execute listener returned no decision")
-            });
+            let gate = downcast_arc::<PreToolDecision>(&gate)
+                .unwrap_or_else(|| panic!("tools/pre-execute listener returned no decision"));
             let (decision, approval_cancelled) = match &*gate {
-                PreToolDecision::Ask { reason } => {
-                    self.service_ask(&run_ctx, reason.clone()).await
-                }
+                PreToolDecision::Ask { reason } => self.service_ask(&run_ctx, reason.clone()).await,
                 PreToolDecision::Allow => (PreToolDecision::Allow, false),
-                PreToolDecision::Deny { reason } => {
-                    (PreToolDecision::Deny { reason: reason.clone() }, false)
-                }
+                PreToolDecision::Deny { reason } => (
+                    PreToolDecision::Deny {
+                        reason: reason.clone(),
+                    },
+                    false,
+                ),
             };
             if self.caller_cancelled(&run_ctx) && approval_cancelled {
                 return Preparation::PostResult {
@@ -856,7 +937,10 @@ impl ToolRuntime {
                         text: format!("Error: {reason}"),
                     }],
                     is_error: true,
-                    error: Some(ToolFailure { message: reason, info: None }),
+                    error: Some(ToolFailure {
+                        message: reason,
+                        info: None,
+                    }),
                     value: None,
                     meta: None,
                     additional_contexts: Vec::new(),
@@ -874,7 +958,9 @@ impl ToolRuntime {
                     result: Arc::new(tool_aborted_before_dispatch_result(None)),
                 };
             }
-            Preparation::Dispatch { run_ctx: Arc::clone(&run_ctx) }
+            Preparation::Dispatch {
+                run_ctx: Arc::clone(&run_ctx),
+            }
         })
         .catch_unwind()
         .await;
@@ -895,7 +981,10 @@ impl ToolRuntime {
         self: &Arc<Self>,
         run_ctx: Arc<ToolRunContext>,
     ) -> DispatchOutcome {
-        let scope_key = run_ctx.agent.as_ref().map(|agent| agent.scope_key().clone());
+        let scope_key = run_ctx
+            .agent
+            .as_ref()
+            .map(|agent| agent.scope_key().clone());
         let runtime = Arc::clone(self);
         let outcome = AssertUnwindSafe(async {
             let carrier = scope_target(None, scope_key);
@@ -939,7 +1028,10 @@ impl ToolRuntime {
             Ok(outcome) => outcome,
             Err(payload) => {
                 let error = tool_error_from_panic(payload);
-                let result = self.mark_canonical(run_ctx.token, tool_error_result(&error.message, error.info.as_ref()));
+                let result = self.mark_canonical(
+                    run_ctx.token,
+                    tool_error_result(&error.message, error.info.as_ref()),
+                );
                 DispatchOutcome::FinalResult(Arc::new(result))
             }
         }
@@ -947,25 +1039,31 @@ impl ToolRuntime {
 
     /// Run post-execute and definition-owned content finalization, then
     /// materialize and notify (the TS scheduler's `finalize` stage).
-    pub async fn finalize_scheduled(self: &Arc<Self>, run_ctx: Arc<ToolRunContext>, result: Arc<ToolExecutionResult>) -> Arc<ToolExecutionResult> {
-        let scope_key = run_ctx.agent.as_ref().map(|agent| agent.scope_key().clone());
+    pub async fn finalize_scheduled(
+        self: &Arc<Self>,
+        run_ctx: Arc<ToolRunContext>,
+        result: Arc<ToolExecutionResult>,
+    ) -> Arc<ToolExecutionResult> {
+        let scope_key = run_ctx
+            .agent
+            .as_ref()
+            .map(|agent| agent.scope_key().clone());
         let run_ctx_for_error = Arc::clone(&run_ctx);
         let outcome = AssertUnwindSafe(async move {
             let carrier = scope_target(None, scope_key);
             let dispatch_ctx = self.ctx.with_filter(carrier.filter);
-            let args = vec![
-                arc(run_ctx.execution.clone()),
-                arc(Arc::clone(&result)),
-            ];
+            let args = vec![arc(run_ctx.execution.clone()), arc(Arc::clone(&result))];
             let value = dispatch_ctx
                 .waterfall(
                     "tools/post-execute",
                     args,
-                    Box::pin(async { arc(PostToolDecision::Accept {
-                        content: None,
-                        value: None,
-                        additional_contexts: None,
-                    }) }),
+                    Box::pin(async {
+                        arc(PostToolDecision::Accept {
+                            content: None,
+                            value: None,
+                            additional_contexts: None,
+                        })
+                    }),
                 )
                 .await;
             let decision = downcast_arc::<PostToolDecision>(&value)
@@ -984,7 +1082,10 @@ impl ToolRuntime {
             Ok(result) => result,
             Err(payload) => {
                 let error = tool_error_from_panic(payload);
-                let result = self.mark_canonical(run_ctx_for_error.token, tool_error_result(&error.message, error.info.as_ref()));
+                let result = self.mark_canonical(
+                    run_ctx_for_error.token,
+                    tool_error_result(&error.message, error.info.as_ref()),
+                );
                 self.finish_scheduled(run_ctx_for_error, Arc::new(result))
             }
         }
@@ -992,23 +1093,27 @@ impl ToolRuntime {
 
     /// Run definition-owned content finalization, then materialize and
     /// notify without post-execute (the TS scheduler's `finish` stage).
-    pub fn finish_scheduled(&self, run_ctx: Arc<ToolRunContext>, result: Arc<ToolExecutionResult>) -> Arc<ToolExecutionResult> {
+    pub fn finish_scheduled(
+        &self,
+        run_ctx: Arc<ToolRunContext>,
+        result: Arc<ToolExecutionResult>,
+    ) -> Arc<ToolExecutionResult> {
         // materializeFinalResult: Rust values are lossless and owned — identity.
         let final_result = {
             let finalizer = run_ctx.state.lock().finalizer.clone();
             match finalizer {
-                Some(finalize_content) => {
-                    let replaced = match catch_unwind(AssertUnwindSafe(|| {
-                        finalize_content(&run_ctx.execution, &result)
-                    })) {
-                        Ok(Some(content)) => {
-                            let rebuilt = ToolExecutionResult { content, ..clone_result(&result) };
-                            Arc::new(self.mark_canonical(run_ctx.token, rebuilt))
-                        }
-                        _ => Arc::clone(&result),
-                    };
-                    replaced
-                }
+                Some(finalize_content) => match catch_unwind(AssertUnwindSafe(|| {
+                    finalize_content(&run_ctx.execution, &result)
+                })) {
+                    Ok(Some(content)) => {
+                        let rebuilt = ToolExecutionResult {
+                            content,
+                            ..clone_result(&result)
+                        };
+                        Arc::new(self.mark_canonical(run_ctx.token, rebuilt))
+                    }
+                    _ => Arc::clone(&result),
+                },
                 None => Arc::clone(&result),
             }
         };
@@ -1023,17 +1128,24 @@ impl ToolRuntime {
         decision: PostToolDecision,
     ) -> Arc<ToolExecutionResult> {
         let decision_contexts = match &decision {
-            PostToolDecision::Accept { additional_contexts, .. }
-            | PostToolDecision::Block { additional_contexts, .. } => {
-                additional_contexts.clone().unwrap_or_default()
+            PostToolDecision::Accept {
+                additional_contexts,
+                ..
             }
+            | PostToolDecision::Block {
+                additional_contexts,
+                ..
+            } => additional_contexts.clone().unwrap_or_default(),
         };
         if let PostToolDecision::Block { feedback, .. } = &decision {
             let message = failure_message_from_content(feedback);
             let rebuilt = ToolExecutionResult {
                 content: feedback.clone(),
                 is_error: true,
-                error: Some(ToolFailure { message, info: None }),
+                error: Some(ToolFailure {
+                    message,
+                    info: None,
+                }),
                 value: None,
                 meta: None,
                 additional_contexts: if decision_contexts.is_empty() {
@@ -1058,8 +1170,19 @@ impl ToolRuntime {
             if result.is_error {
                 panic!("tools/post-execute cannot replace the value of a failed result");
             }
-            let Some(tool) = self.resolve_execution(&run_ctx.name, run_ctx.agent.as_ref(), run_ctx.parent.is_some()) else {
-                std::panic::panic_any(ToolNotFoundError::new(&run_ctx.name, None));
+            let Some(tool) = self.resolve_execution(
+                &run_ctx.name,
+                run_ctx.agent.as_ref(),
+                run_ctx.parent.is_some(),
+            ) else {
+                let error = ToolNotFoundError::new(&run_ctx.name, None);
+                let info = ToolErrorInfo {
+                    name: "ToolNotFoundError".to_string(),
+                    code: error.code().to_string(),
+                };
+                let mut failed = tool_error_result(&error.to_string(), Some(&info));
+                failed.additional_contexts = additional_contexts;
+                return Arc::new(self.mark_canonical(run_ctx.token, failed));
             };
             let replaced = self.create_success_result(run_ctx, &tool, value.clone());
             let rebuilt = ToolExecutionResult {
@@ -1085,7 +1208,13 @@ impl ToolRuntime {
     }
 
     fn notify_result(&self, run_ctx: &ToolRunContext, result: Arc<ToolExecutionResult>) {
-        let carrier = scope_target(None, run_ctx.agent.as_ref().map(|agent| agent.scope_key().clone()));
+        let carrier = scope_target(
+            None,
+            run_ctx
+                .agent
+                .as_ref()
+                .map(|agent| agent.scope_key().clone()),
+        );
         let dispatch_ctx = self.ctx.with_filter(carrier.filter);
         let args = vec![arc(run_ctx.execution.clone()), arc(Arc::clone(&result))];
         let listeners = dispatch_ctx.collect(DispatchMode::Emit, "tools/result", &args);
@@ -1095,12 +1224,11 @@ impl ToolRuntime {
             }));
             if let Err(payload) = outcome {
                 let message = render_panic(payload);
-                self.ctx
-                    .named_logger(Some("tools"))
-                    .warn(vec![arc(format!(
-                        "tool \"{}\" ({}): tools/result observer failed: {message}",
-                        run_ctx.name, run_ctx.call_id.as_str()
-                    ))]);
+                self.ctx.named_logger(Some("tools")).warn(vec![arc(format!(
+                    "tool \"{}\" ({}): tools/result observer failed: {message}",
+                    run_ctx.name,
+                    run_ctx.call_id.as_str()
+                ))]);
             }
         }
     }
@@ -1116,7 +1244,10 @@ impl ToolRuntime {
         (
             PreToolDecision::Deny {
                 reason: reason.unwrap_or_else(|| {
-                    format!("tool \"{}\" requires approval (not yet supported)", run_ctx.name)
+                    format!(
+                        "tool \"{}\" requires approval (not yet supported)",
+                        run_ctx.name
+                    )
                 }),
             },
             false,
@@ -1134,8 +1265,17 @@ impl ToolRuntime {
         }
         *run_ctx.signal.lock() = fused.clone();
         let outcome = AssertUnwindSafe(async {
-            let Some(tool) = self.resolve_execution(&run_ctx.name, run_ctx.agent.as_ref(), run_ctx.parent.is_some()) else {
-                std::panic::panic_any(ToolNotFoundError::new(&run_ctx.name, None));
+            let Some(tool) = self.resolve_execution(
+                &run_ctx.name,
+                run_ctx.agent.as_ref(),
+                run_ctx.parent.is_some(),
+            ) else {
+                let error = ToolNotFoundError::new(&run_ctx.name, None);
+                let info = ToolErrorInfo {
+                    name: "ToolNotFoundError".to_string(),
+                    code: error.code().to_string(),
+                };
+                return tool_error_result(&error.to_string(), Some(&info));
             };
             run_ctx.state.lock().body_invoked = true;
             let body = (tool.execute)(&run_ctx.arguments, &run_ctx);
@@ -1175,7 +1315,10 @@ impl ToolRuntime {
     ) -> ToolExecutionResult {
         let violations = validate_json_schema_value(&tool.output.schema, &candidate, "value");
         if !violations.is_empty() {
-            std::panic::panic_any(ToolOutputError { tool_name: tool.name.clone(), violations });
+            std::panic::panic_any(ToolOutputError {
+                tool_name: tool.name.clone(),
+                violations,
+            });
         }
         let rendered = match (tool.output.render)(&run_ctx.arguments, &candidate) {
             Ok(content) => content,
@@ -1235,13 +1378,20 @@ impl ToolRuntime {
             };
             return Arc::new(self.mark_canonical(run_ctx.token, rebuilt));
         }
-        let Some(tool) = self.resolve_execution(&run_ctx.name, run_ctx.agent.as_ref(), run_ctx.parent.is_some()) else {
+        let Some(tool) = self.resolve_execution(
+            &run_ctx.name,
+            run_ctx.agent.as_ref(),
+            run_ctx.parent.is_some(),
+        ) else {
             std::panic::panic_any(ToolNotFoundError::new(&run_ctx.name, None));
         };
         let normalized = self.create_success_result(
             run_ctx,
             &tool,
-            result.value.clone().expect("successful result carries a value"),
+            result
+                .value
+                .clone()
+                .expect("successful result carries a value"),
         );
         let rebuilt = ToolExecutionResult {
             additional_contexts: if result.additional_contexts.is_empty() {
@@ -1255,7 +1405,10 @@ impl ToolRuntime {
     }
 
     fn mark_canonical(&self, token: u64, result: ToolExecutionResult) -> ToolExecutionResult {
-        ToolExecutionResult { canonical_token: token, ..result }
+        ToolExecutionResult {
+            canonical_token: token,
+            ..result
+        }
     }
 
     // ---- registry views ----
@@ -1290,15 +1443,40 @@ impl ToolRuntime {
     fn wire_schemas(&self, scope: Option<&ScopeKey>) -> ToolProviderResult {
         let view = self.view(scope);
         let mode = self.mode_for(scope);
+        let mut schemas = view
+            .visible
+            .values()
+            .map(|definition| self.schema_of(definition))
+            .collect::<Vec<_>>();
+        let mut known_names = view.known_names;
         if mode != ToolPresentationMode::Native {
-            panic!(
-                "dsh-tools: mode {mode:?} requires a code runtime — the dsh-code-runtime port has not landed yet; set tools mode to \"native\""
-            );
+            let transport = self.require_code_transport();
+            let transport_schema = self.schema_of(&transport);
+            if mode == ToolPresentationMode::Code {
+                schemas.clear();
+                known_names.clear();
+            }
+            schemas.push(transport_schema);
+            known_names.push(RUN_CODE_NAME.to_string());
         }
         ToolProviderResult {
-            schemas: view.visible.values().map(|definition| self.schema_of(definition)).collect(),
-            known_names: Some(view.known_names),
+            schemas,
+            known_names: Some(known_names),
         }
+    }
+
+    fn require_code_transport(&self) -> Arc<ToolDefinition> {
+        let mut transport = self.code_transport.lock();
+        transport
+            .get_or_insert_with(|| {
+                crate::code_mode::create_run_code_tool(Arc::downgrade(
+                    &self
+                        .ctx
+                        .get_typed::<Arc<ToolRuntime>>("tools", false)
+                        .expect("tools service is installed"),
+                ))
+            })
+            .clone()
     }
 
     /// Project one definition onto the model-facing schema fields.
@@ -1314,13 +1492,12 @@ impl ToolRuntime {
     fn view(&self, scope: Option<&ScopeKey>) -> ToolView {
         let layers = self.layers.chain_layers(scope);
         let own = self.layers.peek(scope);
-        let mut inherited: Vec<(String, Arc<ToolDefinition>)> =
-            self.layers.global.tools.entries();
+        let mut inherited: Vec<(String, Arc<ToolDefinition>)> = self.layers.global.tools.entries();
         for layer in &layers {
-            if let Some(own) = &own {
-                if Arc::ptr_eq(layer, own) {
-                    continue;
-                }
+            if let Some(own) = &own
+                && Arc::ptr_eq(layer, own)
+            {
+                continue;
             }
             for (name, definition) in layer.tools.entries() {
                 if let Some(existing) = inherited.iter_mut().find(|(key, _)| *key == name) {
@@ -1400,9 +1577,14 @@ fn failure_message_from_content(content: &[ContentBlock]) -> String {
 /// Normalize one thrown tool outcome into a failed result.
 fn tool_error_result(message: &str, info: Option<&ToolErrorInfo>) -> ToolExecutionResult {
     ToolExecutionResult {
-        content: vec![ContentBlock::Text { text: format!("Error: {message}") }],
+        content: vec![ContentBlock::Text {
+            text: format!("Error: {message}"),
+        }],
         is_error: true,
-        error: Some(ToolFailure { message: message.to_string(), info: info.cloned() }),
+        error: Some(ToolFailure {
+            message: message.to_string(),
+            info: info.cloned(),
+        }),
         value: None,
         meta: None,
         additional_contexts: Vec::new(),
@@ -1421,11 +1603,16 @@ fn tool_aborted_result(prior: Option<&ToolExecutionResult>) -> ToolExecutionResu
         is_error: true,
         error: Some(ToolFailure {
             message: "tool call aborted".to_string(),
-            info: Some(ToolErrorInfo { name: "AbortError".to_string(), code: TOOL_ABORTED.to_string() }),
+            info: Some(ToolErrorInfo {
+                name: "AbortError".to_string(),
+                code: TOOL_ABORTED.to_string(),
+            }),
         }),
         value: None,
         meta: None,
-        additional_contexts: prior.map(|prior| prior.additional_contexts.clone()).unwrap_or_default(),
+        additional_contexts: prior
+            .map(|prior| prior.additional_contexts.clone())
+            .unwrap_or_default(),
         concludes_turn: false,
         canonical_token: 0,
     }
@@ -1447,7 +1634,9 @@ fn tool_aborted_before_dispatch_result(prior: Option<&ToolExecutionResult>) -> T
         }),
         value: None,
         meta: None,
-        additional_contexts: prior.map(|prior| prior.additional_contexts.clone()).unwrap_or_default(),
+        additional_contexts: prior
+            .map(|prior| prior.additional_contexts.clone())
+            .unwrap_or_default(),
         concludes_turn: false,
         canonical_token: 0,
     }

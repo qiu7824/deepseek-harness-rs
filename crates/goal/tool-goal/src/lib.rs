@@ -14,15 +14,15 @@ use authority::{
 };
 use cordis::{ArcValue, Context, Disposer, Plugin, PluginError};
 use dsh_goal::{
-    CreateGoalRequest, EditGoalRequest, GoalActivation, GoalBlockReason, GoalPhase, GoalRef,
-    GoalService, GoalView, goal_id,
+    CreateGoalRequest, EditGoalRequest, GoalActivation, GoalBlockReason, GoalRef, GoalService,
+    GoalView, goal_id,
 };
 use dsh_llm::{
     ContentBlock, ContextForm, MessageSource, bound_context_summary, create_user_message,
 };
 use dsh_system_prompt::{PromptSection, PromptText, SystemPrompt};
 use dsh_tools::{
-    ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition,
+    ToolArgsError, ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition,
     ToolRunContext, ToolRuntime, validate_json_schema_value,
 };
 use serde_json::{Value, json};
@@ -30,6 +30,7 @@ use serde_json::{Value, json};
 pub const NAME: &str = "tool-goal";
 pub const INJECT: [&str; 4] = ["agents", "goals", "tools", "systemPrompt"];
 pub const DEFAULT_BLOCKED_AFTER_CONSECUTIVE_ROUNDS: u64 = 3;
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 const INVALID_UPDATE: &str = "GOAL_TOOL_INVALID_UPDATE";
 const BLOCK_THRESHOLD: &str = "GOAL_TOOL_BLOCK_THRESHOLD";
@@ -51,7 +52,7 @@ fn resolve_config(config: &Config) -> Result<ResolvedConfig, String> {
     let blocked_after = config
         .blocked_after_consecutive_rounds
         .unwrap_or(DEFAULT_BLOCKED_AFTER_CONSECUTIVE_ROUNDS);
-    if blocked_after == 0 {
+    if blocked_after == 0 || blocked_after > MAX_SAFE_INTEGER {
         return Err("blockedAfterConsecutiveRounds must be a positive safe integer".to_string());
     }
     Ok(ResolvedConfig {
@@ -198,8 +199,17 @@ fn validate(schema: &Value, args: &Value) -> Result<(), ToolBodyError> {
     if violations.is_empty() {
         Ok(())
     } else {
-        Err(ToolBodyError::plain(violations.join("; ")))
+        let error = ToolArgsError::new(violations);
+        Err(ToolBodyError::coded(
+            error.to_string(),
+            "ToolArgsError",
+            error.code,
+        ))
     }
+}
+
+fn schema_valid(schema: &Value, args: &Value) -> bool {
+    validate_json_schema_value(schema, args, "arguments").is_empty()
 }
 
 fn goals(ctx: &Context) -> Result<Arc<GoalService>, ToolBodyError> {
@@ -220,23 +230,36 @@ fn has_round_cap(args: &Value) -> bool {
         .is_some_and(|value| value != 0.0)
 }
 
+fn positive_safe_integer(value: &Value) -> Option<u64> {
+    if let Some(value) = value.as_u64() {
+        return (1..=MAX_SAFE_INTEGER).contains(&value).then_some(value);
+    }
+    let value = value.as_f64()?;
+    (value.is_finite() && value.fract() == 0.0 && value >= 1.0 && value <= MAX_SAFE_INTEGER as f64)
+        .then_some(value as u64)
+}
+
 fn round_cap(args: &Value) -> Result<Option<u64>, ToolBodyError> {
     let Some(value) = args.get("max_goal_rounds") else {
         return Ok(None);
     };
-    value.as_u64().map(Some).ok_or_else(|| {
-        ToolBodyError::coded(
+    match positive_safe_integer(value) {
+        Some(value) => Ok(Some(value)),
+        _ => Err(ToolBodyError::coded(
             "maxGoalRounds must be a positive safe integer",
             "GoalError",
             "GOAL_INVALID_MAX_ROUNDS",
-        )
-    })
+        )),
+    }
 }
 
 fn exact_goal_ref(args: &Value) -> Result<GoalRef, ToolBodyError> {
     let id = args.get("goal_id").and_then(Value::as_str).unwrap_or("");
-    let revision = args.get("revision").and_then(Value::as_u64).unwrap_or(0);
-    if id.is_empty() || id.trim() != id || revision < 1 {
+    let revision = args
+        .get("revision")
+        .and_then(positive_safe_integer)
+        .unwrap_or(0);
+    if id.is_empty() || id.trim() != id || revision == 0 {
         return Err(policy_error(
             "goal_id must be non-empty and revision must be a positive safe integer",
             INVALID_UPDATE,
@@ -391,8 +414,11 @@ fn execute_update(
                 exec.defer_context(create_user_message(
                     wrapup::render_wrapup_context(
                         &goal.objective,
-                        (action == "blocked")
-                            .then_some(blocked_reason.expect("validated blocked reason")),
+                        if action == "blocked" {
+                            blocked_reason
+                        } else {
+                            None
+                        },
                     ),
                     MessageSource::Plugin {
                         plugin: NAME.to_string(),
@@ -421,13 +447,47 @@ fn generic(title: &str, kind: ToolCallKind, raw_input: Option<Value>) -> ToolCal
     }
 }
 
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| {
+            payload
+                .downcast_ref::<&str>()
+                .map(|message| (*message).to_string())
+        })
+        .unwrap_or_else(|| "tool registration panicked".to_string())
+}
+
+fn prepare_prompt(
+    system_prompt: &SystemPrompt,
+    ctx: &Context,
+    section: PromptSection,
+) -> Result<dsh_scope::PreparedRegistration, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        system_prompt.try_prepare_section(ctx, section)
+    }))
+    .map_err(panic_message)?
+}
+
+fn prepare_tool(
+    tools: &ToolRuntime,
+    ctx: &Context,
+    definition: Arc<ToolDefinition>,
+) -> Result<dsh_scope::PreparedRegistration, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tools.prepare_register_arc(ctx, definition)
+    }))
+    .map_err(panic_message)?
+}
+
 fn present_update(args: &Value) -> Option<ToolCallView> {
-    let action = args.get("action")?.as_str()?;
-    if !["edit", "pause", "resume", "complete", "blocked"].contains(&action) {
+    if !schema_valid(&update_parameters(), args) {
         return None;
     }
+    let action = args.get("action")?.as_str()?;
     let goal_id = args.get("goal_id")?.as_str()?;
-    args.get("revision")?.as_u64()?;
+    args.get("revision")?.as_f64()?;
     let title = if action == "blocked" {
         "Mark goal".to_string()
     } else {
@@ -458,11 +518,12 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
         .ok_or_else(|| "tool-goal requires the systemPrompt service".to_string())?;
     for name in ["get_goal", "create_goal", "update_goal"] {
         if tools.get(name, None).is_some() {
-            panic!("tool \"{name}\" is already registered");
+            return Err(format!("tool \"{name}\" is already registered"));
         }
     }
 
-    let mut disposers = vec![system_prompt.section(
+    let mut prepared = vec![prepare_prompt(
+        &system_prompt,
         ctx,
         PromptSection {
             name: "tool:goal".to_string(),
@@ -470,12 +531,13 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
             text: PromptText::Static(guidance(resolved.blocked_after_consecutive_rounds)),
             complete: None,
         },
-    )];
+    )?];
 
     let get_ctx = ctx.clone();
-    disposers.push(tools.register(
+    prepared.push(prepare_tool(
+        &tools,
         ctx,
-        ToolDefinition {
+        Arc::new(ToolDefinition {
             name: "get_goal".to_string(),
             description: GET_DESCRIPTION.to_string(),
             parameters: get_parameters(),
@@ -487,17 +549,19 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
                 Box::pin(async move { result })
             }),
             finalize_content: None,
-            present_call: Some(Arc::new(|_args| {
-                Some(generic("Read current goal", ToolCallKind::Read, None))
+            present_call: Some(Arc::new(|args| {
+                schema_valid(&get_parameters(), args)
+                    .then(|| generic("Read current goal", ToolCallKind::Read, None))
             })),
             present_result: None,
-        },
+        }),
     )?);
 
     let create_ctx = ctx.clone();
-    disposers.push(tools.register(
+    prepared.push(prepare_tool(
+        &tools,
         ctx,
-        ToolDefinition {
+        Arc::new(ToolDefinition {
             name: "create_goal".to_string(),
             description: CREATE_DESCRIPTION.to_string(),
             parameters: create_parameters(),
@@ -510,6 +574,9 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
             }),
             finalize_content: None,
             present_call: Some(Arc::new(|args| {
+                if !schema_valid(&create_parameters(), args) {
+                    return None;
+                }
                 let objective = args.get("objective")?.as_str()?;
                 Some(generic(
                     "Create goal",
@@ -518,13 +585,13 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
                 ))
             })),
             present_result: None,
-        },
+        }),
     )?);
 
     let update_ctx = ctx.clone();
-    disposers.push(tools.register(
+    prepared.push(prepare_tool(&tools,
         ctx,
-        ToolDefinition {
+        Arc::new(ToolDefinition {
             name: "update_goal".to_string(),
             description: "Update the exact current goal revision. edit, pause, and resume require a direct top-level human request. During an automatic continuation of the current goal, complete and blocked are also allowed. blocked is rejected before the configured minimum round count; the model remains responsible for judging that the same condition persisted across those rounds and must explain it in blocked_reason.".to_string(),
             parameters: update_parameters(),
@@ -538,17 +605,14 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
             finalize_content: None,
             present_call: Some(Arc::new(present_update)),
             present_result: None,
-        },
+        }),
     )?);
 
-    Ok(cordis::make_disposer(move || {
-        let disposers = disposers.clone();
-        Box::pin(async move {
-            for disposer in disposers.into_iter().rev() {
-                disposer().await;
-            }
-        })
-    }))
+    Ok(dsh_scope::PreparedRegistration::commit_all(
+        ctx,
+        "tool-goal registrations",
+        prepared,
+    ))
 }
 
 pub struct ToolGoalPlugin;

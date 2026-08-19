@@ -70,26 +70,29 @@ impl E2bSandbox for FakeSandbox {
 
     async fn make_dir(&self, path: &str) -> Result<bool, E2bSdkError> {
         self.make_dirs.lock().push(path.to_string());
-        self.make_dir_results
-            .lock()
-            .pop_front()
-            .unwrap_or(Ok(true))
+        self.make_dir_results.lock().pop_front().unwrap_or(Ok(true))
     }
 
     async fn get_info(&self, path: &str) -> Result<E2bEntryInfo, E2bSdkError> {
         self.get_infos.lock().push(path.to_string());
-        self.get_info_results.lock().pop_front().unwrap_or(Ok(E2bEntryInfo {
-            file_type: FileType::Dir,
-            symlink_target: None,
-            ..Default::default()
-        }))
+        self.get_info_results
+            .lock()
+            .pop_front()
+            .unwrap_or(Ok(E2bEntryInfo {
+                file_type: FileType::Dir,
+                symlink_target: None,
+                ..Default::default()
+            }))
     }
 
     async fn read_bytes(&self, _path: &str) -> Result<Vec<u8>, E2bSdkError> {
         Ok(Vec::new())
     }
 
-    async fn read_stream(&self, _path: &str) -> Result<Box<dyn dsh_e2b::E2bReadStream>, E2bSdkError> {
+    async fn read_stream(
+        &self,
+        _path: &str,
+    ) -> Result<Box<dyn dsh_e2b::E2bReadStream>, E2bSdkError> {
         Err(E2bSdkError::other("read stream not scripted"))
     }
 
@@ -119,12 +122,17 @@ impl E2bSandbox for FakeSandbox {
         command: &str,
         options: &E2bCommandOptions,
     ) -> Result<E2bCommandResult, E2bSdkError> {
-        self.runs.lock().push((command.to_string(), options.envs.clone()));
-        self.run_results.lock().pop_front().unwrap_or(Ok(E2bCommandResult {
-            exit_code: 0,
-            stdout: String::new(),
-            stderr: String::new(),
-        }))
+        self.runs
+            .lock()
+            .push((command.to_string(), options.envs.clone()));
+        self.run_results
+            .lock()
+            .pop_front()
+            .unwrap_or(Ok(E2bCommandResult {
+                exit_code: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+            }))
     }
 
     async fn run_background(
@@ -132,7 +140,9 @@ impl E2bSandbox for FakeSandbox {
         _command: &str,
         _options: &E2bBackgroundOptions,
     ) -> Result<Arc<dyn E2bCommandHandle>, E2bSdkError> {
-        Err(E2bSdkError::other("background commands are unsupported in this fake"))
+        Err(E2bSdkError::other(
+            "background commands are unsupported in this fake",
+        ))
     }
 
     async fn kill(&self) -> Result<(), E2bSdkError> {
@@ -221,7 +231,11 @@ fn gives_each_sdk_login_shell_a_fresh_non_overridable_control_home() {
     ]));
     let second = e2b_control_envs(HashMap::new());
 
-    assert!(first["HOME"].starts_with("/.dsh-e2b-control-"), "{}", first["HOME"]);
+    assert!(
+        first["HOME"].starts_with("/.dsh-e2b-control-"),
+        "{}",
+        first["HOME"]
+    );
     assert_eq!(first["NPM_TOKEN"], "");
     assert_ne!(first["HOME"], second["HOME"]);
 }
@@ -240,27 +254,41 @@ async fn creates_one_protected_shared_sandbox_and_kills_it_on_default_disposal()
     sdk.results
         .lock()
         .push_back(Ok(fixture.clone() as Arc<dyn E2bSandbox>));
-    let (ctx, runtime, fiber) = setup(sdk.clone(), serde_json::json!({ "apiKey": "test-key" }), env_lookup()).await;
+    let (ctx, runtime, fiber) = setup(
+        sdk.clone(),
+        serde_json::json!({ "apiKey": "test-key" }),
+        env_lookup(),
+    )
+    .await;
 
     let sandbox = runtime.get_sandbox().await.expect("sandbox");
-    assert!(Arc::ptr_eq(&sandbox, &(fixture.clone() as Arc<dyn E2bSandbox>)));
+    assert!(Arc::ptr_eq(
+        &sandbox,
+        &(fixture.clone() as Arc<dyn E2bSandbox>)
+    ));
     assert_eq!(runtime.cwd(), "/home/user/workspace");
     assert_eq!(runtime.runtime_root(), "/home/user/workspace/.dsh-e2b");
     assert_eq!(
         *sdk.creates.lock(),
-        vec![E2bCreateOptions { api_key: "test-key".to_string(), timeout_ms: 300_000 }]
+        vec![E2bCreateOptions {
+            api_key: "test-key".to_string(),
+            timeout_ms: 300_000
+        }]
     );
     assert_eq!(
         *fixture.make_dirs.lock(),
-        vec!["/home/user/workspace".to_string(), "/home/user/workspace/.dsh-e2b".to_string()]
+        vec![
+            "/home/user/workspace".to_string(),
+            "/home/user/workspace/.dsh-e2b".to_string()
+        ]
     );
-    assert_eq!(*fixture.get_infos.lock(), vec!["/home/user/workspace/.dsh-e2b".to_string()]);
+    assert_eq!(
+        *fixture.get_infos.lock(),
+        vec!["/home/user/workspace/.dsh-e2b".to_string()]
+    );
     let (command, envs) = fixture.runs.lock()[0].clone();
     assert!(envs.as_ref().expect("envs")["HOME"].starts_with("/.dsh-e2b-control-"));
-    assert_eq!(
-        command,
-        "chmod 700 -- '/home/user/workspace/.dsh-e2b'"
-    );
+    assert_eq!(command, "chmod 700 -- '/home/user/workspace/.dsh-e2b'");
 
     fiber.dispose().await;
     assert_eq!(*fixture.kills.lock(), 1);
@@ -278,7 +306,12 @@ async fn rejects_handle_acquisition_when_disposal_starts_during_setup() {
     sdk.results
         .lock()
         .push_back(Ok(fixture.clone() as Arc<dyn E2bSandbox>));
-    let (_ctx, runtime, fiber) = setup(sdk, serde_json::json!({ "apiKey": "test-key" }), env_lookup()).await;
+    let (_ctx, runtime, fiber) = setup(
+        sdk,
+        serde_json::json!({ "apiKey": "test-key" }),
+        env_lookup(),
+    )
+    .await;
 
     let acquisition = runtime.get_sandbox();
     let disposing = fiber.dispose();
@@ -312,7 +345,10 @@ async fn reads_the_key_from_the_environment_and_honors_the_configured_cwd_and_li
 
     assert_eq!(
         *sdk.creates.lock(),
-        vec![E2bCreateOptions { api_key: "environment-key".to_string(), timeout_ms: 60_000 }]
+        vec![E2bCreateOptions {
+            api_key: "environment-key".to_string(),
+            timeout_ms: 60_000
+        }]
     );
     assert_eq!(runtime.cwd(), "/workspace/project");
     fiber.dispose().await;
@@ -330,8 +366,15 @@ async fn accepts_a_missing_sandbox_when_disposal_itself_requests_deletion() {
     sdk.results
         .lock()
         .push_back(Ok(fixture.clone() as Arc<dyn E2bSandbox>));
-    let (ctx, runtime, fiber) = setup(sdk, serde_json::json!({ "apiKey": "test-key" }), env_lookup()).await;
-    let exporter = Arc::new(CaptureExporter { messages: Arc::new(Mutex::new(Vec::new())) });
+    let (ctx, runtime, fiber) = setup(
+        sdk,
+        serde_json::json!({ "apiKey": "test-key" }),
+        env_lookup(),
+    )
+    .await;
+    let exporter = Arc::new(CaptureExporter {
+        messages: Arc::new(Mutex::new(Vec::new())),
+    });
     let messages = exporter.messages.clone();
     ctx.logger.exporter(&ctx, exporter);
 
@@ -352,8 +395,15 @@ async fn does_not_classify_other_disposal_failures_as_an_already_gone_sandbox() 
     sdk.results
         .lock()
         .push_back(Ok(fixture.clone() as Arc<dyn E2bSandbox>));
-    let (ctx, runtime, fiber) = setup(sdk, serde_json::json!({ "apiKey": "test-key" }), env_lookup()).await;
-    let exporter = Arc::new(CaptureExporter { messages: Arc::new(Mutex::new(Vec::new())) });
+    let (ctx, runtime, fiber) = setup(
+        sdk,
+        serde_json::json!({ "apiKey": "test-key" }),
+        env_lookup(),
+    )
+    .await;
+    let exporter = Arc::new(CaptureExporter {
+        messages: Arc::new(Mutex::new(Vec::new())),
+    });
     let messages = exporter.messages.clone();
     ctx.logger.exporter(&ctx, exporter);
 
@@ -361,7 +411,10 @@ async fn does_not_classify_other_disposal_failures_as_an_already_gone_sandbox() 
     fiber.dispose().await;
     assert_eq!(*fixture.kills.lock(), 1);
     assert!(
-        messages.lock().iter().any(|message| message.contains("disposition unknown")),
+        messages
+            .lock()
+            .iter()
+            .any(|message| message.contains("disposition unknown")),
         "{:?}",
         *messages.lock()
     );
@@ -378,7 +431,12 @@ async fn kills_a_newly_created_sandbox_when_remote_directory_setup_fails() {
     sdk.results
         .lock()
         .push_back(Ok(fixture.clone() as Arc<dyn E2bSandbox>));
-    let (_ctx, runtime, fiber) = setup(sdk, serde_json::json!({ "apiKey": "test-key" }), env_lookup()).await;
+    let (_ctx, runtime, fiber) = setup(
+        sdk,
+        serde_json::json!({ "apiKey": "test-key" }),
+        env_lookup(),
+    )
+    .await;
 
     let error = runtime.get_sandbox().await.err().expect("setup failed");
     assert!(error.contains("setup failed"), "{error}");
@@ -402,7 +460,12 @@ async fn preserves_the_setup_failure_after_its_one_rollback_attempt_fails() {
     sdk.results
         .lock()
         .push_back(Ok(fixture.clone() as Arc<dyn E2bSandbox>));
-    let (_ctx, runtime, fiber) = setup(sdk, serde_json::json!({ "apiKey": "test-key" }), env_lookup()).await;
+    let (_ctx, runtime, fiber) = setup(
+        sdk,
+        serde_json::json!({ "apiKey": "test-key" }),
+        env_lookup(),
+    )
+    .await;
 
     let error = runtime.get_sandbox().await.err().expect("chmod failed");
     assert!(error.contains("chmod failed"), "{error}");
@@ -415,8 +478,15 @@ async fn preserves_the_setup_failure_after_its_one_rollback_attempt_fails() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejects_a_reserved_runtime_root_that_is_not_a_real_directory() {
     for info in [
-        E2bEntryInfo { file_type: FileType::Dir, symlink_target: Some("/tmp/redirected".to_string()), ..Default::default() },
-        E2bEntryInfo { file_type: FileType::File, ..Default::default() },
+        E2bEntryInfo {
+            file_type: FileType::Dir,
+            symlink_target: Some("/tmp/redirected".to_string()),
+            ..Default::default()
+        },
+        E2bEntryInfo {
+            file_type: FileType::File,
+            ..Default::default()
+        },
     ] {
         let fixture = FakeSandbox::new("sandbox-1");
         fixture.get_info_results.lock().push_back(Ok(info));
@@ -424,10 +494,18 @@ async fn rejects_a_reserved_runtime_root_that_is_not_a_real_directory() {
         sdk.results
             .lock()
             .push_back(Ok(fixture.clone() as Arc<dyn E2bSandbox>));
-        let (ctx, runtime, _fiber) = setup(sdk, serde_json::json!({ "apiKey": "test-key" }), env_lookup()).await;
+        let (ctx, runtime, _fiber) = setup(
+            sdk,
+            serde_json::json!({ "apiKey": "test-key" }),
+            env_lookup(),
+        )
+        .await;
 
         let error = runtime.get_sandbox().await.err().expect("runtime root");
-        assert!(error.contains("runtime root must be a real directory"), "{error}");
+        assert!(
+            error.contains("runtime root must be a real directory"),
+            "{error}"
+        );
         assert!(fixture.runs.lock().is_empty());
         assert_eq!(*fixture.kills.lock(), 1);
         drop(ctx);
@@ -438,8 +516,14 @@ async fn rejects_a_reserved_runtime_root_that_is_not_a_real_directory() {
 async fn fails_self_contained_configuration_before_opening_e2b() {
     let cases: Vec<(serde_json::Value, &str)> = vec![
         (serde_json::json!({ "apiKey": "" }), "configure apiKey"),
-        (serde_json::json!({ "apiKey": "x", "cwd": "relative" }), "absolute Linux path"),
-        (serde_json::json!({ "apiKey": "x", "timeoutMs": 0 }), "positive finite"),
+        (
+            serde_json::json!({ "apiKey": "x", "cwd": "relative" }),
+            "absolute Linux path",
+        ),
+        (
+            serde_json::json!({ "apiKey": "x", "timeoutMs": 0 }),
+            "positive finite",
+        ),
     ];
     for (config, message) in cases {
         let sdk = FakeSdk::new();
@@ -478,11 +562,14 @@ async fn requires_a_key_when_both_config_and_the_environment_omit_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn registers_the_package_owned_empty_invariant_installer() {
     let ctx = Context::root();
-    dsh_invariants::InvariantRegistry::new(&ctx, dsh_invariants::InvariantConfig { enabled: true, ..Default::default() });
-    let fiber = ctx.plugin(
-        Arc::new(dsh_e2b::E2bInvariantPlugin),
-        arc(()),
+    dsh_invariants::InvariantRegistry::new(
+        &ctx,
+        dsh_invariants::InvariantConfig {
+            enabled: true,
+            ..Default::default()
+        },
     );
+    let fiber = ctx.plugin(Arc::new(dsh_e2b::E2bInvariantPlugin), arc(()));
     fiber.settle().await.expect("companion loads");
     fiber.dispose().await;
 }
