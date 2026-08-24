@@ -21,7 +21,7 @@ fn plugin_cli_uses_the_native_profile_installer_without_node_or_pnpm() {
     std::fs::create_dir_all(&profile).expect("profile dir");
     std::fs::write(
         profile.join("package.json"),
-        r#"{"dependencies":{"existing":"github:owner/repo#ref"}}"#,
+        r#"{"dependencies":{"existing":"github:owner/repo#0123456789abcdef0123456789abcdef01234567"}}"#,
     )
     .expect("manifest");
 
@@ -38,7 +38,7 @@ fn plugin_cli_uses_the_native_profile_installer_without_node_or_pnpm() {
     );
     assert_eq!(
         String::from_utf8_lossy(&list.stdout).trim(),
-        "existing\tgithub:owner/repo#ref"
+        "existing\tgithub:owner/repo#0123456789abcdef0123456789abcdef01234567"
     );
 
     let rejected = Command::new(env!("CARGO_BIN_EXE_dsh"))
