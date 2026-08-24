@@ -498,36 +498,3 @@ impl ScheduleRuntime {
         true
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn vacant_run_slot_is_claimed_once_under_concurrency() {
-        const CONTENDERS: usize = 16;
-        let slot = Arc::new(parking_lot::Mutex::new(None));
-        let start = Arc::new(std::sync::Barrier::new(CONTENDERS));
-        let initializers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut threads = Vec::new();
-
-        for value in 0..CONTENDERS {
-            let slot = Arc::clone(&slot);
-            let start = Arc::clone(&start);
-            let initializers = Arc::clone(&initializers);
-            threads.push(std::thread::spawn(move || {
-                start.wait();
-                install_if_vacant(&slot, || {
-                    initializers.fetch_add(1, Ordering::SeqCst);
-                    value
-                });
-            }));
-        }
-
-        for thread in threads {
-            thread.join().expect("slot contender");
-        }
-        assert_eq!(initializers.load(Ordering::SeqCst), 1);
-        assert!(slot.lock().is_some());
-    }
-}

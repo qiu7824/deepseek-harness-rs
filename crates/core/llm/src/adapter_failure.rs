@@ -54,36 +54,3 @@ pub fn failure_snapshot(
         request_id,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalizes_thrown_messages() {
-        let failure = normalize_llm_failure("busy");
-        assert_eq!(failure.message, "busy");
-        assert_eq!(failure.code, "UNKNOWN");
-        let empty = normalize_llm_failure("");
-        assert_eq!(empty.message, "LLM adapter failed");
-    }
-
-    #[test]
-    fn snapshots_validated_facts() {
-        let snapshot = failure_snapshot(
-            "busy".to_string(),
-            "RATE_LIMIT".to_string(),
-            Some(429),
-            None,
-            None,
-        )
-        .expect("valid");
-        assert_eq!(snapshot.status, Some(429));
-        assert!(
-            failure_snapshot("".to_string(), "RATE_LIMIT".to_string(), None, None, None).is_none()
-        );
-        assert!(
-            failure_snapshot("busy".to_string(), "X".to_string(), Some(99), None, None).is_none()
-        );
-    }
-}

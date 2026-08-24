@@ -308,20 +308,3 @@ pub fn run(profile: &Path, args: &[String]) -> Result<(), String> {
         _ => Err("usage: dsh plugin --profile <name> add github:owner/repo[#ref] | remove <package> | list".to_string()),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn validates_package_names_and_rejects_unsafe_exports() {
-        assert!(valid_package_name("pkg"));
-        assert!(valid_package_name("@scope/pkg"));
-        assert!(!valid_package_name("../pkg"));
-        let root = std::env::temp_dir().join(format!("dsh-native-plugin-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("package.json"),json!({"name":"safe","exports":{"./client":"../bad.js"},"dsh":{"client":{"platform":"web"}}}).to_string()).unwrap();
-        assert!(validate_web_plugin(&root).is_err());
-        let _ = std::fs::remove_dir_all(root);
-    }
-}

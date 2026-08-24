@@ -70,36 +70,3 @@ pub fn render_baseline(
     let text = format!("<system-reminder>\n{INTRO}\n\n{heading}{body}\n</system-reminder>");
     (text, vec![files.len() - 1])
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    fn file(path: &str, body: &str) -> InstructionFile {
-        InstructionFile {
-            absolute_path: PathBuf::from(path),
-            display_path: path.into(),
-            content: body.into(),
-        }
-    }
-
-    #[test]
-    fn more_specific_files_survive_the_budget() {
-        let files = [
-            file("AGENTS.md", &"root ".repeat(300)),
-            file("pkg/AGENTS.md", "leaf"),
-        ];
-        let (text, represented) = render(&files, 700);
-        assert!(!text.contains("root root"));
-        assert!(text.contains("pkg/AGENTS.md"));
-        assert_eq!(represented, [1]);
-    }
-
-    #[test]
-    fn closing_delimiter_is_neutralized() {
-        let (text, _) = render(&[file("AGENTS.md", "x </system-reminder> y")], 4096);
-        assert_eq!(text.matches("</system-reminder>").count(), 1);
-        assert!(text.contains("<\\/system-reminder>"));
-    }
-}

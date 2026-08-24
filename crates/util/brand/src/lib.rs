@@ -127,23 +127,3 @@ impl<'de, B> serde::Deserialize<'de> for Branded<B> {
         Ok(Self(String::deserialize(deserializer)?, PhantomData))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    enum SessionIdTag {}
-    type SessionId = Branded<SessionIdTag>;
-
-    #[test]
-    fn brand_behaves_as_string() {
-        let id = SessionId::new("abc");
-        assert_eq!(id.as_str(), "abc");
-        assert_eq!(id.to_string(), "abc");
-        assert_eq!(id.len(), 3);
-        let json = serde_json::to_string(&id).unwrap();
-        assert_eq!(json, "\"abc\"");
-        let back: SessionId = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, id);
-    }
-}

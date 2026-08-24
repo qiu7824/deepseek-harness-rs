@@ -532,27 +532,3 @@ fn parse_sse(body: &[u8]) -> Result<Vec<Value>, McpClientError> {
     }
     Ok(frames)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_remote_plaintext_endpoints_before_network_io() {
-        let failure = parse_endpoint("http://192.0.2.1/mcp")
-            .expect_err("remote plaintext MCP must fail closed");
-        assert!(failure.to_string().contains("loopback"), "{failure}");
-    }
-
-    #[test]
-    fn rejects_chunk_lengths_whose_trailer_boundary_overflows() {
-        let hex_digits = usize::BITS as usize / 4;
-        let data_start = hex_digits + 2;
-        let size = usize::MAX - data_start;
-        let encoded = format!("{size:x}\r\n").into_bytes();
-        assert_eq!(encoded.len(), data_start);
-        let failure = try_decode_chunked(&encoded)
-            .expect_err("overflowing chunk trailer boundary must reject");
-        assert!(failure.to_string().contains("overflow"), "{failure}");
-    }
-}

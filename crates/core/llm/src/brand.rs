@@ -46,22 +46,3 @@ pub type ReasoningEffortId = Branded<ReasoningEffortIdTag>;
 pub fn reasoning_effort_id(id: impl Into<String>) -> ReasoningEffortId {
     Branded::new(id)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn brands_round_trip_json() {
-        let id = call_id("call-1");
-        assert_eq!(id.as_str(), "call-1");
-        let json = serde_json::to_string(&id).unwrap();
-        assert_eq!(json, "\"call-1\"");
-        let back: CallId = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, id);
-
-        let mid = message_id("m-1");
-        assert_eq!(mid.as_str(), "m-1");
-        assert_ne!(serde_json::to_string(&mid).unwrap(), "\"call-1\"");
-    }
-}

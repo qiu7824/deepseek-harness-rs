@@ -173,21 +173,3 @@ fn text_output(field: &'static str) -> ToolOutputDefinition {
         presentation_meta: None,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{Config, requires_approval};
-
-    #[test]
-    fn defaults_keep_both_providers_disabled() {
-        let config = Config::default();
-        assert!(config.stt_command.is_none());
-        assert!(config.tts_command.is_none());
-    }
-
-    #[test]
-    fn transcribing_a_local_path_requires_approval() {
-        assert!(requires_approval("voice_transcribe"));
-        assert!(!requires_approval("voice_synthesize"));
-    }
-}

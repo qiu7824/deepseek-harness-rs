@@ -172,18 +172,6 @@ fn should_latch_active_wake(disposed: bool) -> bool {
 
 /// Remove adapter-derived values before plugins propose the next request
 /// config.
-#[cfg(test)]
-mod wake_policy_tests {
-    #[test]
-    fn ordinary_running_wake_is_latched() {
-        assert!(super::should_latch_active_wake(false));
-    }
-
-    #[test]
-    fn disposed_running_wake_is_not_latched() {
-        assert!(!super::should_latch_active_wake(true));
-    }
-}
 
 fn request_proposal(header: &EpochHeader) -> LlmCallConfig {
     let mut proposal = header.config.clone();

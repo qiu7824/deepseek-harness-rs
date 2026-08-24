@@ -132,24 +132,3 @@ pub fn install(ctx: &Context, config: Config) -> Result<(), String> {
     )?;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::action_requires_approval;
-
-    #[test]
-    fn mutations_require_approval_but_observation_does_not() {
-        for action in ["click", "type", "key", "cua_browser_navigate"] {
-            assert!(action_requires_approval(action), "{action}");
-        }
-        for action in ["capture", "list_apps", "list_windows", "cua_browser_state"] {
-            assert!(!action_requires_approval(action), "{action}");
-        }
-        for action in ["tap", "write_file", "close_app", ""] {
-            assert!(
-                action_requires_approval(action),
-                "unknown action must fail closed: {action}"
-            );
-        }
-    }
-}

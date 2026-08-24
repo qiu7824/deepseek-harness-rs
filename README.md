@@ -39,6 +39,16 @@ http://127.0.0.1:58080/
 
 The Windows package also includes a PowerShell 7 + WPF service manager:
 
+The simplest option is to double-click:
+
+```text
+windows\启动DSH管理器.cmd
+```
+
+If PowerShell 7 is missing, the CMD launcher displays and copies a one-command Windows x64 MSI installation command. Installation requires administrator approval; double-click the CMD again after installation. See the Chinese README for the exact localized command.
+
+Or launch it from a terminal:
+
 ```powershell
 pwsh -NoProfile -STA -WindowStyle Hidden -File .\windows\DshServiceManager.ps1
 ```
@@ -82,6 +92,17 @@ See [`docs/protocol-matrix.md`](docs/protocol-matrix.md) for evidence and scope.
 
 Pure Web plugins do not require Node, npm, or pnpm. The Rust Host validates, discovers, registers, and serves prebuilt client JavaScript.
 
+### Installing third-party plugins
+
+The Rust build directly installs pure Web plugins with this minimum layout:
+
+```text
+package.json
+lib/client.js
+```
+
+`package.json` must declare a Web client export. GitHub sources must be pinned to an immutable 40-character commit SHA; branches, tags, and mutable default branches are rejected.
+
 GitHub installations require an immutable 40-character commit SHA:
 
 ```bash
@@ -90,11 +111,15 @@ GitHub installations require an immutable 40-character commit SHA:
 ./dsh plugin --profile web remove package-name
 ```
 
+Restart `dsh web` after installation, then confirm the plugin is enabled under Settings → Plugins. To upgrade, review the new commit, remove the old package, and install again with the new commit SHA. The Rust installer validates package names, entry paths, symlinks, file sizes, and directory containment.
+
 Compatibility:
 
 - Pure Web plugin: supported.
-- Web + Node Host plugin: the Web client can load; the Node Host part is explicitly skipped.
+- Web + Node Host plugin: only a standalone Web portion can load; the Node Host portion does not run.
 - Node Host/native-only plugin: not executed by the Rust Host.
+
+Plugins that require `require()`, npm lifecycle scripts, a Node service, native addons, or Host-side JavaScript cannot run directly inside the pure Rust process. Use a plugin-provided pure Web build or run the Host portion as a separate sidecar.
 
 Web plugins run in the application origin and have page-level JavaScript capabilities. Install only trusted, reviewed code pinned to an immutable commit.
 

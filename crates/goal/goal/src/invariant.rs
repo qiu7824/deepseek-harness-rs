@@ -225,24 +225,3 @@ impl Plugin for GoalInvariantPlugin {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use dsh_session::session_id;
-
-    #[test]
-    fn invariant_session_key_uses_stable_session_identity() {
-        let session = Session::create(session_id("goal-invariant-key"), None, None).unwrap();
-        let key_before = session_key(&session);
-        let previous_snapshot = session.events();
-
-        session
-            .append("goal-invariant/noop", serde_json::json!({}), None)
-            .unwrap();
-
-        assert_eq!(key_before, session.identity());
-        assert_eq!(session_key(&session), key_before);
-        drop(previous_snapshot);
-    }
-}

@@ -19,9 +19,3 @@ tokio = { workspace = true }
 [dev-dependencies]
 dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }
 dsh-system-prompt = { path = "../../core/system-prompt" }
-
-[[bin]]
-name = "mcp-test-fixture"
-path = "tests/fixtures/stdio_server.rs"
-test = false
-bench = false

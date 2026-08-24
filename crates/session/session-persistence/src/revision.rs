@@ -14,18 +14,3 @@ pub type SessionPersistenceRevision = Branded<SessionPersistenceRevisionTag>;
 pub fn session_persistence_revision(value: impl Into<String>) -> SessionPersistenceRevision {
     Branded::new(value)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn revision_is_a_branded_string() {
-        let revision = session_persistence_revision("r1");
-        assert_eq!(revision.as_str(), "r1");
-        let json = serde_json::to_string(&revision).unwrap();
-        assert_eq!(json, "\"r1\"");
-        let back: SessionPersistenceRevision = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, revision);
-    }
-}

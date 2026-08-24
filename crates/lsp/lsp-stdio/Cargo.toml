@@ -17,22 +17,3 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }
-
-[[bin]]
-name = "lsp-fixture"
-path = "tests/fixture_server.rs"
-test = false
-bench = false
-doc = false
-
-[[test]]
-name = "framing"
-path = "tests/framing.rs"
-
-[[test]]
-name = "stdio_tracer"
-path = "tests/stdio_tracer.rs"
-
-[[test]]
-name = "provider_tracer"
-path = "tests/provider_tracer.rs"

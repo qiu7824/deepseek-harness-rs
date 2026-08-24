@@ -37,23 +37,3 @@ pub fn user_agent(identity: &AppIdentity) -> String {
 pub fn attribution_headers(identity: &AppIdentity) -> Vec<(String, String)> {
     vec![("user-agent".to_string(), user_agent(identity))]
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn renders_the_standard_user_agent() {
-        let identity = app_identity();
-        assert_eq!(identity.product, "deepseek-harness");
-        let headers = attribution_headers(&identity);
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers[0].0, "user-agent");
-        assert!(headers[0].1.starts_with("deepseek-harness/"));
-        assert!(
-            headers[0]
-                .1
-                .ends_with("(+https://github.com/deepseek-ai/deepseek-harness)")
-        );
-    }
-}

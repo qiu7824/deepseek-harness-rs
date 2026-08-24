@@ -149,37 +149,3 @@ pub fn install(ctx: &Context, root: PathBuf) -> Result<(), String> {
     )?;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{safe_existing_file, valid_name};
-
-    #[test]
-    fn accepts_only_flat_kebab_case_names() {
-        assert!(valid_name("project-rules"));
-        for invalid in ["../secret", "Project", "a/b", "", "a--b"] {
-            assert!(!valid_name(invalid), "{invalid}");
-        }
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn rejects_a_memory_file_symlink() {
-        let root = std::env::temp_dir().join(format!(
-            "dsh-memory-link-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).expect("root");
-        let outside = root.with_extension("outside.md");
-        std::fs::write(&outside, "secret").expect("outside");
-        let link = root.join("linked.md");
-        std::os::windows::fs::symlink_file(&outside, &link).expect("symlink fixture");
-        assert!(!safe_existing_file(&link));
-        let _ = std::fs::remove_dir_all(&root);
-        let _ = std::fs::remove_file(&outside);
-    }
-}

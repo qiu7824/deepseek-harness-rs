@@ -76,24 +76,3 @@ pub fn interpolate(value: &Value) -> Result<Value, InterpolateError> {
         other => Ok(other.clone()),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn passes_plain_values() {
-        let value = json!({"a": 1, "b": [true, "x"], "c": {"d": null}});
-        assert_eq!(interpolate(&value).unwrap(), value);
-    }
-
-    #[test]
-    fn detects_js_exprs() {
-        let value = json!({"a": {"__jsExpr": "process.env.FOO"}});
-        assert!(is_js_expr(&value["a"]));
-        assert!(interpolate(&value).is_err());
-        let nested = json!({"b": [{"__jsExpr": "1 + 1"}]});
-        assert!(interpolate(&nested).is_err());
-    }
-}

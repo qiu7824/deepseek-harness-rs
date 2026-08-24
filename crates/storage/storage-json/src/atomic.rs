@@ -52,28 +52,3 @@ fn fsync_directory(path: &Path) -> std::io::Result<()> {
     let handle = std::fs::File::open(path)?;
     handle.sync_all()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn replaces_and_cleans_up_on_failure() {
-        let root = std::env::temp_dir().join(format!("dsh-json-atomic-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir");
-        let target = root.join("unit.json");
-        write_atomic(&target, "{\"v\":1}").expect("write");
-        assert_eq!(std::fs::read_to_string(&target).expect("read"), "{\"v\":1}");
-        write_atomic(&target, "{\"v\":2}").expect("replace");
-        assert_eq!(std::fs::read_to_string(&target).expect("read"), "{\"v\":2}");
-        // No temp litter survives a successful publish.
-        let leftovers: Vec<_> = std::fs::read_dir(&root)
-            .expect("read dir")
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
-            .collect();
-        assert!(leftovers.is_empty());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-}

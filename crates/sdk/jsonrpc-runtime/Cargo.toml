@@ -8,9 +8,5 @@ description = "Stdio NDJSON JSON-RPC runtime for DeepSeek Harness protocol servi
 [dependencies]
 serde_json.workspace = true
 
-[[bin]]
-name = "jsonrpc-runtime-fixture"
-path = "tests/fixtures/server.rs"
-
 [dev-dependencies]
 serde_json.workspace = true

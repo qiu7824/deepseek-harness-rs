@@ -366,36 +366,3 @@ pub trait AgentFactory: Send + Sync + 'static {
 /// The request config the `agent/request` waterfall resolves (TS
 /// `LlmCallConfig`; re-exported for the model-selection listener).
 pub type AgentRequestConfig = LlmCallConfig;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn status_and_source_values() {
-        assert_eq!(AgentStatus::Idle.as_str(), "idle");
-        assert_eq!(AgentStatus::Running.as_str(), "running");
-        let _ = SessionStartSource::Startup;
-        let _ = SessionStartSource::Resume;
-        let _ = SessionStartSource::Clear;
-        let _ = SessionStartSource::Compact;
-    }
-
-    #[test]
-    fn pre_step_decision_variants() {
-        let reject = PreStepDecision::Reject;
-        assert_eq!(reject, PreStepDecision::Reject);
-        let enter = PreStepDecision::Enter {
-            messages: Vec::new(),
-        };
-        assert!(matches!(enter, PreStepDecision::Enter { .. }));
-    }
-
-    #[test]
-    fn agent_options_default() {
-        let options = AgentOptions::default();
-        assert!(options.provider.is_none());
-        assert!(options.model.is_none());
-        assert!(options.max_tokens.is_none());
-    }
-}

@@ -22,18 +22,19 @@ function Get-ListeningPid {
     return 0
 }
 
-function Get-ServiceState {
-    $svcPid = Get-ListeningPid
-    if ($svcPid -le 0) { return @{ Running = $false; Pid = 0; Detail = '服务未运行' } }
+function Test-ServicePort {
+    $client = [Net.Sockets.TcpClient]::new()
     try {
-        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$svcPid"
-        $path = [IO.Path]::GetFullPath([string]$process.ExecutablePath)
-        $expected = [IO.Path]::GetFullPath($script:Exe)
-        if (-not $path.Equals($expected, [StringComparison]::OrdinalIgnoreCase)) {
-            return @{ Running = $true; Pid = $svcPid; Detail = "端口 $Port 被其他程序占用" }
-        }
-    } catch { return @{ Running = $true; Pid = $svcPid; Detail = "端口 $Port 正在监听" } }
-    return @{ Running = $true; Pid = $svcPid; Detail = "DSH Web 正在运行 · PID $svcPid" }
+        $pending = $client.BeginConnect('127.0.0.1', $Port, $null, $null)
+        if (-not $pending.AsyncWaitHandle.WaitOne(300)) { return $false }
+        $client.EndConnect($pending)
+        return $true
+    } catch { return $false } finally { $client.Dispose() }
+}
+
+function Get-ServiceState {
+    if (-not (Test-ServicePort)) { return @{ Running = $false; Pid = 0; Detail = '服务未运行' } }
+    return @{ Running = $true; Pid = 0; Detail = "DSH Web 正在运行 · 端口 $Port" }
 }
 
 function Start-Dsh {
@@ -57,7 +58,7 @@ function Stop-Dsh {
 }
 
 [xml]$xaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="DeepSeek Harness 运行管理器" Width="620" Height="430" MinWidth="560" MinHeight="390" WindowStartupLocation="CenterScreen" Background="#F5F7FA" FontFamily="Microsoft YaHei UI">
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="DeepSeek Harness 运行管理器" Width="620" Height="430" MinWidth="560" MinHeight="390" WindowStartupLocation="CenterScreen" Background="#F5F7FA" FontFamily="Microsoft YaHei UI">
   <Window.Resources>
     <Style TargetType="Button"><Setter Property="Height" Value="38"/><Setter Property="Padding" Value="18,0"/><Setter Property="Margin" Value="0,0,10,0"/><Setter Property="Background" Value="#FFFFFF"/><Setter Property="BorderBrush" Value="#D7DCE3"/><Setter Property="Cursor" Value="Hand"/></Style>
   </Window.Resources>
@@ -90,7 +91,9 @@ $ui.RestartButton.Add_Click({ Invoke-Safe { Stop-Dsh; Start-Sleep -Milliseconds 
 $ui.OpenButton.Add_Click({ Start-Process "http://127.0.0.1:$Port/" })
 $ui.LogButton.Add_Click({ Start-Process explorer.exe $script:LogDir })
 $timer = [System.Windows.Threading.DispatcherTimer]::new(); $timer.Interval = [TimeSpan]::FromSeconds(2); $timer.Add_Tick({ Refresh-State }); $timer.Start()
-Refresh-State
-Write-UiLog "管理器已就绪；服务入口为 dsh.exe web --port $Port"
+$ui.StatusTitle.Text = '正在检测'
+$ui.StatusDetail.Text = "服务入口：dsh.exe web --port $Port"
+Write-UiLog "管理器已就绪；正在检测服务状态"
+$window.Add_ContentRendered({ Refresh-State })
 [void]$window.ShowDialog()
 $timer.Stop()

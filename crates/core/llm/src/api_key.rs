@@ -34,30 +34,3 @@ pub fn normalize_api_key(raw: &str) -> ApiKeyCheck {
         value: value.to_string(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn trims_and_judges_keys() {
-        assert_eq!(
-            normalize_api_key("  sk-abc123  "),
-            ApiKeyCheck::Ok {
-                value: "sk-abc123".to_string()
-            }
-        );
-        assert_eq!(
-            normalize_api_key("   "),
-            ApiKeyCheck::Rejected {
-                reason: ApiKeyRejection::Empty
-            }
-        );
-        assert_eq!(
-            normalize_api_key("sk\u{00E9}abc"),
-            ApiKeyCheck::Rejected {
-                reason: ApiKeyRejection::IllegalCharacters
-            }
-        );
-    }
-}

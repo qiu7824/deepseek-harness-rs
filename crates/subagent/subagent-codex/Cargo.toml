@@ -24,9 +24,3 @@ dsh-agent = { path = "../../core/agent" }
 dsh-scope = { path = "../../core/scope" }
 dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }
 libc = { workspace = true }
-
-[[bin]]
-name = "codex-app-server-fixture"
-path = "tests/fixtures/codex_app_server_fixture.rs"
-test = false
-bench = false

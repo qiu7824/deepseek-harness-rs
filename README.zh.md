@@ -31,6 +31,22 @@ http://127.0.0.1:58080/
 
 Windows包同时提供PowerShell 7 + WPF管理器：
 
+最简单的方式是直接双击：
+
+```text
+windows\启动DSH管理器.cmd
+```
+
+如果机器没有PowerShell 7，CMD会显示并自动复制一键安装命令。当前Windows x64安装命令为：
+
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$u='https://github.com/PowerShell/PowerShell/releases/download/v7.6.5/PowerShell-7.6.5-win-x64.msi'; $p='$env:TEMP\PowerShell-7.6.5-win-x64.msi'; Invoke-WebRequest $u -OutFile $p; Start-Process msiexec.exe -Verb RunAs -Wait -ArgumentList '/i',$p,'/qn','ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=1','ENABLE_PSREMOTING=1','REGISTER_MANIFEST=1'; Remove-Item $p -Force"
+```
+
+安装需要管理员授权。完成后重新双击`启动DSH管理器.cmd`。
+
+也可以从终端启动：
+
 ```powershell
 pwsh -NoProfile -STA -WindowStyle Hidden -File .\windows\DshServiceManager.ps1
 ```
@@ -87,24 +103,39 @@ Profile插件位于：
 
 纯Web插件无需Node、npm或pnpm。Rust Host负责校验、发现、登记和静态服务预构建的`client.js`。
 
+### 安装第三方插件
+
+Rust版本只直接安装符合以下结构的纯Web插件：
+
+```text
+package.json
+lib/client.js
+```
+
+`package.json`必须声明Web客户端导出。插件安装来源必须固定到完整40位Git commit，不能使用分支名、tag或可变默认分支：
+
 GitHub插件安装必须固定完整40位commit SHA：
 
 ```powershell
 .\dsh.exe plugin --profile web add github:owner/repository#0123456789abcdef0123456789abcdef01234567
 ```
 
-管理命令：
+安装后重启`dsh web`，然后在“设置 → 插件”中确认插件已启用。管理命令：
 
 ```powershell
 .\dsh.exe plugin --profile web list
 .\dsh.exe plugin --profile web remove package-name
 ```
 
+升级插件时，先审计新commit，再卸载旧版本并使用新commit SHA重新安装。Rust安装器会校验包名、入口路径、符号链接、文件大小和目录越界；校验失败时拒绝安装。
+
 兼容范围：
 
 - 纯Web插件：支持；
-- Web + Node Host插件：只加载Web部分并明确跳过Host部分；
+- Web + Node Host插件：只可能加载独立的Web部分，Node Host部分不会运行；
 - 纯Node Host/native插件：Rust Host不执行。
+
+如果社区插件依赖`require()`、npm生命周期脚本、Node服务、native addon或Host侧JS，它不能直接装进纯Rust进程。应使用插件提供的纯Web构建，或者把Host部分作为独立sidecar程序运行。
 
 Web插件与主应用同源运行，拥有页面级JavaScript能力。只安装来源可信、固定commit并完成审计的插件。
 
@@ -112,7 +143,7 @@ Web插件与主应用同源运行，拥有页面级JavaScript能力。只安装�
 
 - `dsh-voice-input`：浏览器语音输入；
 - `dsh-composer-expand`：输入框展开/收起；
-- `dsh-context-jump`：超长会话顶部、底部、上一节点、下一节点快速跳转，并按需触发更早历史分页。
+- `dsh-context-jump`：按用户对话记录标题显示横向快速跳转栏，点击标题定位到对应记录。
 
 ## 能力状态
 

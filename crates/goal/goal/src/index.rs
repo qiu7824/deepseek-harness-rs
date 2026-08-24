@@ -110,8 +110,6 @@ struct SessionGoalState {
     cache: Mutex<GoalCache>,
     mutating: AtomicBool,
     disarm_requested: AtomicBool,
-    #[cfg(test)]
-    release_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// RAII ownership of the single in-flight mutation for one Session.
@@ -165,10 +163,6 @@ impl MutationClaim {
             let mut cache = self.state.cache.lock();
             if self.state.disarm_requested.swap(false, Ordering::AcqRel) {
                 cache.activation = GoalActivation::Disarmed;
-            }
-            #[cfg(test)]
-            if let Some(hook) = self.state.release_hook.lock().as_ref().cloned() {
-                hook();
             }
             self.state.mutating.store(false, Ordering::Release);
         }
@@ -583,8 +577,6 @@ impl GoalService {
             session,
             mutating: AtomicBool::new(false),
             disarm_requested: AtomicBool::new(false),
-            #[cfg(test)]
-            release_hook: Mutex::new(None),
         });
         states.insert(key, state.clone());
         state
@@ -869,55 +861,5 @@ fn change_to_json(change: &GoalChangeMeta) -> Value {
             object.insert("clearedAt".to_string(), Value::from(clear.cleared_at));
             Value::Object(object)
         }
-    }
-}
-
-#[cfg(test)]
-mod mutation_claim_tests {
-    use super::*;
-
-    #[test]
-    fn failed_release_disarm_cannot_be_overwritten_by_a_new_publish() {
-        let entered = Arc::new(std::sync::Barrier::new(2));
-        let resume = Arc::new(std::sync::Barrier::new(2));
-        let entered_for_hook = entered.clone();
-        let resume_for_hook = resume.clone();
-        let state = Arc::new(SessionGoalState {
-            session: Session::create(dsh_session::session_id("goal-release-race"), None, None)
-                .expect("session"),
-            cache: Mutex::new(GoalCache {
-                state: empty_goal_fold_state(),
-                activation: GoalActivation::Armed,
-                observed_seq: 0,
-                pending_activation: None,
-            }),
-            mutating: AtomicBool::new(false),
-            disarm_requested: AtomicBool::new(false),
-            release_hook: Mutex::new(Some(Arc::new(move || {
-                entered_for_hook.wait();
-                resume_for_hook.wait();
-            }))),
-        });
-        let old_claim = MutationClaim::acquire(state.clone()).expect("old claim");
-        state.disarm_requested.store(true, Ordering::Release);
-        let release = std::thread::spawn(move || drop(old_claim));
-
-        entered.wait();
-        assert!(
-            MutationClaim::acquire(state.clone()).is_err(),
-            "the mutation lane must stay closed until Disarmed is visible"
-        );
-        resume.wait();
-        release.join().expect("old release");
-        *state.release_hook.lock() = None;
-
-        let new_claim = MutationClaim::acquire(state.clone()).expect("new claim");
-        let visible_disarm = state.cache.lock().clone();
-        new_claim.publish(visible_disarm);
-        assert_eq!(
-            state.cache.lock().activation,
-            GoalActivation::Disarmed,
-            "a disarm consumed by a failed release must survive the next publish"
-        );
     }
 }

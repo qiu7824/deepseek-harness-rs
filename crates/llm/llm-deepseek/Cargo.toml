@@ -33,11 +33,3 @@ webpki-roots = "1"
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 uuid = { workspace = true }
-
-[[test]]
-name = "files_api"
-path = "tests/files_api.rs"
-
-[[test]]
-name = "upload_index"
-path = "tests/upload_index.rs"

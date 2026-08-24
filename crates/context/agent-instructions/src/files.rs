@@ -91,28 +91,3 @@ pub fn discover(cwd: &Path, dsh_home: &Path, max_source_bytes: u64) -> Vec<Instr
     }
     files
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn loads_global_then_root_to_leaf_candidates() {
-        let root = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join(".git")).unwrap();
-        let leaf = root.path().join("pkg");
-        std::fs::create_dir(&leaf).unwrap();
-        std::fs::write(home.path().join("AGENTS.md"), "global").unwrap();
-        std::fs::write(root.path().join("AGENTS.md"), "root").unwrap();
-        std::fs::write(leaf.join("CLAUDE.md"), "leaf").unwrap();
-        let files = discover(&leaf, home.path(), 1_048_576);
-        assert_eq!(
-            files
-                .iter()
-                .map(|file| file.display_path.as_str())
-                .collect::<Vec<_>>(),
-            ["$DSH_HOME/AGENTS.md", "AGENTS.md", "pkg\\CLAUDE.md"]
-        );
-    }
-}

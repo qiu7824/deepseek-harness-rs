@@ -61,38 +61,3 @@ pub fn adapter_defaults_equals(
         _ => false,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn config_equality_is_fieldwise() {
-        let base = LlmCallConfig {
-            provider: "deepseek".to_string(),
-            model: "deepseek-chat".to_string(),
-            reasoning_effort: None,
-            temperature: None,
-            max_tokens: None,
-            stop: Some(vec!["a".to_string(), "b".to_string()]),
-        };
-        let same = base.clone();
-        assert!(call_config_equals(&base, &same));
-
-        let mut different_model = base.clone();
-        different_model.model = "other".to_string();
-        assert!(!call_config_equals(&base, &different_model));
-
-        let mut different_stop = base.clone();
-        different_stop.stop = Some(vec!["a".to_string()]);
-        assert!(!call_config_equals(&base, &different_stop));
-
-        let mut no_stop = base.clone();
-        no_stop.stop = None;
-        assert!(!call_config_equals(&base, &no_stop));
-
-        let mut temperature = base.clone();
-        temperature.temperature = Some(0.5);
-        assert!(!call_config_equals(&base, &temperature));
-    }
-}

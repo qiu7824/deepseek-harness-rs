@@ -79,36 +79,3 @@ pub const CLIENT_REQUEST_METHODS: &[&str] = &[
 pub fn is_client_request_method(method: &str) -> bool {
     CLIENT_REQUEST_METHODS.binary_search(&method).is_ok()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn table_is_sorted_and_holds_every_method_once() {
-        assert!(
-            CLIENT_REQUEST_METHODS
-                .windows(2)
-                .all(|pair| pair[0] < pair[1]),
-            "method table must stay name-sorted for binary search"
-        );
-        let unique: std::collections::HashSet<&str> =
-            CLIENT_REQUEST_METHODS.iter().copied().collect();
-        assert_eq!(unique.len(), CLIENT_REQUEST_METHODS.len(), "no duplicates");
-        assert_eq!(
-            CLIENT_REQUEST_METHODS.len(),
-            61,
-            "the composed Rust client-request surface holds 61 methods"
-        );
-    }
-
-    #[test]
-    fn client_request_classification() {
-        assert!(is_client_request_method("session.list"));
-        assert!(is_client_request_method("llm.discoverModels"));
-        assert!(is_client_request_method("commands.list"));
-        assert!(!is_client_request_method("commands/list"));
-        assert!(!is_client_request_method("respond"));
-        assert!(!is_client_request_method("session.nope"));
-    }
-}

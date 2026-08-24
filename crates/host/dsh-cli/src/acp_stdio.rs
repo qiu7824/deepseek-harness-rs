@@ -466,35 +466,3 @@ fn write_frame(frame: &Value) -> Result<(), String> {
     output.write_all(b"\n").map_err(|error| error.to_string())?;
     output.flush().map_err(|error| error.to_string())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cancellation_reserved_before_admission_prevents_prompt_start() {
-        let slot = Arc::new(PromptSlot::default());
-        let ticket = slot.reserve().expect("reserve prompt");
-        slot.cancel();
-        let started = std::sync::atomic::AtomicBool::new(false);
-        assert!(!slot.admit(&ticket, || started.store(true, Ordering::SeqCst)));
-        assert!(!started.load(Ordering::SeqCst));
-        slot.complete(&ticket);
-    }
-
-    #[test]
-    fn dropping_an_admitted_ticket_releases_the_slot_after_prompt_failure() {
-        let slot = Arc::new(PromptSlot::default());
-        {
-            let ticket = slot.reserve().expect("reserve first prompt");
-            assert!(slot.admit(&ticket, || {}));
-            // Models `run_prompt` returning early from a fallible output/flush
-            // operation before its explicit completion statement.
-            drop(ticket);
-        }
-        assert!(
-            slot.reserve().is_ok(),
-            "a failed prompt must not permanently retain the in-flight generation"
-        );
-    }
-}

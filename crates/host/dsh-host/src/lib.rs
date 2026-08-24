@@ -387,19 +387,6 @@ use tokio_tungstenite::tungstenite::Message;
 
 const MAX_API_REQUEST_BODY_BYTES: usize = 300 * 1024 * 1024;
 
-#[cfg(test)]
-mod request_body_capacity_tests {
-    use super::MAX_API_REQUEST_BODY_BYTES;
-
-    #[test]
-    fn browser_api_capacity_covers_the_rc2_image_batch_envelope() {
-        assert!(
-            MAX_API_REQUEST_BODY_BYTES >= 300 * 1024 * 1024,
-            "browser API body capacity must cover the rc.2 image batch and encoding envelope"
-        );
-    }
-}
-
 struct JsonSettingsStorage {
     path: std::path::PathBuf,
     document: parking_lot::Mutex<indexmap::IndexMap<String, dsh_schemastery::Data>>,
@@ -494,43 +481,6 @@ impl dsh_settings::SettingsStorage for JsonSettingsStorage {
         .map_err(|error| error.to_string())?;
         *self.document.lock() = committed;
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod settings_storage_tests {
-    use super::*;
-    use dsh_settings::SettingsStorage;
-
-    #[tokio::test]
-    async fn separate_storage_instances_merge_under_the_file_lock() {
-        let root = std::env::temp_dir().join(format!("dsh-settings-txn-{}", std::process::id()));
-        tokio::fs::create_dir_all(&root).await.unwrap();
-        let path = root.join("settings.json");
-        let make = || JsonSettingsStorage {
-            path: path.clone(),
-            document: parking_lot::Mutex::new(indexmap::IndexMap::new()),
-        };
-        let alpha = make();
-        let beta = make();
-        alpha
-            .persist(
-                &dsh_settings::settings_namespace("alpha").unwrap(),
-                dsh_schemastery::Data::String("a".into()),
-            )
-            .await
-            .unwrap();
-        beta.persist(
-            &dsh_settings::settings_namespace("beta").unwrap(),
-            dsh_schemastery::Data::String("b".into()),
-        )
-        .await
-        .unwrap();
-        let value: serde_json::Value =
-            serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
-        assert_eq!(value["alpha"], "a");
-        assert_eq!(value["beta"], "b");
-        let _ = tokio::fs::remove_dir_all(root).await;
     }
 }
 

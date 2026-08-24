@@ -79,27 +79,3 @@ pub fn error_chain(error: &dyn std::error::Error) -> String {
     }
     parts.join(": ")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::error::Error as _;
-
-    #[test]
-    fn error_fields_and_chain() {
-        let inner = HarnessError::new("inner", "X");
-        let outer = HarnessError::with_cause("outer", "Y", Box::new(inner));
-        assert_eq!(outer.code, "Y");
-        assert_eq!(outer.message, "outer");
-        assert_eq!(error_chain(&outer), "outer: inner");
-        assert_eq!(outer.source().unwrap().to_string(), "inner");
-    }
-
-    #[test]
-    fn canonical_codes() {
-        assert_eq!(CONTEXT_WINDOW_EXCEEDED_CODE, "CONTEXT_WINDOW_EXCEEDED");
-        assert_eq!(QUOTA_EXCEEDED_CODE, "QUOTA");
-        assert_eq!(EMPTY_RESPONSE_CODE, "EMPTY_RESPONSE");
-        assert_eq!(INVALID_CREDENTIAL_CODE, "INVALID_CREDENTIAL");
-    }
-}

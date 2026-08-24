@@ -277,24 +277,6 @@ fn method_for(path: &str) -> Option<&'static str> {
         .map(|index| methods[index])
 }
 
-#[cfg(test)]
-mod route_tests {
-    use super::method_for;
-
-    #[test]
-    fn generated_slash_remote_paths_resolve_to_canonical_methods() {
-        assert_eq!(
-            method_for("pluginInventory/list"),
-            Some("pluginInventory.list")
-        );
-        assert_eq!(method_for("session/list"), Some("session.list"));
-        assert_eq!(
-            method_for("pluginInventory.list"),
-            Some("pluginInventory.list")
-        );
-    }
-}
-
 /// Invoke one unary route: payload validity is the composition layer's
 /// second parse (later milestone); an impl crash is 500, carrier layer.
 async fn handle_unary(

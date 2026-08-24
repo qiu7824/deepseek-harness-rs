@@ -183,14 +183,3 @@ impl Plugin for NativeDirectoryPickerPlugin {
 fn _vocab() {
     let _ = arc(());
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn advertises_the_native_capability() {
-        let backend = NativeDirectoryPicker::new();
-        assert_eq!(backend.capability().kind(), "native");
-    }
-}

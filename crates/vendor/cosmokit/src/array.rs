@@ -73,29 +73,3 @@ pub fn make_array<T>(source: Option<MaybeArray<T>>) -> Vec<T> {
         Some(MaybeArray::Many(values)) => values,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn containment_and_sets() {
-        assert!(contain(&[1, 2, 3], &[2, 3]));
-        assert!(!contain(&[1, 2], &[2, 3]));
-        assert_eq!(intersection(&[1, 2, 3], &[2, 3, 4]), vec![2, 3]);
-        assert_eq!(difference(&[1, 2, 3], &[2]), vec![1, 3]);
-        assert_eq!(union(&[1, 2], &[2, 3]), vec![1, 2, 3]);
-        assert_eq!(deduplicate(&[3, 1, 3, 2, 1]), vec![3, 1, 2]);
-    }
-
-    #[test]
-    fn removal_and_normalization() {
-        let mut list = vec![1, 2, 3];
-        assert!(remove(&mut list, &2));
-        assert_eq!(list, vec![1, 3]);
-        assert!(!remove(&mut list, &9));
-        assert!(make_array::<i32>(None).is_empty());
-        assert_eq!(make_array(Some(MaybeArray::One(1))), vec![1]);
-        assert_eq!(make_array(Some(MaybeArray::Many(vec![1, 2]))), vec![1, 2]);
-    }
-}

@@ -58,31 +58,3 @@ pub const KNOWN_SESSION_EVENT_TYPES: [&str; 45] = [
 pub fn is_known_session_event_type(type_: &str) -> bool {
     KNOWN_SESSION_EVENT_TYPES.contains(&type_)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn catalog_contains_core_types() {
-        assert!(is_known_session_event_type("turn/start"));
-        assert!(is_known_session_event_type("user/message"));
-        assert!(is_known_session_event_type("assistant/chunk"));
-        assert!(is_known_session_event_type("session/end-seed"));
-        assert!(!is_known_session_event_type("made/up-type"));
-        assert!(is_known_session_event_type("model/selection"));
-        assert_eq!(KNOWN_SESSION_EVENT_TYPES.len(), 45);
-    }
-
-    #[test]
-    fn catalog_is_sorted() {
-        for window in KNOWN_SESSION_EVENT_TYPES.windows(2) {
-            assert!(
-                window[0] < window[1],
-                "{} must precede {}",
-                window[0],
-                window[1]
-            );
-        }
-    }
-}

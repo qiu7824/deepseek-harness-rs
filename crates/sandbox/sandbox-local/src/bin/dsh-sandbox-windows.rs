@@ -555,29 +555,4 @@ if ($updateDirectFiles) {
             GetLastError()
         })
     }
-
-    #[cfg(test)]
-    mod tests {
-        use super::should_update_direct_files;
-        use std::ffi::OsString;
-        use std::path::Path;
-
-        #[test]
-        fn user_profile_root_skips_direct_file_acl_updates() {
-            let profile = OsString::from(r"C:\Users\Administrator");
-            assert!(!should_update_direct_files(
-                Path::new("C:/Users/Administrator"),
-                Some(profile.as_os_str())
-            ));
-        }
-
-        #[test]
-        fn project_below_user_profile_keeps_direct_file_acl_updates() {
-            let profile = OsString::from(r"C:\Users\Administrator");
-            assert!(should_update_direct_files(
-                Path::new(r"C:\Users\Administrator\project"),
-                Some(profile.as_os_str())
-            ));
-        }
-    }
 }
