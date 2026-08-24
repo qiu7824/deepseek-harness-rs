@@ -123,12 +123,30 @@ pub struct ClientPlugin {
     pub source: PathBuf,
 }
 
+fn valid_package_segment(segment: &str, allow_scope: bool) -> bool {
+    let segment = if allow_scope {
+        segment.strip_prefix('@').unwrap_or("")
+    } else {
+        segment
+    };
+    !matches!(segment, "" | "." | "..")
+        && segment
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
 fn package_directory(profile: &Path, name: &str) -> Option<PathBuf> {
+    let parts: Vec<_> = name.split('/').collect();
+    let valid = match parts.as_slice() {
+        [plain] => valid_package_segment(plain, false),
+        [scope, plain] => valid_package_segment(scope, true) && valid_package_segment(plain, false),
+        _ => false,
+    };
+    if !valid {
+        return None;
+    }
     let mut path = profile.join("node_modules");
-    for part in name.split('/') {
-        if part.is_empty() || matches!(part, "." | "..") {
-            return None;
-        }
+    for part in parts {
         path.push(part);
     }
     Some(path)
@@ -333,6 +351,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn package_names_cannot_escape_node_modules_on_windows_or_posix() {
+        let profile = Path::new("C:/profile");
+        assert_eq!(
+            package_directory(profile, "safe"),
+            Some(profile.join("node_modules/safe"))
+        );
+        assert_eq!(
+            package_directory(profile, "@scope/safe"),
+            Some(profile.join("node_modules/@scope/safe"))
+        );
+        for unsafe_name in [
+            ".",
+            "..",
+            "@scope/.",
+            "../outside",
+            r"..\outside",
+            r"safe\..\outside",
+            r"C:\outside",
+            "safe//outside",
+        ] {
+            assert_eq!(
+                package_directory(profile, unsafe_name),
+                None,
+                "{unsafe_name}"
+            );
+        }
     }
 
     #[test]
