@@ -257,15 +257,22 @@ fn http_failure(
     status: reqwest::StatusCode,
     headers: &reqwest::header::HeaderMap,
     body: &[u8],
+    provider_name: &str,
 ) -> LlmFailure {
     let detail = serde_json::from_slice::<serde_json::Value>(body)
         .ok()
         .and_then(|value| {
-            value
-                .pointer("/error/message")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        });
+            ["/error/message", "/message", "/detail"]
+                .into_iter()
+                .find_map(|path| value.pointer(path))
+                .or_else(|| value.pointer("/error"))
+                .and_then(|detail| match detail {
+                    serde_json::Value::String(text) => Some(text.clone()),
+                    serde_json::Value::Null => None,
+                    other => serde_json::to_string(other).ok(),
+                })
+        })
+        .map(|detail| detail.chars().take(4_096).collect::<String>());
     let status_number = status.as_u16();
     let code = match status_number {
         401 | 403 => "AUTH",
@@ -294,7 +301,8 @@ fn http_failure(
         .filter(|value| !value.is_empty())
         .map(dsh_llm::provider_request_id);
     LlmFailure {
-        message: detail.unwrap_or_else(|| format!("DeepSeek API error (HTTP {status_number})")),
+        message: detail
+            .unwrap_or_else(|| format!("{provider_name} API error (HTTP {status_number})")),
         code: code.to_string(),
         status: Some(u64::from(status_number)),
         provider_retry_after_ms,
@@ -665,6 +673,7 @@ async fn request_chunks(
     options: GenerateOptions,
     connection: ResolvedDeepSeekOptions,
     api_key: String,
+    provider_name: &str,
     include_thinking_fields: bool,
     attachment_store: Option<Arc<dyn dsh_attachment::AttachmentStore>>,
     sender: &tokio::sync::mpsc::Sender<StreamChunk>,
@@ -691,6 +700,7 @@ async fn request_chunks(
             &chat_body,
             &connection,
             &api_key,
+            provider_name,
             &attribution_headers(&app_identity()),
             sender,
         )
@@ -744,7 +754,7 @@ async fn request_chunks(
         };
         let encoded = serde_json::to_vec(&body).map_err(|error| {
             failure(
-                format!("DeepSeek request encode failed: {error}"),
+                format!("{provider_name} request encode failed: {error}"),
                 "INVALID_REQUEST",
             )
         })?;
@@ -756,7 +766,12 @@ async fn request_chunks(
             cancelled.clone(),
         )
         .await
-        .map_err(|error| failure(format!("DeepSeek API request failed: {error}"), "TRANSPORT"))?;
+        .map_err(|error| {
+            failure(
+                format!("{provider_name} API request failed: {error}"),
+                "TRANSPORT",
+            )
+        })?;
         if response.status.is_success() {
             break response;
         }
@@ -817,12 +832,13 @@ async fn request_chunks(
                 &inline_body,
                 &connection,
                 &api_key,
+                provider_name,
                 &attribution_headers(&app_identity()),
                 sender,
             )
             .await;
         }
-        return Err(http_failure(status, &headers, &error_body));
+        return Err(http_failure(status, &headers, &error_body, provider_name));
     };
 
     let mut parser = sse::SseParser::new();
@@ -840,7 +856,7 @@ async fn request_chunks(
                     if done_seen {
                         failure("DeepSeek stream closed after DONE", "STREAM_CLOSED")
                     } else {
-                        failure(format!("DeepSeek API stream failed: {error}"), "TRANSPORT")
+                        failure(format!("{provider_name} API stream failed: {error}"), "TRANSPORT")
                     }
                 })?,
             _ = sender.closed() => return Err(failure("DeepSeek stream consumer closed", "CANCELLED")),
@@ -927,6 +943,7 @@ async fn request_responses_chunks(
     chat_body: &serde_json::Value,
     connection: &ResolvedDeepSeekOptions,
     api_key: &str,
+    provider_name: &str,
     attribution: &[(String, String)],
     sender: &tokio::sync::mpsc::Sender<StreamChunk>,
 ) -> Result<(), LlmFailure> {
@@ -953,7 +970,7 @@ async fn request_responses_chunks(
             .collect_limited(8 * 1024 * 1024)
             .await
             .unwrap_or_default();
-        return Err(http_failure(status, &headers, &body));
+        return Err(http_failure(status, &headers, &body, provider_name));
     }
     let mut parser = sse::SseParser::new();
     let mut translator = responses::ResponsesTranslator::default();
@@ -1024,6 +1041,7 @@ async fn drive_owned_request(
     options_resolver: OptionsResolver,
     key_resolver: ApiKeyResolver,
     attachment_resolver: Option<AttachmentResolver>,
+    provider_name: String,
     include_thinking_fields: bool,
     sender: tokio::sync::mpsc::Sender<StreamChunk>,
 ) {
@@ -1066,6 +1084,7 @@ async fn drive_owned_request(
         options,
         connection,
         api_key,
+        &provider_name,
         include_thinking_fields,
         attachment_store,
         &sender,
@@ -1179,6 +1198,11 @@ impl LlmAdapter for DeepSeekAdapter {
         let options_resolver = Arc::clone(&self.config.options);
         let key_resolver = Arc::clone(&self.config.resolve_api_key);
         let attachment_resolver = self.config.resolve_attachments.clone();
+        let provider_name = self
+            .config
+            .provider_name
+            .clone()
+            .unwrap_or_else(|| "DeepSeek".to_string());
         let include_thinking_fields = self.config.include_thinking_fields;
         Box::pin(async_stream::stream! {
             let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
@@ -1192,7 +1216,7 @@ impl LlmAdapter for DeepSeekAdapter {
                         .expect("DeepSeek request runtime");
                     runtime.block_on(async move {
                         tokio::select! {
-                            _ = drive_owned_request(options, options_resolver, key_resolver, attachment_resolver, include_thinking_fields, sender) => {},
+                            _ = drive_owned_request(options, options_resolver, key_resolver, attachment_resolver, provider_name, include_thinking_fields, sender) => {},
                             _ = cancelled => {},
                         }
                     });
