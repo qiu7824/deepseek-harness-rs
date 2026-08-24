@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const exports = module.exports;
     const React = require("react");
     const inject = ["slots"];
-    const CSS = ".ctxjump-bar{display:flex;align-items:center;gap:8px;width:100%;height:18px;padding:0 12px;box-sizing:border-box}.ctxjump-track{position:relative;display:flex;align-items:center;gap:2px;width:100%;height:6px;border-radius:999px;background:rgba(127,127,137,.16);overflow:hidden}.ctxjump-segment{height:100%;min-width:3px;flex:1;border:0;padding:0;background:rgba(127,127,137,.3);cursor:pointer}.ctxjump-segment:hover{background:var(--dsw-alias-label-primary,#344054)}.ctxjump-segment[data-active=true]{background:var(--dsw-alias-interactive-primary,#175cd3)}.ctxjump-label{font-size:11px;color:var(--dsw-alias-label-tertiary,#98a2b3);white-space:nowrap}";
+    const CSS = ".ctxjump-bar{display:flex;align-items:center;width:100%;height:10px;padding:0 16px;box-sizing:border-box}.ctxjump-track{position:relative;display:flex;align-items:center;gap:1px;width:100%;height:4px;border-radius:999px;background:rgba(127,127,137,.16);overflow:hidden}.ctxjump-segment{height:100%;min-width:2px;flex:1;border:0;padding:0;background:rgba(127,127,137,.3);cursor:pointer}.ctxjump-segment:hover{background:var(--dsw-alias-label-primary,#344054)}.ctxjump-segment[data-active=true]{background:var(--dsw-alias-interactive-primary,#175cd3)}";
 
     function installStyle() {
       if (document.querySelector('style[data-plugin-css="dsh-context-jump/client.css"]')) return;
@@ -50,8 +50,7 @@ window.__ModuleLoader__.load({
       }, []);
       const rows = snapshot.rows;
       if (rows.length < 2) return null;
-      return React.createElement("div", { className: "ctxjump-bar", role: "navigation", "aria-label": "会话快速跳转" },
-        React.createElement("span", { className: "ctxjump-label" }, "跳转"),
+      return React.createElement("div", { className: "ctxjump-bar", role: "navigation", "aria-label": "会话位置" },
         React.createElement("div", { className: "ctxjump-track" }, rows.map((row, index) => React.createElement("button", {
           key: row.dataset.chatAnchorKey || index,
           type: "button",

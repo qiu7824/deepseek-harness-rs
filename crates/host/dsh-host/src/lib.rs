@@ -226,9 +226,9 @@ fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSett
         {
             return Err(format!("llm-pi-ai: invalid provider route \"{provider}\""));
         }
-        if profile.api != "openai-completions" {
+        if profile.api != "openai-completions" && profile.api != "openai-responses" {
             return Err(format!(
-                "llm-pi-ai: provider \"{provider}\" must use openai-completions"
+                "llm-pi-ai: provider \"{provider}\" must use openai-completions or openai-responses"
             ));
         }
         if !(profile.base_url.starts_with("https://")
