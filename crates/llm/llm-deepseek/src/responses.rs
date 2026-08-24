@@ -43,16 +43,21 @@ pub(crate) fn request_from_chat(chat: &Value) -> Result<Value, LlmFailure> {
             continue;
         }
         let mut parts = Vec::new();
+        let text_part_type = if role == "assistant" {
+            "output_text"
+        } else {
+            "input_text"
+        };
         match content {
             Some(Value::String(text)) if !text.is_empty() => {
-                parts.push(json!({"type":"input_text", "text":text}));
+                parts.push(json!({"type":text_part_type, "text":text}));
             }
             Some(Value::Array(items)) => {
                 for item in items {
                     match item.get("type").and_then(Value::as_str) {
                         Some("text") => {
                             if let Some(text) = item.get("text").and_then(Value::as_str) {
-                                parts.push(json!({"type":"input_text", "text":text}));
+                                parts.push(json!({"type":text_part_type, "text":text}));
                             }
                         }
                         Some("image_url") => {
@@ -343,6 +348,20 @@ mod tests {
                 .any(|item| item["type"] == "function_call_output")
         );
         assert_eq!(body["tools"][0]["strict"], true);
+    }
+
+    #[test]
+    fn assistant_history_uses_output_text_parts() {
+        let body = request_from_chat(&json!({
+            "model":"m",
+            "messages":[
+                {"role":"user","content":"question"},
+                {"role":"assistant","content":"answer"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(body["input"][1]["content"][0]["type"], "output_text");
     }
 
     #[test]
