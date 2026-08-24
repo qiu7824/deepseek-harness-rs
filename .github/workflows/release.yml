@@ -54,7 +54,7 @@ jobs:
           cp -R web "dist/${{ matrix.artifact }}/web"
           cp -R config "dist/${{ matrix.artifact }}/config"
           cp .github/workflows/release.yml "dist/${{ matrix.artifact }}/RELEASE_WORKFLOW.yml"
-          cp README.md LICENSE "dist/${{ matrix.artifact }}/"
+          cp README.md LICENSE release/PLUGIN_SECURITY.md "dist/${{ matrix.artifact }}/"
       - name: Archive Windows package
         if: matrix.archive == 'zip'
         shell: pwsh
