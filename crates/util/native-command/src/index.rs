@@ -59,14 +59,14 @@ pub async fn run_native_command(
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         // The TS `windowsHide: true` equivalent: no console window.
         spawned.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let mut child = match spawned.spawn() {
+    let child = match spawned.spawn() {
         Ok(child) => child,
         Err(error) => {
             let code = if error.kind() == std::io::ErrorKind::NotFound {
@@ -83,44 +83,45 @@ pub async fn run_native_command(
         }
     };
 
-    // Abort propagation: poll the predicate, force-terminate on fire.
-    let aborted = loop {
-        if signal.as_ref().is_some_and(|signal| signal()) {
-            break true;
-        }
-        match child.try_wait() {
-            Ok(Some(_)) => break false,
-            Ok(None) => tokio::time::sleep(Duration::from_millis(ABORT_POLL_MS)).await,
-            Err(error) => {
-                return Err(NativeCommandFailure {
-                    message: error.to_string(),
-                    code: None,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                });
+    // `wait_with_output` drains both pipes while the child is running. Race it
+    // against the cancellation predicate; `kill_on_drop` terminates the child
+    // when the output future loses the race.
+    let output = if let Some(signal) = signal {
+        let output = child.wait_with_output();
+        tokio::pin!(output);
+        loop {
+            tokio::select! {
+                result = &mut output => {
+                    break result.map_err(|error| NativeCommandFailure {
+                        message: error.to_string(),
+                        code: None,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })?;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(ABORT_POLL_MS)) => {
+                    if signal() {
+                        return Err(NativeCommandFailure {
+                            message: "native command aborted".to_string(),
+                            code: Some("ABORT_ERR".to_string()),
+                            stdout: String::new(),
+                            stderr: String::new(),
+                        });
+                    }
+                }
             }
         }
+    } else {
+        child
+            .wait_with_output()
+            .await
+            .map_err(|error| NativeCommandFailure {
+                message: error.to_string(),
+                code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+            })?
     };
-    if aborted {
-        let _ = child.start_kill();
-        let _ = child.wait().await;
-        return Err(NativeCommandFailure {
-            message: "native command aborted".to_string(),
-            code: Some("ABORT_ERR".to_string()),
-            stdout: String::new(),
-            stderr: String::new(),
-        });
-    }
-
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|error| NativeCommandFailure {
-            message: error.to_string(),
-            code: None,
-            stdout: String::new(),
-            stderr: String::new(),
-        })?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     match output.status.code() {

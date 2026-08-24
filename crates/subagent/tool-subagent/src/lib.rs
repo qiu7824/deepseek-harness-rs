@@ -16,7 +16,7 @@ pub mod invariant;
 use std::sync::Arc;
 
 use cordis::{ArcValue, Context, InjectSpec, Plugin, PluginError};
-use dsh_agent::{Agent, AgentOptions};
+use dsh_agent::AgentOptions;
 use dsh_jobs::{JobOutcome, JobOutcomeStatus, JobRegistry, JobStart};
 use dsh_llm::ContentBlock;
 use dsh_subagent::{
@@ -163,12 +163,6 @@ fn provider_wording(inherits_conversation: bool) -> (String, String) {
 pub fn apply(ctx: &Context, config: &Config) -> Result<(), String> {
     let background_enabled = config.enable_run_in_background.unwrap_or(true);
     let continuable = config.background_mode.as_deref() == Some("continuable");
-    if continuable {
-        return Err(
-            "tool-subagent: backgroundMode continuable requires the continuation manager (not ported)"
-                .to_string(),
-        );
-    }
     let tool_name = config
         .tool_name
         .clone()
@@ -195,6 +189,7 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<(), String> {
         provider,
         config,
         background_enabled,
+        continuable,
         &tool_name,
     )
 }
@@ -206,6 +201,7 @@ fn mount_tool(
     provider: Arc<dyn SubagentProvider>,
     config: &Config,
     background_enabled: bool,
+    continuable: bool,
     tool_name: &str,
 ) -> Result<(), String> {
     if let Some(max_depth) = config.max_depth {
@@ -264,6 +260,15 @@ fn mount_tool(
                         "type": "object",
                         "additionalProperties": false,
                         "properties": {
+                            "kind": { "type": "string", "const": "continuable" },
+                            "subagentId": { "type": "string" }
+                        },
+                        "required": ["kind", "subagentId"]
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
                             "kind": { "type": "string", "const": "foreground" },
                             "runId": { "type": "string" },
                             "output": { "type": "array" }
@@ -277,6 +282,10 @@ fn mount_tool(
                     Some("background") => format!(
                         "started background subagent task {}",
                         value["jobId"].as_str().unwrap_or("")
+                    ),
+                    Some("continuable") => format!(
+                        "started continuable subagent {}",
+                        value["subagentId"].as_str().unwrap_or("")
                     ),
                     _ => output_value_text(value["output"].as_array().unwrap_or(&vec![])),
                 };
@@ -295,6 +304,7 @@ fn mount_tool(
             let config = config_for_tool.clone();
             let subagents = subagents_for_tool.clone();
             let background_enabled = background_enabled;
+            let continuable = continuable;
             Box::pin(async move {
                 let Some(parent) = agent else {
                     return Err(ToolBodyError::plain(
@@ -314,7 +324,7 @@ fn mount_tool(
                             .to_string(),
                     }],
                     parent: parent.clone(),
-                    signal,
+                    signal: signal.clone(),
                     agent_options: config.agent_options.clone(),
                     output_schema: None,
                     max_depth: config.max_depth,
@@ -330,6 +340,26 @@ fn mount_tool(
                         return Err(ToolBodyError::plain(
                             "run_in_background is disabled for this tool instance (enableRunInBackground: false)",
                         ));
+                    }
+                    if continuable {
+                        let label = args
+                            .get("description")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("subagent")
+                            .to_string();
+                        let started = subagents
+                            .start_continuable(dsh_subagent::ContinuableStartSpec {
+                                provider: provider.clone(),
+                                label,
+                                request,
+                                signal,
+                            })
+                            .await
+                            .map_err(|error| ToolBodyError::plain(error.message))?;
+                        return Ok(serde_json::json!({
+                            "kind": "continuable",
+                            "subagentId": started.child_id.as_str(),
+                        }));
                     }
                     let Some(jobs) = ctx
                         .get_typed::<Arc<dyn JobRegistry>>("jobs", false)
@@ -490,7 +520,36 @@ impl Plugin for ToolSubagentPlugin {
     }
 
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
-        let config = config.downcast_ref::<Config>().cloned().unwrap_or_default();
+        let config = if let Some(config) = config.downcast_ref::<Config>() {
+            config.clone()
+        } else if let Some(value) = config.downcast_ref::<serde_json::Value>() {
+            Config {
+                provider: value
+                    .get("provider")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                tool_name: value
+                    .get("toolName")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                enable_run_in_background: value
+                    .get("enableRunInBackground")
+                    .and_then(serde_json::Value::as_bool),
+                background_mode: value
+                    .get("backgroundMode")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                max_depth: match value.get("maxDepth") {
+                    Some(serde_json::Value::String(value)) if value == "provider-managed" => None,
+                    Some(value) => value.as_u64(),
+                    None => Some(3),
+                },
+                ..Default::default()
+            }
+        } else {
+            Config::default()
+        };
         apply(ctx, &config).map_err(|error| PluginError::from(anyhow::anyhow!(error)))
     }
 }

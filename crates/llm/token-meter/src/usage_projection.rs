@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use cordis::{ArcValue, arc};
 use dsh_session::SessionEvent;
-use dsh_session_projection::ProjectionDefinition;
+use dsh_session_projection::{ProjectionApply, ProjectionDefinition};
 use serde_json::Value;
 
 use crate::surface_projection::{ShadowPriceClaim, fold_surface_projection};
@@ -74,54 +74,53 @@ fn validate_projection_schema(value: &Value) -> Result<Value, String> {
 pub fn token_usage_projection_definition() -> ProjectionDefinition {
     let init: Arc<dyn Fn() -> ArcValue + Send + Sync> =
         Arc::new(|| arc(serde_json::json!({"totals": zero_buckets(), "last": Value::Null})));
-    let apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync> =
-        Arc::new(|state_value: &ArcValue, event: &SessionEvent| {
-            let state: &Value = cordis::downcast(state_value).expect("tokenUsage state");
-            let (turn, step, usage): (u64, u64, &Value) = if event.type_ == "assistant/chunk" {
-                let chunk = event.data.get("chunk");
-                if chunk.and_then(|c| c.get("type")).and_then(|t| t.as_str()) == Some("usage") {
-                    let turn = event.data.get("turn").and_then(|v| v.as_u64());
-                    let step = event.data.get("step").and_then(|v| v.as_u64());
-                    let usage = chunk.and_then(|c| c.get("usage"));
-                    match (turn, step, usage) {
-                        (Some(turn), Some(step), Some(usage)) => (turn, step, usage),
-                        _ => return Arc::clone(state_value),
-                    }
-                } else {
-                    return Arc::clone(state_value);
-                }
-            } else if event.type_ == "assistant/message" {
-                let usage = event.data.get("usage");
+    let apply: ProjectionApply = Arc::new(|state_value: &ArcValue, event: &SessionEvent| {
+        let state: &Value = cordis::downcast(state_value).expect("tokenUsage state");
+        let (turn, step, usage): (u64, u64, &Value) = if event.type_ == "assistant/chunk" {
+            let chunk = event.data.get("chunk");
+            if chunk.and_then(|c| c.get("type")).and_then(|t| t.as_str()) == Some("usage") {
                 let turn = event.data.get("turn").and_then(|v| v.as_u64());
                 let step = event.data.get("step").and_then(|v| v.as_u64());
+                let usage = chunk.and_then(|c| c.get("usage"));
                 match (turn, step, usage) {
                     (Some(turn), Some(step), Some(usage)) => (turn, step, usage),
                     _ => return Arc::clone(state_value),
                 }
             } else {
                 return Arc::clone(state_value);
-            };
-
-            let buckets = buckets_from(usage);
-            let last = state.get("last").and_then(|l| l.as_object());
-            let previous = match last {
-                Some(last)
-                    if last.get("turn").and_then(|v| v.as_u64()) == Some(turn)
-                        && last.get("step").and_then(|v| v.as_u64()) == Some(step) =>
-                {
-                    last.get("buckets")
-                }
-                _ => None,
-            };
-            if previous.is_some_and(|previous| buckets_equal(previous, &buckets)) {
-                return Arc::clone(state_value);
             }
-            let totals = add_replacing(state.get("totals").expect("totals"), previous, &buckets);
-            arc(serde_json::json!({
-                "totals": totals,
-                "last": {"turn": turn, "step": step, "buckets": buckets},
-            }))
-        });
+        } else if event.type_ == "assistant/message" {
+            let usage = event.data.get("usage");
+            let turn = event.data.get("turn").and_then(|v| v.as_u64());
+            let step = event.data.get("step").and_then(|v| v.as_u64());
+            match (turn, step, usage) {
+                (Some(turn), Some(step), Some(usage)) => (turn, step, usage),
+                _ => return Arc::clone(state_value),
+            }
+        } else {
+            return Arc::clone(state_value);
+        };
+
+        let buckets = buckets_from(usage);
+        let last = state.get("last").and_then(|l| l.as_object());
+        let previous = match last {
+            Some(last)
+                if last.get("turn").and_then(|v| v.as_u64()) == Some(turn)
+                    && last.get("step").and_then(|v| v.as_u64()) == Some(step) =>
+            {
+                last.get("buckets")
+            }
+            _ => None,
+        };
+        if previous.is_some_and(|previous| buckets_equal(previous, &buckets)) {
+            return Arc::clone(state_value);
+        }
+        let totals = add_replacing(state.get("totals").expect("totals"), previous, &buckets);
+        arc(serde_json::json!({
+            "totals": totals,
+            "last": {"turn": turn, "step": step, "buckets": buckets},
+        }))
+    });
     let view: Arc<dyn Fn(&ArcValue) -> ArcValue + Send + Sync> = Arc::new(|state_value| {
         let state: &Value = cordis::downcast(state_value).expect("tokenUsage state");
         let totals = state.get("totals").cloned().unwrap_or_else(zero_buckets);
@@ -188,10 +187,10 @@ fn validate_pressure_schema(value: &Value) -> Result<Value, String> {
             _ => return Err(format!("contextPressure view carries unexpected key {key}")),
         }
     }
-    if let Some(window) = object.get("contextWindow").and_then(|v| v.as_u64()) {
-        if window == 0 {
-            return Err("contextPressure view contextWindow must be positive".to_string());
-        }
+    if let Some(window) = object.get("contextWindow").and_then(|v| v.as_u64())
+        && window == 0
+    {
+        return Err("contextPressure view contextWindow must be positive".to_string());
     }
     Ok(value.clone())
 }
@@ -201,63 +200,70 @@ fn validate_pressure_schema(value: &Value) -> Result<Value, String> {
 pub fn context_pressure_projection_definition() -> ProjectionDefinition {
     let init: Arc<dyn Fn() -> ArcValue + Send + Sync> =
         Arc::new(|| arc(serde_json::json!({"surfaceTokens": 0})));
-    let apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync> =
-        Arc::new(|state_value: &ArcValue, event: &SessionEvent| {
-            let state: &Value = cordis::downcast(state_value).expect("contextPressure state");
-            let claim: Option<ShadowPriceClaim> = state
-                .get("claim")
-                .and_then(|claim| serde_json::from_value(claim.clone()).ok());
-            let fold = match fold_surface_projection(claim.as_ref(), event) {
-                Ok(fold) => fold,
-                Err(_) => return Arc::clone(state_value),
-            };
-            let mut next = state.clone();
-            if event.type_ == "request/context" {
-                let window = event.data.get("contextWindow").and_then(|v| v.as_u64());
-                if window != state.get("contextWindow").and_then(|v| v.as_u64()) {
-                    match window {
-                        Some(window) => {
-                            next["contextWindow"] = serde_json::json!(window);
-                        }
-                        None => {
-                            next.as_object_mut()
-                                .expect("object")
-                                .remove("contextWindow");
-                        }
+    let apply: ProjectionApply = Arc::new(|state_value: &ArcValue, event: &SessionEvent| {
+        let state: &Value = cordis::downcast(state_value).expect("contextPressure state");
+        let claim: Option<ShadowPriceClaim> = state
+            .get("claim")
+            .and_then(|claim| serde_json::from_value(claim.clone()).ok());
+        let fold = match fold_surface_projection(claim.as_ref(), event) {
+            Ok(fold) => fold,
+            Err(_) => return Arc::clone(state_value),
+        };
+        let mut next = state.clone();
+        if event.type_ == "request/context" {
+            let window = event.data.get("contextWindow").and_then(|v| v.as_u64());
+            if window != state.get("contextWindow").and_then(|v| v.as_u64()) {
+                match window {
+                    Some(window) => {
+                        next["contextWindow"] = serde_json::json!(window);
+                    }
+                    None => {
+                        next.as_object_mut()
+                            .expect("object")
+                            .remove("contextWindow");
                     }
                 }
             }
-            if let Some(usage) = usage_of(event) {
-                let pressure = pressure_from(usage);
-                let surface_tokens = state
-                    .get("surfaceTokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let sampled = state.get("sampledSurfaceTokens").and_then(|v| v.as_u64());
-                if state.get("pressureTokens").and_then(|v| v.as_u64()) != Some(pressure)
-                    || sampled != Some(surface_tokens)
-                {
-                    next["pressureTokens"] = serde_json::json!(pressure);
-                    next["sampledSurfaceTokens"] = serde_json::json!(surface_tokens);
-                }
+        }
+        if let Some(usage) = usage_of(event) {
+            let pressure = pressure_from(usage);
+            let surface_tokens = state
+                .get("surfaceTokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sampled = state.get("sampledSurfaceTokens").and_then(|v| v.as_u64());
+            if state.get("pressureTokens").and_then(|v| v.as_u64()) != Some(pressure)
+                || sampled != Some(surface_tokens)
+            {
+                next["pressureTokens"] = serde_json::json!(pressure);
+                next["sampledSurfaceTokens"] = serde_json::json!(surface_tokens);
             }
-            if fold.delta_tokens != 0 {
-                let surface_tokens = next
-                    .get("surfaceTokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                next["surfaceTokens"] =
-                    serde_json::json!((surface_tokens as i64 + fold.delta_tokens).max(0) as u64);
-            }
-            if state.get("claim").is_none() && fold.claim.is_none() {
-                return arc(next);
-            }
-            next.as_object_mut().expect("object").remove("claim");
-            if let Some(claim) = &fold.claim {
-                next["claim"] = serde_json::to_value(claim).expect("claim JSON");
-            }
+        }
+        if fold.delta_tokens != 0 {
+            let surface_tokens = next
+                .get("surfaceTokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            next["surfaceTokens"] =
+                serde_json::json!((surface_tokens as i64 + fold.delta_tokens).max(0) as u64);
+        }
+        if state.get("claim").is_none() && fold.claim.is_none() {
+            return if &next == state {
+                Arc::clone(state_value)
+            } else {
+                arc(next)
+            };
+        }
+        next.as_object_mut().expect("object").remove("claim");
+        if let Some(claim) = &fold.claim {
+            next["claim"] = serde_json::to_value(claim).expect("claim JSON");
+        }
+        if &next == state {
+            Arc::clone(state_value)
+        } else {
             arc(next)
-        });
+        }
+    });
     let view: Arc<dyn Fn(&ArcValue) -> ArcValue + Send + Sync> = Arc::new(|state_value| {
         let state: &Value = cordis::downcast(state_value).expect("contextPressure state");
         let mut view = serde_json::Map::new();

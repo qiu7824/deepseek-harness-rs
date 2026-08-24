@@ -7,6 +7,9 @@ use indexmap::IndexMap;
 
 use crate::data::Data;
 
+/// Predicate used to skip validation for selected values and schema nodes.
+pub type Ignore = Arc<dyn Fn(&Data, &crate::schema::Schema) -> bool + Send + Sync>;
+
 /// Object key or array index path segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathSeg {
@@ -30,7 +33,7 @@ pub struct Options {
     /// Remove invalid object properties instead of throwing when possible.
     pub autofix: bool,
     /// Skip validation for selected values and schema nodes.
-    pub ignore: Option<Arc<dyn Fn(&Data, &crate::schema::Schema) -> bool + Send + Sync>>,
+    pub ignore: Option<Ignore>,
     /// Path used to format nested validation errors.
     pub path: Vec<PathSeg>,
 }

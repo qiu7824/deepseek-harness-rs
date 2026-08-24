@@ -21,6 +21,12 @@ pub struct Realm {
     store: Mutex<HashMap<String, u64>>,
 }
 
+impl Default for Realm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Realm {
     pub fn new() -> Self {
         Self {

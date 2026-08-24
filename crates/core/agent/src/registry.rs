@@ -64,24 +64,33 @@ struct EntryFlags {
 }
 
 impl AgentEntry {
+    fn begin_announce(&self) -> bool {
+        let mut flags = self.flags.lock();
+        if flags.announced || flags.announcing {
+            return false;
+        }
+        flags.announcing = true;
+        flags.announced = true;
+        true
+    }
+
+    fn finish_announce(&self) -> bool {
+        let mut flags = self.flags.lock();
+        flags.announcing = false;
+        flags.detach_requested
+    }
+
+    fn request_detach_if_announcing(&self) -> bool {
+        let mut flags = self.flags.lock();
+        if flags.announcing {
+            flags.detach_requested = true;
+            return true;
+        }
+        false
+    }
+
     fn is_announced(&self) -> bool {
         self.flags.lock().announced
-    }
-
-    fn is_announcing(&self) -> bool {
-        self.flags.lock().announcing
-    }
-
-    fn is_detach_requested(&self) -> bool {
-        self.flags.lock().detach_requested
-    }
-
-    fn set_announced(&self, value: bool) {
-        self.flags.lock().announced = value;
-    }
-
-    fn set_announcing(&self, value: bool) {
-        self.flags.lock().announcing = value;
     }
 
     fn set_detach_requested(&self, value: bool) {
@@ -120,12 +129,30 @@ pub struct AgentRegistry {
     store: Arc<Mutex<HashMap<String, Arc<AgentEntry>>>>,
     factory: Arc<Mutex<Option<Arc<dyn AgentFactory>>>>,
     initiator_state: Mutex<InitiatorState>,
+    initiator_gate: Mutex<()>,
     active_initiator_runs: AtomicU32,
     initiator_drain: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     initiator_disposal: Arc<tokio::sync::OnceCell<()>>,
 }
 
 impl AgentRegistry {
+    /// Whether the registered factory owns this exact live lifecycle.
+    pub fn can_retire(&self, agent: &Arc<dyn Agent>) -> bool {
+        self.factory
+            .lock()
+            .as_ref()
+            .is_some_and(|factory| factory.can_retire(agent))
+    }
+
+    /// Ask the registered structural owner to retire this exact lifecycle.
+    pub async fn retire(&self, agent: Arc<dyn Agent>) -> Result<bool, String> {
+        let factory = self.factory.lock().clone();
+        match factory {
+            Some(factory) => factory.retire(agent).await,
+            None => Ok(false),
+        }
+    }
+
     /// Create the registry, register it as the `agents` service, and wire
     /// the typert lookups + initiator lifecycle (TS constructor).
     pub fn install(ctx: &Context) -> Arc<Self> {
@@ -134,6 +161,7 @@ impl AgentRegistry {
             store: Arc::new(Mutex::new(HashMap::new())),
             factory: Arc::new(Mutex::new(None)),
             initiator_state: Mutex::new(InitiatorState::Active),
+            initiator_gate: Mutex::new(()),
             active_initiator_runs: AtomicU32::new(0),
             initiator_drain: Mutex::new(None),
             initiator_disposal: Arc::new(tokio::sync::OnceCell::new()),
@@ -161,7 +189,7 @@ impl AgentRegistry {
                                 wire_type_symbol: "@deepseek-ai/dsh-session/types#SessionId"
                                     .to_string(),
                                 resolve: Arc::new(move |id| {
-                                    lookup_registry.get(&session_id(id)).map(|agent| arc(agent))
+                                    lookup_registry.get(&session_id(id)).map(arc)
                                 }),
                             },
                         );
@@ -232,7 +260,7 @@ impl AgentRegistry {
             Box::pin(async move {
                 let Some(fiber) = args
                     .first()
-                    .and_then(|value| cordis::util::downcast_arc::<cordis::FiberCore>(value))
+                    .and_then(cordis::util::downcast_arc::<cordis::FiberCore>)
                 else {
                     return None;
                 };
@@ -308,16 +336,20 @@ impl AgentRegistry {
         agent: Option<Arc<dyn Agent>>,
         operation: impl Future<Output = T>,
     ) -> Result<T, String> {
-        if *self.initiator_state.lock() != InitiatorState::Active {
-            return Err(DISPOSED_INITIATOR_MESSAGE.to_string());
-        }
-        let run = Arc::new(InitiatorRun {
-            active: std::sync::atomic::AtomicBool::new(true),
-            parent: AMBIENT_INITIATOR_RUN
-                .try_with(|slot| slot.clone())
-                .unwrap_or(None),
-        });
-        self.active_initiator_runs.fetch_add(1, Ordering::SeqCst);
+        let run = {
+            let _gate = self.initiator_gate.lock();
+            if *self.initiator_state.lock() != InitiatorState::Active {
+                return Err(DISPOSED_INITIATOR_MESSAGE.to_string());
+            }
+            let run = Arc::new(InitiatorRun {
+                active: std::sync::atomic::AtomicBool::new(true),
+                parent: AMBIENT_INITIATOR_RUN
+                    .try_with(|slot| slot.clone())
+                    .unwrap_or(None),
+            });
+            self.active_initiator_runs.fetch_add(1, Ordering::SeqCst);
+            run
+        };
         let result = AMBIENT_INITIATOR_RUN
             .scope(Some(run.clone()), AMBIENT_INITIATOR.scope(agent, operation))
             .await;
@@ -416,13 +448,6 @@ impl AgentRegistry {
             ));
         }
         let carrier = scope_target(None, Some(agent.scope_key().clone()));
-        {
-            let store = self.store.lock();
-            if store.contains_key(id.as_str()) {
-                return Err(format!("agent \"{}\" is already registered", id.as_str()));
-            }
-        }
-
         let store_map = self.store.clone();
         let detach_fn: Arc<dyn Fn(&Arc<AgentEntry>) + Send + Sync> = Arc::new(move |entry| {
             entry.set_detach_requested(false);
@@ -451,9 +476,13 @@ impl AgentRegistry {
             flags: Mutex::new(EntryFlags::default()),
             detach: detach_fn,
         });
-        self.store
-            .lock()
-            .insert(id.as_str().to_string(), Arc::clone(&entry));
+        {
+            let mut store = self.store.lock();
+            if store.contains_key(id.as_str()) {
+                return Err(format!("agent \"{}\" is already registered", id.as_str()));
+            }
+            store.insert(id.as_str().to_string(), Arc::clone(&entry));
+        }
 
         let entered = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let detach: Disposer = make_disposer(move || {
@@ -463,8 +492,7 @@ impl AgentRegistry {
                 if !entered.swap(false, Ordering::SeqCst) {
                     return;
                 }
-                if entry.is_announcing() {
-                    entry.set_detach_requested(true);
+                if entry.request_detach_if_announcing() {
                     return;
                 }
                 entry.detach_now();
@@ -477,7 +505,7 @@ impl AgentRegistry {
     /// (TS `AgentRegistry.announce`).
     pub async fn announce(&self, agent: &Arc<dyn Agent>) -> Result<(), String> {
         let entry = self.live_entry_for(agent)?;
-        if entry.is_announced() || entry.is_announcing() {
+        if !entry.begin_announce() {
             return Err(format!(
                 "agent \"{}\" was already announced",
                 entry.id.as_str()
@@ -486,8 +514,7 @@ impl AgentRegistry {
         // Mark before dispatch so a listener cannot recursively create a
         // second lifecycle edge; detach still pairs a partially delivered
         // first edge.
-        entry.set_announcing(true);
-        entry.set_announced(true);
+
         let dispatch_ctx = self.ctx.with_filter(entry.carrier.filter.clone());
         let payload = arc(AgentLifecyclePayload {
             agent: entry.agent.clone(),
@@ -496,7 +523,7 @@ impl AgentRegistry {
             DispatchMode::Emit,
             Some(&dispatch_ctx),
             "agent/created",
-            &[payload.clone()],
+            std::slice::from_ref(&payload),
         );
         let mut veto: Option<String> = None;
         for (listener_ctx, callback) in &listeners {
@@ -511,8 +538,7 @@ impl AgentRegistry {
                 }
             }
         }
-        entry.set_announcing(false);
-        if entry.is_detach_requested() {
+        if entry.finish_announce() {
             entry.detach_now();
         }
         match veto {
@@ -594,11 +620,22 @@ impl AgentRegistry {
         let _ = self
             .initiator_disposal
             .get_or_init(|| async {
-                self.close_initiators();
+                {
+                    let _gate = self.initiator_gate.lock();
+                    self.close_initiators();
+                }
                 self.release_reentrant_initiator_runs();
-                if self.active_initiator_runs.load(Ordering::SeqCst) != 0 {
-                    let (sender, receiver) = tokio::sync::oneshot::channel();
-                    *self.initiator_drain.lock() = Some(sender);
+                let receiver = {
+                    let _gate = self.initiator_gate.lock();
+                    if self.active_initiator_runs.load(Ordering::SeqCst) != 0 {
+                        let (sender, receiver) = tokio::sync::oneshot::channel();
+                        *self.initiator_drain.lock() = Some(sender);
+                        Some(receiver)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(receiver) = receiver {
                     let _ = receiver.await;
                 }
                 *self.initiator_state.lock() = InitiatorState::Disposed;
@@ -620,6 +657,7 @@ impl AgentRegistry {
         if !run.active.swap(false, Ordering::SeqCst) {
             return;
         }
+        let _gate = self.initiator_gate.lock();
         let remaining = self.active_initiator_runs.fetch_sub(1, Ordering::SeqCst);
         if remaining > 1 {
             return;
@@ -672,7 +710,7 @@ fn emit_disposed(entry: &Arc<AgentEntry>) {
         DispatchMode::Emit,
         Some(&dispatch_ctx),
         "agent/disposed",
-        &[payload.clone()],
+        std::slice::from_ref(&payload),
     );
     let logger = entry.emit_ctx.named_logger(Some("agents"));
     for (listener_ctx, callback) in &listeners {
@@ -883,7 +921,7 @@ mod tests {
 
         let agent: Arc<dyn crate::Agent> = test_agent(&ctx, "a1");
         let detach = registry.enter(agent.clone(), None).unwrap();
-        assert_eq!(registry.get(&dsh_session::session_id("a1")).is_some(), true);
+        assert!(registry.get(&dsh_session::session_id("a1")).is_some());
         assert_eq!(created.load(MemOrder::SeqCst), 0, "enter does not announce");
 
         registry.announce(&agent).await.unwrap();

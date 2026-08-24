@@ -6,7 +6,7 @@
 /// vocabulary this build understands. The persistence read path refuses to
 /// interpret a log containing a type outside this set unless the event
 /// carries the envelope's `ignorable` marker.
-pub const KNOWN_SESSION_EVENT_TYPES: [&str; 44] = [
+pub const KNOWN_SESSION_EVENT_TYPES: [&str; 45] = [
     "agent-preset/selected",
     "agent/inbox/spliced",
     "approval/asked",
@@ -26,6 +26,7 @@ pub const KNOWN_SESSION_EVENT_TYPES: [&str; 44] = [
     "hook/result",
     "llm/retry",
     "llm/retry-started",
+    "model/selection",
     "permission/preset",
     "plan/mode",
     "request/context",
@@ -69,7 +70,8 @@ mod tests {
         assert!(is_known_session_event_type("assistant/chunk"));
         assert!(is_known_session_event_type("session/end-seed"));
         assert!(!is_known_session_event_type("made/up-type"));
-        assert_eq!(KNOWN_SESSION_EVENT_TYPES.len(), 44);
+        assert!(is_known_session_event_type("model/selection"));
+        assert_eq!(KNOWN_SESSION_EVENT_TYPES.len(), 45);
     }
 
     #[test]

@@ -5718,8 +5718,45 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					"line": 57,
 					"column": 3
 				}
-			}]
-		};
+				}, {
+				id: "@deepseek-ai/dsh-host-plugin-inventory#pluginInventory/setEnabled",
+				service: "pluginInventory",
+				namespace: "pluginInventory",
+				method: "setEnabled",
+				invocation: { kind: "direct" },
+				parameters: [{
+					name: "request",
+					wire: "request",
+					source: "json",
+					codec: {
+						mode: "strict",
+						typeSymbol: "@deepseek-ai/dsh-host-plugin-inventory/types#PluginSetEnabledRequest",
+						schema: object({
+							"entryId": string().readonly(),
+							"enabled": boolean().readonly()
+						})
+					}
+				}],
+				result: {
+					mode: "strict",
+					typeSymbol: "@deepseek-ai/dsh-host-plugin-inventory/types#PluginSetEnabledResult",
+					schema: object({ "entry": object({
+						"entryId": string().readonly(),
+						"moduleName": string().readonly(),
+						"enabled": boolean().readonly(),
+						"fiberPhase": union([
+							literal(null), literal("failed"), literal("pending"),
+							literal("active"), literal("loading"), literal("unloading")
+						]).readonly()
+					}).readonly() })
+				},
+				sourceLocation: {
+					"file": "packages/host/plugin-inventory/src/index.ts",
+					"line": 58,
+					"column": 3
+				}
+				}]
+				};
 		//#endregion
 		//#region ../../feedback/message-feedback/lib/typert.remote-client.js
 		const _deepseek_ai_dsh_message_feedback_messageFeedback_delete_parameter_0$schema = object({

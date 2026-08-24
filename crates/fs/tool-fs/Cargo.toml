@@ -1,0 +1,27 @@
+[package]
+name = "dsh-tool-fs"
+version = "0.1.0-rc.8"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-fs = { path = "../fs" }
+dsh-fs-observation-policy = { path = "../fs-observation-policy" }
+dsh-agent = { path = "../../core/agent" }
+dsh-llm = { path = "../../core/llm" }
+dsh-tools = { path = "../../core/tools" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-schemastery = { path = "../../vendor/schemastery" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+dsh-agent = { path = "../../core/agent" }
+dsh-fs-local = { path = "../fs-local" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+tokio = { workspace = true }
+uuid = { workspace = true }

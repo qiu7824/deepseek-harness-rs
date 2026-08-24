@@ -249,23 +249,21 @@ fn locate_entry(text: &str, reference: &str) -> Option<EntrySpan> {
         let trimmed = line.trim_start();
         let blank_or_meta =
             trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("---");
-        if !blank_or_meta {
-            if let Some(key) = plain_key_of(line) {
-                if let Some(span) = pending.take() {
-                    if span.key == reference {
-                        return Some(span);
-                    }
-                }
-                let colon = line.find(':').expect("key line has colon");
-                pending = Some(EntrySpan {
-                    key,
-                    start: offset,
-                    key_end: offset + colon + 1,
-                    end: offset + line.len(),
-                });
-                offset += line.len();
-                continue;
+        if !blank_or_meta && let Some(key) = plain_key_of(line) {
+            if let Some(span) = pending.take()
+                && span.key == reference
+            {
+                return Some(span);
             }
+            let colon = line.find(':').expect("key line has colon");
+            pending = Some(EntrySpan {
+                key,
+                start: offset,
+                key_end: offset + colon + 1,
+                end: offset + line.len(),
+            });
+            offset += line.len();
+            continue;
         }
         // Indented non-comment lines extend the pending entry's value span
         // (block scalars and folded quoted scalars); blank and comment lines
@@ -400,9 +398,7 @@ mod tests {
             ("DSH_CRED_TEST: one\nDSH_CRED_TEST: two\n", "DUPLICATE_KEY"),
             ("DSH_CRED_TEST: \"unterminated\n", "invalid document"),
         ] {
-            let error = parse_credentials_document(text, "f.yaml")
-                .err()
-                .expect("rejects");
+            let error = parse_credentials_document(text, "f.yaml").expect_err("rejects");
             assert!(error.contains(needle), "{text:?} -> {error}");
         }
     }

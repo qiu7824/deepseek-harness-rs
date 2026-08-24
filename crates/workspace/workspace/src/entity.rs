@@ -69,10 +69,6 @@ pub trait WorkspaceEntityHost: Send + Sync {
     fn remember_session_path(&self, id: &SessionId, path: &str);
 }
 
-/// Chain-slot abort sentinel (the TS `unchangedSentinel`): `mutate` only
-/// observes it.
-pub(crate) struct UnchangedSentinel;
-
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -215,15 +211,14 @@ impl WorkspaceEntity {
                     record.path
                 ));
             }
-            if let Some(anchor) = &before_session_id {
-                if !record.session_ids.contains(anchor) {
+            if let Some(anchor) = &before_session_id
+                && !record.session_ids.contains(anchor) {
                     return Err(format!(
                         "cannot move session '{session_id}' before '{anchor}' in workspace '{}': \
                          the anchor session is not accounted",
                         record.path
                     ));
                 }
-            }
             if before_session_id.as_ref() == Some(&session_id) {
                 return Ok(None);
             }
@@ -303,7 +298,7 @@ impl WorkspaceEntity {
                     .cloned()
                     .collect();
                 if changed == current && session_ids.len() == current.session_ids.len() {
-                    std::panic::panic_any(UnchangedSentinel);
+                    return current_value;
                 }
                 let mut next = changed;
                 next.session_ids = session_ids;
@@ -324,10 +319,7 @@ impl WorkspaceEntity {
             Ok(Err(error)) => Err(error),
             Err(payload) => match payload.downcast::<String>() {
                 Ok(message) => Err(*message),
-                Err(payload) => match payload.downcast::<UnchangedSentinel>() {
-                    Ok(_) => Ok(()),
-                    Err(payload) => std::panic::resume_unwind(payload),
-                },
+                Err(payload) => std::panic::resume_unwind(payload),
             },
         }
     }

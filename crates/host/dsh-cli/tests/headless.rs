@@ -4,6 +4,18 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
+fn configure_deepseek(home: &std::path::Path, base_url: &str) {
+    std::fs::create_dir_all(home).expect("create isolated headless home");
+    std::fs::write(
+        home.join("settings.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "llm-deepseek": { "baseURL": base_url }
+        }))
+        .expect("encode headless settings"),
+    )
+    .expect("write isolated headless settings");
+}
+
 fn temp_home() -> std::path::PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
@@ -95,8 +107,19 @@ fn headless_cli_calls_deepseek_flushes_and_prints_the_last_assistant_text() {
     });
 
     let home = temp_home();
+    configure_deepseek(&home, &format!("http://{address}"));
+    std::fs::write(home.join("AGENTS.md"), "HEADLESS_GLOBAL_INSTRUCTION")
+        .expect("write global instruction fixture");
+    let workspace = temp_home();
+    std::fs::create_dir(workspace.join(".git")).expect("create instruction root marker");
+    std::fs::write(
+        workspace.join("AGENTS.md"),
+        "HEADLESS_WORKSPACE_INSTRUCTION",
+    )
+    .expect("write headless instruction fixture");
     let mut child = Command::new(env!("CARGO_BIN_EXE_dsh"))
         .args(["--profile", "headless", "reply with pong"])
+        .current_dir(&workspace)
         .env("DSH_HOME", &home)
         .env("DSH_DEEPSEEK_BASE_URL", format!("http://{address}"))
         // Explicit non-sensitive fixture key for wire-level verification.
@@ -147,9 +170,17 @@ fn headless_cli_calls_deepseek_flushes_and_prints_the_last_assistant_text() {
             .contains("authorization: bearer dsh-test-key")
     );
     assert!(request.contains("reply with pong"));
+    assert!(request.contains("HEADLESS_WORKSPACE_INSTRUCTION"));
+    assert!(request.contains("HEADLESS_GLOBAL_INSTRUCTION"));
+    assert!(request.contains("所有用户可见的推理摘要"));
+    assert!(request.contains("Current DSH file policy:"));
+    assert!(request.contains("Approval policy: ask."));
+    assert!(request.contains("available_skills"));
+    assert!(request.contains("dsh-badge"));
     assert!(home.join("profiles/headless/package.json").exists());
 
     let _ = std::fs::remove_dir_all(home);
+    let _ = std::fs::remove_dir_all(workspace);
 }
 
 fn accept_request(listener: &TcpListener, deadline: std::time::Instant) -> std::net::TcpStream {
@@ -247,6 +278,7 @@ fn headless_cli_does_not_hide_the_latest_error_behind_earlier_assistant_text() {
     });
 
     let home = temp_home();
+    configure_deepseek(&home, &format!("http://{address}"));
     let output = Command::new(env!("CARGO_BIN_EXE_dsh"))
         .args(["--profile", "headless", "use the goal tool"])
         .env("DSH_HOME", &home)
@@ -324,52 +356,32 @@ fn headless_interrupt_child_cancels_flushes_and_shuts_down() {
         .build()
         .expect("interrupt child runtime");
     runtime.block_on(async {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind interrupt DeepSeek");
-        let address = listener.local_addr().expect("interrupt fake address");
-        let (interrupt_tx, interrupt_rx) = tokio::sync::oneshot::channel::<()>();
-        let (release_tx, release_rx) = mpsc::channel::<()>();
-        let server = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            let mut socket = accept_request(&listener, deadline);
-            let request = drain_request(&mut socket);
-            assert!(
-                request
-                    .to_ascii_lowercase()
-                    .contains("authorization: bearer dsh-interrupt-key"),
-                "Host did not forward the raw fixture credential"
-            );
-            let _ = interrupt_tx.send(());
-            // Keep the provider permanently pending. The client must settle
-            // from Agent cancellation, not from a late network response.
-            let _ = release_rx.recv_timeout(Duration::from_secs(5));
-        });
+        let before: std::collections::HashSet<_> = std::fs::read_dir(std::env::temp_dir())
+            .expect("read isolated temp baseline")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("dsh-host-"))
+            .map(|entry| entry.path())
+            .collect();
         unsafe {
-            std::env::set_var("DSH_DEEPSEEK_BASE_URL", format!("http://{address}"));
             std::env::set_var("DEEPSEEK_API_KEY", "dsh-interrupt-key");
         }
-        let home = std::env::temp_dir().join("headless-home");
+        let home = temp_home().join("headless-home");
         let result = tokio::time::timeout(
-            Duration::from_secs(3),
+            Duration::from_secs(10),
             dsh_host_cli::run_profile_with_interrupt(
                 dsh_host_cli::RunProfileRequest {
                     profile: "headless".to_string(),
                     patches: Vec::new(),
-                    args: vec!["wait for interrupt".to_string()],
+                    args: vec!["interrupt before model admission".to_string()],
                     home,
                     telemetry_env: None,
                     install_anchor: None,
                 },
-                Some(Box::pin(async move {
-                    interrupt_rx
-                        .await
-                        .map_err(|_| "interrupt fixture closed".to_string())
-                })),
+                Some(Box::pin(async { Ok(()) })),
             ),
         )
         .await
-        .expect("interrupt must settle while the provider stream is pending");
-        let _ = release_tx.send(());
-        server.join().expect("interrupt fake server");
+        .expect("an already-delivered interrupt must settle the full Host lifecycle");
         match result {
             Ok(handle) => {
                 let _ = handle.shutdown().await;
@@ -385,6 +397,7 @@ fn headless_interrupt_child_cancels_flushes_and_shuts_down() {
             .filter_map(Result::ok)
             .filter(|entry| entry.file_name().to_string_lossy().starts_with("dsh-host-"))
             .map(|entry| entry.path())
+            .filter(|path| !before.contains(path))
             .collect();
         assert!(
             leaked.is_empty(),

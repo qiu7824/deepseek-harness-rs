@@ -435,15 +435,15 @@ impl JsonlSessionPersistence {
         meta: &SessionHeader,
         expected_id: Option<&SessionId>,
     ) -> Result<(), String> {
-        if let Some(expected_id) = expected_id {
-            if meta.id != *expected_id {
-                return Err(format!(
-                    "corrupt session log \"{}\": requested id \"{}\" does not match header id \"{}\"",
-                    path.to_string_lossy(),
-                    expected_id.as_str(),
-                    meta.id.as_str()
-                ));
-            }
+        if let Some(expected_id) = expected_id
+            && meta.id != *expected_id
+        {
+            return Err(format!(
+                "corrupt session log \"{}\": requested id \"{}\" does not match header id \"{}\"",
+                path.to_string_lossy(),
+                expected_id.as_str(),
+                meta.id.as_str()
+            ));
         }
         let expected_path = log_path(
             &self.root.to_string_lossy(),
@@ -471,6 +471,15 @@ impl JsonlSessionPersistence {
     }
 
     // ---- file mechanics ----
+
+    async fn existing_materialization_matches(
+        &self,
+        path: &Path,
+        expected_content: &[u8],
+    ) -> Result<bool, String> {
+        let (content, _) = self.read_stable_file(path).await?;
+        Ok(content == expected_content)
+    }
 
     async fn materialize(
         &self,
@@ -505,8 +514,14 @@ impl JsonlSessionPersistence {
             .await
             .map_err(|e| e.to_string())?;
         if self.exists(&final_path).await {
+            if self
+                .existing_materialization_matches(&final_path, &content)
+                .await?
+            {
+                return Ok(());
+            }
             return Err(format!(
-                "refusing to materialize \"{}\": a log already exists on disk (load/resume it instead)",
+                "refusing to materialize \"{}\": a different log already exists on disk (load/resume it instead)",
                 meta.id.as_str()
             ));
         }
@@ -523,6 +538,13 @@ impl JsonlSessionPersistence {
             Ok(()) => {}
             Err(error) => {
                 let _ = tokio::fs::remove_file(&tmp).await;
+                if self.exists(&final_path).await
+                    && self
+                        .existing_materialization_matches(&final_path, &content)
+                        .await?
+                {
+                    return Ok(());
+                }
                 return Err(format!(
                     "failed to publish materialized session \"{}\" at \"{}\": {error}",
                     meta.id.as_str(),
@@ -735,6 +757,9 @@ impl JsonlSessionPersistence {
                 let Some(meta) = parse_header_meta(&first) else {
                     continue;
                 };
+                if meta.version != dsh_session::SESSION_FORMAT_VERSION {
+                    continue;
+                }
                 self.assert_stored_identity(&path, &meta, None).await?;
                 if !ids.insert(meta.id.clone()) {
                     return Err(format!(
@@ -826,6 +851,10 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         self.coordinator().append(id, events).await
     }
 
+    async fn delete(&self, id: &SessionId) -> Result<bool, String> {
+        self.coordinator().delete(id).await
+    }
+
     async fn prepare(&self, id: &SessionId) -> Result<SessionPreparation, String> {
         self.coordinator().prepare(id).await
     }
@@ -914,6 +943,28 @@ impl PersistenceBackend<JsonlTornMarker> for JsonlSessionPersistence {
             Ok(metadata) => Ok(Some(file_revision(&metadata))),
             Err(error) if is_not_found(&error) => Ok(None),
             Err(error) => Err(error.to_string()),
+        }
+    }
+
+    async fn delete_stored(&self, id: &SessionId) -> Result<bool, String> {
+        self.ensure_root_encoding().await?;
+        let Some(path) = self.find_log(id).await? else {
+            return Ok(false);
+        };
+        let directory = path.parent().ok_or_else(|| {
+            format!(
+                "session artifact has no parent directory: {}",
+                path.display()
+            )
+        })?;
+        match tokio::fs::remove_dir_all(directory).await {
+            Ok(()) => Ok(true),
+            Err(error) if is_not_found(&error) => Ok(false),
+            Err(error) => Err(format!(
+                "failed to permanently delete session \"{}\" at \"{}\": {error}",
+                id.as_str(),
+                directory.display()
+            )),
         }
     }
 
@@ -1147,6 +1198,38 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn list_hides_future_format_artifacts_but_direct_inspection_refuses_them() {
+        let root = temp_root("future-format");
+        let ctx = Context::root();
+        let _store = SessionStore::install(&ctx);
+        let backend =
+            JsonlSessionPersistence::install(&ctx, config(&root, JsonlCompression::Zstd)).unwrap();
+        let mut future = header("future", 1, None);
+        future.version = dsh_session::SESSION_FORMAT_VERSION + 1;
+        backend.create(future).await.unwrap();
+        backend
+            .append(&session_id("future"), &[turn_event(0, 1)])
+            .await
+            .unwrap();
+
+        let listed = SessionPersistenceApi::list(backend.as_ref()).await.unwrap();
+        assert!(
+            listed.is_empty(),
+            "future artifacts are not openable list entries"
+        );
+        let refusal = backend.inspect(&session_id("future")).await.unwrap_err();
+        assert!(refusal.contains("written by a newer harness"), "{refusal}");
+        assert!(
+            backend
+                .find_log(&session_id("future"))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn torn_tail_is_truncated_and_repaired() {
         let root = temp_root("torn");
         let ctx = Context::root();
@@ -1222,6 +1305,30 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(path.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn identical_materialization_is_idempotent_but_different_content_rejects() {
+        let root = temp_root("materialize-race");
+        let ctx = Context::root();
+        let _store = SessionStore::install(&ctx);
+        let backend =
+            JsonlSessionPersistence::install(&ctx, config(&root, JsonlCompression::Zstd)).unwrap();
+        let meta = header("race", 1, Some("C:\\work"));
+        let events = vec![turn_event(0, 1), user_event(1)];
+
+        backend.materialize(&meta, &events).await.unwrap();
+        backend
+            .materialize(&meta, &events)
+            .await
+            .expect("an identical winning artifact is an idempotent publish");
+
+        let error = backend
+            .materialize(&meta, &[turn_event(0, 2)])
+            .await
+            .expect_err("different materialization must remain a collision");
+        assert!(error.contains("different log already exists"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

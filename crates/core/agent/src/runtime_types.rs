@@ -282,7 +282,10 @@ pub trait AgentSetupCommit: Send + Sync {
 
 /// Compose an unpublished Agent scope (TS `AgentSetup`).
 pub type AgentSetup = Arc<
-    dyn Fn(&Context) -> BoxFuture<'static, Result<Option<Arc<dyn AgentSetupCommit>>, String>>
+    dyn Fn(
+            &Context,
+            Arc<dyn Agent>,
+        ) -> BoxFuture<'static, Result<Option<Arc<dyn AgentSetupCommit>>, String>>
         + Send
         + Sync,
 >;
@@ -335,6 +338,16 @@ impl std::fmt::Debug for AgentHandle {
 /// registry.
 #[async_trait::async_trait]
 pub trait AgentFactory: Send + Sync + 'static {
+    /// Whether this factory structurally owns the exact live Agent lifecycle.
+    fn can_retire(&self, _agent: &Arc<dyn Agent>) -> bool {
+        false
+    }
+
+    /// Retire one exact Agent through its structural factory owner.
+    async fn retire(&self, _agent: Arc<dyn Agent>) -> Result<bool, String> {
+        Ok(false)
+    }
+
     /// Create a new agent on a caller-supplied session id.
     async fn create_agent(
         &self,

@@ -33,9 +33,40 @@ pub struct Inbox {
     session: Session,
     notifications: InboxNotifications,
     state: Mutex<InboxState>,
+    mutation_owner: Mutex<Option<std::thread::ThreadId>>,
+    mutation_released: parking_lot::Condvar,
+}
+
+struct MutationGuard<'a>(&'a Inbox);
+
+impl Drop for MutationGuard<'_> {
+    fn drop(&mut self) {
+        *self.0.mutation_owner.lock() = None;
+        self.0.mutation_released.notify_one();
+    }
 }
 
 impl Inbox {
+    fn begin_mutation(&self) -> Result<MutationGuard<'_>, String> {
+        let current = std::thread::current().id();
+        let mut owner = self.mutation_owner.lock();
+        loop {
+            match *owner {
+                None => {
+                    *owner = Some(current);
+                    return Ok(MutationGuard(self));
+                }
+                Some(active) if active == current => {
+                    return Err(
+                        "inbox mutation cannot reenter while another mutation is being published"
+                            .to_string(),
+                    );
+                }
+                Some(_) => self.mutation_released.wait(&mut owner),
+            }
+        }
+    }
+
     /// Create the projection and replay the durable inbox splices from the
     /// seed boundary.
     pub fn new(session: &Session, notifications: InboxNotifications) -> Result<Inbox, String> {
@@ -43,6 +74,8 @@ impl Inbox {
             session: session.clone(),
             notifications,
             state: Mutex::new(InboxState::default()),
+            mutation_owner: Mutex::new(None),
+            mutation_released: parking_lot::Condvar::new(),
         };
         let seed_length = session.header().seed_length.unwrap_or(0) as usize;
         for event in session.events().iter().skip(seed_length) {
@@ -86,18 +119,32 @@ impl Inbox {
     /// Durably cancel all pending input, clearing next-step before
     /// next-turn.
     pub fn clear(&self) -> Result<(), String> {
+        let _mutation = self.begin_mutation()?;
         let next_step_len = self.state.lock().next_step.len();
-        self.splice(InboxTarget::NextStep, 0.0, next_step_len as f64, Vec::new())?;
+        self.mutate_locked(
+            InboxTarget::NextStep,
+            0.0,
+            next_step_len as f64,
+            Vec::new(),
+            true,
+        )?;
         let next_turn_len = self.state.lock().next_turn.len();
-        self.splice(InboxTarget::NextTurn, 0.0, next_turn_len as f64, Vec::new())?;
+        self.mutate_locked(
+            InboxTarget::NextTurn,
+            0.0,
+            next_turn_len as f64,
+            Vec::new(),
+            true,
+        )?;
         Ok(())
     }
 
     /// Remove and return the complete batch proposed for one step,
     /// publishing each claimed message (TS `Inbox.claim`).
     pub fn claim(&self, target: InboxTarget, turn: u64) -> Result<Vec<UserMessage>, String> {
+        let _mutation = self.begin_mutation()?;
         let step_len = self.state.lock().next_step.len();
-        let mut claimed = self.mutate(
+        let mut claimed = self.mutate_locked(
             InboxTarget::NextStep,
             0.0,
             step_len as f64,
@@ -105,7 +152,13 @@ impl Inbox {
             false,
         )?;
         if target == InboxTarget::NextTurn {
-            claimed.extend(self.mutate(InboxTarget::NextTurn, 0.0, 1.0, Vec::new(), false)?);
+            claimed.extend(self.mutate_locked(
+                InboxTarget::NextTurn,
+                0.0,
+                1.0,
+                Vec::new(),
+                false,
+            )?);
         }
         if let Some(notify) = &self.notifications.claimed {
             for message in &claimed {
@@ -118,15 +171,17 @@ impl Inbox {
     /// Append one message to a pending list and durably record the
     /// insertion.
     pub fn append(&self, target: InboxTarget, message: UserMessage) -> Result<(), String> {
+        let _mutation = self.begin_mutation()?;
         let length = self.list_len(target);
-        self.splice(target, length as f64, 0.0, vec![message])?;
+        self.mutate_locked(target, length as f64, 0.0, vec![message], true)?;
         Ok(())
     }
 
     /// Prepend one message to a pending list and durably record the
     /// insertion.
     pub fn prepend(&self, target: InboxTarget, message: UserMessage) -> Result<(), String> {
-        self.splice(target, 0.0, 0.0, vec![message])?;
+        let _mutation = self.begin_mutation()?;
+        self.mutate_locked(target, 0.0, 0.0, vec![message], true)?;
         Ok(())
     }
 
@@ -136,24 +191,33 @@ impl Inbox {
         message_id: &MessageId,
         new_message: UserMessage,
     ) -> Result<bool, String> {
+        let _mutation = self.begin_mutation()?;
         let Some(location) = self.locate(message_id) else {
             return Ok(false);
         };
-        self.splice(
+        self.mutate_locked(
             location.target,
             location.index as f64,
             1.0,
             vec![new_message],
+            true,
         )?;
         Ok(true)
     }
 
     /// Remove one pending message and durably record its cancellation.
     pub fn remove(&self, message_id: &MessageId) -> Result<bool, String> {
+        let _mutation = self.begin_mutation()?;
         let Some(location) = self.locate(message_id) else {
             return Ok(false);
         };
-        self.splice(location.target, location.index as f64, 1.0, Vec::new())?;
+        self.mutate_locked(
+            location.target,
+            location.index as f64,
+            1.0,
+            Vec::new(),
+            true,
+        )?;
         Ok(true)
     }
 
@@ -166,7 +230,8 @@ impl Inbox {
         delete_count: f64,
         inserted: Vec<UserMessage>,
     ) -> Result<Vec<UserMessage>, String> {
-        self.mutate(target, start, delete_count, inserted, true)
+        let _mutation = self.begin_mutation()?;
+        self.mutate_locked(target, start, delete_count, inserted, true)
     }
 
     fn list_len(&self, target: InboxTarget) -> usize {
@@ -206,7 +271,7 @@ impl Inbox {
     /// Commit one normalized mutation and publish its live notifications
     /// (TS `Inbox.mutate`). The durable event commits BEFORE the live
     /// projection mutates.
-    fn mutate(
+    fn mutate_locked(
         &self,
         target: InboxTarget,
         start: f64,
@@ -273,11 +338,9 @@ impl Inbox {
             )
             .collect()
         };
-        if discard_removed {
-            if let Some(notify) = &self.notifications.discarded {
-                for message in &removed {
-                    notify(message);
-                }
+        if discard_removed && let Some(notify) = &self.notifications.discarded {
+            for message in &removed {
+                notify(message);
             }
         }
         if let Some(notify) = &self.notifications.inserted {
@@ -389,6 +452,43 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_appends_serialize_durable_and_projected_order() {
+        let session = Session::create(session_id("concurrent-inbox"), None, None).unwrap();
+        let inbox = Arc::new(Inbox::new(&session, InboxNotifications::default()).unwrap());
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for id in ["m1", "m2"] {
+            let inbox = Arc::clone(&inbox);
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                inbox.append(InboxTarget::NextTurn, message(id)).unwrap();
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let projected: Vec<String> = inbox
+            .next_turn()
+            .iter()
+            .map(|message| message.id.as_str().to_string())
+            .collect();
+        let durable: Vec<String> = session
+            .events()
+            .iter()
+            .map(|event| {
+                event.data["inserted"][0]["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(projected.len(), 2);
+        assert_eq!(durable, projected);
+    }
+
+    #[test]
     fn splice_logs_before_mutation() {
         let session = Session::create(session_id("s1"), None, None).unwrap();
         let inbox = Inbox::new(&session, InboxNotifications::default()).unwrap();
@@ -441,10 +541,9 @@ mod tests {
                 .unwrap()
         );
         assert!(
-            inbox
+            !inbox
                 .replace(&dsh_llm::message_id("gone"), message("x"))
                 .unwrap()
-                == false
         );
         assert_eq!(inbox.next_turn()[0].id.as_str(), "new");
         assert_eq!(&*discarded.lock(), &["old"]);

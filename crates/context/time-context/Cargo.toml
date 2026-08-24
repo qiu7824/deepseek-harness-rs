@@ -1,6 +1,6 @@
 [package]
 name = "dsh-time-context"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Opt-in durable per-step context with the current time and elapsed time — Rust port of @deepseek-ai/dsh-time-context"

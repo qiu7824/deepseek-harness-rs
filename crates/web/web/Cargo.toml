@@ -1,0 +1,17 @@
+[package]
+name = "dsh-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Provider-neutral web capability runtime"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+cordis = { path = "../../vendor/cordis" }
+parking_lot.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

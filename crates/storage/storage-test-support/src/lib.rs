@@ -27,15 +27,6 @@ pub struct MemoryMedium {
     pub global: JsonValue,
 }
 
-impl MemoryMedium {
-    fn new() -> Self {
-        Self {
-            tables: HashMap::new(),
-            global: JsonValue::Null,
-        }
-    }
-}
-
 /// Shared media pool (TS `MemoryMediaPool`).
 pub struct MemoryMediaPool {
     /// Unit name → its records; a missing entry is a never-materialized
@@ -141,9 +132,7 @@ impl KvUnit for MemoryKvUnit {
         self.assert_open()?;
         self.pool.consume_injected_failure()?;
         let mut media = self.pool.media.lock();
-        let medium = media
-            .entry(self.descriptor.name.clone())
-            .or_insert_with(MemoryMedium::new);
+        let medium = media.entry(self.descriptor.name.clone()).or_default();
         medium
             .tables
             .entry(table.to_string())
@@ -156,10 +145,10 @@ impl KvUnit for MemoryKvUnit {
         self.assert_open()?;
         self.pool.consume_injected_failure()?;
         let mut media = self.pool.media.lock();
-        if let Some(medium) = media.get_mut(&self.descriptor.name) {
-            if let Some(records) = medium.tables.get_mut(table) {
-                records.remove(key);
-            }
+        if let Some(medium) = media.get_mut(&self.descriptor.name)
+            && let Some(records) = medium.tables.get_mut(table)
+        {
+            records.remove(key);
         }
         Ok(())
     }
@@ -168,9 +157,7 @@ impl KvUnit for MemoryKvUnit {
         self.assert_open()?;
         self.pool.consume_injected_failure()?;
         let mut media = self.pool.media.lock();
-        let medium = media
-            .entry(self.descriptor.name.clone())
-            .or_insert_with(MemoryMedium::new);
+        let medium = media.entry(self.descriptor.name.clone()).or_default();
         medium.global = value;
         Ok(())
     }
@@ -229,9 +216,7 @@ impl KvFacet for MemoryKvFacet {
         }
         {
             let mut media = self.pool.media.lock();
-            media
-                .entry(descriptor.name.clone())
-                .or_insert_with(MemoryMedium::new);
+            media.entry(descriptor.name.clone()).or_default();
         }
         self.open_units.lock().insert(descriptor.name.clone());
         let pool = self.pool.clone();

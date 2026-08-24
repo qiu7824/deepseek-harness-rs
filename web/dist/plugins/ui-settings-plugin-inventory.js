@@ -60,21 +60,50 @@ window.__ModuleLoader__.load({
 			return [entry.moduleName, entry.entryId].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
 		}
 		/** Render the read-only current Loader inventory. */
-		function PluginInventorySettingsTab({ list, t }) {
+		function PluginInventorySettingsTab({ list, setEnabled, t }) {
 			const catalogId = (0, react.useId)();
 			const [request, setRequest] = (0, react.useState)(0);
 			const [query, setQuery] = (0, react.useState)("");
 			const [expanded, setExpanded] = (0, react.useState)(null);
+			const [changing, setChanging] = (0, react.useState)(null);
+			const [actionError, setActionError] = (0, react.useState)(null);
 			const [state, setState] = (0, react.useState)({ status: "loading" });
+			const toggle = async (entry) => {
+				setChanging(entry.entryId);
+				setActionError(null);
+				try {
+					await setEnabled(entry.entryId, !entry.enabled);
+					setRequest((value) => value + 1);
+				} catch {
+					setActionError(entry.entryId);
+				} finally {
+					setChanging(null);
+				}
+			};
 			(0, react.useEffect)(() => {
 				let current = true;
-				Promise.resolve().then(() => list()).then((snapshot) => {
+				const read = async () => {
+					let last;
+					for (let attempt = 0; attempt < 3; attempt += 1) {
+						try {
+							return await list();
+						} catch (error) {
+							last = error;
+							if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+						}
+					}
+					throw last;
+				};
+				Promise.resolve().then(read).then((snapshot) => {
 					if (current) setState({
 						status: "ready",
 						snapshot
 					});
-				}, () => {
-					if (current) setState({ status: "error" });
+				}, (error) => {
+					if (current) setState({
+						status: "error",
+						message: error instanceof Error ? error.message : String(error)
+					});
 				});
 				return () => {
 					current = false;
@@ -101,7 +130,7 @@ window.__ModuleLoader__.load({
 						className: PluginInventorySettingsTab_module_css_default.failure,
 						children: [(0, react_jsx_runtime.jsx)("p", {
 							role: "alert",
-							children: t("error")
+							children: `${t("error")} ${state.message}`
 						}), (0, react_jsx_runtime.jsx)("button", {
 							type: "button",
 							onClick: retry,
@@ -202,7 +231,17 @@ window.__ModuleLoader__.load({
 											}), (0, react_jsx_runtime.jsxs)("dl", {
 												className: PluginInventorySettingsTab_module_css_default.details,
 												children: [(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("dt", { children: t("configuration") }), (0, react_jsx_runtime.jsx)("dd", { children: configuration })] }), entry.enabled ? (0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("dt", { children: t("cordis") }), (0, react_jsx_runtime.jsx)("dd", { children: status })] }) : null]
-											})]
+											}), (0, react_jsx_runtime.jsx)("button", {
+												type: "button",
+												disabled: changing === entry.entryId,
+												"data-plugin-toggle": entry.entryId,
+												onClick: () => toggle(entry),
+												children: changing === entry.entryId ? t("saving") : t(entry.enabled ? "disable" : "enable")
+											}), actionError === entry.entryId ? (0, react_jsx_runtime.jsx)("p", {
+												role: "alert",
+												className: PluginInventorySettingsTab_module_css_default.failure,
+												children: t("actionError")
+											}) : null]
 										}) : null]
 									}, entry.entryId);
 								})
@@ -227,6 +266,10 @@ window.__ModuleLoader__.load({
 			emptySearch: "没有匹配的插件。",
 			enabledTag: "已启用",
 			disabledTag: "已停用",
+			enable: "启用",
+			disable: "停用",
+			saving: "正在保存…",
+			actionError: "插件状态保存失败。",
 			configuration: "配置状态",
 			cordis: "Cordis 状态",
 			unobserved: "未挂载",
@@ -248,6 +291,10 @@ window.__ModuleLoader__.load({
 			emptySearch: "No matching plugins.",
 			enabledTag: "Enabled",
 			disabledTag: "Disabled",
+			enable: "Enable",
+			disable: "Disable",
+			saving: "Saving…",
+			actionError: "Failed to save the plugin state.",
 			configuration: "Configuration",
 			cordis: "Cordis status",
 			unobserved: "Not mounted",
@@ -281,7 +328,12 @@ window.__ModuleLoader__.load({
 				if (!result.ok) throw new Error(`pluginInventory.list failed: ${result.error.code}: ${result.error.message}`);
 				return result.value;
 			};
-			const injected = () => ({ list });
+			const setEnabled = async (entryId, enabled) => {
+				const result = await ctx.remote.pluginInventory.setEnabled({ entryId, enabled });
+				if (!result.ok) throw new Error(`pluginInventory.setEnabled failed: ${result.error.code}: ${result.error.message}`);
+				return result.value;
+			};
+			const injected = () => ({ list, setEnabled });
 			ctx.slots.inject("settings.plugins.tab", () => ctx.slots.register({
 				name: "settings.plugins.tab",
 				id: "all",

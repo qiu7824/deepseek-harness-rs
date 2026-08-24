@@ -1,6 +1,6 @@
 [package]
 name = "dsh-jobs-local"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Process-local provider for the background-job seam (ctx.jobs): in-memory records, fresh snapshots, scope-layered controllers and listeners — Rust port of @deepseek-ai/dsh-jobs-local"

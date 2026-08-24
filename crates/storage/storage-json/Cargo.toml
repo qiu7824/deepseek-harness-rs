@@ -1,6 +1,6 @@
 [package]
 name = "dsh-storage-json"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "JSON storage backend: one human-readable file per unit, published by atomic whole-file rewrite: Rust port of @deepseek-ai/dsh-storage-json"

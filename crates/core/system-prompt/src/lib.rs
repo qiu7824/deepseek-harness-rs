@@ -576,10 +576,7 @@ impl SystemPrompt {
         let change_ctx = ctx.clone();
         let service = Arc::new(Self {
             ctx: ctx.clone(),
-            layers: ScopedLayers::new(
-                |scope| PromptLayer::new(scope),
-                move || emit_change_inline(&change_ctx),
-            ),
+            layers: ScopedLayers::new(PromptLayer::new, move || emit_change_inline(&change_ctx)),
             tool_order,
         });
         ctx.register_service(service.clone());
@@ -1279,7 +1276,7 @@ mod tests {
             ) -> Result<(), cordis::PluginError> {
                 let service: Arc<Arc<SystemPrompt>> = ctx.get_typed("systemPrompt", false).unwrap();
                 service.section(
-                    &ctx,
+                    ctx,
                     PromptSection {
                         name: "scoped".into(),
                         order: 0.0,
@@ -1288,7 +1285,7 @@ mod tests {
                     },
                 );
                 service.context(
-                    &ctx,
+                    ctx,
                     PromptContext {
                         name: "scoped-context".into(),
                         order: 0.0,
@@ -1296,13 +1293,13 @@ mod tests {
                     },
                 );
                 service.tools(
-                    &ctx,
+                    ctx,
                     Arc::new(|_ctx| ToolProviderResult {
                         schemas: vec![tool("scoped-tool", "")],
                         known_names: None,
                     }),
                 );
-                service.variable(&ctx, "scoped_var", Arc::new(|_ctx| Some("v".to_string())));
+                service.variable(ctx, "scoped_var", Arc::new(|_ctx| Some("v".to_string())));
                 Ok(())
             }
         }

@@ -1,6 +1,6 @@
 [package]
 name = "dsh-host-apiproxy"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Host API gateway: four-quadrant RPC message model and the 54-method wire registry. Rust port of @deepseek-ai/dsh-host-apiproxy (contract layer first)"
@@ -12,13 +12,20 @@ dsh-agent-presets = { path = "../../preset/agent-presets" }
 dsh-attachment = { path = "../../attachment/attachment" }
 dsh-brand = { path = "../../util/brand" }
 dsh-credentials = { path = "../../credentials/credentials" }
+dsh-commands = { path = "../../interaction/commands" }
 dsh-goal = { path = "../../goal/goal" }
 dsh-host-directory-picker = { path = "../directory-picker" }
+dsh-host-plugin-inventory = { path = "../plugin-inventory" }
+dsh-cordis-loader = { path = "../../vendor/loader" }
+dsh-atomic-write = { path = "../../util/atomic-write" }
 dsh-llm = { path = "../../core/llm" }
+dsh-message-feedback = { path = "../../feedback/message-feedback" }
 dsh-native-command = { path = "../../util/native-command" }
 dsh-session = { path = "../../core/session" }
 dsh-session-persistence = { path = "../../session/session-persistence" }
 dsh-session-query = { path = "../../session/session-query" }
+dsh-session-projection = { path = "../../session/session-projection" }
+
 dsh-session-title = { path = "../../session/session-title" }
 dsh-settings = { path = "../../settings/settings" }
 dsh-skill = { path = "../../skill/skill" }
@@ -43,13 +50,14 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 [dev-dependencies]
 dsh-agent-presets = { path = "../../preset/agent-presets" }
 dsh-attachment = { path = "../../attachment/attachment" }
+dsh-attachment-local = { path = "../../attachment/attachment-local" }
 dsh-cordis-loader = { path = "../../vendor/loader" }
 dsh-credentials-local = { path = "../../credentials/credentials-local" }
 dsh-host-directory-picker-browse = { path = "../directory-picker-browse" }
 dsh-scope = { path = "../../core/scope" }
 dsh-session-persistence-jsonl = { path = "../../session/session-persistence-jsonl" }
+dsh-token-meter = { path = "../../llm/token-meter" }
 dsh-session-query = { path = "../../session/session-query" }
-dsh-session-projection = { path = "../../session/session-projection" }
 dsh-settings = { path = "../../settings/settings" }
 dsh-subagent = { path = "../../subagent/subagent" }
 dsh-storage = { path = "../../storage/storage" }

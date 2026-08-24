@@ -27,6 +27,12 @@ pub struct E2bBase64Decoder {
     complete: bool,
 }
 
+impl Default for E2bBase64Decoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl E2bBase64Decoder {
     pub fn new() -> Self {
         Self {
@@ -43,10 +49,7 @@ impl E2bBase64Decoder {
         }
         self.pending.push_str(text);
         let mut decoded: Vec<u8> = Vec::new();
-        loop {
-            let Some(boundary) = self.pending.find('\n') else {
-                break;
-            };
+        while let Some(boundary) = self.pending.find('\n') {
             let frame = self.pending[..boundary].to_string();
             self.pending.drain(..=boundary);
             if frame == E2B_OUTPUT_COMPLETE_FRAME {
@@ -163,9 +166,7 @@ impl dsh_subprocess::SubprocessOutputReader for E2bOutputReader {
         let start = if lossy {
             0
         } else {
-            (from_byte - first_retained)
-                .min(retained.len() as u64)
-                .max(0) as usize
+            (from_byte - first_retained).min(retained.len() as u64) as usize
         };
         let spill_path = if lossy
             && self.spill_valid

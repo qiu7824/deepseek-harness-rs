@@ -19,6 +19,11 @@ fn main() {
         "echo-err" => {
             let _ = std::io::stderr().write_all(args[1..].join(" ").as_bytes());
         }
+        "large-stdio" => {
+            let chunk = vec![b'x'; 1024 * 1024];
+            let _ = std::io::stdout().write_all(&chunk);
+            let _ = std::io::stderr().write_all(&chunk);
+        }
         "exit" => {
             let code: i32 = args
                 .get(1)

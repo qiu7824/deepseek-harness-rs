@@ -1,6 +1,6 @@
 [package]
 name = "dsh-tool-goal"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Model-facing same-session goal tools with execution-time authority checks — Rust port of @deepseek-ai/dsh-tool-goal"

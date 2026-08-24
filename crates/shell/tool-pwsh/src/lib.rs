@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
-use cordis::Context;
+use cordis::{Context, EventOptions, Listener, NextFn, arc, downcast_arc};
 use dsh_jobs::{JobHooks, JobOutcome, JobOutcomeStatus, JobRegistry, JobStart};
 use dsh_llm::ContentBlock;
 use dsh_sandbox_policy::{SandboxPolicyRequest, SandboxPolicyService};
 use dsh_shell::{ShellExecRequest, ShellExecutor, ShellProcess, ShellProcessStatus};
-use dsh_tools::{ToolBodyError, ToolDefinition, ToolOutputDefinition, ToolRunContext, ToolRuntime};
+use dsh_tools::{
+    PreToolDecision, ToolBodyError, ToolDefinition, ToolExecution, ToolOutputDefinition,
+    ToolRunContext, ToolRuntime,
+};
 use futures::future::BoxFuture;
 
 struct PwshJobHooks {
@@ -49,6 +52,17 @@ impl JobHooks for PwshJobHooks {
 
 pub struct ToolPwshService;
 
+pub fn removes_directory(command: &str) -> bool {
+    let normalized = command.to_ascii_lowercase();
+    normalized.contains("[system.io.directory]::delete")
+        || normalized.contains("[io.directory]::delete")
+        || normalized
+            .split(|character: char| {
+                character.is_whitespace() || character == ';' || character == '|'
+            })
+            .any(|token| matches!(token, "remove-item" | "ri" | "rm" | "rmdir" | "rd"))
+}
+
 impl ToolPwshService {
     pub fn install(ctx: &Context) -> Result<Arc<Self>, String> {
         let tools = ctx
@@ -66,6 +80,39 @@ impl ToolPwshService {
         let sandbox_policy = ctx
             .get_typed::<Arc<SandboxPolicyService>>("sandboxPolicy", false)
             .map(|slot| slot.as_ref().clone());
+
+        let approval_listener: Arc<Listener> = Arc::new(|_ctx, args| {
+            let execution = args
+                .first()
+                .and_then(|value| downcast_arc::<Arc<ToolExecution>>(value))
+                .map(|slot| slot.as_ref().clone());
+            let next = args.last().and_then(|value| downcast_arc::<NextFn>(value));
+            Box::pin(async move {
+                if let Some(execution) = execution
+                    && execution.name == "pwsh"
+                    && removes_directory(
+                        execution
+                            .arguments
+                            .get("command")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default(),
+                    )
+                {
+                    return Some(arc(PreToolDecision::Ask {
+                        reason: Some("删除文件夹需要用户确认".to_string()),
+                    }));
+                }
+                let Some(next) = next else {
+                    return Some(arc(PreToolDecision::Allow));
+                };
+                Some(next.call().await)
+            })
+        });
+        futures::executor::block_on(ctx.on(
+            "tools/pre-execute",
+            approval_listener,
+            EventOptions::default().global(true),
+        ));
 
         let execute_shell = shell.clone();
         let execute_jobs = jobs.clone();

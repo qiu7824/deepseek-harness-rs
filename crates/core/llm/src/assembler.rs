@@ -109,8 +109,8 @@ impl BlockAssembler {
                 reason,
                 replay_state,
             } => {
+                self.replay_state = Self::align_replay_state(&self.partials, reason, replay_state);
                 self.finish = Some(reason.clone());
-                self.replay_state = replay_state.clone();
             }
         }
     }
@@ -149,6 +149,38 @@ impl BlockAssembler {
         }
     }
 
+    fn align_replay_state(
+        partials: &IndexMap<u64, PartialBlock>,
+        finish: &FinishReason,
+        replay_state: &Option<serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        let mut replay = replay_state.clone()?;
+        let Some(entries) = replay.get("blocks") else {
+            return Some(replay);
+        };
+        let entries = entries.as_array()?;
+        let blocks: Vec<ContentBlock> = partials
+            .iter()
+            .map(|(index, partial)| Self::assemble(partial, *index))
+            .collect();
+        if entries.len() != blocks.len() {
+            return None;
+        }
+        if !matches!(finish, FinishReason::MaxTokens) {
+            return Some(replay);
+        }
+        let kept: Vec<serde_json::Value> = entries
+            .iter()
+            .zip(&blocks)
+            .filter(|(_, block)| block.type_tag() != "tool-call")
+            .map(|(entry, _)| entry.clone())
+            .collect();
+        replay
+            .as_object_mut()?
+            .insert("blocks".to_string(), serde_json::Value::Array(kept));
+        Some(replay)
+    }
+
     /// Assemble all blocks seen so far, in stream order.
     pub fn blocks(&self) -> Vec<ContentBlock> {
         let blocks: Vec<ContentBlock> = self
@@ -163,6 +195,34 @@ impl BlockAssembler {
                 .collect(),
             _ => blocks,
         }
+    }
+
+    /// Assemble the model-visible prefix that is safe to persist when a
+    /// caller interrupts the stream. Only non-blank text and reasoning are
+    /// retained; incomplete tool calls are omitted because no result exists.
+    pub fn interrupted_blocks(&self) -> Vec<ContentBlock> {
+        self.partials
+            .iter()
+            .filter_map(|(index, partial)| {
+                let block_type = partial
+                    .block
+                    .as_ref()
+                    .map(ContentBlock::type_tag)
+                    .unwrap_or(partial.block_type.as_str());
+                if block_type != "text" && block_type != "reasoning" {
+                    return None;
+                }
+                let block = Self::assemble(partial, *index);
+                match &block {
+                    ContentBlock::Text { text } | ContentBlock::Reasoning { text }
+                        if !text.trim().is_empty() =>
+                    {
+                        Some(block)
+                    }
+                    _ => None,
+                }
+            })
+            .collect()
     }
 
     /// Usage from the `usage` chunk; undefined until one arrives.
@@ -206,6 +266,40 @@ mod tests {
             index,
             text: text.to_string(),
         }
+    }
+
+    #[test]
+    fn interrupted_blocks_keep_visible_text_and_reasoning_but_drop_tool_calls() {
+        let mut assembler = BlockAssembler::new();
+        assembler.push(&StreamChunk::TextDelta {
+            index: 0,
+            text: "visible".to_string(),
+        });
+        assembler.push(&StreamChunk::ReasoningDelta {
+            index: 1,
+            text: " thinking ".to_string(),
+        });
+        assembler.push(&StreamChunk::ToolCallDelta {
+            index: 2,
+            id: crate::brand::call_id("call-1"),
+            name: Some("read".to_string()),
+            arguments_delta: "{\"path\":".to_string(),
+        });
+        assembler.push(&StreamChunk::TextDelta {
+            index: 3,
+            text: "   ".to_string(),
+        });
+        assert_eq!(
+            assembler.interrupted_blocks(),
+            vec![
+                ContentBlock::Text {
+                    text: "visible".to_string(),
+                },
+                ContentBlock::Reasoning {
+                    text: " thinking ".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -292,6 +386,84 @@ mod tests {
                 text: "partial".to_string()
             }
         );
+    }
+
+    #[test]
+    fn max_tokens_prunes_replay_entries_with_dropped_tool_calls() {
+        let mut assembler = BlockAssembler::new();
+        assembler.push(&StreamChunk::BlockEnd {
+            index: 0,
+            block: ContentBlock::Text {
+                text: "lead".to_string(),
+            },
+        });
+        assembler.push(&StreamChunk::BlockEnd {
+            index: 1,
+            block: ContentBlock::ToolCall {
+                id: crate::brand::call_id("c1"),
+                name: "echo".to_string(),
+                arguments: "{\"text\":".to_string(),
+            },
+        });
+        assembler.push(&StreamChunk::BlockEnd {
+            index: 2,
+            block: ContentBlock::Reasoning {
+                text: "tail".to_string(),
+            },
+        });
+        assembler.push(&StreamChunk::Finish {
+            reason: FinishReason::MaxTokens,
+            replay_state: Some(serde_json::json!({
+                "response": {"responseId": "resp-1"},
+                "blocks": ["meta-0", "meta-1", "meta-2"]
+            })),
+        });
+
+        assert_eq!(
+            assembler.blocks(),
+            vec![
+                ContentBlock::Text {
+                    text: "lead".to_string(),
+                },
+                ContentBlock::Reasoning {
+                    text: "tail".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            assembler.replay_state(),
+            Some(&serde_json::json!({
+                "response": {"responseId": "resp-1"},
+                "blocks": ["meta-0", "meta-2"]
+            }))
+        );
+    }
+
+    #[test]
+    fn misaligned_replay_entries_drop_the_envelope() {
+        let mut assembler = BlockAssembler::new();
+        assembler.push(&StreamChunk::BlockEnd {
+            index: 0,
+            block: ContentBlock::Text {
+                text: "one".to_string(),
+            },
+        });
+        assembler.push(&StreamChunk::BlockEnd {
+            index: 1,
+            block: ContentBlock::Text {
+                text: "two".to_string(),
+            },
+        });
+        assembler.push(&StreamChunk::Finish {
+            reason: FinishReason::Stop,
+            replay_state: Some(serde_json::json!({
+                "response": {"responseId": "resp-1"},
+                "blocks": ["meta-0"]
+            })),
+        });
+
+        assert_eq!(assembler.blocks().len(), 2);
+        assert_eq!(assembler.replay_state(), None);
     }
 
     #[test]

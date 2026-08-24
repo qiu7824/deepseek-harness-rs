@@ -138,10 +138,10 @@ impl EntryGroup {
             return Err(LoaderError::Aggregate(errors));
         }
         for id in old_map.keys() {
-            if !new_map.contains_key(id) {
-                if let Err(error) = self.remove(id, true).await {
-                    errors.push(error);
-                }
+            if !new_map.contains_key(id)
+                && let Err(error) = self.remove(id, true).await
+            {
+                errors.push(error);
             }
         }
         if !errors.is_empty() {
@@ -216,16 +216,14 @@ impl Plugin for GroupPlugin {
                         Some(next) => next.call().await,
                         None => cordis::arc(()),
                     };
-                    if let Some(config) = args.first().and_then(|v| cordis::downcast::<Value>(v)) {
-                        if let Ok(entries) =
+                    if let Some(config) = args.first().and_then(|v| cordis::downcast::<Value>(v))
+                        && let Ok(entries) =
                             serde_json::from_value::<Vec<EntryOptions>>(config.clone())
-                        {
-                            if let Err(error) = group.update(entries).await {
-                                return Some(cordis::arc(PluginError::new(cordis::arc(
-                                    error.to_string(),
-                                ))));
-                            }
-                        }
+                        && let Err(error) = group.update(entries).await
+                    {
+                        return Some(cordis::arc(PluginError::new(cordis::arc(
+                            error.to_string(),
+                        ))));
                     }
                     Some(next_result)
                 })

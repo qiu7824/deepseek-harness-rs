@@ -1,6 +1,6 @@
 [package]
 name = "dsh-command-goal"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Human-facing /goal command over persisted same-session goals — Rust port of @deepseek-ai/dsh-command-goal"

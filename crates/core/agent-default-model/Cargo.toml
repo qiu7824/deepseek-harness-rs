@@ -1,6 +1,6 @@
 [package]
 name = "dsh-agent-default-model"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Default model selection for an Agent without a session-specific selection: Rust port of @deepseek-ai/dsh-agent-default-model"

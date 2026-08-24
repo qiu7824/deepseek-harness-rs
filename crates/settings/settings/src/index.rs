@@ -18,6 +18,7 @@
 //!   still reject with the same messages.
 //! - `mutate` path ops ride the same serialized queue; `applyPathOp`
 //!   reproduces TS semantics including implicit intermediate creation.
+#![allow(clippy::type_complexity)] // Public callback seams intentionally mirror the TS service API.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -110,16 +111,9 @@ pub struct SettingsDescriptor {
 }
 
 /// Options for [`SettingsProvider::describe`].
+#[derive(Default)]
 pub struct SettingsDescribeOptions {
     pub redact_secrets: bool,
-}
-
-impl Default for SettingsDescribeOptions {
-    fn default() -> Self {
-        Self {
-            redact_secrets: false,
-        }
-    }
 }
 
 /// Owner-facing handle for one registered namespace.
@@ -449,7 +443,7 @@ impl SettingsProvider {
                 .flatten();
             let descriptor = SettingsDescriptor {
                 ns: registration.ns.clone(),
-                schema: serde_json::Value::Null,
+                schema: registration.schema.to_json(),
                 value: registration.resolved.lock().clone(),
                 revision: *registration.revision.lock(),
                 base: registration.base.clone(),
@@ -622,13 +616,13 @@ impl SettingsProvider {
         let current = self.section(ns)?.unwrap_or(Data::Object(IndexMap::new()));
         let before_section = current.clone();
         let revision = *registration.revision.lock();
-        if let Some(expected) = expected_revision {
-            if expected != revision {
-                return Err(format!(
-                    "settings namespace \"{}\" changed since it was read (expected revision {expected}, now {revision})",
-                    ns.as_str()
-                ));
-            }
+        if let Some(expected) = expected_revision
+            && expected != revision
+        {
+            return Err(format!(
+                "settings namespace \"{}\" changed since it was read (expected revision {expected}, now {revision})",
+                ns.as_str()
+            ));
         }
         let section = match mode {
             WriteMode::Merge => merge_layers(&current, &snapshot),
@@ -706,8 +700,8 @@ impl SettingsProvider {
                     continue;
                 }
             };
-            self.bump_revision(&registration, before_section.as_ref(), section.as_ref());
-            self.commit(&registration, next, source);
+            self.bump_revision(registration, before_section.as_ref(), section.as_ref());
+            self.commit(registration, next, source);
         }
     }
 

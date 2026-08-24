@@ -1,3 +1,6 @@
+#![allow(clippy::type_complexity)]
+// Test environment lookups mirror the adapter's injected callback shape.
+
 //! Rust port of the core `packages/e2b/e2b/tests/e2b.spec.ts` behaviors:
 //! the control-env isolation, the shared protected sandbox lifecycle,
 //! disposal races, environment/config validation, setup rollback, and the
@@ -16,9 +19,9 @@ use std::sync::Arc;
 
 use cordis::{Context, Exporter, FiberCore, LoggerLevel, arc};
 use dsh_e2b::{
-    Config, E2bBackgroundOptions, E2bCommandHandle, E2bCommandOptions, E2bCommandResult,
-    E2bCreateOptions, E2bEntryInfo, E2bPlugin, E2bRuntime, E2bSandbox, E2bSdk, E2bSdkError,
-    FileType, SandboxNotFoundError, e2b_control_envs, quote_e2b_shell_arg,
+    E2bBackgroundOptions, E2bCommandHandle, E2bCommandOptions, E2bCommandResult, E2bCreateOptions,
+    E2bEntryInfo, E2bPlugin, E2bRuntime, E2bSandbox, E2bSdk, E2bSdkError, FileType,
+    SandboxNotFoundError, e2b_control_envs, quote_e2b_shell_arg,
 };
 use futures::future::BoxFuture;
 use parking_lot::Mutex;
@@ -535,7 +538,7 @@ async fn fails_self_contained_configuration_before_opening_e2b() {
             )),
             arc(config),
         );
-        let error = fiber.settle().await.err().expect("config rejected");
+        let error = fiber.settle().await.expect_err("config rejected");
         assert!(error.message().contains(message), "{error}");
         assert!(sdk.creates.lock().is_empty());
     }
@@ -552,7 +555,7 @@ async fn requires_a_key_when_both_config_and_the_environment_omit_it() {
         )),
         arc(serde_json::json!({})),
     );
-    let error = fiber.settle().await.err().expect("key required");
+    let error = fiber.settle().await.expect_err("key required");
     assert!(error.message().contains("configure apiKey"), "{error}");
     assert!(sdk.creates.lock().is_empty());
 }

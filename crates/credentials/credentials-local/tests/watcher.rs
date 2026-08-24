@@ -65,10 +65,11 @@ async fn survives_a_watcher_error_and_keeps_publishing_later_edits() {
         Some(default_reader()),
     )
     .expect("boot");
-    let instances = fake_instances().lock();
-    let instance = instances.first().expect("fake instance");
-    instance.sink.on_error("watch backend failure".to_string());
-    drop(instances);
+    let sink = {
+        let instances = fake_instances().lock();
+        instances.first().expect("fake instance").sink.clone()
+    };
+    sink.on_error("watch backend failure".to_string());
     assert_eq!(provider.resolve(&key()).await, None);
 
     write_credentials(&path, "DSH_CRED_PIPE: arrived\n");

@@ -188,14 +188,13 @@ async fn rejects_undeclared_table_and_global_access_as_caller_errors() {
     let error = unit
         .put_record("undeclared", "k", json!({}))
         .await
-        .err()
-        .expect("reject");
+        .expect_err("reject");
     assert!(
         error.message.contains("does not declare table"),
         "{}",
         error.message
     );
-    let error = unit.set_global(json!({})).await.err().expect("reject");
+    let error = unit.set_global(json!({})).await.expect_err("reject");
     assert!(
         error.message.contains("does not declare a global slot"),
         "{}",
@@ -398,8 +397,7 @@ async fn registers_on_the_hub_via_apply_and_closes_on_dispose() {
     let error = unit
         .put_record("t", "x", json!({}))
         .await
-        .err()
-        .expect("closed");
+        .expect_err("closed");
     assert_eq!(error.code, StorageErrorCode::Closed);
     cleanup(&root);
 }
@@ -468,8 +466,7 @@ async fn close_drains_in_flight_writes_and_blocks_in_flight_opens() {
         Ok(unit2) => unit2
             .put_record("t", "x", json!({}))
             .await
-            .err()
-            .expect("closed"),
+            .expect_err("closed"),
         Err(error) => error,
     };
     assert_eq!(error.code, StorageErrorCode::Closed);

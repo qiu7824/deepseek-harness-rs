@@ -1,7 +1,9 @@
 //! Lossless storage packing for `assistant/chunk` delta runs. Rust port of
 //! `packages/core/session/src/chunk-rows.ts`.
 //!
-//! Storage rows are a durable-encoding vocabulary, NOT session events: they
+//! Storage rows are a durable-encoding vocabulary, NOT session events:
+#![allow(clippy::enum_variant_names, clippy::too_many_arguments)]
+// Delta suffixes and full wire-event fixtures intentionally mirror the durable protocol. they
 //! never enter `Session.events` and use bare (slash-less) type tags. The
 //! encoder whitelists exact shapes — anything it does not fully recognize is
 //! stored verbatim.
@@ -156,9 +158,7 @@ fn classify(event: &JsonValue) -> Option<DeltaKind> {
     if !has_exact_keys(record, &["type", "seq", "time", "data"]) {
         return None;
     }
-    if event.get("seq")?.as_u64().is_none() {
-        return None;
-    }
+    event.get("seq")?.as_u64()?;
     if !is_integer_number(event.get("time")?) {
         return None;
     }
@@ -170,9 +170,7 @@ fn classify(event: &JsonValue) -> Option<DeltaKind> {
         return None;
     }
     let chunk = data.get("chunk")?.as_object()?;
-    if chunk.get("index")?.as_u64().is_none() {
-        return None;
-    }
+    chunk.get("index")?.as_u64()?;
     match chunk.get("type")?.as_str()? {
         "text-delta" | "reasoning-delta" => {
             if has_exact_keys(chunk, &["type", "index", "text"]) && chunk.get("text")?.is_string() {

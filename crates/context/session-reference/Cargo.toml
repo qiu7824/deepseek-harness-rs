@@ -1,6 +1,6 @@
 [package]
 name = "dsh-session-reference"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Cross-session snapshot references and durable untrusted model context — Rust port of @deepseek-ai/dsh-session-reference"

@@ -1,6 +1,6 @@
 [package]
 name = "dsh-native-command"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Shared no-shell command runner for host-native OS integrations: utf8 stdio capture, abort propagation, Windows console hide — Rust port of @deepseek-ai/dsh-native-command"

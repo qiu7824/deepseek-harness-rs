@@ -52,7 +52,7 @@ impl AgentEventDispatch {
             DispatchMode::Emit,
             Some(&dispatch_ctx),
             name,
-            &[payload.clone()],
+            std::slice::from_ref(&payload),
         );
         let logger = self.ctx.named_logger(Some("agents"));
         let mut pending = Vec::new();
@@ -155,8 +155,16 @@ pub fn emit_agent_event(
 /// (TS `assembleContextFor`; the `agent` field itself rides the
 /// merge-extensible context fields).
 pub fn assemble_context_for(agent: &Arc<dyn Agent>) -> AssembleContext {
+    let mut fields = serde_json::Map::new();
+    fields.insert(
+        "sessionId".to_string(),
+        serde_json::Value::String(agent.session().id().to_string()),
+    );
+    if let Some(cwd) = &agent.session().header().cwd {
+        fields.insert("cwd".to_string(), serde_json::Value::String(cwd.clone()));
+    }
     AssembleContext {
         scope: Some(agent.scope_key().clone()),
-        fields: Default::default(),
+        fields,
     }
 }

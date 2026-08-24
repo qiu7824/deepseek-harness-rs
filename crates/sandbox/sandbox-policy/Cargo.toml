@@ -1,6 +1,6 @@
 [package]
 name = "dsh-sandbox-policy"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "The sandbox policy home (ctx.sandboxPolicy): deployment fallbacks plus per-session mode resolution: Rust port of @deepseek-ai/dsh-sandbox-policy"

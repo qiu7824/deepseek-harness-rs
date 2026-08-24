@@ -147,17 +147,13 @@ pub fn installer() -> InvariantInstaller {
                 let stream_fail = fail.clone();
                 let stream_listener: Arc<cordis::Listener> =
                     Arc::new(move |_listener_ctx: &Context, args: Vec<ArcValue>| {
-                        let Some(next) =
-                            args.get(1).and_then(|value| downcast_arc::<NextFn>(value))
-                        else {
+                        let Some(next) = args.get(1).and_then(downcast_arc::<NextFn>) else {
                             return Box::pin(async { None });
                         };
                         let fail = stream_fail.clone();
                         Box::pin(async move {
                             let value = next.call().await;
-                            let Some(inner) = downcast_arc::<StreamFactory>(&value) else {
-                                return None;
-                            };
+                            let inner = downcast_arc::<StreamFactory>(&value)?;
                             let inner = inner.as_ref().clone();
                             let wrapped: StreamFactory = Arc::new(move |options| {
                                 validate_stream(inner(options), fail.clone())
@@ -180,9 +176,7 @@ pub fn installer() -> InvariantInstaller {
                         let fail = updated_fail.clone();
                         let llm = listener_ctx.get_typed::<Arc<LlmRuntime>>("llm", false);
                         Box::pin(async move {
-                            let Some(llm) = llm else {
-                                return None;
-                            };
+                            let llm = llm?;
                             for provider in llm.list_providers() {
                                 if llm.provider_retry_policy(&provider.id).is_err() {
                                     (fail)(&format!(

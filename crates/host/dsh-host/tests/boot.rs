@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use cordis::Context;
 use dsh_agent::{Agent, AgentFactory, AgentOptions, AgentStatus, Inbox};
-use dsh_host::{compose_host, compose_host_handle, mount_companions};
+use dsh_host::{compose_host, compose_host_handle, compose_persistent_host_at, mount_companions};
 use dsh_llm::{
     ChunkStream, ContentBlock, FinishReason, GenerateOptions, LlmAdapter, StreamChunk, call_id,
     create_user_message,
@@ -40,6 +40,70 @@ async fn raw_http(port: u16, request: &str) -> (u16, String) {
         .parse::<u16>()
         .expect("numeric status");
     (status, body.to_string())
+}
+
+fn agent_assembly_context(agent: &dyn dsh_agent::Agent) -> dsh_system_prompt::AssembleContext {
+    let mut fields = serde_json::Map::new();
+    fields.insert("model".to_string(), serde_json::json!("deepseek-v4-flash"));
+    if let Some(cwd) = &agent.session().header().cwd {
+        fields.insert("cwd".to_string(), serde_json::json!(cwd));
+    }
+    dsh_system_prompt::AssembleContext {
+        scope: Some(agent.scope_key().clone()),
+        fields,
+    }
+}
+
+async fn create_standard_agent(
+    spine: &dsh_host::HostSpine,
+    id: &str,
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> dsh_agent::AgentHandle {
+    let port = spine.web_server.port();
+    for (method, payload) in std::iter::once((
+        "session.create",
+        serde_json::json!({ "sessionId": id, "cwd": "D:\\preset-work" }),
+    ))
+    .chain(provider.zip(model).map(|(provider, model)| {
+        (
+            "session.selectModel",
+            serde_json::json!({
+                "sessionId": id,
+                "provider": provider,
+                "model": model,
+            }),
+        )
+    })) {
+        let body = serde_json::json!({
+            "type": "client-request",
+            "rpcId": format!("{id}-{method}"),
+            "method": method,
+            "payload": payload,
+        })
+        .to_string();
+        let request = format!(
+            "POST /api/{method} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (status, response) = raw_http(port, &request).await;
+        assert_eq!(status, 200, "{response}");
+        let envelope: serde_json::Value = serde_json::from_str(&response).expect("RPC envelope");
+        assert_eq!(envelope["result"]["ok"], true, "{envelope}");
+    }
+    let agent = spine
+        .agents
+        .get(&session_id(id))
+        .expect("standard agent is live");
+    let registry = spine.agents.clone();
+    let retire_agent = agent.clone();
+    dsh_agent::AgentHandle {
+        agent,
+        dispose: Box::pin(async move {
+            let _ = registry.retire(retire_agent).await;
+        }),
+    }
 }
 
 async fn raw_http_prefix(port: u16, request: &str, needle: &str) -> String {
@@ -197,7 +261,29 @@ struct SubagentToolThenTextAdapter {
 }
 
 impl LlmAdapter for SubagentToolThenTextAdapter {
-    fn stream(&self, _options: &GenerateOptions) -> ChunkStream {
+    fn stream(&self, options: &GenerateOptions) -> ChunkStream {
+        if options.purpose.as_deref() == Some("session-title") {
+            return Box::pin(futures::stream::iter(vec![
+                StreamChunk::BlockStart {
+                    index: 0,
+                    block_type: "text".to_string(),
+                },
+                StreamChunk::TextDelta {
+                    index: 0,
+                    text: "子进程测试".to_string(),
+                },
+                StreamChunk::BlockEnd {
+                    index: 0,
+                    block: ContentBlock::Text {
+                        text: "子进程测试".to_string(),
+                    },
+                },
+                StreamChunk::Finish {
+                    reason: FinishReason::Stop,
+                    replay_state: None,
+                },
+            ]));
+        }
         let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let script = match call {
             0 => {
@@ -336,12 +422,38 @@ impl LlmAdapter for TerminalOpenThenTextAdapter {
     }
 }
 
+fn title_fixture_stream(text: &str) -> ChunkStream {
+    Box::pin(futures::stream::iter(vec![
+        StreamChunk::BlockStart {
+            index: 0,
+            block_type: "text".to_string(),
+        },
+        StreamChunk::TextDelta {
+            index: 0,
+            text: text.to_string(),
+        },
+        StreamChunk::BlockEnd {
+            index: 0,
+            block: ContentBlock::Text {
+                text: text.to_string(),
+            },
+        },
+        StreamChunk::Finish {
+            reason: FinishReason::Stop,
+            replay_state: None,
+        },
+    ]))
+}
+
 struct TerminalRoundTripAdapter {
     calls: std::sync::atomic::AtomicUsize,
 }
 
 impl LlmAdapter for TerminalRoundTripAdapter {
-    fn stream(&self, _options: &GenerateOptions) -> ChunkStream {
+    fn stream(&self, options: &GenerateOptions) -> ChunkStream {
+        if options.purpose.as_deref() == Some("session-title") {
+            return title_fixture_stream("终端往返测试");
+        }
         let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let tool = match call {
             0 => Some((
@@ -437,7 +549,10 @@ struct TerminalSignalAdapter {
 }
 
 impl LlmAdapter for TerminalSignalAdapter {
-    fn stream(&self, _options: &GenerateOptions) -> ChunkStream {
+    fn stream(&self, options: &GenerateOptions) -> ChunkStream {
+        if options.purpose.as_deref() == Some("session-title") {
+            return title_fixture_stream("终端信号测试");
+        }
         let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let tool = match call {
             0 => Some((
@@ -552,6 +667,38 @@ impl LlmAdapter for HostRoundAdapter {
                 index: 0,
                 block: ContentBlock::Text {
                     text: "production goal round".to_string(),
+                },
+            },
+            StreamChunk::Finish {
+                reason: FinishReason::Stop,
+                replay_state: None,
+            },
+        ]))
+    }
+}
+
+struct AutomaticTitleAdapter;
+
+impl LlmAdapter for AutomaticTitleAdapter {
+    fn stream(&self, options: &GenerateOptions) -> ChunkStream {
+        let text = if options.purpose.as_deref() == Some("session-title") {
+            "自动标题已恢复"
+        } else {
+            "正文回复"
+        };
+        Box::pin(futures::stream::iter(vec![
+            StreamChunk::BlockStart {
+                index: 0,
+                block_type: "text".to_string(),
+            },
+            StreamChunk::TextDelta {
+                index: 0,
+                text: text.to_string(),
+            },
+            StreamChunk::BlockEnd {
+                index: 0,
+                block: ContentBlock::Text {
+                    text: text.to_string(),
                 },
             },
             StreamChunk::Finish {
@@ -677,12 +824,22 @@ async fn production_host_mounts_goal_tools_and_the_model_driver() {
         ctx.get("agentLoop", false).is_some(),
         "production host must expose the model agent driver"
     );
+    let handle = create_standard_agent(&spine, "host-goal-tools", None, None).await;
+    let agent = handle.agent;
+    let assembly = spine
+        .system_prompt
+        .assemble(agent.ctx(), &agent_assembly_context(agent.as_ref()))
+        .await
+        .expect("standard goal tool assembly");
+    let names: std::collections::BTreeSet<_> =
+        assembly.tools.into_iter().map(|tool| tool.name).collect();
     for name in ["get_goal", "create_goal", "update_goal"] {
         assert!(
-            spine.tools.get(name, None).is_some(),
-            "production host must register {name}"
+            names.contains(name),
+            "production standard preset must register {name}"
         );
     }
+    spine.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -854,6 +1011,37 @@ async fn production_host_registers_the_deepseek_provider() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn production_host_mounts_message_feedback_and_command() {
+    let ctx = Context::root();
+    let spine = compose_host(&ctx).expect("compose");
+    assert!(
+        spine
+            .ctx
+            .get_typed::<Arc<dsh_message_feedback::MessageFeedbackService>>(
+                "messageFeedback",
+                false,
+            )
+            .is_some(),
+        "production Host must install the durable message feedback service"
+    );
+    let handle = spine
+        .agent_loop
+        .create_agent(&spine.ctx, dsh_agent::CreateAgentOptions::default())
+        .await
+        .expect("agent");
+    assert!(
+        spine
+            .commands
+            .list(&handle.agent)
+            .iter()
+            .any(|command| command.name == "feedback"),
+        "production Host must install /feedback"
+    );
+    handle.dispose.await;
+    spine.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn production_model_loop_executes_create_goal_durably() {
     let ctx = Context::root();
     let spine = compose_host(&ctx).expect("compose");
@@ -867,22 +1055,8 @@ async fn production_model_loop_executes_create_goal_durably() {
             }),
         )
         .expect("adapter");
-    let handle = spine
-        .agent_loop
-        .create_agent(
-            &ctx,
-            dsh_agent::CreateAgentOptions {
-                session_id: Some(session_id("host-model-goal")),
-                agent_options: Some(AgentOptions {
-                    provider: Some("test".to_string()),
-                    model: Some("model".to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("create agent");
+    let handle =
+        create_standard_agent(&spine, "host-model-goal", Some("test"), Some("model")).await;
     handle.agent.followup(create_user_message(
         vec![ContentBlock::Text {
             text: "Create the goal.".to_string(),
@@ -892,7 +1066,14 @@ async fn production_model_loop_executes_create_goal_durably() {
             client_time_zone: None,
         },
     ));
-    handle.agent.when_idle().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), handle.agent.when_idle())
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "goal model loop did not return idle; events={:?}",
+                handle.agent.session().events()
+            )
+        });
 
     let goal = spine
         .goals
@@ -924,7 +1105,69 @@ async fn production_model_loop_executes_create_goal_durably() {
             .count(),
         1
     );
+    spine.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn production_host_generates_a_first_prompt_title() {
+    let ctx = Context::root();
+    let spine = compose_host(&ctx).expect("compose");
+    spine
+        .llm
+        .register_adapter(
+            &ctx,
+            vec!["test-title".to_string()],
+            Arc::new(AutomaticTitleAdapter),
+        )
+        .expect("adapter");
+    let handle = spine
+        .agent_loop
+        .create_agent(
+            &ctx,
+            dsh_agent::CreateAgentOptions {
+                session_id: Some(session_id("host-auto-title")),
+                agent_options: Some(AgentOptions {
+                    provider: Some("test-title".to_string()),
+                    model: Some("model".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create agent");
+    handle.agent.followup(create_user_message(
+        vec![ContentBlock::Text {
+            text: "请恢复自动重命名".to_string(),
+        }],
+        dsh_llm::MessageSource::User {
+            rpc_id: None,
+            client_time_zone: None,
+        },
+    ));
+    handle.agent.when_idle().await;
+    let title = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if handle
+                .agent
+                .session()
+                .events()
+                .iter()
+                .rev()
+                .find(|event| event.type_ == "session/title")
+                .and_then(|event| event.data["title"].as_str())
+                == Some("自动标题已恢复")
+            {
+                break "自动标题已恢复".to_string();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("automatic title");
+    assert_eq!(title, "自动标题已恢复");
     handle.dispose.await;
+    spine.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -941,22 +1184,13 @@ async fn production_model_loop_runs_and_disposes_a_spawn_subagent() {
             }),
         )
         .expect("adapter");
-    let handle = spine
-        .agent_loop
-        .create_agent(
-            &ctx,
-            dsh_agent::CreateAgentOptions {
-                session_id: Some(session_id("host-model-subagent")),
-                agent_options: Some(AgentOptions {
-                    provider: Some("test-subagent".to_string()),
-                    model: Some("model".to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("create parent agent");
+    let handle = create_standard_agent(
+        &spine,
+        "host-model-subagent",
+        Some("test-subagent"),
+        Some("model"),
+    )
+    .await;
     handle.agent.followup(create_user_message(
         vec![ContentBlock::Text {
             text: "Delegate the marker task.".to_string(),
@@ -1010,22 +1244,8 @@ async fn production_model_loop_executes_real_pwsh_durably() {
             }),
         )
         .expect("adapter");
-    let handle = spine
-        .agent_loop
-        .create_agent(
-            &ctx,
-            dsh_agent::CreateAgentOptions {
-                session_id: Some(session_id("host-model-pwsh")),
-                agent_options: Some(AgentOptions {
-                    provider: Some("test".to_string()),
-                    model: Some("model".to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("create agent");
+    let handle =
+        create_standard_agent(&spine, "host-model-pwsh", Some("test"), Some("model")).await;
     dsh_sandbox_policy::set_sandbox_mode(
         handle.agent.session(),
         dsh_sandbox::SandboxMode::DangerFullAccess,
@@ -1224,22 +1444,13 @@ async fn production_model_loop_backgrounds_and_signals_terminal_work() {
             }),
         )
         .expect("adapter");
-    let handle = spine
-        .agent_loop
-        .create_agent(
-            &ctx,
-            dsh_agent::CreateAgentOptions {
-                session_id: Some(session_id("host-model-terminal-signal")),
-                agent_options: Some(AgentOptions {
-                    provider: Some("test-terminal-signal".to_string()),
-                    model: Some("model".to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("create agent");
+    let handle = create_standard_agent(
+        &spine,
+        "host-model-terminal-signal",
+        Some("test-terminal-signal"),
+        Some("model"),
+    )
+    .await;
     dsh_sandbox_policy::set_sandbox_mode(
         handle.agent.session(),
         dsh_sandbox::SandboxMode::DangerFullAccess,
@@ -1451,10 +1662,19 @@ async fn composes_the_core_spine_and_boots_a_report() {
         ctx.get_typed::<Arc<dsh_agent_presets::AgentPresets>>("agentPresets", false)
             .is_some()
     );
+    assert!(
+        ctx.get_typed::<Arc<dsh_session_title::SessionTitleService>>("sessionTitle", false)
+            .is_some()
+    );
 
     let report = dsh_host::boot_report(&spine).await.expect("report");
-    assert_eq!(report["session"]["id"], serde_json::json!("host-boot"));
-    assert_eq!(report["session"]["seq"], serde_json::json!(1));
+    assert!(
+        report["session"]["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("host-boot-")),
+        "{report}"
+    );
+    assert_eq!(report["session"]["seq"], serde_json::json!(5));
     let services = report["services"].as_array().expect("services array");
     let unique: std::collections::HashSet<_> = services
         .iter()
@@ -1520,6 +1740,82 @@ async fn production_host_reports_the_execution_stack() {
         missing.is_empty(),
         "production Host is missing {missing:?}: {report}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_create_mounts_the_default_standard_preset_before_agent_publication() {
+    let ctx = Context::root();
+    let spine = compose_host(&ctx).expect("compose");
+    let port = spine.web_server.port();
+    let body = serde_json::json!({
+        "type": "client-request",
+        "rpcId": "preset-create",
+        "method": "session.create",
+        "payload": { "sessionId": "preset-session", "cwd": "D:\\preset-work" }
+    })
+    .to_string();
+    let request = format!(
+        "POST /api/session.create HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let (status, response) = raw_http(port, &request).await;
+    assert_eq!(status, 200, "{response}");
+    let envelope: serde_json::Value = serde_json::from_str(&response).expect("RPC response");
+    assert_eq!(envelope["result"]["ok"], true, "{envelope}");
+    assert_eq!(envelope["result"]["value"]["agentPreset"], "standard");
+
+    let agent = spine
+        .agents
+        .get(&session_id("preset-session"))
+        .expect("created agent is live");
+    assert_eq!(
+        spine.agent_presets.composed_preset(agent.ctx()).as_deref(),
+        Some("standard")
+    );
+    let assembly = spine
+        .system_prompt
+        .assemble(
+            agent.ctx(),
+            &dsh_system_prompt::AssembleContext {
+                scope: Some(agent.scope_key().clone()),
+                fields: serde_json::Map::from_iter([
+                    ("model".to_string(), serde_json::json!("deepseek-v4-flash")),
+                    ("cwd".to_string(), serde_json::json!("D:\\preset-work")),
+                ]),
+            },
+        )
+        .await
+        .expect("standard prompt assembly");
+    let system = dsh_system_prompt::render_prompt(&assembly).expect("render standard prompt");
+    assert!(system.contains("You are a coding agent powered by the deepseek-v4-flash model."));
+    let tool_names: Vec<_> = assembly
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
+    for required in [
+        "read",
+        "write",
+        "edit",
+        "glob",
+        "grep",
+        "pwsh",
+        "web_search",
+        "subagent",
+        "subagent_fork",
+        "send_message",
+        "interrupt_agent",
+        "list_agents",
+        "ask_user_question",
+        "todo_write",
+    ] {
+        assert!(
+            tool_names.contains(&required),
+            "missing {required}: {tool_names:?}"
+        );
+    }
+    spine.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1772,6 +2068,107 @@ async fn api_mux_streams_sse_on_the_real_host_http_port() {
         "{response}"
     );
     assert!(response.contains(": connected"), "{response}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_home_is_shared_by_settings_and_attachments() {
+    let root = std::env::temp_dir().join(format!(
+        "dsh-explicit-home-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let user_preset = root.join(".agent-presets/custom");
+    std::fs::create_dir_all(&user_preset).expect("preset directory");
+    std::fs::write(user_preset.join("agent.cordis.yml"), "[]\n").expect("preset composition");
+    let ctx = Context::root();
+    let spine =
+        compose_persistent_host_at(&ctx, &root, Some("default")).expect("compose explicit home");
+
+    let settings = ctx
+        .get_typed::<Arc<dsh_settings::SettingsProvider>>("settings", false)
+        .map(|slot| slot.as_ref().clone())
+        .expect("settings service");
+    settings
+        .update(
+            &dsh_settings::settings_namespace("locale").expect("namespace"),
+            serde_json::json!({"preference": "zh"}),
+            None,
+        )
+        .await
+        .expect("persist settings");
+
+    let attachments = ctx
+        .get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false)
+        .map(|slot| slot.as_ref().clone())
+        .expect("attachments service");
+    let saved = attachments
+        .save_image(&dsh_attachment::SaveImageAttachment {
+            data: vec![
+                137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0,
+                1, 8, 4, 0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 100,
+                248, 15, 0, 1, 5, 1, 1, 39, 24, 227, 102, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96,
+                130,
+            ],
+            media_type: dsh_attachment::ImageMediaType::Png,
+            name: Some("pixel.png".to_string()),
+        })
+        .await
+        .expect("persist image");
+    let digest = saved
+        .attachment_id
+        .as_str()
+        .strip_prefix("sha256:")
+        .expect("content-addressed id");
+
+    assert!(root.join("settings.json").is_file());
+    assert!(
+        spine
+            .agent_presets
+            .list()
+            .await
+            .expect("list presets")
+            .iter()
+            .any(|preset| preset.id == "custom"),
+        "explicit home user preset was not discovered"
+    );
+    assert!(
+        root.join("attachments/v1/objects")
+            .join(&digest[..2])
+            .join(digest)
+            .is_file()
+    );
+    spine.shutdown().await.expect("shutdown");
+    let _ = tokio::fs::remove_dir_all(root).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn production_host_exposes_the_existing_node_core_tools_to_the_model() {
+    let ctx = Context::root();
+    let host = compose_host(&ctx).expect("compose production host");
+    let handle = create_standard_agent(&host, "host-core-tools", None, None).await;
+    let assembly = host
+        .system_prompt
+        .assemble(
+            handle.agent.ctx(),
+            &agent_assembly_context(handle.agent.as_ref()),
+        )
+        .await
+        .expect("standard core tool assembly");
+    let names: std::collections::BTreeSet<_> = assembly
+        .tools
+        .into_iter()
+        .map(|schema| schema.name)
+        .collect();
+    for expected in ["ask_user_question", "todo_write", "edit"] {
+        assert!(
+            names.contains(expected),
+            "missing model tool {expected}; got {names:?}"
+        );
+    }
+    host.shutdown().await.expect("shutdown");
 }
 
 // Keep the SessionId/Session imports referenced for parity documentation.

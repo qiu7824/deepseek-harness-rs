@@ -191,8 +191,7 @@ async fn rejects_an_unread_edit_with_fs_not_observed() {
     let gate = dsh_fs_observation_policy::ObservedStateGate::new();
     let error = gate
         .edit_intent(&target("a.txt"), Some(&exec))
-        .err()
-        .expect("rejects");
+        .expect_err("rejects");
     assert_eq!(error.code, FsErrorCode::FsNotObserved);
 }
 
@@ -201,14 +200,12 @@ async fn rejects_an_edit_with_no_owner() {
     let gate = dsh_fs_observation_policy::ObservedStateGate::new();
     let error = gate
         .edit_intent(&target("a.txt"), None)
-        .err()
-        .expect("rejects");
+        .expect_err("rejects");
     assert_eq!(error.code, FsErrorCode::FsNotObserved);
     let no_session = FsObservationActorHandle { session_key: None };
     let error = gate
         .edit_intent(&target("a.txt"), Some(&no_session))
-        .err()
-        .expect("rejects");
+        .expect_err("rejects");
     assert_eq!(error.code, FsErrorCode::FsNotObserved);
 }
 
@@ -238,8 +235,7 @@ async fn rejects_editing_a_target_observed_absent_with_fs_not_found() {
     gate.observe(&target("a.txt"), absent(), Some(&exec));
     let error = gate
         .edit_intent(&target("a.txt"), Some(&exec))
-        .err()
-        .expect("rejects");
+        .expect_err("rejects");
     assert_eq!(error.code, FsErrorCode::FsNotFound);
 }
 
@@ -298,7 +294,7 @@ async fn a_no_owner_observation_records_nothing() {
         Box::pin(async { arc(FsObservationActorHandle { session_key: None }) }),
     )))
     .await;
-    let payload = outcome.err().expect("the listener rejects");
+    let payload = outcome.expect_err("the listener rejects");
     let message = payload
         .downcast::<dsh_fs::FsError>()
         .map(|error| error.code)
@@ -365,8 +361,7 @@ async fn owner_a_observing_does_not_grant_owner_b_edit_authority() {
     gate.observe(&target("a.txt"), present("v0"), Some(&a));
     let b_error = gate
         .edit_intent(&target("a.txt"), Some(&b))
-        .err()
-        .expect("b rejects");
+        .expect_err("b rejects");
     assert_eq!(b_error.code, FsErrorCode::FsNotObserved);
     let a_guard = gate
         .edit_intent(&target("a.txt"), Some(&a))
@@ -515,7 +510,7 @@ async fn a_fresh_plugin_after_disposal_starts_with_no_inherited_state() {
         Box::pin(async { arc(FsObservationActorHandle { session_key: None }) }),
     )))
     .await;
-    let payload = outcome.err().expect("the fresh gate rejects");
+    let payload = outcome.expect_err("the fresh gate rejects");
     let code = payload
         .downcast::<dsh_fs::FsError>()
         .map(|error| error.code)

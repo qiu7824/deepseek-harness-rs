@@ -187,18 +187,14 @@ pub fn installer() -> InvariantInstaller {
                         .and_then(|value| downcast::<String>(value))
                         .cloned()
                         .unwrap_or_default();
-                    let event_args = args
-                        .get(2)
-                        .and_then(|value| downcast_arc::<Vec<ArcValue>>(value));
+                    let event_args = args.get(2).and_then(downcast_arc::<Vec<ArcValue>>);
                     let traces = traces_for_dispatch.clone();
                     let fail = fail_for_dispatch.clone();
                     Box::pin(async move {
                         if event_name != "session/event" {
                             return None;
                         }
-                        let Some(event_args) = event_args else {
-                            return None;
-                        };
+                        let event_args = event_args?;
                         let session = event_args
                             .first()
                             .and_then(|value| downcast::<Session>(value))

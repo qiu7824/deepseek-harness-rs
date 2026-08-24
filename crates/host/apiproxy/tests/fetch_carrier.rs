@@ -99,7 +99,9 @@ impl ApiProxyCarrier for StubApi {
         DownloadResponse {
             status: StatusCode::OK,
             headers: vec![("content-type".to_string(), "application/zip".to_string())],
-            body: Some(format!("log for {}", query.session_id).into_bytes()),
+            body: Some(Body::Bytes(
+                format!("log for {}", query.session_id).into_bytes(),
+            )),
         }
     }
 }
@@ -330,7 +332,11 @@ fn sse_channels_open_with_a_comment_and_frame_as_server_requests() {
         let Body::Stream(stream) = response.into_body() else {
             panic!("SSE answers are stream bodies");
         };
-        let chunks: Vec<Vec<u8>> = futures::StreamExt::collect(stream).await;
+        let chunks: Vec<Vec<u8>> = futures::StreamExt::collect::<Vec<_>>(stream)
+            .await
+            .into_iter()
+            .map(|chunk| chunk.expect("SSE stream success"))
+            .collect();
         let bytes: Vec<u8> = chunks.into_iter().flatten().collect();
         let text = String::from_utf8(bytes).expect("utf8");
         // Open comment first, then exactly one frame.

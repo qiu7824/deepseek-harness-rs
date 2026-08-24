@@ -58,6 +58,7 @@ async fn canonical_workspace_queries_single_flight_and_reuse_real_client() {
             },
             workspace_root,
             language_id: "rust".to_string(),
+            signal: None,
         };
         let (first, second) = tokio::join!(
             provider.query(request(canonical_spelling.clone())),
@@ -80,6 +81,7 @@ async fn canonical_workspace_queries_single_flight_and_reuse_real_client() {
                 },
                 workspace_root: canonical_spelling,
                 language_id: "rust".to_string(),
+                signal: None,
             })
             .await
             .expect("definition through provider");
@@ -96,6 +98,51 @@ async fn canonical_workspace_queries_single_flight_and_reuse_real_client() {
             }
             other => panic!("expected locations, got {other:?}"),
         }
+
+        std::fs::write(workspace.join("src/hang.rs"), "hang").expect("hanging source");
+        let cancellation = dsh_lsp::LspCancellation::default();
+        let cancel_handle = cancellation.clone();
+        let query = provider.query(LspProviderQuery {
+            operation: LspOperation::Hover,
+            file_path: "src/hang.rs".to_string(),
+            position: LspPosition {
+                line: 0,
+                character: 0,
+            },
+            workspace_root: workspace.to_string_lossy().into_owned(),
+            language_id: "rust".to_string(),
+            signal: Some(cancellation),
+        });
+        let cancel = async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_handle.cancel();
+        };
+        let (cancelled, ()) = tokio::join!(query, cancel);
+        assert_eq!(
+            cancelled.expect_err("hanging query cancels").code(),
+            "LSP_CANCELLED"
+        );
+
+        std::fs::write(
+            workspace.join("src/large.rs"),
+            vec![b'x'; 8 * 1024 * 1024 + 1],
+        )
+        .expect("oversized source");
+        let oversized = provider
+            .query(LspProviderQuery {
+                operation: LspOperation::Hover,
+                file_path: "src/large.rs".to_string(),
+                position: LspPosition {
+                    line: 0,
+                    character: 0,
+                },
+                workspace_root: workspace.to_string_lossy().into_owned(),
+                language_id: "rust".to_string(),
+                signal: None,
+            })
+            .await
+            .expect_err("oversized source is rejected");
+        assert_eq!(oversized.code(), "LSP_DOCUMENT_TOO_LARGE");
 
         provider.dispose().await.expect("bounded provider disposal");
         let disposed = provider

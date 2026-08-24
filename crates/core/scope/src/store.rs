@@ -8,6 +8,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+type DuplicateErrorFactory = dyn Fn(&str) -> Box<dyn std::error::Error + Send + Sync> + Send + Sync;
+type LayerFactory<L> = dyn Fn(Option<&ScopeKey>) -> L + Send + Sync;
+
 use cordis::{Context, Disposer, make_disposer};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
@@ -73,7 +76,7 @@ impl Drop for PreparedRegistration {
 #[derive(Clone)]
 pub struct NamedEntries<V: Clone> {
     data: Arc<Mutex<IndexMap<String, V>>>,
-    duplicate_error: Arc<dyn Fn(&str) -> Box<dyn std::error::Error + Send + Sync> + Send + Sync>,
+    duplicate_error: Arc<DuplicateErrorFactory>,
 }
 
 impl<V: Clone + Send + Sync + 'static> NamedEntries<V> {
@@ -239,7 +242,7 @@ pub struct ScopedLayers<L: ScopeLayer> {
     /// The eagerly constructed context-global layer.
     pub global: Arc<L>,
     scoped: Arc<Mutex<HashMap<usize, Arc<L>>>>,
-    create_layer: Arc<dyn Fn(Option<&ScopeKey>) -> L + Send + Sync>,
+    create_layer: Arc<LayerFactory<L>>,
     on_change: Arc<dyn Fn() + Send + Sync>,
 }
 

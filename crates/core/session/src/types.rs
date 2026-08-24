@@ -500,32 +500,32 @@ pub fn validate_session_header(id: &SessionId, input: &JsonValue) -> Result<Sess
             ));
         }
     }
-    if let Some(parent) = record.get("parentSession") {
-        if !parent.is_string() {
-            return Err("session header parentSession must be a string".to_string());
-        }
+    if let Some(parent) = record.get("parentSession")
+        && !parent.is_string()
+    {
+        return Err("session header parentSession must be a string".to_string());
     }
     for (key, field) in [
         ("seedLength", "seedLength"),
         ("delegationDepth", "delegationDepth"),
     ] {
-        if let Some(value) = record.get(key) {
-            if value.as_u64().is_none() {
-                return Err(format!(
-                    "session header {field} must be a non-negative safe integer"
-                ));
-            }
+        if let Some(value) = record.get(key)
+            && value.as_u64().is_none()
+        {
+            return Err(format!(
+                "session header {field} must be a non-negative safe integer"
+            ));
         }
     }
-    if let Some(origin) = record.get("origin") {
-        if origin.as_str() != Some("subagent") {
-            return Err("session header origin must be \"subagent\"".to_string());
-        }
+    if let Some(origin) = record.get("origin")
+        && origin.as_str() != Some("subagent")
+    {
+        return Err("session header origin must be \"subagent\"".to_string());
     }
-    if let Some(preset) = record.get("agentPreset") {
-        if !preset.is_string() {
-            return Err("session header agentPreset must be a string".to_string());
-        }
+    if let Some(preset) = record.get("agentPreset")
+        && !preset.is_string()
+    {
+        return Err("session header agentPreset must be a string".to_string());
     }
     Ok(SessionHeader {
         version,

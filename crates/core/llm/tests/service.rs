@@ -1114,14 +1114,21 @@ async fn duplicate_empty_and_invalid_adapter_registrations_reject_atomically() {
     assert_eq!(error.code, "DUPLICATE_ADAPTER");
     assert!(error.message.contains("already registered"));
 
-    assert_eq!(
-        error_code(&runtime.register_adapter(
+    let dormant = runtime
+        .register_adapter(
             &ctx,
             Vec::new(),
-            Arc::new(ScriptedAdapter { script: script() })
-        )),
-        "INVALID_ADAPTER"
+            Arc::new(ScriptedAdapter { script: script() }),
+        )
+        .expect("empty route set is a live dormant registration");
+    (dormant.replace)(vec!["later".to_string()]).expect("activate dormant registration");
+    assert!(
+        runtime
+            .list_providers()
+            .iter()
+            .any(|entry| entry.id == "later")
     );
+    (dormant.replace)(Vec::new()).expect("return registration to dormant state");
     assert_eq!(
         error_code(&runtime.register_adapter(
             &ctx,
@@ -1173,9 +1180,8 @@ async fn replace_routes_atomically_and_guard_disposed_registration() {
 
     (handle.dispose)().await;
     assert!(runtime.list_providers().is_empty());
-    let error = (handle.replace)(vec!["leaked".to_string()])
-        .err()
-        .expect("disposed replace must refuse");
+    let error =
+        (handle.replace)(vec!["leaked".to_string()]).expect_err("disposed replace must refuse");
     assert_eq!(error.code, "REGISTRATION_DISPOSED");
 }
 

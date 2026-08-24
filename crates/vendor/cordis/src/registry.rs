@@ -13,6 +13,10 @@ use crate::error::{PluginError, ValidationError};
 use crate::fiber::FiberCore;
 use crate::util::{ArcValue, BoxFuture, DisposableList};
 
+/// Callback used by dependency-triggered anonymous plugins.
+pub type InjectCallback =
+    Arc<dyn Fn(&Context, ArcValue) -> BoxFuture<'static, Result<(), PluginError>> + Send + Sync>;
+
 /// Service dependency declaration accepted by plugins: service name →
 /// optional intercept config (`None` = plain requirement).
 #[derive(Debug, Clone, Default)]
@@ -174,18 +178,12 @@ impl RegistryService {
         &self,
         parent: &Context,
         deps: InjectSpec,
-        callback: Arc<
-            dyn Fn(&Context, ArcValue) -> BoxFuture<'static, Result<(), PluginError>> + Send + Sync,
-        >,
+        callback: InjectCallback,
     ) -> Arc<FiberCore> {
         struct CallbackPlugin {
             name: Option<&'static str>,
             deps: InjectSpec,
-            callback: Arc<
-                dyn Fn(&Context, ArcValue) -> BoxFuture<'static, Result<(), PluginError>>
-                    + Send
-                    + Sync,
-            >,
+            callback: InjectCallback,
         }
 
         #[async_trait::async_trait]

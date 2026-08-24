@@ -1,4 +1,6 @@
 use std::sync::Arc;
+
+use dsh_tool_pwsh::removes_directory;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -11,6 +13,23 @@ use dsh_system_prompt::SystemPrompt;
 use dsh_tool_jobs::ToolJobsService;
 use dsh_tool_pwsh::ToolPwshService;
 use dsh_tools::{ToolExecutionInput, ToolExecutionResult, ToolRuntime};
+
+#[test]
+fn directory_deletion_commands_require_approval() {
+    for command in [
+        "Remove-Item C:\\temp\\x -Recurse -Force",
+        "Remove-Item $dir -Force",
+        "Remove-Item C:\\temp\\x.txt",
+        "ri $dir",
+        "rmdir C:\\temp\\x",
+        "[System.IO.Directory]::Delete('C:\\temp\\x', $true)",
+    ] {
+        assert!(removes_directory(command), "{command}");
+    }
+    for command in ["Get-ChildItem C:\\", "Write-Output ok"] {
+        assert!(!removes_directory(command), "{command}");
+    }
+}
 
 fn never_abort() -> Arc<dyn Fn() -> bool + Send + Sync> {
     Arc::new(|| false)

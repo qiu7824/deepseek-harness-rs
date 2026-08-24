@@ -12,10 +12,26 @@ use dsh_host_directory_picker::{
 };
 use dsh_host_directory_picker_browse::{
     BrowseDirectoryPicker, Config, ListingCandidate, ancestry_crumbs, bounded_insert,
-    create_directory, fully_qualified, home_dir, race_abort,
+    create_directory, fully_qualified, home_dir, race_abort, windows_drive_entries,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(windows)]
+#[test]
+fn windows_drive_shortcuts_are_sorted_and_omit_the_current_drive() {
+    let entries = windows_drive_entries(
+        [
+            PathBuf::from("Z:\\"),
+            PathBuf::from("D:\\"),
+            PathBuf::from("d:\\"),
+            PathBuf::from("C:\\"),
+        ],
+        Some(Path::new("C:\\Users\\Administrator")),
+    );
+    let paths: Vec<_> = entries.into_iter().map(|entry| entry.path).collect();
+    assert_eq!(paths, vec!["D:\\", "Z:\\"]);
+}
 
 /// One unique temporary directory root per call, removed by the guard.
 struct TempRoot(PathBuf);
@@ -317,14 +333,27 @@ fn reports_the_ancestry_as_jump_target_crumbs_ending_at_the_listed_directory() {
 }
 
 #[test]
-fn lists_the_home_directory_when_no_path_is_given() {
+fn lists_the_virtual_computer_root_when_no_path_is_given() {
     run(async {
         let ctx = Context::root();
         let backend = install(&ctx, Config::default());
         let capability = browse(&backend.capability()).clone();
         let listing = (capability.list)(None, AbortSignal::new())
             .await
-            .expect("home listing");
+            .expect("initial listing");
+        #[cfg(windows)]
+        {
+            assert!(listing.path.is_empty());
+            assert!(listing.crumbs.is_empty());
+            assert!(!listing.entries.is_empty());
+            assert!(
+                listing
+                    .entries
+                    .iter()
+                    .all(|entry| entry.path.ends_with('\\'))
+            );
+        }
+        #[cfg(not(windows))]
         assert_eq!(listing.path, home_dir());
     });
 }

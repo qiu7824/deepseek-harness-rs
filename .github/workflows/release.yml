@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            artifact: dsh-windows-x86_64
+            binary: dsh.exe
+            archive: zip
+          - os: ubuntu-24.04
+            artifact: dsh-linux-x86_64
+            binary: dsh
+            archive: tar
+          - os: macos-13
+            artifact: dsh-macos-x86_64
+            binary: dsh
+            archive: tar
+          - os: macos-14
+            artifact: dsh-macos-aarch64
+            binary: dsh
+            archive: tar
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify product surface
+        shell: bash
+        run: python tools/verify_product_surface.py
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Build release
+        run: cargo build --release -p dsh-host-cli --bin dsh
+      - name: Stage package
+        shell: bash
+        run: |
+          mkdir -p "dist/${{ matrix.artifact }}/plugins"
+          cp "target/release/${{ matrix.binary }}" "dist/${{ matrix.artifact }}/${{ matrix.binary }}"
+          cp -R release/plugins/. "dist/${{ matrix.artifact }}/plugins/"
+          cp -R web "dist/${{ matrix.artifact }}/web"
+          cp -R config "dist/${{ matrix.artifact }}/config"
+          cp .github/workflows/release.yml "dist/${{ matrix.artifact }}/RELEASE_WORKFLOW.yml"
+          cp README.md LICENSE "dist/${{ matrix.artifact }}/"
+      - name: Archive Windows package
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: Compress-Archive -Path "dist/${{ matrix.artifact }}/*" -DestinationPath "dist/${{ matrix.artifact }}.zip"
+      - name: Archive Unix package
+        if: matrix.archive == 'tar'
+        shell: bash
+        run: tar -C dist -czf "dist/${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}.*
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
+          generate_release_notes: true
+          files: dist/*

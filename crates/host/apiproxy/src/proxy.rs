@@ -14,14 +14,15 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cordis::Context;
-use dsh_agent::Agent;
+use cordis::{Context, make_disposer};
+use dsh_agent::{Agent, AgentSetup, ModelSelectionRef};
 use dsh_host_directory_picker::{
     AbortSignal as PickerAbort, DirectoryPicker, DirectoryPickerBrowseCapability,
     DirectoryPickerCapability, DirectoryPickerErrorCode, DirectoryPickerListError,
 };
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use parking_lot::Mutex;
 
 use crate::api::host::{
     HostCreateDirectoryRequest, HostCreateDirectoryResult, HostDescribeResult,
@@ -34,6 +35,23 @@ use crate::api::sessions::ModelSelection;
 use crate::fetch::handler::{
     AbortSignal, ApiProxyCarrier, Body, DownloadResponse, FrameRequest, SessionLogQuery,
 };
+
+type OpenPathFn =
+    Arc<dyn Fn(String, AbortSignal) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
+type GoalMutation = Arc<
+    dyn Fn(
+            Arc<dsh_goal::GoalService>,
+            Arc<dyn Agent>,
+        ) -> Result<dsh_goal::GoalView, dsh_goal::GoalError>
+        + Send
+        + Sync,
+>;
+type PresetSwitch = (
+    u64,
+    futures::future::Shared<BoxFuture<'static, Arc<RpcResponse<serde_json::Value>>>>,
+);
+type PresetSwitches =
+    Arc<parking_lot::Mutex<std::collections::HashMap<dsh_session::SessionId, PresetSwitch>>>;
 
 /// The host app version reported by `host.describe` (the TS placeholder —
 /// reads apps/cli's package version once the CLI lands).
@@ -48,11 +66,13 @@ pub struct ApiProxyDefaults {
     /// carries no cwd.
     pub cwd: String,
     /// Native open-with-default-application; injectable for carrier tests.
-    pub open_path: Option<
-        Arc<dyn Fn(String, AbortSignal) -> BoxFuture<'static, Result<(), String>> + Send + Sync>,
-    >,
+    pub open_path: Option<OpenPathFn>,
     /// Whether handing a path to the native opener can work at all.
     pub can_open_path: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// Profile-local plugin entry document used by inventory mutations.
+    pub plugins_document: Option<std::path::PathBuf>,
+    /// Serialize Loader mutation, whole-tree snapshot, persistence, and rollback.
+    pub plugin_mutation_lock: Arc<tokio::sync::Mutex<()>>,
     /// Validated DEFLATE level for session-log ZIP entries; defaults to 6.
     pub session_export_compression_level: u32,
     /// Maximum artifact size eligible for one cold blankness read.
@@ -72,41 +92,256 @@ impl Default for ApiProxyDefaults {
                 .unwrap_or_default(),
             open_path: None,
             can_open_path: None,
+            plugins_document: None,
+            plugin_mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
             session_export_compression_level: 6,
             cold_blank_probe_max_bytes: 1024,
         }
     }
 }
 
+type SelectionState = Arc<Mutex<ModelSelectionRef>>;
+
+struct SelectionEntry {
+    agent: std::sync::Weak<dyn Agent>,
+    state: SelectionState,
+    installed: tokio::sync::OnceCell<()>,
+}
+
+type SelectionMap =
+    Arc<Mutex<std::collections::HashMap<dsh_session::SessionId, Arc<SelectionEntry>>>>;
+
+fn core_selection(selection: crate::api::sessions::ModelSelection) -> dsh_agent::ModelSelection {
+    dsh_agent::ModelSelection {
+        provider: selection.provider,
+        model: selection.model,
+        reasoning_effort: selection
+            .reasoning_effort
+            .map(dsh_llm::ReasoningEffortId::new),
+    }
+}
+
+fn wire_selection(selection: dsh_agent::ModelSelection) -> crate::api::sessions::ModelSelection {
+    crate::api::sessions::ModelSelection {
+        provider: selection.provider,
+        model: selection.model,
+        reasoning_effort: selection.reasoning_effort.map(|effort| effort.to_string()),
+    }
+}
+
+fn model_selection_from_events(
+    events: &[dsh_session::SessionEvent],
+) -> Option<dsh_agent::ModelSelection> {
+    if let Some(selected) = events.iter().rev().find_map(|event| {
+        if event.type_ != "model/selection" {
+            return None;
+        }
+        serde_json::from_value::<crate::api::sessions::ModelSelection>(event.data.clone())
+            .ok()
+            .map(core_selection)
+    }) {
+        return Some(selected);
+    }
+    events.iter().rev().find_map(|event| {
+        if event.type_ != "request/header" {
+            return None;
+        }
+        let config = event.data.get("header")?.get("config")?;
+        Some(dsh_agent::ModelSelection {
+            provider: config.get("provider")?.as_str()?.to_string(),
+            model: config.get("model")?.as_str()?.to_string(),
+            reasoning_effort: config
+                .get("reasoningEffort")
+                .and_then(serde_json::Value::as_str)
+                .map(dsh_llm::ReasoningEffortId::new),
+        })
+    })
+}
+
+fn persisted_model_selection(session: &dsh_session::Session) -> Option<dsh_agent::ModelSelection> {
+    model_selection_from_events(&session.events())
+}
+
+fn set_plugin_document_enabled(
+    entries: &mut [serde_json::Value],
+    entry_id: &str,
+    enabled: bool,
+) -> bool {
+    for entry in entries {
+        let Some(object) = entry.as_object_mut() else {
+            continue;
+        };
+        if object.get("id").and_then(serde_json::Value::as_str) == Some(entry_id) {
+            object.insert("disabled".to_string(), serde_json::Value::Bool(!enabled));
+            return true;
+        }
+        if let Some(children) = object
+            .get_mut("config")
+            .and_then(serde_json::Value::as_array_mut)
+            && set_plugin_document_enabled(children, entry_id, enabled)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn model_selection_setup(defaults: Arc<ApiProxyDefaults>, selections: SelectionMap) -> AgentSetup {
+    Arc::new(move |agent_ctx, agent| {
+        let ctx = agent_ctx.clone();
+        let id = agent.id().clone();
+        let weak = Arc::downgrade(&agent);
+        let defaults = defaults.clone();
+        let selections = selections.clone();
+        Box::pin(async move {
+            let entry = {
+                let mut entries = selections.lock();
+                if let Some(existing) = entries.get(&id) {
+                    if let Some(existing_agent) = existing.agent.upgrade() {
+                        if !Arc::ptr_eq(&existing_agent, &agent) {
+                            return Err(format!(
+                                "api-proxy: model selection already belongs to another live agent \"{id}\""
+                            ));
+                        }
+                        existing.clone()
+                    } else {
+                        entries.remove(&id);
+                        let session = agent.session().clone();
+                        let defaults = defaults.clone();
+                        let entry = Arc::new(SelectionEntry {
+                            agent: weak.clone(),
+                            state: Arc::new(Mutex::new(ModelSelectionRef::with_resolver(
+                                Arc::new(move || {
+                                    if let Some(selected) = persisted_model_selection(&session) {
+                                        return Some(selected);
+                                    }
+                                    if let Some(header) = session.request_header() {
+                                        return Some(dsh_agent::ModelSelection {
+                                            provider: header.config.provider,
+                                            model: header.config.model,
+                                            reasoning_effort: header.config.reasoning_effort,
+                                        });
+                                    }
+                                    Some(core_selection((defaults.default_model_selection)()))
+                                }),
+                            ))),
+                            installed: tokio::sync::OnceCell::new(),
+                        });
+                        entries.insert(id.clone(), entry.clone());
+                        entry
+                    }
+                } else {
+                    let session = agent.session().clone();
+                    let defaults = defaults.clone();
+                    let entry = Arc::new(SelectionEntry {
+                        agent: weak.clone(),
+                        state: Arc::new(Mutex::new(ModelSelectionRef::with_resolver(Arc::new(
+                            move || {
+                                if let Some(selected) = persisted_model_selection(&session) {
+                                    return Some(selected);
+                                }
+                                if let Some(header) = session.request_header() {
+                                    return Some(dsh_agent::ModelSelection {
+                                        provider: header.config.provider,
+                                        model: header.config.model,
+                                        reasoning_effort: header.config.reasoning_effort,
+                                    });
+                                }
+                                Some(core_selection((defaults.default_model_selection)()))
+                            },
+                        )))),
+                        installed: tokio::sync::OnceCell::new(),
+                    });
+                    entries.insert(id.clone(), entry.clone());
+                    entry
+                }
+            };
+
+            let entry_for_install = entry.clone();
+            let entries_for_cleanup = selections.clone();
+            let id_for_cleanup = id.clone();
+            entry
+                .installed
+                .get_or_init(|| async move {
+                    let _ =
+                        dsh_agent::install_model_selection(&ctx, entry_for_install.state.clone())
+                            .await;
+                    let cleanup_entry = entry_for_install.clone();
+                    let _ = ctx.effect(
+                        "apiProxy.modelSelection",
+                        Box::pin(async move {
+                            Some(make_disposer(move || {
+                                let entries = entries_for_cleanup.clone();
+                                let id = id_for_cleanup.clone();
+                                let entry = cleanup_entry.clone();
+                                Box::pin(async move {
+                                    let mut entries = entries.lock();
+                                    if entries
+                                        .get(&id)
+                                        .is_some_and(|current| Arc::ptr_eq(current, &entry))
+                                    {
+                                        entries.remove(&id);
+                                    }
+                                })
+                            }))
+                        }),
+                    );
+                })
+                .await;
+            Ok(None)
+        })
+    })
+}
+
+fn composed_agent_setup(
+    selection: AgentSetup,
+    presets: Option<Arc<dsh_agent_presets::AgentPresets>>,
+    preset_id: Option<String>,
+) -> AgentSetup {
+    Arc::new(move |agent_ctx, agent| {
+        let agent_ctx = agent_ctx.clone();
+        let selection = selection.clone();
+        let presets = presets.clone();
+        let preset_id = preset_id.clone();
+        Box::pin(async move {
+            let commit = selection(&agent_ctx, agent).await?;
+            if let Some(presets) = presets {
+                presets
+                    .mount(&agent_ctx, preset_id.as_deref())
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(commit)
+        })
+    })
+}
+
+struct OwnedAgentHandle {
+    agent: Arc<dyn Agent>,
+    dispose: Option<BoxFuture<'static, ()>>,
+}
+
+type OwnedAgentHandles =
+    Arc<parking_lot::Mutex<std::collections::HashMap<dsh_session::SessionId, OwnedAgentHandle>>>;
+
 /// The composed `ctx.apiProxy` service.
 pub struct ApiProxyService {
     ctx: Context,
     defaults: Arc<ApiProxyDefaults>,
     resolver: Arc<crate::agent_lookup::AgentResolver>,
-    /// Per-session process-local model selections (the TS `selections`
-    /// WeakMap; the logged-request tier arrives with the request-header
-    /// milestone).
-    selections: parking_lot::Mutex<
-        std::collections::HashMap<dsh_session::SessionId, crate::api::sessions::ModelSelection>,
-    >,
+    model_selection_setup: AgentSetup,
+    /// Per-session process-local model selections, tied to the exact live
+    /// Agent identity. The state is installed before publication and removed
+    /// by the Agent scope's disposer.
+    selections: SelectionMap,
+    /// Owner-only lifecycle handles for Agents created or resumed through this API.
+    owned_agent_handles: OwnedAgentHandles,
     /// Per-session preset-switch chains (the TS `presetSwitches` map): each
     /// select request serializes behind the previous one so a queued request
     /// re-reads blankness and the roster after earlier switches committed.
     /// The `u64` is a per-session turn token; the settled entry is removed
     /// only when it is still the caller's own turn (TS finally-check).
-    preset_switches: Arc<
-        parking_lot::Mutex<
-            std::collections::HashMap<
-                dsh_session::SessionId,
-                (
-                    u64,
-                    futures::future::Shared<
-                        BoxFuture<'static, Arc<RpcResponse<serde_json::Value>>>,
-                    >,
-                ),
-            >,
-        >,
-    >,
+    preset_switches: PresetSwitches,
     /// Monotone turn tokens for the preset-switch chains.
     preset_switch_counter: std::sync::atomic::AtomicU64,
     /// Pending approval/question requests and live mux subscribers.
@@ -134,11 +369,40 @@ impl ApiProxyService {
                     ..Default::default()
                 }
             });
+        let selections: SelectionMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let owned_agent_handles: OwnedAgentHandles =
+            Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
+        let handles_for_resume = owned_agent_handles.clone();
+        let retain_handle: Arc<dyn Fn(dsh_agent::AgentHandle) -> Arc<dyn Agent> + Send + Sync> =
+            Arc::new(move |handle| {
+                let agent = handle.agent.clone();
+                handles_for_resume.lock().insert(
+                    agent.id().clone(),
+                    OwnedAgentHandle {
+                        agent: agent.clone(),
+                        dispose: Some(handle.dispose),
+                    },
+                );
+                agent
+            });
+        let selection_setup = model_selection_setup(defaults.clone(), selections.clone());
+        let setup_for_resume = selection_setup.clone();
+        let ctx_for_resume = ctx.clone();
         let resolver = crate::agent_lookup::AgentResolver::new(
             ctx,
             crate::agent_lookup::ApiRemoteAgentOptions {
                 agent_options,
-                setup: None,
+                retain_handle,
+                setup: Some(Arc::new(move |header, events| {
+                    let selection = setup_for_resume.clone();
+                    let presets = ctx_for_resume
+                        .get_typed::<Arc<dsh_agent_presets::AgentPresets>>("agentPresets", false)
+                        .map(|slot| slot.as_ref().clone());
+                    let preset_id = dsh_agent_presets::resolve_session_preset(&header, &events);
+                    Box::pin(async move {
+                        Ok(Some(composed_agent_setup(selection, presets, preset_id)))
+                    })
+                })),
             },
         );
         let interactions = crate::interactions::InteractionState::new();
@@ -146,7 +410,9 @@ impl ApiProxyService {
             ctx: ctx.clone(),
             defaults,
             resolver,
-            selections: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            model_selection_setup: selection_setup,
+            selections,
+            owned_agent_handles,
             preset_switches: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             preset_switch_counter: std::sync::atomic::AtomicU64::new(0),
             interactions: interactions.clone(),
@@ -166,6 +432,18 @@ impl ApiProxyService {
         self.ctx
             .get_typed::<Arc<dsh_agent::AgentRegistry>>("agents", false)
             .map(|slot| slot.as_ref().clone())
+    }
+
+    fn retain_owned_handle(&self, handle: dsh_agent::AgentHandle) -> Arc<dyn Agent> {
+        let agent = handle.agent.clone();
+        self.owned_agent_handles.lock().insert(
+            agent.id().clone(),
+            OwnedAgentHandle {
+                agent: agent.clone(),
+                dispose: Some(handle.dispose),
+            },
+        );
+        agent
     }
 
     fn sessions(&self) -> Option<Arc<dsh_session::SessionStore>> {
@@ -219,62 +497,62 @@ impl ApiProxyService {
         agent_preset: &str,
         error: String,
     ) -> RpcResponse<serde_json::Value> {
-        if let Some(rest) = error.strip_prefix("agent-presets: preset \"") {
-            if let Some((id, tail)) = rest.split_once('"') {
-                if let Some(available_tail) = tail.strip_prefix(" not found (available: ") {
-                    let available_tail = available_tail.strip_suffix(')').unwrap_or(available_tail);
-                    let available: Vec<String> = if available_tail == "none" {
-                        Vec::new()
-                    } else {
-                        available_tail.split(", ").map(str::to_string).collect()
-                    };
-                    return err(
-                        rpc_id,
-                        RpcError::AgentPresetNotFound(RpcErrorBody {
-                            message: error.clone(),
-                            details: crate::api::rpc::AgentPresetNotFoundDetails {
-                                agent_preset: id.to_string(),
-                                available,
-                            },
-                        }),
-                    );
-                }
-                if let Some(reason) = tail.strip_prefix(" failed to mount: ") {
-                    return err(
-                        rpc_id,
-                        RpcError::AgentPresetInvalid(RpcErrorBody {
-                            message: error.clone(),
-                            details: crate::api::rpc::AgentPresetReasonDetails {
-                                agent_preset: agent_preset.to_string(),
-                                reason: reason.to_string(),
-                            },
-                        }),
-                    );
-                }
-                if tail.starts_with(" cannot be written: ") {
-                    return err(
-                        rpc_id,
-                        RpcError::AgentPresetReadOnly(RpcErrorBody {
-                            message: error.clone(),
-                            details: crate::api::rpc::AgentPresetReasonDetails {
-                                agent_preset: agent_preset.to_string(),
-                                reason: error,
-                            },
-                        }),
-                    );
-                }
-                if tail.starts_with(" already exists") {
-                    return err(
-                        rpc_id,
-                        RpcError::AgentPresetInvalid(RpcErrorBody {
-                            message: error.clone(),
-                            details: crate::api::rpc::AgentPresetReasonDetails {
-                                agent_preset: agent_preset.to_string(),
-                                reason: error,
-                            },
-                        }),
-                    );
-                }
+        if let Some(rest) = error.strip_prefix("agent-presets: preset \"")
+            && let Some((id, tail)) = rest.split_once('"')
+        {
+            if let Some(available_tail) = tail.strip_prefix(" not found (available: ") {
+                let available_tail = available_tail.strip_suffix(')').unwrap_or(available_tail);
+                let available: Vec<String> = if available_tail == "none" {
+                    Vec::new()
+                } else {
+                    available_tail.split(", ").map(str::to_string).collect()
+                };
+                return err(
+                    rpc_id,
+                    RpcError::AgentPresetNotFound(RpcErrorBody {
+                        message: error.clone(),
+                        details: crate::api::rpc::AgentPresetNotFoundDetails {
+                            agent_preset: id.to_string(),
+                            available,
+                        },
+                    }),
+                );
+            }
+            if let Some(reason) = tail.strip_prefix(" failed to mount: ") {
+                return err(
+                    rpc_id,
+                    RpcError::AgentPresetInvalid(RpcErrorBody {
+                        message: error.clone(),
+                        details: crate::api::rpc::AgentPresetReasonDetails {
+                            agent_preset: agent_preset.to_string(),
+                            reason: reason.to_string(),
+                        },
+                    }),
+                );
+            }
+            if tail.starts_with(" cannot be written: ") {
+                return err(
+                    rpc_id,
+                    RpcError::AgentPresetReadOnly(RpcErrorBody {
+                        message: error.clone(),
+                        details: crate::api::rpc::AgentPresetReasonDetails {
+                            agent_preset: agent_preset.to_string(),
+                            reason: error,
+                        },
+                    }),
+                );
+            }
+            if tail.starts_with(" already exists") {
+                return err(
+                    rpc_id,
+                    RpcError::AgentPresetInvalid(RpcErrorBody {
+                        message: error.clone(),
+                        details: crate::api::rpc::AgentPresetReasonDetails {
+                            agent_preset: agent_preset.to_string(),
+                            reason: error,
+                        },
+                    }),
+                );
             }
         }
         if error.starts_with("agent-presets: preset id ") {
@@ -516,6 +794,135 @@ impl ApiProxyService {
             ),
         }
     }
+    async fn plugin_inventory_list(
+        &self,
+        request: RpcRequest<serde_json::Value>,
+    ) -> RpcResponse<serde_json::Value> {
+        let Some(inventory) = self
+            .ctx
+            .get_typed::<Arc<dsh_host_plugin_inventory::PluginInventoryGateway>>(
+                "pluginInventory",
+                false,
+            )
+            .map(|slot| slot.as_ref().clone())
+        else {
+            return err(
+                request.rpc_id,
+                RpcError::Internal(RpcErrorBody {
+                    message: "pluginInventory service is not composed".to_string(),
+                    details: EmptyDetails {},
+                }),
+            );
+        };
+        ok(request.rpc_id, inventory.list())
+    }
+
+    async fn plugin_inventory_set_enabled(
+        &self,
+        request: RpcRequest<dsh_host_plugin_inventory::PluginSetEnabledRequest>,
+    ) -> RpcResponse<serde_json::Value> {
+        let Some(loader) = self
+            .ctx
+            .get_typed::<Arc<dsh_cordis_loader::LoaderService>>("loader", false)
+            .map(|slot| slot.as_ref().clone())
+        else {
+            return err(
+                request.rpc_id,
+                RpcError::Internal(RpcErrorBody {
+                    message: "loader service is not composed".to_string(),
+                    details: EmptyDetails {},
+                }),
+            );
+        };
+        let _mutation = self.defaults.plugin_mutation_lock.lock().await;
+        let Ok(entry) = loader.tree.resolve(&request.payload.entry_id) else {
+            return err(
+                request.rpc_id,
+                RpcError::Internal(RpcErrorBody {
+                    message: format!("unknown plugin entry {:?}", request.payload.entry_id),
+                    details: EmptyDetails {},
+                }),
+            );
+        };
+        let previous = entry.options.lock().clone();
+        let mut patch = indexmap::IndexMap::new();
+        patch.insert(
+            "disabled".to_string(),
+            serde_json::Value::Bool(!request.payload.enabled),
+        );
+        if let Err(error) = entry.update(patch, false).await {
+            return err(
+                request.rpc_id,
+                RpcError::Internal(RpcErrorBody {
+                    message: format!("plugin enablement failed: {error}"),
+                    details: EmptyDetails {},
+                }),
+            );
+        }
+        if let Some(path) = &self.defaults.plugins_document {
+            let entry_id = request.payload.entry_id.clone();
+            let enabled = request.payload.enabled;
+            let write = dsh_atomic_write::with_file_lock(path, async {
+                let raw = tokio::fs::read(path).await?;
+                let mut entries: Vec<serde_json::Value> = serde_json::from_slice(&raw)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+                if !set_plugin_document_enabled(&mut entries, &entry_id, enabled) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("plugin entry {entry_id:?} is absent from the latest config"),
+                    ));
+                }
+                let bytes = serde_json::to_vec_pretty(&entries)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+                dsh_atomic_write::write_file_atomic(
+                    path,
+                    &bytes,
+                    dsh_atomic_write::WriteFileAtomicOptions {
+                        mode: 0o600,
+                        dir_mode: Some(0o700),
+                    },
+                )
+                .await
+            })
+            .await
+            .and_then(|result| result);
+            if let Err(error) = write {
+                let rollback = entry.replace_options(previous).await;
+                let message = match rollback {
+                    Ok(()) => format!("plugin config persist failed: {error}"),
+                    Err(rollback_error) => format!(
+                        "plugin config persist failed: {error}; runtime rollback failed: {rollback_error}"
+                    ),
+                };
+                return err(
+                    request.rpc_id,
+                    RpcError::Internal(RpcErrorBody {
+                        message,
+                        details: EmptyDetails {},
+                    }),
+                );
+            }
+        }
+        let inventory = self
+            .ctx
+            .get_typed::<Arc<dsh_host_plugin_inventory::PluginInventoryGateway>>(
+                "pluginInventory",
+                false,
+            )
+            .map(|slot| slot.as_ref().clone())
+            .expect("plugin inventory service");
+        let snapshot = inventory.list();
+        let selected = snapshot
+            .entries
+            .into_iter()
+            .find(|entry| entry.entry_id.as_str() == request.payload.entry_id)
+            .expect("updated entry remains in inventory");
+        ok(
+            request.rpc_id,
+            dsh_host_plugin_inventory::PluginSetEnabledResult { entry: selected },
+        )
+    }
+
     async fn skill_list(
         &self,
         request: RpcRequest<crate::api::skills::SkillListRequest>,
@@ -806,14 +1213,7 @@ impl ApiProxyService {
         &self,
         rpc_id: RpcId,
         session_id: &dsh_session::SessionId,
-        mutation: Arc<
-            dyn Fn(
-                    Arc<dsh_goal::GoalService>,
-                    Arc<dyn Agent>,
-                ) -> Result<dsh_goal::GoalView, dsh_goal::GoalError>
-                + Send
-                + Sync,
-        >,
+        mutation: GoalMutation,
     ) -> RpcResponse<serde_json::Value> {
         let resolved = self.resolver.resolve(session_id).await;
         let agent = match resolved {
@@ -912,7 +1312,6 @@ impl ApiProxyService {
                     GoalVerb::Pause => goals.pause(&agent, &goal_ref),
                     GoalVerb::Resume => goals.resume(&agent, &goal_ref),
                     GoalVerb::Complete => goals.complete(&agent, &goal_ref),
-                    GoalVerb::Clear => unreachable!("clear answers a plain acknowledgement"),
                 }
             }),
         )
@@ -950,7 +1349,6 @@ enum GoalVerb {
     Pause,
     Resume,
     Complete,
-    Clear,
 }
 
 impl ApiProxyService {
@@ -1390,19 +1788,30 @@ impl ApiProxyService {
                 }),
             );
         };
-        let Some(open_path) = &self.defaults.open_path else {
-            return err(
-                request.rpc_id,
-                RpcError::Internal(RpcErrorBody {
-                    message: "settings.openDocument: no native opener is composed".to_string(),
-                    details: EmptyDetails {},
-                }),
-            );
+        let opened = match &self.defaults.open_path {
+            Some(open_path) => open_path(path.clone(), signal.clone()).await,
+            None => {
+                let abort = signal.clone();
+                crate::native_path_opener::open_native_text_file(
+                    &path,
+                    Some(Arc::new(move || abort.aborted())),
+                    &crate::native_path_opener::PathOpenerInternals::default(),
+                )
+                .await
+                .map_err(|error| error.to_string())
+            }
         };
-        match open_path(path, signal).await {
+        match opened {
             Ok(()) => ok(
                 request.rpc_id,
                 crate::api::settings::SettingsOpenDocumentResult { opened: true },
+            ),
+            Err(_error) if signal.aborted() => err(
+                request.rpc_id,
+                RpcError::Cancelled(RpcErrorBody {
+                    message: "settings document open was aborted".to_string(),
+                    details: EmptyDetails {},
+                }),
             ),
             Err(error) => err(
                 request.rpc_id,
@@ -1729,6 +2138,170 @@ impl ApiProxyService {
         }
     }
 
+    async fn workspace_delete_archived_session(
+        &self,
+        request: RpcRequest<crate::api::workspace::WorkspaceArchiveSessionRequest>,
+    ) -> RpcResponse<serde_json::Value> {
+        let Some(registry) = self.workspace_registry() else {
+            return err(request.rpc_id, Self::workspace_absent());
+        };
+        let session_id = dsh_session::session_id(request.payload.session_id.clone());
+        let live = self.agents().and_then(|agents| agents.get(&session_id));
+        let owned_dispose = {
+            let mut handles = self.owned_agent_handles.lock();
+            match handles.get_mut(&session_id) {
+                Some(handle)
+                    if live
+                        .as_ref()
+                        .is_some_and(|live| !Arc::ptr_eq(&handle.agent, live)) =>
+                {
+                    None
+                }
+                Some(handle) => handle
+                    .dispose
+                    .take()
+                    .map(|dispose| (handle.agent.clone(), dispose)),
+                None => None,
+            }
+        };
+        if let Some(live_agent) = live.as_ref()
+            && let Some(subagents) = self.subagents()
+            && let Err(error) = subagents
+                .drain_continuable_descendants(std::slice::from_ref(live_agent))
+                .await
+        {
+            return err(
+                request.rpc_id,
+                RpcError::AgentBusy(RpcErrorBody {
+                    message: format!(
+                        "session \"{session_id}\" continuable descendants could not be drained: {error}"
+                    ),
+                    details: crate::api::rpc::ReasonDetails {
+                        reason: "continuable descendant drain failed".to_string(),
+                    },
+                }),
+            );
+        }
+        if let Some(live_agent) = live.as_ref()
+            && owned_dispose.is_none()
+        {
+            let Some(agents) = self.agents() else {
+                return err(
+                    request.rpc_id,
+                    RpcError::Internal(RpcErrorBody {
+                        message: "agent registry disappeared while retiring a live session"
+                            .to_string(),
+                        details: EmptyDetails {},
+                    }),
+                );
+            };
+            if !agents.can_retire(live_agent) {
+                return err(
+                    request.rpc_id,
+                    RpcError::AgentBusy(RpcErrorBody {
+                        message: format!(
+                            "session \"{session_id}\" is owned by another live subsystem"
+                        ),
+                        details: crate::api::rpc::ReasonDetails {
+                            reason:
+                                "the structural Agent factory does not own this exact lifecycle"
+                                    .to_string(),
+                        },
+                    }),
+                );
+            }
+            live_agent.cancel(dsh_agent::AgentCancelCause::User, None);
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                agents.retire(live_agent.clone()),
+            )
+            .await
+            {
+                Ok(Ok(true)) => {}
+                Ok(Ok(false)) | Err(_) => {
+                    return err(
+                        request.rpc_id,
+                        RpcError::AgentBusy(RpcErrorBody {
+                            message: format!(
+                                "session \"{session_id}\" did not stop within 5 seconds; permanent deletion was not started"
+                            ),
+                            details: crate::api::rpc::ReasonDetails {
+                                reason: "structural agent retirement did not settle".to_string(),
+                            },
+                        }),
+                    );
+                }
+                Ok(Err(error)) => {
+                    return err(
+                        request.rpc_id,
+                        RpcError::AgentBusy(RpcErrorBody {
+                            message: format!(
+                                "session \"{session_id}\" could not be retired: {error}"
+                            ),
+                            details: crate::api::rpc::ReasonDetails {
+                                reason: "structural agent retirement failed".to_string(),
+                            },
+                        }),
+                    );
+                }
+            }
+        }
+        if let Some((disposed_agent, mut dispose)) = owned_dispose {
+            if tokio::time::timeout(std::time::Duration::from_secs(5), &mut dispose)
+                .await
+                .is_err()
+            {
+                let mut handles = self.owned_agent_handles.lock();
+                if let Some(current) = handles.get_mut(&session_id)
+                    && current.dispose.is_none()
+                    && Arc::ptr_eq(&current.agent, &disposed_agent)
+                {
+                    current.dispose = Some(dispose);
+                }
+                return err(
+                    request.rpc_id,
+                    RpcError::AgentBusy(RpcErrorBody {
+                        message: format!(
+                            "session \"{session_id}\" did not stop within 5 seconds; permanent deletion was not started"
+                        ),
+                        details: crate::api::rpc::ReasonDetails {
+                            reason: "agent disposal timed out".to_string(),
+                        },
+                    }),
+                );
+            }
+            let mut handles = self.owned_agent_handles.lock();
+            if handles.get(&session_id).is_some_and(|current| {
+                current.dispose.is_none() && Arc::ptr_eq(&current.agent, &disposed_agent)
+            }) {
+                handles.remove(&session_id);
+            }
+        }
+        match registry.delete_archived_session(&session_id, None).await {
+            Ok(_artifact_existed) => ok(
+                request.rpc_id,
+                crate::api::workspace::WorkspaceArchiveSessionResult {
+                    // Success means the session is now durably absent. An
+                    // already-unmaterialized artifact is still a successful
+                    // permanent deletion.
+                    deleted: true,
+                    archived_session_ids: registry
+                        .archived_session_ids()
+                        .into_iter()
+                        .map(|id| id.to_string())
+                        .collect(),
+                },
+            ),
+            Err(error) => err(
+                request.rpc_id,
+                RpcError::Internal(RpcErrorBody {
+                    message: format!("workspace.deleteArchivedSession: {error}"),
+                    details: EmptyDetails {},
+                }),
+            ),
+        }
+    }
+
     async fn workspace_archive_session(
         &self,
         request: RpcRequest<crate::api::workspace::WorkspaceArchiveSessionRequest>,
@@ -1747,6 +2320,7 @@ impl ApiProxyService {
             Ok(()) => ok(
                 request.rpc_id,
                 crate::api::workspace::WorkspaceArchiveSessionResult {
+                    deleted: false,
                     archived_session_ids: registry
                         .archived_session_ids()
                         .into_iter()
@@ -1810,15 +2384,27 @@ impl ApiProxyService {
         }
     }
 
-    /// Summarize one cold session (TS `summarizeCold`; the cold blank probe
-    /// is simplified — an unreadable artifact conservatively reports
-    /// `blank: false`, the TS posture for oversized artifacts).
-    fn summarize_cold(meta: &dsh_session::SessionHeader) -> crate::api::sessions::SessionSummary {
+    /// Summarize one validated cold session from its complete durable prefix.
+    fn summarize_cold(
+        inspection: &dsh_session_persistence::SessionReadFromResult,
+    ) -> crate::api::sessions::SessionSummary {
+        let meta = &inspection.meta;
+        let blank = !inspection
+            .events
+            .iter()
+            .any(|event| event.type_ == "turn/start");
+        let updated_at = inspection
+            .events
+            .iter()
+            .rev()
+            .find(|event| event.type_ == "user/message")
+            .map(|event| event.time)
+            .unwrap_or_else(|| meta.created_at as i64);
         crate::api::sessions::SessionSummary {
             session_id: meta.id.clone(),
-            updated_at: meta.created_at as i64,
+            updated_at,
             running: false,
-            blank: false,
+            blank,
             parent_session_id: meta.parent_session.clone(),
             origin: meta.origin.as_deref().and_then(|origin| match origin {
                 "subagent" => Some(crate::api::sessions::SessionOrigin::Subagent),
@@ -1862,17 +2448,45 @@ impl ApiProxyService {
             )
             .map(|slot| slot.as_ref().clone())
         {
-            if let Ok(cold) = persistence.list().await {
-                for meta in cold {
-                    if attached.contains(meta.id.as_str()) || meta.cwd.is_none() {
-                        continue;
-                    }
-                    items.push(Self::summarize_cold(&meta));
+            let cold = match persistence.list().await {
+                Ok(cold) => cold,
+                Err(error) => {
+                    return err(
+                        request.rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message: format!("session.list: {error}"),
+                            details: EmptyDetails {},
+                        }),
+                    );
                 }
+            };
+            for meta in cold {
+                if attached.contains(meta.id.as_str())
+                    || meta.cwd.is_none()
+                    || meta.version != dsh_session::SESSION_FORMAT_VERSION
+                {
+                    continue;
+                }
+                let stored = match persistence.read_from(&meta.id, 0).await {
+                    Ok(stored) => stored,
+                    Err(error) => {
+                        return err(
+                            request.rpc_id,
+                            RpcError::Internal(RpcErrorBody {
+                                message: format!(
+                                    "session.list: cannot read persisted session {}: {error}",
+                                    meta.id.as_str()
+                                ),
+                                details: EmptyDetails {},
+                            }),
+                        );
+                    }
+                };
+                items.push(Self::summarize_cold(&stored));
             }
         }
         // updatedAt descending (the TS sort).
-        items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        items.sort_by_key(|item| std::cmp::Reverse(item.updated_at));
         ok(
             request.rpc_id,
             crate::api::sessions::SessionListResult { items },
@@ -1885,7 +2499,7 @@ impl ApiProxyService {
     ) -> RpcResponse<serde_json::Value> {
         use dsh_session::CreateSessionMeta;
 
-        let Some(sessions) = self.sessions() else {
+        let Some(_sessions) = self.sessions() else {
             return err(
                 request.rpc_id,
                 RpcError::Internal(RpcErrorBody {
@@ -1903,53 +2517,54 @@ impl ApiProxyService {
                 }),
             );
         };
-        // Workspace attachment (ensureWorkspace) arrives with the
-        // workspace-create milestone; a workspaceId request answers
-        // internal for now.
-        if request.payload.workspace_id.is_some() {
-            return err(
-                request.rpc_id,
-                RpcError::Internal(RpcErrorBody {
-                    message: "session.create: workspace attachment is not implemented in the Rust composition yet".to_string(),
-                    details: EmptyDetails {},
-                }),
-            );
-        }
+        let workspace = match request.payload.workspace_id.as_ref() {
+            Some(workspace_id) => {
+                let Some(registry) = self.workspace_registry() else {
+                    return err(request.rpc_id, Self::workspace_absent());
+                };
+                let workspace_id = dsh_workspace::workspace_id(workspace_id.to_string());
+                let Some(workspace) = registry.get(&workspace_id) else {
+                    return err(
+                        request.rpc_id,
+                        RpcError::WorkspaceNotFound(RpcErrorBody {
+                            message: format!("workspace \"{workspace_id}\" not found"),
+                            details: crate::api::rpc::WorkspaceIdDetails {
+                                workspace_id: workspace_id.to_string(),
+                            },
+                        }),
+                    );
+                };
+                Some(workspace)
+            }
+            None => None,
+        };
         let cwd = request
             .payload
             .cwd
             .clone()
+            .or_else(|| workspace.as_ref().map(|workspace| workspace.path()))
             .unwrap_or_else(|| self.defaults.cwd.clone());
         let session_id = request.payload.session_id.clone();
+        let presets = self.agent_presets();
+        let resolved_preset = if let Some(presets) = presets.as_ref() {
+            match presets
+                .resolve(request.payload.agent_preset.as_deref())
+                .await
+            {
+                Ok(preset) => Some(preset.id),
+                Err(error) => return self.preset_failure_unknown(request.rpc_id, error),
+            }
+        } else {
+            None
+        };
         let meta = CreateSessionMeta {
             cwd: Some(cwd),
-            agent_preset: request.payload.agent_preset.clone(),
+            agent_preset: resolved_preset.clone(),
             ..Default::default()
         };
-        let session = match sessions
-            .create(
-                &self.ctx,
-                session_id.clone(),
-                Some(dsh_session::CreateSessionOptions {
-                    meta: Some(meta),
-                    ..Default::default()
-                }),
-            )
-            .await
-        {
-            Ok(session) => session,
-            Err(error) => {
-                return err(
-                    request.rpc_id,
-                    RpcError::Internal(RpcErrorBody {
-                        message: format!("session.create: {error}"),
-                        details: EmptyDetails {},
-                    }),
-                );
-            }
-        };
-        // The idle agent rides the same creation (the factory is composed
-        // by the host app; an absent factory is a composition failure).
+        // The agent factory owns the one session creation transaction. Creating
+        // through SessionStore first would make the factory create the same id
+        // twice and leave a half-published session after the error.
         let agent_options = {
             let selection = (self.defaults.default_model_selection)();
             dsh_agent::AgentOptions {
@@ -1960,14 +2575,33 @@ impl ApiProxyService {
         };
         match agents
             .create(dsh_agent::CreateAgentOptions {
-                session_id: Some(session.id().clone()),
+                session_id: session_id.clone(),
+                meta: Some(meta),
                 agent_options: Some(agent_options),
+                setup: Some(composed_agent_setup(
+                    self.model_selection_setup.clone(),
+                    presets,
+                    resolved_preset,
+                )),
                 ..Default::default()
             })
             .await
         {
             Ok(handle) => {
-                let _ = handle;
+                let session = handle.agent.session().clone();
+                if let Some(workspace) = workspace
+                    && let Err(error) = workspace.attach_session(session.id()).await
+                {
+                    handle.dispose.await;
+                    return err(
+                        request.rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message: format!("session.create: workspace attach failed: {error}"),
+                            details: EmptyDetails {},
+                        }),
+                    );
+                }
+                let _agent = self.retain_owned_handle(handle);
                 ok(
                     request.rpc_id,
                     crate::api::sessions::SessionCreateResult {
@@ -2088,6 +2722,23 @@ impl ApiProxyService {
             dsh_session::AgentCancelCause::User,
             Some(&dsh_agent::CancelOptions { keep_inbox: true }),
         );
+        if tokio::time::timeout(std::time::Duration::from_secs(10), agent.when_idle())
+            .await
+            .is_err()
+        {
+            return err(
+                request.rpc_id,
+                RpcError::AgentBusy(RpcErrorBody {
+                    message: format!(
+                        "session \"{}\" did not become idle after cancellation",
+                        request.payload.session_id
+                    ),
+                    details: crate::api::rpc::ReasonDetails {
+                        reason: "cancel-timeout".to_string(),
+                    },
+                }),
+            );
+        }
         ok(
             request.rpc_id,
             crate::api::sessions::AcceptedResult { accepted: true },
@@ -2149,10 +2800,15 @@ impl ApiProxyService {
 
         let session_id = request.payload.session_id.clone();
         // The source: an attached session is the live object; a detached
-        // one is a frozen persistence inspection (TS `historySourceFor`).
+        // one is a frozen, non-caching persistence read (TS `historySourceFor`).
+        let mut live_session: Option<dsh_session::Session> = None;
+        let mut cold_header: Option<dsh_session::SessionHeader> = None;
         let events: Vec<dsh_session::SessionEvent> =
             match self.sessions().and_then(|store| store.get(&session_id)) {
-                Some(session) => session.events().to_vec(),
+                Some(session) => {
+                    live_session = Some(session.clone());
+                    session.events().to_vec()
+                }
                 None => {
                     let Some(persistence) = self
                         .ctx
@@ -2172,8 +2828,11 @@ impl ApiProxyService {
                             }),
                         );
                     };
-                    match persistence.inspect(&session_id).await {
-                        Ok(inspection) => inspection.events,
+                    match persistence.read_from(&session_id, 0).await {
+                        Ok(stored) => {
+                            cold_header = Some(stored.meta);
+                            stored.events
+                        }
                         Err(_) => {
                             return err(
                                 request.rpc_id,
@@ -2188,49 +2847,132 @@ impl ApiProxyService {
                     }
                 }
             };
+        let presentation_scope = if let Some(agent) =
+            self.agents().and_then(|agents| agents.get(&session_id))
+        {
+            Some(agent.scope_key().clone())
+        } else if let (Some(header), Some(presets)) = (cold_header.as_ref(), self.agent_presets()) {
+            let preset = dsh_agent_presets::resolve_session_preset(header, &events);
+            presets.standing_key_for(preset.as_deref()).await.ok()
+        } else {
+            None
+        };
+        let tools = self
+            .ctx
+            .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
+            .map(|slot| slot.as_ref().clone());
         const DEFAULT_MAX_MESSAGES: u64 = 100;
         let (page_events, has_more) = Self::paginate(
             &events,
             request.payload.before_seq,
             request.payload.max_messages.unwrap_or(DEFAULT_MAX_MESSAGES),
         );
-        // The host-computed render intent arrives with the presenter
-        // milestone (TS `viewFor`); entries carry the raw event for now.
         let page: Vec<HistoryEntry> = page_events
             .into_iter()
-            .map(|event| HistoryEntry { event, view: None })
+            .map(|event| {
+                let view = if event.type_ == "tool/call" {
+                    let name = event.data.get("name").and_then(serde_json::Value::as_str);
+                    let arguments = event
+                        .data
+                        .get("arguments")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
+                    match (tools.as_ref(), name, arguments.as_ref()) {
+                        (Some(tools), Some(name), Some(arguments)) => tools
+                            .present_call_for_scope(presentation_scope.as_ref(), name, arguments)
+                            .map(|view| crate::api::events::ToolEventView::Call { view }),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                HistoryEntry { event, view }
+            })
             .collect();
+        let projections = if request.payload.before_seq.is_some() {
+            None
+        } else {
+            self.ctx
+                .get_typed::<Arc<dsh_session_projection::SessionProjectionRegistry>>(
+                    "sessionProjections",
+                    false,
+                )
+                .and_then(|registry| {
+                    let snapshot = if let Some(session) = live_session {
+                        registry.snapshot(&session)
+                    } else {
+                        registry
+                            .restore(
+                                &dsh_session_projection::ProjectionCheckpoint::new(),
+                                &events,
+                                0,
+                            )
+                            .ok()?
+                            .0
+                    };
+                    Some(crate::api::sessions::SessionProjectionsBlock {
+                        as_of_seq: snapshot.as_of_seq,
+                        values: serde_json::Value::Object(snapshot.values),
+                    })
+                })
+        };
         ok(
             request.rpc_id,
             crate::api::sessions::SessionHistoryResult {
                 events: page,
                 has_more,
-                projections: None,
+                projections,
             },
         )
     }
-    /// The current model selection for one live agent (picked tier, else
-    /// the host default; the logged-request tier arrives with the
-    /// request-header milestone).
-    fn selection_for(&self, agent: &Arc<dyn Agent>) -> crate::api::sessions::ModelSelection {
-        let session_id = agent.id().clone();
-        if let Some(picked) = self.selections.lock().get(&session_id) {
-            return picked.clone();
+    /// Install (once) and return the selection state owned by this exact live
+    /// Agent. Directly-registered test/deployment Agents are supported through
+    /// the same lazy path; factory-created Agents install it before publication.
+    async fn selection_state_for(&self, agent: &Arc<dyn Agent>) -> Result<SelectionState, String> {
+        if let Some(commit) = (self.model_selection_setup)(agent.ctx(), agent.clone()).await? {
+            commit.commit();
         }
-        (self.defaults.default_model_selection)()
+        let entry = self
+            .selections
+            .lock()
+            .get(agent.id())
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "model selection was not installed for agent \"{}\"",
+                    agent.id()
+                )
+            })?;
+        let exact = entry
+            .agent
+            .upgrade()
+            .is_some_and(|installed| Arc::ptr_eq(&installed, agent));
+        if !exact {
+            return Err(format!(
+                "model selection belongs to a different agent for session \"{}\"",
+                agent.id()
+            ));
+        }
+        Ok(entry.state.clone())
+    }
+
+    async fn selection_for(
+        &self,
+        agent: &Arc<dyn Agent>,
+    ) -> Result<crate::api::sessions::ModelSelection, String> {
+        let state = self.selection_state_for(agent).await?;
+        state
+            .lock()
+            .resolved_current()
+            .map(wire_selection)
+            .ok_or_else(|| format!("agent \"{}\" has no model selection", agent.id()))
     }
 
     async fn session_models(
         &self,
         request: RpcRequest<crate::api::sessions::SessionRefRequest>,
     ) -> RpcResponse<serde_json::Value> {
-        let resolved = self.resolver.resolve(&request.payload.session_id).await;
-        let agent = match resolved {
-            crate::agent_lookup::ApiRemoteAgentResult::Agent(agent) => agent,
-            crate::agent_lookup::ApiRemoteAgentResult::Error(error) => {
-                return err(request.rpc_id, error);
-            }
-        };
+        let session_id = request.payload.session_id.clone();
         let Some(runtime) = self.llm_runtime() else {
             return err(
                 request.rpc_id,
@@ -2240,7 +2982,56 @@ impl ApiProxyService {
                 }),
             );
         };
-        let current = self.selection_for(&agent);
+        let current = if let Some(agent) = self.agents().and_then(|agents| agents.get(&session_id))
+        {
+            match self.selection_for(&agent).await {
+                Ok(current) => current,
+                Err(error) => {
+                    return err(
+                        request.rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message: format!("session.models: {error}"),
+                            details: EmptyDetails {},
+                        }),
+                    );
+                }
+            }
+        } else {
+            let Some(persistence) = self
+                .ctx
+                .get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
+                    "sessionPersistence",
+                    false,
+                )
+                .map(|slot| slot.as_ref().clone())
+            else {
+                return err(
+                    request.rpc_id,
+                    RpcError::Internal(RpcErrorBody {
+                        message: "session.models: session persistence is not composed".to_string(),
+                        details: EmptyDetails {},
+                    }),
+                );
+            };
+            let stored = match persistence.read_from(&session_id, 0).await {
+                Ok(stored) => stored,
+                Err(_) => {
+                    return err(
+                        request.rpc_id,
+                        RpcError::SessionNotFound(RpcErrorBody {
+                            message: format!("session \"{session_id}\" not found"),
+                            details: crate::api::rpc::SessionIdDetails {
+                                session_id: session_id.to_string(),
+                            },
+                        }),
+                    );
+                }
+            };
+            wire_selection(
+                model_selection_from_events(&stored.events)
+                    .unwrap_or_else(|| core_selection((self.defaults.default_model_selection)())),
+            )
+        };
         let catalog = Self::build_model_catalog(&runtime).await;
         let routable = runtime
             .list_providers()
@@ -2286,7 +3077,7 @@ impl ApiProxyService {
                         .payload
                         .reasoning_effort
                         .clone()
-                        .map(|id| dsh_llm::ReasoningEffortId::new(id)),
+                        .map(dsh_llm::ReasoningEffortId::new),
                     ..Default::default()
                 },
                 None,
@@ -2311,11 +3102,67 @@ impl ApiProxyService {
                 );
             }
         };
-        // The image-admission fence arrives with the attachment milestone
-        // (TS checks pending inbox images against input modalities).
-        self.selections
-            .lock()
-            .insert(agent.id().clone(), selected.clone());
+        let pending_images = agent
+            .inbox()
+            .next_turn()
+            .into_iter()
+            .chain(agent.inbox().next_step())
+            .any(|message| {
+                message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, dsh_llm::ContentBlock::Image { .. }))
+            });
+        if pending_images {
+            let supports_images = runtime
+                .resolve_model_info(&selected.provider, &selected.model, None)
+                .await
+                .is_ok_and(|model| {
+                    model.input_modalities.as_ref().is_some_and(|modalities| {
+                        modalities.contains(&dsh_llm::ModelModality::Image)
+                    })
+                });
+            if !supports_images {
+                return err(
+                    request.rpc_id,
+                    RpcError::AttachmentError(RpcErrorBody {
+                        message: format!(
+                            "model {}/{} does not declare image input support",
+                            selected.provider, selected.model
+                        ),
+                        details: crate::api::rpc::ReasonDetails {
+                            reason: "MODEL_DOES_NOT_SUPPORT_IMAGES".to_string(),
+                        },
+                    }),
+                );
+            }
+        }
+        let state = match self.selection_state_for(&agent).await {
+            Ok(state) => state,
+            Err(error) => {
+                return err(
+                    request.rpc_id,
+                    RpcError::Internal(RpcErrorBody {
+                        message: format!("session.selectModel: {error}"),
+                        details: EmptyDetails {},
+                    }),
+                );
+            }
+        };
+        if let Err(error) = agent.session().append(
+            "model/selection",
+            serde_json::to_value(&selected).expect("model selection serializes"),
+            None,
+        ) {
+            return err(
+                request.rpc_id,
+                RpcError::Internal(RpcErrorBody {
+                    message: format!("session.selectModel: could not persist selection: {error}"),
+                    details: EmptyDetails {},
+                }),
+            );
+        }
+        state.lock().current = Some(core_selection(selected.clone()));
         ok(
             request.rpc_id,
             crate::api::sessions::SessionSelectModelResult { selected },
@@ -2445,27 +3292,60 @@ impl ApiProxyService {
                 ..Default::default()
             }
         };
-        let mut meta = dsh_session::CreateSessionMeta {
+        let inherited_preset = dsh_agent_presets::resolve_session_preset(&header, &seed);
+        let presets = self.agent_presets();
+        let resolved_preset = if let Some(presets) = presets.as_ref() {
+            match presets.resolve(inherited_preset.as_deref()).await {
+                Ok(preset) => Some(preset.id),
+                Err(error) => return self.preset_failure_unknown(request.rpc_id, error),
+            }
+        } else {
+            None
+        };
+        let meta = dsh_session::CreateSessionMeta {
             cwd: header.cwd.clone(),
             parent_session: Some(session_id.clone()),
-            seed_length: Some(cut as u64),
-            agent_preset: header.agent_preset.clone(),
+            seed_length: Some(cut),
+            agent_preset: resolved_preset.clone(),
             ..Default::default()
         };
-        let _ = &mut meta;
         match agents
             .create(dsh_agent::CreateAgentOptions {
                 session_id: Some(child_id.clone()),
                 seed: Some(seed),
                 meta: Some(meta),
                 agent_options: Some(agent_options),
-                ..Default::default()
+                setup: Some(composed_agent_setup(
+                    self.model_selection_setup.clone(),
+                    presets,
+                    resolved_preset,
+                )),
             })
             .await
         {
-            Ok(_handle) => {
-                // Workspace attachment follows the source (TS forkWorkspace);
-                // it arrives with the workspace-attach milestone.
+            Ok(handle) => {
+                if let Some(registry) = self.workspace_registry() {
+                    let source_workspace = registry.list().ok().and_then(|workspaces| {
+                        workspaces
+                            .into_iter()
+                            .find(|workspace| workspace.session_ids().contains(&session_id))
+                    });
+                    if let Some(workspace) = source_workspace
+                        && let Err(error) = workspace.attach_session(&child_id).await
+                    {
+                        handle.dispose.await;
+                        return err(
+                            request.rpc_id,
+                            RpcError::Internal(RpcErrorBody {
+                                message: format!(
+                                    "forked session \"{child_id}\" could not inherit its workspace: {error}"
+                                ),
+                                details: EmptyDetails {},
+                            }),
+                        );
+                    }
+                }
+                self.retain_owned_handle(handle);
                 ok(
                     request.rpc_id,
                     crate::api::sessions::SessionForkResult {
@@ -2489,21 +3369,20 @@ impl ApiProxyService {
         use crate::api::sessions::QueueAction;
 
         let item_id = request.payload.item_id.clone();
-        if let QueueAction::Edit { content } = &request.payload.action {
-            if content
+        if let QueueAction::Edit { content } = &request.payload.action
+            && content
                 .iter()
                 .any(|block| !matches!(block, dsh_llm::ContentBlock::Text { .. }))
-            {
-                return err(
-                    request.rpc_id,
-                    RpcError::AttachmentError(RpcErrorBody {
-                        message: "queue edits accept text content only".to_string(),
-                        details: crate::api::rpc::ReasonDetails {
-                            reason: "QUEUE_EDIT_NON_TEXT".to_string(),
-                        },
-                    }),
-                );
-            }
+        {
+            return err(
+                request.rpc_id,
+                RpcError::AttachmentError(RpcErrorBody {
+                    message: "queue edits accept text content only".to_string(),
+                    details: crate::api::rpc::ReasonDetails {
+                        reason: "QUEUE_EDIT_NON_TEXT".to_string(),
+                    },
+                }),
+            );
         }
         let Some(agents) = self.agents() else {
             return err(
@@ -2547,11 +3426,11 @@ impl ApiProxyService {
         let in_turn = inbox
             .next_turn()
             .iter()
-            .any(|message| &message.id == &item_id);
+            .any(|message| message.id == item_id);
         let in_step = inbox
             .next_step()
             .iter()
-            .any(|message| &message.id == &item_id);
+            .any(|message| message.id == item_id);
         if !in_turn && !in_step {
             return err(
                 request.rpc_id,
@@ -2567,12 +3446,12 @@ impl ApiProxyService {
             inbox
                 .next_turn()
                 .into_iter()
-                .find(|message| &message.id == &item_id)
+                .find(|message| message.id == item_id)
         } else {
             inbox
                 .next_step()
                 .into_iter()
-                .find(|message| &message.id == &item_id)
+                .find(|message| message.id == item_id)
         };
         let Some(message) = message else {
             return err(
@@ -2651,36 +3530,127 @@ impl ApiProxyService {
                 return err(request.rpc_id, error);
             }
         };
-        // Image admission and durable promotion arrive with the attachment
-        // milestone; image parts are refused for now.
         if request
             .payload
             .content
             .iter()
             .any(|part| matches!(part, PromptContentPart::Image { .. }))
         {
-            return err(
-                request.rpc_id,
-                RpcError::AttachmentError(RpcErrorBody {
-                    message: "image admission is not implemented in the Rust composition yet"
-                        .to_string(),
-                    details: crate::api::rpc::ReasonDetails {
-                        reason: "MODEL_DOES_NOT_SUPPORT_IMAGES".to_string(),
-                    },
-                }),
-            );
-        }
-        let content: Vec<dsh_llm::ContentBlock> = request
-            .payload
-            .content
-            .iter()
-            .map(|part| match part {
-                PromptContentPart::Text { text } => {
-                    dsh_llm::ContentBlock::Text { text: text.clone() }
+            let selection = match self.selection_for(&agent).await {
+                Ok(selection) => selection,
+                Err(error) => {
+                    return err(
+                        request.rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message: format!("session.prompt: {error}"),
+                            details: EmptyDetails {},
+                        }),
+                    );
                 }
-                PromptContentPart::Image { .. } => unreachable!("image parts refused above"),
-            })
-            .collect();
+            };
+            let supports_images = if selection.provider.is_empty() || selection.model.is_empty() {
+                true
+            } else {
+                match self.llm_runtime() {
+                    Some(runtime) => runtime
+                        .resolve_model_info(&selection.provider, &selection.model, None)
+                        .await
+                        .is_ok_and(|model| {
+                            model.input_modalities.as_ref().is_some_and(|modalities| {
+                                modalities.contains(&dsh_llm::ModelModality::Image)
+                            })
+                        }),
+                    None => false,
+                }
+            };
+            if !supports_images {
+                return err(
+                    request.rpc_id,
+                    RpcError::AttachmentError(RpcErrorBody {
+                        message: format!(
+                            "model {}/{} does not declare image input support",
+                            selection.provider, selection.model
+                        ),
+                        details: crate::api::rpc::ReasonDetails {
+                            reason: "MODEL_DOES_NOT_SUPPORT_IMAGES".to_string(),
+                        },
+                    }),
+                );
+            }
+        }
+        let attachment_store = self
+            .ctx
+            .get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false)
+            .map(|slot| slot.as_ref().clone());
+        let mut content = Vec::with_capacity(request.payload.content.len());
+        for part in &request.payload.content {
+            match part {
+                PromptContentPart::Text { text } => {
+                    content.push(dsh_llm::ContentBlock::Text { text: text.clone() });
+                }
+                PromptContentPart::Image {
+                    media_type,
+                    data,
+                    name,
+                } => {
+                    let Some(store) = attachment_store.as_ref() else {
+                        return err(
+                            request.rpc_id,
+                            RpcError::AttachmentError(RpcErrorBody {
+                                message: "image input requires the attachments service".to_string(),
+                                details: crate::api::rpc::ReasonDetails {
+                                    reason: "ATTACHMENT_SERVICE_UNAVAILABLE".to_string(),
+                                },
+                            }),
+                        );
+                    };
+                    use base64::Engine;
+                    let bytes = match base64::engine::general_purpose::STANDARD.decode(data) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            return err(
+                                request.rpc_id,
+                                RpcError::AttachmentError(RpcErrorBody {
+                                    message: format!("image data is not valid base64: {error}"),
+                                    details: crate::api::rpc::ReasonDetails {
+                                        reason: "INVALID_IMAGE".to_string(),
+                                    },
+                                }),
+                            );
+                        }
+                    };
+                    let saved = match store
+                        .save_image(&dsh_attachment::SaveImageAttachment {
+                            data: bytes,
+                            media_type: *media_type,
+                            name: name.clone(),
+                        })
+                        .await
+                    {
+                        Ok(reference) => reference,
+                        Err(error) => {
+                            return err(
+                                request.rpc_id,
+                                RpcError::AttachmentError(RpcErrorBody {
+                                    message: error.to_string(),
+                                    details: crate::api::rpc::ReasonDetails { reason: error.code },
+                                }),
+                            );
+                        }
+                    };
+                    content.push(dsh_llm::ContentBlock::Image {
+                        attachment: dsh_llm::ImageAttachmentRef {
+                            attachment_id: saved.attachment_id.to_string(),
+                            media_type: Some(saved.media_type.as_str().to_string()),
+                            bytes: Some(saved.bytes),
+                            width: Some(saved.width),
+                            height: Some(saved.height),
+                            name: saved.name,
+                        },
+                    });
+                }
+            }
+        }
         // Request identity and optional browser zone ride the exact durable
         // user message.
         let source = dsh_llm::MessageSource::User {
@@ -2712,22 +3682,17 @@ impl ApiProxyService {
         ) -> Option<dsh_attachment::ImageAttachmentRef> {
             match value {
                 serde_json::Value::Object(object) => {
-                    if object.get("type").and_then(serde_json::Value::as_str) == Some("image") {
-                        if let Some(reference) = object.get("attachment") {
-                            if reference
-                                .get("attachmentId")
-                                .and_then(serde_json::Value::as_str)
-                                == Some(attachment_id)
-                            {
-                                if let Ok(reference) =
-                                    serde_json::from_value::<dsh_attachment::ImageAttachmentRef>(
-                                        reference.clone(),
-                                    )
-                                {
-                                    return Some(reference);
-                                }
-                            }
-                        }
+                    if object.get("type").and_then(serde_json::Value::as_str) == Some("image")
+                        && let Some(reference) = object.get("attachment")
+                        && reference
+                            .get("attachmentId")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(attachment_id)
+                        && let Ok(reference) = serde_json::from_value::<
+                            dsh_attachment::ImageAttachmentRef,
+                        >(reference.clone())
+                    {
+                        return Some(reference);
                     }
                     object.values().find_map(|value| scan(value, attachment_id))
                 }
@@ -3022,17 +3987,17 @@ impl ApiProxyService {
                 });
             }
             let next_cursor = page.next_cursor.clone();
-            if let Some(next) = &next_cursor {
-                if !seen_cursors.insert(next.to_string()) {
-                    return err(
-                        request.rpc_id,
-                        RpcError::Internal(RpcErrorBody {
-                            message: "session search provider repeated a continuation cursor"
-                                .to_string(),
-                            details: EmptyDetails {},
-                        }),
-                    );
-                }
+            if let Some(next) = &next_cursor
+                && !seen_cursors.insert(next.to_string())
+            {
+                return err(
+                    request.rpc_id,
+                    RpcError::Internal(RpcErrorBody {
+                        message: "session search provider repeated a continuation cursor"
+                            .to_string(),
+                        details: EmptyDetails {},
+                    }),
+                );
             }
             if authorized.len() > RESULT_LIMIT || next_cursor.is_none() {
                 break;
@@ -3857,6 +4822,111 @@ impl ApiProxyCarrier for ApiProxyService {
                     };
                 self.skill_list(RpcRequest { rpc_id, payload }).await
             }
+            "messageFeedback.list" => {
+                let payload: dsh_message_feedback::MessageFeedbackListRequest =
+                    match serde_json::from_value(request.payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            return err(rpc_id, bad_request("messageFeedback.list", error));
+                        }
+                    };
+                let Some(service) = self
+                    .ctx
+                    .get_typed::<Arc<dsh_message_feedback::MessageFeedbackService>>(
+                        "messageFeedback",
+                        false,
+                    )
+                    .map(|slot| slot.as_ref().clone())
+                else {
+                    return err(
+                        rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message: "message feedback service is unavailable".to_string(),
+                            details: EmptyDetails {},
+                        }),
+                    );
+                };
+                match service.list(&payload).await {
+                    Ok(value) => ok(rpc_id, value),
+                    Err(value) => ok(rpc_id, value),
+                }
+            }
+            "messageFeedback.put" => {
+                let payload: dsh_message_feedback::MessageFeedbackPutRequest =
+                    match serde_json::from_value(request.payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            return err(rpc_id, bad_request("messageFeedback.put", error));
+                        }
+                    };
+                let Some(service) = self
+                    .ctx
+                    .get_typed::<Arc<dsh_message_feedback::MessageFeedbackService>>(
+                        "messageFeedback",
+                        false,
+                    )
+                    .map(|slot| slot.as_ref().clone())
+                else {
+                    return err(
+                        rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message: "message feedback service is unavailable".to_string(),
+                            details: EmptyDetails {},
+                        }),
+                    );
+                };
+                match service.put(&payload).await {
+                    Ok(value) => ok(rpc_id, value),
+                    Err(value) => ok(rpc_id, value),
+                }
+            }
+            "messageFeedback.delete" => {
+                let payload: dsh_message_feedback::MessageFeedbackDeleteRequest =
+                    match serde_json::from_value(request.payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            return err(rpc_id, bad_request("messageFeedback.delete", error));
+                        }
+                    };
+                let Some(service) = self
+                    .ctx
+                    .get_typed::<Arc<dsh_message_feedback::MessageFeedbackService>>(
+                        "messageFeedback",
+                        false,
+                    )
+                    .map(|slot| slot.as_ref().clone())
+                else {
+                    return err(
+                        rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message: "message feedback service is unavailable".to_string(),
+                            details: EmptyDetails {},
+                        }),
+                    );
+                };
+                match service.delete(&payload).await {
+                    Ok(value) => ok(rpc_id, value),
+                    Err(value) => ok(rpc_id, value),
+                }
+            }
+            "pluginInventory.list" => {
+                self.plugin_inventory_list(RpcRequest {
+                    rpc_id,
+                    payload: serde_json::Value::Null,
+                })
+                .await
+            }
+            "pluginInventory.setEnabled" => {
+                let payload: dsh_host_plugin_inventory::PluginSetEnabledRequest =
+                    match serde_json::from_value(request.payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            return err(rpc_id, bad_request("pluginInventory.setEnabled", error));
+                        }
+                    };
+                self.plugin_inventory_set_enabled(RpcRequest { rpc_id, payload })
+                    .await
+            }
             "credentials.describe" => {
                 let payload: crate::api::credentials::CredentialsDescribeRequest =
                     match serde_json::from_value(request.payload) {
@@ -3957,6 +5027,163 @@ impl ApiProxyCarrier for ApiProxyService {
                     };
                 self.llm_discover_models(RpcRequest { rpc_id, payload }, signal)
                     .await
+            }
+            "commands.execute" => {
+                let args = request.payload.get("args");
+                let session_id = args
+                    .and_then(|args| args.get("agentId"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(dsh_session::session_id);
+                let line = args
+                    .and_then(|args| args.get("line"))
+                    .and_then(serde_json::Value::as_str);
+                let (Some(session_id), Some(line)) = (session_id, line) else {
+                    return err(
+                        rpc_id,
+                        RpcError::BadRequest(RpcErrorBody {
+                            message: "commands.execute requires args.agentId and args.line"
+                                .to_string(),
+                            details: crate::api::rpc::BadRequestDetails { issues: vec![] },
+                        }),
+                    );
+                };
+                let agent = match self.resolver.resolve(&session_id).await {
+                    crate::agent_lookup::ApiRemoteAgentResult::Agent(agent) => agent,
+                    crate::agent_lookup::ApiRemoteAgentResult::Error(error) => {
+                        return err(rpc_id, error);
+                    }
+                };
+                let Some(commands) = self
+                    .ctx
+                    .get_typed::<Arc<dsh_commands::CommandRuntime>>("commands", false)
+                    .map(|slot| slot.as_ref().clone())
+                else {
+                    return ok(rpc_id, serde_json::Value::Null);
+                };
+                let command_signal = signal.clone();
+                let abort = Arc::new(move || command_signal.aborted());
+                match commands.execute(&agent, line, abort).await {
+                    Ok(Some(execution)) => ok(
+                        rpc_id,
+                        serde_json::json!({
+                            "commandId": execution.command_id.as_str(),
+                            "result": execution.result,
+                        }),
+                    ),
+                    Ok(None) => ok(rpc_id, serde_json::Value::Null),
+                    Err(error) if signal.aborted() => err(
+                        rpc_id,
+                        RpcError::Cancelled(RpcErrorBody {
+                            message: error,
+                            details: EmptyDetails {},
+                        }),
+                    ),
+                    Err(error) => err(
+                        rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message: error,
+                            details: EmptyDetails {},
+                        }),
+                    ),
+                }
+            }
+            "commands.list" => {
+                let session_id = request
+                    .payload
+                    .get("args")
+                    .and_then(|args| args.get("agentId"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(dsh_session::session_id);
+                let Some(session_id) = session_id else {
+                    return err(
+                        rpc_id,
+                        RpcError::BadRequest(RpcErrorBody {
+                            message: "commands.list requires args.agentId".to_string(),
+                            details: crate::api::rpc::BadRequestDetails { issues: vec![] },
+                        }),
+                    );
+                };
+                let Some(commands) = self
+                    .ctx
+                    .get_typed::<Arc<dsh_commands::CommandRuntime>>("commands", false)
+                    .map(|slot| slot.as_ref().clone())
+                else {
+                    return ok(rpc_id, serde_json::json!([]));
+                };
+                let descriptors = if let Some(agent) =
+                    self.agents().and_then(|agents| agents.get(&session_id))
+                {
+                    commands.list(&agent)
+                } else {
+                    let Some(persistence) = self
+                        .ctx
+                        .get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
+                            "sessionPersistence",
+                            false,
+                        )
+                        .map(|slot| slot.as_ref().clone())
+                    else {
+                        return err(
+                            rpc_id,
+                            RpcError::Internal(RpcErrorBody {
+                                message: "commands.list: session persistence is not composed"
+                                    .to_string(),
+                                details: EmptyDetails {},
+                            }),
+                        );
+                    };
+                    let headers = match persistence.list().await {
+                        Ok(headers) => headers,
+                        Err(error) => {
+                            return err(
+                                rpc_id,
+                                RpcError::Internal(RpcErrorBody {
+                                    message: format!(
+                                        "commands.list: persistence unavailable: {error}"
+                                    ),
+                                    details: EmptyDetails {},
+                                }),
+                            );
+                        }
+                    };
+                    let Some(header) = headers.into_iter().find(|header| header.id == session_id)
+                    else {
+                        return err(
+                            rpc_id,
+                            RpcError::SessionNotFound(RpcErrorBody {
+                                message: format!("session \"{session_id}\" not found"),
+                                details: crate::api::rpc::SessionIdDetails {
+                                    session_id: session_id.to_string(),
+                                },
+                            }),
+                        );
+                    };
+                    let Some(presets) = self.agent_presets() else {
+                        return ok(rpc_id, serde_json::json!([]));
+                    };
+                    let scope = match presets
+                        .standing_key_for(header.agent_preset.as_deref())
+                        .await
+                    {
+                        Ok(scope) => scope,
+                        Err(error) => {
+                            return err(
+                                rpc_id,
+                                RpcError::Internal(RpcErrorBody {
+                                    message: format!(
+                                        "commands.list: preset standing scope unavailable: {error}"
+                                    ),
+                                    details: EmptyDetails {},
+                                }),
+                            );
+                        }
+                    };
+                    commands.list_for_scope(Some(&scope))
+                };
+                ok(
+                    rpc_id,
+                    serde_json::to_value(descriptors).expect("commands serialize"),
+                )
             }
             "settings.describe" => {
                 self.settings_describe(RpcRequest {
@@ -4085,6 +5312,20 @@ impl ApiProxyCarrier for ApiProxyService {
                         }
                     };
                 self.workspace_archive_session(RpcRequest { rpc_id, payload }, true)
+                    .await
+            }
+            "workspace.deleteArchivedSession" => {
+                let payload: crate::api::workspace::WorkspaceArchiveSessionRequest =
+                    match serde_json::from_value(request.payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            return err(
+                                rpc_id,
+                                bad_request("workspace.deleteArchivedSession", error),
+                            );
+                        }
+                    };
+                self.workspace_delete_archived_session(RpcRequest { rpc_id, payload })
                     .await
             }
             "session.list" => {
@@ -4293,8 +5534,6 @@ impl ApiProxyCarrier for ApiProxyService {
         request: FrameRequest,
         signal: AbortSignal,
     ) -> std::pin::Pin<Box<dyn futures::Stream<Item = FrameRequest> + Send>> {
-        use futures::StreamExt;
-
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FrameRequest>();
         // Baseline: one subscribed control frame per attached session.
         for session in self
@@ -4315,11 +5554,19 @@ impl ApiProxyCarrier for ApiProxyService {
         // the queue and replays every still-pending interaction, so a request
         // created during baseline construction is retained rather than lost.
         let subscription = self.interactions.subscribe(tx.clone());
-        // Live session events ride the global cordis stream.
+        // Live session events ride the global cordis stream with the same
+        // tool presentation intent cold history derives.
         let tx_for_listener = tx.clone();
+        let tools_for_listener = self
+            .ctx
+            .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
+            .map(|slot| slot.as_ref().clone());
+        let agents_for_listener = self.agents();
         let listener: Arc<cordis::Listener> = Arc::new(
             move |_dispatch_ctx: &Context, args: Vec<cordis::ArcValue>| {
                 let tx = tx_for_listener.clone();
+                let tools = tools_for_listener.clone();
+                let agents = agents_for_listener.clone();
                 Box::pin(async move {
                     let session = args
                         .first()
@@ -4330,12 +5577,35 @@ impl ApiProxyCarrier for ApiProxyService {
                         .and_then(|value| cordis::downcast::<dsh_session::SessionEvent>(value))
                         .cloned();
                     if let (Some(session), Some(event)) = (session, event) {
+                        let view = if event.type_ == "tool/call" {
+                            let name = event.data.get("name").and_then(serde_json::Value::as_str);
+                            let arguments = event
+                                .data
+                                .get("arguments")
+                                .and_then(serde_json::Value::as_str)
+                                .and_then(|value| {
+                                    serde_json::from_str::<serde_json::Value>(value).ok()
+                                });
+                            let scope = agents
+                                .as_ref()
+                                .and_then(|agents| agents.get(session.id()))
+                                .map(|agent| agent.scope_key().clone());
+                            match (tools.as_ref(), name, arguments.as_ref()) {
+                                (Some(tools), Some(name), Some(arguments)) => tools
+                                    .present_call_for_scope(scope.as_ref(), name, arguments)
+                                    .map(|view| crate::api::events::ToolEventView::Call { view }),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
                         let _ = tx.send(FrameRequest {
                             rpc_id: crate::api::rpc::rpc_id(Self::fresh_id()),
                             payload: serde_json::json!({
                                 "type": "session/event",
                                 "sessionId": session.id(),
                                 "event": event,
+                                "view": view,
                             }),
                         });
                     }
@@ -4376,8 +5646,6 @@ impl ApiProxyCarrier for ApiProxyService {
         request: FrameRequest,
         signal: AbortSignal,
     ) -> std::pin::Pin<Box<dyn futures::Stream<Item = FrameRequest> + Send>> {
-        use futures::StreamExt;
-
         /// The host events this application forwards to consumers verbatim
         /// (TS `API_REMOTE_FORWARDED_EVENTS`): no projection, no redaction,
         /// no renaming.
@@ -4533,10 +5801,38 @@ impl ApiProxyCarrier for ApiProxyService {
                     cordis::EventOptions::default().global(true),
                 )
                 .await;
-            // domain/changed → the workspace frame family. Deviations: the
-            // agent/status and agent/error frames wait for dsh-agent's
-            // status/error publication (the Rust registry only publishes
-            // agent/created + agent/disposed so far); a committed
+            // agent/status → host/session-status. The Agent Loop already
+            // publishes exact Running/Idle transitions; forwarding them is
+            // what clears the browser's busy state after turn/end.
+            let tx_status = tx.clone();
+            let _d_status = ctx
+                .on(
+                    "agent/status",
+                    Arc::new(move |_dispatch_ctx, args| {
+                        let tx = tx_status.clone();
+                        Box::pin(async move {
+                            if let Some(payload) = args
+                                .first()
+                                .and_then(|value| {
+                                    cordis::downcast::<dsh_agent::AgentStatusPayload>(value)
+                                })
+                                .cloned()
+                            {
+                                push(
+                                    &tx,
+                                    crate::api::events::HostFrame::SessionStatus {
+                                        session_id: payload.agent.id().clone(),
+                                        running: payload.status == dsh_agent::AgentStatus::Running,
+                                    },
+                                );
+                            }
+                            None
+                        })
+                    }),
+                    cordis::EventOptions::default().global(true),
+                )
+                .await;
+            // domain/changed → the workspace frame family. A committed
             // workspace id the registry cannot resolve is skipped instead
             // of throwing (the Rust listener has no throw path).
             let tx_domain = tx.clone();
@@ -4554,15 +5850,12 @@ impl ApiProxyCarrier for ApiProxyService {
                         let archived_ids = domain_archived.clone();
                         let registry = domain_registry.clone();
                         Box::pin(async move {
-                            let Some(change) = args
+                            let change = args
                                 .first()
                                 .and_then(|value| {
                                     cordis::downcast::<dsh_storage_domain::DomainChanged>(value)
                                 })
-                                .cloned()
-                            else {
-                                return None;
-                            };
+                                .cloned()?;
                             match change {
                                 dsh_storage_domain::DomainChanged::Put {
                                     domain,
@@ -4733,15 +6026,10 @@ impl ApiProxyCarrier for ApiProxyService {
         let stream = futures::stream::unfold(rx, move |mut rx| {
             let signal = stream_signal.clone();
             async move {
-                loop {
-                    if signal.aborted() {
-                        return None;
-                    }
-                    match rx.recv().await {
-                        Some(frame) => return Some((frame, rx)),
-                        None => return None,
-                    }
+                if signal.aborted() {
+                    return None;
                 }
+                rx.recv().await.map(|frame| (frame, rx))
             }
         });
         Box::pin(stream)
@@ -4753,8 +6041,8 @@ impl ApiProxyCarrier for ApiProxyService {
 
     async fn session_log(&self, query: SessionLogQuery, signal: AbortSignal) -> DownloadResponse {
         use crate::session_export::{
-            SessionLogExportDeps, assemble_session_log_zip, flush_live_session_log,
-            session_log_zip_entries, session_log_zip_filename,
+            SessionLogExportDeps, flush_live_session_log, produce_session_log_zip_entries,
+            session_log_zip_filename, stream_session_log_zip,
         };
 
         // Clean error path first: missing services answer 500 and a missing
@@ -4784,10 +6072,10 @@ impl ApiProxyCarrier for ApiProxyService {
             return DownloadResponse {
                 status: http::StatusCode::INTERNAL_SERVER_ERROR,
                 headers: Vec::new(),
-                body: Some(
+                body: Some(crate::fetch::handler::Body::Bytes(
                     b"session log export is unavailable: missing session-query, session-persistence, or attachments service"
                         .to_vec(),
-                ),
+                )),
             };
         }
         let persistence = deps.session_persistence.as_ref().expect("checked");
@@ -4795,10 +6083,10 @@ impl ApiProxyCarrier for ApiProxyService {
             return DownloadResponse {
                 status: http::StatusCode::NOT_IMPLEMENTED,
                 headers: Vec::new(),
-                body: Some(
+                body: Some(crate::fetch::handler::Body::Bytes(
                     b"session log export is unavailable: the persistence backend does not expose per-session raw artifacts"
                         .to_vec(),
-                ),
+                )),
             };
         }
         let session_id = dsh_session::session_id(query.session_id.clone());
@@ -4810,7 +6098,9 @@ impl ApiProxyCarrier for ApiProxyService {
             return DownloadResponse {
                 status: http::StatusCode::INTERNAL_SERVER_ERROR,
                 headers: Vec::new(),
-                body: Some(b"session log export failed to prepare the stored artifact".to_vec()),
+                body: Some(crate::fetch::handler::Body::Bytes(
+                    b"session log export failed to prepare the stored artifact".to_vec(),
+                )),
             };
         }
         let root = match persistence.read_raw(&session_id).await {
@@ -4819,9 +6109,9 @@ impl ApiProxyCarrier for ApiProxyService {
                 return DownloadResponse {
                     status: http::StatusCode::INTERNAL_SERVER_ERROR,
                     headers: Vec::new(),
-                    body: Some(
+                    body: Some(crate::fetch::handler::Body::Bytes(
                         b"session log export failed to prepare the stored artifact".to_vec(),
-                    ),
+                    )),
                 };
             }
         };
@@ -4829,53 +6119,44 @@ impl ApiProxyCarrier for ApiProxyService {
             return DownloadResponse {
                 status: http::StatusCode::NOT_FOUND,
                 headers: Vec::new(),
-                body: Some(b"session not found".to_vec()),
+                body: Some(crate::fetch::handler::Body::Bytes(
+                    b"session not found".to_vec(),
+                )),
             };
         };
-        let entries = match session_log_zip_entries(
-            &deps,
-            &root,
-            &session_id,
-            query.include_descendants.unwrap_or(false),
-            &signal,
-        )
-        .await
-        {
-            Ok(entries) => entries,
-            Err(_) => {
-                return DownloadResponse {
-                    status: http::StatusCode::INTERNAL_SERVER_ERROR,
-                    headers: Vec::new(),
-                    body: Some(b"session log export failed".to_vec()),
-                };
+        let filename = session_log_zip_filename(&session_id);
+        let (entry_sender, entry_receiver) = tokio::sync::mpsc::channel(1);
+        let producer_signal = signal.clone();
+        let producer_id = session_id.clone();
+        tokio::spawn(async move {
+            if let Err(error) = produce_session_log_zip_entries(
+                &deps,
+                root,
+                &producer_id,
+                query.include_descendants.unwrap_or(false),
+                &producer_signal,
+                &entry_sender,
+            )
+            .await
+            {
+                let _ = entry_sender.send(Err(error)).await;
             }
-        };
-        let bytes = match assemble_session_log_zip(
-            entries,
+        });
+        let body = crate::fetch::handler::Body::Stream(stream_session_log_zip(
+            entry_receiver,
             self.defaults.session_export_compression_level.min(9) as u8,
-        ) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                return DownloadResponse {
-                    status: http::StatusCode::INTERNAL_SERVER_ERROR,
-                    headers: Vec::new(),
-                    body: Some(b"session log export failed".to_vec()),
-                };
-            }
-        };
+            signal,
+        ));
         DownloadResponse {
             status: http::StatusCode::OK,
             headers: vec![
                 ("content-type".to_string(), "application/zip".to_string()),
                 (
                     "content-disposition".to_string(),
-                    format!(
-                        "attachment; filename=\"{}\"",
-                        session_log_zip_filename(&session_id)
-                    ),
+                    format!("attachment; filename=\"{}\"", filename),
                 ),
             ],
-            body: Some(bytes),
+            body: Some(body),
         }
     }
 }

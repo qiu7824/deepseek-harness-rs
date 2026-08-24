@@ -2681,7 +2681,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-conversation\src\client\chat\StatsLine.module.css.mjs
-		const css$20 = ".puIAHG_root{text-align:center;max-width:var(--dsh-chat-content-width);box-sizing:border-box;width:100%;padding:4px calc(var(--dsh-composer-side-clearance) + 16px) 0px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;margin:0 auto;font-size:12px;line-height:20px;display:block;overflow:hidden}.puIAHG_sep{color:var(--dsw-alias-separator-primary);margin:0 10px}";
+		const css$20 = ".puIAHG_root{text-align:center;max-width:var(--dsh-chat-content-width);box-sizing:border-box;width:100%;padding:4px calc(var(--dsh-composer-side-clearance) + 16px) 0px;color:var(--dsw-alias-label-tertiary);white-space:normal;text-overflow:clip;margin:0 auto;font-size:12px;line-height:20px;display:block;overflow:visible}.puIAHG_sep{color:var(--dsw-alias-separator-primary);margin:0 10px}";
 		const tagId$20 = "@deepseek-ai/dsh-client-ui-conversation/StatsLine.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$20) + "]") === null) {
 			const tag = document.createElement("style");
@@ -3164,8 +3164,10 @@ window.__ModuleLoader__.load({
 			if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) return name;
 			return name.split("-").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
 		}
-		function optionLabel(option) {
-			return option.value === FULL_ACCESS ? "Full access" : displayName(option.name);
+		function optionLabel(option, t) {
+			if (option.value === FULL_ACCESS) return t("permission.fullAccess");
+			if (option.value === "workspace-write") return t("permission.workspaceWrite");
+			return displayName(option.name);
 		}
 		function PermissionSelect({ value, locked, command, t }) {
 			const [pick, setPick] = (0, react.useState)(null);
@@ -3186,7 +3188,7 @@ window.__ModuleLoader__.load({
 				const icon = permissionGlyph(option.value);
 				return {
 					id: option.value,
-					label: optionLabel(option),
+					label: optionLabel(option, t),
 					...icon === void 0 ? {} : { icon }
 				};
 			});
@@ -3228,7 +3230,7 @@ window.__ModuleLoader__.load({
 				anchor: (0, react_jsx_runtime.jsxs)("button", {
 					type: "button",
 					className: PermissionSelect_module_css_default.trigger,
-					"aria-label": t("input.accessMode", { name: current === void 0 ? displayName(currentValue) : optionLabel(current) }),
+					"aria-label": t("input.accessMode", { name: current === void 0 ? displayName(currentValue) : optionLabel(current, t) }),
 					title: current?.description,
 					disabled: locked || busy,
 					onClick: () => {
@@ -3242,7 +3244,7 @@ window.__ModuleLoader__.load({
 						}),
 						(0, react_jsx_runtime.jsx)("span", {
 							className: PermissionSelect_module_css_default.triggerLabel,
-							children: current === void 0 ? displayName(currentValue) : optionLabel(current)
+							children: current === void 0 ? displayName(currentValue) : optionLabel(current, t)
 						}),
 						(0, react_jsx_runtime.jsx)("span", {
 							className: clsx(PermissionSelect_module_css_default.chevron, open && PermissionSelect_module_css_default.chevronOpen),
@@ -3332,6 +3334,19 @@ window.__ModuleLoader__.load({
 			const commandMenuOpen = useMenuLauncher((source) => source === "command");
 			const promptError = useSession((s) => s.promptError) ?? null;
 			const running = useSession((s) => s.running) ?? false;
+			const [runningSeconds, setRunningSeconds] = (0, react.useState)(0);
+			(0, react.useEffect)(() => {
+				if (!running) {
+					setRunningSeconds(0);
+					return;
+				}
+				const startedAt = Date.now();
+				setRunningSeconds(0);
+				const timer = setInterval(() => {
+					setRunningSeconds(Math.floor((Date.now() - startedAt) / 1e3));
+				}, 1e3);
+				return () => clearInterval(timer);
+			}, [running]);
 			const subagent = useSession((s) => s.subagent) ?? null;
 			const removed = useSession((s) => s.removed) ?? false;
 			const planActive = useProjection("plan", (plan) => plan !== void 0 && (plan.pending ? !plan.active : plan.active));
@@ -3370,6 +3385,7 @@ window.__ModuleLoader__.load({
 			const scrollRef = (0, react.useRef)(null);
 			const mirrorRef = (0, react.useRef)(null);
 			const composingRef = (0, react.useRef)(false);
+
 			const onCompositionStart = () => {
 				composingRef.current = true;
 			};
@@ -3654,6 +3670,7 @@ window.__ModuleLoader__.load({
 				/* v8 ignore next -- defensive: the primary button is disabled while empty||disabled, so a click cannot reach the false arm. */
 				if (!empty && !disabled && !machineBusy) inputActions.submit();
 			};
+
 			const accessSelect = command === void 0 ? null : (0, react_jsx_runtime.jsx)(PermissionSelect, {
 				value: permissions,
 				locked,
@@ -3855,6 +3872,7 @@ window.__ModuleLoader__.load({
 									children: [
 										rightItems,
 										renderSlot("conversation.input.model", { locked: modelSeatLocked }),
+
 										(0, react_jsx_runtime.jsx)(ContextMeter, {
 											useProjection,
 											t
@@ -4803,6 +4821,27 @@ window.__ModuleLoader__.load({
 			const copyPending = (0, react.useRef)(false);
 			const copyTimer = (0, react.useRef)(null);
 			const copyEpoch = (0, react.useRef)(0);
+			const [speaking, setSpeaking] = (0, react.useState)(false);
+			const canSpeak = typeof window !== "undefined" && "speechSynthesis" in window && text.trim() !== "";
+			const onSpeak = () => {
+				if (!canSpeak) return;
+				if (speaking) {
+					window.speechSynthesis.cancel();
+					setSpeaking(false);
+					return;
+				}
+				try {
+					window.speechSynthesis.cancel();
+					const utterance = new SpeechSynthesisUtterance(text);
+					utterance.lang = navigator.language || "zh-CN";
+					utterance.onend = utterance.onerror = () => setSpeaking(false);
+					setSpeaking(true);
+					window.speechSynthesis.speak(utterance);
+				} catch (error) {
+					setSpeaking(false);
+					showToast(`语音播放不可用：${error instanceof Error ? error.message : String(error)}`);
+				}
+			};
 			(0, react.useEffect)(() => () => {
 				copyEpoch.current += 1;
 				copyPending.current = false;
@@ -4872,6 +4911,18 @@ window.__ModuleLoader__.load({
 							"aria-label": copied ? t("copied") : t("copy"),
 							onClick: onCopy,
 							children: copied ? (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCheckOutline16, {}) : (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCopyOutline16, {})
+						})
+					}),
+					canSpeak && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
+						label: speaking ? "停止朗读" : "朗读",
+						side: "bottom",
+						children: (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							className: MessageIconActions_module_css_default.action,
+							"aria-label": speaking ? "停止朗读" : "朗读",
+							"aria-pressed": speaking,
+							onClick: onSpeak,
+							children: (0, react_jsx_runtime.jsx)("svg", { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, "aria-hidden": true, children: speaking ? (0, react_jsx_runtime.jsx)("rect", { x: 7, y: 7, width: 10, height: 10, rx: 1.5 }) : (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("path", { d: "M5 9v6h4l5 4V5L9 9H5Z" }), (0, react_jsx_runtime.jsx)("path", { d: "M17 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12" })] }) })
 						})
 					}),
 					extraActions,
@@ -5170,7 +5221,7 @@ window.__ModuleLoader__.load({
 		});
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-conversation\src\client\chat\ChatView.module.css.mjs
-		const css$11 = ".R15qIq_root{flex-direction:column;flex:auto;min-height:0;display:flex;position:relative}.R15qIq_scroll{min-height:0;padding:16px calc(var(--dsh-composer-side-clearance) + 16px);flex:auto;overflow-y:auto}[data-conversation-scroll] .R15qIq_root{flex:none;height:auto;min-height:auto}[data-conversation-scroll] .R15qIq_scroll{flex:none;min-height:auto;overflow:visible}.R15qIq_column{max-width:var(--dsh-chat-content-width);flex-direction:column;gap:16px;width:100%;margin:0 auto;display:flex}.R15qIq_flowItem{min-width:0}.R15qIq_flowItem:empty{display:none}.R15qIq_callRow{border-radius:6px}.R15qIq_turnStatus{height:26px;font:var(--dsw-font-s-strong-14);white-space:nowrap;background:linear-gradient(90deg, var(--dsw-static-deepseek-500) 0%, var(--dsw-static-deepseek-500) 40%, var(--dsw-static-deepseek-200) 50%, var(--dsw-static-deepseek-500) 60%, var(--dsw-static-deepseek-500) 100%);color:#0000;-webkit-text-fill-color:transparent;background-position:100% 0;background-size:250% 100%;-webkit-background-clip:text;background-clip:text;flex:none;align-self:flex-start;align-items:center;animation:1.8s linear infinite R15qIq_dsh-turn-status-shimmer;display:inline-flex}.R15qIq_turnStatusClock{font:var(--dsw-font-xs-13);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-caption);-webkit-text-fill-color:var(--dsw-alias-label-caption);margin-left:8px;font-weight:400}@keyframes R15qIq_dsh-turn-status-shimmer{to{background-position:0 0}}@media (prefers-reduced-motion:reduce){.R15qIq_turnStatus{background-position:0 0;background-size:100% 100%;animation:none}}.R15qIq_hint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}.R15qIq_openError{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}.R15qIq_older{justify-content:center;display:flex}.R15qIq_older button{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover-solid);cursor:pointer;border:none;border-radius:14px;padding:4px 12px;font-size:12px}.R15qIq_older button:disabled{cursor:default;opacity:.6}.R15qIq_toBottomSlot{z-index:8;height:0;padding-right:max(0px, calc((100% - var(--dsh-chat-content-width)) / 2));pointer-events:none;justify-content:flex-end;display:flex;position:sticky;bottom:16px}[data-conversation-scroll] .R15qIq_toBottomSlot{bottom:calc(var(--dsh-composer-height,152px) + 16px)}.R15qIq_toBottom{border:1px solid var(--dsw-alias-border-l2);width:34px;height:34px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-button-floating-fill);box-shadow:var(--dsw-shadow-lv2);cursor:pointer;pointer-events:auto;border-radius:100px;justify-content:center;align-items:center;margin-top:-34px;padding:0;display:flex}.R15qIq_toBottom:hover{background:var(--dsw-alias-button-floating-hover)}";
+		const css$11 = ".R15qIq_root{flex-direction:column;flex:auto;min-height:0;display:flex;position:relative}.R15qIq_scroll{min-height:0;padding:16px calc(var(--dsh-composer-side-clearance) + 32px) 16px calc(var(--dsh-composer-side-clearance) + 16px);flex:auto;overflow-y:auto}.R15qIq_outline{z-index:3;position:absolute;right:8px;top:18px;bottom:18px;width:18px;display:flex;flex-direction:column;align-items:center;gap:5px}.R15qIq_outlineTrack{position:absolute;top:0;bottom:0;width:2px;border-radius:2px;background:var(--dsw-alias-border-l2)}.R15qIq_outlineProgress{position:absolute;top:0;width:2px;border-radius:2px;background:var(--dsw-alias-label-secondary)}.R15qIq_outlineDot{z-index:1;width:8px;height:8px;border:0;border-radius:50%;padding:0;background:var(--dsw-alias-label-caption);cursor:pointer}.R15qIq_outlineDot:hover,.R15qIq_outlineDot:focus-visible{background:var(--dsw-alias-label-primary);transform:scale(1.25)}[data-conversation-scroll] .R15qIq_root{flex:none;height:auto;min-height:auto}[data-conversation-scroll] .R15qIq_scroll{flex:none;min-height:auto;overflow:visible}.R15qIq_column{max-width:var(--dsh-chat-content-width);flex-direction:column;gap:16px;width:100%;margin:0 auto;display:flex}.R15qIq_flowItem{min-width:0}.R15qIq_flowItem:empty{display:none}.R15qIq_callRow{border-radius:6px}.R15qIq_turnStatus{height:26px;font:var(--dsw-font-s-strong-14);white-space:nowrap;background:linear-gradient(90deg, var(--dsw-static-deepseek-500) 0%, var(--dsw-static-deepseek-500) 40%, var(--dsw-static-deepseek-200) 50%, var(--dsw-static-deepseek-500) 60%, var(--dsw-static-deepseek-500) 100%);color:#0000;-webkit-text-fill-color:transparent;background-position:100% 0;background-size:250% 100%;-webkit-background-clip:text;background-clip:text;flex:none;align-self:flex-start;align-items:center;animation:1.8s linear infinite R15qIq_dsh-turn-status-shimmer;display:inline-flex}.R15qIq_turnStatusClock{font:var(--dsw-font-xs-13);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-caption);-webkit-text-fill-color:var(--dsw-alias-label-caption);margin-left:8px;font-weight:400}@keyframes R15qIq_dsh-turn-status-shimmer{to{background-position:0 0}}@media (prefers-reduced-motion:reduce){.R15qIq_turnStatus{background-position:0 0;background-size:100% 100%;animation:none}}.R15qIq_hint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}.R15qIq_openError{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}.R15qIq_older{justify-content:center;display:flex}.R15qIq_older button{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover-solid);cursor:pointer;border:none;border-radius:14px;padding:4px 12px;font-size:12px}.R15qIq_older button:disabled{cursor:default;opacity:.6}.R15qIq_toBottomSlot{z-index:8;height:0;padding-right:max(0px, calc((100% - var(--dsh-chat-content-width)) / 2));pointer-events:none;justify-content:flex-end;display:flex;position:sticky;bottom:16px}[data-conversation-scroll] .R15qIq_toBottomSlot{bottom:calc(var(--dsh-composer-height,152px) + 16px)}.R15qIq_toBottom{border:1px solid var(--dsw-alias-border-l2);width:34px;height:34px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-button-floating-fill);box-shadow:var(--dsw-shadow-lv2);cursor:pointer;pointer-events:auto;border-radius:100px;justify-content:center;align-items:center;margin-top:-34px;padding:0;display:flex}.R15qIq_toBottom:hover{background:var(--dsw-alias-button-floating-hover)}";
 		const tagId$11 = "@deepseek-ai/dsh-client-ui-conversation/ChatView.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$11) + "]") === null) {
 			const tag = document.createElement("style");
@@ -5180,6 +5231,10 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var ChatView_module_css_default = {
+			"outline": "R15qIq_outline",
+			"outlineTrack": "R15qIq_outlineTrack",
+			"outlineProgress": "R15qIq_outlineProgress",
+			"outlineDot": "R15qIq_outlineDot",
 			"column": "R15qIq_column",
 			"scroll": "R15qIq_scroll",
 			"flowItem": "R15qIq_flowItem",
@@ -5298,8 +5353,15 @@ window.__ModuleLoader__.load({
 			for (const turn of timeline.turns.values()) if (turn.status === "open" && turn.start !== void 0) latest = turn.start.time;
 			return latest;
 		}
+		const turnPulseStyleId = "dsh-turn-status-pulse";
+		if (typeof document !== "undefined" && document.getElementById(turnPulseStyleId) === null) {
+			const style = document.createElement("style");
+			style.id = turnPulseStyleId;
+			style.textContent = "@keyframes dshTurnDot{0%,20%{opacity:.22;transform:translateY(0)}50%{opacity:1;transform:translateY(-1px)}80%,100%{opacity:.22;transform:translateY(0)}}.dsh-turn-dots{display:inline-flex;gap:1px;margin-left:2px}.dsh-turn-dot{animation:dshTurnDot 1.2s ease-in-out infinite}.dsh-turn-dot:nth-child(2){animation-delay:.16s}.dsh-turn-dot:nth-child(3){animation-delay:.32s}@media(prefers-reduced-motion:reduce){.dsh-turn-dot{animation:none;opacity:.7}}";
+			document.head.appendChild(style);
+		}
 		/** Turn-level model activity label retained across first-token, tool, and streaming phases. */
-		function TurnStatus({ startTime, t }) {
+		function TurnStatus({ startTime, toolActive, phase, t }) {
 			const [mountedAt] = (0, react.useState)(() => Date.now());
 			const anchor = startTime ?? mountedAt;
 			const [elapsedMs, setElapsedMs] = (0, react.useState)(() => Math.max(0, Date.now() - anchor));
@@ -5313,12 +5375,14 @@ window.__ModuleLoader__.load({
 					clearInterval(id);
 				};
 			}, [anchor]);
-			const showClock = elapsedMs >= 15e3;
+			const showClock = elapsedMs >= 5e3;
+			const phaseLabel = phase === "text" ? "生成回复中" : phase === "reasoning" ? "模型推理中" : "等待模型响应";
+			const baseLabel = (toolActive ? t("turn.executingTool") : phaseLabel).replace(/[…\.]+$/, "");
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: ChatView_module_css_default.turnStatus,
 				role: "status",
 				"aria-live": "polite",
-				children: ["Deep diving...", showClock && (0, react_jsx_runtime.jsx)("span", {
+				children: [baseLabel, (0, react_jsx_runtime.jsxs)("span", { className: "dsh-turn-dots", "aria-hidden": true, children: [(0, react_jsx_runtime.jsx)("span", { className: "dsh-turn-dot", children: "." }), (0, react_jsx_runtime.jsx)("span", { className: "dsh-turn-dot", children: "." }), (0, react_jsx_runtime.jsx)("span", { className: "dsh-turn-dot", children: "." })] }), showClock && (0, react_jsx_runtime.jsx)("span", {
 					className: ChatView_module_css_default.turnStatusClock,
 					"aria-hidden": true,
 					children: formatRunDuration(elapsedMs, t)
@@ -5336,6 +5400,7 @@ window.__ModuleLoader__.load({
 			const inbox = useSession((s) => s.queue);
 			const cwd = useSessions((s) => s.byId[sessionId]?.cwd);
 			const running = useSession((s) => s.running);
+			const runningCalls = useSession((s) => s.runningCalls);
 			const openState = useSession((s) => s.openState);
 			const openError = useSession((s) => s.openError);
 			const hasMore = useSession((s) => s.hasMore);
@@ -5343,8 +5408,17 @@ window.__ModuleLoader__.load({
 			const selectedCallId = useStore((s) => s.selection?.callId);
 			const pendingSteering = (0, react.useMemo)(() => inbox.filter((item) => item.placement === "steering"), [inbox]);
 			const runningTurnStart = (0, react.useMemo)(() => runningTurnStartTime(timeline), [timeline]);
+			const runningPhase = (0, react.useMemo)(() => {
+				const active = [...nodeStore.values()].filter((node) => node.kind === "assistant" && node.status === "running").at(-1);
+				if (active === void 0) return "waiting";
+				const blocks = active.blocks ?? [];
+				if (blocks.some((block) => block.type === "text" && block.text?.length > 0)) return "text";
+				if (blocks.some((block) => block.type === "reasoning")) return "reasoning";
+				return "waiting";
+			}, [nodeStore, order]);
 			const listRef = (0, react.useRef)(null);
 			const columnRef = (0, react.useRef)(null);
+			const [outline, setOutline] = (0, react.useState)({ sections: [], progress: 0 });
 			const atBottomRef = (0, react.useRef)(true);
 			const [atBottom, setAtBottom] = (0, react.useState)(true);
 			/** Last position delivered or written on the main thread. */
@@ -5366,6 +5440,19 @@ window.__ModuleLoader__.load({
 			const lastNode = lastKey === null ? void 0 : nodeStore.get(lastKey);
 			const lastSteeringId = pendingSteering[pendingSteering.length - 1]?.id ?? null;
 			const followSig = `${openState}:${firstSeq}:${lastKey}:${order.length}:${running ? 1 : 0}:${lastSteeringId ?? ""}`;
+			const refreshOutline = () => {
+				const local = listRef.current;
+				if (local === null) return;
+				const el = scrollerOf(local);
+				const rows = [...local.querySelectorAll('[data-chat-flow-kind="user"],[data-chat-flow-kind="compaction"]')];
+				const sections = rows.map((row, index) => ({
+					key: row.dataset.chatAnchorKey,
+					label: row.dataset.chatFlowKind === "compaction" ? "上下文压缩" : (row.innerText.trim().split("\n")[0] || `章节 ${index + 1}`).slice(0, 48)
+				})).filter((item) => item.key !== void 0);
+				const floor = Math.max(0, el.scrollHeight - el.clientHeight);
+				const progress = floor === 0 ? 1 : Math.max(0, Math.min(1, el.scrollTop / floor));
+				setOutline((current) => current.progress === progress && current.sections.length === sections.length && current.sections.every((item, index) => item.key === sections[index]?.key && item.label === sections[index]?.label) ? current : { sections, progress });
+			};
 			const toBottom = (el) => {
 				anchorRef.current = null;
 				el.scrollTop = el.scrollHeight;
@@ -5447,7 +5534,12 @@ window.__ModuleLoader__.load({
 				if (isAtBottom) chatScroll.save(null);
 				else if (position !== null) chatScroll.save(position);
 				observedTopRef.current = el.scrollTop;
+				refreshOutline();
 			};
+			(0, react.useEffect)(() => {
+				const frame = requestAnimationFrame(refreshOutline);
+				return () => cancelAnimationFrame(frame);
+			}, [order, hasMore, openState]);
 			(0, react.useEffect)(() => {
 				const local = listRef.current;
 				/* v8 ignore next -- ref-null guard: effect runs after the list node commits. */
@@ -5503,7 +5595,7 @@ window.__ModuleLoader__.load({
 			};
 			return (0, react_jsx_runtime.jsx)("div", {
 				className: ChatView_module_css_default.root,
-				children: (0, react_jsx_runtime.jsxs)("div", {
+				children: [(0, react_jsx_runtime.jsxs)("div", {
 					ref: listRef,
 					className: ChatView_module_css_default.scroll,
 					children: [(0, react_jsx_runtime.jsxs)("div", {
@@ -5546,6 +5638,8 @@ window.__ModuleLoader__.load({
 							}, nodeKey)),
 							running && (0, react_jsx_runtime.jsx)(TurnStatus, {
 								startTime: runningTurnStart,
+								toolActive: runningCalls.length > 0,
+								phase: runningPhase,
 								t
 							}),
 							pendingSteering.map((item) => (0, react_jsx_runtime.jsx)(PendingSteeringBubble, {
@@ -5568,7 +5662,24 @@ window.__ModuleLoader__.load({
 							children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
 						})
 					})]
-				})
+				}), outline.sections.length >= 4 && (0, react_jsx_runtime.jsxs)("nav", {
+					className: ChatView_module_css_default.outline,
+					"aria-label": "对话章节导航",
+					children: [(0, react_jsx_runtime.jsx)("span", { className: ChatView_module_css_default.outlineTrack }), (0, react_jsx_runtime.jsx)("span", {
+						className: ChatView_module_css_default.outlineProgress,
+						style: { height: `${Math.round(outline.progress * 100)}%` }
+					}), outline.sections.map((section) => (0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						className: ChatView_module_css_default.outlineDot,
+						"aria-label": `跳转到：${section.label}`,
+						title: section.label,
+						onClick: () => {
+							const local = listRef.current;
+							if (local === null) return;
+							anchorElement(local, section.key)?.scrollIntoView({ behavior: "smooth", block: "start" });
+						}
+					}, section.key))]
+				})]
 			});
 		}
 		//#endregion
@@ -5789,8 +5900,13 @@ window.__ModuleLoader__.load({
 			"input.commands": "命令",
 			"input.stop": "停止生成",
 			"input.send": "发送消息",
+			"input.waitingModel": "正在等待模型响应… {seconds}秒",
+			"turn.processingModel": "模型处理中…",
+			"turn.executingTool": "正在执行工具…",
 			"placeholder.steerQueue": "Cmd/Ctrl+Enter 插话发送全部排队消息",
 			"input.accessMode": "访问模式，当前：{name}",
+			"permission.fullAccess": "完全访问",
+			"permission.workspaceWrite": "工作区写入",
 			"image.dropTitle": "图片拖动到此处即可添加",
 			"image.dropDesc": "最多 {count} 张，每张 {size}",
 			"image.dropBlocked": "当前无法添加图片",
@@ -5954,8 +6070,13 @@ window.__ModuleLoader__.load({
 			"input.commands": "Commands",
 			"input.stop": "Stop generating",
 			"input.send": "Send message",
+			"input.waitingModel": "Waiting for model response… {seconds}s",
+			"turn.processingModel": "Model processing…",
+			"turn.executingTool": "Running tool…",
 			"placeholder.steerQueue": "Cmd/Ctrl+Enter steers all queued messages",
 			"input.accessMode": "Access mode, current: {name}",
+			"permission.fullAccess": "Full access",
+			"permission.workspaceWrite": "Workspace Write",
 			"image.dropTitle": "Drag images here to add them",
 			"image.dropDesc": "Up to {count} images, {size} each",
 			"image.dropBlocked": "Images cannot be added right now",
@@ -7440,7 +7561,8 @@ window.__ModuleLoader__.load({
 				if (match.event.type === "step/start") return "none";
 				if (match.event.type !== "assistant/chunk") return "immediate";
 				const type = match.event.data.chunk.type;
-				return type === "usage" || type === "finish" ? "none" : "animation-frame";
+				if (type === "usage" || type === "finish") return "none";
+				return type === "reasoning-delta" || type === "block-start" ? "immediate" : "animation-frame";
 			},
 			buildLocationData: (context, scope) => {
 				if (scope !== "step") return null;
@@ -8946,7 +9068,7 @@ window.__ModuleLoader__.load({
 		* @returns the reasoning disclosure.
 		*/
 		function ReasoningRow({ text, running, t }) {
-			const [expanded, setExpanded] = (0, react.useState)(false);
+			const [expanded, setExpanded] = (0, react.useState)(running);
 			const summaryRef = (0, react.useRef)(null);
 			const summary = running ? latestLine(text) : firstLine(text);
 			const scheduleSummaryScroll = useThrottledVisualUpdate(() => {
@@ -9769,7 +9891,6 @@ window.__ModuleLoader__.load({
 				input: inputHub,
 				blocks: composerBlocks
 			});
-			ctx.plugin(todoDockEntry);
 			ctx.plugin(queueDockEntry);
 			slots.register({
 				name: "details",

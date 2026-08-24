@@ -1,6 +1,6 @@
 [package]
 name = "dsh-timeout"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Shared timeout arithmetic, signal fusion, and classification: Rust port of @deepseek-ai/dsh-timeout"

@@ -170,9 +170,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_malformed_and_foreign_documents() {
-        let error = parse("not json at all", &descriptor())
-            .err()
-            .expect("reject");
+        let error = parse("not json at all", &descriptor()).expect_err("reject");
         assert_eq!(error.code, StorageErrorCode::MalformedMedium);
 
         let foreign = serde_json::json!({
@@ -181,7 +179,7 @@ mod tests {
             "tables": {},
         })
         .to_string();
-        let error = parse(&foreign, &descriptor()).err().expect("reject");
+        let error = parse(&foreign, &descriptor()).expect_err("reject");
         assert_eq!(error.code, StorageErrorCode::MalformedMedium);
 
         let mismatched = serde_json::json!({
@@ -190,7 +188,7 @@ mod tests {
             "tables": {},
         })
         .to_string();
-        let error = parse(&mismatched, &descriptor()).err().expect("reject");
+        let error = parse(&mismatched, &descriptor()).expect_err("reject");
         assert_eq!(error.code, StorageErrorCode::VersionMismatch);
 
         let bad_table = serde_json::json!({
@@ -199,11 +197,11 @@ mod tests {
             "tables": {"t": ["not", "an", "object"]},
         })
         .to_string();
-        let error = parse(&bad_table, &descriptor()).err().expect("reject");
+        let error = parse(&bad_table, &descriptor()).expect_err("reject");
         assert_eq!(error.code, StorageErrorCode::MalformedMedium);
 
         let string_doc = serde_json::json!("just a string").to_string();
-        let error = parse(&string_doc, &descriptor()).err().expect("reject");
+        let error = parse(&string_doc, &descriptor()).expect_err("reject");
         assert_eq!(error.code, StorageErrorCode::MalformedMedium);
     }
 

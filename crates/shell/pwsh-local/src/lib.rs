@@ -215,6 +215,10 @@ impl LocalPwshExecutor {
 }
 
 impl ShellExecutor for LocalPwshExecutor {
+    fn sandbox_mode(&self) -> Option<SandboxMode> {
+        Some(SandboxMode::WorkspaceWrite)
+    }
+
     fn resolve(&self, request: ShellExecRequest) -> ShellExecSpec {
         ShellExecSpec {
             command: request.command,

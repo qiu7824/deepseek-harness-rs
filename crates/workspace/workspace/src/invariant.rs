@@ -81,9 +81,7 @@ pub fn installer() -> dsh_invariants::InvariantInstaller {
                         let registry = registry.clone();
                         let fail = listener_fail.clone();
                         Box::pin(async move {
-                            let Some(change) = change else {
-                                return None;
-                            };
+                            let change = change?;
                             check_change(
                                 &change,
                                 &|key| registry.get(&workspace_id(key)).is_some(),

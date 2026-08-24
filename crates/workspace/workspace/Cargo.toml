@@ -1,6 +1,6 @@
 [package]
 name = "dsh-workspace"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Workspace entity registry (ctx.workspaceRegistry): durable workspace records, stable registry order, and header-validated session membership over the domain data form: Rust port of @deepseek-ai/dsh-workspace"

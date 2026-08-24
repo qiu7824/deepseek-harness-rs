@@ -87,13 +87,13 @@ pub fn define_domain(
             ));
         }
     }
-    if let Some(global) = &global {
-        if (global.schema)(&JsonValue::Null).is_ok() {
-            return Err(format!(
-                "domain '{name}' global schema must not accept null: \
+    if let Some(global) = &global
+        && (global.schema)(&JsonValue::Null).is_ok()
+    {
+        return Err(format!(
+            "domain '{name}' global schema must not accept null: \
                  null is the medium's \"never written\" sentinel, so a stored null could not round-trip"
-            ));
-        }
+        ));
     }
     Ok(DomainSpec {
         name,

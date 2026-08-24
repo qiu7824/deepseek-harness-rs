@@ -1,6 +1,6 @@
 [package]
 name = "dsh-user-approval"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "User-approval seam (ctx.approval): one-shot permission decisions over the approval/request waterfall, fail-closed by default — Rust port of @deepseek-ai/dsh-user-approval"

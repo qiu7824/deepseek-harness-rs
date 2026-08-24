@@ -123,6 +123,7 @@ struct Harness {
     handler: dsh_host_apiproxy::FetchHandler,
     agents: Arc<AgentRegistry>,
     agent: Arc<StubAgent>,
+    attachment_root: std::path::PathBuf,
 }
 
 impl Harness {
@@ -130,6 +131,22 @@ impl Harness {
         let ctx = Context::root();
         let agents = AgentRegistry::install(&ctx);
         let agent = StubAgent::new(&ctx, "owner");
+        let home = std::env::temp_dir().join(format!(
+            "dsh-prompt-attachments-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let attachments = dsh_attachment_local::LocalAttachmentStore::install(
+            &ctx,
+            dsh_attachment_local::Config {
+                dsh_home: Some(home.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        );
+        let attachment_root = attachments.root.clone();
         let service = ApiProxyService::install(&ctx, ApiProxyDefaults::default());
         let handler = to_fetch_handler(service);
         Self {
@@ -137,6 +154,7 @@ impl Harness {
             handler,
             agents,
             agent,
+            attachment_root,
         }
     }
 
@@ -225,7 +243,7 @@ fn steer_delivers_through_the_steer_path() {
 }
 
 #[test]
-fn an_invalid_time_zone_and_image_content_are_rejected() {
+fn an_invalid_time_zone_is_rejected() {
     run(async {
         let harness = Harness::new();
         harness.register_owner().await;
@@ -240,15 +258,53 @@ fn an_invalid_time_zone_and_image_content_are_rejected() {
         assert_eq!(invalid["result"]["ok"], false);
         assert_eq!(invalid["result"]["error"]["code"], "invalid-time-zone");
         assert_eq!(invalid["result"]["error"]["details"]["value"], "Not/AZone");
+    });
+}
 
-        let image = harness
+#[test]
+fn image_prompt_is_validated_persisted_and_delivered_as_a_durable_reference() {
+    run(async {
+        let harness = Harness::new();
+        harness.register_owner().await;
+        let accepted = harness
             .post(serde_json::json!({
                 "sessionId": "owner",
                 "mode": "queue",
-                "content": [{ "type": "image", "mediaType": "image/png", "data": "xx" }],
+                "content": [
+                    { "type": "text", "text": "inspect" },
+                    {
+                        "type": "image",
+                        "mediaType": "image/png",
+                        "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+                        "name": "pixel.png"
+                    }
+                ],
             }))
             .await;
-        assert_eq!(image["result"]["ok"], false);
-        assert_eq!(image["result"]["error"]["code"], "attachment-error");
+        assert_eq!(accepted["result"]["ok"], true, "{accepted}");
+
+        let delivered = harness.agent.delivered.lock();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].1.content.len(), 2);
+        let dsh_llm::ContentBlock::Image { attachment } = &delivered[0].1.content[1] else {
+            panic!("expected durable image reference");
+        };
+        assert_eq!(attachment.media_type.as_deref(), Some("image/png"));
+        assert_eq!(attachment.width, Some(1));
+        assert_eq!(attachment.height, Some(1));
+        assert_eq!(attachment.name.as_deref(), Some("pixel.png"));
+        let digest = attachment
+            .attachment_id
+            .strip_prefix("sha256:")
+            .expect("content-addressed id");
+        assert!(
+            harness
+                .attachment_root
+                .join("objects")
+                .join(&digest[..2])
+                .join(digest)
+                .is_file(),
+            "attachment bytes were not committed"
+        );
     });
 }

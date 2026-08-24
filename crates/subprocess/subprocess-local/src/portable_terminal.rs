@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)] // Cleanup state mirrors the shared async terminal lifecycle.
+
 //! Native PTY allocation over `portable-pty` (ConPTY on Windows).
 
 use std::ffi::OsString;

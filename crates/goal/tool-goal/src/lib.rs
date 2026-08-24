@@ -628,10 +628,7 @@ impl Plugin for ToolGoalPlugin {
     }
 
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
-        let config = config
-            .downcast_ref::<Config>()
-            .cloned()
-            .ok_or_else(|| PluginError::from(anyhow::anyhow!("tool-goal requires config")))?;
+        let config = config.downcast_ref::<Config>().cloned().unwrap_or_default();
         let disposer =
             apply(ctx, &config).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
         let _ = ctx.effect("tool-goal", Box::pin(async move { Some(disposer) }));

@@ -1,0 +1,21 @@
+[package]
+name = "dsh-tool-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Model-facing web_search tool over the Rust web search service"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+cordis = { path = "../../vendor/cordis" }
+dsh-llm = { path = "../../core/llm" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-tools = { path = "../../core/tools" }
+dsh-web = { path = "../web" }
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

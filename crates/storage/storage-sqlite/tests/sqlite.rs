@@ -316,7 +316,7 @@ async fn rejects_unparsable_stored_json_with_malformed_medium() {
         .open(&descriptor())
         .await
         .expect("open");
-    let error = damaged.load_all().await.err().expect("malformed");
+    let error = damaged.load_all().await.expect_err("malformed");
     assert_eq!(error.code, StorageErrorCode::MalformedMedium);
     let _ = reopened.close().await;
     cleanup(&path);
@@ -337,11 +337,7 @@ async fn rejects_set_global_without_a_slot_and_writes_to_undeclared_tables() {
         .open(&no_global)
         .await
         .expect("open");
-    let error = unit
-        .set_global(json!({"g": 1}))
-        .await
-        .err()
-        .expect("reject");
+    let error = unit.set_global(json!({"g": 1})).await.expect_err("reject");
     assert!(
         error.message.contains("declared no global slot"),
         "{}",
@@ -350,8 +346,7 @@ async fn rejects_set_global_without_a_slot_and_writes_to_undeclared_tables() {
     let error = unit
         .put_record("undeclared", "k", json!(1))
         .await
-        .err()
-        .expect("reject");
+        .expect_err("reject");
     assert!(
         error.message.contains("declared no table"),
         "{}",
@@ -398,7 +393,10 @@ async fn drains_a_still_pending_failed_open_during_close() {
     let close_task = tokio::spawn(async move { backend.close().await });
     let error = open_future.await.err().expect("version-mismatch");
     assert_eq!(error.code, StorageErrorCode::VersionMismatch);
-    close_task.await.expect("close drains the failed open");
+    close_task
+        .await
+        .expect("close task")
+        .expect("close drains the failed open");
     cleanup(&path);
 }
 
@@ -493,7 +491,7 @@ async fn rejects_an_unparsable_global_slot_with_malformed_medium() {
         .open(&descriptor())
         .await
         .expect("open");
-    let error = damaged.load_all().await.err().expect("malformed");
+    let error = damaged.load_all().await.expect_err("malformed");
     assert_eq!(error.code, StorageErrorCode::MalformedMedium);
     let _ = reopened.close().await;
     cleanup(&path);

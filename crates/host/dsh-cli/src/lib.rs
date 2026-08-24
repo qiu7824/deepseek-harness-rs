@@ -4,6 +4,7 @@
 //! flags belongs to the booted tree verbatim).
 
 pub mod acp_stdio;
+pub mod native_plugin;
 pub mod profile_boot;
 pub mod run_profile;
 pub mod sdk_stdio;
@@ -63,7 +64,7 @@ pub fn plugin_command_spec(
         ));
     }
     Ok(PluginCommandSpec {
-        program: std::env::var("DSH_PNPM_BIN").unwrap_or_else(|_| "pnpm".to_string()),
+        program: "dsh-native-plugin".to_string(),
         args: invocation.args.clone(),
         cwd,
     })
@@ -72,13 +73,103 @@ pub fn plugin_command_spec(
 pub fn run_plugin_command(
     invocation: &PluginInvocation,
     home: &std::path::Path,
-) -> Result<std::process::ExitStatus, String> {
+) -> Result<(), String> {
     let spec = plugin_command_spec(invocation, home)?;
-    std::process::Command::new(&spec.program)
-        .args(&spec.args)
-        .current_dir(&spec.cwd)
-        .status()
-        .map_err(|error| format!("dsh: failed to run {}: {error}", spec.program))
+    native_plugin::run(&spec.cwd, &spec.args)
+}
+
+/// Read-only legacy-history inspection. It never writes to the source or DSH_HOME.
+pub fn inspect_legacy_history(source: &std::path::Path) -> Result<String, String> {
+    if !source.exists() {
+        return Err(format!(
+            "history source does not exist: {}",
+            source.display()
+        ));
+    }
+    let mut jsonl = 0usize;
+    let mut other = 0usize;
+    fn visit(path: &std::path::Path, jsonl: &mut usize, other: &mut usize) -> std::io::Result<()> {
+        if path.is_dir() {
+            for entry in std::fs::read_dir(path)? {
+                visit(&entry?.path(), jsonl, other)?;
+            }
+        } else if path.extension().and_then(|v| v.to_str()) == Some("jsonl") {
+            *jsonl += 1;
+        } else {
+            *other += 1;
+        }
+        Ok(())
+    }
+    visit(source, &mut jsonl, &mut other)
+        .map_err(|error| format!("history scan failed: {error}"))?;
+    Ok(format!(
+        "source={}\njsonl_files={}\nother_files={}\nimport=not_performed\n",
+        source.display(),
+        jsonl,
+        other
+    ))
+}
+
+pub fn import_legacy_history(
+    source: &std::path::Path,
+    target_home: &std::path::Path,
+) -> Result<usize, String> {
+    let mut candidates = Vec::new();
+    fn visit(path: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
+        if path.is_dir() {
+            for entry in std::fs::read_dir(path)? {
+                visit(&entry?.path(), out)?;
+            }
+        } else if path.file_name().and_then(|v| v.to_str()) == Some("session.jsonl") {
+            out.push(path.to_path_buf());
+        }
+        Ok(())
+    }
+    visit(source, &mut candidates).map_err(|error| format!("history scan failed: {error}"))?;
+    let sessions_root = target_home.join("sessions");
+    let mut imported = 0usize;
+    for source_file in candidates {
+        let content = std::fs::read_to_string(&source_file)
+            .map_err(|error| format!("history read {}: {error}", source_file.display()))?;
+        let first = content
+            .lines()
+            .next()
+            .ok_or_else(|| format!("history artifact has no header: {}", source_file.display()))?;
+        let header: dsh_session_persistence_jsonl::HeaderLine = serde_json::from_str(first)
+            .map_err(|error| format!("history header {}: {error}", source_file.display()))?;
+        if header.type_ != "session" {
+            return Err(format!(
+                "unsupported history artifact: {}",
+                source_file.display()
+            ));
+        }
+        let root = sessions_root.to_string_lossy();
+        let target = dsh_session_persistence_jsonl::log_path(
+            &root,
+            header.cwd.as_deref(),
+            &header.id,
+            dsh_session_persistence_jsonl::JsonlCompression::None,
+        );
+        if target.exists() {
+            return Err(format!(
+                "history target already exists: {}",
+                target.display()
+            ));
+        }
+        std::fs::create_dir_all(target.parent().expect("session artifact parent"))
+            .map_err(|error| format!("history target directory: {error}"))?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        let mut file = options
+            .open(&target)
+            .map_err(|error| format!("history target {}: {error}", target.display()))?;
+        std::io::Write::write_all(&mut file, content.as_bytes())
+            .map_err(|error| format!("history target write {}: {error}", target.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("history target sync: {error}"))?;
+        imported += 1;
+    }
+    Ok(imported)
 }
 
 /// The resolved `dsh` invocation.
@@ -87,6 +178,19 @@ pub enum DshInvocation {
     Profile(ProfileInvocation),
     DumpConfig(DumpConfigInvocation),
     Plugin(PluginInvocation),
+    HistoryInspect(HistoryInspectInvocation),
+    HistoryImport(HistoryImportInvocation),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryInspectInvocation {
+    pub source: std::path::PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryImportInvocation {
+    pub source: std::path::PathBuf,
+    pub target_home: std::path::PathBuf,
 }
 
 /// The launcher's own help text.
@@ -100,6 +204,8 @@ Examples:
   dsh --profile tui --resume <session>       arguments after the launcher flags reach the app
   dsh --profile web --help                   the web app's own flags and help
   dsh plugin --profile tui add <package>     install a plugin into the tui profile
+  dsh history inspect <directory>            inspect legacy history without importing it
+  dsh history import <directory> --to <home> import compatible JSONL without overwriting
 ";
 
 /// Parse failure: the CLI prints the message and exits with a code.
@@ -262,6 +368,29 @@ pub fn parse_dsh_args(argv: &[String], version: &str) -> Result<DshInvocation, D
         let (profile, options, inner) = parse_options(&argv[1..], Some("web"))?;
         return resolve_boot(profile, options, inner);
     }
+    // The read-only legacy-history inspector is intentionally separate from Host boot.
+    if argv.first().map(String::as_str) == Some("history") {
+        return match argv.get(1).map(String::as_str) {
+            Some("inspect") if argv.len() == 3 => {
+                Ok(DshInvocation::HistoryInspect(HistoryInspectInvocation {
+                    source: argv[2].clone().into(),
+                }))
+            }
+            Some("inspect") => Err(DshArgsError::error(
+                "history inspect needs a source directory",
+            )),
+            Some("import") if argv.len() == 5 && argv[3] == "--to" => {
+                Ok(DshInvocation::HistoryImport(HistoryImportInvocation {
+                    source: argv[2].clone().into(),
+                    target_home: argv[4].clone().into(),
+                }))
+            }
+            Some("import") => Err(DshArgsError::error(
+                "history import needs <source> --to <DSH_HOME>",
+            )),
+            _ => Err(DshArgsError::error("history supports inspect and import")),
+        };
+    }
     // The `plugin` subcommand.
     if argv.first().map(String::as_str) == Some("plugin") {
         let (profile, _options, inner) = parse_options(&argv[1..], None)?;
@@ -285,6 +414,36 @@ mod tests {
 
     fn argv(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn history_inspect_is_a_standalone_read_only_invocation() {
+        assert_eq!(
+            parse_dsh_args(&argv(&["history", "inspect", "C:/legacy"]), "1.0").unwrap(),
+            DshInvocation::HistoryInspect(HistoryInspectInvocation {
+                source: std::path::PathBuf::from("C:/legacy"),
+            })
+        );
+        let missing = parse_dsh_args(&argv(&["history", "inspect"]), "1.0").unwrap_err();
+        assert!(
+            missing
+                .message
+                .contains("history inspect needs a source directory")
+        );
+        assert_eq!(
+            parse_dsh_args(
+                &argv(&["history", "import", "C:/legacy", "--to", "C:/target"]),
+                "1.0",
+            )
+            .unwrap(),
+            DshInvocation::HistoryImport(HistoryImportInvocation {
+                source: std::path::PathBuf::from("C:/legacy"),
+                target_home: std::path::PathBuf::from("C:/target"),
+            })
+        );
+        let malformed =
+            parse_dsh_args(&argv(&["history", "import", "C:/legacy"]), "1.0").unwrap_err();
+        assert!(malformed.message.contains("history import needs"));
     }
 
     #[test]
@@ -366,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_command_uses_direct_argv_and_the_profile_directory() {
+    fn plugin_command_uses_native_installer_and_the_profile_directory() {
         let home =
             std::env::temp_dir().join(format!("dsh-plugin-command-spec-{}", std::process::id()));
         let profile_dir = home.join("profiles").join("web");
@@ -377,7 +536,7 @@ mod tests {
             args: vec!["add".to_string(), "pkg;not-shell".to_string()],
         };
         let spec = plugin_command_spec(&invocation, &home).expect("command spec");
-        assert_eq!(spec.program, "pnpm");
+        assert_eq!(spec.program, "dsh-native-plugin");
         assert_eq!(spec.args, invocation.args);
         assert_eq!(spec.cwd, profile_dir);
         let _ = std::fs::remove_dir_all(home);

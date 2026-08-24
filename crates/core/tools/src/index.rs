@@ -561,6 +561,19 @@ impl ToolRuntime {
         self.default_mode
     }
 
+    /// Derive the registered pending-call presentation for one scope without
+    /// executing or materializing an Agent. Cold history readers use the
+    /// preset's standing scope so deliverable locations remain available.
+    pub fn present_call_for_scope(
+        &self,
+        scope: Option<&ScopeKey>,
+        name: &str,
+        arguments: &JsonValue,
+    ) -> Option<ToolCallView> {
+        let definition = self.view(scope).visible.get(name).cloned()?;
+        definition.present_call.as_ref()?.as_ref()(arguments)
+    }
+
     /// Present the calling scope's tools in `mode` instead of the
     /// deployment default.
     pub fn present_as(
@@ -624,8 +637,18 @@ impl ToolRuntime {
                 "tool name \"{RUN_CODE_NAME}\" is reserved for the Code Mode presentation transport and cannot be registered or shadowed"
             ));
         }
-        assert_supported_json_schema(&definition.output.schema)
-            .map_err(|error| error.to_string())?;
+        assert_supported_json_schema(&definition.parameters).map_err(|error| {
+            format!(
+                "tool \"{}\" has invalid parameters schema: {error}",
+                definition.name
+            )
+        })?;
+        assert_supported_json_schema(&definition.output.schema).map_err(|error| {
+            format!(
+                "tool \"{}\" has invalid output schema: {error}",
+                definition.name
+            )
+        })?;
         if definition.timeout_ms.is_some_and(|timeout| timeout == 0) {
             return Err(format!(
                 "tool \"{}\" timeoutMs must be a positive finite number",
@@ -1238,20 +1261,52 @@ impl ToolRuntime {
         run_ctx: &ToolRunContext,
         reason: Option<String>,
     ) -> (PreToolDecision, bool) {
-        // The approval seam (dsh-user-approval) is not yet ported: degrade
-        // to denial, exactly like a composition that mounts no seam.
-        let _ = run_ctx;
-        (
-            PreToolDecision::Deny {
-                reason: reason.unwrap_or_else(|| {
-                    format!(
-                        "tool \"{}\" requires approval (not yet supported)",
-                        run_ctx.name
-                    )
-                }),
-            },
-            false,
-        )
+        let Some(agent) = run_ctx.agent.clone() else {
+            return (
+                PreToolDecision::Deny {
+                    reason: "approval requires an agent-owned tool call".to_string(),
+                },
+                false,
+            );
+        };
+        let Some(approval) = self
+            .ctx
+            .get_typed::<Arc<dsh_user_approval::ApprovalService>>("approval", false)
+            .map(|slot| slot.as_ref().clone())
+        else {
+            return (
+                PreToolDecision::Deny {
+                    reason: "approval service is unavailable".to_string(),
+                },
+                false,
+            );
+        };
+        let signal = run_ctx.signal.lock().clone();
+        let request = dsh_user_approval::ApprovalRequest {
+            agent,
+            tool_name: run_ctx.name.clone(),
+            call_id: Some(run_ctx.call_id.as_str().to_string()),
+            reason: reason.clone(),
+            signal: Some(signal),
+        };
+        match approval.request(&request).await {
+            Ok(dsh_user_approval::ApprovalOutcome::AllowedOnce) => (PreToolDecision::Allow, false),
+            Ok(dsh_user_approval::ApprovalOutcome::Cancelled) => (
+                PreToolDecision::Deny {
+                    reason: "approval request was cancelled".to_string(),
+                },
+                true,
+            ),
+            Ok(outcome) => (
+                PreToolDecision::Deny {
+                    reason: reason.unwrap_or_else(|| {
+                        format!("approval request resolved {}", outcome.as_str())
+                    }),
+                },
+                false,
+            ),
+            Err(error) => (PreToolDecision::Deny { reason: error }, false),
+        }
     }
 
     /// Run around-dispatch fallback: the registered body with the original

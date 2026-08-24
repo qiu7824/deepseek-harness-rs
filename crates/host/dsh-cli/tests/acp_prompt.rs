@@ -5,9 +5,18 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-fn spawn_acp(base_url: &str) -> Child {
+fn spawn_acp(base_url: &str, home: &std::path::Path) -> Child {
+    std::fs::write(
+        home.join("settings.json"),
+        serde_json::to_vec_pretty(&json!({
+            "llm-deepseek": { "baseURL": base_url }
+        }))
+        .expect("encode ACP settings"),
+    )
+    .expect("write isolated ACP settings");
     Command::new(env!("CARGO_BIN_EXE_dsh"))
         .arg("__dsh-acp")
+        .env("DSH_HOME", home)
         .env("DSH_DEEPSEEK_BASE_URL", base_url)
         .env("DEEPSEEK_API_KEY", "acp-fixture-key")
         .env("DSH_DEEPSEEK_MODEL", "deepseek-chat")
@@ -122,7 +131,7 @@ fn acp_prompt_streams_committed_text_and_settles_at_whole_agent_idle() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&root).expect("ACP workspace");
-    let mut child = spawn_acp(&format!("http://{address}"));
+    let mut child = spawn_acp(&format!("http://{address}"), &root);
     let stdout = child.stdout.take().expect("piped ACP stdout");
     let mut reader = BufReader::new(stdout);
     let session_id = start_session(&mut child, &mut reader, &root);
@@ -151,8 +160,11 @@ fn acp_prompt_streams_committed_text_and_settles_at_whole_agent_idle() {
             break frame;
         }
     };
-    assert_eq!(committed, vec!["ACP_OK"]);
-    assert_eq!(response["result"]["stopReason"], "end_turn");
+    assert_eq!(committed, vec!["ACP_OK"], "response={response}");
+    assert_eq!(
+        response["result"]["stopReason"], "end_turn",
+        "response={response}"
+    );
 
     drop(child.stdin.take());
     let output = child.wait_with_output().expect("ACP runtime exits on EOF");
@@ -210,7 +222,7 @@ fn acp_cancel_interrupts_an_inflight_prompt_and_settles_cancelled() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&root).expect("ACP cancel workspace");
-    let mut child = spawn_acp(&format!("http://{address}"));
+    let mut child = spawn_acp(&format!("http://{address}"), &root);
     let stdout = child.stdout.take().expect("piped ACP stdout");
     let mut reader = BufReader::new(stdout);
     let session_id = start_session(&mut child, &mut reader, &root);

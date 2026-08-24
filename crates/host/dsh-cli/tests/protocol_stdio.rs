@@ -5,9 +5,24 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+fn temp_home(label: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "dsh-protocol-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&path).expect("protocol temp home");
+    path
+}
+
 fn run_protocol(mode: &str, requests: &[Value]) -> std::process::Output {
+    let home = temp_home("stdio");
     let mut child = Command::new(env!("CARGO_BIN_EXE_dsh"))
         .arg(mode)
+        .env("DSH_HOME", &home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -25,7 +40,9 @@ fn run_protocol(mode: &str, requests: &[Value]) -> std::process::Output {
         }
     }
     drop(child.stdin.take());
-    child.wait_with_output().expect("protocol process exits")
+    let output = child.wait_with_output().expect("protocol process exits");
+    let _ = std::fs::remove_dir_all(home);
+    output
 }
 
 fn json_lines(output: &[u8]) -> Vec<Value> {
@@ -132,6 +149,9 @@ fn upstream_python_sdk_drives_a_real_turn_through_the_rust_runtime() {
             }
         };
         socket
+            .set_nonblocking(false)
+            .expect("accepted model socket must block");
+        socket
             .set_read_timeout(Some(Duration::from_secs(10)))
             .expect("read timeout");
         let mut bytes = Vec::new();
@@ -184,6 +204,14 @@ fn upstream_python_sdk_drives_a_real_turn_through_the_rust_runtime() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&root).expect("temp root");
+    std::fs::write(
+        root.join("settings.json"),
+        serde_json::to_vec_pretty(&json!({
+            "llm-deepseek": { "baseURL": format!("http://{address}") }
+        }))
+        .expect("encode SDK settings"),
+    )
+    .expect("write SDK settings");
     let script = root.join("run_sdk.py");
     std::fs::write(
         &script,
@@ -195,7 +223,7 @@ with DeepSeekHarness(
     provider="deepseek-official",
     model="deepseek-chat",
     env={
-        "DSH_DEEPSEEK_BASE_URL": os.environ["DSH_TEST_BASE_URL"],
+        "DSH_HOME": os.environ["DSH_TEST_HOME"],
         "DEEPSEEK_API_KEY": "sdk-fixture-key",
     },
     request_timeout_seconds=15,
@@ -211,7 +239,7 @@ print(json.dumps({"text": result.final_response, "reason": result.finish_reason}
         .env("PYTHONPATH", sdk_src)
         .env("DSH_TEST_BIN", env!("CARGO_BIN_EXE_dsh"))
         .env("DSH_TEST_CWD", &root)
-        .env("DSH_TEST_BASE_URL", format!("http://{address}"))
+        .env("DSH_TEST_HOME", &root)
         .output()
         .expect("run upstream Python SDK");
     let _ = server.join();

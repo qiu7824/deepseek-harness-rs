@@ -1,3 +1,11 @@
+#![allow(
+    clippy::type_complexity,
+    clippy::collapsible_if,
+    clippy::useless_conversion,
+    clippy::manual_clamp
+)]
+// Testable atomic-publication hooks intentionally retain their exact callback shapes and sequencing.
+
 //! Cordis-free local filesystem mechanics. Rust port of
 //! `packages/fs/fs-local/src/fsio.ts`. This provider layer returns validated
 //! UTF-8 text, streams large files, and rejects binary data; line windows
@@ -994,12 +1002,12 @@ pub async fn write_file_atomic(
             .await
             .map_err(|error| FsError::new(error, FsErrorCode::FsIoError))?;
         }
-        if let Some(mode) = mode {
+        if let Some(_mode) = mode {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let _ = file
-                    .set_permissions(std::fs::Permissions::from_mode(mode))
+                    .set_permissions(std::fs::Permissions::from_mode(_mode))
                     .await;
             }
         }

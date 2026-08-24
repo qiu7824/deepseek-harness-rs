@@ -1,6 +1,6 @@
 [package]
 name = "dsh-subprocess-e2b"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "E2B service provider for the subprocess capability seam. Rust port of @deepseek-ai/dsh-subprocess-e2b (packages/e2b/subprocess-e2b)"

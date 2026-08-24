@@ -49,29 +49,26 @@ pub fn interrupted_turn_closers(events: &[SessionEvent]) -> Vec<SessionEvent> {
             }
             "assistant/message" => {
                 let step = event.data.get("step").and_then(|value| value.as_u64());
-                if let (Some(step), Some(message)) = (step, event.data.get("message")) {
-                    if let Some(blocks) = message.get("content").and_then(|value| value.as_array())
-                    {
-                        for block in blocks {
-                            if block.get("type").and_then(|value| value.as_str())
-                                == Some("tool-call")
-                            {
-                                if let Some(id) = block.get("id").and_then(|value| value.as_str()) {
-                                    pending_calls.entry(id.to_string()).or_insert(PendingCall {
-                                        step,
-                                        call_seq: None,
-                                    });
-                                }
-                            }
+                if let (Some(step), Some(message)) = (step, event.data.get("message"))
+                    && let Some(blocks) = message.get("content").and_then(|value| value.as_array())
+                {
+                    for block in blocks {
+                        if block.get("type").and_then(|value| value.as_str()) == Some("tool-call")
+                            && let Some(id) = block.get("id").and_then(|value| value.as_str())
+                        {
+                            pending_calls.entry(id.to_string()).or_insert(PendingCall {
+                                step,
+                                call_seq: None,
+                            });
                         }
                     }
                 }
             }
             "tool/call" => {
-                if let Some(call_id) = event.data.get("callId").and_then(|value| value.as_str()) {
-                    if let Some(entry) = pending_calls.get_mut(call_id) {
-                        entry.call_seq = Some(event.seq);
-                    }
+                if let Some(call_id) = event.data.get("callId").and_then(|value| value.as_str())
+                    && let Some(entry) = pending_calls.get_mut(call_id)
+                {
+                    entry.call_seq = Some(event.seq);
                 }
             }
             "tool/result" => {

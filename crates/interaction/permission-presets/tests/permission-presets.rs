@@ -83,6 +83,7 @@ fn mounted(
         &ctx,
         ApprovalConfig {
             policy: approval_policy,
+            timeout_ms: None,
         },
     );
     let service = PermissionPresetService::install(&ctx, config.unwrap_or_default())?;
@@ -112,6 +113,7 @@ async fn mounted_store(
         &ctx,
         ApprovalConfig {
             policy: approval_policy,
+            timeout_ms: None,
         },
     );
     let service = PermissionPresetService::install(&ctx, Config::default()).expect("install");

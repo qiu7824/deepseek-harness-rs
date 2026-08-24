@@ -1,3 +1,11 @@
+#![allow(
+    clippy::type_complexity,
+    clippy::explicit_counter_loop,
+    clippy::question_mark,
+    clippy::empty_line_after_doc_comments
+)]
+// Registry detach callbacks and ordered skill projection retain explicit lifecycle semantics.
+
 //! Agent service: live registry, factory delegation, and process-local
 //! initiator scope. Concrete creation and driving belong to the loop.
 //! Rust port of `@deepseek-ai/dsh-agent`.
@@ -14,7 +22,10 @@ pub mod types;
 pub use consumed_work::{ConsumedWork, fold_consumed_work};
 pub use dispatch::{AgentEventDispatch, agent_carrier, assemble_context_for, emit_agent_event};
 pub use inbox::{Inbox, InboxNotifications};
-pub use model_selection::{ModelSelection, ModelSelectionRef, install_model_selection};
+pub use model_selection::{
+    ModelSelection, ModelSelectionRef, ModelSelectionResolver, install_model_selection,
+    model_selection_service_name,
+};
 pub use registry::AgentRegistry;
 pub use runtime_types::{
     Agent, AgentErrorPayload, AgentFactory, AgentHandle, AgentInboxClaimedPayload,

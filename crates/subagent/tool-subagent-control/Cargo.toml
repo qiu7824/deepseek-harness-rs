@@ -1,0 +1,23 @@
+[package]
+name = "dsh-tool-subagent-control"
+version = "0.1.0-rc.8"
+edition = "2024"
+license = "MIT"
+description = "Global continuable subagent control tools — Rust port of @deepseek-ai/dsh-tool-subagent-control"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-subagent = { path = "../subagent" }
+dsh-tools = { path = "../../core/tools" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+dsh-scope = { path = "../../core/scope" }
+dsh-session-projection = { path = "../../session/session-projection" }
+tokio = { workspace = true }

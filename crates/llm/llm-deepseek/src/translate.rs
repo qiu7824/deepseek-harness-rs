@@ -106,6 +106,16 @@ impl Translator {
         }
     }
 
+    pub(crate) fn close_after_explicit_finish(&mut self) -> Result<Vec<StreamChunk>, LlmFailure> {
+        if self.finish.is_none() {
+            return Err(failure(
+                "SSE stream ended without [DONE] or finish_reason",
+                "STREAM_CLOSED",
+            ));
+        }
+        Ok(self.close())
+    }
+
     fn next_block(&mut self, key: BlockKey) -> OpenBlock {
         let index = self.next_index;
         self.next_index += 1;

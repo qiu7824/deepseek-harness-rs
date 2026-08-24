@@ -856,8 +856,8 @@ async fn drain_descendants_stops_only_the_selected_forest() {
             &followup_options(),
         )
         .await
-        .expect_err("resumable");
-    assert_eq!(error.code, "NOT_RESUMABLE");
+        .expect_err("closed admission");
+    assert_eq!(error.code, "DRAINING");
     let error = world
         .manager
         .followup(
@@ -867,8 +867,8 @@ async fn drain_descendants_stops_only_the_selected_forest() {
             &followup_options(),
         )
         .await
-        .expect_err("resumable");
-    assert_eq!(error.code, "NOT_RESUMABLE");
+        .expect_err("closed admission");
+    assert_eq!(error.code, "DRAINING");
     let child_a_probe = world.factory.agent(&child_a.child_id);
     assert!(!child_a_probe.cancels.lock().is_empty());
 
@@ -1161,6 +1161,6 @@ async fn runtime_forwards_continuable_operations_through_the_installed_host() {
             },
         )
         .await
-        .expect_err("resumable");
-    assert_eq!(error.code, "NOT_RESUMABLE");
+        .expect_err("closed admission");
+    assert_eq!(error.code, "DRAINING");
 }

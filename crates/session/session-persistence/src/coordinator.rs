@@ -1,3 +1,6 @@
+#![allow(clippy::type_complexity, clippy::redundant_allocation)]
+// Nested service handles and preparation callbacks preserve the public lifecycle seams.
+
 //! Shared buffering, serialization, adoption, repair, and disposal
 //! orchestration for first-party backends. Rust port of
 //! `packages/session/session-persistence/src/coordinator.ts`.
@@ -170,6 +173,12 @@ pub trait PersistenceBackend<TornMarker: Clone + Send + Sync + 'static = ()>: Se
         closers: &[SessionEvent],
     ) -> Result<(), String>;
 
+    /// Permanently remove one backend-owned session artifact.
+    async fn delete_stored(&self, id: &SessionId) -> Result<bool, String> {
+        let _ = id;
+        Err("this persistence backend does not support deletion".to_string())
+    }
+
     /// List all stored (materialized) sessions' metadata.
     async fn list(&self) -> Result<Vec<SessionHeader>, String>;
 
@@ -213,9 +222,16 @@ struct SessionState {
     owner: Option<Session>,
 }
 
+#[derive(Clone)]
+struct RetirementEntry {
+    token: Arc<()>,
+    future: futures::future::Shared<BoxOpFuture<()>>,
+}
+
 /// One live session's initialization and bounded write-behind controller.
 #[derive(Clone)]
 struct LiveSessionState {
+    session: Session,
     /// Shared initialization future (awaitable by many callers).
     init: Option<futures::future::Shared<BoxOpFuture<()>>>,
     writes: Arc<SessionWriteBehind>,
@@ -354,13 +370,14 @@ fn migrate_legacy_steering_event(
         return Err(malformed());
     };
     let turn_is_int = data.get("turn").and_then(|value| value.as_u64()).is_some();
-    if let Some(wrapped) = data.get("message").and_then(|value| value.as_object()) {
-        if turn_is_int && has_only_keys(data, &["turn", "message"], &[]) {
-            let mut migrated = event.clone();
-            migrated.type_ = "user/message".to_string();
-            migrated.data = JsonValue::Object(wrapped.clone());
-            return Ok(migrated);
-        }
+    if let Some(wrapped) = data.get("message").and_then(|value| value.as_object())
+        && turn_is_int
+        && has_only_keys(data, &["turn", "message"], &[])
+    {
+        let mut migrated = event.clone();
+        migrated.type_ = "user/message".to_string();
+        migrated.data = JsonValue::Object(wrapped.clone());
+        return Ok(migrated);
     }
     if !turn_is_int || !has_only_keys(data, &["turn", "content", "source"], &[]) {
         return Err(malformed());
@@ -684,7 +701,7 @@ pub struct PersistenceCoordinator<TornMarker: Clone + Send + Sync + 'static = ()
     backend: Arc<dyn PersistenceBackend<TornMarker>>,
     states: Mutex<HashMap<String, SessionState>>,
     live: Mutex<HashMap<usize, LiveSessionState>>,
-    retirements: Mutex<HashMap<String, futures::future::Shared<BoxOpFuture<()>>>>,
+    retirements: Mutex<HashMap<String, RetirementEntry>>,
     preparations: SessionPreparations<PreparedSessionSource<TornMarker>, SessionState>,
     /// Per-id serialization: one async mutex per id.
     chains: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -790,6 +807,50 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         })?;
         let id_owned = id.clone();
         self.serialize(id, self.append_core(id_owned, batch)).await
+    }
+
+    /// Permanently delete one detached session after its retirement drained.
+    pub async fn delete(self: &Arc<Self>, id: &SessionId) -> Result<bool, String> {
+        if self.sessions()?.get(id).is_some() {
+            return Err(format!(
+                "cannot delete session \"{}\" while it is live",
+                id.as_str()
+            ));
+        }
+        // `session/disposed` is an emitted event. Permanent deletion may race
+        // ahead of its listener, so synchronously retire any persistence-owned
+        // live controller before deleting the backend artifact. Otherwise a
+        // late write-behind drain can recreate the file after delete returns.
+        let owner = self
+            .live
+            .lock()
+            .values()
+            .find(|live| live.session.id() == id)
+            .map(|live| live.session.clone())
+            .or_else(|| {
+                self.states
+                    .lock()
+                    .get(id.as_str())
+                    .and_then(|state| state.owner.clone())
+            });
+        if let Some(owner) = owner {
+            self.retire_core(&owner).await?;
+        }
+        self.wait_for_retirement(id).await?;
+
+        let coordinator = Arc::clone(self);
+        let id_owned = id.clone();
+        self.serialize(
+            id,
+            Box::pin(async move {
+                coordinator.preparations.assert_writable(&id_owned)?;
+                let deleted = coordinator.backend.delete_stored(&id_owned).await?;
+                coordinator.states.lock().remove(id_owned.as_str());
+                coordinator.preparations.invalidate(&id_owned);
+                Ok(deleted)
+            }),
+        )
+        .await
     }
 
     fn append_core(self: &Arc<Self>, id: SessionId, events: Vec<SessionEvent>) -> BoxOpFuture<()> {
@@ -1182,7 +1243,11 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
 
     /// Await one retiring lifecycle.
     async fn wait_for_retirement(&self, id: &SessionId) -> Result<(), String> {
-        let retirement = self.retirements.lock().get(id.as_str()).cloned();
+        let retirement = self
+            .retirements
+            .lock()
+            .get(id.as_str())
+            .map(|entry| entry.future.clone());
         if let Some(retirement) = retirement {
             retirement.await?;
         }
@@ -1326,15 +1391,22 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             let session = downcast::<Session>(&args[0]).expect("session arg").clone();
             let coordinator = Arc::clone(&created_coordinator);
             Box::pin(async move {
-                coordinator.init_for(&session);
+                let live = coordinator.init_for(&session);
+                if let Some(init) = live.init
+                    && let Err(error) = init.await
+                {
+                    panic!("{error}");
+                }
                 None
             })
         });
-        let _ = futures::executor::block_on(ctx.on(
+        let _ = ctx.events.register(
+            &ctx,
+            "session-persistence: session/created",
             "session/created",
             created_listener,
-            EventOptions::default(),
-        ));
+            &EventOptions::default().global(true),
+        );
 
         // session/event: keep a persistence-owned copy of each frozen event.
         let event_coordinator = Arc::clone(&coordinator);
@@ -1350,11 +1422,13 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 None
             })
         });
-        let _ = futures::executor::block_on(ctx.on(
+        let _ = ctx.events.register(
+            &ctx,
+            "session-persistence: session/event",
             "session/event",
             event_listener,
-            EventOptions::default(),
-        ));
+            &EventOptions::default().global(true),
+        );
 
         // session/flush: the immediate durability barrier for buffered
         // writes.
@@ -1369,11 +1443,13 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 None
             })
         });
-        let _ = futures::executor::block_on(ctx.on(
+        let _ = ctx.events.register(
+            &ctx,
+            "session-persistence: session/flush",
             "session/flush",
             flush_listener,
-            EventOptions::default(),
-        ));
+            &EventOptions::default().global(true),
+        );
 
         // session/disposed: retirement contains its own failure.
         let disposed_coordinator = Arc::clone(&coordinator);
@@ -1385,11 +1461,13 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 None
             })
         });
-        let _ = futures::executor::block_on(ctx.on(
+        let _ = ctx.events.register(
+            &ctx,
+            "session-persistence: session/disposed",
             "session/disposed",
             disposed_listener,
-            EventOptions::default(),
-        ));
+            &EventOptions::default().global(true),
+        );
 
         // HMR: seed existing live sessions.
         if let Ok(sessions) = coordinator.sessions() {
@@ -1424,13 +1502,25 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         let retirement: BoxOpFuture<()> =
             Box::pin(async move { coordinator.retire_core(&session).await });
         let shared = retirement.shared();
-        self.retirements
-            .lock()
-            .insert(id.as_str().to_string(), shared.clone());
+        let token = Arc::new(());
+        self.retirements.lock().insert(
+            id.as_str().to_string(),
+            RetirementEntry {
+                token: Arc::clone(&token),
+                future: shared.clone(),
+            },
+        );
         let coordinator = Arc::clone(self);
         tokio::spawn(async move {
             let result = shared.await;
-            coordinator.retirements.lock().remove(id.as_str());
+            let mut retirements = coordinator.retirements.lock();
+            if retirements
+                .get(id.as_str())
+                .is_some_and(|entry| Arc::ptr_eq(&entry.token, &token))
+            {
+                retirements.remove(id.as_str());
+            }
+            drop(retirements);
             if let Err(error) = result {
                 coordinator
                     .ctx
@@ -1489,13 +1579,15 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             Some(reservation) => self.attach_prepared(session, &reservation),
             None => {
                 let seed = session.events().as_ref().clone();
-                let writes = self.create_write_behind(session);
                 let coordinator = Arc::clone(self);
                 let session_for_init = session.clone();
                 let init: BoxOpFuture<()> =
                     Box::pin(async move { coordinator.on_created(&session_for_init, &seed).await });
+                let init = init.shared();
+                let writes = self.create_write_behind(session, Some(init.clone()));
                 LiveSessionState {
-                    init: Some(init.shared()),
+                    session: session.clone(),
+                    init: Some(init),
                     writes,
                 }
             }
@@ -1540,7 +1632,6 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 state.owner = Some(session.clone());
             }
         }
-        let writes = self.create_write_behind(session);
         let init = if suffix.is_empty() {
             None
         } else {
@@ -1550,7 +1641,12 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 Box::pin(async move { coordinator.append_core(id, suffix).await });
             Some(init.shared())
         };
-        LiveSessionState { init, writes }
+        let writes = self.create_write_behind(session, init.clone());
+        LiveSessionState {
+            session: session.clone(),
+            init,
+            writes,
+        }
     }
 
     /// Whether a live session's `seed` reproduces the first `cursor`
@@ -1672,7 +1768,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         stored: StoredPrefix<TornMarker>,
     ) -> Result<(), String> {
         let meta = stored.meta.clone();
-        self.assert_stored_id(&session.id(), &meta)?;
+        self.assert_stored_id(session.id(), &meta)?;
         if meta.cwd != session.header().cwd {
             return Err(format!(
                 "session \"{}\" is already persisted at a different cwd (persisted: {}, live: {}) (id collision)",
@@ -1686,7 +1782,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             ));
         }
         self.assert_version(&meta)?;
-        let stored_events = snapshot_stored_events(&stored.events, &session.id())?;
+        let stored_events = snapshot_stored_events(&stored.events, session.id())?;
         self.assert_events_supported(&meta, &stored_events)?;
         if !seed_covers_prefix(seed, &stored_events) {
             return Err(format!(
@@ -1728,7 +1824,11 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
 
     /// Build one package-private write controller around initialization and
     /// id serialization.
-    fn create_write_behind(self: &Arc<Self>, session: &Session) -> Arc<SessionWriteBehind> {
+    fn create_write_behind(
+        self: &Arc<Self>,
+        session: &Session,
+        init: Option<futures::future::Shared<BoxOpFuture<()>>>,
+    ) -> Arc<SessionWriteBehind> {
         let coordinator = Arc::clone(self);
         let coordinator_for_write = Arc::clone(self);
         let coordinator_for_report = Arc::clone(self);
@@ -1738,7 +1838,11 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             write: Arc::new(move |batch| {
                 let coordinator = Arc::clone(&coordinator_for_write);
                 let id = live_session.id().clone();
+                let init = init.clone();
                 Box::pin(async move {
+                    if let Some(init) = init {
+                        init.await?;
+                    }
                     coordinator
                         .serialize(&id, coordinator.append_live_batch(id.clone(), batch))
                         .await
@@ -1971,8 +2075,10 @@ mod tests {
             .append(&session_id("s1"), &[turn_event(0, 1), user_event(1)])
             .await
             .unwrap();
-        let stored = backend.sessions.lock();
-        assert_eq!(stored.get("s1").unwrap().1.len(), 2, "durable after append");
+        {
+            let stored = backend.sessions.lock();
+            assert_eq!(stored.get("s1").unwrap().1.len(), 2, "durable after append");
+        }
 
         // Duplicate creation rejects.
         let error = coordinator.create(header("s1", 2)).await.unwrap_err();

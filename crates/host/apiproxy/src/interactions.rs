@@ -246,7 +246,7 @@ impl InteractionState {
                             .first()
                             .and_then(|value| downcast::<ApprovalRequest>(value))
                             .cloned();
-                        let next = args.last().and_then(|value| downcast_arc::<NextFn>(value));
+                        let next = args.last().and_then(downcast_arc::<NextFn>);
                         let Some(request) = request else {
                             return match next {
                                 Some(next) => Some(next.call().await),

@@ -47,6 +47,16 @@ pub enum ContextForm {
     Recall,
 }
 
+/// One durable workspace-instruction scope transition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentInstructionChange {
+    pub action: String,
+    pub scope: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+}
+
 /// One named contribution to a `snapshot`-form context, in assembly order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextSnapshotSection {
@@ -157,6 +167,19 @@ pub enum MessageSource {
         /// Injected skill bodies are instructions for the model to follow.
         form: ContextForm,
     },
+    /// Workspace instruction baseline or update (`AGENTS.md` / `CLAUDE.md`).
+    AgentInstructions {
+        form: ContextForm,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        baseline: Option<bool>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "baselineIdentity"
+        )]
+        baseline_identity: Option<String>,
+        changes: Vec<AgentInstructionChange>,
+    },
     /// A model coordinator's follow-up to one of its children (TS
     /// `coordinator` source augmentation).
     Coordinator {
@@ -191,6 +214,7 @@ impl MessageSource {
             MessageSource::Goal { .. } => "goal",
             MessageSource::SkillCatalog { .. } => "skill-catalog",
             MessageSource::SkillInvocation { .. } => "skill-invocation",
+            MessageSource::AgentInstructions { .. } => "agent-instructions",
             MessageSource::Coordinator { .. } => "coordinator",
             MessageSource::SubagentReport { .. } => "subagent-report",
             MessageSource::SubagentSettled { .. } => "subagent-settled",

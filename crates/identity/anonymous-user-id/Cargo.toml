@@ -1,6 +1,6 @@
 [package]
 name = "dsh-anonymous-user-id"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Per-harness-home anonymous user id shared by telemetry and feedback — Rust port of @deepseek-ai/dsh-anonymous-user-id"

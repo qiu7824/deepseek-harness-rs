@@ -36,13 +36,6 @@ fn other() -> dsh_credentials::CredentialRef {
     credential_ref("DSH_CRED_OTHER")
 }
 
-fn provider_of(ctx: &Context) -> Arc<dyn CredentialProvider> {
-    ctx.get_typed::<Arc<dyn CredentialProvider>>("credentials", false)
-        .expect("credentials service")
-        .as_ref()
-        .clone()
-}
-
 fn update_listener(ctx: &Context) -> Arc<parking_lot::Mutex<Vec<dsh_credentials::CredentialRef>>> {
     let seen: Arc<parking_lot::Mutex<Vec<dsh_credentials::CredentialRef>>> =
         Arc::new(parking_lot::Mutex::new(Vec::new()));
@@ -443,8 +436,7 @@ async fn lets_only_the_inherited_environment_shadow_the_store_read_only() {
     let error = provider
         .set(&key(), "next")
         .await
-        .err()
-        .expect("shadowed set rejects");
+        .expect_err("shadowed set rejects");
     assert!(error.contains("launching environment"), "{error}");
 }
 
@@ -617,8 +609,7 @@ async fn rejects_empty_values_and_writes_the_environment_would_shadow() {
     let error = provider
         .set(&key(), "")
         .await
-        .err()
-        .expect("empty set rejects");
+        .expect_err("empty set rejects");
     assert!(error.contains("empty value"), "{error}");
 
     let probe = format!("DSH_CRED_TEST_SHADOW_{}", std::process::id());
@@ -627,14 +618,12 @@ async fn rejects_empty_values_and_writes_the_environment_would_shadow() {
     let error = provider
         .set(&reference, "next")
         .await
-        .err()
-        .expect("shadowed set rejects");
+        .expect_err("shadowed set rejects");
     assert!(error.contains("shadowed"), "{error}");
     let error = provider
         .unset(&reference)
         .await
-        .err()
-        .expect("shadowed unset rejects");
+        .expect_err("shadowed unset rejects");
     assert!(error.contains("shadowed"), "{error}");
     unsafe { std::env::remove_var(&probe) };
 }
@@ -660,8 +649,7 @@ async fn fails_a_write_loud_when_the_on_disk_document_became_invalid() {
     let error = provider
         .set(&other(), "lands")
         .await
-        .err()
-        .expect("write rejects");
+        .expect_err("write rejects");
     assert!(error.contains("invalid document"), "{error}");
 }
 
@@ -707,8 +695,7 @@ async fn refuses_writes_after_disposal() {
     let error = provider
         .set(&key(), "late")
         .await
-        .err()
-        .expect("late set rejects");
+        .expect_err("late set rejects");
     assert!(error.contains("disposed"), "{error}");
 }
 
@@ -873,8 +860,7 @@ async fn rethrows_an_invariant_coded_failure_after_the_commit_and_the_remaining_
     let error = provider
         .set(&key(), "one")
         .await
-        .err()
-        .expect("invariant failure rethrows");
+        .expect_err("invariant failure rethrows");
     assert!(error.contains("forged relation"), "{error}");
     assert!(second_ran.load(Ordering::SeqCst));
     assert!(

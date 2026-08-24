@@ -115,8 +115,7 @@ async fn open_puts_and_reads_round_trip_with_change_events() {
     let missing = table
         .update("absent", Arc::new(|value| value))
         .await
-        .err()
-        .expect("missing-key");
+        .expect_err("missing-key");
     assert!(
         missing.contains("no record 'absent' to update"),
         "{missing}"
@@ -261,8 +260,8 @@ async fn writes_reject_after_close_and_queued_writes_drain() {
     let domain = facility.open(&spec).await.expect("open");
     let table = domain.table("rows");
     table.put("a", json!(1)).await.expect("put");
-    let _ = table.put("b", json!(2)).await.expect("put");
+    table.put("b", json!(2)).await.expect("put");
     domain.close().await;
-    let error = table.put("c", json!(3)).await.err().expect("closed");
+    let error = table.put("c", json!(3)).await.expect_err("closed");
     assert!(error.contains("is closed"), "{error}");
 }

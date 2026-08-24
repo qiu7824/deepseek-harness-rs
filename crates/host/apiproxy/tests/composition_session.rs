@@ -111,8 +111,23 @@ impl AgentFactory for StubFactory {
         options: CreateAgentOptions,
     ) -> Result<AgentHandle, String> {
         let session_id = options.session_id.expect("session id");
-        let session =
-            Session::create(session_id.clone(), None, None).map_err(|error| error.to_string())?;
+        let sessions = owner_ctx
+            .get_typed::<Arc<SessionStore>>("sessions", false)
+            .ok_or_else(|| "sessions service missing".to_string())?
+            .as_ref()
+            .clone();
+        let session = sessions.prepare(
+            Some(session_id.clone()),
+            Some(CreateSessionOptions {
+                meta: options.meta,
+                ..Default::default()
+            }),
+        )?;
+        let session_detach = sessions.enter(&session)?;
+        if let Err(error) = sessions.announce(&session).await {
+            session_detach().await;
+            return Err(error);
+        }
         let inbox = Inbox::new(&session, Default::default()).map_err(|error| error.to_string())?;
         let agent: Arc<dyn Agent> = Arc::new(StubAgent {
             id: session_id,
@@ -121,9 +136,29 @@ impl AgentFactory for StubFactory {
             ctx: owner_ctx.clone(),
             scope_key: ScopeKey::new(),
         });
+        let agents = owner_ctx
+            .get_typed::<Arc<AgentRegistry>>("agents", false)
+            .ok_or_else(|| "agents service missing".to_string())?
+            .as_ref()
+            .clone();
+        let agent_detach = match agents.enter(agent.clone(), None) {
+            Ok(detach) => detach,
+            Err(error) => {
+                session_detach().await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = agents.announce(&agent).await {
+            agent_detach().await;
+            session_detach().await;
+            return Err(error);
+        }
         Ok(AgentHandle {
             agent,
-            dispose: Box::pin(async {}),
+            dispose: Box::pin(async move {
+                agent_detach().await;
+                session_detach().await;
+            }),
         })
     }
 
@@ -152,6 +187,8 @@ impl Harness {
     fn new() -> Self {
         let ctx = Context::root();
         SessionStore::install(&ctx);
+        dsh_session_projection::SessionProjectionRegistry::install(&ctx);
+        dsh_token_meter::TokenMeter::install(&ctx, dsh_token_meter::TokenMeterConfig::default());
         let agents = AgentRegistry::install(&ctx);
         agents.set_factory(Arc::new(StubFactory));
         let root = temp_root();
@@ -258,7 +295,7 @@ fn list_merges_attached_and_cold_sessions_sorted_by_updated_at() {
             .clone();
         persistence
             .create(SessionHeader {
-                version: 1,
+                version: dsh_session::SESSION_FORMAT_VERSION,
                 id: session_id("cold-1"),
                 created_at: 200,
                 cwd: Some("D:\\c".to_string()),
@@ -286,7 +323,6 @@ fn list_merges_attached_and_cold_sessions_sorted_by_updated_at() {
             )
             .await
             .expect("append");
-
         let listed = harness.post("session.list", serde_json::json!({})).await;
         let items = listed["result"]["value"]["items"]
             .as_array()
@@ -297,6 +333,24 @@ fn list_merges_attached_and_cold_sessions_sorted_by_updated_at() {
         assert_eq!(items[0]["running"], false);
         assert_eq!(items[0]["origin"], "subagent");
         assert_eq!(items[1]["sessionId"], "attached-1");
+
+        let cold_history = harness
+            .post(
+                "session.history",
+                serde_json::json!({ "sessionId": "cold-1" }),
+            )
+            .await;
+        assert!(
+            cold_history["result"]["value"]["projections"]["values"]["tokenUsage"].is_object(),
+            "{cold_history}"
+        );
+        let historical_page = harness
+            .post(
+                "session.history",
+                serde_json::json!({ "sessionId": "cold-1", "beforeSeq": 1 }),
+            )
+            .await;
+        assert!(historical_page["result"]["value"]["projections"].is_null());
     });
 }
 

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -79,16 +80,54 @@ impl LspProvider for LocalLspProvider {
     }
 
     async fn query(&self, request: LspProviderQuery) -> Result<LspQueryResult, LspError> {
+        let cancelled = || {
+            request
+                .signal
+                .as_ref()
+                .is_some_and(dsh_lsp::LspCancellation::cancelled)
+        };
+        if cancelled() {
+            return Err(LspError::new("LSP query was cancelled", "LSP_CANCELLED"));
+        }
         let workspace = canonical_directory(&request.workspace_root)?;
         let file = canonical_file_inside(&workspace, &request.file_path)?;
         let workspace_uri = file_uri(&workspace)?;
         let file_uri = file_uri(&file)?;
-        let text = std::fs::read_to_string(&file).map_err(|error| {
+        const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;
+        let source = std::fs::File::open(&file).map_err(|error| {
             LspError::new(
                 format!("cannot read LSP source file {}: {error}", file.display()),
                 "LSP_UNAVAILABLE",
             )
         })?;
+        let mut bytes = Vec::new();
+        source
+            .take(MAX_DOCUMENT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| {
+                LspError::new(
+                    format!("cannot read LSP source file {}: {error}", file.display()),
+                    "LSP_UNAVAILABLE",
+                )
+            })?;
+        if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+            return Err(LspError::new(
+                format!(
+                    "LSP source file exceeds the 8 MiB document limit: {}",
+                    file.display()
+                ),
+                "LSP_DOCUMENT_TOO_LARGE",
+            ));
+        }
+        let text = String::from_utf8(bytes).map_err(|error| {
+            LspError::new(
+                format!("LSP source file is not UTF-8 {}: {error}", file.display()),
+                "LSP_UNAVAILABLE",
+            )
+        })?;
+        if cancelled() {
+            return Err(LspError::new("LSP query was cancelled", "LSP_CANCELLED"));
+        }
 
         let mut state = self.gate.lock().await;
         if state.disposed {
@@ -110,47 +149,50 @@ impl LspProvider for LocalLspProvider {
                     )
                 },
             )?);
-            if let Err(error) = client.initialize(&workspace_uri).await {
+            if let Err(error) =
+                cancellable(client.initialize(&workspace_uri), request.signal.as_ref()).await
+            {
                 let _ = client.shutdown().await;
-                return Err(LspError::new(
-                    format!("language server initialization failed: {error}"),
-                    "LSP_UNAVAILABLE",
-                ));
+                return Err(error);
             }
             state.clients.insert(workspace.clone(), client.clone());
             client
         };
 
         match request.operation {
-            LspOperation::GoToDefinition => client
-                .definition(&file_uri, &request.language_id, &text, request.position)
-                .await
-                .map(|locations| LspQueryResult::Locations {
-                    locations,
-                    resolved_workspace_uri: workspace_uri,
-                })
-                .map_err(query_error),
-            LspOperation::FindReferences => client
-                .references(&file_uri, &request.language_id, &text, request.position)
-                .await
-                .map(|locations| LspQueryResult::Locations {
-                    locations,
-                    resolved_workspace_uri: workspace_uri,
-                })
-                .map_err(query_error),
-            LspOperation::GoToImplementation => client
-                .implementation(&file_uri, &request.language_id, &text, request.position)
-                .await
-                .map(|locations| LspQueryResult::Locations {
-                    locations,
-                    resolved_workspace_uri: workspace_uri,
-                })
-                .map_err(query_error),
-            LspOperation::Hover => client
-                .hover(&file_uri, &request.language_id, &text, request.position)
-                .await
-                .map(|hover| LspQueryResult::Hover { hover })
-                .map_err(query_error),
+            LspOperation::GoToDefinition => cancellable(
+                client.definition(&file_uri, &request.language_id, &text, request.position),
+                request.signal.as_ref(),
+            )
+            .await
+            .map(|locations| LspQueryResult::Locations {
+                locations,
+                resolved_workspace_uri: workspace_uri,
+            }),
+            LspOperation::FindReferences => cancellable(
+                client.references(&file_uri, &request.language_id, &text, request.position),
+                request.signal.as_ref(),
+            )
+            .await
+            .map(|locations| LspQueryResult::Locations {
+                locations,
+                resolved_workspace_uri: workspace_uri,
+            }),
+            LspOperation::GoToImplementation => cancellable(
+                client.implementation(&file_uri, &request.language_id, &text, request.position),
+                request.signal.as_ref(),
+            )
+            .await
+            .map(|locations| LspQueryResult::Locations {
+                locations,
+                resolved_workspace_uri: workspace_uri,
+            }),
+            LspOperation::Hover => cancellable(
+                client.hover(&file_uri, &request.language_id, &text, request.position),
+                request.signal.as_ref(),
+            )
+            .await
+            .map(|hover| LspQueryResult::Hover { hover }),
         }
     }
 }
@@ -229,4 +271,24 @@ fn percent_encode_path(value: &str) -> String {
 
 fn query_error(error: String) -> LspError {
     LspError::new(error, "LSP_UNAVAILABLE")
+}
+
+async fn cancellable<T>(
+    future: impl std::future::Future<Output = Result<T, String>>,
+    signal: Option<&dsh_lsp::LspCancellation>,
+) -> Result<T, LspError> {
+    let Some(signal) = signal else {
+        return future.await.map_err(query_error);
+    };
+    tokio::pin!(future);
+    loop {
+        tokio::select! {
+            result = &mut future => return result.map_err(query_error),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                if signal.cancelled() {
+                    return Err(LspError::new("LSP query was cancelled", "LSP_CANCELLED"));
+                }
+            }
+        }
+    }
 }

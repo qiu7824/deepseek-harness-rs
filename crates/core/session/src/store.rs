@@ -1,4 +1,6 @@
 //! Event-sourced session service: append-only session log, in-memory store,
+#![allow(clippy::type_complexity)]
+// Publication and lifecycle callback tuples intentionally preserve the public event contract.
 //! and the derived LLM message history. Rust port of
 //! `packages/core/session/src/index.ts`.
 //!
@@ -76,11 +78,10 @@ fn assert_session_event_envelope(value: &JsonValue, index: usize) -> Result<(), 
     if !type_ok || !seq_ok || !time_ok || !data_present || !ignorable_ok {
         return Err(invalid());
     }
-    match record.get("type").and_then(|value| value.as_str()) {
-        Some("request/header" | "user/message" | "assistant/message" | "tool/result") => {
-            assert_current_llm_shape(record, index)?;
-        }
-        _ => {}
+    if let Some("request/header" | "user/message" | "assistant/message" | "tool/result") =
+        record.get("type").and_then(|value| value.as_str())
+    {
+        assert_current_llm_shape(record, index)?;
     }
     Ok(())
 }
@@ -153,12 +154,12 @@ fn assert_current_llm_shape(record: &Map<String, JsonValue>, index: usize) -> Re
             ));
         }
         let config_record = config.and_then(|config| config.as_object()).unwrap();
-        if let Some(effort) = config_record.get("reasoningEffort") {
-            if effort.as_str().is_none_or(|effort| effort.is_empty()) {
-                return Err(format!(
-                    "seed request/header at index {index} has an invalid reasoningEffort"
-                ));
-            }
+        if let Some(effort) = config_record.get("reasoningEffort")
+            && effort.as_str().is_none_or(|effort| effort.is_empty())
+        {
+            return Err(format!(
+                "seed request/header at index {index} has an invalid reasoningEffort"
+            ));
         }
         assert_adapter_defaults(
             header.and_then(|header| header.get("adapterDefaults")),
@@ -572,10 +573,10 @@ impl Session {
         let (event, listeners) = match outcome {
             Ok(result) => result,
             Err(error) => {
-                if let Some(entry) = &entry {
-                    if entry.finish_append() {
-                        entry.detach_now();
-                    }
+                if let Some(entry) = &entry
+                    && entry.finish_append()
+                {
+                    entry.detach_now();
                 }
                 return Err(error);
             }
@@ -638,10 +639,10 @@ impl Session {
             state.derived_generation = generation;
         }
         for seq in &nodes[state.derived_nodes..] {
-            if let Some(event) = state.log.get(*seq as usize) {
-                if let Some(message) = derive_event_message(event) {
-                    state.derived.push(message);
-                }
+            if let Some(event) = state.log.get(*seq as usize)
+                && let Some(message) = derive_event_message(event)
+            {
+                state.derived.push(message);
             }
         }
         state.derived_nodes = nodes.len();
@@ -715,6 +716,7 @@ pub(crate) struct SessionEntry {
     pub carrier: ScopeCarrier,
     pub emit_ctx: Context,
     flags: Mutex<EntryFlags>,
+    append_released: parking_lot::Condvar,
     /// Store-owned detach transition (TS `entry.detach()` closure).
     detach: Arc<dyn Fn(&Arc<SessionEntry>) + Send + Sync>,
 }
@@ -724,47 +726,61 @@ struct EntryFlags {
     announced: bool,
     announcing: bool,
     appending: bool,
+    append_owner: Option<std::thread::ThreadId>,
     detach_requested: bool,
 }
 
 impl SessionEntry {
+    fn begin_announce(&self) -> bool {
+        let mut flags = self.flags.lock();
+        if flags.announced || flags.announcing {
+            return false;
+        }
+        flags.announced = true;
+        flags.announcing = true;
+        true
+    }
+
+    fn finish_announce(&self) -> bool {
+        let mut flags = self.flags.lock();
+        flags.announcing = false;
+        flags.detach_requested && !flags.appending
+    }
+
+    fn request_detach_if_busy(&self) -> bool {
+        let mut flags = self.flags.lock();
+        if flags.announcing || flags.appending {
+            flags.detach_requested = true;
+            return true;
+        }
+        false
+    }
+
     fn is_announced(&self) -> bool {
         self.flags.lock().announced
     }
 
-    fn is_announcing(&self) -> bool {
-        self.flags.lock().announcing
-    }
-
-    fn is_appending(&self) -> bool {
-        self.flags.lock().appending
-    }
-
     fn try_begin_append(&self) -> bool {
         let mut flags = self.flags.lock();
-        if flags.appending {
-            return false;
+        let current = std::thread::current().id();
+        while flags.appending {
+            if flags.append_owner == Some(current) {
+                return false;
+            }
+            self.append_released.wait(&mut flags);
         }
         flags.appending = true;
+        flags.append_owner = Some(current);
         true
     }
 
     fn finish_append(&self) -> bool {
         let mut flags = self.flags.lock();
         flags.appending = false;
-        flags.detach_requested && !flags.announcing
-    }
-
-    fn is_detach_requested(&self) -> bool {
-        self.flags.lock().detach_requested
-    }
-
-    fn set_announced(&self, value: bool) {
-        self.flags.lock().announced = value;
-    }
-
-    fn set_announcing(&self, value: bool) {
-        self.flags.lock().announcing = value;
+        flags.append_owner = None;
+        let detach = flags.detach_requested && !flags.announcing;
+        self.append_released.notify_all();
+        detach
     }
 
     fn set_detach_requested(&self, value: bool) {
@@ -889,9 +905,7 @@ impl SessionStore {
                                 host_type_symbol: "@deepseek-ai/dsh-session#Session".to_string(),
                                 wire_type_symbol: "@deepseek-ai/dsh-session/types#SessionId"
                                     .to_string(),
-                                resolve: Arc::new(move |id| {
-                                    store.get(&session_id(id)).map(|session| arc(session))
-                                }),
+                                resolve: Arc::new(move |id| store.get(&session_id(id)).map(arc)),
                             },
                         );
                         // Own the lookup for the inject fiber's lifetime.
@@ -978,21 +992,7 @@ impl SessionStore {
     pub fn enter(&self, session: &Session) -> Result<Disposer, String> {
         let id = session.id().clone();
         let carrier = scope_target(None, scope_of(&self.ctx));
-        {
-            let store = self.store.lock();
-            if store.contains_key(id.as_str()) {
-                return Err(format!("session \"{}\" already exists", id.as_str()));
-            }
-        }
-        {
-            let attachments = ATTACHMENTS.lock();
-            if attachments.contains_key(&(Arc::as_ptr(&session.inner) as *const () as usize)) {
-                return Err(format!(
-                    "session \"{}\" is already attached to a store",
-                    id.as_str()
-                ));
-            }
-        }
+        let attachment_key = Arc::as_ptr(&session.inner) as *const () as usize;
 
         let store_map = self.store.clone();
         let detach_fn: Arc<dyn Fn(&Arc<SessionEntry>) + Send + Sync> = Arc::new(move |entry| {
@@ -1023,15 +1023,24 @@ impl SessionStore {
             carrier,
             emit_ctx: self.ctx.clone(),
             flags: Mutex::new(EntryFlags::default()),
+            append_released: parking_lot::Condvar::new(),
             detach: detach_fn,
         });
-        self.store
-            .lock()
-            .insert(id.as_str().to_string(), Arc::clone(&entry));
-        ATTACHMENTS.lock().insert(
-            Arc::as_ptr(&session.inner) as *const () as usize,
-            Arc::downgrade(&entry),
-        );
+        {
+            let mut store = self.store.lock();
+            let mut attachments = ATTACHMENTS.lock();
+            if store.contains_key(id.as_str()) {
+                return Err(format!("session \"{}\" already exists", id.as_str()));
+            }
+            if attachments.contains_key(&attachment_key) {
+                return Err(format!(
+                    "session \"{}\" is already attached to a store",
+                    id.as_str()
+                ));
+            }
+            store.insert(id.as_str().to_string(), Arc::clone(&entry));
+            attachments.insert(attachment_key, Arc::downgrade(&entry));
+        }
 
         let entered = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let detach: Disposer = make_disposer(move || {
@@ -1043,8 +1052,7 @@ impl SessionStore {
                 }
                 // A lifecycle listener may own the advanced detach
                 // capability: keep the entry live until publication unwinds.
-                if entry.is_announcing() || entry.is_appending() {
-                    entry.set_detach_requested(true);
+                if entry.request_detach_if_busy() {
                     return;
                 }
                 entry.detach_now();
@@ -1057,15 +1065,14 @@ impl SessionStore {
     /// carrier captured at enter (TS `SessionStore.announce`).
     pub async fn announce(&self, session: &Session) -> Result<(), String> {
         let entry = self.live_entry_for(session)?;
-        if entry.is_announced() || entry.is_announcing() {
+        if !entry.begin_announce() {
             return Err(format!(
                 "session \"{}\" was already announced",
                 entry.id.as_str()
             ));
         }
         // Mark before emit so rollback pairs the creation with disposal.
-        entry.set_announced(true);
-        entry.set_announcing(true);
+
         let dispatch_ctx = entry.emit_ctx.with_filter(entry.carrier.filter.clone());
         let args: Vec<ArcValue> = vec![arc(session.clone())];
         let listeners = entry.emit_ctx.events.collect(
@@ -1076,19 +1083,24 @@ impl SessionStore {
         );
         let mut veto: Option<String> = None;
         for (listener_ctx, callback) in &listeners {
-            let future = callback(listener_ctx, args.clone());
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                futures::executor::block_on(future)
-            })) {
-                Ok(_) => {}
+            let future = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                callback(listener_ctx, args.clone())
+            }));
+            match future {
+                Ok(future) => {
+                    if let Err(payload) = std::panic::AssertUnwindSafe(future).catch_unwind().await
+                    {
+                        veto = Some(render_panic(payload));
+                        break;
+                    }
+                }
                 Err(payload) => {
                     veto = Some(render_panic(payload));
                     break;
                 }
             }
         }
-        entry.set_announcing(false);
-        if entry.is_detach_requested() && !entry.is_appending() {
+        if entry.finish_announce() {
             entry.detach_now();
         }
         match veto {
@@ -1176,14 +1188,14 @@ impl SessionStore {
         boundary: Option<u64>,
         child_session_id: Option<SessionId>,
     ) -> Result<Session, ForkError> {
-        if let Some(child_id) = &child_session_id {
-            if self.get(child_id).is_some() {
-                return Err(SessionForkError {
-                    message: format!("session \"{}\" already exists", child_id.as_str()),
-                    code: SessionForkErrorCode::SessionAlreadyExists,
-                }
-                .into());
+        if let Some(child_id) = &child_session_id
+            && self.get(child_id).is_some()
+        {
+            return Err(SessionForkError {
+                message: format!("session \"{}\" already exists", child_id.as_str()),
+                code: SessionForkErrorCode::SessionAlreadyExists,
             }
+            .into());
         }
         let live_source = self.resolve_fork_source(&source)?;
         let seed = self.fork_seed(&live_source, boundary)?;
@@ -1732,7 +1744,7 @@ mod tests {
                 let c = c.clone();
                 Box::pin(async move {
                     let session = downcast::<Session>(&args[0]).expect("session arg");
-                    assert_eq!(session.id().as_str().starts_with("session-"), true);
+                    assert!(session.id().as_str().starts_with("session-"));
                     c.fetch_add(1, MemOrder::SeqCst);
                     None
                 })
@@ -1861,7 +1873,7 @@ mod tests {
         assert!(store.enter(&prepared).is_err());
         detach().await;
         assert!(store.get(&session_id("fresh")).is_none());
-        assert_eq!(store.get(session.id()).is_some(), true);
+        assert!(store.get(session.id()).is_some());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2017,37 +2029,47 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn append_publication_claim_is_atomic_across_threads() {
-        let session =
-            Session::create(session_id("append-claim-race"), None, None).expect("session");
+    async fn concurrent_appends_from_different_threads_serialize() {
         let ctx = Context::root();
         let store = SessionStore::install(&ctx);
-        let _detach = store.enter(&session).expect("enter");
-        let entry = attachment_of(&session).expect("attachment");
+        let session = store.create(&ctx, None, None).await.expect("session");
+        ctx.on(
+            "session/event",
+            Arc::new(move |_ctx, _args| {
+                Box::pin(async move {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    None
+                })
+            }),
+            cordis::EventOptions::default(),
+        )
+        .await;
         let barrier = Arc::new(std::sync::Barrier::new(3));
         let results = Arc::new(Mutex::new(Vec::new()));
         let mut threads = Vec::new();
-        for _ in 0..2 {
-            let entry = entry.clone();
+        for index in 0..2 {
+            let session = session.clone();
             let barrier = barrier.clone();
             let results = results.clone();
             threads.push(std::thread::spawn(move || {
                 barrier.wait();
-                let claimed = entry.try_begin_append();
-                results.lock().push(claimed);
-                barrier.wait();
-                if claimed {
-                    entry.finish_append();
-                }
+                let result =
+                    session.append("turn/start", serde_json::json!({"turn": index + 1}), None);
+                results.lock().push(result.map(|event| event.seq));
             }));
         }
         barrier.wait();
-        barrier.wait();
         for thread in threads {
-            thread.join().expect("claim thread");
+            thread.join().expect("append thread");
         }
-        let claims = results.lock().clone();
-        assert_eq!(claims.iter().filter(|claimed| **claimed).count(), 1);
+        let mut seqs = results
+            .lock()
+            .iter()
+            .map(|result| result.as_ref().copied().expect("concurrent append"))
+            .collect::<Vec<_>>();
+        seqs.sort_unstable();
+        assert_eq!(seqs, vec![0, 1]);
+        assert_eq!(session.seq(), 2);
     }
 
     #[tokio::test(flavor = "multi_thread")]

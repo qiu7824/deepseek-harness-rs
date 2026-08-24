@@ -6,8 +6,8 @@
 //!
 //! # Deviations
 //!
-//! - The continuation manager and activation setup registry are not ported
-//!   yet (continuable operations reject with `CONTINUATION_UNAVAILABLE`).
+//! - Continuable cold resume currently rejects with `NOT_RESUMABLE`; live
+//!   creation, followup, interruption, reporting, and descendant drain are ported.
 //! - `SubagentProvider.prepareContinuable` is a defaulted trait method
 //!   rejecting with `SUBAGENT_NOT_CONTINUABLE` (the TS optional-method
 //!   capability).

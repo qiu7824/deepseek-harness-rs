@@ -218,6 +218,47 @@ fn questions_of(ctx: &Context) -> Arc<UserQuestionService> {
         .expect("userQuestions")
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn plan_policy_is_injected_only_for_the_enabled_session() {
+    let (ctx, service) = setup().await;
+    let store = ctx
+        .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
+        .map(|slot| slot.as_ref().clone())
+        .expect("sessions");
+    let session = store
+        .create(&ctx, Some(session_id("plan-policy")), None)
+        .await
+        .expect("create");
+    let probe = ProbeAgent::new("plan-policy", session);
+    let agent: Arc<dyn dsh_agent::Agent> = probe;
+    let system_prompt = ctx
+        .get_typed::<Arc<SystemPrompt>>("systemPrompt", false)
+        .map(|slot| slot.as_ref().clone())
+        .expect("systemPrompt");
+
+    let inactive = system_prompt
+        .assemble(&ctx, &dsh_agent::assemble_context_for(&agent))
+        .await
+        .expect("assemble inactive");
+    assert!(
+        inactive
+            .sections
+            .iter()
+            .all(|section| { section.name != "plan:policy" || section.text.is_empty() })
+    );
+    assert_eq!(service.set(&agent, true), SetOutcome::Committed);
+    let active = system_prompt
+        .assemble(&ctx, &dsh_agent::assemble_context_for(&agent))
+        .await
+        .expect("assemble active");
+    assert!(
+        active
+            .sections
+            .iter()
+            .any(|section| { section.name == "plan:policy" && section.text == "PLAN GUIDANCE" })
+    );
+}
+
 async fn fire_step(ctx: &Context, agent: &Arc<dyn dsh_agent::Agent>) -> PreStepDecision {
     let dispatch = AgentEventDispatch::new(ctx, agent.clone());
     let decision_value = dispatch

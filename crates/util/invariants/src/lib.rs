@@ -55,13 +55,14 @@ impl std::fmt::Display for InvariantError {
 impl std::error::Error for InvariantError {}
 
 /// One package's invariant installer (TS `InvariantInstaller`).
+type FailureReporter = dyn Fn(&str) + Send + Sync;
+type InstallerFn = dyn Fn(&Context, Arc<FailureReporter>) -> BoxFuture<'static, ()> + Send + Sync;
+
 pub struct InvariantInstaller {
     /// Runs the package contribution in a child context; `fail` reports a
     /// violation bound to the registering package name. The failure channel
     /// is owned so installers may move it into spawned listeners.
-    pub install: Arc<
-        dyn Fn(&Context, Arc<dyn Fn(&str) + Send + Sync>) -> BoxFuture<'static, ()> + Send + Sync,
-    >,
+    pub install: Arc<InstallerFn>,
     /// Services the child installer fiber may access.
     pub inject: Option<InjectSpec>,
 }
@@ -89,7 +90,7 @@ fn compile_patterns(field: &str, values: &[String]) -> Vec<Regex> {
 /// (TS `InvariantRegistry`).
 pub struct InvariantRegistry {
     enabled: bool,
-    owner_ctx: Context,
+
     package_allowlist: Vec<Regex>,
     package_blocklist: Vec<Regex>,
     registrations: Arc<Mutex<HashSet<String>>>,
@@ -100,7 +101,7 @@ impl InvariantRegistry {
     pub fn new(ctx: &Context, config: InvariantConfig) -> Arc<Self> {
         let service = Arc::new(Self {
             enabled: config.enabled,
-            owner_ctx: ctx.clone(),
+
             package_allowlist: compile_patterns("package_allowlist", &config.package_allowlist),
             package_blocklist: compile_patterns("package_blocklist", &config.package_blocklist),
             registrations: Arc::new(Mutex::new(HashSet::new())),
@@ -241,9 +242,7 @@ impl Service for InvariantRegistry {
 }
 
 struct InstallerPlugin {
-    install: Arc<
-        dyn Fn(&Context, Arc<dyn Fn(&str) + Send + Sync>) -> BoxFuture<'static, ()> + Send + Sync,
-    >,
+    install: Arc<InstallerFn>,
     package_name: String,
     inject: Option<InjectSpec>,
 }

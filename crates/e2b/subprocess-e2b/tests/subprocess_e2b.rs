@@ -34,7 +34,6 @@ struct FakeSandbox {
     runs: Mutex<Vec<String>>,
     run_results: Mutex<VecDeque<Result<E2bCommandResult, E2bSdkError>>>,
     background_results: Mutex<VecDeque<Result<i32, E2bSdkError>>>,
-    kills: Mutex<Vec<String>>,
     stdin: Arc<Mutex<Vec<u8>>>,
 }
 
@@ -45,7 +44,6 @@ impl FakeSandbox {
             runs: Mutex::new(Vec::new()),
             run_results: Mutex::new(VecDeque::new()),
             background_results: Mutex::new(VecDeque::new()),
-            kills: Mutex::new(Vec::new()),
             stdin: Arc::new(Mutex::new(Vec::new())),
         })
     }
@@ -56,10 +54,6 @@ impl FakeSandbox {
 
     fn recorded_runs(&self) -> Vec<String> {
         self.runs.lock().clone()
-    }
-
-    fn recorded_kills(&self) -> Vec<String> {
-        self.kills.lock().clone()
     }
 }
 

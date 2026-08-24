@@ -32,13 +32,28 @@ pub struct LlmFailure {
     pub request_id: Option<ProviderRequestId>,
 }
 
-/// A durable raster image reference (placeholder pending the
-/// `dsh-attachment` port; the current adapters declare text-only output, so
-/// the session core never produces image blocks).
+/// Durable raster image metadata. Kept in the provider-neutral core to avoid
+/// an llm↔attachment dependency cycle; the attachment service owns validation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImageAttachmentRef {
-    /// Placeholder for the attachment service identity.
-    pub id: String,
+    /// Opaque content-addressed storage identity.
+    #[serde(alias = "id")]
+    pub attachment_id: String,
+    /// Media type verified from the stored bytes (absent on legacy references).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    /// Exact encoded byte length (absent on legacy references).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    /// Intrinsic encoded dimensions (absent on legacy references).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+    /// Optional display name stripped of local path information.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// Any known content block, discriminated by `type` (merge-extensible in TS;

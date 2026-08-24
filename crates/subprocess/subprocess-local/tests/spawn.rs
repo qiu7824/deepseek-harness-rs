@@ -403,22 +403,19 @@ async fn runtime_resolves_executables() {
     let error = runtime
         .resolve_executable("", None, None)
         .await
-        .err()
-        .expect("empty");
+        .expect_err("empty");
     assert!(error.contains("non-empty"), "{error}");
     let error = runtime
         .resolve_executable("dir/command", None, None)
         .await
-        .err()
-        .expect("relative");
+        .expect_err("relative");
     assert!(error.contains("relative path"), "{error}");
 
     // A missing name reports one stable PATH error.
     let error = runtime
         .resolve_executable("definitely-not-a-real-command", Some(&env), None)
         .await
-        .err()
-        .expect("missing");
+        .expect_err("missing");
     assert!(error.contains("was not found on PATH"), "{error}");
 }
 

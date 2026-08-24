@@ -409,10 +409,20 @@ impl Plugin for ToolTodoPlugin {
     }
 
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
-        let config = config
-            .downcast_ref::<Config>()
-            .cloned()
-            .ok_or_else(|| PluginError::from(anyhow::anyhow!("tool-todo requires config")))?;
+        let config = if let Some(config) = config.downcast_ref::<Config>() {
+            config.clone()
+        } else if let Some(value) = config.downcast_ref::<serde_json::Value>() {
+            Config {
+                allow_parallel_in_progress: value
+                    .get("allowParallelInProgress")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            }
+        } else {
+            Config {
+                allow_parallel_in_progress: false,
+            }
+        };
         let disposer =
             apply(ctx, &config).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
         let _ = ctx.effect("tool-todo", Box::pin(async move { Some(disposer) }));

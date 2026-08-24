@@ -31,13 +31,13 @@ impl Plugin for ProbePlugin {
     }
 }
 
-fn probe(
-    name: &'static str,
-) -> (
+type Probe = (
     Arc<dyn Plugin>,
     Arc<AtomicU32>,
     Arc<std::sync::Mutex<Vec<Value>>>,
-) {
+);
+
+fn probe(name: &'static str) -> Probe {
     let runs = Arc::new(AtomicU32::new(0));
     let configs = Arc::new(std::sync::Mutex::new(Vec::new()));
     let plugin = Arc::new(ProbePlugin {

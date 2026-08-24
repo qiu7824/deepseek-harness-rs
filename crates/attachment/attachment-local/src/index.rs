@@ -7,11 +7,12 @@ use std::sync::Arc;
 use cordis::{ArcValue, Context, Plugin, PluginError};
 use dsh_attachment::{
     AttachmentAbort, AttachmentError, AttachmentStore, ImageAttachmentLimits, ImageAttachmentRef,
-    ImageMediaType, SaveImageAttachment, StoredImageAttachment,
+    ImageMediaType, RequestImageAttachment, RequestImagePolicy, SaveImageAttachment,
+    StoredImageAttachment,
 };
 use dsh_home_paths::resolve_dsh_home;
 
-pub use crate::image::{DetectedImage, detect_image, probe_image};
+pub use crate::image::{DetectedImage, detect_image, encoded_alpha_is_compatible, probe_image};
 pub use crate::store::{read_image_file, save_image_file, validate_image_file};
 
 /// Default maximum encoded bytes for one image.
@@ -129,12 +130,35 @@ impl AttachmentStore for LocalAttachmentStore {
         save_image_file(&self.root, input, &self.limits).await
     }
 
+    async fn save_images(
+        &self,
+        inputs: &[SaveImageAttachment],
+    ) -> Result<Vec<ImageAttachmentRef>, AttachmentError> {
+        for input in inputs {
+            validate_image_file(input, &self.limits).await?;
+        }
+        let mut references = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            references.push(save_image_file(&self.root, input, &self.limits).await?);
+        }
+        Ok(references)
+    }
+
     async fn read_image(
         &self,
         reference: &ImageAttachmentRef,
         signal: Option<&AttachmentAbort>,
     ) -> Result<StoredImageAttachment, AttachmentError> {
         read_image_file(&self.root, reference, signal).await
+    }
+
+    async fn read_image_request(
+        &self,
+        reference: &ImageAttachmentRef,
+        policy: &RequestImagePolicy,
+        signal: Option<&AttachmentAbort>,
+    ) -> Result<RequestImageAttachment, AttachmentError> {
+        crate::request_image::read_request_image_file(&self.root, reference, policy, signal).await
     }
 }
 

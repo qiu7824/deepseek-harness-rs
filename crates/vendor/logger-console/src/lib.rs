@@ -108,7 +108,7 @@ pub fn name_code(name: &str, level: Option<usize>) -> usize {
             .wrapping_add(13);
     }
     let palette: &[usize] = match level {
-        Some(level) if level >= 2 => &C256,
+        Some(level) if level >= 2 => C256,
         _ => &C16,
     };
     palette[hash.unsigned_abs() as usize % palette.len()]

@@ -123,7 +123,13 @@ pub struct WorkspaceArchiveSessionRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceArchiveSessionResult {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub deleted: bool,
     pub archived_session_ids: Vec<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Workspace-domain unary methods (the map keys `workspace.*`).

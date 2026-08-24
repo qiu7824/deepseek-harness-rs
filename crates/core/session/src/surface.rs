@@ -439,10 +439,10 @@ impl SurfaceManager {
                 apply_surface_plan(&mut self.state, pending.plan);
             } else {
                 apply_surface_event(&mut self.state, event, seq, log, self.base_seq)?;
-                if let Some(pending) = &self.pending {
-                    if pending.expected_seq <= seq {
-                        self.pending = None;
-                    }
+                if let Some(pending) = &self.pending
+                    && pending.expected_seq <= seq
+                {
+                    self.pending = None;
                 }
             }
             self.last_processed_seq = Some(seq);

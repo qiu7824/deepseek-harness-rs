@@ -1,0 +1,12 @@
+[package]
+name = "dsh-command-compact"
+version = "0.1.0-rc.8"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-commands = { path = "../../interaction/commands" }
+dsh-compaction = { path = "../compaction" }
+async-trait = { workspace = true }

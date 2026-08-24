@@ -64,10 +64,10 @@ pub fn yaml_to_json(value: &saphyr::Yaml) -> Result<Value, String> {
         // third field (early_parse(false)); untagged scalars resolve through
         // saphyr's core-schema parser.
         Yaml::Representation(text, style, tag) => {
-            if let Some(tag) = tag {
-                if is_js_tag(&tag.handle, &tag.suffix) {
-                    return Ok(js_expr_object(text));
-                }
+            if let Some(tag) = tag
+                && is_js_tag(&tag.handle, &tag.suffix)
+            {
+                return Ok(js_expr_object(text));
             }
             let scalar = saphyr::Scalar::parse_from_cow_and_metadata(
                 std::borrow::Cow::Borrowed(text.as_ref()),
@@ -141,13 +141,13 @@ pub fn json_to_yaml(value: &Value) -> serde_yaml::Value {
         Value::String(value) => serde_yaml::Value::String(value.clone()),
         Value::Array(list) => serde_yaml::Value::Sequence(list.iter().map(json_to_yaml).collect()),
         Value::Object(map) => {
-            if map.len() == 1 {
-                if let Some(expr) = map.get("__jsExpr").and_then(|v| v.as_str()) {
-                    return serde_yaml::Value::Tagged(Box::new(serde_yaml::value::TaggedValue {
-                        tag: serde_yaml::value::Tag::new("tag:yaml.org,2002:js"),
-                        value: serde_yaml::Value::String(expr.to_string()),
-                    }));
-                }
+            if map.len() == 1
+                && let Some(expr) = map.get("__jsExpr").and_then(|v| v.as_str())
+            {
+                return serde_yaml::Value::Tagged(Box::new(serde_yaml::value::TaggedValue {
+                    tag: serde_yaml::value::Tag::new("tag:yaml.org,2002:js"),
+                    value: serde_yaml::Value::String(expr.to_string()),
+                }));
             }
             let mut result = serde_yaml::Mapping::new();
             for (key, item) in map {

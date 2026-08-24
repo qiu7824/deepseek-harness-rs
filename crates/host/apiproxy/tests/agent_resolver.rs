@@ -134,6 +134,7 @@ fn resolver(ctx: &Context) -> Arc<AgentResolver> {
         ctx,
         ApiRemoteAgentOptions {
             agent_options: Arc::new(AgentOptions::default),
+            retain_handle: Arc::new(|handle| handle.agent.clone()),
             setup: None,
         },
     )

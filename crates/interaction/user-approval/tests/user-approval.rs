@@ -596,6 +596,7 @@ async fn a_never_config_rejects_deterministically_without_consulting_any_answere
         &ctx,
         Config {
             policy: Some(ApprovalPolicy::Never),
+            timeout_ms: None,
         },
     );
     let agent = ProbeAgent::new("never-config", true);
@@ -663,6 +664,7 @@ async fn the_gate_decides_first_even_against_an_answerer_registered_before_the_s
         &ctx,
         Config {
             policy: Some(ApprovalPolicy::Never),
+            timeout_ms: None,
         },
     );
     let agent = ProbeAgent::new("gate-first", true);
@@ -683,6 +685,7 @@ async fn a_session_override_outranks_the_configured_default_in_both_directions()
         &ctx,
         Config {
             policy: Some(ApprovalPolicy::Never),
+            timeout_ms: None,
         },
     );
     ctx.on(

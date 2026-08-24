@@ -231,8 +231,15 @@ impl CommandRuntime {
 
     /// List the effective immutable command descriptors for one agent.
     pub fn list(&self, agent: &Arc<dyn Agent>) -> Vec<CommandDescriptor> {
+        self.list_for_scope(Some(agent.scope_key()))
+    }
+
+    /// List descriptors for a standing preset scope without materializing a
+    /// Session/Agent. Host discovery surfaces use this for cold sessions.
+    pub fn list_for_scope(&self, scope: Option<&dsh_scope::ScopeKey>) -> Vec<CommandDescriptor> {
         let mut descriptors: Vec<CommandDescriptor> = self
-            .view(agent)
+            .layers
+            .merge(scope, |layer| &layer.commands)
             .into_values()
             .map(|command| command.descriptor)
             .collect();

@@ -297,11 +297,11 @@ impl WorkspaceEntityHost for RegistryHost {
         let indexer = Arc::clone(&self.indexer);
         let persistence = self.persistence.clone();
         Box::pin(async move {
-            if let Some(live) = &live {
-                if let Some(header) = live.get(&id) {
-                    indexer.headers.lock().insert(id.clone(), header.clone());
-                    return Ok(header);
-                }
+            if let Some(live) = &live
+                && let Some(header) = live.get(&id)
+            {
+                indexer.headers.lock().insert(id.clone(), header.clone());
+                return Ok(header);
             }
             if let Some(cached) = indexer.headers.lock().get(&id) {
                 return Ok(cached.clone());
@@ -395,16 +395,16 @@ impl WorkspaceRegistry {
             let headers = futures::executor::block_on(persistence.list())?;
             futures::executor::block_on(registry.host.indexer.replace_header_index(&headers));
             futures::executor::block_on(registry.bootstrap(&headers))?;
-        } else if registry.table.len() > 0 {
-            let headers = futures::executor::block_on(persistence.list())?;
-            futures::executor::block_on(registry.host.indexer.replace_header_index(&headers));
-        }
-        if let Some(live) = &registry.host.live {
-            futures::executor::block_on(registry.host.indexer.index_headers(&live.list()));
         }
         let current = registry.require_state();
         registry.validate_stored_state(&current)?;
         registry.rebuild_entities()?;
+        if state.initialized {
+            registry.seed_paths_from_durable_records();
+        }
+        if let Some(live) = &registry.host.live {
+            futures::executor::block_on(registry.host.indexer.index_headers(&live.list()));
+        }
         registry.report_filtered_candidates();
         Ok(registry)
     }
@@ -494,13 +494,13 @@ impl WorkspaceRegistry {
                 if !state.workspace_ids.contains(&id) {
                     return Err(WorkspaceOrderInvalidError { workspace_id: id }.to_string());
                 }
-                if let Some(before) = &before_id {
-                    if !state.workspace_ids.contains(before) {
-                        return Err(WorkspaceOrderInvalidError {
-                            workspace_id: before.clone(),
-                        }
-                        .to_string());
+                if let Some(before) = &before_id
+                    && !state.workspace_ids.contains(before)
+                {
+                    return Err(WorkspaceOrderInvalidError {
+                        workspace_id: before.clone(),
                     }
+                    .to_string());
                 }
                 if before_id.as_ref() == Some(&id) {
                     return Ok(state.workspace_ids);
@@ -589,28 +589,25 @@ impl WorkspaceRegistry {
         session_id: &SessionId,
         release_live: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
     ) -> Result<bool, String> {
+        if let Some(live) = &self.host.live
+            && live.get(session_id).is_some()
+        {
+            let Some(release) = &release_live else {
+                return Err(WorkspaceSessionLiveError::new(session_id).to_string());
+            };
+            release().await;
+            if live.get(session_id).is_some() {
+                return Err(WorkspaceSessionLiveError::not_detached(session_id).to_string());
+            }
+        }
         let session_id = session_id.clone();
         let registry = Arc::clone(self);
         self.enqueue_operation(move || {
             let registry = registry.clone();
-            let release_live = release_live.clone();
             box_future(async move {
                 let state = registry.require_state();
                 if !state.archived_session_ids.contains(&session_id) {
                     return Err(WorkspaceSessionNotArchivedError { session_id }.to_string());
-                }
-                if let Some(live) = &registry.host.live {
-                    if live.get(&session_id).is_some() {
-                        let Some(release) = &release_live else {
-                            return Err(WorkspaceSessionLiveError::new(&session_id).to_string());
-                        };
-                        release().await;
-                        if live.get(&session_id).is_some() {
-                            return Err(
-                                WorkspaceSessionLiveError::not_detached(&session_id).to_string()
-                            );
-                        }
-                    }
                 }
                 let deleted = (registry.session_delete)(&session_id).await?;
                 let entities = registry
@@ -664,10 +661,10 @@ impl WorkspaceRegistry {
     /// Whether a session is live, header-indexed, or present in a fresh
     /// persistence listing (TS `sessionKnown`).
     async fn session_known(&self, id: &SessionId) -> Result<bool, String> {
-        if let Some(live) = &self.host.live {
-            if live.get(id).is_some() {
-                return Ok(true);
-            }
+        if let Some(live) = &self.host.live
+            && live.get(id).is_some()
+        {
+            return Ok(true);
         }
         if self.host.indexer.headers.lock().contains_key(id) {
             return Ok(true);
@@ -1053,6 +1050,19 @@ impl WorkspaceRegistry {
             }
         }
         Ok(())
+    }
+
+    fn seed_paths_from_durable_records(&self) {
+        for entity in self.entities.lock().values() {
+            let record = entity.record();
+            for session_id in &record.session_ids {
+                self.host
+                    .indexer
+                    .session_paths
+                    .lock()
+                    .insert(session_id.clone(), record.path.clone());
+            }
+        }
     }
 
     fn rebuild_entities(&self) -> Result<(), String> {

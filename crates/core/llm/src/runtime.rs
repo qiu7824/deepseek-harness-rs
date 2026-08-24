@@ -125,6 +125,8 @@ impl std::error::Error for LlmError {}
 
 /// Accept one supplied credential, or refuse it as unusable (TS
 /// `assertUsableApiKey`).
+// The public error contract carries structured provider failure details by value.
+#[allow(clippy::result_large_err)]
 pub fn assert_usable_api_key(raw: &str, pkg: &str, reference: &str) -> Result<String, LlmError> {
     match normalize_api_key(raw) {
         ApiKeyCheck::Ok { value } => Ok(value),
@@ -314,6 +316,8 @@ impl LlmRuntime {
     /// Register an adapter for the given provider routes. Throws `LlmError`
     /// with code `DUPLICATE_ADAPTER` if any provider already has an adapter
     /// (all-or-nothing). Disposed with the fiber.
+    // The public error contract carries structured provider failure details by value.
+    #[allow(clippy::result_large_err)]
     pub fn register_adapter(
         self: &Arc<Self>,
         caller: &Context,
@@ -328,13 +332,6 @@ impl LlmRuntime {
         // holding none.
         let released: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         {
-            if providers.is_empty() {
-                return Err(LlmError::new(
-                    "an adapter must register at least one provider",
-                    "INVALID_ADAPTER",
-                    LlmErrorOptions::default(),
-                ));
-            }
             let registrations = self.prepare_routes(&providers, &adapter, &owned.lock())?;
             self.commit_routes(&mut owned.lock(), &registrations);
         }
@@ -384,6 +381,8 @@ impl LlmRuntime {
     /// Validate one candidate route set for `adapter`, treating routes this
     /// registration already holds as available. Nothing is mutated: a
     /// rejected candidate leaves the registry exactly as it was.
+    // Keep this helper aligned with the public registration error contract.
+    #[allow(clippy::result_large_err)]
     fn prepare_routes(
         &self,
         providers: &[String],
@@ -462,6 +461,8 @@ impl LlmRuntime {
     /// Declare provider routes an adapter plugin can activate through
     /// configuration. Registration is all-or-nothing. Disposed with the
     /// fiber.
+    // The public error contract carries structured provider failure details by value.
+    #[allow(clippy::result_large_err)]
     pub fn register_configurable_providers(
         self: &Arc<Self>,
         caller: &Context,
@@ -470,13 +471,6 @@ impl LlmRuntime {
         let held: Arc<Mutex<Vec<LlmConfigurableProvider>>> = Arc::new(Mutex::new(Vec::new()));
         let disposed: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         {
-            if entries.is_empty() {
-                return Err(LlmError::new(
-                    "a configurable-provider registration must declare at least one provider",
-                    "INVALID_DIRECTORY",
-                    LlmErrorOptions::default(),
-                ));
-            }
             self.commit_directory(&mut held.lock(), &entries)?;
         }
         let runtime = Arc::clone(self);
@@ -521,6 +515,8 @@ impl LlmRuntime {
     /// Validate a candidate set in full against everything this registration
     /// does not already hold, then publish it. A refused candidate leaves the
     /// current entries in place.
+    // Keep this helper aligned with the public registration error contract.
+    #[allow(clippy::result_large_err)]
     fn commit_directory(
         &self,
         held: &mut Vec<LlmConfigurableProvider>,
@@ -588,6 +584,8 @@ impl LlmRuntime {
 
     /// Offer to interrogate provider endpoints on behalf of the settings
     /// namespace this plugin owns. Disposed with the fiber.
+    // The public error contract carries structured provider failure details by value.
+    #[allow(clippy::result_large_err)]
     pub fn register_model_discovery(
         self: &Arc<Self>,
         caller: &Context,
@@ -670,6 +668,8 @@ impl LlmRuntime {
 
     /// Resolve the retry policy captured when one provider route was
     /// registered.
+    // The public error contract carries structured provider failure details by value.
+    #[allow(clippy::result_large_err)]
     pub fn provider_retry_policy(&self, provider: &str) -> Result<ResolvedRetryPolicy, LlmError> {
         Ok(self.registration(provider)?.retry_policy.clone())
     }
@@ -732,16 +732,16 @@ impl LlmRuntime {
                 LlmErrorOptions::default(),
             ));
         }
-        if let Some(context) = &resolved.context {
-            if context.context_window == 0 {
-                return Err(LlmError::new(
-                    &format!(
-                        "adapter returned invalid context metadata for provider \"{provider}\" model \"{model}\""
-                    ),
-                    "INVALID_MODEL_CONTEXT",
-                    LlmErrorOptions::default(),
-                ));
-            }
+        if let Some(context) = &resolved.context
+            && context.context_window == 0
+        {
+            return Err(LlmError::new(
+                &format!(
+                    "adapter returned invalid context metadata for provider \"{provider}\" model \"{model}\""
+                ),
+                "INVALID_MODEL_CONTEXT",
+                LlmErrorOptions::default(),
+            ));
         }
         if resolved
             .default_max_tokens
@@ -780,16 +780,16 @@ impl LlmRuntime {
                     ));
                 }
             }
-            if let Some(default) = &reasoning.default_effort {
-                if !seen.contains(default.as_str()) {
-                    return Err(LlmError::new(
-                        &format!(
-                            "adapter returned an unknown default reasoning effort for provider \"{provider}\" model \"{model}\""
-                        ),
-                        "INVALID_MODEL_REASONING",
-                        LlmErrorOptions::default(),
-                    ));
-                }
+            if let Some(default) = &reasoning.default_effort
+                && !seen.contains(default.as_str())
+            {
+                return Err(LlmError::new(
+                    &format!(
+                        "adapter returned an unknown default reasoning effort for provider \"{provider}\" model \"{model}\""
+                    ),
+                    "INVALID_MODEL_REASONING",
+                    LlmErrorOptions::default(),
+                ));
             }
         }
         Ok(resolved)
@@ -815,10 +815,10 @@ impl LlmRuntime {
     ) -> Result<(LlmCallConfig, Option<LlmModelContext>), LlmError> {
         let info = Self::resolve_model_info_for(registration, &config.model, signal).await?;
         let mut resolved = config.clone();
-        if resolved.max_tokens.is_none() {
-            if let Some(default) = info.default_max_tokens {
-                resolved.max_tokens = Some(default);
-            }
+        if resolved.max_tokens.is_none()
+            && let Some(default) = info.default_max_tokens
+        {
+            resolved.max_tokens = Some(default);
         }
         let requested = resolved.reasoning_effort.clone();
         match &info.reasoning {
@@ -870,6 +870,8 @@ impl LlmRuntime {
     /// one-shot handle keeps that registration across header logging and
     /// dispatch, so HMR cannot combine one adapter's capability result with
     /// another adapter.
+    // The public prepared-call contract returns the structured LLM error by value.
+    #[allow(clippy::result_large_err)]
     pub async fn prepare_call(
         self: &Arc<Self>,
         config: &LlmCallConfig,
@@ -926,6 +928,8 @@ impl LlmRuntime {
         })
     }
 
+    // Keep this helper aligned with the public runtime error contract.
+    #[allow(clippy::result_large_err)]
     fn registration(&self, provider: &str) -> Result<Arc<AdapterRegistration>, LlmError> {
         self.adapters.lock().get(provider).cloned().ok_or_else(|| {
             LlmError::new(

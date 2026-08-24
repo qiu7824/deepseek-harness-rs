@@ -10,11 +10,344 @@
 
 use std::sync::Arc;
 
+mod client_plugins;
+
+fn packaged_resource(relative: &str) -> std::path::PathBuf {
+    let adjacent = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.join(relative)))
+        .filter(|path| path.exists());
+    adjacent.unwrap_or_else(|| {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../")
+            .join(relative)
+    })
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenAiCompatibleModelConfig {
+    id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    context_window: Option<u64>,
+    #[serde(default)]
+    max_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenAiCompatibleProviderConfig {
+    #[serde(default)]
+    api_key_env: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    api: String,
+    #[serde(rename = "baseURL")]
+    base_url: String,
+    models: Vec<OpenAiCompatibleModelConfig>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct OpenAiCompatibleSettings {
+    #[serde(default)]
+    providers: indexmap::IndexMap<String, OpenAiCompatibleProviderConfig>,
+}
+
+struct OpenAiCompatibleAdapter {
+    profiles: Arc<parking_lot::Mutex<indexmap::IndexMap<String, OpenAiCompatibleProviderConfig>>>,
+    credentials: Arc<dsh_credentials_local::LocalCredentialProvider>,
+    attachment_ctx: Context,
+}
+
+fn openai_compatible_schema() -> dsh_schemastery::Schema {
+    use dsh_schemastery::{Data, Schema};
+
+    let mut model = indexmap::IndexMap::new();
+    model.insert("id".to_string(), Schema::string().required(true));
+    model.insert("name".to_string(), Schema::string());
+    model.insert(
+        "contextWindow".to_string(),
+        Schema::number().min(1.0).step(1.0),
+    );
+    model.insert("maxTokens".to_string(), Schema::number().min(1.0).step(1.0));
+
+    let mut profile = indexmap::IndexMap::new();
+    profile.insert(
+        "apiKeyEnv".to_string(),
+        Schema::string().role("credential-ref", None).required(true),
+    );
+    profile.insert("displayName".to_string(), Schema::string());
+    profile.insert(
+        "api".to_string(),
+        Schema::union(vec![Schema::constant(Data::String(
+            "openai-completions".to_string(),
+        ))])
+        .required(true),
+    );
+    profile.insert("baseURL".to_string(), Schema::string().required(true));
+    profile.insert(
+        "models".to_string(),
+        Schema::array(Schema::object(model)).required(true),
+    );
+
+    let mut root = indexmap::IndexMap::new();
+    root.insert(
+        "providers".to_string(),
+        Schema::dict(Schema::object(profile), None)
+            .default(Data::Object(indexmap::IndexMap::new())),
+    );
+    Schema::object(root)
+}
+
+fn discovery_models_url(base_url: &str) -> Result<reqwest::Url, String> {
+    let mut url = reqwest::Url::parse(base_url)
+        .map_err(|error| format!("invalid provider baseURL: {error}"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| "provider baseURL has no host".to_string())?;
+    if url.scheme() != "https"
+        && !(url.scheme() == "http" && matches!(host, "127.0.0.1" | "localhost" | "::1"))
+    {
+        return Err(
+            "model discovery requires HTTPS (loopback HTTP is allowed for testing)".to_string(),
+        );
+    }
+    let path = url.path().trim_end_matches('/');
+    url.set_path(&format!("{path}/models"));
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
+async fn discover_openai_compatible_models(
+    request: dsh_llm::LlmModelDiscoveryRequest,
+) -> Result<Vec<dsh_llm::LlmDiscoveredModel>, String> {
+    if request
+        .api
+        .as_deref()
+        .is_some_and(|api| api != "openai-completions")
+    {
+        return Err("model discovery only supports openai-completions".to_string());
+    }
+    let base_url = request
+        .base_url
+        .as_deref()
+        .ok_or_else(|| "model discovery needs a baseURL".to_string())?;
+    let url = discovery_models_url(base_url)?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("model discovery client failed: {error}"))?;
+    let mut builder = client.get(url);
+    if let Some(api_key) = request.api_key.as_deref().filter(|key| !key.is_empty()) {
+        builder = builder.bearer_auth(api_key);
+    }
+    let response = if let Some(signal) = request.signal.as_ref() {
+        tokio::select! {
+            response = builder.send() => response,
+            _ = async {
+                while !signal() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            } => return Err("model discovery aborted".to_string()),
+        }
+    } else {
+        builder.send().await
+    }
+    .map_err(|error| format!("model discovery request failed: {error}"))?;
+    let status = response.status();
+    let mut response = response;
+    let mut bytes = Vec::new();
+    loop {
+        if request.signal.as_ref().is_some_and(|signal| signal()) {
+            return Err("model discovery aborted".to_string());
+        }
+        let chunk = response
+            .chunk()
+            .await
+            .map_err(|error| format!("model discovery response failed: {error}"))?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        if bytes.len().saturating_add(chunk.len()) > 1024 * 1024 {
+            return Err("model discovery response exceeded 1 MiB".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if !status.is_success() {
+        return Err(format!("model discovery returned HTTP {status}"));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("model discovery returned invalid JSON: {error}"))?;
+    let data = value
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "model discovery response needs a data array".to_string())?;
+    let mut seen = std::collections::HashSet::new();
+    let mut models = Vec::new();
+    for item in data {
+        let Some(id) = item.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if id.is_empty() || !seen.insert(id.to_string()) {
+            continue;
+        }
+        models.push(dsh_llm::LlmDiscoveredModel {
+            id: id.to_string(),
+            name: item
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            context_window: item
+                .get("context_window")
+                .and_then(serde_json::Value::as_u64),
+            max_tokens: item.get("max_tokens").and_then(serde_json::Value::as_u64),
+        });
+    }
+    Ok(models)
+}
+
+fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSettings, String> {
+    let json = value
+        .to_json()
+        .ok_or_else(|| "llm-pi-ai settings are not JSON-compatible".to_string())?;
+    let settings: OpenAiCompatibleSettings =
+        serde_json::from_value(json).map_err(|error| format!("llm-pi-ai: {error}"))?;
+    for (provider, profile) in &settings.providers {
+        if provider.is_empty()
+            || !provider.chars().enumerate().all(|(index, ch)| {
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || (index > 0 && ch == '-')
+            })
+        {
+            return Err(format!("llm-pi-ai: invalid provider route \"{provider}\""));
+        }
+        if profile.api != "openai-completions" {
+            return Err(format!(
+                "llm-pi-ai: provider \"{provider}\" must use openai-completions"
+            ));
+        }
+        if !(profile.base_url.starts_with("https://")
+            || profile.base_url.starts_with("http://127.0.0.1")
+            || profile.base_url.starts_with("http://localhost"))
+        {
+            return Err(format!(
+                "llm-pi-ai: provider \"{provider}\" needs an HTTPS baseURL (loopback HTTP is allowed for testing)"
+            ));
+        }
+        if profile.models.is_empty() || profile.models.iter().any(|model| model.id.is_empty()) {
+            return Err(format!(
+                "llm-pi-ai: provider \"{provider}\" needs at least one named model"
+            ));
+        }
+        if profile.api_key_env.as_deref().is_none_or(str::is_empty) {
+            return Err(format!(
+                "llm-pi-ai: provider \"{provider}\" needs apiKeyEnv"
+            ));
+        }
+    }
+    Ok(settings)
+}
+
+impl OpenAiCompatibleAdapter {
+    #[allow(clippy::result_large_err)] // The delegate must preserve the shared LlmError resolver seam.
+    fn delegate(&self, provider: &str) -> dsh_llm_deepseek::DeepSeekAdapter {
+        let profile = self
+            .profiles
+            .lock()
+            .get(provider)
+            .cloned()
+            .expect("registered OpenAI-compatible route has a profile");
+        let resolved =
+            dsh_llm_deepseek::resolve_adapter_options(&dsh_llm_deepseek::DeepSeekConfig {
+                api_key_env: profile.api_key_env.clone(),
+                base_url: Some(profile.base_url.clone()),
+                models: Some(
+                    profile
+                        .models
+                        .iter()
+                        .map(|model| dsh_llm_deepseek::DeepSeekCatalogModel {
+                            id: model.id.clone(),
+                            name: model.name.clone(),
+                            description: None,
+                            context_window: model.context_window,
+                            max_tokens: model.max_tokens,
+                        })
+                        .collect(),
+                ),
+                ..Default::default()
+            })
+            .expect("validated OpenAI-compatible profile");
+        let credentials = self.credentials.clone();
+        dsh_llm_deepseek::DeepSeekAdapter::new(dsh_llm_deepseek::DeepSeekAdapterOptions {
+            options: Arc::new(move || Ok(resolved.clone())),
+            resolve_api_key: Arc::new(move |snapshot| {
+                let credentials = credentials.clone();
+                let api_key_env = snapshot.api_key_env.clone();
+                Box::pin(async move {
+                    let reference = dsh_credentials::credential_ref(&api_key_env);
+                    Ok(credentials
+                        .resolve(&reference)
+                        .await
+                        .map(|value| value.value))
+                })
+            }),
+            resolve_attachments: Some(Arc::new({
+                let attachment_ctx = self.attachment_ctx.clone();
+                move || {
+                    attachment_ctx
+                        .get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false)
+                        .map(|slot| slot.as_ref().clone())
+                }
+            })),
+            provider_name: Some(
+                profile
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| provider.to_string()),
+            ),
+            include_thinking_fields: false,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl dsh_llm::LlmAdapter for OpenAiCompatibleAdapter {
+    fn provider_info(&self, provider: &str) -> dsh_llm::LlmProviderInfo {
+        self.delegate(provider).provider_info(provider)
+    }
+
+    fn provider_retry_policy(&self, provider: &str) -> Option<dsh_llm::ResolvedRetryPolicy> {
+        self.delegate(provider).provider_retry_policy(provider)
+    }
+
+    async fn list_models(&self, provider: &str) -> Vec<dsh_llm::LlmModelInfo> {
+        self.delegate(provider).list_models(provider).await
+    }
+
+    async fn resolve_model(
+        &self,
+        provider: &str,
+        model: &str,
+        signal: Option<&Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) -> dsh_llm::LlmResolvedModelInfo {
+        self.delegate(provider)
+            .resolve_model(provider, model, signal)
+            .await
+    }
+
+    fn stream(&self, options: &dsh_llm::GenerateOptions) -> dsh_llm::ChunkStream {
+        self.delegate(&options.provider).stream(options)
+    }
+}
+
 use axum::body::Body as WebBody;
 use cordis::{ArcValue, Context, Plugin, PluginError, arc, make_disposer};
 use dsh_agent::AgentRegistry;
 use dsh_agent_loop::AgentLoop;
 use dsh_commands::CommandRuntime;
+use dsh_credentials::CredentialProvider;
 use dsh_goal::GoalService;
 use dsh_host_apiproxy::{
     AbortSignal, ApiProxyCarrier, ApiProxyDefaults, ApiProxyService, Body as CarrierBody,
@@ -40,7 +373,7 @@ use dsh_session_persistence_jsonl::{JsonlCompression, JsonlConfig, JsonlSessionP
 use dsh_session_query::{SessionQueryEngine, SessionSearchRequest};
 use dsh_session_query_sqlite::{Config as SqliteSearchConfig, SqliteSearch};
 use dsh_subprocess_local::LocalSubprocessRuntime;
-use dsh_system_prompt::SystemPrompt;
+use dsh_system_prompt::{PromptSection, PromptText, SystemPrompt};
 use dsh_terminal::TerminalSessionService;
 use dsh_tools::ToolRuntime;
 use dsh_user_approval::ApprovalService;
@@ -48,7 +381,154 @@ use dsh_user_questions::UserQuestionService;
 use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
-const MAX_API_REQUEST_BODY_BYTES: usize = 160 * 1024 * 1024;
+const MAX_API_REQUEST_BODY_BYTES: usize = 300 * 1024 * 1024;
+
+#[cfg(test)]
+mod request_body_capacity_tests {
+    use super::MAX_API_REQUEST_BODY_BYTES;
+
+    #[test]
+    fn browser_api_capacity_covers_the_rc2_image_batch_envelope() {
+        assert!(
+            MAX_API_REQUEST_BODY_BYTES >= 300 * 1024 * 1024,
+            "browser API body capacity must cover the rc.2 image batch and encoding envelope"
+        );
+    }
+}
+
+struct JsonSettingsStorage {
+    path: std::path::PathBuf,
+    document: parking_lot::Mutex<indexmap::IndexMap<String, dsh_schemastery::Data>>,
+}
+
+fn json_to_settings_data(value: &serde_json::Value) -> dsh_schemastery::Data {
+    match value {
+        serde_json::Value::Null => dsh_schemastery::Data::Null,
+        serde_json::Value::Bool(value) => dsh_schemastery::Data::Bool(*value),
+        serde_json::Value::Number(value) => {
+            dsh_schemastery::Data::Number(value.as_f64().unwrap_or(0.0))
+        }
+        serde_json::Value::String(value) => dsh_schemastery::Data::String(value.clone()),
+        serde_json::Value::Array(values) => {
+            dsh_schemastery::Data::Array(values.iter().map(json_to_settings_data).collect())
+        }
+        serde_json::Value::Object(values) => dsh_schemastery::Data::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), json_to_settings_data(value)))
+                .collect(),
+        ),
+    }
+}
+
+#[async_trait::async_trait]
+impl dsh_settings::SettingsStorage for JsonSettingsStorage {
+    fn writable(&self) -> bool {
+        true
+    }
+
+    fn document_path(&self) -> Option<String> {
+        Some(self.path.to_string_lossy().into_owned())
+    }
+
+    async fn load(&self) -> Result<indexmap::IndexMap<String, dsh_schemastery::Data>, String> {
+        if !self.path.exists() {
+            return Ok(self.document.lock().clone());
+        }
+        let value: serde_json::Value = serde_json::from_slice(
+            &tokio::fs::read(&self.path)
+                .await
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let data = json_to_settings_data(&value);
+        let dsh_schemastery::Data::Object(document) = data else {
+            return Err("settings document must be an object".to_string());
+        };
+        *self.document.lock() = document.clone();
+        Ok(document)
+    }
+
+    async fn persist(
+        &self,
+        ns: &dsh_settings::SettingsNamespace,
+        section: dsh_schemastery::Data,
+    ) -> Result<(), String> {
+        let path = self.path.clone();
+        let ns = ns.as_str().to_string();
+        let committed = dsh_atomic_write::with_file_lock(&path, async {
+            let mut document = if path.exists() {
+                let value: serde_json::Value =
+                    serde_json::from_slice(&tokio::fs::read(&path).await?)
+                        .map_err(std::io::Error::other)?;
+                let data = json_to_settings_data(&value);
+                let dsh_schemastery::Data::Object(document) = data else {
+                    return Err(std::io::Error::other("settings document must be an object"));
+                };
+                document
+            } else {
+                indexmap::IndexMap::new()
+            };
+            document.insert(ns, section);
+            let value = dsh_schemastery::Data::Object(document.clone())
+                .to_json()
+                .ok_or_else(|| std::io::Error::other("settings document is not JSON-compatible"))?;
+            let bytes = serde_json::to_vec_pretty(&value).map_err(std::io::Error::other)?;
+            dsh_atomic_write::write_file_atomic(
+                &path,
+                &bytes,
+                dsh_atomic_write::WriteFileAtomicOptions {
+                    mode: 0o600,
+                    dir_mode: Some(0o700),
+                },
+            )
+            .await?;
+            Ok::<_, std::io::Error>(document)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        *self.document.lock() = committed;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod settings_storage_tests {
+    use super::*;
+    use dsh_settings::SettingsStorage;
+
+    #[tokio::test]
+    async fn separate_storage_instances_merge_under_the_file_lock() {
+        let root = std::env::temp_dir().join(format!("dsh-settings-txn-{}", std::process::id()));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let path = root.join("settings.json");
+        let make = || JsonSettingsStorage {
+            path: path.clone(),
+            document: parking_lot::Mutex::new(indexmap::IndexMap::new()),
+        };
+        let alpha = make();
+        let beta = make();
+        alpha
+            .persist(
+                &dsh_settings::settings_namespace("alpha").unwrap(),
+                dsh_schemastery::Data::String("a".into()),
+            )
+            .await
+            .unwrap();
+        beta.persist(
+            &dsh_settings::settings_namespace("beta").unwrap(),
+            dsh_schemastery::Data::String("b".into()),
+        )
+        .await
+        .unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+        assert_eq!(value["alpha"], "a");
+        assert_eq!(value["beta"], "b");
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+}
 
 fn decode_query_component(value: &str) -> String {
     let bytes = value.as_bytes();
@@ -303,7 +783,7 @@ async fn bridge_api_request(request: WebRequest, handler: Arc<FetchHandler>) -> 
         CarrierBody::Bytes(bytes) => WebBody::from(bytes),
         CarrierBody::Stream(stream) => {
             use futures::StreamExt;
-            let stream = stream.map(Ok::<Vec<u8>, std::convert::Infallible>);
+            let stream = stream.map(|item| item.map_err(|message| std::io::Error::other(message)));
             WebBody::from_stream(stream)
         }
     };
@@ -324,6 +804,7 @@ pub struct HostSpine {
     pub goals: Arc<GoalService>,
     pub questions: Arc<UserQuestionService>,
     pub approval: Arc<ApprovalService>,
+    pub message_feedback: Arc<dsh_message_feedback::MessageFeedbackService>,
     pub persistence: Arc<JsonlSessionPersistence>,
     pub search: Arc<SqliteSearch>,
     pub query: Arc<SessionQueryEngine>,
@@ -332,6 +813,8 @@ pub struct HostSpine {
     pub agent_presets: Arc<dsh_agent_presets::AgentPresets>,
     api_route: RouteDisposer,
     data_root: std::path::PathBuf,
+    owns_data_root: bool,
+    boot_probe_id: dsh_session::SessionId,
     companion_fiber: parking_lot::Mutex<Option<Arc<cordis::FiberCore>>>,
     lifecycle_fiber: parking_lot::Mutex<Option<Arc<cordis::FiberCore>>>,
     shutdown_result: tokio::sync::OnceCell<Result<(), String>>,
@@ -419,13 +902,17 @@ impl HostSpine {
                         failures.join("; ")
                     ));
                 }
-                match tokio::fs::remove_dir_all(&self.data_root).await {
-                    Ok(()) => Ok(()),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                    Err(error) => Err(format!(
-                        "host shutdown could not remove data root {}: {error}",
-                        self.data_root.display()
-                    )),
+                if self.owns_data_root {
+                    match tokio::fs::remove_dir_all(&self.data_root).await {
+                        Ok(()) => Ok(()),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                        Err(error) => Err(format!(
+                            "host shutdown could not remove data root {}: {error}",
+                            self.data_root.display()
+                        )),
+                    }
+                } else {
+                    Ok(())
                 }
             })
             .await
@@ -451,6 +938,9 @@ impl Drop for HostSpine {
 
 struct HostCompositionPlugin {
     output: Arc<parking_lot::Mutex<Option<Result<HostSpine, String>>>>,
+    data_root: Option<std::path::PathBuf>,
+    profile: Option<String>,
+    port: u16,
 }
 
 #[async_trait::async_trait]
@@ -460,7 +950,12 @@ impl Plugin for HostCompositionPlugin {
     }
 
     async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
-        *self.output.lock() = Some(compose_host_in_fiber(ctx));
+        *self.output.lock() = Some(compose_host_in_fiber(
+            ctx,
+            self.data_root.clone(),
+            self.profile.as_deref(),
+            self.port,
+        ));
         Ok(())
     }
 }
@@ -468,10 +963,49 @@ impl Plugin for HostCompositionPlugin {
 /// Compose the M6 host spine synchronously (the async service bindings
 /// settle through their own fibers).
 pub fn compose_host(ctx: &Context) -> Result<HostSpine, String> {
+    compose_host_with_root(ctx, None, None, 0)
+}
+
+/// Compose the long-running application Host against the stable DSH home.
+pub fn compose_persistent_host(ctx: &Context, profile: Option<&str>) -> Result<HostSpine, String> {
+    let root = dsh_home_paths::resolve_dsh_home(None, &|name| std::env::var(name).ok());
+    compose_persistent_host_at(ctx, root, profile)
+}
+
+/// Compose a persistent Host at an explicitly selected DSH home.
+/// Embedded launchers use this instead of mutating the process environment.
+pub fn compose_persistent_host_at(
+    ctx: &Context,
+    root: impl Into<std::path::PathBuf>,
+    profile: Option<&str>,
+) -> Result<HostSpine, String> {
+    compose_host_with_root(ctx, Some(root.into()), profile, 0)
+}
+
+/// Compose a persistent Host at an explicitly selected home and TCP port.
+/// Port zero preserves the OS-assigned test/embedding behavior.
+pub fn compose_persistent_host_at_port(
+    ctx: &Context,
+    root: impl Into<std::path::PathBuf>,
+    profile: Option<&str>,
+    port: u16,
+) -> Result<HostSpine, String> {
+    compose_host_with_root(ctx, Some(root.into()), profile, port)
+}
+
+fn compose_host_with_root(
+    ctx: &Context,
+    data_root: Option<std::path::PathBuf>,
+    profile: Option<&str>,
+    port: u16,
+) -> Result<HostSpine, String> {
     let output = Arc::new(parking_lot::Mutex::new(None));
     let fiber = ctx.plugin(
         Arc::new(HostCompositionPlugin {
             output: Arc::clone(&output),
+            data_root,
+            profile: profile.map(str::to_string),
+            port,
         }),
         arc(()),
     );
@@ -506,7 +1040,12 @@ pub fn compose_host_handle(ctx: &Context) -> Result<HostHandle, String> {
 // boxing it here would make the Host adapter closure incompatible with the
 // shared runtime contract.
 #[allow(clippy::result_large_err)]
-fn compose_host_in_fiber(ctx: &Context) -> Result<HostSpine, String> {
+fn compose_host_in_fiber(
+    ctx: &Context,
+    configured_root: Option<std::path::PathBuf>,
+    profile: Option<&str>,
+    bind_port: u16,
+) -> Result<HostSpine, String> {
     // Package-owned invariant companions run first so every later append is
     // validated.
     let _invariants = InvariantRegistry::new(
@@ -517,7 +1056,9 @@ fn compose_host_in_fiber(ctx: &Context) -> Result<HostSpine, String> {
             package_blocklist: vec![],
         },
     );
-    let data_root = std::env::temp_dir().join(format!("dsh-host-{}", uuid::Uuid::new_v4()));
+    let owns_data_root = configured_root.is_none();
+    let data_root = configured_root
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("dsh-host-{}", uuid::Uuid::new_v4())));
     std::fs::create_dir_all(&data_root).map_err(|error| format!("data root: {error}"))?;
     // Own the temporary root immediately. This is the first composition
     // effect, so reverse teardown closes every subsequently installed service
@@ -535,7 +1076,7 @@ fn compose_host_in_fiber(ctx: &Context) -> Result<HostSpine, String> {
                 let transferred = Arc::clone(&transferred_for_cleanup);
                 let logger = cleanup_logger.clone();
                 Box::pin(async move {
-                    if !transferred.load(std::sync::atomic::Ordering::SeqCst) {
+                    if owns_data_root && !transferred.load(std::sync::atomic::Ordering::SeqCst) {
                         match tokio::fs::remove_dir_all(&root).await {
                             Ok(()) => {}
                             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -553,6 +1094,18 @@ fn compose_host_in_fiber(ctx: &Context) -> Result<HostSpine, String> {
     let search_path = data_root.join("search.db");
 
     let sessions = SessionStore::install(ctx);
+    let _session_projections = dsh_session_projection::SessionProjectionRegistry::install(ctx);
+    let _token_meter = dsh_token_meter::TokenMeter::install(ctx, Default::default());
+
+    let _session_titles = dsh_session_title::SessionTitleService::install(
+        ctx,
+        dsh_session_title::Config {
+            fallback_max_words: 8,
+            fallback_max_bytes: 96,
+            max_title_bytes: 256,
+        },
+    )
+    .map_err(|error| format!("session-title: {error}"))?;
     // Persistence and the derived search index are installed before active
     // agent fibers. Cordis disposes effects in reverse order, so agent work is
     // quiescent before the durability barrier and backend close run.
@@ -571,6 +1124,7 @@ fn compose_host_in_fiber(ctx: &Context) -> Result<HostSpine, String> {
         ctx,
         &SqliteSearchConfig {
             path: search_path.to_string_lossy().to_string(),
+            open_at: Some(dsh_session_query_sqlite::OpenAt::FirstSearch),
             ..Default::default()
         },
     )
@@ -629,27 +1183,478 @@ fn compose_host_in_fiber(ctx: &Context) -> Result<HostSpine, String> {
     let _terminal_shell = dsh_terminal_bash::ShellTerminalBackend::install(ctx, Default::default())
         .map_err(|error| format!("terminal-bash: {error}"))?;
     let _shell = LocalPwshExecutor::install(ctx, Default::default());
-    let llm = LlmRuntime::install(ctx);
-    let deepseek_options =
-        dsh_llm_deepseek::resolve_adapter_options(&dsh_llm_deepseek::DeepSeekConfig {
-            base_url: std::env::var("DSH_DEEPSEEK_BASE_URL").ok(),
-            ..Default::default()
+    let dsh_home = data_root.clone();
+    let settings_storage = Arc::new(JsonSettingsStorage {
+        path: dsh_home.join("settings.json"),
+        document: parking_lot::Mutex::new(indexmap::IndexMap::new()),
+    });
+    let settings = dsh_settings::SettingsProvider::install(ctx, settings_storage);
+    futures::executor::block_on(settings.ready()).map_err(|error| format!("settings: {error}"))?;
+    let path_defaults = [
+        ("dataDirectory", dsh_home.clone()),
+        ("cacheDirectory", dsh_home.join("cache")),
+        ("environmentDirectory", dsh_home.join("environments")),
+        ("testDirectory", dsh_home.join("test-runs")),
+    ];
+    let path_properties = path_defaults
+        .into_iter()
+        .map(|(name, path)| {
+            (
+                name.to_string(),
+                dsh_schemastery::Schema::string().default(dsh_schemastery::Data::String(
+                    path.to_string_lossy().into_owned(),
+                )),
+            )
         })
-        .map_err(|error| format!("llm-deepseek: {}", error.failure.message))?;
-    let deepseek_key = std::env::var(dsh_llm_deepseek::DEFAULT_API_KEY_ENV).ok();
+        .collect();
+    settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("storage-paths")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            dsh_schemastery::Schema::object(path_properties),
+            dsh_settings::SettingsRegisterOptions {
+                validate: Some(Arc::new(|value| {
+                    let dsh_schemastery::Data::Object(object) = value else {
+                        return Err("storage paths must be an object".to_string());
+                    };
+                    for (name, value) in object {
+                        let dsh_schemastery::Data::String(path) = value else {
+                            return Err(format!("{name} must be a string"));
+                        };
+                        if !std::path::Path::new(path).is_absolute() {
+                            return Err(format!("{name} must be an absolute path"));
+                        }
+                    }
+                    Ok(())
+                })),
+                ..Default::default()
+            },
+        )
+        .map_err(|error| format!("settings storage-paths: {error}"))?;
+    let computer_use_scope = settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("computer-use")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([
+                (
+                    "enabled".to_string(),
+                    dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(false)),
+                ),
+                (
+                    "command".to_string(),
+                    dsh_schemastery::Schema::string()
+                        .default(dsh_schemastery::Data::String(String::new())),
+                ),
+                (
+                    "timeoutSeconds".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(5.0)
+                        .max(300.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(60.0)),
+                ),
+            ])),
+            dsh_settings::SettingsRegisterOptions::default(),
+        )
+        .map_err(|error| format!("settings computer-use: {error}"))?;
+    let voice_scope = settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("voice")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([
+                (
+                    "sttCommand".to_string(),
+                    dsh_schemastery::Schema::string()
+                        .default(dsh_schemastery::Data::String(String::new())),
+                ),
+                (
+                    "ttsCommand".to_string(),
+                    dsh_schemastery::Schema::string()
+                        .default(dsh_schemastery::Data::String(String::new())),
+                ),
+                (
+                    "timeoutSeconds".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(5.0)
+                        .max(300.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(60.0)),
+                ),
+            ])),
+            dsh_settings::SettingsRegisterOptions::default(),
+        )
+        .map_err(|error| format!("settings voice: {error}"))?;
+    let memory_scope = settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("memory")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([(
+                "enabled".to_string(),
+                dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(true)),
+            )])),
+            dsh_settings::SettingsRegisterOptions::default(),
+        )
+        .map_err(|error| format!("settings memory: {error}"))?;
+    let security_scope = settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("security")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([(
+                "approvalTimeoutSeconds".to_string(),
+                dsh_schemastery::Schema::number()
+                    .min(5.0)
+                    .max(300.0)
+                    .step(1.0)
+                    .default(dsh_schemastery::Data::Number(30.0)),
+            )])),
+            dsh_settings::SettingsRegisterOptions::default(),
+        )
+        .map_err(|error| format!("settings security: {error}"))?;
+    for (namespace, field, choices, default) in [
+        ("locale", "preference", &["zh", "en"][..], None),
+        (
+            "ui-theme",
+            "preference",
+            &["light", "dark", "system"][..],
+            Some("system"),
+        ),
+        (
+            "ui-conversation",
+            "busyEnter",
+            &["queue", "steer"][..],
+            Some("queue"),
+        ),
+    ] {
+        let choice_schema = dsh_schemastery::Schema::union(
+            choices
+                .iter()
+                .map(|choice| {
+                    dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                        (*choice).to_string(),
+                    ))
+                })
+                .collect(),
+        );
+        let choice_schema = match default {
+            Some(default) => {
+                choice_schema.default(dsh_schemastery::Data::String(default.to_string()))
+            }
+            None => choice_schema,
+        };
+        settings
+            .register(
+                ctx,
+                dsh_settings::settings_namespace(namespace)
+                    .map_err(|error| format!("settings namespace: {error}"))?,
+                dsh_schemastery::Schema::object(indexmap::IndexMap::from([(
+                    field.to_string(),
+                    choice_schema,
+                )])),
+                dsh_settings::SettingsRegisterOptions::default(),
+            )
+            .map_err(|error| format!("settings {namespace}: {error}"))?;
+    }
+    let llm = LlmRuntime::install(ctx);
+    dsh_session_title_first_prompt_llm::apply(
+        ctx,
+        dsh_session_title_first_prompt_llm::Config {
+            target_words: 5,
+            target_cjk_characters: 10,
+            max_input_bytes: 4_096,
+            max_output_tokens: 32,
+            timeout_ms: 15_000,
+            provider: None,
+            model: None,
+        },
+    )
+    .map_err(|error| format!("session-title-first-prompt-llm: {error}"))?;
+    for settings_ns in ["llm-deepseek", "llm-pi-ai"] {
+        let discovery = Arc::new(|request: &dsh_llm::LlmModelDiscoveryRequest| {
+            let request = request.clone();
+            Box::pin(async move { discover_openai_compatible_models(request).await })
+                as cordis::BoxFuture<'static, Result<Vec<dsh_llm::LlmDiscoveredModel>, String>>
+        });
+        let _discovery = llm
+            .register_model_discovery(ctx, settings_ns, discovery)
+            .map_err(|error| format!("{settings_ns} discovery: {error}"))?;
+    }
+    let _attachments = dsh_attachment_local::LocalAttachmentStore::install(
+        ctx,
+        dsh_attachment_local::Config {
+            dsh_home: Some(dsh_home.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+    );
+    let credentials = dsh_credentials_local::LocalCredentialProvider::install(
+        ctx,
+        dsh_credentials_local::Config {
+            dsh_home: Some(dsh_home.to_string_lossy().into_owned()),
+            // The browser is the authoritative writer. Starting with no
+            // credentials document must not fail while trying to watch a path
+            // that does not exist yet.
+            watch: Some(false),
+            ..Default::default()
+        },
+    )
+    .map_err(|error| format!("credentials-local: {error}"))?;
+    let mut deepseek_settings_properties = indexmap::IndexMap::new();
+    deepseek_settings_properties.insert(
+        "apiKeyEnv".to_string(),
+        dsh_schemastery::Schema::string()
+            .role("credential-ref", None)
+            .default(dsh_schemastery::Data::String(
+                dsh_llm_deepseek::DEFAULT_API_KEY_ENV.to_string(),
+            )),
+    );
+    deepseek_settings_properties.insert(
+        "baseURL".to_string(),
+        dsh_schemastery::Schema::string().default(dsh_schemastery::Data::String(
+            dsh_llm_deepseek::PUBLIC_BASE_URL.to_string(),
+        )),
+    );
+    let deepseek_scope = settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("llm-deepseek")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            dsh_schemastery::Schema::object(deepseek_settings_properties),
+            dsh_settings::SettingsRegisterOptions::default(),
+        )
+        .map_err(|error| format!("settings llm-deepseek: {error}"))?;
+    let _deepseek_directory = llm
+        .register_configurable_providers(
+            ctx,
+            vec![dsh_llm::LlmConfigurableProvider {
+                provider: dsh_llm_deepseek::PROVIDER.to_string(),
+                display_name: "DeepSeek".to_string(),
+                settings_ns: "llm-deepseek".to_string(),
+                settings_path: Vec::new(),
+                declared: None,
+            }],
+        )
+        .map_err(|error| format!("llm-deepseek directory: {error}"))?;
+    let web = dsh_web::WebRuntime::install(
+        ctx,
+        dsh_web::Config {
+            search_provider: Some("deepseek-official".to_string()),
+        },
+    );
+    let web_credentials = credentials.clone();
+    let web_provider = Arc::new(dsh_web_search_deepseek::DeepSeekSearchProvider::new(
+        dsh_web_search_deepseek::Options {
+            api_key: None,
+            resolve_api_key: Some(Arc::new(move || {
+                let credentials = web_credentials.clone();
+                Box::pin(async move {
+                    let reference = dsh_credentials::credential_ref("DEEPSEEK_API_KEY");
+                    Ok(credentials
+                        .resolve(&reference)
+                        .await
+                        .map(|resolved| resolved.value))
+                })
+            })),
+            api_key_env: "DEEPSEEK_API_KEY".to_string(),
+            base_url: "https://api.deepseek.com/anthropic/v1".to_string(),
+            model: "deepseek-v4-flash".to_string(),
+            api_version: "2023-06-01".to_string(),
+            max_tokens: 4096,
+            max_uses: 5,
+            record_request: None,
+        },
+    ));
+    let _web_provider = web
+        .register_search_provider(web_provider)
+        .map_err(|error| format!("web-search-deepseek: {error}"))?;
+
+    let deepseek_scope_for_options = deepseek_scope.clone();
+    let deepseek_credentials = credentials.clone();
+    let deepseek_attachment_ctx = ctx.clone();
     let deepseek_adapter = Arc::new(dsh_llm_deepseek::DeepSeekAdapter::new(
         dsh_llm_deepseek::DeepSeekAdapterOptions {
-            options: Arc::new(move || Ok(deepseek_options.clone())),
-            resolve_api_key: Arc::new(move |_snapshot| {
-                let key = deepseek_key.clone();
-                Box::pin(async move { Ok(key) })
+            options: Arc::new(move || {
+                let value = (deepseek_scope_for_options.get)()
+                    .to_json()
+                    .ok_or_else(|| {
+                        dsh_llm::LlmError::new(
+                            "llm-deepseek settings are not JSON-compatible",
+                            "INVALID_CONFIG",
+                            dsh_llm::LlmErrorOptions::default(),
+                        )
+                    })?;
+                let api_key_env = value
+                    .get("apiKeyEnv")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let base_url = value
+                    .get("baseURL")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| std::env::var("DSH_DEEPSEEK_BASE_URL").ok());
+                dsh_llm_deepseek::resolve_adapter_options(&dsh_llm_deepseek::DeepSeekConfig {
+                    api_key_env,
+                    base_url,
+                    ..Default::default()
+                })
             }),
+            resolve_api_key: Arc::new(move |snapshot| {
+                let credentials = deepseek_credentials.clone();
+                let api_key_env = snapshot.api_key_env.clone();
+                Box::pin(async move {
+                    let reference = dsh_credentials::credential_ref(&api_key_env);
+                    Ok(credentials
+                        .resolve(&reference)
+                        .await
+                        .map(|resolved| resolved.value))
+                })
+            }),
+            resolve_attachments: Some(Arc::new(move || {
+                deepseek_attachment_ctx
+                    .get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false)
+                    .map(|slot| slot.as_ref().clone())
+            })),
+            provider_name: None,
+            include_thinking_fields: true,
         },
     ));
     let _deepseek_registration = dsh_llm_deepseek::apply(ctx, &llm, deepseek_adapter)
         .map_err(|error| format!("llm-deepseek: {}", error.failure.message))?;
+
+    let default_model = dsh_agent_default_model::AgentDefaultModelConfigService::install(
+        ctx,
+        dsh_agent_default_model::AgentDefaultModelConfig {
+            provider: dsh_llm_deepseek::PROVIDER.to_string(),
+            model: "deepseek-v4-flash".to_string(),
+        },
+    );
+    futures::executor::block_on(default_model.ready())
+        .map_err(|error| format!("agent-default-model ready: {error}"))?;
+
+    let pi_scope = settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("llm-pi-ai")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            openai_compatible_schema(),
+            dsh_settings::SettingsRegisterOptions {
+                validate: Some(Arc::new(|value| openai_profiles(value).map(|_| ()))),
+                ..Default::default()
+            },
+        )
+        .map_err(|error| format!("settings llm-pi-ai: {error}"))?;
+    let initial_pi = openai_profiles(&(pi_scope.get)())?;
+    let pi_profiles = Arc::new(parking_lot::Mutex::new(initial_pi.providers));
+    let pi_adapter: Arc<dyn dsh_llm::LlmAdapter> = Arc::new(OpenAiCompatibleAdapter {
+        profiles: pi_profiles.clone(),
+        credentials: credentials.clone(),
+        attachment_ctx: ctx.clone(),
+    });
+    let initial_routes: Vec<String> = pi_profiles.lock().keys().cloned().collect();
+    let pi_registration = llm
+        .register_adapter(ctx, initial_routes, pi_adapter.clone())
+        .map_err(|error| format!("llm-pi-ai: {error}"))?;
+    let initial_entries: Vec<dsh_llm::LlmConfigurableProvider> = pi_profiles
+        .lock()
+        .iter()
+        .map(|(provider, profile)| dsh_llm::LlmConfigurableProvider {
+            provider: provider.clone(),
+            display_name: profile
+                .display_name
+                .clone()
+                .unwrap_or_else(|| provider.clone()),
+            settings_ns: "llm-pi-ai".to_string(),
+            settings_path: vec!["providers".to_string(), provider.clone()],
+            declared: Some(true),
+        })
+        .collect();
+    let pi_directory = llm
+        .register_configurable_providers(ctx, initial_entries)
+        .map_err(|error| format!("llm-pi-ai directory: {error}"))?;
+    let _pi_watch = (pi_scope.watch)(Arc::new(move |next, _previous| {
+        let parsed = openai_profiles(next);
+        let profiles = pi_profiles.clone();
+        let registration_replace = pi_registration.replace.clone();
+        let directory_replace = pi_directory.replace.clone();
+        if let Ok(parsed) = parsed {
+            let routes: Vec<String> = parsed.providers.keys().cloned().collect();
+            let entries = parsed
+                .providers
+                .iter()
+                .map(|(provider, profile)| dsh_llm::LlmConfigurableProvider {
+                    provider: provider.clone(),
+                    display_name: profile
+                        .display_name
+                        .clone()
+                        .unwrap_or_else(|| provider.clone()),
+                    settings_ns: "llm-pi-ai".to_string(),
+                    settings_path: vec!["providers".to_string(), provider.clone()],
+                    declared: Some(true),
+                })
+                .collect::<Vec<_>>();
+            let previous = {
+                let mut current = profiles.lock();
+                std::mem::replace(&mut *current, parsed.providers)
+            };
+            if (registration_replace)(routes).is_err() || (directory_replace)(entries).is_err() {
+                *profiles.lock() = previous;
+            }
+        }
+        Box::pin(async {})
+    }));
     let system_prompt = SystemPrompt::install(ctx, dsh_system_prompt::Config::default())
         .map_err(|error| format!("systemPrompt: {error}"))?;
+    let _harness_source = system_prompt.section(
+        ctx,
+        PromptSection {
+            name: "harness:source".to_string(),
+            order: -99.0,
+            text: PromptText::Static(format!(
+                "The DeepSeek Harness implementation checkout is at {}. The checkout location and current working directory are separate values and may differ; never infer the working directory from this path. Use pwd to determine the current working directory. Use this checkout only to inspect or extend DSH itself.",
+                env!("CARGO_MANIFEST_DIR"),
+            )),
+            complete: None,
+        },
+    );
+    let _zh_visible_output = system_prompt.section(
+        ctx,
+        PromptSection {
+            name: "language:zh-visible-output".to_string(),
+            order: 5.0,
+            text: PromptText::Static(
+                "所有用户可见的推理摘要、计划、进度、错误说明和最终答案必须从第一个字开始使用简体中文；代码、文件名、命令和必要技术术语除外。"
+                    .to_string(),
+            ),
+            complete: None,
+        },
+    );
+    let sandbox_policy_for_context = Arc::clone(&_sandbox_policy);
+    let sessions_for_context = Arc::clone(&sessions);
+    let _sandbox_context = system_prompt.context(
+        ctx,
+        dsh_system_prompt::PromptContext {
+            name: "sandbox:policy".to_string(),
+            order: 110.0,
+            text: PromptText::Provider(Arc::new(move |assembly| {
+                let session = assembly
+                    .field_str("sessionId")
+                    .and_then(|id| sessions_for_context.get(&dsh_session::session_id(id)));
+                let execution =
+                    sandbox_policy_for_context.resolve(&dsh_sandbox_policy::SandboxPolicyRequest {
+                        session: session.map(Arc::new),
+                        mode: None,
+                    });
+                format!(
+                    "Current DSH file policy: {}. The workspace boundary is {}.",
+                    execution.mode.as_str(),
+                    execution.workspace_root
+                )
+            })),
+        },
+    );
     let tools = ToolRuntime::install(
         ctx,
         dsh_tools::Config {
@@ -658,69 +1663,423 @@ fn compose_host_in_fiber(ctx: &Context) -> Result<HostSpine, String> {
         },
     )
     .map_err(|error| format!("tools: {error}"))?;
-    futures::executor::block_on(dsh_tool_jobs::ToolJobsService::install(
+    let install_timeout_policy = dsh_timeout_policy::apply(ctx);
+    futures::executor::block_on(install_timeout_policy());
+    let _fs = dsh_fs_local::LocalFileSystem::install(
         ctx,
-        Default::default(),
-    ))
-    .map_err(|error| format!("tool-jobs: {error}"))?;
-    dsh_tool_pwsh::ToolPwshService::install(ctx).map_err(|error| format!("tool-pwsh: {error}"))?;
+        dsh_fs_local::Config {
+            cwd: None,
+            diff_basis_max_bytes: None,
+        },
+    )
+    .map_err(|error| format!("fs-local: {error}"))?;
+    let _skills = dsh_skill::SkillRegistry::install(ctx, Default::default())
+        .map_err(|error| format!("skills: {error}"))?;
+    let _skill_badge = dsh_skill_badge::apply(ctx);
+    if matches!(
+        (memory_scope.get)(),
+        dsh_schemastery::Data::Object(ref object)
+            if matches!(object.get("enabled"), Some(dsh_schemastery::Data::Bool(true)))
+    ) {
+        dsh_tool_memory_local::install(ctx, data_root.join("memory"))
+            .map_err(|error| format!("memory: {error}"))?;
+    }
+    if let dsh_schemastery::Data::Object(object) = (voice_scope.get)() {
+        let stt_command = match object.get("sttCommand") {
+            Some(dsh_schemastery::Data::String(value)) if !value.trim().is_empty() => {
+                Some(value.trim().to_string())
+            }
+            _ => None,
+        };
+        let tts_command = match object.get("ttsCommand") {
+            Some(dsh_schemastery::Data::String(value)) if !value.trim().is_empty() => {
+                Some(value.trim().to_string())
+            }
+            _ => None,
+        };
+        let timeout_ms = match object.get("timeoutSeconds") {
+            Some(dsh_schemastery::Data::Number(value)) => (*value as u64) * 1_000,
+            _ => 60_000,
+        };
+        dsh_tool_voice_command::install(
+            ctx,
+            dsh_tool_voice_command::Config {
+                stt_command,
+                tts_command,
+                timeout_ms,
+            },
+        )
+        .map_err(|error| format!("voice: {error}"))?;
+    }
+    if let dsh_schemastery::Data::Object(object) = (computer_use_scope.get)()
+        && matches!(
+            object.get("enabled"),
+            Some(dsh_schemastery::Data::Bool(true))
+        )
+    {
+        let command = match object.get("command") {
+            Some(dsh_schemastery::Data::String(value)) => value.trim().to_string(),
+            _ => String::new(),
+        };
+        let timeout_ms = match object.get("timeoutSeconds") {
+            Some(dsh_schemastery::Data::Number(value)) => (*value as u64) * 1_000,
+            _ => 60_000,
+        };
+        dsh_tool_computer_use_command::install(
+            ctx,
+            dsh_tool_computer_use_command::Config {
+                command,
+                timeout_ms,
+            },
+        )
+        .map_err(|error| format!("computer-use: {error}"))?;
+    }
     dsh_tool_terminal::ToolTerminalService::install(ctx)
         .map_err(|error| format!("tool-terminal: {error}"))?;
     let _subagents = dsh_subagent::SubagentRuntime::install(ctx);
     dsh_subagent_spawn_in_process::apply(ctx, &Default::default())
         .map_err(|error| format!("subagent-spawn: {}", error.message))?;
-    dsh_tool_subagent::apply(
-        ctx,
-        &dsh_tool_subagent::Config {
-            provider: "spawn".to_string(),
-            ..Default::default()
-        },
-    )
-    .map_err(|error| format!("tool-subagent: {error}"))?;
-    let workflow = dsh_workflow_node::NodeWorkflowEngine::install(ctx, Default::default())
-        .map_err(|error| format!("workflow-node: {error}"))?;
-    let workflow_service: Arc<dyn dsh_workflow::WorkflowEngine> = workflow.clone();
-    ctx.register_service(workflow_service);
-    let workflow_teardown = workflow.clone();
-    let _ = ctx.effect(
-        "workflow node teardown",
-        Box::pin(async move {
-            Some(make_disposer(move || {
-                let workflow = workflow_teardown.clone();
-                Box::pin(async move { workflow.dispose().await })
-            }))
-        }),
-    );
-    dsh_tool_workflow::apply(ctx).map_err(|error| format!("tool-workflow: {error}"))?;
-    dsh_tool_ralph::apply(ctx, &Default::default())
-        .map_err(|error| format!("tool-ralph: {error}"))?;
+    dsh_subagent_fork_in_process::apply(ctx, &Default::default())
+        .map_err(|error| format!("subagent-fork: {}", error.message))?;
     let agent_loop = AgentLoop::install(ctx, dsh_agent_loop::Config::default())
         .map_err(|error| format!("agentLoop: {error}"))?;
     let commands = CommandRuntime::install(ctx);
+    let _feedback_command =
+        dsh_command_feedback::apply(ctx).map_err(|error| format!("command-feedback: {error}"))?;
     let goals = GoalService::install(ctx, dsh_goal::Config::default());
     let _goal_round_driver =
         dsh_goal_round_driver::apply(ctx).map_err(|error| format!("goal-round-driver: {error}"))?;
     let _goal_command =
         dsh_command_goal::apply(ctx).map_err(|error| format!("command-goal: {error}"))?;
-    let _goal_tools = dsh_tool_goal::apply(ctx, &dsh_tool_goal::Config::default())
-        .map_err(|error| format!("tool-goal: {error}"))?;
     let questions = UserQuestionService::install(ctx);
-    let approval = ApprovalService::install(ctx, dsh_user_approval::Config::default());
+    let approval_timeout_ms = match (security_scope.get)() {
+        dsh_schemastery::Data::Object(object) => {
+            object
+                .get("approvalTimeoutSeconds")
+                .and_then(|value| match value {
+                    dsh_schemastery::Data::Number(value) => Some((*value as u64) * 1_000),
+                    _ => None,
+                })
+        }
+        _ => None,
+    };
+    let approval = ApprovalService::install(
+        ctx,
+        dsh_user_approval::Config {
+            policy: None,
+            timeout_ms: approval_timeout_ms,
+        },
+    );
+    let permission_presets =
+        dsh_permission_presets::PermissionPresetService::install(ctx, Default::default())
+            .map_err(|error| format!("permission-presets: {error}"))?;
+    futures::executor::block_on(permission_presets.ready())
+        .map_err(|error| format!("permission-presets ready: {error}"))?;
     dsh_schedule::apply(ctx);
     // ---- M6 shell: the web face over the spine ----
     // The loader service anchors the plugin inventory and profile
     // composition (the Rust static registry serves empty for now).
     let loader = futures::executor::block_on(dsh_cordis_loader::LoaderService::new(ctx));
+    enum PresetBuiltinPlugin {
+        Persona,
+        AgentInstructions { dsh_home: std::path::PathBuf },
+        Pwsh,
+        WorkflowEngine,
+        Workflow,
+        Ralph,
+    }
+    #[async_trait::async_trait]
+    impl cordis::Plugin for PresetBuiltinPlugin {
+        async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
+            match self {
+                Self::Persona => {
+                    let text = config
+                        .downcast_ref::<serde_json::Value>()
+                        .and_then(|value| value.get("text"))
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            PluginError::new(arc("persona requires config.text".to_string()))
+                        })?;
+                    let prompt = ctx
+                        .get_typed::<Arc<dsh_system_prompt::SystemPrompt>>("systemPrompt", false)
+                        .map(|slot| slot.as_ref().clone())
+                        .ok_or_else(|| {
+                            PluginError::new(arc("persona requires systemPrompt".to_string()))
+                        })?;
+                    let disposer = prompt.section(
+                        ctx,
+                        PromptSection {
+                            name: dsh_system_prompt::PERSONA_SECTION.to_string(),
+                            order: dsh_system_prompt::PERSONA_ORDER,
+                            text: PromptText::Static(text.to_string()),
+                            complete: None,
+                        },
+                    );
+                    let _ = ctx.effect("persona", Box::pin(async move { Some(disposer) }));
+                }
+                Self::AgentInstructions { dsh_home } => {
+                    let max_bytes = config
+                        .downcast_ref::<serde_json::Value>()
+                        .and_then(|value| value.get("maxBytes"))
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(65_536) as usize;
+                    let disposer = dsh_agent_instructions::apply(
+                        ctx,
+                        dsh_agent_instructions::Config {
+                            dsh_home: dsh_home.clone(),
+                            max_bytes,
+                            max_source_bytes: 1024 * 1024,
+                        },
+                    );
+                    let _ = ctx.effect(
+                        "agent-instructions",
+                        Box::pin(async move { Some(disposer) }),
+                    );
+                }
+                Self::Pwsh => {
+                    dsh_tool_pwsh::ToolPwshService::install(ctx)
+                        .map_err(|error| PluginError::new(arc(error)))?;
+                }
+                Self::WorkflowEngine => {
+                    let workflow =
+                        dsh_workflow_node::NodeWorkflowEngine::install(ctx, Default::default())
+                            .map_err(|error| PluginError::new(arc(error)))?;
+                    let service: Arc<dyn dsh_workflow::WorkflowEngine> = workflow.clone();
+                    ctx.register_service(service);
+                    let _ = ctx.effect(
+                        "workflow-node",
+                        Box::pin(async move {
+                            Some(make_disposer(move || {
+                                let workflow = workflow.clone();
+                                Box::pin(async move { workflow.dispose().await })
+                            }))
+                        }),
+                    );
+                }
+                Self::Workflow => {
+                    let disposer = dsh_tool_workflow::apply(ctx)
+                        .map_err(|error| PluginError::new(arc(error)))?;
+                    let _ = ctx.effect("tool-workflow", Box::pin(async move { Some(disposer) }));
+                }
+                Self::Ralph => {
+                    let disposer = dsh_tool_ralph::apply(ctx, &Default::default())
+                        .map_err(|error| PluginError::new(arc(error)))?;
+                    let _ = ctx.effect("tool-ralph", Box::pin(async move { Some(disposer) }));
+                }
+            }
+            Ok(())
+        }
+    }
+    struct NoopPlugin;
+    #[async_trait::async_trait]
+    impl cordis::Plugin for NoopPlugin {
+        fn name(&self) -> Option<&'static str> {
+            Some("noop")
+        }
+        fn inject(&self) -> cordis::InjectSpec {
+            cordis::InjectSpec::new([])
+        }
+        async fn apply(&self, _ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
+            Ok(())
+        }
+    }
+    loader.core.register("noop", Arc::new(NoopPlugin));
+    loader.core.register(
+        "@deepseek-ai/dsh-persona",
+        Arc::new(PresetBuiltinPlugin::Persona),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-agent-instructions",
+        Arc::new(PresetBuiltinPlugin::AgentInstructions {
+            dsh_home: dsh_home.clone(),
+        }),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-pwsh",
+        Arc::new(PresetBuiltinPlugin::Pwsh),
+    );
+    loader.core.register(
+        "host-plugin-inventory",
+        Arc::new(dsh_host_plugin_inventory::PluginInventoryGatewayPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-jobs",
+        Arc::new(dsh_tool_jobs::ToolJobsPlugin::new()),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-skill-filesystem",
+        Arc::new(dsh_skill_filesystem::SkillFilesystemPlugin::new(
+            Default::default(),
+        )),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-skill",
+        Arc::new(dsh_tool_skill::ToolSkillPlugin::new(Default::default())),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-plan-mode",
+        Arc::new(dsh_plan_mode::PlanModePlugin::new(Default::default())),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-compaction-basic",
+        Arc::new(dsh_compaction::basic::BasicCompactionPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-command-compact",
+        Arc::new(dsh_command_compact::CommandCompactPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-compaction-tool-result-pruner",
+        dsh_compaction_tool_result_pruner::plugin(),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-fs",
+        Arc::new(dsh_tool_fs::ToolFsPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-fs-search",
+        Arc::new(dsh_tool_fs_search::ToolFsSearchPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-str-replace-editor",
+        Arc::new(dsh_tool_str_replace_editor::ToolStrReplaceEditorPlugin::new()),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-fs-search",
+        Arc::new(dsh_tool_fs_search::ToolFsSearchPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-goal",
+        Arc::new(dsh_tool_goal::ToolGoalPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-ask-user",
+        Arc::new(dsh_tool_ask_user::ToolAskUserPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-todo",
+        Arc::new(dsh_tool_todo::ToolTodoPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-web",
+        Arc::new(dsh_tool_web::ToolWebPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-subagent-control",
+        Arc::new(dsh_tool_subagent_control::ToolSubagentControlPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-subagent-control/list-agents",
+        Arc::new(dsh_tool_subagent_control::list_agents::ToolSubagentListAgentsPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-subagent",
+        Arc::new(dsh_tool_subagent::ToolSubagentPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-workflow-worker-thread",
+        Arc::new(PresetBuiltinPlugin::WorkflowEngine),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-workflow",
+        Arc::new(PresetBuiltinPlugin::Workflow),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-tool-ralph",
+        Arc::new(PresetBuiltinPlugin::Ralph),
+    );
+    if let Some(profile) = profile {
+        let profile_dir = data_root.join("profiles").join(profile);
+        client_plugins::materialize_bundled(&profile_dir)?;
+        for plugin in client_plugins::discover(&profile_dir)? {
+            loader.core.register(&plugin.id, Arc::new(NoopPlugin));
+        }
+    }
     ctx.register_service(loader);
+    if let Some(profile) = profile {
+        let plugin_config = data_root
+            .join("profiles")
+            .join(profile)
+            .join("plugins.json");
+        if plugin_config.is_file() {
+            let raw = std::fs::read_to_string(&plugin_config).map_err(|error| {
+                format!("plugins config read {}: {error}", plugin_config.display())
+            })?;
+            let entries: Vec<serde_json::Value> = serde_json::from_str(&raw).map_err(|error| {
+                format!("plugins config parse {}: {error}", plugin_config.display())
+            })?;
+            let loader = ctx
+                .get_typed::<Arc<dsh_cordis_loader::LoaderService>>("loader", false)
+                .map(|slot| slot.as_ref().clone())
+                .ok_or_else(|| "loader service missing after install".to_string())?;
+            futures::executor::block_on(dsh_app_boot::boot("dsh-host", &loader, &entries))?;
+        }
+    }
+    let mut onboarding_properties = indexmap::IndexMap::new();
+    onboarding_properties.insert(
+        "welcomeNoticeVersion".to_string(),
+        dsh_schemastery::Schema::string().default(dsh_schemastery::Data::String(String::new())),
+    );
+    settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("ui-onboarding")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            dsh_schemastery::Schema::object(onboarding_properties),
+            dsh_settings::SettingsRegisterOptions::default(),
+        )
+        .map_err(|error| format!("settings ui-onboarding: {error}"))?;
+    let storage = dsh_storage::Storage::install(ctx);
+    let json_backend = dsh_storage_json::JsonStorageBackend::new(
+        dsh_home.join("storages").to_string_lossy().into_owned(),
+    );
+    storage
+        .backend
+        .register("json", json_backend)
+        .map_err(|error| format!("storage json: {error}"))?;
+    let domains = dsh_storage_domain::DomainFacility::install(
+        ctx,
+        dsh_storage_domain::DomainFacilityConfig {
+            backend: "json".to_string(),
+            routes: Default::default(),
+        },
+    )
+    .map_err(|error| format!("storage domain: {error}"))?;
+    let message_feedback = dsh_message_feedback::MessageFeedbackService::install(
+        ctx,
+        &dsh_message_feedback::Config {
+            max_note_bytes: 16_384,
+        },
+    )
+    .map_err(|error| format!("message-feedback: {error}"))?;
+    let persistence_api: Arc<dyn dsh_session_persistence::SessionPersistenceApi> =
+        persistence.clone();
+    let live: Arc<dyn dsh_workspace::LiveSessionStore> =
+        Arc::new(dsh_workspace::StoreLiveSessions(sessions.clone()));
+    let persistence_for_delete = persistence.clone();
+    dsh_workspace::WorkspaceRegistry::install(
+        ctx,
+        &domains,
+        persistence_api,
+        Some(live),
+        Arc::new(move |session_id| {
+            let persistence = persistence_for_delete.clone();
+            let session_id = session_id.clone();
+            Box::pin(async move { persistence.delete(&session_id).await })
+        }),
+    )
+    .map_err(|error| format!("workspace: {error}"))?;
     // The agent-presets roster: the shipped presets beside this app's
     // config plus the harness-home user root the service appends itself.
     // Anchored to the manifest, not the process cwd (tests and launchers
     // run from different directories; TS anchors to the package location
     // the same way).
-    let shipped_preset_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../config/agent-presets")
+    let shipped_preset_root = packaged_resource("config/agent-presets")
         .to_string_lossy()
         .into_owned();
+    let preset_home = dsh_home.to_string_lossy().into_owned();
+    let preset_env: Arc<dyn Fn(&str) -> Option<String> + Send + Sync> =
+        Arc::new(move |name| (name == "DSH_HOME").then(|| preset_home.clone()));
     let agent_presets = dsh_agent_presets::AgentPresets::install(
         ctx,
         dsh_agent_presets::Config {
@@ -731,28 +2090,49 @@ fn compose_host_in_fiber(ctx: &Context) -> Result<HostSpine, String> {
             }],
             include_user_root: true,
         },
-        dsh_agent_presets::process_env(),
+        preset_env,
     )
     .map_err(|error| format!("agentPresets: {error}"))?;
-    // The webserver binds an OS-assigned port (the report publishes it).
+    // Port zero asks the OS for a free test/embedding port; application
+    // launchers may select a stable port so the web-surface prompt stays
+    // byte-identical across Host restarts.
     let web_server = futures::executor::block_on(WebServer::install(
         ctx,
         WebConfig {
             host: BindHost::Loopback,
-            port: 0,
+            port: bind_port,
         },
     ))
     .map_err(|error| format!("webserver: {error}"))?;
+    let _web_surface = system_prompt.section(
+        ctx,
+        PromptSection {
+            name: "app:web-surface".to_string(),
+            order: -98.0,
+            text: PromptText::Provider(Arc::new({
+                let port = web_server.port();
+                move |_| {
+                    let web_url = format!("http://127.0.0.1:{port}");
+                    let update_contract = "The client-plugin HMR receiver is active, but client-plugin changes reload without a refresh only while `pnpm run dev:web` is also running from this same checkout to rebuild their bundles; verify that watcher before promising automatic updates. Every other change — the apps/web shell and plain packages — requires rebuilding the affected Web artifacts and verifying this existing URL after a page refresh. ";
+                    format!(
+                        "You are interacting with the user through the DeepSeek Harness Web GUI at {web_url}. When the user refers to \"this page\", \"this GUI\", or \"this app\" without naming another target, they mean this GUI. The browser provides no implicit DOM, route, or screenshot context. {update_contract}Starting another server does not update this GUI. The apps/web Vite entry builds the shell but is not a standalone application because only dsh web injects window.__DSH_BOOT__. Do not start a replacement server unless the user asks; if one is needed, use a managed background job and verify its exact URL."
+                    )
+                }
+            })),
+            complete: None,
+        },
+    );
     // The SPA dist server claims the fallback seat.
-    let dist_index = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../web/dist/index.html")
+    let dist_index = packaged_resource("web/dist/index.html")
         .to_string_lossy()
         .into_owned();
     let _ = apply_frontend_static(ctx, FrontendConfig { dist_index })
         .map_err(|error| format!("frontend-static: {error}"))?;
+    let manifest_path = packaged_resource("web/dist/plugins/manifest.json");
+    let manifest_text = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|_| include_str!("../../../../web/dist/plugins/manifest.json").to_string());
     let mut boot_payload: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../web/dist/plugins/manifest.json"))
-            .expect("web plugin manifest");
+        serde_json::from_str(&manifest_text).expect("web plugin manifest");
     let object = boot_payload
         .as_object_mut()
         .expect("web plugin manifest object");
@@ -762,6 +2142,12 @@ fn compose_host_in_fiber(ctx: &Context) -> Result<HostSpine, String> {
         serde_json::json!("deepseek-official"),
     );
     object.insert("model".to_string(), serde_json::json!("deepseek-chat"));
+    let _external_client_plugin_routes = if let Some(profile) = profile {
+        let profile_dir = data_root.join("profiles").join(profile);
+        client_plugins::compose(&web_server, &mut boot_payload, &profile_dir)?
+    } else {
+        Vec::new()
+    };
     let boot_script = format!(
         "<script>window.__DSH_BOOT__={};</script>",
         serde_json::to_string(&boot_payload).expect("web boot payload")
@@ -771,18 +2157,46 @@ fn compose_host_in_fiber(ctx: &Context) -> Result<HostSpine, String> {
     }));
     // The directory-picker seam serves the browse interaction.
     BrowseDirectoryPicker::install(ctx, PickerConfig::default());
-    // The plugin inventory projects the loader tree (no loader composed in
-    // this spine yet; the gateway installs and serves an empty catalog).
-    let _ = PluginInventoryGateway::install(ctx);
+    // Ensure the inventory service exists even when no profile entry mounted it.
+    if ctx.get("pluginInventory", false).is_none() {
+        let _ = PluginInventoryGateway::install(ctx);
+    }
     // The apiproxy gateway wires the 52-RPC surface onto the spine.
     let api_proxy = ApiProxyService::install(
         ctx,
         ApiProxyDefaults {
-            default_model_selection: Arc::new(|| dsh_host_apiproxy::ModelSelection {
-                provider: "deepseek-official".to_string(),
-                model: "deepseek-chat".to_string(),
-                reasoning_effort: None,
+            default_model_selection: Arc::new({
+                let default_model = default_model.clone();
+                move || {
+                    let selection = default_model.current_selection();
+                    dsh_host_apiproxy::ModelSelection {
+                        provider: selection.provider,
+                        model: selection.model,
+                        reasoning_effort: selection
+                            .reasoning_effort
+                            .map(|effort| effort.to_string()),
+                    }
+                }
             }),
+            plugins_document: profile.map(|profile| {
+                data_root
+                    .join("profiles")
+                    .join(profile)
+                    .join("plugins.json")
+            }),
+            open_path: Some(Arc::new(|path, signal| {
+                Box::pin(async move {
+                    let abort: dsh_native_command::NativeCommandAbort =
+                        Arc::new(move || signal.aborted());
+                    dsh_host_apiproxy::native_path_opener::open_native_path(
+                        &path,
+                        Some(abort),
+                        &dsh_host_apiproxy::native_path_opener::PathOpenerInternals::default(),
+                    )
+                    .await
+                    .map_err(|error| error.message)
+                })
+            })),
             ..Default::default()
         },
     );
@@ -824,6 +2238,7 @@ fn compose_host_in_fiber(ctx: &Context) -> Result<HostSpine, String> {
         goals,
         questions,
         approval,
+        message_feedback,
         persistence,
         search,
         query,
@@ -832,6 +2247,8 @@ fn compose_host_in_fiber(ctx: &Context) -> Result<HostSpine, String> {
         agent_presets,
         api_route,
         data_root,
+        owns_data_root,
+        boot_probe_id: session_id(format!("host-boot-{}", uuid::Uuid::new_v4())),
         companion_fiber: parking_lot::Mutex::new(None),
         lifecycle_fiber: parking_lot::Mutex::new(None),
         shutdown_result: tokio::sync::OnceCell::new(),
@@ -849,7 +2266,7 @@ pub async fn boot_report(spine: &HostSpine) -> Result<serde_json::Value, String>
         .sessions
         .create(
             &spine.ctx,
-            Some(session_id("host-boot")),
+            Some(spine.boot_probe_id.clone()),
             Some(dsh_session::CreateSessionOptions::default()),
         )
         .await
@@ -883,7 +2300,7 @@ pub async fn boot_report(spine: &HostSpine) -> Result<serde_json::Value, String>
     // reconcile through the erased persistence service.
     let durable_header = dsh_session::SessionHeader {
         version: dsh_session::SESSION_FORMAT_VERSION,
-        id: session_id("host-persisted"),
+        id: session_id(format!("{}-persisted", spine.boot_probe_id)),
         created_at: 1,
         cwd: None,
         parent_session: None,
@@ -1014,6 +2431,7 @@ impl Plugin for HostCompanionsPlugin {
         let _goal_round_driver = dsh_goal_round_driver::invariant::apply(ctx);
         let _command_goal = dsh_command_goal::invariant::apply(ctx);
         let _tool_goal = dsh_tool_goal::invariant::apply(ctx);
+        let _plan_mode = dsh_plan_mode::invariant::apply(ctx);
         let _agent_loop = dsh_agent_loop::apply_agent_loop_invariant(ctx);
         let _schedule = dsh_schedule::invariant::apply(ctx);
         let _query_sqlite = dsh_session_query_sqlite::invariant::apply(ctx);

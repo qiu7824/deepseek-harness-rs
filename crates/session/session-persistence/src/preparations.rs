@@ -1,3 +1,6 @@
+#![allow(clippy::type_complexity)]
+// Generic reservation tables and commit callbacks intentionally retain their exact ownership types.
+
 //! Bounded sharing and exclusive reservation of unpublished Sessions.
 //! Rust port of `packages/session/session-persistence/src/preparations.ts`.
 //!
@@ -243,7 +246,8 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
 
     /// Discard a prepared view after the durable log changes.
     pub fn invalidate(&self, id: &SessionId) {
-        if let Some(entry) = self.entries.lock().get(id.as_str()).cloned() {
+        let entry = { self.entries.lock().get(id.as_str()).cloned() };
+        if let Some(entry) = entry {
             self.remove(&entry);
         }
     }
@@ -303,22 +307,24 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
     }
 
     fn entry_for(&self, id: &SessionId, load: LoadFn<S>) -> Arc<PreparationEntry<S, C>> {
-        if let Some(existing) = self.entries.lock().get(id.as_str()).cloned() {
-            return existing;
-        }
-        let entry = Arc::new(PreparationEntry {
-            id: id.clone(),
-            result: OnceCell::new(),
-            notify: Notify::new(),
-            state: Mutex::new(EntryState {
-                phase: PreparationPhase::Loading,
-                source: None,
-                reservation: None,
-            }),
-        });
-        self.entries
-            .lock()
-            .insert(id.as_str().to_string(), entry.clone());
+        let entry = {
+            let mut entries = self.entries.lock();
+            if let Some(existing) = entries.get(id.as_str()).cloned() {
+                return existing;
+            }
+            let entry = Arc::new(PreparationEntry {
+                id: id.clone(),
+                result: OnceCell::new(),
+                notify: Notify::new(),
+                state: Mutex::new(EntryState {
+                    phase: PreparationPhase::Loading,
+                    source: None,
+                    reservation: None,
+                }),
+            });
+            entries.insert(id.as_str().to_string(), entry.clone());
+            entry
+        };
         // Start immediately (the TS `entryFor` starts the load synchronously),
         // settling the shared result after the entry becomes ready.
         let entries = Arc::clone(&self.entries);

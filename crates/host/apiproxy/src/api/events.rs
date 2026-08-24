@@ -100,6 +100,10 @@ pub trait EventsApi: Send + Sync {
 /// rest are pure pushes).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all_fields = "camelCase")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "boxing SessionEvent would change the public construction API for this wire frame"
+)]
 pub enum MuxFrame {
     #[serde(rename = "session/event")]
     SessionEventFrame {

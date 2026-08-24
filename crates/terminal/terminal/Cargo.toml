@@ -1,6 +1,6 @@
 [package]
 name = "dsh-terminal"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Persistent PTY session seam: owner-scoped ids, backend registry, interactive sends, reads, signals, and awaited cleanup — Rust port of @deepseek-ai/dsh-terminal"

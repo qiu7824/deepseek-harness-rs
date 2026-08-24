@@ -528,10 +528,11 @@ fn job_output_definition(service: Arc<ToolJobsService>) -> ToolDefinition {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "job_id": { "type": "string", "required": true, "description": "Job id returned by the tool that started the background work." },
+                "job_id": { "type": "string", "description": "Job id returned by the tool that started the background work." },
                 "wait": { "type": "boolean", "description": "Block until the job reaches a terminal status or the timeout expires. A timed-out wait returns [status: running] and leaves the job alive." },
                 "timeout_ms": { "type": "number", "description": "Max wait in milliseconds (only meaningful with wait: true). Defaults to the configured wait timeout; capped by the configured maximum." },
             },
+            "required": ["job_id"],
         }),
         output: ToolOutputDefinition {
             schema: serde_json::json!({
@@ -688,9 +689,10 @@ fn job_kill_definition(service: Arc<ToolJobsService>) -> ToolDefinition {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "job_id": { "type": "string", "required": true, "description": "Job id returned by the tool that started the background work." },
+                "job_id": { "type": "string", "description": "Job id returned by the tool that started the background work." },
                 "reason": { "type": "string", "description": "Optional short reason, recorded in the log and forwarded to the job." },
             },
+            "required": ["job_id"],
         }),
         output: ToolOutputDefinition {
             schema: serde_json::json!({

@@ -429,12 +429,11 @@ impl WebServer {
                                 .serve_connection(io, service)
                                 .with_upgrades()
                                 .await
+                                && let Some(server) = weak_track.upgrade()
                             {
-                                if let Some(server) = weak_track.upgrade() {
-                                    server.logger.warn(vec![arc(format!(
-                                        "webServer connection error: {error}"
-                                    ))]);
-                                }
+                                server.logger.warn(vec![arc(format!(
+                                    "webServer connection error: {error}"
+                                ))]);
                             }
                         });
                         let mut connections = server.connections.lock();
@@ -446,12 +445,10 @@ impl WebServer {
                             .upgrade()
                             .map(|server| server.stopping.load(Ordering::SeqCst))
                             .unwrap_or(true);
-                        if !stopping {
-                            if let Some(server) = weak.upgrade() {
-                                server
-                                    .logger
-                                    .warn(vec![arc(format!("webServer accept error: {error}"))]);
-                            }
+                        if !stopping && let Some(server) = weak.upgrade() {
+                            server
+                                .logger
+                                .warn(vec![arc(format!("webServer accept error: {error}"))]);
                         }
                         break;
                     }

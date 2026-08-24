@@ -1,6 +1,6 @@
 [package]
 name = "dsh-goal"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Same-session goal domain (ctx.goals): event-sourced state, compare-and-set mutations, and process-local continuation activation — Rust port of @deepseek-ai/dsh-goal"

@@ -1,6 +1,6 @@
 [package]
 name = "dsh-host"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Runnable DeepSeek Harness Host assembly (M6) — Rust port of the apps/host boot spine"
@@ -12,16 +12,47 @@ path = "src/main.rs"
 [dependencies]
 cordis = { path = "../../vendor/cordis" }
 dsh-agent = { path = "../../core/agent" }
+dsh-fs-local = { path = "../../fs/fs-local" }
+dsh-skill = { path = "../../skill/skill" }
+dsh-skill-filesystem = { path = "../../skill/skill-filesystem" }
+dsh-skill-badge = { path = "../../skill/skill-badge" }
+dsh-tool-skill = { path = "../../skill/tool-skill" }
+dsh-agent-default-model = { path = "../../core/agent-default-model" }
+dsh-agent-instructions = { path = "../../context/agent-instructions" }
 dsh-agent-loop = { path = "../../core/agent-loop" }
 dsh-agent-tool-presentation = { path = "../../core/agent-tool-presentation" }
 dsh-agent-presets = { path = "../../preset/agent-presets" }
+dsh-atomic-write = { path = "../../util/atomic-write" }
+dsh-attachment = { path = "../../attachment/attachment" }
+dsh-attachment-local = { path = "../../attachment/attachment-local" }
 dsh-code-runtime-node = { path = "../../code-runtime/code-runtime-node" }
 dsh-commands = { path = "../../interaction/commands" }
 dsh-cordis-loader = { path = "../../vendor/loader" }
 dsh-command-goal = { path = "../../goal/command-goal" }
+dsh-command-feedback = { path = "../../feedback/command-feedback" }
+dsh-command-compact = { path = "../../compaction/command-compact" }
+dsh-compaction = { path = "../../compaction/compaction" }
+dsh-compaction-tool-result-pruner = { path = "../../compaction/compaction-tool-result-pruner" }
+dsh-credentials = { path = "../../credentials/credentials" }
+dsh-credentials-local = { path = "../../credentials/credentials-local" }
 dsh-goal = { path = "../../goal/goal" }
 dsh-goal-round-driver = { path = "../../goal/goal-round-driver" }
+dsh-home-paths = { path = "../../util/home-paths" }
+dsh-native-command = { path = "../../util/native-command" }
+dsh-timeout-policy = { path = "../../guard/timeout-policy" }
+dsh-tool-computer-use-command = { path = "../../computer-use/tool-computer-use-command" }
+dsh-tool-voice-command = { path = "../../voice/tool-voice-command" }
+dsh-tool-memory-local = { path = "../../memory/tool-memory-local" }
+dsh-app-boot = { path = "../../boot/app-boot" }
 dsh-tool-goal = { path = "../../goal/tool-goal" }
+dsh-tool-ask-user = { path = "../../interaction/tool-ask-user" }
+dsh-tool-todo = { path = "../../todo/tool-todo" }
+dsh-tool-web = { path = "../../web/tool-web" }
+dsh-web = { path = "../../web/web" }
+dsh-web-search-deepseek = { path = "../../web/web-search-deepseek" }
+dsh-tool-str-replace-editor = { path = "../../fs/tool-str-replace-editor" }
+dsh-tool-fs = { path = "../../fs/tool-fs" }
+dsh-tool-fs-search = { path = "../../fs/tool-fs-search" }
 dsh-host-apiproxy = { path = "../apiproxy" }
 dsh-host-directory-picker-browse = { path = "../directory-picker-browse" }
 dsh-host-frontend-static = { path = "../frontend-static" }
@@ -30,25 +61,42 @@ dsh-host-webserver = { path = "../webserver" }
 dsh-invariants = { path = "../../util/invariants" }
 dsh-llm = { path = "../../core/llm" }
 dsh-llm-deepseek = { path = "../../llm/llm-deepseek" }
+
 dsh-schedule = { path = "../../schedule/schedule" }
+dsh-settings = { path = "../../settings/settings" }
+dsh-schemastery = { path = "../../vendor/schemastery" }
+dsh-storage = { path = "../../storage/storage" }
+dsh-storage-domain = { path = "../../storage/storage-domain" }
+dsh-message-feedback = { path = "../../feedback/message-feedback" }
+dsh-storage-json = { path = "../../storage/storage-json" }
+dsh-workspace = { path = "../../workspace/workspace" }
 dsh-jobs = { path = "../../jobs/jobs" }
 dsh-jobs-local = { path = "../../jobs/jobs-local" }
 dsh-sandbox = { path = "../../sandbox/sandbox" }
 dsh-sandbox-local = { path = "../../sandbox/sandbox-local" }
 dsh-sandbox-policy = { path = "../../sandbox/sandbox-policy" }
 dsh-pwsh-local = { path = "../../shell/pwsh-local" }
+dsh-permission-presets = { path = "../../interaction/permission-presets" }
+dsh-plan-mode = { path = "../../plan/plan-mode" }
 dsh-shell = { path = "../../shell/shell" }
 dsh-session = { path = "../../core/session" }
 dsh-session-persistence = { path = "../../session/session-persistence" }
 dsh-session-persistence-jsonl = { path = "../../session/session-persistence-jsonl" }
 dsh-session-query = { path = "../../session/session-query" }
 dsh-session-query-sqlite = { path = "../../session/session-query-sqlite" }
+dsh-session-projection = { path = "../../session/session-projection" }
+dsh-token-meter = { path = "../../llm/token-meter" }
+
+dsh-session-title = { path = "../../session/session-title" }
+dsh-session-title-first-prompt-llm = { path = "../../session/session-title-first-prompt-llm" }
 dsh-system-prompt = { path = "../../core/system-prompt" }
 dsh-subprocess = { path = "../../subprocess/subprocess" }
 dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }
 dsh-subagent = { path = "../../subagent/subagent" }
 dsh-subagent-spawn-in-process = { path = "../../subagent/subagent-spawn" }
+dsh-subagent-fork-in-process = { path = "../../subagent/subagent-fork" }
 dsh-tool-subagent = { path = "../../subagent/tool-subagent" }
+dsh-tool-subagent-control = { path = "../../subagent/tool-subagent-control" }
 dsh-terminal = { path = "../../terminal/terminal" }
 dsh-terminal-bash = { path = "../../terminal/terminal-bash" }
 dsh-tool-jobs = { path = "../../jobs/tool-jobs" }
@@ -66,11 +114,14 @@ async-trait = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
 parking_lot = { workspace = true }
+reqwest = { version = "=0.12.24", default-features = false, features = ["json", "rustls-tls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 http = { workspace = true }
+indexmap = { workspace = true }
 tokio-tungstenite = "0.29"
 
 [dev-dependencies]

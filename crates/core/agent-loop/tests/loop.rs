@@ -67,6 +67,48 @@ struct GatedAdapter {
     released: Arc<AtomicBool>,
 }
 
+struct InterruptedThenRecordAdapter {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    first_emitted: Arc<AtomicBool>,
+    recorded: Arc<parking_lot::Mutex<Option<GenerateOptions>>>,
+}
+
+impl LlmAdapter for InterruptedThenRecordAdapter {
+    fn stream(&self, options: &GenerateOptions) -> ChunkStream {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            let first_emitted = self.first_emitted.clone();
+            Box::pin(futures::stream::unfold(0_u8, move |state| {
+                let first_emitted = first_emitted.clone();
+                async move {
+                    match state {
+                        0 => Some((
+                            StreamChunk::BlockStart {
+                                index: 0,
+                                block_type: "text".to_string(),
+                            },
+                            1,
+                        )),
+                        1 => {
+                            first_emitted.store(true, Ordering::SeqCst);
+                            Some((
+                                StreamChunk::TextDelta {
+                                    index: 0,
+                                    text: "visible prefix".to_string(),
+                                },
+                                2,
+                            ))
+                        }
+                        _ => futures::future::pending().await,
+                    }
+                }
+            }))
+        } else {
+            *self.recorded.lock() = Some(options.clone());
+            Box::pin(futures::stream::iter(script()))
+        }
+    }
+}
+
 impl LlmAdapter for GatedAdapter {
     fn stream(&self, _options: &GenerateOptions) -> ChunkStream {
         let entered = self.entered.clone();
@@ -572,6 +614,63 @@ async fn cancellation_interrupts_a_pending_model_stream() {
     )
     .await
     .expect("cancellation must interrupt a pending model stream");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_persists_visible_assistant_prefix_for_the_next_request() {
+    let harness = harness().await;
+    let first_emitted = Arc::new(AtomicBool::new(false));
+    let recorded = Arc::new(parking_lot::Mutex::new(None));
+    register_adapter(
+        &harness,
+        Arc::new(InterruptedThenRecordAdapter {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            first_emitted: first_emitted.clone(),
+            recorded: recorded.clone(),
+        }),
+    );
+
+    harness.agent.followup(user_message("first"));
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !harness.agent.session().events().iter().any(|event| {
+            event.type_ == "assistant/chunk" && event.data["chunk"]["text"] == "visible prefix"
+        }) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("visible assistant prefix must be durably projected before cancellation");
+    harness.agent.cancel(
+        dsh_agent::AgentCancelCause::User,
+        Some(&dsh_agent::CancelOptions { keep_inbox: false }),
+    );
+    harness.agent.when_idle().await;
+
+    let events = harness.agent.session().events();
+    let interrupted = events
+        .iter()
+        .find(|event| {
+            event.type_ == "assistant/message"
+                && event.data["interrupted"] == serde_json::Value::Bool(true)
+        })
+        .expect("interrupted assistant message is durable");
+    assert_eq!(
+        interrupted.data["message"]["content"][0]["text"],
+        "visible prefix"
+    );
+
+    harness.agent.followup(user_message("second"));
+    harness.agent.when_idle().await;
+    let options = recorded.lock().clone().expect("second request recorded");
+    assert!(options.messages.iter().any(|message| {
+        message.role == dsh_llm::Role::Assistant
+            && message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::Text { text } if text == "visible prefix"
+                )
+            })
+    }));
 }
 
 #[tokio::test]

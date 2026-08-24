@@ -56,6 +56,10 @@ pub async fn canonicalize_watch_path(path: &Path) -> std::io::Result<PathBuf> {
 
 /// Resolve the default DeepSeek Harness home (TS `defaultDshHome`).
 pub fn default_dsh_home() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(local_app_data) = dirs::data_local_dir() {
+        return local_app_data.join("DeepSeek Harness");
+    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(DSH_HOME_DIR_NAME)
@@ -158,8 +162,7 @@ mod tests {
         assert!(configured.ends_with(Path::new("cfg")), "got {configured:?}");
         let env_home = resolve_dsh_home(None, &env);
         assert!(
-            env_home.ends_with(Path::new("env").join("home"))
-                || env_home == PathBuf::from("/env/home"),
+            env_home.ends_with(Path::new("env").join("home")) || env_home == Path::new("/env/home"),
             "got {env_home:?}"
         );
         let empty_env = |_name: &str| Some("   ".to_string());
@@ -173,5 +176,15 @@ mod tests {
         let env = |_name: &str| None::<String>;
         let path = dsh_home_path(None, &env, &["sessions", "x"]);
         assert_eq!(path, default_dsh_home().join("sessions").join("x"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_default_home_is_stable_and_not_temporary() {
+        let home = default_dsh_home();
+        assert!(home.is_absolute());
+        assert!(home.ends_with("DeepSeek Harness"));
+        let normalized = home.to_string_lossy().to_ascii_lowercase();
+        assert!(!normalized.contains("\\temp\\"));
     }
 }

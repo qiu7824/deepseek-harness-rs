@@ -88,6 +88,29 @@ fn windows_opens_through_powershell_invoke_item() {
 }
 
 #[test]
+fn windows_text_documents_open_in_notepad_without_file_associations() {
+    run(async {
+        let recorder = RecordingRunner::new();
+        let internals = build_internals("win32", &recorder);
+        dsh_host_apiproxy::native_path_opener::open_native_text_file(
+            r"C:\dir\settings.json",
+            None,
+            &internals,
+        )
+        .await
+        .expect("open text document");
+        let calls = recorder.calls();
+        assert_eq!(
+            calls,
+            vec![(
+                "notepad.exe".to_string(),
+                vec![r"C:\dir\settings.json".to_string()]
+            )]
+        );
+    });
+}
+
+#[test]
 fn powershell_literals_double_embedded_quotes() {
     run(async {
         let recorder = RecordingRunner::new();

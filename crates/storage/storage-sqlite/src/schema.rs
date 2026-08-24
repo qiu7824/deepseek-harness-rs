@@ -23,19 +23,14 @@ pub const STORAGE_SQLITE_SCHEMA_VERSION: i64 = 1;
 /// WAL's shared-memory files do not work. `memory`/`off` are excluded:
 /// dropping journal durability silently contradicts the durability clause
 /// of the KV backend contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JournalMode {
+    #[default]
     Wal,
     Delete,
     Truncate,
     Persist,
-}
-
-impl Default for JournalMode {
-    fn default() -> Self {
-        JournalMode::Wal
-    }
 }
 
 impl JournalMode {
@@ -238,8 +233,7 @@ mod tests {
                 .expect("stamp");
         }
         let error = open_database(path.to_string_lossy().as_ref(), JournalMode::default())
-            .err()
-            .expect("reject");
+            .expect_err("reject");
         assert_eq!(error.code, StorageErrorCode::VersionMismatch);
         let _ = std::fs::remove_file(&path);
     }

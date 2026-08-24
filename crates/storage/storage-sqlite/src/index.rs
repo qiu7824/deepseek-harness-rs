@@ -28,7 +28,7 @@ use tokio::sync::{OnceCell, oneshot};
 use cordis::{ArcValue, Context, InjectSpec, Plugin, PluginError, Service, arc, downcast};
 use dsh_storage::{
     KvFacet, KvUnit, KvUnitDescriptor, Storage, StorageBackend, StorageError, StorageErrorCode,
-    closed_error, storage_backend_service_key, unit_name_matches,
+    closed_error, unit_name_matches,
 };
 
 use crate::schema::{JournalMode, open_database, record_table_name};

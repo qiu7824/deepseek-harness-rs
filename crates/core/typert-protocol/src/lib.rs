@@ -49,6 +49,8 @@ impl std::error::Error for TypertLookupFailure {}
 
 /// One registered lookup provider (TS `TypertLookupDefinition` +
 /// `TypertLookup.resolve`).
+type LookupResolver = dyn Fn(&str) -> Option<ArcValue> + Send + Sync;
+
 pub struct TypertLookup {
     /// Merge-declared lookup key.
     pub key: String,
@@ -61,7 +63,7 @@ pub struct TypertLookup {
     /// Canonical wire type symbol used by strict generation.
     pub wire_type_symbol: String,
     /// Resolve a wire identity through the provider's default policy.
-    pub resolve: Arc<dyn Fn(&str) -> Option<ArcValue> + Send + Sync>,
+    pub resolve: Arc<LookupResolver>,
 }
 
 /// Runtime registry for Host object lookup providers (TS

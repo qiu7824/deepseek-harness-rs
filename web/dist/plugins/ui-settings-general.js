@@ -299,6 +299,58 @@ window.__ModuleLoader__.load({
 				children: renderSlot("settings.general.item", {})
 			});
 		}
+		const securityCss = ".dshSecurity{box-sizing:border-box;flex-direction:column;gap:18px;width:100%;padding:4px 2px 24px;display:flex;color:var(--dsw-alias-label-primary)}.dshSecurity h2{font-size:18px;line-height:26px;margin:0}.dshSecuritySummary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.dshSecurityCard{border:1px solid var(--dsw-alias-border-subtle);border-radius:12px;padding:12px;background:var(--dsw-alias-bg-layer-1)}.dshSecurityLabel{font-size:12px;color:var(--dsw-alias-label-tertiary)}.dshSecurityValue{font-size:14px;font-weight:500;margin-top:4px}.dshSecurityRule{font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}.dshSecurityTable{width:100%;border-collapse:collapse;font-size:12px}.dshSecurityTable th,.dshSecurityTable td{text-align:left;padding:8px;border-bottom:1px solid var(--dsw-alias-border-subtle);vertical-align:top}.dshSecurityTable th{color:var(--dsw-alias-label-tertiary);font-weight:400}.dshSecurityEmpty{font-size:13px;color:var(--dsw-alias-label-tertiary);padding:14px 0}.dshSecurityError{color:var(--dsw-alias-state-error-primary);font-size:13px}";
+		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css='dsh-security-shield']") === null) {
+			const tag = document.createElement("style");
+			tag.dataset.pluginCss = "dsh-security-shield";
+			tag.textContent = securityCss;
+			document.head.appendChild(tag);
+		}
+		function SecuritySection({ api }) {
+			const [state, setState] = (0, react.useState)({ loading: true, error: null, timeout: 30, preset: "workspace-write", rows: [] });
+			(0, react.useEffect)(() => {
+				let cancelled = false;
+				(async () => {
+					try {
+						const [settingsReply, sessionsReply] = await Promise.all([api.settings.describe({}), api.sessions.list({})]);
+						if (!settingsReply.result.ok) throw new Error(settingsReply.result.error.message);
+						if (!sessionsReply.result.ok) throw new Error(sessionsReply.result.error.message);
+						const namespaces = settingsReply.result.value.namespaces ?? [];
+						const security = namespaces.find((entry) => entry.ns === "security")?.value ?? {};
+						const permission = namespaces.find((entry) => entry.ns === "permission")?.value ?? {};
+						const audits = [];
+						for (const session of (sessionsReply.result.value.items ?? []).slice(0, 50)) {
+							const historyReply = await api.sessions.history({ sessionId: session.sessionId });
+							if (!historyReply.result.ok) continue;
+							const pending = new Map();
+							for (const event of historyReply.result.value.events ?? []) {
+								if (event.type === "approval/asked") pending.set(event.data?.id, event);
+								if (event.type === "approval/decided") {
+									const asked = pending.get(event.data?.id);
+									audits.push({ sessionId: session.sessionId, time: event.timestamp ?? asked?.timestamp, tool: asked?.data?.toolName ?? "-", reason: asked?.data?.reason ?? "-", outcome: event.data?.outcome ?? "unavailable" });
+								}
+							}
+						}
+						audits.sort((a, b) => String(b.time ?? "").localeCompare(String(a.time ?? "")));
+						if (!cancelled) setState({ loading: false, error: null, timeout: security.approvalTimeoutSeconds ?? 30, preset: permission.defaultPreset ?? "workspace-write", rows: audits.slice(0, 100) });
+					} catch (error) {
+						if (!cancelled) setState((previous) => ({ ...previous, loading: false, error: error instanceof Error ? error.message : String(error) }));
+					}
+				})();
+				return () => { cancelled = true; };
+			}, [api]);
+			return (0, react_jsx_runtime.jsxs)("section", { className: "dshSecurity", children: [
+				(0, react_jsx_runtime.jsx)("h2", { children: "安全盾" }),
+				(0, react_jsx_runtime.jsxs)("div", { className: "dshSecuritySummary", children: [
+					(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "审批模式" }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityValue", children: state.preset })] }),
+					(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "审批超时" }), (0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityValue", children: [state.timeout, " 秒"] })] }),
+					(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "目录保护" }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityValue", children: "删除文件夹必须确认" })] })
+				] }),
+				(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityRule", children: "工具调用在执行边界应用沙箱与审批策略；审批超时、拒绝或无人应答时均失败关闭。每次询问和决定写入原会话审计事件。" }),
+				state.error && (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityError", role: "alert", children: state.error }),
+				state.loading ? (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityEmpty", children: "正在读取安全审计…" }) : state.rows.length === 0 ? (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityEmpty", children: "暂无审批记录" }) : (0, react_jsx_runtime.jsxs)("table", { className: "dshSecurityTable", children: [(0, react_jsx_runtime.jsx)("thead", { children: (0, react_jsx_runtime.jsxs)("tr", { children: [(0, react_jsx_runtime.jsx)("th", { children: "时间" }), (0, react_jsx_runtime.jsx)("th", { children: "工具" }), (0, react_jsx_runtime.jsx)("th", { children: "原因" }), (0, react_jsx_runtime.jsx)("th", { children: "结果" })] }) }), (0, react_jsx_runtime.jsx)("tbody", { children: state.rows.map((row, index) => (0, react_jsx_runtime.jsxs)("tr", { children: [(0, react_jsx_runtime.jsx)("td", { children: row.time ? new Date(row.time).toLocaleString() : "-" }), (0, react_jsx_runtime.jsx)("td", { children: row.tool }), (0, react_jsx_runtime.jsx)("td", { children: row.reason }), (0, react_jsx_runtime.jsx)("td", { children: row.outcome })] }, row.sessionId + index)) })] })
+			] });
+		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-settings-general\src\client\SettingsDocumentAction.module.css.mjs
 		const css = ".S1Gy-G_action{align-items:center;gap:8px;min-width:0;display:flex}.S1Gy-G_error{max-width:180px;color:var(--dsw-alias-state-error-primary);text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:18px;overflow:hidden}";
@@ -597,6 +649,12 @@ window.__ModuleLoader__.load({
 					scope: "root"
 				} }
 			}, GeneralSection));
+			ctx.slots.inject("settings.section", () => ctx.slots.register({
+				name: "settings.section",
+				id: "security",
+				order: 25,
+				label: "安全盾"
+			}, () => (0, react_jsx_runtime.jsx)(SecuritySection, { api: connection.api })));
 		}
 		//#endregion
 		exports.SettingsDocumentStore = SettingsDocumentStore;

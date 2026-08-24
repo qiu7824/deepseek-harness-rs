@@ -21,6 +21,8 @@ use std::time::Duration;
 use cordis::{ArcValue, Context, Disposer, Plugin, PluginError, Service, make_disposer};
 use tokio::task::JoinHandle;
 
+type TimerTrigger = Arc<dyn Fn(Vec<ArcValue>, &AtomicBool) -> Option<JoinHandle<()>> + Send + Sync>;
+
 /// Timer cancellation error (TS `Error('Context has been disposed')`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimerError {
@@ -204,7 +206,7 @@ impl TimerService {
         &self,
         caller: &Context,
         label: &str,
-        trigger: Arc<dyn Fn(Vec<ArcValue>, &AtomicBool) -> Option<JoinHandle<()>> + Send + Sync>,
+        trigger: TimerTrigger,
         initially_disposed: bool,
     ) -> Throttled {
         let disposed = Arc::new(AtomicBool::new(initially_disposed));
@@ -257,9 +259,7 @@ impl TimerService {
         });
         let execute_for_trigger = execute.clone();
         let last_call_for_trigger = last_call.clone();
-        let trigger: Arc<
-            dyn Fn(Vec<ArcValue>, &AtomicBool) -> Option<JoinHandle<()>> + Send + Sync,
-        > = Arc::new(move |args, is_disposed| {
+        let trigger: TimerTrigger = Arc::new(move |args, is_disposed| {
             let now = now_ms();
             let remaining = delay_ms as i64 - now + last_call_for_trigger.load(Ordering::SeqCst);
             if remaining <= 0 {
@@ -287,9 +287,7 @@ impl TimerService {
         delay_ms: u64,
     ) -> Throttled {
         let callback_for_trigger = callback.clone();
-        let trigger: Arc<
-            dyn Fn(Vec<ArcValue>, &AtomicBool) -> Option<JoinHandle<()>> + Send + Sync,
-        > = Arc::new(move |args, is_disposed| {
+        let trigger: TimerTrigger = Arc::new(move |args, is_disposed| {
             if is_disposed.load(Ordering::SeqCst) {
                 return None;
             }
@@ -340,6 +338,9 @@ impl Plugin for TimerPlugin {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicU32;
+
+    type CapturedTimerFuture =
+        Arc<std::sync::Mutex<Option<cordis::BoxFuture<'static, Result<(), TimerError>>>>>;
 
     async fn timer_ctx() -> Context {
         let ctx = Context::root();
@@ -395,9 +396,7 @@ mod tests {
         assert_eq!(ok, Ok(()));
 
         // A fiber-owned future rejects when the owning plugin unloads.
-        struct Capturer(
-            Arc<std::sync::Mutex<Option<cordis::BoxFuture<'static, Result<(), TimerError>>>>>,
-        );
+        struct Capturer(CapturedTimerFuture);
         #[async_trait::async_trait]
         impl Plugin for Capturer {
             async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {

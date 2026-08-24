@@ -17,6 +17,8 @@ pub const CLIENT_REQUEST_METHODS: &[&str] = &[
     "agentPreset.read",
     "agentPreset.remove",
     "agentPreset.select",
+    "commands.execute",
+    "commands.list",
     "credentials.describe",
     "credentials.set",
     "credentials.unset",
@@ -34,6 +36,11 @@ pub const CLIENT_REQUEST_METHODS: &[&str] = &[
     "llm.discoverModels",
     "llm.models",
     "llm.providers",
+    "messageFeedback.delete",
+    "messageFeedback.list",
+    "messageFeedback.put",
+    "pluginInventory.list",
+    "pluginInventory.setEnabled",
     "session.attachment",
     "session.cancel",
     "session.create",
@@ -90,8 +97,8 @@ mod tests {
         assert_eq!(unique.len(), CLIENT_REQUEST_METHODS.len(), "no duplicates");
         assert_eq!(
             CLIENT_REQUEST_METHODS.len(),
-            54,
-            "the TS map holds 54 methods"
+            61,
+            "the composed Rust client-request surface holds 61 methods"
         );
     }
 
@@ -99,6 +106,8 @@ mod tests {
     fn client_request_classification() {
         assert!(is_client_request_method("session.list"));
         assert!(is_client_request_method("llm.discoverModels"));
+        assert!(is_client_request_method("commands.list"));
+        assert!(!is_client_request_method("commands/list"));
         assert!(!is_client_request_method("respond"));
         assert!(!is_client_request_method("session.nope"));
     }

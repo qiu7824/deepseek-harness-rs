@@ -33,6 +33,9 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::types::ProjectionValue;
 
+pub type ProjectionSchema = Arc<dyn Fn(&ArcValue) -> Result<ProjectionValue, String> + Send + Sync>;
+pub type ProjectionApply = Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync>;
+
 /// One domain's state-driven computation unit (TS `ProjectionDefinition`).
 /// All three functions MUST be synchronous and `state` MUST be plain JSON
 /// (the persisted-cache precondition). An unchanged state reference
@@ -43,12 +46,12 @@ pub struct ProjectionDefinition {
     pub key: String,
     /// Validates the wire payload (`view` output) before it leaves the host;
     /// returns the JSON snapshot served to consumers.
-    pub schema: Arc<dyn Fn(&ArcValue) -> Result<ProjectionValue, String> + Send + Sync>,
+    pub schema: ProjectionSchema,
     /// State for the empty log.
     pub init: Arc<dyn Fn() -> ArcValue + Send + Sync>,
     /// Pure transition: previous state + one committed event → next state.
     /// Return the SAME `Arc` when the event is not the unit's.
-    pub apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync>,
+    pub apply: ProjectionApply,
     /// State → wire payload (the read-side projection).
     pub view: Arc<dyn Fn(&ArcValue) -> ArcValue + Send + Sync>,
     /// Persisted-cache invalidation version (non-negative integer).
@@ -223,7 +226,8 @@ impl SessionProjectionRegistry {
         let id = self.next_listener_id.fetch_add(1, Ordering::Relaxed);
         self.listeners.lock().push((id, listener));
         let registry = Arc::clone(self);
-        let dispose = caller.effect(
+
+        (caller.effect(
             "sessionProjections.onChanged()",
             Box::pin(async move {
                 Some(make_disposer(move || {
@@ -233,8 +237,7 @@ impl SessionProjectionRegistry {
                     })
                 }))
             }),
-        );
-        dispose
+        )) as _
     }
 
     /// One consistent cut over every registered unit for one session (TS

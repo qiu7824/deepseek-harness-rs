@@ -7246,12 +7246,17 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					result = transportError(error);
 				}
 				if (!result.ok) {
+					this.firstPromptPendingTurn = false;
 					this.promptError = {
 						op: "send",
 						error: result.error
 					};
 					this.notifier.markDirty();
 					return result;
+				}
+				if (result.value.accepted) {
+					this.running = true;
+					this.notifier.markDirty();
 				}
 				if (this.blankBit) {
 					this.blankBit = false;
@@ -8437,6 +8442,16 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* request with its live rpcId.
 			*/
 			handleDisconnected() {
+				let activityChanged = false;
+				for (const session of this.sessions.values()) {
+					if (session.running) activityChanged = true;
+					session.handleRunning(false);
+				}
+				if (this.summaries.some((summary) => summary.running)) {
+					this.summaries = this.summaries.map((summary) => summary.running ? { ...summary, running: false } : summary);
+					activityChanged = true;
+				}
+				if (activityChanged) this.notifier.markDirty();
 				if (this.pendingInteractions.size > 0) {
 					this.pendingInteractions.clear();
 					this.notifier.markDirty();

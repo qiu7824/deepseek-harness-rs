@@ -62,6 +62,7 @@ impl ApprovalOutcome {
         }
     }
 
+    #[allow(clippy::should_implement_trait)] // Wire vocabulary parser intentionally returns Option.
     pub fn from_str(value: &str) -> Option<Self> {
         match value {
             "allowed-once" => Some(ApprovalOutcome::AllowedOnce),
@@ -95,6 +96,7 @@ impl ApprovalPolicy {
         }
     }
 
+    #[allow(clippy::should_implement_trait)] // Wire vocabulary parser intentionally returns Option.
     pub fn from_str(value: &str) -> Option<Self> {
         match value {
             "ask" => Some(ApprovalPolicy::Ask),
@@ -179,6 +181,8 @@ pub struct ApprovalRequest {
 pub struct Config {
     /// The deployment's default [`ApprovalPolicy`].
     pub policy: Option<ApprovalPolicy>,
+    /// Maximum time an interactive answerer may hold a request open.
+    pub timeout_ms: Option<u64>,
 }
 
 /// Approval service that applies session policy before answerers and logs
@@ -199,16 +203,13 @@ impl ApprovalService {
         });
         ctx.register_service(service.clone());
 
-        // TS: ctx.inject(['systemPrompt'], scope =>
-        //   scope.systemPrompt.context({ name: 'approval:policy', order: 115,
-        //     text: ctx => ctx.agent === undefined ? '' : sentence(ctx) }))
-        // The Rust AssembleContext carries no agent (dsh-agent deviation), so
-        // the contribution resolves to the TS no-agent empty branch.
+        let service_for_context = Arc::clone(&service);
         let inject = Arc::new(
             move |scope: &Context,
                   _config: ArcValue|
                   -> BoxFuture<'static, Result<(), PluginError>> {
                 let scope = scope.clone();
+                let service = Arc::clone(&service_for_context);
                 Box::pin(async move {
                     let Some(system_prompt) = scope
                         .get_typed::<Arc<SystemPrompt>>("systemPrompt", false)
@@ -221,7 +222,27 @@ impl ApprovalService {
                         PromptContext {
                             name: "approval:policy".to_string(),
                             order: 115.0,
-                            text: PromptText::Static(String::new()),
+                            text: PromptText::Provider(Arc::new(move |assembly| {
+                                let policy = assembly
+                                    .field_str("sessionId")
+                                    .and_then(|id| {
+                                        service
+                                            .ctx
+                                            .get_typed::<Arc<dsh_session::SessionStore>>(
+                                                "sessions", false,
+                                            )
+                                            .and_then(|slot| slot.get(&dsh_session::session_id(id)))
+                                    })
+                                    .and_then(|session| {
+                                        effective_approval_policy(&session.events())
+                                    })
+                                    .or(service.config.policy)
+                                    .unwrap_or(ApprovalPolicy::Ask);
+                                match policy {
+                                    ApprovalPolicy::Ask => ASK_SENTENCE.to_string(),
+                                    ApprovalPolicy::Never => NEVER_SENTENCE.to_string(),
+                                }
+                            })),
                         },
                     );
                     // Attach the removal to the inject fiber so plugin stop
@@ -345,13 +366,19 @@ impl ApprovalService {
                 // fail-closed outcome instead of leaking it into callers'
                 // closed-union switches.
                 Ok(value) => downcast_arc::<ApprovalOutcome>(&value)
-                    .map(|outcome| outcome.as_ref().clone())
+                    .map(|outcome| *outcome.as_ref())
                     .unwrap_or(ApprovalOutcome::Unavailable),
                 Err(_) => ApprovalOutcome::Unavailable,
             }
         };
+        let timeout_ms = self.config.timeout_ms.unwrap_or(30_000);
+        let timed_answer = async move {
+            tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), answer)
+                .await
+                .unwrap_or(ApprovalOutcome::Unavailable)
+        };
         let Some(signal) = &req.signal else {
-            return answer.await;
+            return timed_answer.await;
         };
         let poller = {
             let signal = signal.clone();
@@ -364,11 +391,11 @@ impl ApprovalService {
                 }
             }
         };
-        tokio::pin!(answer);
+        tokio::pin!(timed_answer);
         tokio::pin!(poller);
         tokio::select! {
             biased;
-            outcome = &mut answer => outcome,
+            outcome = &mut timed_answer => outcome,
             // After an abort wins the race the late answer is discarded by
             // construction: the answer future is dropped.
             _ = &mut poller => ApprovalOutcome::Cancelled,

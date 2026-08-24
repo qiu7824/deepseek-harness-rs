@@ -62,10 +62,8 @@ async fn install_inner(ctx: &Context, fail: Arc<dyn Fn(&str) + Send + Sync>) {
                     if weak.strong_count() == 0 {
                         table.remove(&identity);
                         false
-                    } else if *previous == payload.status {
-                        true
                     } else {
-                        false
+                        *previous == payload.status
                     }
                 }
                 None => false,

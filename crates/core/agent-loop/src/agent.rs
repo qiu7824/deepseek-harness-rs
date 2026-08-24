@@ -226,6 +226,7 @@ pub struct ReactLoopAgent {
     weak: Weak<Self>,
     phase: Mutex<Phase>,
     activity: Arc<Mutex<Activity>>,
+    clear_inbox_when_idle: AtomicBool,
     request_header_logged: AtomicBool,
     runtime_context: RuntimeContextProjection,
 }
@@ -257,6 +258,7 @@ impl Drop for MaintenanceGuard {
             *phase = Phase::Idle { last_turn };
             wake_requested
         };
+        agent.clear_cancelled_inbox();
         if wake_requested && agent.inbox.has_pending() {
             agent.wake_driver(false);
         }
@@ -309,6 +311,7 @@ impl ReactLoopAgent {
                 weak: agent_ref.clone(),
                 phase: Mutex::new(Phase::Idle { last_turn }),
                 activity: Arc::new(Mutex::new(Activity::resolved())),
+                clear_inbox_when_idle: AtomicBool::new(false),
                 request_header_logged: AtomicBool::new(false),
                 runtime_context,
             }
@@ -448,7 +451,17 @@ impl ReactLoopAgent {
         });
     }
 
+    fn clear_cancelled_inbox(&self) {
+        if self.clear_inbox_when_idle.swap(false, Ordering::SeqCst) {
+            self.inbox.clear().expect("inbox clear after cancellation");
+        }
+    }
+
     fn finish_driver(&self, activity_token: u64) {
+        // The driver owns the publication boundary until this point. Apply a
+        // deferred cancellation clear before publishing Idle so observers
+        // never see quiescence with stale queued authority.
+        self.clear_cancelled_inbox();
         let wake_requested = {
             let mut phase = self.phase.lock();
             let Phase::Running {
@@ -465,6 +478,7 @@ impl ReactLoopAgent {
             wake_requested
         };
         self.emit_status(AgentStatus::Idle);
+        self.clear_cancelled_inbox();
         if wake_requested && self.inbox.has_pending() {
             self.wake_driver(false);
         }
@@ -769,10 +783,41 @@ impl ReactLoopAgent {
             loop {
                 let next = tokio::select! {
                     biased;
-                    _ = signal.cancelled() => return Err(LoopCancelled {
-                        reason: signal.reason().unwrap_or(AgentCancelCause::User),
-                        failure: None,
-                    }),
+                    _ = signal.cancelled() => {
+                        let content = assembler.interrupted_blocks();
+                        if !content.is_empty() {
+                            let message = create_assistant_message(
+                                content,
+                                ModelMessageSource {
+                                    provider: request.provider.clone(),
+                                    model: request.model.clone(),
+                                    replay_state: None,
+                                },
+                            );
+                            let mut data = serde_json::json!({
+                                "turn": turn,
+                                "step": step,
+                                "message": message,
+                                "interrupted": true,
+                            });
+                            if let Some(usage) = assembler.usage() {
+                                data.as_object_mut().expect("assistant message data")
+                                    .insert("usage".to_string(), serde_json::to_value(usage).expect("usage"));
+                            }
+                            self.session.append(
+                                "assistant/message",
+                                data,
+                                Some(SurfaceIntent {
+                                    surface_op: SurfaceOp::Append,
+                                    source_event_seqs: Some(chunk_seqs),
+                                }),
+                            ).expect("interrupted assistant/message");
+                        }
+                        return Err(LoopCancelled {
+                            reason: signal.reason().unwrap_or(AgentCancelCause::User),
+                            failure: None,
+                        });
+                    },
                     next = stream.next() => next,
                 };
                 let Some(chunk) = next else {
@@ -790,7 +835,47 @@ impl ReactLoopAgent {
                 chunk_seqs.push(event.seq);
                 assembler.push(&chunk);
             }
-            throw_if_aborted(&signal)?;
+            if signal.aborted() {
+                let content = assembler.interrupted_blocks();
+                if !content.is_empty() {
+                    let message = create_assistant_message(
+                        content,
+                        ModelMessageSource {
+                            provider: request.provider.clone(),
+                            model: request.model.clone(),
+                            replay_state: None,
+                        },
+                    );
+                    let mut data = serde_json::json!({
+                        "turn": turn,
+                        "step": step,
+                        "message": message,
+                        "interrupted": true,
+                    });
+                    if let Some(usage) = assembler.usage() {
+                        data.as_object_mut()
+                            .expect("assistant message data")
+                            .insert(
+                                "usage".to_string(),
+                                serde_json::to_value(usage).expect("usage"),
+                            );
+                    }
+                    self.session
+                        .append(
+                            "assistant/message",
+                            data,
+                            Some(SurfaceIntent {
+                                surface_op: SurfaceOp::Append,
+                                source_event_seqs: Some(chunk_seqs),
+                            }),
+                        )
+                        .expect("interrupted assistant/message");
+                }
+                return Err(LoopCancelled {
+                    reason: signal.reason().unwrap_or(AgentCancelCause::User),
+                    failure: None,
+                });
+            }
             let finish = assembler.finish();
             if matches!(
                 finish,
@@ -1183,19 +1268,31 @@ impl Agent for ReactLoopAgent {
 
     fn cancel(&self, cause: AgentCancelCause, options: Option<&CancelOptions>) {
         let keep_inbox = options.map(|options| options.keep_inbox).unwrap_or(false);
-        if !keep_inbox {
+        let clear_now = {
+            let mut phase = self.phase.lock();
+            match &mut *phase {
+                Phase::Maintenance {
+                    abort,
+                    wake_requested,
+                    ..
+                }
+                | Phase::Running {
+                    abort,
+                    wake_requested,
+                    ..
+                } => {
+                    if !keep_inbox {
+                        self.clear_inbox_when_idle.store(true, Ordering::SeqCst);
+                        *wake_requested = false;
+                    }
+                    abort.abort_with(cause);
+                    false
+                }
+                Phase::Idle { .. } => !keep_inbox,
+            }
+        };
+        if clear_now {
             self.inbox.clear().expect("inbox clear");
-            if let Phase::Maintenance { wake_requested, .. }
-            | Phase::Running { wake_requested, .. } = &mut *self.phase.lock()
-            {
-                *wake_requested = false;
-            }
-        }
-        match &*self.phase.lock() {
-            Phase::Maintenance { abort, .. } | Phase::Running { abort, .. } => {
-                abort.abort_with(cause);
-            }
-            Phase::Idle { .. } => {}
         }
     }
 

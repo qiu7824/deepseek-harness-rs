@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use cordis::{ArcValue, arc};
 use dsh_session::SessionEvent;
-use dsh_session_projection::ProjectionDefinition;
+use dsh_session_projection::{ProjectionApply, ProjectionDefinition};
 use serde_json::Value;
 
 use crate::estimate::{estimate_system_tokens, estimate_tools_tokens};
@@ -35,64 +35,63 @@ pub fn context_breakdown_projection_definition() -> ProjectionDefinition {
             "messageTokens": 0,
         }))
     });
-    let apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync> =
-        Arc::new(|state_value: &ArcValue, event: &SessionEvent| {
-            let state: &Value = cordis::downcast(state_value).expect("contextBreakdown state");
-            let claim: Option<ShadowPriceClaim> = state
-                .get("claim")
-                .and_then(|claim| serde_json::from_value(claim.clone()).ok());
-            let fold = match fold_surface_projection(claim.as_ref(), event) {
-                Ok(fold) => fold,
-                Err(_) => return Arc::clone(state_value),
-            };
-            let mut system_tokens = state
+    let apply: ProjectionApply = Arc::new(|state_value: &ArcValue, event: &SessionEvent| {
+        let state: &Value = cordis::downcast(state_value).expect("contextBreakdown state");
+        let claim: Option<ShadowPriceClaim> = state
+            .get("claim")
+            .and_then(|claim| serde_json::from_value(claim.clone()).ok());
+        let fold = match fold_surface_projection(claim.as_ref(), event) {
+            Ok(fold) => fold,
+            Err(_) => return Arc::clone(state_value),
+        };
+        let mut system_tokens = state
+            .get("systemTokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let mut tools_tokens = state
+            .get("toolsTokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if event.type_ == "request/header" {
+            let header = event.data.get("header");
+            if let Some(header) = header {
+                let canonical: Option<dsh_session::EpochHeader> =
+                    serde_json::from_value(header.clone()).ok();
+                system_tokens = estimate_system_tokens(canonical.as_ref());
+                tools_tokens = estimate_tools_tokens(canonical.as_ref());
+            }
+        }
+        if system_tokens
+            == state
                 .get("systemTokens")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let mut tools_tokens = state
-                .get("toolsTokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            if event.type_ == "request/header" {
-                let header = event.data.get("header");
-                if let Some(header) = header {
-                    let canonical: Option<dsh_session::EpochHeader> =
-                        serde_json::from_value(header.clone()).ok();
-                    system_tokens = estimate_system_tokens(canonical.as_ref());
-                    tools_tokens = estimate_tools_tokens(canonical.as_ref());
-                }
-            }
-            if system_tokens
+                .unwrap_or(0)
+            && tools_tokens
                 == state
-                    .get("systemTokens")
+                    .get("toolsTokens")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0)
-                && tools_tokens
-                    == state
-                        .get("toolsTokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0)
-                && fold.delta_tokens == 0
-                && fold.claim.is_none()
-                && state.get("claim").is_none()
-            {
-                return Arc::clone(state_value);
-            }
-            let message_tokens = state
-                .get("messageTokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as i64
-                + fold.delta_tokens;
-            let mut next = serde_json::json!({
-                "systemTokens": system_tokens,
-                "toolsTokens": tools_tokens,
-                "messageTokens": message_tokens.max(0) as u64,
-            });
-            if let Some(claim) = &fold.claim {
-                next["claim"] = serde_json::to_value(claim).expect("claim JSON");
-            }
-            arc(next)
+            && fold.delta_tokens == 0
+            && fold.claim.is_none()
+            && state.get("claim").is_none()
+        {
+            return Arc::clone(state_value);
+        }
+        let message_tokens = state
+            .get("messageTokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as i64
+            + fold.delta_tokens;
+        let mut next = serde_json::json!({
+            "systemTokens": system_tokens,
+            "toolsTokens": tools_tokens,
+            "messageTokens": message_tokens.max(0) as u64,
         });
+        if let Some(claim) = &fold.claim {
+            next["claim"] = serde_json::to_value(claim).expect("claim JSON");
+        }
+        arc(next)
+    });
     let view: Arc<dyn Fn(&ArcValue) -> ArcValue + Send + Sync> = Arc::new(|state_value| {
         let state: &Value = cordis::downcast(state_value).expect("contextBreakdown state");
         arc(serde_json::json!({

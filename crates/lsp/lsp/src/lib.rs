@@ -61,6 +61,56 @@ pub struct LspQueryRequest {
     pub workspace_root: String,
 }
 
+#[derive(Clone)]
+pub struct LspCancellation {
+    predicate: Arc<dyn Fn() -> bool + Send + Sync>,
+    flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl Default for LspCancellation {
+    fn default() -> Self {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let check = flag.clone();
+        Self {
+            predicate: Arc::new(move || check.load(std::sync::atomic::Ordering::SeqCst)),
+            flag: Some(flag),
+        }
+    }
+}
+
+impl std::fmt::Debug for LspCancellation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LspCancellation")
+            .field("cancelled", &self.cancelled())
+            .finish()
+    }
+}
+
+impl LspCancellation {
+    pub fn from_predicate(predicate: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        Self {
+            predicate,
+            flag: None,
+        }
+    }
+    pub fn cancel(&self) {
+        if let Some(flag) = &self.flag {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    pub fn cancelled(&self) -> bool {
+        (self.predicate)()
+    }
+}
+
+impl PartialEq for LspCancellation {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.predicate, &other.predicate)
+    }
+}
+impl Eq for LspCancellation {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspProviderQuery {
     pub operation: LspOperation,
@@ -68,6 +118,7 @@ pub struct LspProviderQuery {
     pub position: LspPosition,
     pub workspace_root: String,
     pub language_id: String,
+    pub signal: Option<LspCancellation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,6 +260,17 @@ impl Lsp {
     }
 
     pub async fn query(&self, request: LspQueryRequest) -> Result<LspQueryResult, LspError> {
+        self.query_with_signal(request, None).await
+    }
+
+    pub async fn query_with_signal(
+        &self,
+        request: LspQueryRequest,
+        signal: Option<LspCancellation>,
+    ) -> Result<LspQueryResult, LspError> {
+        if signal.as_ref().is_some_and(LspCancellation::cancelled) {
+            return Err(LspError::new("LSP query was cancelled", "LSP_CANCELLED"));
+        }
         let route = self
             .registry
             .lock()
@@ -229,6 +291,7 @@ impl Lsp {
                 position: request.position,
                 workspace_root: request.workspace_root,
                 language_id: route.language_id,
+                signal,
             })
             .await
     }

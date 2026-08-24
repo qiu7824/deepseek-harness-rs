@@ -1,3 +1,6 @@
+#![allow(clippy::type_complexity, clippy::explicit_counter_loop)]
+// Provider invalidation callbacks intentionally retain their public shape.
+
 //! Agent skill provider registry.
 //!
 //! This package owns the Service Definition role of the skill capability
@@ -536,10 +539,10 @@ impl SkillRegistry {
                 let live = live.clone();
                 let registry_weak = registry_weak.clone();
                 Arc::new(move || {
-                    if live.load(Ordering::SeqCst) {
-                        if let Some(registry) = registry_weak.upgrade() {
-                            registry.invalidate_cache();
-                        }
+                    if live.load(Ordering::SeqCst)
+                        && let Some(registry) = registry_weak.upgrade()
+                    {
+                        registry.invalidate_cache();
                     }
                 })
             },
@@ -717,10 +720,10 @@ impl SkillRegistry {
             if result.cacheable {
                 let mut cache = self.collect_cache.lock();
                 cache.insert(key, result.entries.clone());
-                if cache.len() > self.collect_cache_max_entries {
-                    if let Some(oldest) = cache.keys().next().cloned() {
-                        cache.shift_remove(&oldest);
-                    }
+                if cache.len() > self.collect_cache_max_entries
+                    && let Some(oldest) = cache.keys().next().cloned()
+                {
+                    cache.shift_remove(&oldest);
                 }
             }
             return Ok(result);

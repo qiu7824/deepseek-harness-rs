@@ -249,10 +249,10 @@ impl FiberCore {
                         .emit(None, "internal/plugin", vec![arc(core.clone())]);
                 }
                 runtime.fibers.delete(&core);
-                if runtime.fibers.is_empty() {
-                    if let Some(ctx) = core.ctx() {
-                        ctx.registry.remove_runtime(&runtime);
-                    }
+                if runtime.fibers.is_empty()
+                    && let Some(ctx) = core.ctx()
+                {
+                    ctx.registry.remove_runtime(&runtime);
                 }
                 core.set_runner_epoch(None);
                 if !core.has_inertia() {
@@ -304,10 +304,10 @@ impl FiberCore {
         let mut current: Option<Arc<FiberCore>> = Some(self.clone());
         loop {
             let core = current.take().unwrap();
-            if let Some(runtime) = &core.runtime {
-                if let Some(name) = &runtime.name {
-                    return name.to_string();
-                }
+            if let Some(runtime) = &core.runtime
+                && let Some(name) = &runtime.name
+            {
+                return name.to_string();
             }
             let Some(parent_ctx) = core.parent.lock().clone() else {
                 return "root".to_string();

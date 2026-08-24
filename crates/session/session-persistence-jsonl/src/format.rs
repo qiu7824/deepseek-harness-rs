@@ -320,10 +320,7 @@ impl SessionLogScanner {
         let chunk_start = self.input_bytes;
         self.input_bytes += chunk.len();
         let mut line_start = 0usize;
-        loop {
-            let Some(relative) = chunk[line_start..].iter().position(|byte| *byte == 0x0A) else {
-                break;
-            };
+        while let Some(relative) = chunk[line_start..].iter().position(|byte| *byte == 0x0A) {
             let newline = line_start + relative;
             let fragment = &chunk[line_start..newline];
             let line: Vec<u8>;
@@ -597,7 +594,9 @@ mod tests {
                 .as_bytes(),
             );
         }
-        let torn = format!("{}", serde_json::to_string(&event(3, "turn/end")).unwrap());
+        let torn = serde_json::to_string(&event(3, "turn/end"))
+            .unwrap()
+            .to_string();
         bytes.extend_from_slice(torn.as_bytes());
 
         let scan = scan_log(&bytes).unwrap();

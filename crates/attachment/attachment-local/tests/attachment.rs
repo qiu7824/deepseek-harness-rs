@@ -10,13 +10,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use dsh_attachment::{
-    AttachmentError, AttachmentStore, ImageAttachmentLimits, ImageMediaType, SaveImageAttachment,
-    attachment_id,
+    AttachmentError, AttachmentStore, ImageAttachmentLimits, ImageMediaType, RequestImagePolicy,
+    SaveImageAttachment, attachment_id,
 };
 use dsh_attachment_local::{
     Config, DEFAULT_MAX_IMAGE_BYTES, DEFAULT_MAX_IMAGE_PIXELS, DEFAULT_MAX_IMAGES_PER_MESSAGE,
-    DEFAULT_MAX_MESSAGE_IMAGE_BYTES, LocalAttachmentStore, detect_image, probe_image,
-    read_image_file, save_image_file, validate_image_file,
+    DEFAULT_MAX_MESSAGE_IMAGE_BYTES, LocalAttachmentStore, detect_image,
+    encoded_alpha_is_compatible, probe_image, read_image_file, save_image_file,
 };
 use image::{Rgba, RgbaImage};
 
@@ -25,6 +25,34 @@ fn png_1x1() -> Vec<u8> {
     base64::engine::general_purpose::STANDARD
         .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
         .expect("fixture")
+}
+
+#[test]
+fn webp_may_omit_only_an_all_opaque_alpha_plane() {
+    assert!(encoded_alpha_is_compatible(
+        ImageMediaType::Webp,
+        true,
+        true,
+        false
+    ));
+    assert!(!encoded_alpha_is_compatible(
+        ImageMediaType::Webp,
+        true,
+        false,
+        false
+    ));
+    assert!(!encoded_alpha_is_compatible(
+        ImageMediaType::Png,
+        true,
+        true,
+        false
+    ));
+    assert!(encoded_alpha_is_compatible(
+        ImageMediaType::Webp,
+        false,
+        true,
+        false
+    ));
 }
 
 fn raster(format: image::ImageFormat) -> Vec<u8> {
@@ -467,4 +495,71 @@ async fn service_boundary_resolves_defaults_and_validates_without_persisting() {
 
     let _ = std::fs::remove_dir_all(&home);
     let _ = std::fs::remove_dir_all(&clean_home);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn batch_save_validates_every_image_before_publishing_any_object() {
+    let home = temp_home();
+    let ctx = cordis::Context::root();
+    let service = LocalAttachmentStore::install(
+        &ctx,
+        Config {
+            dsh_home: Some(home.to_string_lossy().to_string()),
+            ..Default::default()
+        },
+    );
+    let valid = input(png_1x1(), ImageMediaType::Png);
+    let invalid = input(vec![1, 2, 3], ImageMediaType::Png);
+
+    let outcome = service.save_images(&[valid.clone(), invalid]).await;
+    assert_eq!(code(&outcome.expect_err("invalid batch")), "INVALID_IMAGE");
+    assert!(
+        !service.root.exists(),
+        "a rejected batch must not publish an earlier valid image"
+    );
+
+    let references = service
+        .save_images(&[valid.clone(), valid])
+        .await
+        .expect("valid batch");
+    assert_eq!(references.len(), 2);
+    assert_eq!(references[0].attachment_id, references[1].attachment_id);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_image_is_deterministic_and_respects_route_budgets() {
+    let home = temp_home();
+    let ctx = cordis::Context::root();
+    let service = LocalAttachmentStore::install(
+        &ctx,
+        Config {
+            dsh_home: Some(home.to_string_lossy().to_string()),
+            max_image_bytes: Some(1024 * 1024),
+            max_image_pixels: Some(1_000_000),
+            ..Default::default()
+        },
+    );
+    let reference = service
+        .save_image(&input(raster_at(100, 100), ImageMediaType::Png))
+        .await
+        .expect("master");
+    let policy = RequestImagePolicy {
+        max_pixels: 400,
+        max_bytes: 128 * 1024,
+        preferred_media_type: ImageMediaType::Webp,
+    };
+    let first = service
+        .read_image_request(&reference, &policy, None)
+        .await
+        .expect("request version");
+    let second = service
+        .read_image_request(&reference, &policy, None)
+        .await
+        .expect("cached request version");
+    assert!(first.width * first.height <= policy.max_pixels);
+    assert!(first.data.len() as u64 <= policy.max_bytes);
+    assert_eq!(first.variant_id, second.variant_id);
+    assert_eq!(first.data, second.data);
+    let _ = std::fs::remove_dir_all(&home);
 }

@@ -34,12 +34,10 @@ fn index_entries(
             .get("group")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
-        if is_group {
-            if let Some(list) = entry.get("config").and_then(|value| value.as_array()) {
-                let mut child = path.clone();
-                child.push(Seg::Config);
-                index_entries(list, &child, 0, map);
-            }
+        if is_group && let Some(list) = entry.get("config").and_then(|value| value.as_array()) {
+            let mut child = path.clone();
+            child.push(Seg::Config);
+            index_entries(list, &child, 0, map);
         }
     }
 }

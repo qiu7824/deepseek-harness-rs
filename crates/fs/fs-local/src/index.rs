@@ -1,3 +1,6 @@
+#![allow(clippy::collapsible_match, clippy::collapsible_if)]
+// Explicit guarded-write branches preserve exhaustive create/replace semantics.
+
 //! Host-filesystem implementation of `ctx.fs`. Realpath-derived target
 //! identity makes aliases share stale guards, and writes through a symlink
 //! update its target without replacing the link. Rust port of

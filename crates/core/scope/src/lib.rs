@@ -154,17 +154,14 @@ pub struct Scope {
     pub dispose: Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>,
 }
 
+type ContextFilter = dyn Fn(&Context) -> bool + Send + Sync;
+
 /// Options accepted by [`create_scope`].
+#[derive(Default)]
 pub struct CreateScopeOptions {
     /// Enclosing scope bound via [`bind_scope_parent`] before the scope is
     /// usable.
     pub parent: Option<ScopeKey>,
-}
-
-impl Default for CreateScopeOptions {
-    fn default() -> Self {
-        Self { parent: None }
-    }
 }
 
 struct ScopePlugin;
@@ -251,16 +248,13 @@ pub struct ScopeCarrier {
 }
 
 /// Build an opaque receiver (TS `scopeTarget`).
-pub fn scope_target(
-    base: Option<Arc<dyn Fn(&Context) -> bool + Send + Sync>>,
-    key: Option<ScopeKey>,
-) -> ScopeCarrier {
+pub fn scope_target(base: Option<Arc<ContextFilter>>, key: Option<ScopeKey>) -> ScopeCarrier {
     let key_for_filter = key.clone();
     let filter: Arc<dyn Fn(&Context) -> bool + Send + Sync> = Arc::new(move |ctx| {
-        if let Some(base) = &base {
-            if !base(ctx) {
-                return false;
-            }
+        if let Some(base) = &base
+            && !base(ctx)
+        {
+            return false;
         }
         let Some(tag) = scope_of(ctx) else {
             return true;
@@ -338,9 +332,7 @@ mod tests {
         assert_eq!(fiber.state(), cordis::FiberState::Disposed);
     }
 
-    fn callback(
-        f: impl Fn(&Context) + Send + Sync + 'static,
-    ) -> impl Plugin + Send + Sync + 'static {
+    fn callback(f: impl Fn(&Context) + Send + Sync + 'static) -> impl Plugin + 'static {
         struct Cb<F>(F);
         #[async_trait::async_trait]
         impl<F: Fn(&Context) + Send + Sync + 'static> Plugin for Cb<F> {

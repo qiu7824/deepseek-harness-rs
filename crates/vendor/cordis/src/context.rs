@@ -10,15 +10,16 @@ use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
 
-use crate::error::PluginError;
 use crate::events::{DispatchMode, Disposer, EventOptions, EventsService, Listener};
 use crate::fiber::FiberCore;
 use crate::logger::LoggerService;
 use crate::reflect::{Accessor, ReflectService};
-use crate::registry::{InjectSpec, Plugin, RegistryService};
+use crate::registry::{InjectCallback, InjectSpec, Plugin, RegistryService};
 use crate::util::{ArcValue, BoxFuture, OverlayMap, arc};
 
 static NEXT_ISOLATION_LABEL: AtomicU64 = AtomicU64::new(1);
+
+pub type ContextFilter = Arc<dyn Fn(&Context) -> bool + Send + Sync>;
 
 /// Allocate a fresh isolation label from the shared process-wide namespace.
 /// Consumers that mint their own scope labels (the loader's realms) must use
@@ -50,7 +51,7 @@ pub struct ContextInner {
     isolate: Arc<OverlayMap<u64>>,
     intercept: Arc<OverlayMap<ArcValue>>,
     base_url: Mutex<Option<String>>,
-    filter: Option<Arc<dyn Fn(&Context) -> bool + Send + Sync>>,
+    filter: Option<ContextFilter>,
     #[allow(dead_code)] // reserved for the TS shadow-context interop layer
     shadow: Option<Arc<ContextInner>>,
 }
@@ -130,7 +131,7 @@ impl Context {
         fiber: Arc<FiberCore>,
         isolate: Arc<OverlayMap<u64>>,
         intercept: Arc<OverlayMap<ArcValue>>,
-        filter: Option<Arc<dyn Fn(&Context) -> bool + Send + Sync>>,
+        filter: Option<ContextFilter>,
         shadow: Option<Arc<ContextInner>>,
     ) -> Context {
         let root = OnceLock::new();
@@ -213,7 +214,7 @@ impl Context {
     }
 
     /// Context used by scoped internal/service dispatch.
-    pub fn with_filter(&self, filter: Arc<dyn Fn(&Context) -> bool + Send + Sync>) -> Context {
+    pub fn with_filter(&self, filter: ContextFilter) -> Context {
         self.child_with(
             self.fiber.clone(),
             self.isolate.clone(),
@@ -266,13 +267,7 @@ impl Context {
     }
 
     /// Run a callback once the requested services are available.
-    pub fn inject(
-        &self,
-        deps: InjectSpec,
-        callback: Arc<
-            dyn Fn(&Context, ArcValue) -> BoxFuture<'static, Result<(), PluginError>> + Send + Sync,
-        >,
-    ) -> Arc<FiberCore> {
+    pub fn inject(&self, deps: InjectSpec, callback: InjectCallback) -> Arc<FiberCore> {
         self.registry.inject(self, deps, callback)
     }
 

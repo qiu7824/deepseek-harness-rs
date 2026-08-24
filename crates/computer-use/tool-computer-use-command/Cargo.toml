@@ -1,0 +1,17 @@
+[package]
+name = "dsh-tool-computer-use-command"
+version = "0.1.0-rc.8"
+edition = "2024"
+license = "MIT"
+description = "External command adapter for the optional computer_use tool"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-llm = { path = "../../core/llm" }
+dsh-native-command = { path = "../../util/native-command" }
+dsh-tools = { path = "../../core/tools" }
+futures = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

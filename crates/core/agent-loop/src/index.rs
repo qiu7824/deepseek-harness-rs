@@ -131,7 +131,7 @@ fn validate_configured_agents(agents: &[ConfiguredAgent]) -> Result<(), String> 
 struct FactoryOwnership {
     accepting: AtomicBool,
     teardown: Arc<dsh_agent::CancellationSignal>,
-    live_agents: parking_lot::Mutex<Vec<BoxFuture<'static, ()>>>,
+    live_agents: parking_lot::Mutex<Vec<Arc<PreparedAgent>>>,
     startup_tasks: parking_lot::Mutex<Vec<BoxFuture<'static, ()>>>,
 }
 
@@ -152,8 +152,16 @@ impl FactoryOwnership {
     /// Track one live agent's shared teardown until it has run. Dispose
     /// futures are memoized and idempotent, so the TS untrack pair collapses
     /// to no-op.
-    fn track(&self, dispose: BoxFuture<'static, ()>) {
-        self.live_agents.lock().push(dispose);
+    fn track(&self, prepared: Arc<PreparedAgent>) {
+        self.live_agents.lock().push(prepared);
+    }
+
+    fn owned(&self, agent: &Arc<dyn Agent>) -> Option<Arc<PreparedAgent>> {
+        self.live_agents
+            .lock()
+            .iter()
+            .find(|prepared| Arc::ptr_eq(&(prepared.agent.clone() as Arc<dyn Agent>), agent))
+            .cloned()
     }
 
     /// Join config startup work that begins before an agent exists.
@@ -167,8 +175,8 @@ impl FactoryOwnership {
             .abort_with(dsh_agent::AgentCancelCause::Disposed);
         let live = std::mem::take(&mut *self.live_agents.lock());
         let startup = std::mem::take(&mut *self.startup_tasks.lock());
-        for dispose in live {
-            dispose.await;
+        for prepared in live {
+            prepared.dispose().await;
         }
         for task in startup {
             task.await;
@@ -274,6 +282,15 @@ impl AgentLoop {
             max_parallel_tool_calls: parking_lot::Mutex::new(cap),
         });
         ctx.register_service(service.clone());
+        let system_prompt = ctx
+            .get_typed::<Arc<dsh_system_prompt::SystemPrompt>>("systemPrompt", false)
+            .map(|slot| slot.as_ref().clone())
+            .ok_or_else(|| "agent-loop requires the systemPrompt service".to_string())?;
+        let _cwd_variable = system_prompt.variable(
+            ctx,
+            "cwd",
+            Arc::new(|context| context.field_str("cwd").map(str::to_string)),
+        );
 
         // User-owned parallelism cap (optional settings seam).
         let mut entry: IndexMap<String, Data> = IndexMap::new();
@@ -371,7 +388,7 @@ impl AgentLoop {
                     let options = options.clone();
                     Box::pin(async move {
                         let result = service
-                            .resume_with(&child_ctx, &resume_session_id, &options)
+                            .resume_with(&child_ctx, &resume_session_id, &options, None)
                             .await;
                         if let Err(error) = result {
                             service.report_configured_startup_failure(
@@ -468,7 +485,8 @@ impl AgentLoop {
         let session = preparation.session.clone();
         let prepared = self.prepare(owner_ctx, id, agent_options, session)?;
         if let Some(setup) = setup {
-            let commit = setup(prepared.agent.ctx()).await?;
+            let exact_agent: Arc<dyn Agent> = prepared.agent.clone();
+            let commit = setup(prepared.agent.ctx(), exact_agent).await?;
             if let Some(commit) = commit {
                 commit.commit();
             }
@@ -479,11 +497,34 @@ impl AgentLoop {
 
     async fn resume_with(
         &self,
-        _owner_ctx: &Context,
-        _id: &SessionId,
-        _options: &AgentOptions,
+        owner_ctx: &Context,
+        id: &SessionId,
+        options: &AgentOptions,
+        setup: Option<&AgentSetup>,
     ) -> Result<AgentHandle, String> {
-        Err("cannot resume: session persistence backend contract is not yet wired (load a dsh-session-persistence backend)".to_string())
+        let persistence = self
+            .ctx
+            .get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
+                "sessionPersistence",
+                false,
+            )
+            .map(|slot| slot.as_ref().clone())
+            .ok_or_else(|| {
+                "cannot resume: session persistence is not configured (load a dsh-session-persistence backend)"
+                    .to_string()
+            })?;
+        let inspection = persistence.inspect(id).await?;
+        let session = Session::from_restore(id.clone(), inspection.events, &inspection.meta)?;
+        let preparation = SessionPreparation::create(session, SessionPreparationOptions::default());
+        self.setup_and_publish(
+            owner_ctx,
+            id,
+            preparation,
+            options,
+            setup,
+            SessionStartSource::Resume,
+        )
+        .await
     }
 
     /// Construct the driver, scope, and one memoized reverse teardown for a
@@ -512,8 +553,7 @@ impl AgentLoop {
             dispose_started: AtomicBool::new(false),
             dispose_done,
         });
-        let dispose_future = prepared.dispose();
-        self.ownership.track(dispose_future);
+        self.ownership.track(prepared.clone());
         Ok(prepared)
     }
 }
@@ -564,6 +604,18 @@ impl PreparedAgent {
 
 #[async_trait::async_trait]
 impl AgentFactory for AgentLoop {
+    fn can_retire(&self, agent: &Arc<dyn Agent>) -> bool {
+        self.ownership.owned(agent).is_some()
+    }
+
+    async fn retire(&self, agent: Arc<dyn Agent>) -> Result<bool, String> {
+        let Some(prepared) = self.ownership.owned(&agent) else {
+            return Ok(false);
+        };
+        prepared.dispose().await;
+        Ok(true)
+    }
+
     async fn create_agent(
         &self,
         owner_ctx: &Context,
@@ -582,10 +634,7 @@ impl AgentFactory for AgentLoop {
             Some(id.clone()),
             Some(dsh_session::CreateSessionOptions {
                 seed: options.seed.clone(),
-                meta: Some(dsh_session::CreateSessionMeta {
-                    cwd: options.meta.as_ref().and_then(|meta| meta.cwd.clone()),
-                    ..Default::default()
-                }),
+                meta: Some(options.meta.clone().unwrap_or_default()),
                 ..Default::default()
             }),
         )?;
@@ -606,15 +655,6 @@ impl AgentFactory for AgentLoop {
         owner_ctx: &Context,
         options: ResumeAgentOptions,
     ) -> Result<AgentHandle, String> {
-        let persistence = self
-            .ctx
-            .get_typed::<Arc<dsh_session_persistence::SessionPersistence>>(
-                "sessionPersistence",
-                false,
-            );
-        if persistence.is_none() {
-            return Err("cannot resume: session persistence is not configured (load a dsh-session-persistence backend)".to_string());
-        }
         let Some(id) = options.resume_session_id.clone() else {
             return Err("cannot resume: resumeSessionId is required".to_string());
         };
@@ -622,6 +662,7 @@ impl AgentFactory for AgentLoop {
             owner_ctx,
             &id,
             &options.agent_options.clone().unwrap_or_default(),
+            options.setup.as_ref(),
         )
         .await
     }

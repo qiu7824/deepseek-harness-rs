@@ -163,6 +163,42 @@ async fn name_update_replaces_fiber() {
 }
 
 #[tokio::test]
+async fn replace_options_import_failure_restores_live_plugin() {
+    let (_ctx, service) = setup().await;
+    let runs = Arc::new(AtomicU32::new(0));
+    let configs = Arc::new(std::sync::Mutex::new(Vec::new()));
+    service
+        .core
+        .register("probe", probe("probe", runs.clone(), configs));
+
+    let id = service
+        .tree
+        .create(entry("probe", json!(1)), None, None)
+        .await
+        .unwrap();
+    service.tree.await_ready().await.unwrap();
+    let live = service.tree.resolve(&id).unwrap();
+    let previous = live.options.lock().clone();
+
+    let mut invalid = previous.clone();
+    invalid.name = "missing-plugin".to_string();
+    let error = live
+        .replace_options(invalid)
+        .await
+        .expect_err("missing replacement import must fail");
+    assert!(error.to_string().contains("missing-plugin"), "{error}");
+    assert_eq!(*live.options.lock(), previous);
+    assert!(
+        live.fiber
+            .lock()
+            .as_ref()
+            .is_some_and(|fiber| fiber.uid_value().is_some()),
+        "the previous plugin must be live after import rollback"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 2, "old plugin restarted");
+}
+
+#[tokio::test]
 async fn remove_disposes_entry() {
     let (_ctx, service) = setup().await;
     let runs = Arc::new(AtomicU32::new(0));

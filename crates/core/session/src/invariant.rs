@@ -1,4 +1,6 @@
 //! Package-owned relational invariants for the session event log. Rust port
+#![allow(clippy::type_complexity, clippy::unnecessary_unwrap)]
+// Callback graph aliases would obscure the invariant transitions; checked Options remain in diagnostics.
 //! of `packages/core/session/src/invariant.ts`.
 //!
 //! Load this companion beside `dsh-invariants` to enable the checks. The
@@ -273,16 +275,14 @@ fn validate_event(
             }
         }
         "user/message" | "session/end-seed" => {}
-        "todo/write" | "request/header" | "request/context" => {
-            if trace.open_turn.is_none() {
-                invariant_fail(
-                    fail,
-                    format!(
-                        "{} appended outside any open turn (core execution events must be turn-enclosed)",
-                        event.type_
-                    ),
-                );
-            }
+        "todo/write" | "request/header" | "request/context" if trace.open_turn.is_none() => {
+            invariant_fail(
+                fail,
+                format!(
+                    "{} appended outside any open turn (core execution events must be turn-enclosed)",
+                    event.type_
+                ),
+            );
         }
         // Merge-extensible event relations belong to their owning plugin.
         _ => {}

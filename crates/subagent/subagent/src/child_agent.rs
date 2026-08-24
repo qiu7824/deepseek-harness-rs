@@ -78,9 +78,20 @@ pub fn resolve_child_agent_options(
     child_depth: u64,
 ) -> AgentOptions {
     let parent_options = parent.options();
+    let selection_name = dsh_agent::model_selection_service_name(parent.ctx());
+    let current_selection = parent
+        .ctx()
+        .get_typed::<Arc<parking_lot::Mutex<dsh_agent::ModelSelectionRef>>>(&selection_name, false)
+        .and_then(|selection| selection.lock().resolved_current());
     let mut resolved = AgentOptions {
-        provider: parent_options.provider.clone(),
-        model: parent_options.model.clone(),
+        provider: current_selection
+            .as_ref()
+            .map(|selection| selection.provider.clone())
+            .or_else(|| parent_options.provider.clone()),
+        model: current_selection
+            .as_ref()
+            .map(|selection| selection.model.clone())
+            .or_else(|| parent_options.model.clone()),
         max_tokens: parent_options.max_tokens,
         subagent_depth: Some(child_depth),
     };

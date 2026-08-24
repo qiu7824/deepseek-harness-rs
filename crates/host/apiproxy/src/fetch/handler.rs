@@ -35,14 +35,14 @@ use serde::{Deserialize, Serialize};
 use crate::api::rpc::{
     BadRequestDetails, ClientRequest, ClientRequestType, ClientResponse, False, RpcError,
     RpcErrorBody, RpcId, RpcMessage, RpcReceipt, RpcReceiptReason, RpcRequest, RpcResponse,
-    RpcResult, ServerRequest, ServerRequestType, True, WireRpcResult, rpc_id,
+    RpcResult, ServerRequest, ServerRequestType, WireRpcResult, rpc_id,
 };
 
 /// The response body: plain bytes for unary answers, or a byte stream for
 /// SSE channels.
 pub enum Body {
     Bytes(Vec<u8>),
-    Stream(Pin<Box<dyn Stream<Item = Vec<u8>> + Send>>),
+    Stream(Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>> + Send>>),
 }
 
 impl From<Vec<u8>> for Body {
@@ -72,7 +72,7 @@ pub struct SessionLogQuery {
 pub struct DownloadResponse {
     pub status: StatusCode,
     pub headers: Vec<(String, String)>,
-    pub body: Option<Vec<u8>>,
+    pub body: Option<Body>,
 }
 
 /// One SSE-capable event channel frame: a server-initiated push whose
@@ -253,7 +253,8 @@ fn sse_response(
         }
     });
     // Leading open comment + the frame stream.
-    let with_open = futures::stream::once(async { SSE_OPEN_LINE.to_vec() }).chain(stream);
+    let with_open =
+        futures::stream::once(async { Ok(SSE_OPEN_LINE.to_vec()) }).chain(stream.map(Ok));
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
@@ -265,10 +266,33 @@ fn sse_response(
 /// Route lookup: narrow an arbitrary path segment to a registered
 /// client-request method.
 fn method_for(path: &str) -> Option<&'static str> {
-    crate::api::rpc_map::CLIENT_REQUEST_METHODS
-        .binary_search(&path)
+    let methods = crate::api::rpc_map::CLIENT_REQUEST_METHODS;
+    if let Ok(index) = methods.binary_search(&path) {
+        return Some(methods[index]);
+    }
+    let canonical = path.replace('/', ".");
+    methods
+        .binary_search(&canonical.as_str())
         .ok()
-        .map(|index| crate::api::rpc_map::CLIENT_REQUEST_METHODS[index])
+        .map(|index| methods[index])
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::method_for;
+
+    #[test]
+    fn generated_slash_remote_paths_resolve_to_canonical_methods() {
+        assert_eq!(
+            method_for("pluginInventory/list"),
+            Some("pluginInventory.list")
+        );
+        assert_eq!(method_for("session/list"), Some("session.list"));
+        assert_eq!(
+            method_for("pluginInventory.list"),
+            Some("pluginInventory.list")
+        );
+    }
 }
 
 /// Invoke one unary route: payload validity is the composition layer's
@@ -387,13 +411,11 @@ impl FetchHandler {
                 builder = builder.header(name, value);
             }
             let body = if request.method == Method::GET {
-                response.body
+                response.body.unwrap_or_else(|| Body::Bytes(Vec::new()))
             } else {
-                None
+                Body::Bytes(Vec::new())
             };
-            return builder
-                .body(Body::Bytes(body.unwrap_or_default()))
-                .expect("carrier response");
+            return builder.body(body).expect("carrier response");
         }
 
         if request.method != Method::POST || !path.starts_with("/api/") {
@@ -449,7 +471,8 @@ impl FetchHandler {
                 method: envelope_method,
                 payload,
             }) => {
-                if envelope_method != method {
+                let canonical_envelope = envelope_method.replace('/', ".");
+                if canonical_envelope != method {
                     return error_response(
                         rpc_id,
                         RpcError::BadRequest(RpcErrorBody {
@@ -463,7 +486,7 @@ impl FetchHandler {
                 ClientRequest {
                     kind: ClientRequestType::ClientRequest,
                     rpc_id,
-                    method: envelope_method,
+                    method: method.to_string(),
                     payload,
                 }
             }

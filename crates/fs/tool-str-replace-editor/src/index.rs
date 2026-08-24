@@ -830,14 +830,15 @@ impl ToolStrReplaceEditorService {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "command": { "type": "string", "required": true, "enum": ["view", "create", "str_replace", "insert"], "description": "The commands to run. Allowed options are: `view`, `create`, `str_replace`, `insert`." },
-                    "path": { "type": "string", "required": true, "description": "Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`." },
+                    "command": { "type": "string", "enum": ["view", "create", "str_replace", "insert"], "description": "The commands to run. Allowed options are: `view`, `create`, `str_replace`, `insert`." },
+                    "path": { "type": "string", "description": "Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`." },
                     "file_text": { "type": "string", "description": "Required parameter of `create` command, with the content of the file to be created." },
                     "insert_line": { "type": "integer", "description": "Required parameter of `insert` command. The `new_str` will be inserted AFTER the line `insert_line` of `path`." },
                     "new_str": { "type": "string", "description": "Optional parameter of `str_replace` command containing the new string (if not given, no string will be added). Required parameter of `insert` command containing the string to insert." },
                     "old_str": { "type": "string", "description": "Required parameter of `str_replace` command containing the string in `path` to replace." },
                     "view_range": { "type": "array", "items": { "type": "integer" }, "description": "Optional parameter of `view` command when `path` points to a file. If none is given, the full file is shown. If provided, the file will be shown in the indicated line number range, e.g. [11, 12] will show lines 11 and 12. Indexing at 1 to start. Setting `[start_line, -1]` shows all lines from `start_line` to the end of the file." },
                 },
+                "required": ["command", "path"],
             }),
             output: ToolOutputDefinition {
                 schema: serde_json::json!({ "type": "string" }),

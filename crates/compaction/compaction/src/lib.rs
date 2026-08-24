@@ -10,8 +10,10 @@
 //! - The abort seam is a predicate; aborted requests surface as
 //!   `ManualCompactionError { code: cancelled }`.
 
+pub mod basic;
 pub mod invariant;
 pub mod tool_pairing;
+pub use basic::BasicCompactionEngine;
 
 use std::sync::Arc;
 

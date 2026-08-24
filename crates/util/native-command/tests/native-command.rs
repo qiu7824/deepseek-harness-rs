@@ -29,8 +29,7 @@ async fn captures_utf8_stdout_and_stderr_on_exit_zero() {
 async fn rejects_a_nonzero_exit_with_code_and_stdio_attached() {
     let failure = run_native_command(&child_path(), &args(&["exit", "3"]), None)
         .await
-        .err()
-        .expect("non-zero exit");
+        .expect_err("non-zero exit");
     assert_eq!(failure.code.as_deref(), Some("3"));
     assert_eq!(failure.stdout, "");
     assert_eq!(failure.stderr, "");
@@ -41,8 +40,7 @@ async fn rejects_a_nonzero_exit_with_code_and_stdio_attached() {
 async fn rejects_a_missing_executable_with_the_spawn_enoent_code() {
     let failure = run_native_command("dsh-definitely-missing-command", &[], None)
         .await
-        .err()
-        .expect("missing executable");
+        .expect_err("missing executable");
     assert_eq!(failure.code.as_deref(), Some("ENOENT"));
 }
 
@@ -59,6 +57,19 @@ async fn terminates_the_child_when_the_signal_aborts() {
         tokio::spawn(async move { run_native_command(&child, &sleep_args, Some(signal)).await });
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     aborted.store(true, std::sync::atomic::Ordering::SeqCst);
-    let failure = pending.await.expect("task").err().expect("aborted");
+    let failure = pending.await.expect("task").expect_err("aborted");
     assert_eq!(failure.code.as_deref(), Some("ABORT_ERR"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn drains_large_stdout_and_stderr_while_the_child_is_running() {
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        run_native_command(&child_path(), &args(&["large-stdio"]), None),
+    )
+    .await
+    .expect("large stdio must not deadlock")
+    .expect("large stdio child exits zero");
+    assert_eq!(result.stdout.len(), 1024 * 1024);
+    assert_eq!(result.stderr.len(), 1024 * 1024);
 }

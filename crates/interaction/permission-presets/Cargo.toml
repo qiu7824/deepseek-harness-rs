@@ -1,6 +1,6 @@
 [package]
 name = "dsh-permission-presets"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "User-facing permission presets over the sandbox-mode and approval-policy knobs — Rust port of @deepseek-ai/dsh-permission-presets"

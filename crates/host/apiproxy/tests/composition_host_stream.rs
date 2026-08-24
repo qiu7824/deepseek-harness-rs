@@ -4,10 +4,65 @@
 use std::sync::Arc;
 
 use cordis::Context;
+use dsh_agent::{
+    Agent, AgentOptions, AgentStatus, AgentStatusPayload, CancelOptions, Inbox, InboxTarget,
+};
 use dsh_host_apiproxy::{
     ApiProxyDefaults, ApiProxyService, Body, CarrierRequest, to_fetch_handler,
 };
-use dsh_session::{CreateSessionMeta, CreateSessionOptions, SessionStore, session_id};
+use dsh_llm::UserMessage;
+use dsh_scope::ScopeKey;
+use dsh_session::{
+    AgentCancelCause, CreateSessionMeta, CreateSessionOptions, Session, SessionId, SessionStore,
+    session_id,
+};
+
+struct StatusAgent {
+    id: SessionId,
+    session: Session,
+    inbox: Inbox,
+    ctx: Context,
+    scope: ScopeKey,
+}
+
+impl Agent for StatusAgent {
+    fn id(&self) -> &SessionId {
+        &self.id
+    }
+    fn options(&self) -> &AgentOptions {
+        static OPTIONS: std::sync::OnceLock<AgentOptions> = std::sync::OnceLock::new();
+        OPTIONS.get_or_init(AgentOptions::default)
+    }
+    fn session(&self) -> &Session {
+        &self.session
+    }
+    fn inbox(&self) -> &Inbox {
+        &self.inbox
+    }
+    fn status(&self) -> AgentStatus {
+        AgentStatus::Idle
+    }
+    fn ctx(&self) -> &Context {
+        &self.ctx
+    }
+    fn scope_key(&self) -> &ScopeKey {
+        &self.scope
+    }
+    fn cancel(&self, _cause: AgentCancelCause, _options: Option<&CancelOptions>) {}
+    fn when_idle(&self) -> cordis::BoxFuture<'static, ()> {
+        Box::pin(async {})
+    }
+    fn run_maintenance(
+        &self,
+        _task: Arc<dyn Fn() -> cordis::BoxFuture<'static, ()> + Send + Sync>,
+    ) -> cordis::BoxFuture<'static, ()> {
+        Box::pin(async {})
+    }
+    fn send(&self, _message: UserMessage, _target: InboxTarget, _wakeup: bool) {}
+    fn followup(&self, _message: UserMessage) {}
+    fn steer(&self, _message: UserMessage) {}
+    fn inject(&self, _message: UserMessage) {}
+}
 
 fn run<F: std::future::Future>(future: F) -> F::Output {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -19,7 +74,7 @@ fn run<F: std::future::Future>(future: F) -> F::Output {
 
 async fn open_host(
     handler: &dsh_host_apiproxy::FetchHandler,
-) -> std::pin::Pin<Box<dyn futures::Stream<Item = Vec<u8>> + Send>> {
+) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<u8>, String>> + Send>> {
     let response = handler
         .handle(CarrierRequest {
             method: http::Method::GET,
@@ -56,9 +111,13 @@ fn the_host_stream_forwards_session_added_and_remote_events() {
         let handler = to_fetch_handler(service);
 
         let stream = open_host(&handler).await;
-        let mut frames = Box::pin(futures::StreamExt::take(stream, 3));
+        let mut frames = Box::pin(futures::StreamExt::take(stream, 5));
         use futures::StreamExt;
-        let first = frames.next().await.expect("open comment");
+        let first = frames
+            .next()
+            .await
+            .expect("open comment")
+            .expect("open stream success");
         let text = String::from_utf8(first).expect("utf8");
         assert!(text.starts_with(": connected\n\n"), "{text}");
 
@@ -86,13 +145,46 @@ fn the_host_stream_forwards_session_added_and_remote_events() {
             .await
             .expect("session");
 
-        let added = frames.next().await.expect("session-added frame");
+        let added = frames
+            .next()
+            .await
+            .expect("session-added frame")
+            .expect("session-added success");
         let payload = frame_payload(added);
         assert_eq!(payload["method"], "host/session-added");
         assert_eq!(payload["payload"]["type"], "host/session-added");
         assert_eq!(payload["payload"]["sessionId"], "host-1");
         assert_eq!(payload["payload"]["blank"], true);
         assert_eq!(payload["payload"]["cwd"], "D:\\proj");
+
+        let agent: Arc<dyn Agent> = Arc::new(StatusAgent {
+            id: _session.id().clone(),
+            inbox: Inbox::new(&_session, Default::default()).expect("inbox"),
+            session: _session.clone(),
+            ctx: ctx.clone(),
+            scope: ScopeKey::new(),
+        });
+        for status in [AgentStatus::Running, AgentStatus::Idle] {
+            let _ = ctx.emit(
+                "agent/status",
+                vec![cordis::arc(AgentStatusPayload {
+                    agent: agent.clone(),
+                    status,
+                })],
+            );
+            let status_frame = frames
+                .next()
+                .await
+                .expect("status frame")
+                .expect("status success");
+            let payload = frame_payload(status_frame);
+            assert_eq!(payload["method"], "host/session-status");
+            assert_eq!(payload["payload"]["sessionId"], "host-1");
+            assert_eq!(
+                payload["payload"]["running"],
+                status == AgentStatus::Running
+            );
+        }
 
         // An allowlisted host event rides one verbatim wrapper frame.
         let _ = ctx.emit(
@@ -101,7 +193,11 @@ fn the_host_stream_forwards_session_added_and_remote_events() {
                 serde_json::json!({ "provider": "deepseek-official" }),
             )],
         );
-        let remote = frames.next().await.expect("remote-event frame");
+        let remote = frames
+            .next()
+            .await
+            .expect("remote-event frame")
+            .expect("remote-event success");
         let payload = frame_payload(remote);
         assert_eq!(payload["method"], "host/remote-event");
         assert_eq!(payload["payload"]["type"], "host/remote-event");

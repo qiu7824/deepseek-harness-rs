@@ -1033,7 +1033,11 @@ window.__ModuleLoader__.load({
 					inject: injected
 				}, BrowseDirectoryFlow);
 			}));
-		}
+			ctx.slots.inject("settings.paths.directoryFlow", () => ctx.slots.register({
+			name: "settings.paths.directoryFlow",
+			inject: injected
+			}, BrowseDirectoryFlow));
+			}
 		//#endregion
 		exports.apply = apply;
 		exports.inject = inject;

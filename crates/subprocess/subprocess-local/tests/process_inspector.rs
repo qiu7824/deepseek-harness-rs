@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU32, Ordering::SeqCst};
 
 use dsh_subprocess::SubprocessTerminalSignal;
 use dsh_subprocess_local::{
-    ProcessIdentity, ProcessInspector, ProcessInspectorInternals, TerminalKillSignal,
-    create_process_inspector, linux_process_group_has_live_members, parse_proc_stat,
+    ProcessIdentity, ProcessInspectorInternals, TerminalKillSignal, create_process_inspector,
+    linux_process_group_has_live_members, parse_proc_stat,
 };
 use parking_lot::Mutex;
 

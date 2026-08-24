@@ -192,16 +192,14 @@ pub async fn run_profile_with_interrupt(
     let surface = resolve_profile_surface(&composed)?;
     match surface {
         ProfileSurface::Web => {
-            // The shipped Host currently owns the safe loopback/ephemeral
-            // bind. Surface flags are parsed by the next integration slice.
-            if request.args.as_slice() != ["--port", "0"] && !request.args.is_empty() {
-                return Err(format!(
-                    "dsh: the Rust web surface currently accepts no app arguments except --port 0, got {:?}",
-                    request.args
-                ));
-            }
+            let port = parse_web_port(&request.args)?;
             let ctx = Context::root();
-            let host = dsh_host::compose_host(&ctx)?;
+            let host = dsh_host::compose_persistent_host_at_port(
+                &ctx,
+                request.home.clone(),
+                Some(&request.profile),
+                port,
+            )?;
             let companions = dsh_host::mount_companions(&host);
             let (host, ()) = own_host_result(host, companions).await?;
             Ok(RunProfileHandle {
@@ -210,12 +208,25 @@ pub async fn run_profile_with_interrupt(
                 output: None,
             })
         }
-        ProfileSurface::Headless => run_headless(request.args, interrupt).await,
+        ProfileSurface::Headless => run_headless(request.args, request.home, interrupt).await,
+    }
+}
+
+fn parse_web_port(args: &[String]) -> Result<u16, String> {
+    match args {
+        [] => Ok(3080),
+        [flag, value] if flag == "--port" => value.parse::<u16>().map_err(|_| {
+            format!("dsh: --port must be an integer from 0 through 65535, got {value:?}")
+        }),
+        _ => Err(format!(
+            "dsh: the Rust web surface accepts only --port <port>, got {args:?}"
+        )),
     }
 }
 
 async fn run_headless(
     args: Vec<String>,
+    home: PathBuf,
     interrupt: Option<ProfileInterrupt>,
 ) -> Result<RunProfileHandle, String> {
     let [task] = args.as_slice() else {
@@ -226,7 +237,7 @@ async fn run_headless(
     }
 
     let ctx = Context::root();
-    let host = dsh_host::compose_host(&ctx)?;
+    let host = dsh_host::compose_persistent_host_at(&ctx, home, Some("headless"))?;
     let companions = dsh_host::mount_companions(&host);
     let (host, ()) = own_host_result(host, companions).await?;
 
@@ -236,6 +247,15 @@ async fn run_headless(
         .create_agent(
             &host.ctx,
             dsh_agent::CreateAgentOptions {
+                meta: Some(dsh_session::CreateSessionMeta {
+                    cwd: Some(
+                        std::env::current_dir()
+                            .map_err(|error| format!("dsh: headless cwd: {error}"))?
+                            .to_string_lossy()
+                            .into_owned(),
+                    ),
+                    ..Default::default()
+                }),
                 agent_options: Some(dsh_agent::AgentOptions {
                     provider: Some(dsh_llm_deepseek::PROVIDER.to_string()),
                     model: Some(model),
@@ -389,6 +409,21 @@ fn headless_outcome(events: &[dsh_session::SessionEvent]) -> Result<String, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_port_defaults_to_node_port_and_accepts_an_explicit_override() {
+        assert_eq!(parse_web_port(&[]).unwrap(), 3080);
+        assert_eq!(
+            parse_web_port(&["--port".to_string(), "58080".to_string()]).unwrap(),
+            58080
+        );
+        assert_eq!(
+            parse_web_port(&["--port".to_string(), "0".to_string()]).unwrap(),
+            0
+        );
+        assert!(parse_web_port(&["--port".to_string(), "65536".to_string()]).is_err());
+        assert!(parse_web_port(&["--host".to_string(), "127.0.0.1".to_string()]).is_err());
+    }
 
     #[tokio::test]
     async fn interrupt_latch_starts_before_the_first_lifecycle_waiter() {

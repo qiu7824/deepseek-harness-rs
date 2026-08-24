@@ -82,7 +82,14 @@ fn main() {
                 let uri = message["params"]["textDocument"]["uri"]
                     .as_str()
                     .unwrap_or_default();
-                if duplicate_opens.remove(uri) {
+                if open_documents.get(uri).is_some_and(|text| text == "hang") {
+                    thread::sleep(Duration::from_secs(5));
+                    send(
+                        &mut output,
+                        json!({ "jsonrpc": "2.0", "id": id, "result": null }),
+                        false,
+                    );
+                } else if duplicate_opens.remove(uri) {
                     send(
                         &mut output,
                         json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": "document was opened twice without didClose" } }),

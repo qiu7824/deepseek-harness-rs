@@ -10,18 +10,19 @@
 //! - `waitWithSignal` collapses into polling the seam's abort predicate.
 //! - The exit-code file poll reads through `sandbox.read_bytes` (the TS
 //!   `files.read`; same bytes contract).
+#![allow(dead_code)] // Deferred lifecycle helpers remain part of the incomplete E2B adapter.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use dsh_e2b::{
-    E2bBackgroundOptions, E2bCommandHandle, E2bCommandResult, E2bRuntime, E2bSandbox, E2bSdkError,
-    e2b_control_envs, quote_e2b_shell_arg,
+    E2bBackgroundOptions, E2bRuntime, E2bSandbox, E2bSdkError, e2b_control_envs,
+    quote_e2b_shell_arg,
 };
 use dsh_subprocess::{
-    SubprocessAbort, SubprocessCollect, SubprocessCollectedOutputs, SubprocessHandle,
-    SubprocessOutcome, SubprocessOutputMode, SubprocessSpawnSpec, SubprocessStdinMode,
+    SubprocessAbort, SubprocessCollectedOutputs, SubprocessHandle, SubprocessOutcome,
+    SubprocessOutputMode, SubprocessSpawnSpec, SubprocessStdinMode,
 };
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -30,7 +31,7 @@ use parking_lot::Mutex;
 use crate::environment::{
     bootstrap_environment, read_remote_environment, serialize_remote_environment,
 };
-use crate::output::{E2bBase64Decoder, E2bOutputReader};
+use crate::output::E2bOutputReader;
 use crate::remote::{signal_remote_groups, wait_tick};
 
 /// Remote file paths one handle's state lives under (TS `RemotePaths`).
@@ -431,12 +432,11 @@ impl SubprocessHandle for E2bSubprocessHandle {
             tokio::time::sleep(std::time::Duration::from_millis(grace)).await;
             if let Ok(raw) = sandbox.read_bytes(&format!("{state_dir}/pid")).await {
                 let trimmed = String::from_utf8_lossy(&raw);
-                if let Ok(group) = trimmed.trim().parse::<i64>() {
-                    if let Err(error) =
+                if let Ok(group) = trimmed.trim().parse::<i64>()
+                    && let Err(error) =
                         signal_remote_groups(&sandbox, HashMap::new(), &[group], "KILL").await
-                    {
-                        *failure.lock() = Some(error.to_string());
-                    }
+                {
+                    *failure.lock() = Some(error.to_string());
                 }
             }
             let _ = quiescent;

@@ -89,6 +89,7 @@ pub fn resolve_spec(config: &Config) -> ResolvedSpec {
 
 /// Permission bits outside the owner; a credentials document must have none
 /// of them.
+#[cfg(unix)]
 const GROUP_OTHER_BITS: u32 = 0o077;
 
 /// Reject a credentials document other OS users can read, before its
@@ -123,14 +124,13 @@ async fn assert_owner_only(filename: &str) -> Result<(), String> {
             // file; Windows Rust canonicalize reports NotFound there — check
             // explicitly so a file-as-parent is a loud misconfiguration, not
             // "no credentials yet".
-            if let Some(parent) = Path::new(filename).parent() {
-                if let Ok(meta) = tokio::fs::metadata(parent).await {
-                    if !meta.is_dir() {
-                        return Err(format!(
-                            "ENOTDIR: cannot reach {filename}: a parent component is not a directory"
-                        ));
-                    }
-                }
+            if let Some(parent) = Path::new(filename).parent()
+                && let Ok(meta) = tokio::fs::metadata(parent).await
+                && !meta.is_dir()
+            {
+                return Err(format!(
+                    "ENOTDIR: cannot reach {filename}: a parent component is not a directory"
+                ));
             }
             canonicalize_watch_path(Path::new(filename))
                 .await

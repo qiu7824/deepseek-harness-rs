@@ -34,7 +34,10 @@ pub use call_config::{
     adapter_defaults_equals, call_config_equals, deep_freeze, is_agent_loop_request,
     mark_agent_loop_request,
 };
-pub use content::content_has_image;
+pub use content::{
+    OFFLOADED_IMAGE_TEXT, RequestImageOffloadPolicy, RequestImageRepresentation, content_has_image,
+    offload_request_images, offload_request_images_with_policy,
+};
 pub use error::{
     CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, HarnessError, INVALID_CREDENTIAL_CODE,
     QUOTA_EXCEEDED_CODE, error_chain,
@@ -44,11 +47,11 @@ pub use invariant::{
     apply as apply_llm_invariant, validate_stream,
 };
 pub use message::{
-    AssistantMessage, CONTEXT_SUMMARY_MAX_CHARS, ContextForm, ContextSnapshotSection, Message,
-    MessageSource, ModelMessageSource, Role, SkillCatalogEntry, ToolMessageSource,
-    ToolResultMessage, ToolResultMessageInput, UserMessage, bound_context_summary,
-    create_assistant_message, create_message, create_tool_result_message, create_user_message,
-    freeze_message, is_token_delta,
+    AgentInstructionChange, AssistantMessage, CONTEXT_SUMMARY_MAX_CHARS, ContextForm,
+    ContextSnapshotSection, Message, MessageSource, ModelMessageSource, Role, SkillCatalogEntry,
+    ToolMessageSource, ToolResultMessage, ToolResultMessageInput, UserMessage,
+    bound_context_summary, create_assistant_message, create_message, create_tool_result_message,
+    create_user_message, freeze_message, is_token_delta,
 };
 pub use never::assert_never;
 pub use retry_policy::{

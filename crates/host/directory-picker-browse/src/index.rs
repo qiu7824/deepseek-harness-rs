@@ -167,6 +167,56 @@ fn win32_fully_qualified(path: &str) -> bool {
     false
 }
 
+/// Convert Windows filesystem roots into ordinary browse rows. The current
+/// target's drive is omitted to avoid duplicating the directory already shown;
+/// callers provide the roots so enumeration stays deterministic in tests.
+pub fn windows_drive_entries<I>(roots: I, current: Option<&Path>) -> Vec<DirectoryEntry>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    if platform() != "win32" {
+        return Vec::new();
+    }
+    let current_root = current.and_then(|current| {
+        current
+            .to_string_lossy()
+            .get(..2)
+            .map(str::to_ascii_uppercase)
+    });
+    let mut entries: Vec<_> = roots
+        .into_iter()
+        .filter_map(|root| {
+            let raw = root.to_string_lossy();
+            let drive = raw.get(..2)?.to_ascii_uppercase();
+            if Some(&drive) == current_root.as_ref() {
+                return None;
+            }
+            let path = format!("{drive}\\");
+            Some(DirectoryEntry {
+                name: path.clone(),
+                path,
+                hidden: false,
+            })
+        })
+        .collect();
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    entries.dedup_by(|left, right| left.path == right.path);
+    entries
+}
+
+#[cfg(windows)]
+fn accessible_windows_roots() -> Vec<PathBuf> {
+    (b'A'..=b'Z')
+        .map(|letter| PathBuf::from(format!("{}:\\", letter as char)))
+        .filter(|root| root.is_dir())
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn accessible_windows_roots() -> Vec<PathBuf> {
+    Vec::new()
+}
+
 /// One streamed listing candidate: the dirent facts a row needs, nothing
 /// else retained.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,6 +339,20 @@ pub struct BrowseDirectoryPicker {
     capability: DirectoryPickerCapability,
 }
 
+type ListDirectoryFn = Arc<
+    dyn Fn(
+            Option<String>,
+            AbortSignal,
+        ) -> BoxFuture<'static, Result<DirectoryListing, DirectoryPickerListError>>
+        + Send
+        + Sync,
+>;
+type CreateDirectoryFn = Arc<
+    dyn Fn(String, String) -> BoxFuture<'static, Result<String, DirectoryPickerError>>
+        + Send
+        + Sync,
+>;
+
 impl DirectoryPicker for BrowseDirectoryPicker {
     fn capability(&self) -> DirectoryPickerCapability {
         self.capability.clone()
@@ -299,26 +363,14 @@ impl BrowseDirectoryPicker {
     /// Construct an unregistered backend; `install` registers it as
     /// `ctx.directoryPicker`.
     pub fn new(config: Config) -> Arc<Self> {
-        let list: Arc<
-            dyn Fn(
-                    Option<String>,
-                    AbortSignal,
-                )
-                    -> BoxFuture<'static, Result<DirectoryListing, DirectoryPickerListError>>
-                + Send
-                + Sync,
-        > = Arc::new({
+        let list: ListDirectoryFn = Arc::new({
             let config = config.clone();
             move |path: Option<String>, signal: AbortSignal| {
                 let config = config.clone();
                 Box::pin(async move { list_directory(&config, path, &signal).await })
             }
         });
-        let create_directory: Arc<
-            dyn Fn(String, String) -> BoxFuture<'static, Result<String, DirectoryPickerError>>
-                + Send
-                + Sync,
-        > = Arc::new(move |path: String, name: String| {
+        let create_directory: CreateDirectoryFn = Arc::new(move |path: String, name: String| {
             Box::pin(async move { create_directory(&path, &name).await })
         });
         Arc::new(Self {
@@ -345,19 +397,28 @@ async fn list_directory(
     signal: &AbortSignal,
 ) -> Result<DirectoryListing, DirectoryPickerListError> {
     let home = home_dir();
+    if path.is_none() && platform() == "win32" {
+        return Ok(DirectoryListing {
+            path: String::new(),
+            home,
+            crumbs: Vec::new(),
+            entries: windows_drive_entries(accessible_windows_roots(), None),
+            truncated: false,
+        });
+    }
     // The seam contract takes fully qualified paths only; resolve() would
     // silently rebase a relative or empty wire value under the host process
     // cwd (or, for rooted drive-less Windows forms, its current drive).
-    if let Some(path) = &path {
-        if !fully_qualified(path, platform()) {
-            return Err(DirectoryPickerListError::Unreadable(
-                DirectoryPickerError::new(
-                    DirectoryPickerErrorCode::DirectoryUnreadable,
-                    path.clone(),
-                    format!("cannot list \"{path}\": not a fully qualified path"),
-                ),
-            ));
-        }
+    if let Some(path) = &path
+        && !fully_qualified(path, platform())
+    {
+        return Err(DirectoryPickerListError::Unreadable(
+            DirectoryPickerError::new(
+                DirectoryPickerErrorCode::DirectoryUnreadable,
+                path.clone(),
+                format!("cannot list \"{path}\": not a fully qualified path"),
+            ),
+        ));
     }
     let target = PathBuf::from(path.unwrap_or_else(|| home.clone()));
 
@@ -464,6 +525,7 @@ async fn list_directory(
         }
         entries.push(row);
     }
+
     Ok(DirectoryListing {
         path: target.to_string_lossy().into_owned(),
         home,

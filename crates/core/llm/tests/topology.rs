@@ -8,6 +8,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use cordis::{ArcValue, Context, InjectSpec, Plugin, PluginError, arc};
 use dsh_llm::*;
 
+type DiscoveryFn = Arc<
+    dyn Fn(
+            &LlmModelDiscoveryRequest,
+        ) -> cordis::BoxFuture<'static, Result<Vec<LlmDiscoveredModel>, String>>
+        + Send
+        + Sync,
+>;
+
 struct NoopAdapter;
 
 impl LlmAdapter for NoopAdapter {
@@ -197,11 +205,12 @@ async fn directory_rejects_invalid_entries_all_or_nothing() {
     let ctx = Context::root();
     let runtime = LlmRuntime::install(&ctx);
 
-    let error = runtime
+    let dormant = runtime
         .register_configurable_providers(&ctx, Vec::new())
-        .err()
-        .expect("empty registration must reject");
-    assert_eq!(error.code, "INVALID_DIRECTORY");
+        .expect("empty directory is a live dormant registration");
+    (dormant.replace)(vec![entry()]).expect("activate dormant directory");
+    assert_eq!(runtime.list_configurable_providers().len(), 1);
+    (dormant.replace)(Vec::new()).expect("return directory to dormant state");
 
     for invalid in [
         LlmConfigurableProvider {
@@ -283,9 +292,7 @@ async fn directory_replaces_atomically_and_guards_disposed_handle() {
     assert_eq!(providers, vec!["owned-elsewhere".to_string()]);
 
     (handle.dispose)().await;
-    let error = (handle.replace)(vec![entry()])
-        .err()
-        .expect("disposed replace must refuse");
+    let error = (handle.replace)(vec![entry()]).expect_err("disposed replace must refuse");
     assert_eq!(error.code, "REGISTRATION_DISPOSED");
 }
 
@@ -329,13 +336,7 @@ async fn discovery_registers_serves_dedupes_and_disposes() {
     let seen_request: Arc<parking_lot::Mutex<Option<LlmModelDiscoveryRequest>>> =
         Arc::new(parking_lot::Mutex::new(None));
     let seen_for_closure = Arc::clone(&seen_request);
-    let discover: Arc<
-        dyn Fn(
-                &LlmModelDiscoveryRequest,
-            ) -> cordis::BoxFuture<'static, Result<Vec<LlmDiscoveredModel>, String>>
-            + Send
-            + Sync,
-    > = Arc::new(move |request: &LlmModelDiscoveryRequest| {
+    let discover: DiscoveryFn = Arc::new(move |request: &LlmModelDiscoveryRequest| {
         let seen = Arc::clone(&seen_for_closure);
         let request = request.clone();
         Box::pin(async move {
@@ -414,34 +415,22 @@ async fn discovery_registers_serves_dedupes_and_disposes() {
 async fn discovery_rejects_unnamed_namespace_duplicates_and_endpointless_drafts() {
     let ctx = Context::root();
     let runtime = LlmRuntime::install(&ctx);
-    let discover: Arc<
-        dyn Fn(
-                &LlmModelDiscoveryRequest,
-            ) -> cordis::BoxFuture<'static, Result<Vec<LlmDiscoveredModel>, String>>
-            + Send
-            + Sync,
-    > = Arc::new(|_request| Box::pin(async { Ok(Vec::new()) }));
+    let discover: DiscoveryFn = Arc::new(|_request| Box::pin(async { Ok(Vec::new()) }));
 
-    let error = runtime
-        .register_model_discovery(&ctx, "", Arc::clone(&discover))
-        .err()
-        .expect("unnamed namespace must reject");
+    let error = match runtime.register_model_discovery(&ctx, "", Arc::clone(&discover)) {
+        Err(error) => error,
+        Ok(_) => panic!("unnamed namespace must reject"),
+    };
     assert_eq!(error.code, "INVALID_DISCOVERY");
 
     runtime
         .register_model_discovery(&ctx, "llm-example", discover)
         .expect("register");
-    let duplicate: Arc<
-        dyn Fn(
-                &LlmModelDiscoveryRequest,
-            ) -> cordis::BoxFuture<'static, Result<Vec<LlmDiscoveredModel>, String>>
-            + Send
-            + Sync,
-    > = Arc::new(|_request| Box::pin(async { Ok(Vec::new()) }));
-    let error = runtime
-        .register_model_discovery(&ctx, "llm-example", duplicate)
-        .err()
-        .expect("duplicate namespace must reject");
+    let duplicate: DiscoveryFn = Arc::new(|_request| Box::pin(async { Ok(Vec::new()) }));
+    let error = match runtime.register_model_discovery(&ctx, "llm-example", duplicate) {
+        Err(error) => error,
+        Ok(_) => panic!("duplicate namespace must reject"),
+    };
     assert_eq!(error.code, "DUPLICATE_DISCOVERY");
 
     let request = LlmModelDiscoveryRequest {

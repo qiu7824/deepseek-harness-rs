@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use cordis::{ArcValue, BoxFuture, Context, InjectSpec, PluginError, Service, arc, downcast_arc};
+use cordis::{ArcValue, BoxFuture, Context, InjectSpec, PluginError, Service, arc};
 use dsh_agent::runtime_types::AgentLifecyclePayload;
 use dsh_home_paths::dsh_home_path;
 use dsh_schemastery::{Data, Schema};

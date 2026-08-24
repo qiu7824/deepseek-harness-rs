@@ -269,6 +269,25 @@ pub mod windows_runner {
         }
     }
 
+    fn is_user_profile_root(workspace: &Path, profile: Option<&OsStr>) -> bool {
+        let Some(profile) = profile else {
+            return false;
+        };
+        let normalize = |value: &OsStr| {
+            value
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .trim_end_matches(['\\', '/'])
+                .replace('/', "\\")
+                .to_ascii_lowercase()
+        };
+        normalize(workspace.as_os_str()) == normalize(profile)
+    }
+
+    fn should_update_direct_files(workspace: &Path, profile: Option<&OsStr>) -> bool {
+        !is_user_profile_root(workspace, profile)
+    }
+
     fn update_workspace_acl(
         workspace: &Path,
         sid: &str,
@@ -281,16 +300,23 @@ $ErrorActionPreference='Stop'
 $path=$env:DSH_SANDBOX_ACL_PATH
 $sid=$env:DSH_SANDBOX_ACL_SID
 $action=$env:DSH_SANDBOX_ACL_ACTION
+$updateDirectFiles=$env:DSH_SANDBOX_ACL_DIRECT_FILES -eq '1'
+$profileRoot=$env:DSH_SANDBOX_ACL_PROFILE_ROOT -eq '1'
 $rights=if ($env:DSH_SANDBOX_ACL_WRITABLE -eq '1') {
   [Security.AccessControl.FileSystemRights]::Modify
 } else {
   [Security.AccessControl.FileSystemRights]::ReadAndExecute
 }
 $identity=[Security.Principal.SecurityIdentifier]::new($sid)
+$inheritance=if ($profileRoot) {
+  [Security.AccessControl.InheritanceFlags]::None
+} else {
+  [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'
+}
 $rule=[Security.AccessControl.FileSystemAccessRule]::new(
   $identity,
   $rights,
-  [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',
+  $inheritance,
   [Security.AccessControl.PropagationFlags]::None,
   [Security.AccessControl.AccessControlType]::Allow)
 $acl=Get-Acl -LiteralPath $path
@@ -300,16 +326,20 @@ Set-Acl -LiteralPath $path -AclObject $acl
 # Adding an inheritable ACE does not retroactively update existing children.
 # The Node sidecar root is deliberately tiny, so update its direct files in
 # the same PowerShell process without broad recursive host access.
-Get-ChildItem -LiteralPath $path -File | ForEach-Object {
-  $childAcl=Get-Acl -LiteralPath $_.FullName
-  $childRule=[Security.AccessControl.FileSystemAccessRule]::new(
-    $identity, $rights, [Security.AccessControl.AccessControlType]::Allow)
-  if ($action -eq 'grant') { $childAcl.AddAccessRule($childRule) | Out-Null }
-  else { $childAcl.RemoveAccessRuleAll($childRule) }
-  Set-Acl -LiteralPath $_.FullName -AclObject $childAcl
+if ($updateDirectFiles) {
+  Get-ChildItem -LiteralPath $path -File | ForEach-Object {
+    $childAcl=Get-Acl -LiteralPath $_.FullName
+    $childRule=[Security.AccessControl.FileSystemAccessRule]::new(
+      $identity, $rights, [Security.AccessControl.AccessControlType]::Allow)
+    if ($action -eq 'grant') { $childAcl.AddAccessRule($childRule) | Out-Null }
+    else { $childAcl.RemoveAccessRuleAll($childRule) }
+    Set-Acl -LiteralPath $_.FullName -AclObject $childAcl
+  }
 }
 "#;
-        let status = Command::new(r"C:\Program Files\PowerShell\7\pwsh.exe")
+        let profile = std::env::var_os("USERPROFILE");
+        let profile_root = is_user_profile_root(workspace, profile.as_deref());
+        let mut child = Command::new(r"C:\Program Files\PowerShell\7\pwsh.exe")
             .args([
                 "-NoLogo",
                 "-NoProfile",
@@ -324,8 +354,38 @@ Get-ChildItem -LiteralPath $path -File | ForEach-Object {
                 if grant { "grant" } else { "revoke" },
             )
             .env("DSH_SANDBOX_ACL_WRITABLE", if writable { "1" } else { "0" })
-            .status()
+            .env(
+                "DSH_SANDBOX_ACL_DIRECT_FILES",
+                if should_update_direct_files(workspace, profile.as_deref()) {
+                    "1"
+                } else {
+                    "0"
+                },
+            )
+            .env(
+                "DSH_SANDBOX_ACL_PROFILE_ROOT",
+                if profile_root { "1" } else { "0" },
+            )
+            .spawn()
             .map_err(|error| format!("launch ACL updater: {error}"))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let status = loop {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|error| format!("wait for ACL updater: {error}"))?
+            {
+                break status;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(
+                    "ACL updater timed out after 15 seconds; select a narrower project workspace"
+                        .to_string(),
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        };
         if status.success() {
             Ok(())
         } else {
@@ -339,6 +399,12 @@ Get-ChildItem -LiteralPath $path -File | ForEach-Object {
 
     pub fn run_args(args: impl Iterator<Item = String>) -> Result<i32, String> {
         let (mode, workspace, argv) = parse_args(args)?;
+        if is_user_profile_root(&workspace, std::env::var_os("USERPROFILE").as_deref()) {
+            return Err(
+                "the sandbox cannot use the whole user profile as a workspace; select a specific project directory"
+                    .to_string(),
+            );
+        }
         let profile = AppContainerProfile::create()?;
         let sid_text = sid_string(profile.sid.0)?;
         let _acl = AclGrant::grant(&workspace, &sid_text, mode == "workspace-write")?;
@@ -488,5 +554,30 @@ Get-ChildItem -LiteralPath $path -File | ForEach-Object {
         format!("{operation} failed with Windows error {}", unsafe {
             GetLastError()
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::should_update_direct_files;
+        use std::ffi::OsString;
+        use std::path::Path;
+
+        #[test]
+        fn user_profile_root_skips_direct_file_acl_updates() {
+            let profile = OsString::from(r"C:\Users\Administrator");
+            assert!(!should_update_direct_files(
+                Path::new("C:/Users/Administrator"),
+                Some(profile.as_os_str())
+            ));
+        }
+
+        #[test]
+        fn project_below_user_profile_keeps_direct_file_acl_updates() {
+            let profile = OsString::from(r"C:\Users\Administrator");
+            assert!(should_update_direct_files(
+                Path::new(r"C:\Users\Administrator\project"),
+                Some(profile.as_os_str())
+            ));
+        }
     }
 }

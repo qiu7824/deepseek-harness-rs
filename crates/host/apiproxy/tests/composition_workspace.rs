@@ -344,6 +344,28 @@ fn archive_session_reports_unknown_sessions_as_session_not_found() {
                 .len(),
             0
         );
+
+        let archived_again = harness
+            .post(
+                "workspace.archiveSession",
+                serde_json::json!({ "sessionId": "s1" }),
+            )
+            .await;
+        assert_eq!(archived_again["result"]["ok"], true);
+        let deleted = harness
+            .post(
+                "workspace.deleteArchivedSession",
+                serde_json::json!({ "sessionId": "s1" }),
+            )
+            .await;
+        assert_eq!(deleted["result"]["ok"], true, "{deleted}");
+        assert_eq!(deleted["result"]["value"]["deleted"], true);
+        assert!(
+            deleted["result"]["value"]["archivedSessionIds"]
+                .as_array()
+                .expect("ids")
+                .is_empty()
+        );
     });
 }
 

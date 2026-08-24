@@ -772,8 +772,8 @@ impl SqliteSearch {
                 continue;
             }
             assert_not_aborted(signal)?;
-            let loaded = match persistence.inspect(&entry.header.id).await {
-                Ok(inspection) => inspection,
+            let loaded = match persistence.read_from(&entry.header.id, 0).await {
+                Ok(stored) => stored,
                 Err(message) => return self.persistence_failure(binding, signal, &message),
             };
             assert_not_aborted(signal)?;

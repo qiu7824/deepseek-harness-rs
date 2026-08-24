@@ -1,6 +1,6 @@
 [package]
 name = "dsh-bash-local"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Local bash executor over the subprocess seam: command defaulting, deadlines, cause classification, and model-facing background reads — Rust port of @deepseek-ai/dsh-bash-local"

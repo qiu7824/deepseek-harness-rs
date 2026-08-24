@@ -1,6 +1,6 @@
 [package]
 name = "dsh-attachment-local"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Local durable attachment backend rooted below DSH_HOME — Rust port of @deepseek-ai/dsh-attachment-local"
@@ -10,6 +10,7 @@ cordis = { path = "../../vendor/cordis" }
 dsh-attachment = { path = "../attachment" }
 dsh-home-paths = { path = "../../util/home-paths" }
 dsh-invariants = { path = "../../util/invariants" }
+dsh-atomic-write = { path = "../../util/atomic-write" }
 dsh-schemastery = { path = "../../vendor/schemastery" }
 async-trait = { workspace = true }
 anyhow = { workspace = true }

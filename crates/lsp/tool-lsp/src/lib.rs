@@ -68,6 +68,7 @@ pub fn apply(ctx: &Context, lsp: Arc<Lsp>) -> Result<(), String> {
             let lsp = lsp.clone();
             let args = args.clone();
             let agent = run.agent.clone();
+            let signal = run.execution.signal.lock().clone();
             Box::pin(async move {
                 let workspace_root = agent
                     .as_ref()
@@ -89,8 +90,9 @@ pub fn apply(ctx: &Context, lsp: Arc<Lsp>) -> Result<(), String> {
                 let file_path = required_string(&args, "file_path")?.to_string();
                 let line = one_based(&args, "line")?;
                 let character = one_based(&args, "character")?;
+                let cancellation = dsh_lsp::LspCancellation::from_predicate(signal);
                 let result = lsp
-                    .query(LspQueryRequest {
+                    .query_with_signal(LspQueryRequest {
                         operation,
                         file_path,
                         position: LspPosition {
@@ -98,7 +100,7 @@ pub fn apply(ctx: &Context, lsp: Arc<Lsp>) -> Result<(), String> {
                             character: character - 1,
                         },
                         workspace_root,
-                    })
+                    }, Some(cancellation))
                     .await
                     .map_err(|failure| ToolBodyError::plain(failure.to_string()))?;
                 serde_json::to_value(result)

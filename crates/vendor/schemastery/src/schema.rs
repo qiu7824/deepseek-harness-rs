@@ -191,6 +191,170 @@ impl Schema {
         &self.inner.node
     }
 
+    /// Serialize this schema as the reference-preserving wire envelope used by
+    /// the browser form renderer (`{ uid, refs }`). Shared nodes are emitted
+    /// once and every edge is represented by its uid.
+    pub fn to_json(&self) -> serde_json::Value {
+        fn meta_json(meta: &Meta) -> serde_json::Value {
+            let mut out = serde_json::Map::new();
+            if let Some(value) = meta.default.as_ref().and_then(Data::to_json) {
+                out.insert("default".to_string(), value);
+            }
+            for (key, value) in [
+                ("required", meta.required),
+                ("disabled", meta.disabled),
+                ("collapse", meta.collapse),
+                ("hidden", meta.hidden),
+                ("loose", meta.loose),
+            ] {
+                if value {
+                    out.insert(key.to_string(), serde_json::Value::Bool(true));
+                }
+            }
+            if !meta.badges.is_empty() {
+                out.insert(
+                    "badges".to_string(),
+                    serde_json::Value::Array(
+                        meta.badges
+                            .iter()
+                            .map(|badge| serde_json::json!({"text": badge.text, "type": badge.r#type}))
+                            .collect(),
+                    ),
+                );
+            }
+            if let Some(role) = &meta.role {
+                out.insert("role".to_string(), role.clone().into());
+            }
+            if let Some(extra) = meta.extra.as_ref().and_then(Data::to_json) {
+                out.insert("extra".to_string(), extra);
+            }
+            if let Some(link) = &meta.link {
+                out.insert("link".to_string(), link.clone().into());
+            }
+            if let Some(description) = &meta.description {
+                let value = match description {
+                    Desc::Plain(text) => serde_json::Value::String(text.clone()),
+                    Desc::Localized(entries) => serde_json::Value::Object(
+                        entries
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone().into()))
+                            .collect(),
+                    ),
+                };
+                out.insert("description".to_string(), value);
+            }
+            if let Some(comment) = &meta.comment {
+                out.insert("comment".to_string(), comment.clone().into());
+            }
+            if let Some(pattern) = &meta.pattern {
+                out.insert(
+                    "pattern".to_string(),
+                    serde_json::json!({
+                        "source": pattern.source,
+                        "flags": pattern.flags,
+                    }),
+                );
+            }
+            for (key, value) in [("max", meta.max), ("min", meta.min), ("step", meta.step)] {
+                if let Some(value) = value.and_then(serde_json::Number::from_f64) {
+                    out.insert(key.to_string(), serde_json::Value::Number(value));
+                }
+            }
+            serde_json::Value::Object(out)
+        }
+
+        fn visit(schema: &Schema, refs: &mut serde_json::Map<String, serde_json::Value>) {
+            let key = schema.uid().to_string();
+            if refs.contains_key(&key) {
+                return;
+            }
+            // Reserve first so shared/recursive graphs terminate.
+            refs.insert(key.clone(), serde_json::Value::Null);
+            let mut node = serde_json::Map::new();
+            node.insert("type".to_string(), schema.type_name().into());
+            let meta = meta_json(schema.meta());
+            if meta.as_object().is_some_and(|meta| !meta.is_empty()) {
+                node.insert("meta".to_string(), meta);
+            }
+            let uid = |child: &Schema| serde_json::Value::Number(child.uid().into());
+            match schema.node() {
+                Node::Any
+                | Node::Never
+                | Node::String
+                | Node::Number
+                | Node::Boolean
+                | Node::Function => {}
+                Node::Const(value) => {
+                    node.insert(
+                        "value".to_string(),
+                        value.to_json().unwrap_or(serde_json::Value::Null),
+                    );
+                }
+                Node::Bitset(bits) => {
+                    node.insert(
+                        "bits".to_string(),
+                        serde_json::to_value(bits).unwrap_or_default(),
+                    );
+                }
+                Node::Is(name) => {
+                    node.insert("constructor".to_string(), name.clone().into());
+                }
+                Node::Array(inner) => {
+                    visit(inner, refs);
+                    node.insert("inner".to_string(), uid(inner));
+                }
+                Node::Dict { inner, s_key } => {
+                    visit(inner, refs);
+                    visit(s_key, refs);
+                    node.insert("inner".to_string(), uid(inner));
+                    node.insert("sKey".to_string(), uid(s_key));
+                }
+                Node::Tuple(list) | Node::Union(list) | Node::Intersect(list) => {
+                    for child in list {
+                        visit(child, refs);
+                    }
+                    node.insert(
+                        "list".to_string(),
+                        serde_json::Value::Array(list.iter().map(uid).collect()),
+                    );
+                }
+                Node::Object(dict) => {
+                    for child in dict.values() {
+                        visit(child, refs);
+                    }
+                    node.insert(
+                        "dict".to_string(),
+                        serde_json::Value::Object(
+                            dict.iter()
+                                .map(|(name, child)| (name.clone(), uid(child)))
+                                .collect(),
+                        ),
+                    );
+                }
+                Node::Transform {
+                    inner, preserve, ..
+                } => {
+                    visit(inner, refs);
+                    node.insert("inner".to_string(), uid(inner));
+                    if *preserve {
+                        node.insert("preserve".to_string(), true.into());
+                    }
+                }
+                Node::Lazy { builder, cache } => {
+                    let mut cache = cache.lock();
+                    let inner = cache.get_or_insert_with(|| Box::new(builder()));
+                    visit(inner, refs);
+                    node.insert("inner".to_string(), uid(inner));
+                }
+            }
+            refs.insert(key, serde_json::Value::Object(node));
+        }
+
+        let mut refs = serde_json::Map::new();
+        visit(self, &mut refs);
+        serde_json::json!({"uid": self.uid(), "refs": refs})
+    }
+
     /// TS `schema.type`.
     pub fn type_name(&self) -> &'static str {
         match &self.inner.node {
@@ -544,10 +708,10 @@ impl Schema {
         options: &Options,
         strict: bool,
     ) -> Result<Data, ValidationError> {
-        if let Some(ignore) = &options.ignore {
-            if ignore(data, schema) {
-                return Ok(data.clone());
-            }
+        if let Some(ignore) = &options.ignore
+            && ignore(data, schema)
+        {
+            return Ok(data.clone());
         }
         if data.is_nullish() && !matches!(schema.inner.node, Node::Lazy { .. }) {
             if schema.inner.meta.required {
@@ -726,13 +890,13 @@ impl Schema {
                     Some(Data::Object(extract_keys(data)))
                 });
                 let updated = child.i18n(&sub);
-                *child = Box::new(updated);
+                **child = updated;
             }
             _ => {}
         }
         if let Node::Dict { s_key, .. } = &mut inner.node {
             let sub = child_messages(messages, &|data| inner_object(data)?.get("$key").cloned());
-            *s_key = Box::new(s_key.i18n(&sub));
+            **s_key = s_key.i18n(&sub);
         }
         schema
     }
@@ -997,10 +1161,8 @@ fn resolve_node(
                     result.insert(key.clone(), value);
                 }
             }
-            if !strict {
-                if let Data::Object(map) = data {
-                    merge_object_maps(&mut result, map);
-                }
+            if !strict && let Data::Object(map) = data {
+                merge_object_maps(&mut result, map);
             }
             Ok(Data::Object(result))
         }
@@ -1214,17 +1376,18 @@ fn resolve_number(
     };
     let value = *value;
     check_within_range(value, &schema.inner.meta, "number", options, false)?;
-    if let Some(step) = schema.inner.meta.step {
-        if step != 0.0 && !is_multiple_of(value, schema.inner.meta.min.unwrap_or(0.0), step) {
-            return Err(ValidationError::new(
-                format!(
-                    "expected number multiple of {} but got {}",
-                    js_number_string(step),
-                    js_number_string(value)
-                ),
-                options,
-            ));
-        }
+    if let Some(step) = schema.inner.meta.step
+        && step != 0.0
+        && !is_multiple_of(value, schema.inner.meta.min.unwrap_or(0.0), step)
+    {
+        return Err(ValidationError::new(
+            format!(
+                "expected number multiple of {} but got {}",
+                js_number_string(step),
+                js_number_string(value)
+            ),
+            options,
+        ));
     }
     Ok(Data::Number(value))
 }
@@ -1390,9 +1553,8 @@ fn property(
 
 /// JS `merge`: copy keys from `source` that `result` does not have.
 fn merge(result: &mut Data, source: &Data) {
-    match (result, source) {
-        (Data::Object(target), Data::Object(source)) => merge_object_maps(target, source),
-        _ => {}
+    if let (Data::Object(target), Data::Object(source)) = (result, source) {
+        merge_object_maps(target, source);
     }
 }
 

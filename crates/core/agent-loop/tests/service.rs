@@ -113,6 +113,84 @@ async fn install_creates_configured_agents_and_publishes_the_factory() {
     assert!(store.get(&session_id("created-session")).is_none());
 }
 
+#[tokio::test]
+async fn registry_retires_an_agent_through_its_structural_factory_owner() {
+    let (ctx, store, agents) = setup();
+    let loop_service = AgentLoop::install(&ctx, Config::default()).expect("install");
+    let handle = loop_service
+        .create_agent(
+            &ctx,
+            dsh_agent::CreateAgentOptions {
+                session_id: Some(session_id("structural-retirement")),
+                agent_options: Some(dsh_agent::AgentOptions {
+                    provider: Some("test".to_string()),
+                    model: Some("model".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("createAgent");
+    let agent = handle.agent.clone();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !agents.can_retire(&agent) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("factory retirement authority published");
+    assert!(agents.retire(agent).await.expect("structural retirement"));
+    assert!(agents.get(&session_id("structural-retirement")).is_none());
+    assert!(store.get(&session_id("structural-retirement")).is_none());
+    handle.dispose.await;
+}
+
+#[tokio::test]
+async fn setup_receives_the_exact_unpublished_agent() {
+    let (ctx, _store, agents) = setup();
+    let loop_service = AgentLoop::install(&ctx, Config::default()).expect("install");
+    let seen = Arc::new(parking_lot::Mutex::new(None));
+    let seen_for_setup = seen.clone();
+    let registry = agents.clone();
+    let setup: dsh_agent::AgentSetup = Arc::new(move |_ctx, exact| {
+        let seen = seen_for_setup.clone();
+        let registry = registry.clone();
+        Box::pin(async move {
+            assert!(
+                registry.get(exact.id()).is_none(),
+                "setup must run before registry publication"
+            );
+            *seen.lock() = Some(exact);
+            Ok(None)
+        })
+    });
+    let handle = loop_service
+        .create_agent(
+            &ctx,
+            dsh_agent::CreateAgentOptions {
+                session_id: Some(session_id("setup-exact")),
+                agent_options: Some(dsh_agent::AgentOptions {
+                    provider: Some("test".to_string()),
+                    model: Some("model".to_string()),
+                    ..Default::default()
+                }),
+                setup: Some(setup),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create with setup");
+    let seen = seen.lock().clone().expect("setup exact agent");
+    assert!(Arc::ptr_eq(&seen, &handle.agent));
+    assert!(
+        agents
+            .get(handle.agent.id())
+            .is_some_and(|published| Arc::ptr_eq(&published, &handle.agent))
+    );
+    handle.dispose.await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_a_dispose_waiter_does_not_cancel_agent_teardown() {
     let (ctx, store, agents) = setup();

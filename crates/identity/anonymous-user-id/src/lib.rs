@@ -33,20 +33,14 @@ const UUID_PATTERN: &str = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 
 /// Ambient hooks for locating and generating the id; every field has a
 /// default.
+pub type EnvironmentReader = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+#[derive(Default)]
 pub struct AnonymousUserIdOptions {
     /// Environment consulted for `DSH_HOME`; defaults to the process env.
-    pub env: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    pub env: Option<EnvironmentReader>,
     /// UUID generator; defaults to a random v4 (test hook).
     pub random_uuid: Option<Arc<dyn Fn() -> String + Send + Sync>>,
-}
-
-impl Default for AnonymousUserIdOptions {
-    fn default() -> Self {
-        Self {
-            env: None,
-            random_uuid: None,
-        }
-    }
 }
 
 /// Process-lifetime memo keyed by resolved file path, so distinct test homes
@@ -97,7 +91,7 @@ pub fn get_or_create_anonymous_user_id(options: AnonymousUserIdOptions) -> Anony
                 .write(true)
                 .create_new(true)
                 .open(&file)?;
-            write!(handle, "{created}\n")?;
+            writeln!(handle, "{created}")?;
             Ok(())
         })();
         match exclusive {

@@ -208,7 +208,11 @@ impl KvTable for KvTableImpl {
                 self.host.domain_name, self.table_name
             ));
         }
-        let next = f(self.records.lock().get(key).cloned().expect("checked"));
+        let current = self.records.lock().get(key).cloned().expect("checked");
+        let next = f(current.clone());
+        if next == current {
+            return Ok(current);
+        }
         self.host
             .unit
             .put_record(&self.table_name, key, next.clone())

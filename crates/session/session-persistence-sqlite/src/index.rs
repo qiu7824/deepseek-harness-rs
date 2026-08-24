@@ -94,7 +94,7 @@ pub fn parse_config(value: &serde_json::Value) -> Result<SqliteConfig, String> {
         .get("writeBatchMaxDelayMs")
         .and_then(|v| v.as_u64())
         .unwrap_or(DEFAULT_WRITE_BATCH_MAX_DELAY_MS);
-    if write_batch_max_delay_ms < 1 || write_batch_max_delay_ms > MAX_WRITE_BATCH_DELAY_MS {
+    if !(1..=MAX_WRITE_BATCH_DELAY_MS).contains(&write_batch_max_delay_ms) {
         return Err(format!(
             "writeBatchMaxDelayMs must be an integer between 1 and {MAX_WRITE_BATCH_DELAY_MS}"
         ));
@@ -464,7 +464,8 @@ impl SqliteSessionPersistence {
     async fn read_prefix(&self, id: &SessionId) -> Result<Option<StoredPrefix<u64>>, String> {
         self.ensure_ready().await?;
         let identity = self.store_identity();
-        let result = self.with_db(|db| {
+
+        self.with_db(|db| {
             db.execute_batch("BEGIN")
                 .map_err(|error| error.to_string())?;
             let outcome = (|| -> Result<Option<StoredPrefix<u64>>, String> {
@@ -491,8 +492,7 @@ impl SqliteSessionPersistence {
                     Err(error)
                 }
             }
-        });
-        result
+        })
     }
 
     fn insert_event(
@@ -508,7 +508,7 @@ impl SqliteSessionPersistence {
                 id.as_str(),
                 event.seq as i64,
                 event.type_,
-                event.time as i64,
+                { event.time },
                 serde_json::to_string(&event.data).expect("session event data is lossless JSON"),
                 surface_seqs,
                 surface_op,

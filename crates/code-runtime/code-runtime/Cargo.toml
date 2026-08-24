@@ -1,6 +1,6 @@
 [package]
 name = "dsh-code-runtime"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Code-execution capability seam (ctx.codeRuntime): one model-written program against host async bindings — Rust port of @deepseek-ai/dsh-code-runtime"

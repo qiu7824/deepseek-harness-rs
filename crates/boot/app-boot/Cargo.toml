@@ -1,6 +1,6 @@
 [package]
 name = "dsh-app-boot"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Profile discovery, initialization, and patch-layer composition for the dsh launcher family. Rust port of @deepseek-ai/dsh-app-boot (profile core first)"

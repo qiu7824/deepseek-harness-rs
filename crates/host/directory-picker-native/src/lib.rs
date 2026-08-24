@@ -52,6 +52,38 @@ async fn pick_macos(signal: &AbortSignal) -> Option<String> {
     }
 }
 
+/// Open the Windows folder chooser through PowerShell's native WinForms dialog.
+#[cfg(windows)]
+async fn pick_windows(signal: &AbortSignal) -> Option<String> {
+    let abort = signal.clone();
+    let signal_flag: dsh_native_command::NativeCommandAbort = Arc::new(move || abort.aborted());
+    let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='Select workspace directory'; $d.RootFolder=[System.Environment+SpecialFolder]::MyComputer; $d.ShowNewFolderButton=$true; if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){$d.SelectedPath}"#;
+    match dsh_native_command::run_native_command(
+        "powershell.exe",
+        vec![
+            "-NoProfile".to_string(),
+            "-STA".to_string(),
+            "-Command".to_string(),
+            script.to_string(),
+        ]
+        .as_slice(),
+        Some(signal_flag),
+    )
+    .await
+    {
+        Ok(output) => {
+            let path = output.stdout.trim();
+            (!path.is_empty()).then(|| path.to_string())
+        }
+        Err(_) => None,
+    }
+}
+
+#[cfg(not(windows))]
+async fn pick_windows(_signal: &AbortSignal) -> Option<String> {
+    None
+}
+
 /// Open the Linux chooser through `zenity` (kdialog fallback; the TS
 /// native-picker path).
 async fn pick_linux(signal: &AbortSignal) -> Option<String> {
@@ -69,17 +101,14 @@ async fn pick_linux(signal: &AbortSignal) -> Option<String> {
                 std::env::var("HOME").unwrap_or_default(),
             ],
         };
-        match dsh_native_command::run_native_command(binary, &args, Some(signal_flag)).await {
-            Ok(output) => {
-                let path = output.stdout.trim();
-                if !path.is_empty() {
-                    return Some(path.to_string());
-                }
-                // zenity answered with no path: fall through to kdialog.
+        if let Ok(output) =
+            dsh_native_command::run_native_command(binary, &args, Some(signal_flag)).await
+        {
+            let path = output.stdout.trim();
+            if !path.is_empty() {
+                return Some(path.to_string());
             }
-            // Missing binary (ENOENT) or operator cancel: try the fallback,
-            // then give up.
-            Err(_) => {}
+            // zenity answered with no path: fall through to kdialog.
         }
     }
     None
@@ -108,10 +137,9 @@ impl NativeDirectoryPicker {
                         pick_macos(&signal).await
                     } else if cfg!(target_os = "linux") {
                         pick_linux(&signal).await
+                    } else if cfg!(windows) {
+                        pick_windows(&signal).await
                     } else {
-                        // Windows: the IFileOpenDialog COM dialog arrives with
-                        // the win32-dialog milestone; picking is unavailable
-                        // until then.
                         None
                     }
                 })

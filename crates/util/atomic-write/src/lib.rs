@@ -146,7 +146,7 @@ fn is_lock_contention(error: &std::io::Error) -> bool {
         // Create-new races around another writer's lock release can surface
         // as access/sharing/lock denial rather than AlreadyExists on Windows.
         // The existing deadline keeps permanent permission failures loud.
-        return matches!(error.raw_os_error(), Some(5 | 32 | 33));
+        matches!(error.raw_os_error(), Some(5 | 32 | 33))
     }
     #[cfg(not(windows))]
     false

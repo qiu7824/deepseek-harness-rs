@@ -97,7 +97,7 @@ impl Logger {
                     .levels()
                     .get(&this.name)
                     .copied()
-                    .or_else(|| this.level)
+                    .or(this.level)
                     .unwrap_or_else(|| exporter.default_level());
                 if target < level {
                     continue;

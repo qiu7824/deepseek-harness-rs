@@ -489,22 +489,19 @@ async fn rejects_nonexistent_and_non_directory_paths_without_changing_order() {
         .registry
         .create(&missing, None)
         .await
-        .err()
-        .expect("rejects");
+        .expect_err("rejects");
     assert!(error.contains("cannot create a workspace at"), "{error}");
     let error = result
         .registry
         .create(&file, None)
         .await
-        .err()
-        .expect("rejects");
+        .expect_err("rejects");
     assert!(error.contains("path is not a directory"), "{error}");
     let error = result
         .registry
         .resolve_by_path(&missing)
         .await
-        .err()
-        .expect("rejects");
+        .expect_err("rejects");
     assert!(error.contains("cannot resolve workspace path"), "{error}");
     assert_eq!(result.registry.list().expect("list").len(), 0);
     let _ = parent;
@@ -533,8 +530,7 @@ async fn rolls_back_the_provisional_cache_when_the_record_write_fails() {
         .registry
         .create(&dir, None)
         .await
-        .err()
-        .expect("create rejects");
+        .expect_err("create rejects");
     assert!(error.contains("selected bootstrap put failure"), "{error}");
     assert_eq!(result.registry.list().expect("list").len(), 0);
     assert!(result.registry.create(&dir, None).await.is_ok());
@@ -563,8 +559,7 @@ async fn does_not_publish_a_workspace_when_its_pending_marker_cannot_be_written(
         .registry
         .create(&dir, None)
         .await
-        .err()
-        .expect("create rejects");
+        .expect_err("create rejects");
     assert!(
         error.contains("selected bootstrap marker failure"),
         "{error}"
@@ -603,8 +598,7 @@ async fn rolls_back_a_record_when_registry_order_persistence_fails() {
         .registry
         .create(&dir, None)
         .await
-        .err()
-        .expect("create rejects");
+        .expect_err("create rejects");
     assert!(error.contains("marker failure"), "{error}");
     assert_eq!(result.registry.list().expect("list").len(), 0);
     let media = pool.media.lock();
@@ -636,8 +630,7 @@ async fn reports_both_order_and_rollback_failures_while_retaining_the_recoverabl
         .registry
         .create(&dir, None)
         .await
-        .err()
-        .expect("create rejects");
+        .expect_err("create rejects");
     assert!(
         error.contains("selected bootstrap marker failure"),
         "{error}"
@@ -675,8 +668,7 @@ async fn reports_a_record_write_and_pending_marker_rollback_failure_together() {
         .registry
         .create(&dir, None)
         .await
-        .err()
-        .expect("create rejects");
+        .expect_err("create rejects");
     assert!(error.contains("selected bootstrap put failure"), "{error}");
     assert!(
         error.contains("selected bootstrap marker failure"),
@@ -713,8 +705,7 @@ async fn reports_an_order_write_and_pending_marker_rollback_failure_together() {
         .registry
         .create(&dir, None)
         .await
-        .err()
-        .expect("create rejects");
+        .expect_err("create rejects");
     assert!(
         error.contains("selected bootstrap marker failure"),
         "{error}"
@@ -742,21 +733,19 @@ async fn deletes_only_the_registration_and_leaves_its_directory_and_session_head
         .await
         .expect("attach");
 
-    assert_eq!(
+    assert!(
         result
             .registry
             .delete(workspace.id())
             .await
-            .expect("delete"),
-        true
+            .expect("delete")
     );
-    assert_eq!(
-        result
+    assert!(
+        !result
             .registry
             .delete(workspace.id())
             .await
-            .expect("delete"),
-        false
+            .expect("delete")
     );
     assert_eq!(result.registry.get(workspace.id()), None);
     assert_eq!(result.registry.list().expect("list").len(), 0);
@@ -817,8 +806,7 @@ async fn rolls_registry_order_and_cache_back_when_record_deletion_fails() {
         .registry
         .delete(workspace.id())
         .await
-        .err()
-        .expect("delete rejects");
+        .expect_err("delete rejects");
     assert!(
         error.contains("selected rollback delete failure"),
         "{error}"
@@ -858,10 +846,7 @@ async fn commits_deletion_and_leaves_a_recoverable_marker_when_marker_cleanup_fa
     .expect("install");
     let workspace = first.registry.create(&dir, None).await.expect("create");
 
-    assert_eq!(
-        first.registry.delete(workspace.id()).await.expect("delete"),
-        true
-    );
+    assert!(first.registry.delete(workspace.id()).await.expect("delete"));
     assert_eq!(first.registry.list().expect("list").len(), 0);
     let state = stored_state(&pool);
     assert_eq!(
@@ -922,8 +907,7 @@ async fn keeps_the_failed_deletion_unpublished_when_record_and_order_rollback_bo
         .registry
         .delete(workspace.id())
         .await
-        .err()
-        .expect("delete rejects");
+        .expect_err("delete rejects");
     assert!(
         error.contains("selected rollback delete failure"),
         "{error}"
@@ -973,7 +957,7 @@ async fn moves_a_workspace_before_an_anchor_or_to_the_end_and_restores_that_orde
 
     let moved = result
         .registry
-        .insert_before(&first.id(), Some(&second.id()))
+        .insert_before(first.id(), Some(second.id()))
         .await
         .expect("move");
     assert_eq!(
@@ -986,7 +970,7 @@ async fn moves_a_workspace_before_an_anchor_or_to_the_end_and_restores_that_orde
     );
     let moved = result
         .registry
-        .insert_before(&third.id(), None)
+        .insert_before(third.id(), None)
         .await
         .expect("move to end");
     assert_eq!(
@@ -1040,17 +1024,17 @@ async fn keeps_self_anchored_and_already_positioned_moves_write_free_and_rejects
 
     result
         .registry
-        .insert_before(&second.id(), Some(&second.id()))
+        .insert_before(second.id(), Some(second.id()))
         .await
         .expect("self anchor");
     result
         .registry
-        .insert_before(&second.id(), Some(&first.id()))
+        .insert_before(second.id(), Some(first.id()))
         .await
         .expect("already positioned");
     result
         .registry
-        .insert_before(&first.id(), None)
+        .insert_before(first.id(), None)
         .await
         .expect("already at end");
     settle().await;
@@ -1064,18 +1048,16 @@ async fn keeps_self_anchored_and_already_positioned_moves_write_free_and_rejects
         .registry
         .insert_before(&wid("missing"), None)
         .await
-        .err()
-        .expect("rejects unknown");
+        .expect_err("rejects unknown");
     assert!(
         error.contains("cannot reorder unknown workspace 'missing'"),
         "{error}"
     );
     let error = result
         .registry
-        .insert_before(&second.id(), Some(&wid("missing-anchor")))
+        .insert_before(second.id(), Some(&wid("missing-anchor")))
         .await
-        .err()
-        .expect("rejects unknown anchor");
+        .expect_err("rejects unknown anchor");
     assert!(error.contains("'missing-anchor'"), "{error}");
     settle().await;
     assert_eq!(result.changes.lock().len(), written);
@@ -1210,14 +1192,12 @@ async fn rejects_moves_naming_an_unaccounted_session_or_anchor() {
     let error = workspace
         .insert_session_before(&sid("ghost"), None)
         .await
-        .err()
-        .expect("rejects unaccounted");
+        .expect_err("rejects unaccounted");
     assert!(error.contains("the session is not accounted"), "{error}");
     let error = workspace
         .insert_session_before(&sid("s1"), Some(&sid("ghost")))
         .await
-        .err()
-        .expect("rejects unaccounted anchor");
+        .expect_err("rejects unaccounted anchor");
     assert!(
         error.contains("the anchor session is not accounted"),
         "{error}"
@@ -1269,32 +1249,27 @@ async fn rejects_mismatched_missing_unresolved_non_directory_and_unknown_cwd_fac
     let error = workspace
         .attach_session(&sid("mismatch"))
         .await
-        .err()
-        .expect("rejects mismatch");
+        .expect_err("rejects mismatch");
     assert!(error.contains("resolves to"), "{error}");
     let error = workspace
         .attach_session(&sid("no-cwd"))
         .await
-        .err()
-        .expect("rejects no-cwd");
+        .expect_err("rejects no-cwd");
     assert!(error.contains("no cwd"), "{error}");
     let error = workspace
         .attach_session(&sid("gone"))
         .await
-        .err()
-        .expect("rejects gone");
+        .expect_err("rejects gone");
     assert!(error.contains("does not resolve"), "{error}");
     let error = workspace
         .attach_session(&sid("file"))
         .await
-        .err()
-        .expect("rejects file");
+        .expect_err("rejects file");
     assert!(error.contains("not a directory"), "{error}");
     let error = workspace
         .attach_session(&sid("unknown"))
         .await
-        .err()
-        .expect("rejects unknown");
+        .expect_err("rejects unknown");
     assert!(error.contains("no such session"), "{error}");
     assert_eq!(workspace.session_ids().len(), 0);
 }
@@ -1327,7 +1302,7 @@ async fn decides_detach_attach_membership_at_domain_write_chain_slots() {
 // header-validated membership projection
 
 #[tokio::test(flavor = "current_thread")]
-async fn requires_both_candidate_id_and_matching_canonical_cwd_without_re_reading_on_list() {
+async fn restores_initialized_durable_membership_without_rescanning_session_headers() {
     let temp = TempRoot::new();
     let owned = canonical(&temp.dir("owned"));
     let elsewhere = canonical(&temp.dir("projection-elsewhere"));
@@ -1357,13 +1332,21 @@ async fn requires_both_candidate_id_and_matching_canonical_cwd_without_re_readin
     let workspace = result.registry.list().expect("list").remove(0);
     assert_eq!(
         session_strings(&workspace.session_ids()),
-        vec!["good".to_string()]
+        vec![
+            "good".to_string(),
+            "mismatch".to_string(),
+            "missing".to_string()
+        ]
     );
     assert_eq!(
         session_strings(&result.registry.list().expect("list")[0].session_ids()),
-        vec!["good".to_string()]
+        vec![
+            "good".to_string(),
+            "mismatch".to_string(),
+            "missing".to_string()
+        ]
     );
-    assert_eq!(result.persistence.list_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(result.persistence.list_calls.load(Ordering::SeqCst), 0);
     let stored = stored_record(&pool, "00000000-0000-4000-8000-000000000001");
     assert_eq!(
         session_strings(&stored.session_ids),
@@ -1378,7 +1361,11 @@ async fn requires_both_candidate_id_and_matching_canonical_cwd_without_re_readin
     let stored = stored_record(&pool, "00000000-0000-4000-8000-000000000001");
     assert_eq!(
         session_strings(&stored.session_ids),
-        vec!["good".to_string()]
+        vec![
+            "good".to_string(),
+            "mismatch".to_string(),
+            "missing".to_string()
+        ]
     );
     assert!(!workspace.session_ids().contains(&sid("cwd-only")));
 }
@@ -1481,7 +1468,7 @@ async fn fails_list_if_the_durable_order_and_entity_cache_are_externally_diverge
     let result = harness(Arc::new(MemoryMediaPool::new()), &[], None).await;
     let workspace = result.registry.create(&dir, None).await.expect("create");
     result.registry.uncache(workspace.id());
-    let error = result.registry.list().err().expect("list fails");
+    let error = result.registry.list().expect_err("list fails");
     assert!(error.contains("references missing workspace"), "{error}");
 }
 
@@ -1610,11 +1597,7 @@ async fn keeps_created_at_stable_advances_updated_at_and_preserves_snapshot_on_w
             >= chrono::DateTime::parse_from_rfc3339(&created_at).expect("createdAt parses")
     );
     result.pool.fail_next_writes.store(1, Ordering::SeqCst);
-    let error = workspace
-        .set_title("lost")
-        .await
-        .err()
-        .expect("write fails");
+    let error = workspace.set_title("lost").await.expect_err("write fails");
     assert!(error.contains("injected"), "{error}");
     assert_eq!(workspace.title(), "kept");
 }
@@ -1752,8 +1735,7 @@ async fn accepts_unaccounted_and_live_sessions_but_rejects_unknown_ids_without_w
         .registry
         .archive_session(&sid("ghost"))
         .await
-        .err()
-        .expect("rejects unknown");
+        .expect_err("rejects unknown");
     assert!(error.contains("cannot archive session 'ghost'"), "{error}");
     assert_eq!(
         session_strings(&stored_state(&result.pool).archived_session_ids),
@@ -1780,8 +1762,7 @@ async fn permanently_deletes_only_archived_cold_sessions_and_clears_every_accoun
         .registry
         .delete_archived_session(&sid("deleted"), None)
         .await
-        .err()
-        .expect("rejects unarchived");
+        .expect_err("rejects unarchived");
     assert!(error.contains("it is not archived"), "{error}");
     assert!(result.persistence.delete_calls.lock().is_empty());
     result
@@ -1789,13 +1770,12 @@ async fn permanently_deletes_only_archived_cold_sessions_and_clears_every_accoun
         .archive_session(&sid("deleted"))
         .await
         .expect("archive");
-    assert_eq!(
+    assert!(
         result
             .registry
             .delete_archived_session(&sid("deleted"), None)
             .await
-            .expect("delete"),
-        true
+            .expect("delete")
     );
     settle().await;
 
@@ -1836,8 +1816,7 @@ async fn refuses_an_unowned_live_deletion_but_accepts_an_explicit_lifecycle_rele
         .registry
         .delete_archived_session(&session_id, None)
         .await
-        .err()
-        .expect("rejects live");
+        .expect_err("rejects live");
     assert!(error.contains("while it is live"), "{error}");
     assert!(result.persistence.delete_calls.lock().is_empty());
     assert_eq!(
@@ -1857,13 +1836,12 @@ async fn refuses_an_unowned_live_deletion_but_accepts_an_explicit_lifecycle_rele
                 })
             }
         });
-    assert_eq!(
+    assert!(
         result
             .registry
             .delete_archived_session(&session_id, Some(release))
             .await
-            .expect("delete with release"),
-        true
+            .expect("delete with release")
     );
     assert!(live.get(&session_id).is_none());
     assert_eq!(result.registry.archived_session_ids().len(), 0);
@@ -1879,8 +1857,7 @@ async fn propagates_a_persistence_listing_failure_instead_of_reporting_an_unknow
         .registry
         .archive_session(&sid("unlisted"))
         .await
-        .err()
-        .expect("rejects");
+        .expect_err("rejects");
     assert!(error.contains("persistence backend down"), "{error}");
     assert_eq!(stored_state(&result.pool).archived_session_ids.len(), 0);
 }

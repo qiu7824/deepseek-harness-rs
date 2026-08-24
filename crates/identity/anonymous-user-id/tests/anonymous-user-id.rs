@@ -3,28 +3,28 @@
 //! adoption, best-effort failure, process-lifetime memoization, and the
 //! invariant companion registration.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dsh_anonymous_user_id::{
-    ANONYMOUS_USER_ID_FILE_NAME, AnonymousUserIdOptions, get_or_create_anonymous_user_id,
-    invariant::AnonymousUserIdInvariantPlugin,
+    ANONYMOUS_USER_ID_FILE_NAME, AnonymousUserIdOptions, EnvironmentReader,
+    get_or_create_anonymous_user_id, invariant::AnonymousUserIdInvariantPlugin,
 };
 
 const UUID_PATTERN: &str = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
 
 fn temp_home() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("dsh-userid-{}", uuid::Uuid::new_v4().to_string()));
+    let dir = std::env::temp_dir().join(format!("dsh-userid-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("temp home");
     dir
 }
 
-fn env_of(home: &PathBuf) -> Arc<dyn Fn(&str) -> Option<String> + Send + Sync> {
+fn env_of(home: &Path) -> EnvironmentReader {
     let home = home.to_string_lossy().to_string();
     Arc::new(move |name: &str| (name == "DSH_HOME").then(|| home.clone()))
 }
 
-fn file_of(home: &PathBuf) -> PathBuf {
+fn file_of(home: &Path) -> PathBuf {
     home.join(ANONYMOUS_USER_ID_FILE_NAME)
 }
 

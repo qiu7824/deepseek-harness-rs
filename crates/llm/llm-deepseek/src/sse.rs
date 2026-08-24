@@ -70,9 +70,18 @@ impl SseParser {
         Ok(payloads)
     }
 
-    pub(crate) fn finish(&self) -> Result<(), LlmFailure> {
+    #[cfg(test)]
+    pub(crate) fn finish(&mut self) -> Result<Vec<String>, LlmFailure> {
         if self.done {
-            return Ok(());
+            return Ok(Vec::new());
+        }
+        if !self.bytes.is_empty() {
+            self.bytes.push(b'\n');
+            self.bytes.push(b'\n');
+            let payloads = self.push(&[])?;
+            if self.done {
+                return Ok(payloads);
+            }
         }
         Err(LlmFailure {
             message: "SSE stream ended without [DONE]".to_string(),
@@ -81,5 +90,38 @@ impl SseParser {
             provider_retry_after_ms: None,
             request_id: None,
         })
+    }
+
+    /// Flush a final event at EOF for protocols whose translator owns the
+    /// terminal marker instead of using chat-completions `[DONE]`.
+    pub(crate) fn finish_at_eof(&mut self) -> Result<Vec<String>, LlmFailure> {
+        if self.done || (self.bytes.is_empty() && self.data.is_empty()) {
+            return Ok(Vec::new());
+        }
+        self.bytes.push(b'\n');
+        self.bytes.push(b'\n');
+        self.push(&[])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DONE, SseParser};
+
+    #[test]
+    fn finish_flushes_a_done_event_without_a_trailing_blank_line() {
+        let mut parser = SseParser::new();
+        assert!(parser.push(b"data: [DONE]").expect("push").is_empty());
+        assert_eq!(parser.finish().expect("finish"), vec![DONE.to_string()]);
+    }
+
+    #[test]
+    fn finish_still_rejects_a_truncated_non_done_event() {
+        let mut parser = SseParser::new();
+        parser
+            .push(b"data: {\"choices\":[]}")
+            .expect("push truncated event");
+        let error = parser.finish().expect_err("missing done must fail");
+        assert_eq!(error.code, "STREAM_CLOSED");
     }
 }

@@ -197,7 +197,7 @@ window.__ModuleLoader__.load({
 				onClick: () => {
 					request(sessionId);
 				},
-				children: [(0, react_jsx_runtime.jsx)("span", { children: "Session log" }), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconDownloadOutline16, { size: 12 })]
+				children: [(0, react_jsx_runtime.jsx)("span", { children: "会话日志" }), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconDownloadOutline16, { size: 12 })]
 			}), (0, react_jsx_runtime.jsx)(SessionLogDownloadDialog, { ...props })] });
 		}
 		//#endregion

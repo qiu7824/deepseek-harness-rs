@@ -151,8 +151,7 @@ async fn rejects_a_blank_path() {
     let temp = TempRoot::new();
     let error = resolve_local_target(temp.0.to_str().expect("cwd"), "   ")
         .await
-        .err()
-        .expect("rejects");
+        .expect_err("rejects");
     assert_eq!(error.code, FsErrorCode::FsNotFound);
 }
 
@@ -162,8 +161,7 @@ async fn rejects_a_path_whose_ancestor_is_a_file_with_a_structured_error() {
     temp.write("afile", b"regular");
     let error = resolve_local_target(temp.0.to_str().expect("cwd"), "afile/child.txt")
         .await
-        .err()
-        .expect("rejects");
+        .expect_err("rejects");
     assert_eq!(error.code, FsErrorCode::FsNotFound);
     assert!(error.to_string().contains("not a directory"), "{error}");
 }
@@ -226,8 +224,7 @@ async fn read_whole_text_reads_rejects_missing_directory_binary_and_invalid_utf8
     assert_eq!(
         read_whole_text(&missing, Some(&never()))
             .await
-            .err()
-            .expect("missing")
+            .expect_err("missing")
             .code,
         FsErrorCode::FsNotFound
     );
@@ -241,8 +238,7 @@ async fn read_whole_text_reads_rejects_missing_directory_binary_and_invalid_utf8
     assert_eq!(
         read_whole_text(&dir_target, Some(&never()))
             .await
-            .err()
-            .expect("directory")
+            .expect_err("directory")
             .code,
         FsErrorCode::FsNotRegularFile
     );
@@ -255,8 +251,7 @@ async fn read_whole_text_reads_rejects_missing_directory_binary_and_invalid_utf8
     assert_eq!(
         read_whole_text(&binary_target, Some(&never()))
             .await
-            .err()
-            .expect("binary")
+            .expect_err("binary")
             .code,
         FsErrorCode::FsNotText
     );
@@ -269,8 +264,7 @@ async fn read_whole_text_reads_rejects_missing_directory_binary_and_invalid_utf8
     assert_eq!(
         read_whole_text(&invalid_target, Some(&never()))
             .await
-            .err()
-            .expect("utf8")
+            .expect_err("utf8")
             .code,
         FsErrorCode::FsNotText
     );
@@ -279,8 +273,7 @@ async fn read_whole_text_reads_rejects_missing_directory_binary_and_invalid_utf8
     assert_eq!(
         read_whole_text(&local, Some(&aborted()))
             .await
-            .err()
-            .expect("aborted")
+            .expect_err("aborted")
             .code,
         FsErrorCode::FsAborted
     );
@@ -305,8 +298,7 @@ async fn read_whole_bytes_bounds_content_and_skips_decoding() {
     assert_eq!(
         read_whole_bytes(&local, Some(&never()), 2, &internals)
             .await
-            .err()
-            .expect("cap")
+            .expect_err("cap")
             .code,
         FsErrorCode::FsTooLarge
     );
@@ -343,22 +335,19 @@ fn apply_literal_edit_replaces_matches_and_rejects_bad_shapes() {
 
     assert_eq!(
         apply_literal_edit("alpha beta", "missing", "x", false, "f")
-            .err()
-            .expect("zero")
+            .expect_err("zero")
             .code,
         FsErrorCode::FsEditNotFound
     );
     assert_eq!(
         apply_literal_edit("alpha beta", "", "x", false, "f")
-            .err()
-            .expect("empty")
+            .expect_err("empty")
             .code,
         FsErrorCode::FsEditNotFound
     );
     assert_eq!(
         apply_literal_edit("alpha alpha", "alpha", "x", false, "f")
-            .err()
-            .expect("ambiguous")
+            .expect_err("ambiguous")
             .code,
         FsErrorCode::FsAmbiguousEdit
     );
@@ -422,8 +411,7 @@ async fn read_text_for_diff_bounds_the_opened_file_and_returns_null_for_undiffab
     assert_eq!(
         read_text_for_diff(&small, 1024, Some(&aborted()))
             .await
-            .err()
-            .expect("aborted")
+            .expect_err("aborted")
             .code,
         FsErrorCode::FsAborted
     );
@@ -494,8 +482,7 @@ async fn write_file_atomic_creates_parent_directories_and_honors_pre_abort() {
         None,
     )
     .await
-    .err()
-    .expect("aborted");
+    .expect_err("aborted");
     assert_eq!(error.code, FsErrorCode::FsAborted);
     assert!(!Path::new(&other).exists());
 }
@@ -530,8 +517,7 @@ async fn guarded_create_preserves_a_competitor_through_hard_link() {
         Some(&guard),
     )
     .await
-    .err()
-    .expect("rejects");
+    .expect_err("rejects");
     assert_eq!(error.code, FsErrorCode::FsNotObserved);
     assert_eq!(
         std::fs::read_to_string(&target).expect("read"),
@@ -598,8 +584,7 @@ async fn provider_resolves_reads_writes_and_edits() {
             None,
         )
         .await
-        .err()
-        .expect("stale");
+        .expect_err("stale");
     assert_eq!(stale.code, FsErrorCode::FsStaleVersion);
 
     // createIfAbsent onto an existing file rejects.
@@ -612,8 +597,7 @@ async fn provider_resolves_reads_writes_and_edits() {
             None,
         )
         .await
-        .err()
-        .expect("blind overwrite rejects");
+        .expect_err("blind overwrite rejects");
     assert_eq!(overwrite.code, FsErrorCode::FsNotObserved);
 
     // Literal edit at the fresh version.
@@ -671,8 +655,7 @@ async fn provider_rejects_directories_and_honors_opts_cwd() {
     let error = backend
         .write_text(&dir_target, "x", None, None, None)
         .await
-        .err()
-        .expect("dir rejects");
+        .expect_err("dir rejects");
     assert_eq!(error.code, FsErrorCode::FsNotRegularFile);
 }
 

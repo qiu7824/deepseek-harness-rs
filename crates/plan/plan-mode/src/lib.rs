@@ -238,19 +238,39 @@ impl PlanModeController {
             cordis::EventOptions::default(),
         ));
 
-        // The plan:policy guidance section. The Rust AssembleContext carries
-        // no agent, so the provider resolves the TS no-agent empty branch
-        // (documented deviation).
+        // The plan:policy guidance section is resolved against the concrete
+        // session carried by prompt assembly; inactive sessions contribute
+        // no plan policy.
         if let Some(system_prompt) = ctx
             .get_typed::<Arc<SystemPrompt>>("systemPrompt", false)
             .map(|slot| slot.as_ref().clone())
         {
+            let ctx_for_policy = ctx.clone();
+            let section = service.section.clone();
             let disposer = system_prompt.section(
                 ctx,
                 PromptSection {
                     name: "plan:policy".to_string(),
                     order: 50.0,
-                    text: PromptText::Static(String::new()),
+                    text: PromptText::Provider(Arc::new(move |assembly| {
+                        let Some(session_id) = assembly.field_str("sessionId") else {
+                            return String::new();
+                        };
+                        let Some(store) = ctx_for_policy
+                            .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
+                            .map(|slot| slot.as_ref().clone())
+                        else {
+                            return String::new();
+                        };
+                        let Some(session) = store.get(&dsh_session::session_id(session_id)) else {
+                            return String::new();
+                        };
+                        if fold_plan_mode(&session.events(), session.events().len()) {
+                            section.clone()
+                        } else {
+                            String::new()
+                        }
+                    })),
                     complete: None,
                 },
             );
@@ -779,8 +799,19 @@ impl Plugin for PlanModePlugin {
         InjectSpec::new(["tools", "systemPrompt"])
     }
 
-    async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
-        PlanModeController::install(ctx, &self.config)
+    async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
+        let config = if let Some(value) = config.downcast_ref::<serde_json::Value>() {
+            PlanModeConfig {
+                section: value
+                    .get("section")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| self.config.section.clone()),
+            }
+        } else {
+            self.config.clone()
+        };
+        PlanModeController::install(ctx, &config)
             .map(|_| ())
             .map_err(|message| PluginError::from(anyhow::anyhow!(message)))
     }

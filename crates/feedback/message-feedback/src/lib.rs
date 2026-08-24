@@ -204,12 +204,10 @@ fn validate_item(item: &JsonValue) -> Result<(), String> {
     if rating != "positive" && rating != "negative" {
         return Err("rating must be positive or negative".to_string());
     }
-    if let Some(note) = item.get("note").and_then(|value| value.as_str()) {
-        if note.trim().is_empty() {
-            return Err(
-                "message feedback note must contain a non-whitespace character".to_string(),
-            );
-        }
+    if let Some(note) = item.get("note").and_then(|value| value.as_str())
+        && note.trim().is_empty()
+    {
+        return Err("message feedback note must contain a non-whitespace character".to_string());
     }
     let version = item
         .get("version")
@@ -243,10 +241,10 @@ pub fn validate_row(value: &JsonValue) -> Result<(), String> {
     if created_at > MAX_SAFE_INTEGER {
         return Err("row.session.createdAt must be a non-negative safe integer".to_string());
     }
-    if let Some(cwd) = session.get("cwd") {
-        if !cwd.is_string() {
-            return Err("row.session.cwd must be a string".to_string());
-        }
+    if let Some(cwd) = session.get("cwd")
+        && !cwd.is_string()
+    {
+        return Err("row.session.cwd must be a string".to_string());
     }
     let items = value
         .get("items")
@@ -396,10 +394,11 @@ impl MessageFeedbackService {
                     MessageFeedbackFailure::VersionConflict { current: existing },
                 ));
             }
-            if let Some(existing) = &existing {
-                if existing.rating == request.rating && existing.note == note {
-                    return Ok(MessageFeedbackSuccess::of(existing.clone()));
-                }
+            if let Some(existing) = &existing
+                && existing.rating == request.rating
+                && existing.note == note
+            {
+                return Ok(MessageFeedbackSuccess::of(existing.clone()));
             }
             let now = chrono::Utc::now().timestamp_millis() as u64;
             let item = MessageFeedbackItem {
@@ -552,20 +551,20 @@ impl MessageFeedbackService {
         let live = store
             .as_ref()
             .and_then(|store| store.get(&inspection.meta.id));
-        if let Some(live) = &live {
-            if same_header_identity(live.header(), &inspection.meta) {
-                let flushed = store
-                    .as_ref()
-                    .expect("store")
-                    .flush(live)
-                    .await
-                    .expect("message-feedback: session flush failed");
-                if !flushed {
-                    panic!(
-                        "message-feedback: no durability listener participated for live session '{}'",
-                        inspection.meta.id
-                    );
-                }
+        if let Some(live) = &live
+            && same_header_identity(live.header(), &inspection.meta)
+        {
+            let flushed = store
+                .as_ref()
+                .expect("store")
+                .flush(live)
+                .await
+                .expect("message-feedback: session flush failed");
+            if !flushed {
+                panic!(
+                    "message-feedback: no durability listener participated for live session '{}'",
+                    inspection.meta.id
+                );
             }
         }
         let result = persistence

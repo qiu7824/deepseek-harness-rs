@@ -1,3 +1,6 @@
+#![allow(clippy::type_complexity)]
+// Environment and SDK capability callbacks preserve the adapter boundary.
+
 //! Shared ownership of one E2B sandbox. Capability adapters await the same
 //! SDK handle, so filesystem and process operations inhabit one remote
 //! Linux world. Rust port of `packages/e2b/e2b`.

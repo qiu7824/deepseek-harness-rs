@@ -253,8 +253,7 @@ impl TokenMeter {
                 );
             }
             "step/start" => {
-                if state.step_start.is_some() {
-                    let (turn, step, _) = state.step_start.expect("checked");
+                if let Some((turn, step, _)) = state.step_start {
                     return Err(format!(
                         "token meter: step/start at seq {} arrived before turn {turn}/step {step} ended",
                         event.seq
@@ -400,10 +399,10 @@ impl TokenMeter {
                     event.seq
                 ));
             }
-            if let Some(chunk) = source.data.get("chunk") {
-                if let Ok(chunk) = serde_json::from_value::<dsh_llm::StreamChunk>(chunk.clone()) {
-                    assembler.push(&chunk);
-                }
+            if let Some(chunk) = source.data.get("chunk")
+                && let Ok(chunk) = serde_json::from_value::<dsh_llm::StreamChunk>(chunk.clone())
+            {
+                assembler.push(&chunk);
             }
         }
         let provider_content = assembler.blocks();
@@ -489,10 +488,10 @@ impl LocalBlockAssembler {
                     if !id.as_str().is_empty() {
                         *id_buffer = id.as_str().to_string();
                     }
-                    if let Some(name) = name {
-                        if !name.is_empty() {
-                            *name_buffer = name.clone();
-                        }
+                    if let Some(name) = name
+                        && !name.is_empty()
+                    {
+                        *name_buffer = name.clone();
                     }
                     arguments.push_str(arguments_delta);
                 }

@@ -1,6 +1,6 @@
 [package]
 name = "dsh-llm"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Canonical provider-neutral message and streaming vocabulary plus the adapter runtime: Rust port of @deepseek-ai/dsh-llm"

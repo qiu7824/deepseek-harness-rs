@@ -123,10 +123,7 @@ impl DomainFacility {
                 .open(&descriptor_of(spec))
                 .await
                 .map_err(|error| error.message)?;
-            match self.build(spec, unit).await {
-                Ok(domain) => Ok(domain),
-                Err(error) => Err(error),
-            }
+            self.build(spec, unit).await
         })
         .await;
         match &outcome {

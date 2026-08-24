@@ -201,7 +201,7 @@ fn read_syscall(
         .take(6)
         .map(|field| u32::from_str_radix(field.trim_start_matches("0x"), 16).unwrap_or(u32::MAX))
         .collect();
-    if args.iter().any(|value| *value == u32::MAX) {
+    if args.contains(&u32::MAX) {
         return None;
     }
     Some(SyscallInfo { number, args })
@@ -398,10 +398,10 @@ impl ProcessInspector for LinuxProcessInspector {
                 continue;
             }
             for tid in numeric_entries(self.internals.as_ref(), &format!("/proc/{pid}/task")) {
-                if let Some(syscall) = read_syscall(self.internals.as_ref(), pid, tid) {
-                    if syscall_waits_on_stdin(self.internals.as_ref(), pid, &syscall, &table) {
-                        return true;
-                    }
+                if let Some(syscall) = read_syscall(self.internals.as_ref(), pid, tid)
+                    && syscall_waits_on_stdin(self.internals.as_ref(), pid, &syscall, &table)
+                {
+                    return true;
                 }
             }
         }

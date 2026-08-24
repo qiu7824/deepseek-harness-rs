@@ -48,6 +48,7 @@ impl Drop for TempRoot {
 
 /// A directory OUTSIDE every writable grant: the profile home's temp is a
 /// grant, so the "outside" must live under a sibling of the workspace.
+#[allow(dead_code)] // Used only by platform-specific sandbox cases.
 fn outside_base() -> std::path::PathBuf {
     let base = std::env::temp_dir()
         .parent()
@@ -101,8 +102,7 @@ async fn read_only_denies_write_and_edit_but_allows_reads() {
             None,
         )
         .await
-        .err()
-        .expect("denied");
+        .expect_err("denied");
     assert_eq!(error.code, FsErrorCode::FsSandboxDenied);
     assert!(!std::path::Path::new(&denied).exists());
 
@@ -155,8 +155,7 @@ async fn workspace_write_contains_and_denies_traversal_and_symlink_escapes() {
             None,
         )
         .await
-        .err()
-        .expect("denied");
+        .expect_err("denied");
     assert_eq!(error.code, FsErrorCode::FsSandboxDenied);
     assert!(!std::path::Path::new(&escape).exists());
 
@@ -173,8 +172,7 @@ async fn workspace_write_contains_and_denies_traversal_and_symlink_escapes() {
             None,
         )
         .await
-        .err()
-        .expect("denied");
+        .expect_err("denied");
     assert_eq!(error.code, FsErrorCode::FsSandboxDenied);
 
     // A symlinked directory inside the workspace pointing OUT is denied
@@ -193,8 +191,7 @@ async fn workspace_write_contains_and_denies_traversal_and_symlink_escapes() {
             None,
         )
         .await
-        .err()
-        .expect("denied");
+        .expect_err("denied");
     assert_eq!(error.code, FsErrorCode::FsSandboxDenied);
     assert!(!std::path::Path::new(&outside).join("f.txt").exists());
 
@@ -306,7 +303,6 @@ async fn the_per_call_policy_override_escalation() {
             None,
         )
         .await
-        .err()
-        .expect("denied");
+        .expect_err("denied");
     assert_eq!(error.code, FsErrorCode::FsSandboxDenied);
 }

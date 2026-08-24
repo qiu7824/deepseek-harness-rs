@@ -218,11 +218,11 @@ impl OutputCollector {
     /// Open the spill file lazily and append `chunk` (and any prior chunks
     /// once) (TS `spillAll`).
     fn spill_all(&mut self, chunk: &[u8]) {
-        if let Some(max) = self.max_spill_bytes {
-            if self.total > max {
-                self.discard_spill();
-                return;
-            }
+        if let Some(max) = self.max_spill_bytes
+            && self.total > max
+        {
+            self.discard_spill();
+            return;
         }
         if self.spill_fd.is_none() {
             // Random suffix + create_new (O_EXCL, fails on any existing path,
@@ -265,10 +265,10 @@ impl OutputCollector {
                 }
             }
         }
-        if let Some(fd) = &mut self.spill_fd {
-            if fd.write_all(chunk).is_err() {
-                self.discard_spill();
-            }
+        if let Some(fd) = &mut self.spill_fd
+            && fd.write_all(chunk).is_err()
+        {
+            self.discard_spill();
         }
     }
 
@@ -778,10 +778,10 @@ pub fn spawn_subprocess(
         .linux_group_has_live_members
         .unwrap_or_else(|| Arc::new(default_linux_group_live));
 
-    if let Some(signal) = &spec.signal {
-        if signal() {
-            return Err("aborted before spawn: aborted".to_string());
-        }
+    if let Some(signal) = &spec.signal
+        && signal()
+    {
+        return Err("aborted before spawn: aborted".to_string());
     }
     let Some(program) = spec.argv.first() else {
         return Err("invalid argv: expected a non-empty program name at argv[0]".to_string());
@@ -914,15 +914,15 @@ pub fn spawn_subprocess(
 
     // Batch stdin is written and closed up front; process exit and captured
     // output remain authoritative, so write errors (EPIPE) are best-effort.
-    if let SubprocessStdinMode::Data(data) = &stdin_mode {
-        if let Some(mut stdin) = stdin_stream.take() {
-            let data = data.clone();
-            tokio::spawn(async move {
-                use tokio::io::AsyncWriteExt;
-                let _ = stdin.write_all(data.as_bytes()).await;
-                let _ = stdin.shutdown().await;
-            });
-        }
+    if let SubprocessStdinMode::Data(data) = &stdin_mode
+        && let Some(mut stdin) = stdin_stream.take()
+    {
+        let data = data.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(data.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+        });
     }
 
     let done: Shared<BoxFuture<'static, Result<SubprocessOutcome, String>>> = {

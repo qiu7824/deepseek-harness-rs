@@ -22,7 +22,7 @@ async fn harness() -> (
     (ctx, store, registry, meter)
 }
 
-fn session<'a>(store: &'a SessionStore, id: &str) -> Session {
+fn session(store: &SessionStore, id: &str) -> Session {
     store
         .prepare(
             Some(session_id(id)),
@@ -133,7 +133,7 @@ async fn anchors_measurement_on_provider_usage_and_tracks_surface_delta() {
         measurement.surface_tokens,
         measurement.nodes.iter().map(|n| n.tokens).sum::<u64>()
     );
-    assert!(measurement.log_revision >= assistant.seq + 1);
+    assert!(measurement.log_revision > assistant.seq);
     assert!(measurement.surface_delta_tokens >= 0);
 
     // Appending a surface message after the anchor moves the delta.
@@ -341,6 +341,23 @@ async fn context_breakdown_projection_prices_envelope_and_surface() {
             .unwrap_or(0)
             > 0
     );
+}
+
+#[test]
+fn context_pressure_keeps_identity_for_unrelated_events() {
+    let definition = dsh_token_meter::context_pressure_projection_definition();
+    let state = (definition.init)();
+    let event = dsh_session::SessionEvent {
+        type_: "turn/start".to_string(),
+        seq: 0,
+        time: 0,
+        data: serde_json::json!({"turn": 1}),
+        ignorable: None,
+        surface_op: None,
+        source_event_seqs: None,
+    };
+    let next = (definition.apply)(&state, &event);
+    assert!(Arc::ptr_eq(&state, &next));
 }
 
 #[tokio::test(flavor = "multi_thread")]

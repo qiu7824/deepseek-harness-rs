@@ -12,7 +12,11 @@ use parking_lot::Mutex;
 use crate::context::Context;
 use crate::events::Disposer;
 use crate::fiber::{FiberCore, FiberState};
+use crate::service::CheckFn;
 use crate::util::{ArcValue, arc};
+
+pub type AccessorGet = Arc<dyn Fn(&Context) -> ArcValue + Send + Sync>;
+pub type AccessorSet = Arc<dyn Fn(&Context, ArcValue) -> bool + Send + Sync>;
 
 /// Concrete service implementation record stored in the root reflect service.
 pub struct Impl {
@@ -23,13 +27,13 @@ pub struct Impl {
     /// The current service value.
     pub value: Option<ArcValue>,
     /// Optional availability predicate consulted before dependents may load.
-    pub check: Option<Arc<dyn Fn(&Context) -> bool + Send + Sync>>,
+    pub check: Option<CheckFn>,
 }
 
 /// Computed context property backed by custom get/set hooks.
 pub struct Accessor {
-    pub get: Arc<dyn Fn(&Context) -> ArcValue + Send + Sync>,
-    pub set: Option<Arc<dyn Fn(&Context, ArcValue) -> bool + Send + Sync>>,
+    pub get: AccessorGet,
+    pub set: Option<AccessorSet>,
 }
 
 /// Context property definition known by the reflection service.
@@ -119,7 +123,7 @@ impl ReflectService {
         caller: &Context,
         name: &str,
         value: Option<ArcValue>,
-        check: Option<Arc<dyn Fn(&Context) -> bool + Send + Sync>>,
+        check: Option<CheckFn>,
     ) -> Disposer {
         let fiber = caller.fiber.clone();
         fiber

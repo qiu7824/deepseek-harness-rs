@@ -125,7 +125,7 @@ impl RpcErrorCode {
     }
 
     /// Parse a wire code literal (unknown codes are a schema failure).
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn parse_wire_code(value: &str) -> Option<Self> {
         Some(match value {
             "bad-request" => Self::BadRequest,
             "cancelled" => Self::Cancelled,

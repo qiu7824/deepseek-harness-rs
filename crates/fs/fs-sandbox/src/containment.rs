@@ -34,6 +34,7 @@ fn is_lexically_under(path: &str, root: &str, case_sensitive: bool) -> bool {
     comparable_target.starts_with(&prefix)
 }
 
+#[allow(dead_code)] // Retained for platform-specific containment probes.
 async fn stat_if_present(path: &str) -> Result<Option<std::fs::Metadata>, String> {
     match tokio::fs::metadata(path).await {
         Ok(info) => Ok(Some(info)),
@@ -87,10 +88,10 @@ pub async fn is_path_under(
             // Windows std exposes no file index; canonicalize equality is
             // the reliable alias identity (8.3 names and casing resolve to
             // one spelling).
-            if let Some(ancestor_canonical) = tokio::fs::canonicalize(&ancestor).await.ok() {
-                if canonical_root.as_ref() == Some(&ancestor_canonical) {
-                    return Ok(true);
-                }
+            if let Ok(ancestor_canonical) = tokio::fs::canonicalize(&ancestor).await
+                && canonical_root.as_ref() == Some(&ancestor_canonical)
+            {
+                return Ok(true);
             }
         }
         let parent = Path::new(&ancestor)

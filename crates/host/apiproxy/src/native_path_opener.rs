@@ -24,7 +24,7 @@ pub type PathOpenerRunner = Arc<
 >;
 
 /// Injectable platform facts for deterministic adapter tests.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct PathOpenerInternals {
     pub platform: Option<&'static str>,
     /// Kernel release override used to distinguish WSL from desktop Linux.
@@ -33,17 +33,6 @@ pub struct PathOpenerInternals {
     /// convention.
     pub env: Option<std::collections::HashMap<String, String>>,
     pub run: Option<PathOpenerRunner>,
-}
-
-impl Default for PathOpenerInternals {
-    fn default() -> Self {
-        Self {
-            platform: None,
-            os_release: None,
-            env: None,
-            run: None,
-        }
-    }
 }
 
 impl PathOpenerInternals {
@@ -89,9 +78,7 @@ fn is_browser_document(path: &str) -> bool {
 /// by a direct block scan (the nested-version stripping only matters for
 /// plists whose preferred-version dict precedes the scheme block).
 fn mac_bundle_for_https(plist: &str) -> Option<String> {
-    let Some(block_start) = plist.find("LSHandlerURLScheme") else {
-        return None;
-    };
+    let block_start = plist.find("LSHandlerURLScheme")?;
     // Walk back to the enclosing { and forward to the matching }.
     let before = &plist[..block_start];
     let open = before.rfind('{')?;
@@ -204,7 +191,12 @@ async fn open_native_path_with_intent(
         )
         .await
         .map(|_| ()),
-        "win32" => open_windows_path(path, &run, signal).await,
+        "win32" => match intent {
+            PathOpenIntent::TextEditor => run("notepad.exe", vec![path.to_string()], signal)
+                .await
+                .map(|_| ()),
+            PathOpenIntent::Default => open_windows_path(path, &run, signal).await,
+        },
         "linux" => {
             if wsl {
                 open_wsl_path(path, &run, signal).await

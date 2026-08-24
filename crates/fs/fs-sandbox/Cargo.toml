@@ -1,6 +1,6 @@
 [package]
 name = "dsh-fs-sandbox"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "SandboxedFileSystem: the sandbox-enforcing implementation of the dsh-fs Service Definition: Rust port of @deepseek-ai/dsh-fs-sandbox"

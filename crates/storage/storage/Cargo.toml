@@ -1,6 +1,6 @@
 [package]
 name = "dsh-storage"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Storage hub (ctx.storage): a named backend registry plus mounted data-form facilities: Rust port of @deepseek-ai/dsh-storage"

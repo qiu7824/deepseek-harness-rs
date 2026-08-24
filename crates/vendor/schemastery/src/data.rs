@@ -103,10 +103,8 @@ impl Data {
             (Data::Object(map), PathKey::Key(key)) => {
                 map.shift_remove(key);
             }
-            (Data::Array(list), PathKey::Index(index)) => {
-                if *index < list.len() {
-                    list[*index] = Data::Undefined;
-                }
+            (Data::Array(list), PathKey::Index(index)) if *index < list.len() => {
+                list[*index] = Data::Undefined;
             }
             _ => {}
         }

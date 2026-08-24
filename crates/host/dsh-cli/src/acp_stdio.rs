@@ -96,7 +96,8 @@ struct AcpSession {
 
 pub async fn run() -> Result<(), String> {
     let ctx = cordis::Context::root();
-    let spine = dsh_host::compose_host(&ctx).map_err(|error| format!("compose Host: {error}"))?;
+    let spine = dsh_host::compose_persistent_host(&ctx, Some("acp"))
+        .map_err(|error| format!("compose Host: {error}"))?;
     let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, String>>();
     std::thread::spawn(move || {
         let stdin = std::io::stdin();
@@ -198,6 +199,10 @@ pub async fn run() -> Result<(), String> {
         }
     }
 
+    let roots: Vec<Arc<dyn dsh_agent::Agent>> = sessions
+        .values()
+        .map(|session| session.handle.agent.clone())
+        .collect();
     for session in sessions.values() {
         session.prompt.cancel();
         session
@@ -206,6 +211,16 @@ pub async fn run() -> Result<(), String> {
             .cancel(dsh_session::AgentCancelCause::User, None);
     }
     while prompts.join_next().await.is_some() {}
+    if let Some(subagents) = spine
+        .ctx
+        .get_typed::<Arc<dsh_subagent::SubagentRuntime>>("subagents", false)
+        .map(|slot| slot.as_ref().clone())
+    {
+        subagents
+            .drain_continuable_descendants(&roots)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     for (_, session) in sessions.drain() {
         session.handle.dispose.await;
     }
@@ -331,7 +346,7 @@ async fn run_prompt(prepared: PreparedPrompt) -> Result<&'static str, String> {
     if cancelled {
         Ok("cancelled")
     } else {
-        Ok(stop_reason(&events))
+        stop_reason(&events)
     }
 }
 
@@ -397,18 +412,26 @@ fn emit_committed_text(session_id: &str, event: &SessionEvent) -> Result<(), Str
     Ok(())
 }
 
-fn stop_reason(events: &[SessionEvent]) -> &'static str {
-    let kind = events
+fn stop_reason(events: &[SessionEvent]) -> Result<&'static str, String> {
+    let reason = events
         .iter()
         .rev()
         .find(|event| event.type_ == "turn/end")
         .and_then(|event| event.data.get("reason"))
-        .and_then(|reason| reason.get("kind"))
-        .and_then(Value::as_str);
-    match kind {
-        Some("max-tokens") => "max_tokens",
-        Some("interrupted") => "cancelled",
-        _ => "end_turn",
+        .ok_or_else(|| "prompt ended without a durable turn/end event".to_string())?;
+    match reason.get("kind").and_then(Value::as_str) {
+        Some("completed") => Ok("end_turn"),
+        Some("max-tokens") => Ok("max_tokens"),
+        Some("interrupted" | "aborted") => Ok("cancelled"),
+        Some("error") => Err(reason
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("prompt failed")
+            .to_string()),
+        Some("blocked") => Err("prompt was blocked".to_string()),
+        Some(kind) => Err(format!("prompt ended with unsupported reason: {kind}")),
+        None => Err("prompt ended with a malformed reason".to_string()),
     }
 }
 

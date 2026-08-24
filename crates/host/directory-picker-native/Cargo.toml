@@ -1,6 +1,6 @@
 [package]
 name = "dsh-host-directory-picker-native"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Native backend of the directory-picker seam: an OS directory chooser on the host display. Rust port of @deepseek-ai/dsh-host-directory-picker-native"

@@ -46,8 +46,17 @@ pub const AGENT_PRESETS_ROW_ID: &str = "agent-presets";
 /// package). Anchored to the manifest, not the process cwd, so profile
 /// boots from any working directory resolve the same root.
 pub fn shipped_preset_root() -> String {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../config/agent-presets")
+    let adjacent = std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.parent()
+                .map(|parent| parent.join("config/agent-presets"))
+        })
+        .filter(|path| path.exists());
+    adjacent
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../config/agent-presets")
+        })
         .to_string_lossy()
         .into_owned()
 }

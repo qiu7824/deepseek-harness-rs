@@ -227,12 +227,9 @@ impl LoaderService {
                     let core = core.clone();
                     let tree = tree.clone();
                     Box::pin(async move {
-                        let Some(next) = args
+                        let next = args
                             .last()
-                            .and_then(|v| cordis::downcast::<cordis::NextFn>(v))
-                        else {
-                            return None;
-                        };
+                            .and_then(|v| cordis::downcast::<cordis::NextFn>(v))?;
                         let result = next.call().await;
                         let no_save = args
                             .get(1)
@@ -243,10 +240,10 @@ impl LoaderService {
                             return Some(result);
                         }
                         if let Some(entry) = core.entry_of(&ctx.fiber) {
-                            if let Some(config) = args.first() {
-                                if let Some(raw) = cordis::downcast::<serde_json::Value>(config) {
-                                    entry.options.lock().config = Some(raw.clone());
-                                }
+                            if let Some(config) = args.first()
+                                && let Some(raw) = cordis::downcast::<serde_json::Value>(config)
+                            {
+                                entry.options.lock().config = Some(raw.clone());
                             }
                             tree.write();
                         }
@@ -266,21 +263,14 @@ impl LoaderService {
                 Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
                     let core = core.clone();
                     Box::pin(async move {
-                        let Some(fiber_value) = args.first() else {
-                            return None;
-                        };
-                        let Some(fiber_arc) = cordis::downcast::<Arc<FiberCore>>(fiber_value)
-                        else {
-                            return None;
-                        };
+                        let fiber_value = args.first()?;
+                        let fiber_arc = cordis::downcast::<Arc<FiberCore>>(fiber_value)?;
                         let fiber: Arc<FiberCore> = (*fiber_arc).clone();
                         // Only self-dispose events carry uid == None.
                         if fiber.uid_value().is_some() {
                             return None;
                         }
-                        let Some(entry) = core.entry_of(&fiber) else {
-                            return None;
-                        };
+                        let entry = core.entry_of(&fiber)?;
                         if entry.disposing() {
                             return None;
                         }
@@ -289,9 +279,7 @@ impl LoaderService {
                             return None;
                         }
                         entry.options.lock().disabled = Some(serde_json::Value::Bool(true));
-                        let Some(parent) = entry.parent.lock().clone() else {
-                            return None;
-                        };
+                        let parent = entry.parent.lock().clone()?;
                         parent.tree.write();
                         None
                     })

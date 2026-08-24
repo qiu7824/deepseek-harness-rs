@@ -1,3 +1,6 @@
+#![allow(clippy::type_complexity)]
+// Test invalidation cells mirror the public callback ownership shape.
+
 //! Rust port of the core `skill.spec.ts` behaviors: provider registration
 //! and disposal, rank/order dedup, invocation policies, runtime-skill
 //! defaults and duplicate handling, candidate/definition validation,

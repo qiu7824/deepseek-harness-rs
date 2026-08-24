@@ -152,6 +152,12 @@ pub struct OverlayMap<V: Clone> {
     entries: parking_lot::Mutex<HashMap<String, V>>,
 }
 
+impl<V: Clone> Default for OverlayMap<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<V: Clone> OverlayMap<V> {
     pub fn new() -> Self {
         Self {

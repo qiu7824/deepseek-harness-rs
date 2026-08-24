@@ -138,7 +138,7 @@ impl SessionWriteBehind {
                 }
             }
         };
-        Box::pin(async move { barrier.await })
+        Box::pin(barrier)
     }
 
     /// Cancel the current automatic deadline without draining retained work.
@@ -236,10 +236,7 @@ impl SessionWriteBehind {
                 None => break,
             }
         }
-        while {
-            let pending = !self.state.lock().pending.is_empty();
-            pending
-        } {
+        while !self.state.lock().pending.is_empty() {
             match self.start_write(false).await {
                 Ok(()) => {}
                 Err(error) => {
@@ -258,14 +255,14 @@ impl SessionWriteBehind {
     /// Start one stable pending prefix, retaining it in order if durability
     /// fails (TS `startWrite`).
     fn start_write(self: &Arc<Self>, background: bool) -> WriteFuture {
+        let (tx, rx) = tokio::sync::oneshot::channel();
         let batch = {
             let mut state = self.state.lock();
             let batch = std::mem::take(&mut state.pending);
             state.deadline_expired = false;
+            state.active = Some(rx);
             batch
         };
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.state.lock().active = Some(rx);
         let write = self.options.write.clone();
         let controller = Arc::clone(self);
         let report = self.options.report_background_failure.clone();

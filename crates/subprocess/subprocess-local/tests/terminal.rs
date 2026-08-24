@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)] // Test doubles retain explicit listener and override callback shapes.
+
 //! Rust port of the core
 //! `packages/subprocess/subprocess-local/tests/terminal.spec.ts` behaviors:
 //! the local PTY handle's host-exit teardown, identity-fenced adoption and
@@ -11,7 +13,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
 use dsh_subprocess::{
     SubprocessOutcome, SubprocessRuntime, SubprocessTerminalHandle, SubprocessTerminalSignal,
@@ -399,8 +401,7 @@ async fn rejects_unsafe_foreground_signals_and_writes_after_exit() {
     let error = handle
         .signal_foreground(SubprocessTerminalSignal::SigKill)
         .await
-        .err()
-        .expect("SIGKILL refused");
+        .expect_err("SIGKILL refused");
     assert!(error.contains("terminate the terminal session"), "{error}");
     *inspector.pgid.lock() = None;
     assert!(
@@ -413,8 +414,7 @@ async fn rejects_unsafe_foreground_signals_and_writes_after_exit() {
     let error = handle
         .signal_foreground(SubprocessTerminalSignal::SigTerm)
         .await
-        .err()
-        .expect("cannot resolve");
+        .expect_err("cannot resolve");
     assert!(error.contains("cannot resolve"), "{error}");
 
     pty.emit_exit(3, None);
@@ -426,7 +426,7 @@ async fn rejects_unsafe_foreground_signals_and_writes_after_exit() {
         }
     );
     handle.terminate().await.expect("terminate");
-    let error = handle.write("late").await.err().expect("has exited");
+    let error = handle.write("late").await.expect_err("has exited");
     assert!(error.contains("has exited"), "{error}");
 }
 
@@ -695,7 +695,7 @@ async fn retries_failed_cleanup_after_a_surviving_descendant_leaves() {
     });
     let handle = LocalTerminalHandle::new(pty.clone(), inspector.clone(), 10);
 
-    let error = handle.terminate().await.err().expect("surviving");
+    let error = handle.terminate().await.expect_err("surviving");
     assert!(error.contains("surviving pids: 124"), "{error}");
 
     inspector.alive.lock().remove(&late.pid);
@@ -761,7 +761,7 @@ async fn reports_a_top_level_process_that_ignores_escalation() {
     let pty = FakePty::new();
     pty.auto_exit_on_kill.store(false, SeqCst);
     let handle = LocalTerminalHandle::new(pty.clone(), FakeInspector::new(), 10);
-    let error = handle.terminate().await.err().expect("surviving shell");
+    let error = handle.terminate().await.expect_err("surviving shell");
     assert!(error.contains("surviving pid: 123"), "{error}");
     assert_eq!(
         *pty.kills.lock(),
@@ -791,7 +791,7 @@ async fn contains_process_races_while_reporting_surviving_descendants() {
     inspector.alive.lock().insert(124);
     inspector.throw_process.store(true, SeqCst);
     let handle = LocalTerminalHandle::new(pty, inspector, 1);
-    let error = handle.terminate().await.err().expect("surviving");
+    let error = handle.terminate().await.expect_err("surviving");
     assert!(error.contains("surviving pids: 124"), "{error}");
 }
 

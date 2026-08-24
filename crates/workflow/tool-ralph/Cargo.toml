@@ -1,6 +1,6 @@
 [package]
 name = "dsh-tool-ralph"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Model-facing fresh-agent Ralph loop over the workflow and subagent seams — Rust port of @deepseek-ai/dsh-tool-ralph"

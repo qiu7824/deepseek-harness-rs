@@ -115,6 +115,12 @@ pub trait SessionPersistenceApi: Send + Sync {
     /// Durably persist a batch of events.
     async fn append(&self, id: &SessionId, events: &[SessionEvent]) -> Result<(), String>;
 
+    /// Permanently remove one detached session and all backend-owned artifacts.
+    async fn delete(&self, id: &SessionId) -> Result<bool, String> {
+        let _ = id;
+        Err("this session persistence backend does not support deletion".to_string())
+    }
+
     /// Prepare the exact unpublished Session used by resume (default: load +
     /// `SessionStore::prepare` with `seedSource: 'persistence'`).
     async fn prepare(&self, id: &SessionId) -> Result<dsh_session::SessionPreparation, String> {

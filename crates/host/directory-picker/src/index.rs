@@ -21,6 +21,7 @@
 //!   it against their blocking work.
 //! - TS browse primitives throw [`DirectoryPickerError`]; the Rust
 //!   equivalents return `Result<_, DirectoryPickerError>`.
+#![allow(clippy::type_complexity)] // Capability callbacks are the public discriminated service seam.
 
 use std::fmt;
 use std::sync::Arc;

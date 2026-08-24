@@ -1,0 +1,17 @@
+[package]
+name = "dsh-compaction-tool-result-pruner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-token-meter = { path = "../../llm/token-meter" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

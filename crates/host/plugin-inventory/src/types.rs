@@ -42,3 +42,16 @@ pub struct PluginInventoryEntry {
 pub struct PluginInventorySnapshot {
     pub entries: Vec<PluginInventoryEntry>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSetEnabledRequest {
+    pub entry_id: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSetEnabledResult {
+    pub entry: PluginInventoryEntry,
+}

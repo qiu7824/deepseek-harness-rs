@@ -185,12 +185,7 @@ pub fn inactive_rows(tree: &Arc<EntryTree>) -> Vec<String> {
         let missing: Vec<&str> = fiber
             .inject
             .keys()
-            .filter(|name| {
-                fiber
-                    .ctx()
-                    .and_then(|ctx| ctx.get_typed::<ArcValue>(name, true))
-                    .is_none()
-            })
+            .filter(|name| fiber.ctx().and_then(|ctx| ctx.get(name, true)).is_none())
             .map(String::as_str)
             .collect();
         if !missing.is_empty() {
@@ -347,4 +342,55 @@ pub async fn mount_preset(
         &preset.id,
         format!("{} ({})", mount_detail(&error_message), preset.path),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cordis::{InjectSpec, Service};
+    use dsh_cordis_loader::EntryOptions;
+
+    struct TypedService;
+    impl Service for TypedService {
+        fn service_name(&self) -> &'static str {
+            "typedService"
+        }
+    }
+
+    struct NeedsTypedService;
+    #[async_trait::async_trait]
+    impl Plugin for NeedsTypedService {
+        fn inject(&self) -> InjectSpec {
+            InjectSpec::new(["typedService"])
+        }
+
+        async fn apply(&self, _ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn inactive_rows_accepts_any_live_typed_service() {
+        let ctx = Context::root();
+        ctx.register_service(Arc::new(TypedService));
+        let loader = LoaderService::new(&ctx).await;
+        loader
+            .core
+            .register("needs-typed", Arc::new(NeedsTypedService));
+        loader
+            .tree
+            .create(
+                EntryOptions {
+                    id: "probe".to_string(),
+                    name: "needs-typed".to_string(),
+                    ..EntryOptions::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .expect("create typed-service consumer");
+        loader.tree.await_ready().await.expect("consumer ready");
+        assert!(inactive_rows(&loader.tree).is_empty());
+    }
 }

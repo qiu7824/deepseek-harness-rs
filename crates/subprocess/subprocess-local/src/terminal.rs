@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)] // Cleanup state mirrors the shared async terminal lifecycle.
+
 //! Local PTY terminal-process handle for the subprocess seam. Rust port of
 //! `packages/subprocess/subprocess-local/src/terminal.ts`.
 //!
@@ -19,7 +21,7 @@ use dsh_subprocess::{
     SubprocessOutcome, SubprocessTerminalForeground, SubprocessTerminalHandle,
     SubprocessTerminalSignal,
 };
-use futures::FutureExt;
+
 use futures::future::BoxFuture;
 use futures::stream::{BoxStream, StreamExt};
 use parking_lot::Mutex;
@@ -216,8 +218,7 @@ impl LocalTerminalHandle {
             let remaining = until
                 .saturating_duration_since(std::time::Instant::now())
                 .as_millis()
-                .max(1)
-                .min(25) as u64;
+                .clamp(1, 25) as u64;
             tokio::time::sleep(std::time::Duration::from_millis(remaining)).await;
             survivors = self.survivors(members);
         }

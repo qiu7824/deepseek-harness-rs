@@ -3,13 +3,46 @@
 //! boot itself arrives with the profile-boot milestone; the adapter prints
 //! and exits for help/version/parse errors).
 
+#[cfg(windows)]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use dsh_host_cli::{
     DshArgsError, DshInvocation, ProfileInterruptLatch, RunProfileRequest, parse_dsh_args,
     run_profile_with_interrupt,
 };
 
-#[tokio::main]
-async fn main() {
+#[cfg(windows)]
+fn configure_allocator() {
+    // mimalloc v2 stable enum positions (mimalloc.h): arena eager commit = 4,
+    // purge decommits = 5, purge delay = 15. Set these at the single-threaded
+    // process boundary before Tokio creates workers.
+    const ARENA_EAGER_COMMIT: libmimalloc_sys::mi_option_t = 4;
+    const PURGE_DECOMMITS: libmimalloc_sys::mi_option_t = 5;
+    const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+    // SAFETY: the mimalloc option API is not thread-safe; main calls this
+    // before any application thread or async runtime exists.
+    unsafe {
+        libmimalloc_sys::mi_option_set(ARENA_EAGER_COMMIT, 0);
+        libmimalloc_sys::mi_option_set(PURGE_DECOMMITS, 1);
+        libmimalloc_sys::mi_option_set(PURGE_DELAY, 0);
+    }
+}
+
+fn main() {
+    #[cfg(windows)]
+    configure_allocator();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap_or_else(|error| {
+            eprintln!("dsh: failed to initialize async runtime: {error}");
+            std::process::exit(1);
+        });
+    runtime.block_on(async_main());
+}
+
+async fn async_main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|arg| arg == "__dsh-sdk-jsonrpc") {
         if let Err(error) = dsh_host_cli::sdk_stdio::run().await {
@@ -123,7 +156,25 @@ async fn main() {
         DshInvocation::Plugin(invocation) => {
             let home = dsh_home_paths::resolve_dsh_home(None, &|name| std::env::var(name).ok());
             match dsh_host_cli::run_plugin_command(&invocation, &home) {
-                Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+                Ok(()) => return,
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        DshInvocation::HistoryInspect(invocation) => {
+            match dsh_host_cli::inspect_legacy_history(&invocation.source) {
+                Ok(report) => print!("{report}"),
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        DshInvocation::HistoryImport(invocation) => {
+            match dsh_host_cli::import_legacy_history(&invocation.source, &invocation.target_home) {
+                Ok(count) => println!("imported_sessions={count}"),
                 Err(error) => {
                     eprintln!("{error}");
                     std::process::exit(1);

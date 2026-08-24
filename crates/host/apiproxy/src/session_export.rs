@@ -8,6 +8,9 @@ use std::sync::Arc;
 
 use dsh_attachment::{ImageAttachmentRef, ImageMediaType};
 
+mod zip_stream;
+pub use zip_stream::stream_session_log_zip;
+
 /// Valid DEFLATE levels accepted by session-log export.
 pub type SessionLogCompressionLevel = u8;
 
@@ -50,14 +53,11 @@ pub fn collect_image_refs(
         let Some(object) = value.as_object() else {
             continue;
         };
-        if object.get("type").and_then(serde_json::Value::as_str) == Some("image") {
-            if let Some(attachment) = object.get("attachment") {
-                if let Ok(reference) =
-                    serde_json::from_value::<ImageAttachmentRef>(attachment.clone())
-                {
-                    refs.insert(reference.attachment_id.to_string(), reference);
-                }
-            }
+        if object.get("type").and_then(serde_json::Value::as_str) == Some("image")
+            && let Some(attachment) = object.get("attachment")
+            && let Ok(reference) = serde_json::from_value::<ImageAttachmentRef>(attachment.clone())
+        {
+            refs.insert(reference.attachment_id.to_string(), reference);
         }
         if let Some(nested) = object.get("content").and_then(serde_json::Value::as_array) {
             pending.extend(nested);
@@ -78,10 +78,10 @@ pub fn collect_event_image_refs(
     if let Some(content) = data.get("content") {
         collect_image_refs(content, refs);
     }
-    if let Some(message) = data.get("message").and_then(serde_json::Value::as_object) {
-        if let Some(content) = message.get("content") {
-            collect_image_refs(content, refs);
-        }
+    if let Some(message) = data.get("message").and_then(serde_json::Value::as_object)
+        && let Some(content) = message.get("content")
+    {
+        collect_image_refs(content, refs);
     }
     if let Some(messages) = data.get("messages").and_then(serde_json::Value::as_array) {
         for message in messages {
@@ -93,10 +93,10 @@ pub fn collect_event_image_refs(
             }
         }
     }
-    if let Some(chunk) = data.get("chunk").and_then(serde_json::Value::as_object) {
-        if let Some(content) = chunk.get("content") {
-            collect_image_refs(content, refs);
-        }
+    if let Some(chunk) = data.get("chunk").and_then(serde_json::Value::as_object)
+        && let Some(content) = chunk.get("content")
+    {
+        collect_image_refs(content, refs);
     }
 }
 
@@ -130,7 +130,10 @@ pub async fn flush_live_session_log(
     let Some(session) = sessions.get(id) else {
         return Ok(());
     };
-    let _ = sessions.flush(&session).await;
+    sessions
+        .flush(&session)
+        .await
+        .map_err(|error| format!("session log flush failed: {error}"))?;
     if signal.aborted() {
         return Err("session log export was cancelled".to_string());
     }
@@ -150,23 +153,26 @@ fn image_refs_in_artifact(content: &str, media: &mut HashMap<String, ImageAttach
     }
 }
 
-/// Collect every export entry in zip order (the TS generator collapsed
-/// into a vector; the streaming capacity gate has no Rust counterpart —
-/// the archive is assembled in memory and returned as one byte vector).
-pub async fn session_log_zip_entries(
+/// Produce export entries in ZIP order through a bounded channel. The
+/// capacity-one handoff prevents descendant logs and attachments from
+/// accumulating while the blocking ZIP writer applies downstream pressure.
+pub async fn produce_session_log_zip_entries(
     deps: &SessionLogExportDeps,
-    root: &dsh_session_persistence::SessionRawArtifact,
+    root: dsh_session_persistence::SessionRawArtifact,
     session_id: &dsh_session::SessionId,
     include_descendants: bool,
     signal: &crate::fetch::handler::AbortSignal,
-) -> Result<Vec<SessionLogZipEntry>, String> {
-    let mut entries: Vec<SessionLogZipEntry> = Vec::new();
+    sender: &tokio::sync::mpsc::Sender<Result<SessionLogZipEntry, String>>,
+) -> Result<(), String> {
     let mut media: HashMap<String, ImageAttachmentRef> = HashMap::new();
     image_refs_in_artifact(&root.content, &mut media);
-    entries.push(SessionLogZipEntry::Text {
-        path: root.filename.clone(),
-        content: root.content.clone(),
-    });
+    sender
+        .send(Ok(SessionLogZipEntry::Text {
+            path: root.filename,
+            content: root.content,
+        }))
+        .await
+        .map_err(|_| "session log export consumer closed".to_string())?;
 
     if include_descendants {
         let Some(query) = &deps.session_query else {
@@ -209,14 +215,17 @@ pub async fn session_log_zip_entries(
                 return Err(format!("subagent \"{id}\" has no stored log artifact"));
             };
             image_refs_in_artifact(&raw.content, &mut media);
-            entries.push(SessionLogZipEntry::Text {
-                path: format!(
-                    "subagents/{}/{}",
-                    safe_session_id_segment(id.as_str()),
-                    raw.filename
-                ),
-                content: raw.content,
-            });
+            sender
+                .send(Ok(SessionLogZipEntry::Text {
+                    path: format!(
+                        "subagents/{}/{}",
+                        safe_session_id_segment(id.as_str()),
+                        raw.filename
+                    ),
+                    content: raw.content,
+                }))
+                .await
+                .map_err(|_| "session log export consumer closed".to_string())?;
             pending.extend(node.descendants.iter());
         }
     }
@@ -232,12 +241,15 @@ pub async fn session_log_zip_entries(
             .read_image(reference, None)
             .await
             .map_err(|error| error.to_string())?;
-        entries.push(SessionLogZipEntry::Data {
-            path: media_entry_path(reference),
-            data: stored.data,
-        });
+        sender
+            .send(Ok(SessionLogZipEntry::Data {
+                path: media_entry_path(reference),
+                data: stored.data,
+            }))
+            .await
+            .map_err(|_| "session log export consumer closed".to_string())?;
     }
-    Ok(entries)
+    Ok(())
 }
 
 /// Assemble the session-log ZIP as one byte vector (the TS streams deflate
@@ -298,6 +310,41 @@ pub fn session_log_zip_filename(session_id: &str) -> String {
 mod tests {
     use super::*;
     use dsh_attachment::attachment_id;
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn streamed_zip_yields_a_header_before_the_entry_producer_finishes() {
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        sender
+            .send(Ok(SessionLogZipEntry::Text {
+                path: "first.jsonl".to_string(),
+                content: "x".repeat(2 * 1024 * 1024),
+            }))
+            .await
+            .expect("first entry");
+        let signal = crate::fetch::handler::AbortSignal::new();
+        let mut stream = stream_session_log_zip(receiver, 6, signal);
+        let first = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+            .await
+            .expect("first chunk while producer remains open")
+            .expect("first chunk")
+            .expect("first chunk is not an error");
+        assert!(first.starts_with(b"PK"));
+        sender
+            .send(Ok(SessionLogZipEntry::Text {
+                path: "second.jsonl".to_string(),
+                content: "second".to_string(),
+            }))
+            .await
+            .expect("second entry after first response chunk");
+        drop(sender);
+        let mut bytes = first;
+        while let Some(chunk) = stream.next().await {
+            bytes.extend(chunk.expect("archive stream remains successful"));
+        }
+        let archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid zip");
+        assert_eq!(archive.len(), 2);
+    }
 
     #[test]
     fn zip_filename_sanitizes_one_segment() {

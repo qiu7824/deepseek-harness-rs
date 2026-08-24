@@ -1,6 +1,6 @@
 [package]
 name = "dsh-compaction"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
 description = "Abstract compaction service seam (ctx.compaction) — Rust port of @deepseek-ai/dsh-compaction"
@@ -8,10 +8,13 @@ description = "Abstract compaction service seam (ctx.compaction) — Rust port o
 [dependencies]
 cordis = { path = "../../vendor/cordis" }
 dsh-brand = { path = "../../util/brand" }
+dsh-agent = { path = "../../core/agent" }
 dsh-commands = { path = "../../interaction/commands" }
 dsh-invariants = { path = "../../util/invariants" }
 dsh-llm = { path = "../../core/llm" }
 dsh-session = { path = "../../core/session" }
+dsh-token-meter = { path = "../../llm/token-meter" }
+futures = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 parking_lot = { workspace = true }

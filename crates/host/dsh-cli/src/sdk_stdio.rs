@@ -17,7 +17,8 @@ struct SdkConfig {
 
 pub async fn run() -> Result<(), String> {
     let ctx = cordis::Context::root();
-    let spine = dsh_host::compose_host(&ctx).map_err(|error| format!("compose Host: {error}"))?;
+    let spine = dsh_host::compose_persistent_host(&ctx, Some("sdk"))
+        .map_err(|error| format!("compose Host: {error}"))?;
     let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, String>>();
     std::thread::spawn(move || {
         let stdin = std::io::stdin();

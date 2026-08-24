@@ -173,10 +173,10 @@ async fn validate_rejects_bad_write_and_publish_keeps_last_good() {
                         }),
                         _ => None,
                     };
-                    if let Some(size) = font_size {
-                        if size < 10.0 {
-                            return Err(format!("font size {size} is unreadable"));
-                        }
+                    if let Some(size) = font_size
+                        && size < 10.0
+                    {
+                        return Err(format!("font size {size} is unreadable"));
                     }
                     Ok(())
                 })),
@@ -189,8 +189,7 @@ async fn validate_rejects_bad_write_and_publish_keeps_last_good() {
     let error = provider
         .update(&ns("ui-theme"), serde_json::json!({"font_size": 4}), None)
         .await
-        .err()
-        .expect("update must fail");
+        .expect_err("update must fail");
     assert!(error.contains("unreadable"), "{error}");
     assert_eq!((scope.get)(), before);
 
@@ -236,10 +235,10 @@ async fn fails_registration_when_stored_section_is_unserviceable() {
                         }),
                         _ => None,
                     };
-                    if let Some(size) = font_size {
-                        if size < 10.0 {
-                            return Err(format!("font size {size} is unreadable"));
-                        }
+                    if let Some(size) = font_size
+                        && size < 10.0
+                    {
+                        return Err(format!("font size {size} is unreadable"));
                     }
                     Ok(())
                 })),
@@ -500,8 +499,7 @@ async fn replace_resets_and_expected_revision_rejects_stale() {
             Some(0),
         )
         .await
-        .err()
-        .expect("stale write must fail");
+        .expect_err("stale write must fail");
     assert!(error.contains("changed since it was read"), "{error}");
 
     // replace({}) re-inherits the base.
@@ -701,11 +699,11 @@ impl cordis::Plugin for ThemePlugin {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn install_settings_section_wires_source_and_falls_back() {
+    type SettingsSource = Arc<dyn Fn() -> Data + Send + Sync>;
     let (ctx, provider, _) = boot(None).await;
     // The source sink stores the THUNK (TS `setSource(current)` semantics);
     // asserting reads through it to see the authoritative value.
-    let current: Arc<Mutex<Option<Arc<dyn Fn() -> Data + Send + Sync>>>> =
-        Arc::new(Mutex::new(None));
+    let current: Arc<Mutex<Option<SettingsSource>>> = Arc::new(Mutex::new(None));
     let changes: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
     let current_for_set = Arc::clone(&current);
     let changes_for_hook = Arc::clone(&changes);

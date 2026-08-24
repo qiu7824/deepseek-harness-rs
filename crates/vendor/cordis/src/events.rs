@@ -83,7 +83,10 @@ pub struct ListenerWrap(pub Arc<Listener>);
 /// listener (finally the built-in behavior); not calling it vetoes the chain.
 /// Calling it more than once yields a dummy value (the continuation is
 /// single-use, matching the TS `next` contract).
-pub struct NextFn(Arc<Mutex<Option<Box<dyn FnOnce() -> BoxFuture<'static, ArcValue> + Send>>>>);
+type NextCallback = Box<dyn FnOnce() -> BoxFuture<'static, ArcValue> + Send>;
+type NextSlot = Arc<Mutex<Option<NextCallback>>>;
+
+pub struct NextFn(NextSlot);
 
 impl NextFn {
     /// Invoke the continuation (at most once).
@@ -159,16 +162,15 @@ impl EventsService {
                             .and_then(|v| downcast::<EventOptions>(v))
                             .map(|o| o.global)
                             .unwrap_or(false);
-                        if !global {
-                            if let Some(listener) = args
+                        if !global
+                            && let Some(listener) = args
                                 .get(1)
-                                .and_then(|v| crate::util::downcast_arc::<ListenerWrap>(v))
+                                .and_then(crate::util::downcast_arc::<ListenerWrap>)
                                 .map(|wrap| wrap.0.clone())
-                            {
-                                let wrapped = ListenerWrap(listener);
-                                let remove = ctx.fiber.hooks_push("internal/update", arc(wrapped));
-                                return Box::pin(async move { Some(arc(remove)) });
-                            }
+                        {
+                            let wrapped = ListenerWrap(listener);
+                            let remove = ctx.fiber.hooks_push("internal/update", arc(wrapped));
+                            return Box::pin(async move { Some(arc(remove)) });
                         }
                     }
                     Box::pin(async move { None })
@@ -204,31 +206,31 @@ impl EventsService {
         name: &str,
         args: &[ArcValue],
     ) -> Vec<(Context, Arc<Listener>)> {
-        if !name.starts_with("internal/") {
-            if let Some(root) = self.ctx.get() {
-                let dispatch_args = vec![
-                    arc(mode_name(mode).to_string()),
-                    arc(name.to_string()),
-                    arc(args.to_vec()),
-                    match this_arg {
-                        Some(ctx) => arc(ctx.clone()),
-                        None => arc(String::from("<none>")),
-                    },
-                ];
-                let internal = self.collect(
-                    DispatchMode::Bail,
-                    Some(root),
-                    "internal/dispatch",
-                    &dispatch_args,
-                );
-                for (ctx, callback) in internal {
-                    let future = callback(&ctx, dispatch_args.clone());
-                    // TS runs this pre-hook synchronously; failures are
-                    // contained per listener.
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        futures::executor::block_on(future)
-                    }));
-                }
+        if !name.starts_with("internal/")
+            && let Some(root) = self.ctx.get()
+        {
+            let dispatch_args = vec![
+                arc(mode_name(mode).to_string()),
+                arc(name.to_string()),
+                arc(args.to_vec()),
+                match this_arg {
+                    Some(ctx) => arc(ctx.clone()),
+                    None => arc(String::from("<none>")),
+                },
+            ];
+            let internal = self.collect(
+                DispatchMode::Bail,
+                Some(root),
+                "internal/dispatch",
+                &dispatch_args,
+            );
+            for (ctx, callback) in internal {
+                let future = callback(&ctx, dispatch_args.clone());
+                // TS runs this pre-hook synchronously; failures are
+                // contained per listener.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    futures::executor::block_on(future)
+                }));
             }
         }
 
@@ -350,11 +352,11 @@ impl EventsService {
         }
 
         let mut listeners: Vec<(Context, Arc<Listener>)> = Vec::new();
-        if name == "internal/update" {
-            if let Some(ctx) = this_arg {
-                for hook in Self::update_hooks(ctx) {
-                    listeners.push((ctx.clone(), hook));
-                }
+        if name == "internal/update"
+            && let Some(ctx) = this_arg
+        {
+            for hook in Self::update_hooks(ctx) {
+                listeners.push((ctx.clone(), hook));
             }
         }
         listeners.extend(self.collect(DispatchMode::Waterfall, this_arg, name, &args));

@@ -27,21 +27,23 @@ use parking_lot::Mutex;
 use crate::api::rpc::{EmptyDetails, ReasonDetails, RpcError, RpcErrorBody, SessionIdDetails};
 
 /// Resume configuration supplied by the owning Host composition.
+pub type ApiRemoteAgentSetup = Arc<
+    dyn Fn(
+            SessionHeader,
+            Vec<SessionEvent>,
+        ) -> BoxFuture<'static, Result<Option<AgentSetup>, String>>
+        + Send
+        + Sync,
+>;
+
 pub struct ApiRemoteAgentOptions {
     /// Read the per-Agent defaults when a cold identity must resume.
     pub agent_options: Arc<dyn Fn() -> dsh_agent::AgentOptions + Send + Sync>,
+    /// Retain the owner-only lifecycle handle for an API-resumed Agent.
+    pub retain_handle: Arc<dyn Fn(dsh_agent::AgentHandle) -> Arc<dyn Agent> + Send + Sync>,
     /// Build the Host-specific Agent-scope composition completed before
     /// publication, keyed by the resumed session itself.
-    pub setup: Option<
-        Arc<
-            dyn Fn(
-                    SessionHeader,
-                    Vec<SessionEvent>,
-                ) -> BoxFuture<'static, Result<Option<AgentSetup>, String>>
-                + Send
-                + Sync,
-        >,
-    >,
+    pub setup: Option<ApiRemoteAgentSetup>,
 }
 
 /// The single-flight resume failure classification (caller-facing errors
@@ -160,12 +162,11 @@ impl AgentResolver {
         if let Some(fenced) = self.fenced_live_agent(session_id) {
             return fenced;
         }
-        if let Some(sessions) = self.sessions() {
-            if let Some(attached) = sessions.get(session_id) {
-                if has_api_remote_subagent_owner(&self.ctx, attached.header(), None) {
-                    return ApiRemoteAgentResult::Error(subagent_ownership_error(session_id));
-                }
-            }
+        if let Some(sessions) = self.sessions()
+            && let Some(attached) = sessions.get(session_id)
+            && has_api_remote_subagent_owner(&self.ctx, attached.header(), None)
+        {
+            return ApiRemoteAgentResult::Error(subagent_ownership_error(session_id));
         }
 
         let shared = {
@@ -186,7 +187,7 @@ impl AgentResolver {
                             None => None,
                             Some(build) => build(meta.clone(), events.clone())
                                 .await
-                                .map_err(|error| ResumeFailure::Internal(error))?,
+                                .map_err(ResumeFailure::Internal)?,
                         };
                         // Re-check published state before resuming (the TS
                         // collision-window guard).
@@ -230,8 +231,8 @@ impl AgentResolver {
                         let handle = registry
                             .resume(options_builder)
                             .await
-                            .map_err(|error| ResumeFailure::Internal(error))?;
-                        Ok(handle.agent)
+                            .map_err(ResumeFailure::Internal)?;
+                        Ok((options.retain_handle)(handle))
                     });
                 let shared: SharedResume = future.shared();
                 resumes.insert(session_id.clone(), shared.clone());

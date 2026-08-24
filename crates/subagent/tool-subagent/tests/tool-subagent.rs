@@ -3,11 +3,8 @@
 //! tool errors with preserved partial text, background one-shot jobs, and
 //! provider-lifecycle wording.
 //!
-//! # Deviations
-//!
-//! - `backgroundMode: 'continuable'` is rejected at mount (the continuation
-//!   manager is not ported).
-//! - The jobs registry is a scripted fake.
+//! The jobs registry is a scripted fake; continuable execution is covered by
+//! the continuation-manager integration suite.
 
 use std::sync::Arc;
 

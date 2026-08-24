@@ -161,19 +161,73 @@ pub struct SubagentContinuationManager {
     pub ctx: Context,
     self_arc: std::sync::OnceLock<std::sync::Weak<Self>>,
     activations: parking_lot::Mutex<HashMap<String, Arc<parking_lot::Mutex<Activation>>>>,
+    materializations: parking_lot::Mutex<HashMap<u64, HashSet<usize>>>,
+    next_materialization: std::sync::atomic::AtomicU64,
+    materialization_changed: tokio::sync::Notify,
     locks: ChildLock,
     host: Arc<dyn ContinuationHost>,
     closing_scopes: parking_lot::Mutex<HashMap<usize, HashSet<usize>>>,
     draining: std::sync::atomic::AtomicBool,
 }
 
+struct MaterializationGuard {
+    manager: std::sync::Weak<SubagentContinuationManager>,
+    token: u64,
+}
+
+impl Drop for MaterializationGuard {
+    fn drop(&mut self) {
+        if let Some(manager) = self.manager.upgrade() {
+            manager.materializations.lock().remove(&self.token);
+            manager.materialization_changed.notify_waiters();
+        }
+    }
+}
+
 impl SubagentContinuationManager {
+    fn begin_materialization(&self, parent: &Arc<dyn Agent>) -> MaterializationGuard {
+        let token = self
+            .next_materialization
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let lineage = self
+            .live_lineage(parent)
+            .into_iter()
+            .map(|agent| Arc::as_ptr(&agent).cast::<()>() as usize)
+            .collect();
+        self.materializations.lock().insert(token, lineage);
+        MaterializationGuard {
+            manager: self.self_arc.get().expect("manager weak").clone(),
+            token,
+        }
+    }
+
+    async fn wait_materializations(&self, roots: Option<&HashSet<usize>>) {
+        loop {
+            let notified = self.materialization_changed.notified();
+            let pending = {
+                let materializations = self.materializations.lock();
+                match roots {
+                    None => !materializations.is_empty(),
+                    Some(roots) => materializations
+                        .values()
+                        .any(|lineage| !lineage.is_disjoint(roots)),
+                }
+            };
+            if !pending {
+                return;
+            }
+            notified.await;
+        }
+    }
     /// Build the manager (TS constructor).
     pub fn new(ctx: &Context, host: Arc<dyn ContinuationHost>) -> Arc<Self> {
         let manager = Arc::new(Self {
             ctx: ctx.clone(),
             self_arc: std::sync::OnceLock::new(),
             activations: parking_lot::Mutex::new(HashMap::new()),
+            materializations: parking_lot::Mutex::new(HashMap::new()),
+            next_materialization: std::sync::atomic::AtomicU64::new(1),
+            materialization_changed: tokio::sync::Notify::new(),
             locks: ChildLock::default(),
             host,
             closing_scopes: parking_lot::Mutex::new(HashMap::new()),
@@ -199,11 +253,59 @@ impl SubagentContinuationManager {
             disposed_listener,
             Default::default(),
         ));
+        for event in ["agent/inbox/claimed", "agent/inbox/discarded"] {
+            let manager_for_inbox = manager.clone();
+            let listener: Arc<cordis::Listener> = Arc::new(move |_ctx, args| {
+                let manager = manager_for_inbox.clone();
+                let payload = args.first().cloned();
+                Box::pin(async move {
+                    if let Some(payload) = payload {
+                        if let Some(claimed) =
+                            payload.downcast_ref::<dsh_agent::AgentInboxClaimedPayload>()
+                        {
+                            manager.settle_accepted(&claimed.agent, &claimed.message.id);
+                        } else if let Some(discarded) =
+                            payload.downcast_ref::<dsh_agent::AgentInboxMessagePayload>()
+                        {
+                            manager.settle_accepted(&discarded.agent, &discarded.message.id);
+                        }
+                    }
+                    None
+                })
+            });
+            let _ = futures::executor::block_on(ctx.on(event, listener, Default::default()));
+        }
         manager
             .self_arc
             .set(Arc::downgrade(&manager))
             .expect("once");
+        let weak = Arc::downgrade(&manager);
+        let _ = ctx.effect(
+            "subagents.continuations()",
+            Box::pin(async move {
+                Some(cordis::make_disposer(move || {
+                    let weak = weak.clone();
+                    Box::pin(async move {
+                        if let Some(manager) = weak.upgrade() {
+                            let _ = manager.drain().await;
+                        }
+                    })
+                }))
+            }),
+        );
         manager
+    }
+
+    fn settle_accepted(&self, agent: &Arc<dyn Agent>, message_id: &MessageId) {
+        let activation = self.activations.lock().get(agent.id().as_str()).cloned();
+        if let Some(activation) = activation {
+            let mut activation = activation.lock();
+            if Arc::ptr_eq(&activation.handle().agent, agent)
+                && activation.accepted.remove(message_id.as_str())
+            {
+                activation.poke.notify_waiters();
+            }
+        }
     }
 
     fn agents(&self) -> Arc<AgentRegistry> {
@@ -501,6 +603,7 @@ impl SubagentContinuationManager {
     pub async fn drain(&self) -> Result<(), SubagentError> {
         self.draining
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.wait_materializations(None).await;
         let roots = {
             let activations = self.activations.lock();
             let mut owned: HashSet<String> = HashSet::new();
@@ -551,6 +654,13 @@ impl SubagentContinuationManager {
         if roots.is_empty() {
             return Ok(());
         }
+        {
+            let mut closing = self.closing_scopes.lock();
+            for root in &roots {
+                closing.entry(*root).or_default().insert(*root);
+            }
+        }
+        self.wait_materializations(Some(&roots)).await;
         let targets = {
             let activations = self.activations.lock();
             activations
@@ -603,6 +713,7 @@ impl SubagentContinuationManager {
             signal,
         } = input;
         self.assert_admitting(parent.as_ref())?;
+        let _materialization = self.begin_materialization(&parent);
         if (signal)() {
             return Err(SubagentError::new(
                 "CANCELLED",
@@ -1008,11 +1119,32 @@ impl SubagentContinuationManager {
         }
     }
 
-    fn assert_admitting(&self, _agent: &dyn Agent) -> Result<(), SubagentError> {
+    fn assert_admitting(&self, agent: &dyn Agent) -> Result<(), SubagentError> {
         if self.draining.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(SubagentError::new(
                 "DRAINING",
                 "continuable subagents are draining; the operation was not admitted",
+            ));
+        }
+        let mut lineage = HashSet::new();
+        lineage.insert(agent as *const dyn Agent as *const () as usize);
+        let mut parent_session = agent.session().header().parent_session.clone();
+        while let Some(parent_id) = parent_session {
+            let Some(parent) = self.agents().get(&parent_id) else {
+                break;
+            };
+            lineage.insert(Arc::as_ptr(&parent).cast::<()>() as usize);
+            parent_session = parent.session().header().parent_session.clone();
+        }
+        if self
+            .closing_scopes
+            .lock()
+            .iter()
+            .any(|(root, members)| lineage.contains(root) || !lineage.is_disjoint(members))
+        {
+            return Err(SubagentError::new(
+                "DRAINING",
+                "continuable subagents below this parent are draining; the operation was not admitted",
             ));
         }
         Ok(())

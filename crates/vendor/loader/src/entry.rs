@@ -258,13 +258,13 @@ impl Entry {
                 }
                 *entry.ctx.lock() = ctx;
                 let live_fiber = entry.fiber.lock().clone();
-                if let Some(fiber) = live_fiber {
-                    if fiber.uid_value().is_some() {
-                        let config: ArcValue =
-                            options.config.clone().map(arc).unwrap_or_else(|| arc(()));
-                        if let Err(error) = fiber.update(config, true).await {
-                            *error_slot_for_fallback.lock() = Some(error);
-                        }
+                if let Some(fiber) = live_fiber
+                    && fiber.uid_value().is_some()
+                {
+                    let config: ArcValue =
+                        options.config.clone().map(arc).unwrap_or_else(|| arc(()));
+                    if let Err(error) = fiber.update(config, true).await {
+                        *error_slot_for_fallback.lock() = Some(error);
                     }
                 }
                 arc(())
@@ -447,19 +447,55 @@ impl Entry {
                 *self.options.lock() = previous.clone();
                 return Err(error);
             }
-            let plugin = self.core.import(&options.name).map_err(|error| {
-                LoaderError::update("import", &options.id, &options.name, error.to_string())
-            })?;
+            if self.disabled_of(&options)? {
+                self.emit_partial_dispose(&previous, true);
+                return Ok(());
+            }
+            let plugin = match self.core.import(&options.name) {
+                Ok(plugin) => plugin,
+                Err(import_error) => {
+                    *self.options.lock() = previous.clone();
+                    let rollback = if self.disabled_of(&previous)? {
+                        Ok(())
+                    } else {
+                        match self.core.import(&previous.name) {
+                            Ok(previous_plugin) => self.start(previous_plugin).await,
+                            Err(rollback_import_error) => Err(LoaderError::update(
+                                "import",
+                                &previous.id,
+                                &previous.name,
+                                rollback_import_error.to_string(),
+                            )),
+                        }
+                    };
+                    let error = LoaderError::update(
+                        "import",
+                        &options.id,
+                        &options.name,
+                        import_error.to_string(),
+                    );
+                    return match rollback {
+                        Ok(()) => Err(error),
+                        Err(rollback_error) => {
+                            Err(LoaderError::Aggregate(vec![error, rollback_error]))
+                        }
+                    };
+                }
+            };
             if let Err(error) = self.start(plugin).await {
                 *self.options.lock() = previous.clone();
-                let rollback = match self.core.import(&previous.name) {
-                    Ok(previous_plugin) => self.start(previous_plugin).await,
-                    Err(import_error) => Err(LoaderError::update(
-                        "import",
-                        &previous.id,
-                        &previous.name,
-                        import_error.to_string(),
-                    )),
+                let rollback = if self.disabled_of(&previous)? {
+                    Ok(())
+                } else {
+                    match self.core.import(&previous.name) {
+                        Ok(previous_plugin) => self.start(previous_plugin).await,
+                        Err(import_error) => Err(LoaderError::update(
+                            "import",
+                            &previous.id,
+                            &previous.name,
+                            import_error.to_string(),
+                        )),
+                    }
                 };
                 match rollback {
                     Ok(()) => self.emit_partial_dispose(&options, true),
@@ -527,8 +563,8 @@ fn diff_keys(candidate: &EntryOptions, previous: &EntryOptions) -> Vec<String> {
         ),
         (
             "group",
-            json_opt(candidate.group.map(|b| Value::Bool(b)).as_ref()),
-            json_opt(previous.group.map(|b| Value::Bool(b)).as_ref()),
+            json_opt(candidate.group.map(Value::Bool).as_ref()),
+            json_opt(previous.group.map(Value::Bool).as_ref()),
         ),
         (
             "disabled",

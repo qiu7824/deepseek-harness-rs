@@ -19,7 +19,7 @@ fn run<F: std::future::Future>(future: F) -> F::Output {
 
 async fn open_mux(
     handler: &dsh_host_apiproxy::FetchHandler,
-) -> std::pin::Pin<Box<dyn futures::Stream<Item = Vec<u8>> + Send>> {
+) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<u8>, String>> + Send>> {
     let response = handler
         .handle(CarrierRequest {
             method: http::Method::GET,
@@ -61,12 +61,20 @@ fn the_mux_stream_opens_with_the_subscribed_baseline_and_forwards_events() {
         let stream = open_mux(&handler).await;
         let mut frames = Box::pin(futures::StreamExt::take(stream, 3));
         use futures::StreamExt;
-        let first = frames.next().await.expect("open comment");
+        let first = frames
+            .next()
+            .await
+            .expect("open comment")
+            .expect("open stream success");
         let text = String::from_utf8(first).expect("utf8");
         assert!(text.starts_with(": connected\n\n"), "{text}");
 
         // The subscribed baseline frame.
-        let second = frames.next().await.expect("baseline");
+        let second = frames
+            .next()
+            .await
+            .expect("baseline")
+            .expect("baseline success");
         let text = String::from_utf8(second).expect("utf8");
         let payload: serde_json::Value = serde_json::from_str(
             text.lines()
@@ -104,7 +112,11 @@ fn the_mux_stream_opens_with_the_subscribed_baseline_and_forwards_events() {
                 }),
             )
             .expect("append");
-        let third = frames.next().await.expect("live frame");
+        let third = frames
+            .next()
+            .await
+            .expect("live frame")
+            .expect("live frame success");
         let text = String::from_utf8(third).expect("utf8");
         let payload: serde_json::Value = serde_json::from_str(
             text.lines()

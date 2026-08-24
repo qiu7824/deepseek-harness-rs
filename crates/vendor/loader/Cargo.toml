@@ -14,3 +14,12 @@ async-trait = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
+
+[dev-dependencies]
+dsh-session = { path = "../../core/session" }
+dsh-token-meter = { path = "../../llm/token-meter" }
+dsh-llm = { path = "../../core/llm" }
+dsh-commands = { path = "../../interaction/commands" }
+dsh-compaction = { path = "../../compaction/compaction" }
+dsh-command-compact = { path = "../../compaction/command-compact" }
+dsh-compaction-tool-result-pruner = { path = "../../compaction/compaction-tool-result-pruner" }
