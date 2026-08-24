@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const exports = module.exports;
     const React = require("react");
     const inject = ["slots"];
-    const CSS = ".ctxjump-bar{display:flex;align-items:center;width:100%;height:10px;padding:0 16px;box-sizing:border-box}.ctxjump-track{position:relative;display:flex;align-items:center;gap:1px;width:100%;height:4px;border-radius:999px;background:rgba(127,127,137,.16);overflow:hidden}.ctxjump-segment{height:100%;min-width:2px;flex:1;border:0;padding:0;background:rgba(127,127,137,.3);cursor:pointer}.ctxjump-segment:hover{background:var(--dsw-alias-label-primary,#344054)}.ctxjump-segment[data-active=true]{background:var(--dsw-alias-interactive-primary,#175cd3)}";
+    const CSS = ".ctxjump-bar{display:flex;align-items:center;width:100%;height:30px;padding:0 16px;box-sizing:border-box;overflow:hidden}.ctxjump-track{display:flex;align-items:center;gap:6px;width:100%;overflow-x:auto;scrollbar-width:none}.ctxjump-track::-webkit-scrollbar{display:none}.ctxjump-segment{height:22px;max-width:180px;flex:0 0 auto;border:0;border-radius:6px;padding:0 9px;background:transparent;color:var(--dsw-alias-label-tertiary,#667085);cursor:pointer;font-size:11px;line-height:22px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ctxjump-segment:hover{background:rgba(127,127,137,.12);color:var(--dsw-alias-label-primary,#344054)}.ctxjump-segment[data-active=true]{background:rgba(23,92,211,.12);color:var(--dsw-alias-interactive-primary,#175cd3)}";
 
     function installStyle() {
       if (document.querySelector('style[data-plugin-css="dsh-context-jump/client.css"]')) return;
@@ -52,17 +52,20 @@ window.__ModuleLoader__.load({
         };
       }, []);
       const rows = snapshot.rows;
-      if (rows.length < 2) return null;
-      return React.createElement("div", { className: "ctxjump-bar", role: "navigation", "aria-label": "会话位置" },
-        React.createElement("div", { className: "ctxjump-track" }, rows.map((row, index) => React.createElement("button", {
-          key: row.dataset.chatAnchorKey || index,
-          type: "button",
-          className: "ctxjump-segment",
-          "data-active": index === snapshot.current ? "true" : "false",
-          title: `跳转到第 ${index + 1} 个节点`,
-          "aria-label": `跳转到第 ${index + 1} 个节点`,
-          onClick: () => jump(row)
-        })))
+      if (rows.length < 1) return null;
+      return React.createElement("div", { className: "ctxjump-bar", role: "navigation", "aria-label": "对话记录跳转" },
+        React.createElement("div", { className: "ctxjump-track" }, rows.map((row, index) => {
+          const title = (row.innerText || "").trim().split("\n")[0].trim() || `对话 ${index + 1}`;
+          return React.createElement("button", {
+            key: row.dataset.chatAnchorKey || index,
+            type: "button",
+            className: "ctxjump-segment",
+            "data-active": index === snapshot.current ? "true" : "false",
+            title,
+            "aria-label": `跳转到：${title}`,
+            onClick: () => jump(row)
+          }, title);
+        }))
       );
     }
 
