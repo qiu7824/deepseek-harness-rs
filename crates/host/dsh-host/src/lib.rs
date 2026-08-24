@@ -81,9 +81,10 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
     profile.insert("displayName".to_string(), Schema::string());
     profile.insert(
         "api".to_string(),
-        Schema::union(vec![Schema::constant(Data::String(
-            "openai-completions".to_string(),
-        ))])
+        Schema::union(vec![
+            Schema::constant(Data::String("openai-completions".to_string())),
+            Schema::constant(Data::String("openai-responses".to_string())),
+        ])
         .required(true),
     );
     profile.insert("baseURL".to_string(), Schema::string().required(true));
@@ -127,9 +128,11 @@ async fn discover_openai_compatible_models(
     if request
         .api
         .as_deref()
-        .is_some_and(|api| api != "openai-completions")
+        .is_some_and(|api| api != "openai-completions" && api != "openai-responses")
     {
-        return Err("model discovery only supports openai-completions".to_string());
+        return Err(
+            "model discovery only supports openai-completions or openai-responses".to_string(),
+        );
     }
     let base_url = request
         .base_url

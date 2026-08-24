@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const exports = module.exports;
     const React = require("react");
     const inject = ["slots"];
-    const CSS = ".ctxjump{display:inline-flex;gap:3px}.ctxjump button{height:24px;min-width:24px;padding:0 6px;border:1px solid rgba(127,127,137,.35);border-radius:6px;background:transparent;color:inherit;cursor:pointer;font-size:12px}.ctxjump button:hover{background:rgba(127,127,137,.12)}";
+    const CSS = ".ctxjump-bar{display:flex;align-items:center;gap:8px;width:100%;height:18px;padding:0 12px;box-sizing:border-box}.ctxjump-track{position:relative;display:flex;align-items:center;gap:2px;width:100%;height:6px;border-radius:999px;background:rgba(127,127,137,.16);overflow:hidden}.ctxjump-segment{height:100%;min-width:3px;flex:1;border:0;padding:0;background:rgba(127,127,137,.3);cursor:pointer}.ctxjump-segment:hover{background:var(--dsw-alias-label-primary,#344054)}.ctxjump-segment[data-active=true]{background:var(--dsw-alias-interactive-primary,#175cd3)}.ctxjump-label{font-size:11px;color:var(--dsw-alias-label-tertiary,#98a2b3);white-space:nowrap}";
 
     function installStyle() {
       if (document.querySelector('style[data-plugin-css="dsh-context-jump/client.css"]')) return;
@@ -16,59 +16,62 @@ window.__ModuleLoader__.load({
       document.head.appendChild(style);
     }
 
-    function state() {
+    function readRows() {
       const scroll = document.querySelector("[data-conversation-scroll]");
-      const rows = scroll ? [...scroll.querySelectorAll("[data-chat-anchor-key]")] : [];
-      if (!(scroll instanceof HTMLElement)) return { scroll: null, rows, index: -1 };
-      const top = scroll.getBoundingClientRect().top;
-      let index = rows.findIndex((row) => row.getBoundingClientRect().bottom > top + 8);
-      if (index < 0 && rows.length) index = rows.length - 1;
-      return { scroll, rows, index };
+      if (!(scroll instanceof HTMLElement)) return { scroll: null, rows: [] };
+      return { scroll, rows: [...scroll.querySelectorAll("[data-chat-anchor-key]")] };
     }
 
-    function reveal(row) {
+    function jump(row) {
       if (row instanceof HTMLElement) row.scrollIntoView({ block: "start", behavior: "smooth" });
     }
 
-    function ContextJump() {
-      const top = () => {
-        const { scroll, rows } = state();
-        if (!scroll) return;
-        if (rows[0]) reveal(rows[0]);
-        else scroll.scrollTo({ top: 0, behavior: "smooth" });
-        const older = [...scroll.querySelectorAll("button")].find((button) => /加载更早|Load earlier/i.test(button.textContent || ""));
-        if (older instanceof HTMLButtonElement && !older.disabled) older.click();
-      };
-      const previous = () => {
-        const { rows, index } = state();
-        reveal(rows[Math.max(0, index - 1)]);
-      };
-      const next = () => {
-        const { rows, index } = state();
-        reveal(rows[Math.min(rows.length - 1, index + 1)]);
-      };
-      const bottom = () => {
-        const { scroll, rows } = state();
-        if (!scroll) return;
-        if (rows.length) reveal(rows[rows.length - 1]);
-        scroll.scrollTo({ top: scroll.scrollHeight, behavior: "smooth" });
-      };
-      return React.createElement("div", { className: "ctxjump", role: "group", "aria-label": "会话快速跳转" },
-        React.createElement("button", { type: "button", title: "跳到已加载内容顶部；必要时加载更早历史", onClick: top }, "⇈"),
-        React.createElement("button", { type: "button", title: "上一个节点", onClick: previous }, "↑"),
-        React.createElement("button", { type: "button", title: "下一个节点", onClick: next }, "↓"),
-        React.createElement("button", { type: "button", title: "回到底部", onClick: bottom }, "⇊")
+    function ContextJumpBar() {
+      const [snapshot, setSnapshot] = React.useState({ rows: [], current: -1 });
+      React.useEffect(() => {
+        const refresh = () => {
+          const { scroll, rows } = readRows();
+          if (!scroll) return setSnapshot({ rows: [], current: -1 });
+          const top = scroll.getBoundingClientRect().top + 10;
+          const current = rows.findIndex((row) => row.getBoundingClientRect().bottom > top);
+          setSnapshot({ rows, current: current < 0 ? rows.length - 1 : current });
+        };
+        refresh();
+        const scroll = document.querySelector("[data-conversation-scroll]");
+        scroll?.addEventListener("scroll", refresh, { passive: true });
+        const observer = new MutationObserver(refresh);
+        if (scroll) observer.observe(scroll, { childList: true, subtree: true });
+        window.addEventListener("resize", refresh);
+        return () => {
+          scroll?.removeEventListener("scroll", refresh);
+          observer.disconnect();
+          window.removeEventListener("resize", refresh);
+        };
+      }, []);
+      const rows = snapshot.rows;
+      if (rows.length < 2) return null;
+      return React.createElement("div", { className: "ctxjump-bar", role: "navigation", "aria-label": "会话快速跳转" },
+        React.createElement("span", { className: "ctxjump-label" }, "跳转"),
+        React.createElement("div", { className: "ctxjump-track" }, rows.map((row, index) => React.createElement("button", {
+          key: row.dataset.chatAnchorKey || index,
+          type: "button",
+          className: "ctxjump-segment",
+          "data-active": index === snapshot.current ? "true" : "false",
+          title: `跳转到第 ${index + 1} 个节点`,
+          "aria-label": `跳转到第 ${index + 1} 个节点`,
+          onClick: () => jump(row)
+        })))
       );
     }
 
     function apply(ctx) {
       installStyle();
-      ctx.slots.inject("conversation.input.right", () => ctx.slots.register({
-        name: "conversation.input.right",
-        id: "context-jump",
-        order: 70,
-        label: "Context jump"
-      }, ContextJump));
+      ctx.slots.inject("conversation.session.header", () => ctx.slots.register({
+        name: "conversation.session.header",
+        id: "context-jump-bar",
+        priority: -80,
+        label: "Context jump bar"
+      }, ContextJumpBar));
     }
 
     exports.apply = apply;
