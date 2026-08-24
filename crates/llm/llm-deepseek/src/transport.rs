@@ -58,19 +58,11 @@ impl CancelableResponse {
 }
 
 fn client() -> Result<reqwest::Client, String> {
-    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
-        std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .tcp_nodelay(true)
-                .pool_idle_timeout(std::time::Duration::from_secs(90))
-                .pool_max_idle_per_host(8)
-                .build()
-                .map_err(|error| format!("provider HTTP client build failed: {error}"))
-        })
-        .clone()
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .tcp_nodelay(true)
+        .build()
+        .map_err(|error| format!("provider HTTP client build failed: {error}"))
 }
 
 pub(crate) async fn post(
@@ -105,6 +97,10 @@ pub(crate) async fn post(
         let driver = tokio::spawn(async move {
             let _ = connection.await;
         });
+        let authority = match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        };
         let mut builder = hyper::Request::builder()
             .method(hyper::Method::POST)
             .uri({
@@ -115,6 +111,7 @@ pub(crate) async fn post(
                 }
                 path
             })
+            .header(hyper::header::HOST, authority)
             .header(hyper::header::AUTHORIZATION, format!("Bearer {api_key}"))
             .header(hyper::header::ACCEPT, "text/event-stream")
             .header(hyper::header::ACCEPT_ENCODING, "identity")
