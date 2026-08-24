@@ -5601,12 +5601,14 @@ impl ApiProxyCarrier for ApiProxyService {
                         };
                         let _ = tx.send(FrameRequest {
                             rpc_id: crate::api::rpc::rpc_id(Self::fresh_id()),
-                            payload: serde_json::json!({
-                                "type": "session/event",
-                                "sessionId": session.id(),
-                                "event": event,
-                                "view": view,
-                            }),
+                            payload: serde_json::to_value(
+                                crate::api::events::MuxFrame::SessionEventFrame {
+                                    session_id: session.id().clone(),
+                                    event,
+                                    view,
+                                },
+                            )
+                            .expect("session/event mux frame serialization"),
                         });
                     }
                     None
