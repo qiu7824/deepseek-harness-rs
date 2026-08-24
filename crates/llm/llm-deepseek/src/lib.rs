@@ -80,6 +80,7 @@ pub struct DeepSeekCatalogModel {
 
 #[derive(Debug, Clone, Default)]
 pub struct DeepSeekConfig {
+    pub api: Option<String>,
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
     pub thinking: Option<ThinkingMode>,
@@ -95,6 +96,7 @@ pub struct DeepSeekConfig {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedDeepSeekOptions {
+    pub api: String,
     pub api_key_env: String,
     pub base_url: String,
     pub defaults: RequestDefaults,
@@ -140,7 +142,19 @@ pub fn resolve_adapter_options(
         resolve_retry_policy(config.retry_policy.as_ref(), "llm-deepseek: retryPolicy").map_err(
             |message| LlmError::new(&message, "INVALID_CONFIG", LlmErrorOptions::default()),
         )?;
+    let api = config
+        .api
+        .clone()
+        .unwrap_or_else(|| "openai-completions".to_string());
+    if api != "openai-completions" && api != "openai-responses" {
+        return Err(LlmError::new(
+            "unsupported llm-deepseek api protocol",
+            "UNSUPPORTED_PROTOCOL",
+            LlmErrorOptions::default(),
+        ));
+    }
     Ok(ResolvedDeepSeekOptions {
+        api,
         api_key_env: config
             .api_key_env
             .clone()
@@ -171,6 +185,33 @@ pub fn resolve_adapter_options(
         files_index_path: config.files_index_path.clone(),
         retry_policy,
     })
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_responses_protocol_is_resolved_and_default_stays_completions() {
+        let default = resolve_adapter_options(&DeepSeekConfig::default()).unwrap();
+        assert_eq!(default.api, "openai-completions");
+        let responses = resolve_adapter_options(&DeepSeekConfig {
+            api: Some("openai-responses".to_string()),
+            ..DeepSeekConfig::default()
+        })
+        .unwrap();
+        assert_eq!(responses.api, "openai-responses");
+    }
+
+    #[test]
+    fn unknown_protocol_fails_closed() {
+        let error = resolve_adapter_options(&DeepSeekConfig {
+            api: Some("anthropic-messages".to_string()),
+            ..DeepSeekConfig::default()
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "UNSUPPORTED_PROTOCOL");
+    }
 }
 
 #[cfg(test)]
@@ -747,6 +788,31 @@ async fn request_chunks(
     cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
 ) -> Result<(), LlmFailure> {
     let options = project_estimated_request(&options);
+    if connection.api == "openai-responses" {
+        let (image_urls, image_meta) =
+            resolve_image_urls(&options, attachment_store.as_ref()).await?;
+        let exact_options = project_exact_request(
+            &options,
+            &image_meta,
+            dsh_llm::RequestImageRepresentation::Base64,
+        );
+        let chat_body = serialize::serialize_request_with_prepared_images(
+            &exact_options,
+            &connection.defaults,
+            include_thinking_fields,
+            Some(&image_urls),
+            None,
+            Some(&image_meta),
+        )?;
+        return request_responses_chunks(
+            &chat_body,
+            &connection,
+            &api_key,
+            &attribution_headers(&app_identity()),
+            sender,
+        )
+        .await;
+    }
     let url = format!(
         "{}/chat/completions",
         connection.base_url.trim_end_matches('/')
@@ -895,6 +961,12 @@ async fn request_chunks(
                     }
                 })?,
             _ = sender.closed() => return Err(failure("DeepSeek stream consumer closed", "CANCELLED")),
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                if cancelled.as_ref().is_some_and(|is_cancelled| is_cancelled()) {
+                    return Err(failure("DeepSeek stream cancelled", "CANCELLED"));
+                }
+                continue;
+            },
         };
         let Some(bytes) = bytes else {
             break;
@@ -1241,6 +1313,7 @@ impl LlmAdapter for DeepSeekAdapter {
                             _ = cancelled => {},
                         }
                     });
+                    runtime.shutdown_timeout(Duration::from_millis(250));
                 })
                 .expect("spawn DeepSeek request worker");
             let _guard = RequestWorkerGuard {

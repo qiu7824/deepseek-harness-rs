@@ -1,17 +1,48 @@
+use http_body_util::{BodyExt, Full};
 use hyper::{HeaderMap, StatusCode};
+use hyper_util::rt::TokioIo;
+
+enum ResponseBody {
+    Reqwest(reqwest::Response),
+    Hyper {
+        body: hyper::body::Incoming,
+        driver: tokio::task::JoinHandle<()>,
+    },
+}
 
 pub(crate) struct CancelableResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
-    response: reqwest::Response,
+    response: ResponseBody,
+}
+
+impl Drop for CancelableResponse {
+    fn drop(&mut self) {
+        if let ResponseBody::Hyper { driver, .. } = &self.response {
+            driver.abort();
+        }
+    }
 }
 
 impl CancelableResponse {
     pub async fn next_data(&mut self) -> Result<Option<bytes::Bytes>, String> {
-        self.response
-            .chunk()
-            .await
-            .map_err(|error| format!("HTTP response body failed: {error}"))
+        match &mut self.response {
+            ResponseBody::Reqwest(response) => response
+                .chunk()
+                .await
+                .map_err(|error| format!("HTTP response body failed: {error}")),
+            ResponseBody::Hyper { body, .. } => loop {
+                match body.frame().await {
+                    Some(Ok(frame)) => {
+                        if let Ok(data) = frame.into_data() {
+                            return Ok(Some(data));
+                        }
+                    }
+                    Some(Err(error)) => return Err(format!("HTTP response body failed: {error}")),
+                    None => return Ok(None),
+                }
+            },
+        }
     }
 
     pub async fn collect_limited(mut self, limit: usize) -> Result<Vec<u8>, String> {
@@ -57,6 +88,61 @@ pub(crate) async fn post(
         ),
         scheme => return Err(format!("unsupported provider URL scheme {scheme:?}")),
     }
+    if url.scheme() == "http" {
+        let port = url.port_or_known_default().unwrap_or(80);
+        let stream = tokio::net::TcpStream::connect((host, port))
+            .await
+            .map_err(|error| format!("provider TCP connect failed: {error}"))?;
+        let io = TokioIo::new(stream);
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(io)
+            .await
+            .map_err(|error| format!("provider HTTP handshake failed: {error}"))?;
+        let driver = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let mut builder = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri({
+                let mut path = url.path().to_string();
+                if let Some(query) = url.query() {
+                    path.push('?');
+                    path.push_str(query);
+                }
+                path
+            })
+            .header(hyper::header::AUTHORIZATION, format!("Bearer {api_key}"))
+            .header(hyper::header::ACCEPT, "text/event-stream")
+            .header(hyper::header::ACCEPT_ENCODING, "identity")
+            .header(hyper::header::CONTENT_TYPE, "application/json")
+            .header(hyper::header::CONNECTION, "close");
+        for (name, value) in attribution {
+            builder = builder.header(name, value);
+        }
+        let request = builder
+            .body(Full::new(bytes::Bytes::from(body)))
+            .map_err(|error| format!("provider HTTP request build failed: {error}"))?;
+        let response = tokio::select! {
+            result = sender.send_request(request) => result
+                .map_err(|error| format!("provider HTTP request failed: {error}"))?,
+            _ = async {
+                loop {
+                    if cancelled.as_ref().is_some_and(|is_cancelled| is_cancelled()) { break; }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            } => {
+                driver.abort();
+                return Err("provider request cancelled before response headers".to_string());
+            }
+        };
+        return Ok(CancelableResponse {
+            status: response.status(),
+            headers: response.headers().clone(),
+            response: ResponseBody::Hyper {
+                body: response.into_body(),
+                driver,
+            },
+        });
+    }
     let client = client()?;
     let mut request = client
         .post(url)
@@ -68,7 +154,8 @@ pub(crate) async fn post(
     for (name, value) in attribution {
         request = request.header(name, value);
     }
-    let mut send_task = tokio::spawn(async move { request.body(body).send().await });
+    let send = request.body(body).send();
+    tokio::pin!(send);
     let response = if let Some(cancelled) = cancelled {
         let cancel_wait = async move {
             loop {
@@ -80,19 +167,14 @@ pub(crate) async fn post(
         };
         tokio::pin!(cancel_wait);
         tokio::select! {
-            result = &mut send_task => result
-                .map_err(|error| format!("provider HTTP request task failed: {error}"))?
+            result = &mut send => result
                 .map_err(|error| format!("provider HTTP request failed: {error}"))?,
             _ = &mut cancel_wait => {
-                send_task.abort();
-                let _ = send_task.await;
                 return Err("provider request cancelled before response headers".to_string());
             }
         }
     } else {
-        send_task
-            .await
-            .map_err(|error| format!("provider HTTP request task failed: {error}"))?
+        send.await
             .map_err(|error| format!("provider HTTP request failed: {error}"))?
     };
     let status = response.status();
@@ -100,7 +182,7 @@ pub(crate) async fn post(
     Ok(CancelableResponse {
         status,
         headers,
-        response,
+        response: ResponseBody::Reqwest(response),
     })
 }
 

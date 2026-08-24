@@ -315,4 +315,61 @@ mod tests {
         ));
         translator.finish().unwrap();
     }
+
+    #[test]
+    fn request_preserves_developer_and_tool_protocol_fields() {
+        let body = request_from_chat(&json!({
+            "model":"m",
+            "messages":[
+                {"role":"developer","content":"policy"},
+                {"role":"assistant","content":"call","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+                {"role":"tool","tool_call_id":"call_1","content":"result"}
+            ],
+            "tools":[{"type":"function","function":{"name":"lookup","description":"find","parameters":{"type":"object"},"strict":true}}]
+        })).unwrap();
+        assert_eq!(body["input"][0]["role"], "developer");
+        let function_call = body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "function_call")
+            .unwrap();
+        assert_eq!(function_call["call_id"], "call_1");
+        assert!(
+            body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "function_call_output")
+        );
+        assert_eq!(body["tools"][0]["strict"], true);
+    }
+
+    #[test]
+    fn translator_preserves_reasoning_tool_and_cached_usage() {
+        let mut translator = ResponsesTranslator::default();
+        let reasoning = translator
+            .consume(r#"{"type":"response.reasoning_summary_text.delta","delta":"plan"}"#)
+            .unwrap();
+        assert!(reasoning.iter().any(
+            |chunk| matches!(chunk, StreamChunk::ReasoningDelta { text, .. } if text == "plan")
+        ));
+        translator
+            .consume(r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"lookup"}}"#)
+            .unwrap();
+        let args = translator
+            .consume(r#"{"type":"response.function_call_arguments.delta","item_id":"item_1","delta":"{}"}"#)
+            .unwrap();
+        assert!(
+            args.iter().any(
+                |chunk| matches!(chunk, StreamChunk::ToolCallDelta { id, .. } if id.as_str() == "call_1")
+            )
+        );
+        let done = translator
+            .consume(r#"{"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":4,"input_tokens_details":{"cached_tokens":7},"output_tokens_details":{"reasoning_tokens":2}}}}"#)
+            .unwrap();
+        assert!(done.iter().any(|chunk| matches!(chunk, StreamChunk::Usage { usage } if usage.cache_read_tokens == Some(7) && usage.reasoning_tokens == Some(2))));
+        assert!(done.iter().any(|chunk| matches!(chunk, StreamChunk::BlockEnd { block: ContentBlock::ToolCall { arguments, .. }, .. } if arguments == "{}")));
+        translator.finish().unwrap();
+    }
 }

@@ -261,6 +261,7 @@ impl OpenAiCompatibleAdapter {
             .expect("registered OpenAI-compatible route has a profile");
         let resolved =
             dsh_llm_deepseek::resolve_adapter_options(&dsh_llm_deepseek::DeepSeekConfig {
+                api: Some(profile.api.clone()),
                 api_key_env: profile.api_key_env.clone(),
                 base_url: Some(profile.base_url.clone()),
                 models: Some(

@@ -1,0 +1,12 @@
+{
+  "name": "dsh-context-jump",
+  "version": "1.0.0",
+  "license": "MIT",
+  "exports": { "./client": "./lib/client.js" },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
+    }
+  }
+}

@@ -51,6 +51,7 @@ jobs:
           mkdir -p "dist/${{ matrix.artifact }}/plugins"
           cp "target/release/${{ matrix.binary }}" "dist/${{ matrix.artifact }}/${{ matrix.binary }}"
           cp -R release/plugins/. "dist/${{ matrix.artifact }}/plugins/"
+          if [[ "${{ matrix.os }}" == windows-* ]]; then cp -R release/windows "dist/${{ matrix.artifact }}/windows"; fi
           mkdir -p "dist/${{ matrix.artifact }}/web/dist" "dist/${{ matrix.artifact }}/config"
           cp -R web/dist/. "dist/${{ matrix.artifact }}/web/dist/"
           cp -R config/agent-presets "dist/${{ matrix.artifact }}/config/agent-presets"
