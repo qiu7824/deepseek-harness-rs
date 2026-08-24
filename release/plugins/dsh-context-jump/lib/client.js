@@ -19,7 +19,10 @@ window.__ModuleLoader__.load({
     function readRows() {
       const scroll = document.querySelector("[data-conversation-scroll]");
       if (!(scroll instanceof HTMLElement)) return { scroll: null, rows: [] };
-      return { scroll, rows: [...scroll.querySelectorAll("[data-chat-anchor-key]")] };
+      return {
+        scroll,
+        rows: [...scroll.querySelectorAll('[data-chat-flow-kind="user"]')]
+      };
     }
 
     function jump(row) {
