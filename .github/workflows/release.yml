@@ -23,7 +23,7 @@ jobs:
             artifact: dsh-linux-x86_64
             binary: dsh
             archive: tar
-          - os: macos-13
+          - os: macos-15-intel
             artifact: dsh-macos-x86_64
             binary: dsh
             archive: tar
