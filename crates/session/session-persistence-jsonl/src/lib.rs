@@ -4,6 +4,7 @@
 
 pub mod format;
 pub mod index;
+mod packed_stream;
 pub mod zstd;
 
 pub use format::{

@@ -5293,6 +5293,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		object({
 			sessionId: sessionIdSchema,
 			beforeSeq: number().int().nonnegative().optional(),
+			afterSeq: number().int().nonnegative().optional(),
 			maxMessages: number().int().positive().optional()
 		});
 		/** Complete provider/model selection. */

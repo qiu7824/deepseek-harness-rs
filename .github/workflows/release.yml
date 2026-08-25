@@ -41,7 +41,10 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
       - name: Verify product surface
         shell: bash
-        run: python tools/verify_product_surface.py
+        run: |
+          python tools/verify_product_surface.py
+          node --check release/plugins/dsh-better-sidebar/lib/client.js
+          node --check release/plugins/dsh-web-preview-rs/lib/client.js
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Build release

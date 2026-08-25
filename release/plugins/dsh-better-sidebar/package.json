@@ -1,0 +1,13 @@
+{
+  "name": "dsh-better-sidebar",
+  "version": "0.15.2-rs.1",
+  "description": "Rust-hosted right sidebar: workspace explorer and browser preview, isolated per session.",
+  "license": "MIT",
+  "exports": { "./client": "./lib/client.js" },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
+    }
+  }
+}

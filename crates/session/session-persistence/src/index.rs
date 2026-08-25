@@ -241,6 +241,18 @@ pub trait SessionPersistenceApi: Send + Sync {
         }
     }
 
+    /// Read only human-authored user messages for lightweight navigation
+    /// projections. Backends should override this to skip packed assistant runs.
+    async fn read_user_message_events(&self, id: &SessionId) -> Result<Vec<SessionEvent>, String> {
+        Ok(self
+            .read_from(id, 0)
+            .await?
+            .events
+            .into_iter()
+            .filter(|event| event.type_ == "user/message")
+            .collect())
+    }
+
     /// Read a bounded, message-aligned history window. Backends should
     /// override this to avoid materializing the full log; the default keeps
     /// compatibility while preserving the explicit event-budget contract.

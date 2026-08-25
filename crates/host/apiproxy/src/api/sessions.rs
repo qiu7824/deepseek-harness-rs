@@ -278,6 +278,10 @@ pub struct SessionHistoryRequest {
     pub session_id: SessionId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub before_seq: Option<i64>,
+    /// Forward-history anchor used by indexed jumps. Mutually exclusive with
+    /// `before_seq`; the returned window starts at this durable sequence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_seq: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_messages: Option<u64>,
 }

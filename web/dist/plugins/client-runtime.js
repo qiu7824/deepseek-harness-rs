@@ -7430,12 +7430,12 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					this.notifier.markDirty();
 				}
 			}
-			/** Replace the rendered window with the one page ending at targetSeq. */
+			/** Replace the rendered window with a forward page starting at targetSeq. */
 			async loadAround(targetSeq) {
 				if (this.openState !== "open" || !Number.isSafeInteger(targetSeq) || targetSeq < 0) return false;
 				if (this.events.some((event) => event.seq === targetSeq)) return true;
 				try {
-					const { result } = await this.history({ beforeSeq: targetSeq + 1, maxMessages: 50 });
+					const { result } = await this.history({ afterSeq: targetSeq, maxMessages: 50 });
 					if (!result.ok || !result.value.events.some((entry) => entry.event.seq === targetSeq)) return false;
 					this.historyTargetSeq = targetSeq;
 					this.installWindow(result.value.events, result.value.hasMore, void 0);

@@ -5931,7 +5931,7 @@ window.__ModuleLoader__.load({
 			"access.confirm.cancel": "取消",
 			"access.confirm.enable": "启用 Full access",
 			"hero.headline": "探索未至之境",
-			"hero.preview": "预览版",
+			"hero.preview": "Rust 版",
 			"hero.chooseWorkspace": "选择工作区",
 			"session.hierarchy": "会话层级",
 			"details.title": "详情",
@@ -6108,7 +6108,7 @@ window.__ModuleLoader__.load({
 			"access.confirm.cancel": "Cancel",
 			"access.confirm.enable": "Enable Full access",
 			"hero.headline": "Into the Unknown",
-			"hero.preview": "Preview",
+			"hero.preview": "Rust",
 			"hero.chooseWorkspace": "Choose workspace",
 			"session.hierarchy": "Session hierarchy",
 			"details.title": "Details",
@@ -6219,7 +6219,7 @@ window.__ModuleLoader__.load({
 		};
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-conversation\src\client\skeleton\TodoPanel.module.css.mjs
-		const css$9 = ".qbgx4a_root{box-sizing:border-box;width:calc(100% - var(--dsh-composer-side-clearance) - var(--dsh-composer-side-clearance) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));max-width:calc(var(--dsh-composer-card-max-width) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-specific-tip);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:12px;flex:none;margin:0 auto;overflow:hidden}.qbgx4a_body{flex-direction:column;gap:8px;padding:6px 12px;display:flex}.qbgx4a_header{text-align:left;cursor:pointer;background:0 0;border:none;align-items:center;gap:10px;width:100%;padding:0;display:flex}.qbgx4a_lead{color:var(--dsw-alias-label-tertiary);flex:none;place-items:center;display:grid}.qbgx4a_title{color:var(--dsw-alias-label-primary);flex:none;font-size:13px;font-weight:500;line-height:24px}.qbgx4a_progress{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:auto;font-size:13px;font-weight:400;line-height:20px;overflow:hidden}.qbgx4a_chevron{color:var(--dsw-alias-label-tertiary);flex:none;place-items:center;display:grid}.qbgx4a_list{flex-direction:column;gap:8px;max-height:180px;margin:0;padding:0;list-style:none;display:flex;overflow-y:auto}.qbgx4a_item{min-width:0;color:var(--dsw-alias-label-secondary);align-items:center;gap:10px;font-size:13px;line-height:20px;display:flex}.qbgx4a_glyph{flex:none;place-items:center;width:16px;height:16px;display:grid}.qbgx4a_glyphCompleted{color:var(--dsw-alias-state-success-primary)}.qbgx4a_glyphPending{color:var(--dsw-alias-label-caption)}.qbgx4a_glyphProgress{color:var(--dsw-alias-state-business-primary);animation:1s linear infinite qbgx4a_todo-progress-spin}@keyframes qbgx4a_todo-progress-spin{to{transform:rotate(360deg)}}.qbgx4a_content{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}";
+		const css$9 = ".qbgx4a_root{box-sizing:border-box;width:calc(100% - var(--dsh-composer-side-clearance) - var(--dsh-composer-side-clearance) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));max-width:calc(var(--dsh-composer-card-max-width) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-specific-tip);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:12px;flex:none;margin:0 auto;overflow:hidden}.qbgx4a_body{flex-direction:column;gap:8px;padding:6px 12px;display:flex}.qbgx4a_header{text-align:left;cursor:pointer;background:0 0;border:none;align-items:center;gap:10px;width:100%;padding:0;display:flex}.qbgx4a_lead{color:var(--dsw-alias-label-tertiary);flex:none;place-items:center;display:grid}.qbgx4a_title{color:var(--dsw-alias-label-primary);flex:none;font-size:13px;font-weight:500;line-height:24px}.qbgx4a_progress{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:auto;font-size:13px;font-weight:400;line-height:20px;overflow:hidden}.qbgx4a_chevron{color:var(--dsw-alias-label-tertiary);flex:none;place-items:center;display:grid}.qbgx4a_list{flex-direction:column;gap:8px;max-height:180px;margin:0;padding:0;list-style:none;display:flex;overflow-y:auto}.qbgx4a_item{min-width:0;color:var(--dsw-alias-label-secondary);align-items:center;gap:10px;font-size:13px;line-height:20px;display:flex}.qbgx4a_glyph{flex:none;place-items:center;width:16px;height:16px;display:grid}.qbgx4a_glyphCompleted{color:var(--dsw-alias-state-success-primary)}.qbgx4a_glyphPending{color:var(--dsw-alias-label-caption)}.qbgx4a_glyphProgress{color:var(--dsw-alias-state-business-primary);animation:1s linear infinite qbgx4a_todo-progress-spin}.dsh-todo-editor{min-width:0;height:26px;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:2px 7px;font:var(--dsw-font-xs-13);font-family:Inter,var(--dsw-font-family);outline:none;flex:auto}.dsh-todo-editor:focus{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-business-primary) 18%,transparent)}.dsh-todo-actions{flex:none;align-items:center;gap:2px;display:flex;opacity:0;transition:opacity var(--ds-transition-duration-fast)}.qbgx4a_item:hover .dsh-todo-actions,.qbgx4a_item:focus-within .dsh-todo-actions{opacity:1}.dsh-todo-action{width:25px;height:25px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:6px;place-items:center;padding:0;display:grid}.dsh-todo-action:hover:not(:disabled){color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}.dsh-todo-action:disabled{cursor:not-allowed;opacity:.4}.dsh-todo-danger:hover:not(:disabled){color:var(--dsw-alias-state-error-primary)}.dsh-todo-stop{align-self:flex-end;color:var(--dsw-alias-state-error-primary);cursor:pointer;background:0 0;border:none;border-radius:7px;padding:4px 8px;font-size:12px;line-height:18px}.dsh-todo-stop:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 10%,transparent)}.dsh-todo-stop:disabled{cursor:not-allowed;opacity:.4}@media (hover:none){.dsh-todo-actions{opacity:1}}@keyframes qbgx4a_todo-progress-spin{to{transform:rotate(360deg)}}.qbgx4a_content{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}";
 		const tagId$9 = "@deepseek-ai/dsh-client-ui-conversation/TodoPanel.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$9) + "]") === null) {
 			const tag = document.createElement("style");
@@ -6425,14 +6425,22 @@ window.__ModuleLoader__.load({
 								children: item.content
 							}), mutable && (0, react_jsx_runtime.jsx)("span", {
 								className: "dsh-todo-actions",
-								children: editing?.index === index ? (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("button", {
-									type: "button", className: "dsh-todo-action", "aria-label": t("todo.save"), disabled: busy !== null || editing.value.trim() === "", onClick: saveEdit, children: "✓"
-								}), (0, react_jsx_runtime.jsx)("button", {
-									type: "button", className: "dsh-todo-action", "aria-label": t("todo.cancelEdit"), disabled: busy !== null, onClick: () => setEditing(null), children: "×"
-								})] }) : (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("button", {
-									type: "button", className: "dsh-todo-action", "aria-label": t("todo.edit"), disabled: busy !== null, onClick: () => setEditing({ index, original: item.content, value: item.content }), children: "✎"
-								}), item.status !== "completed" && (0, react_jsx_runtime.jsx)("button", {
-									type: "button", className: "dsh-todo-action dsh-todo-danger", "aria-label": t("todo.remove"), disabled: busy !== null, onClick: () => applyAction(index, { kind: "remove", index }), children: "■"
+								children: editing?.index === index ? (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
+									label: t("todo.save"), side: "bottom", delayMs: 500, children: (0, react_jsx_runtime.jsx)("button", {
+										type: "button", className: "dsh-todo-action", "aria-label": t("todo.save"), disabled: busy !== null || editing.value.trim() === "", onClick: saveEdit, children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCheckOutline16, { size: 14 })
+									})
+								}), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
+									label: t("todo.cancelEdit"), side: "bottom", delayMs: 500, children: (0, react_jsx_runtime.jsx)("button", {
+										type: "button", className: "dsh-todo-action", "aria-label": t("todo.cancelEdit"), disabled: busy !== null, onClick: () => setEditing(null), children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCloseOutline16, { size: 14 })
+									})
+								})] }) : (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
+									label: t("todo.edit"), side: "bottom", delayMs: 500, children: (0, react_jsx_runtime.jsx)("button", {
+										type: "button", className: "dsh-todo-action", "aria-label": t("todo.edit"), disabled: busy !== null, onClick: () => setEditing({ index, original: item.content, value: item.content }), children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconEditOutline16, { size: 14 })
+									})
+								}), item.status !== "completed" && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
+									label: t("todo.remove"), side: "bottom", delayMs: 500, children: (0, react_jsx_runtime.jsx)("button", {
+										type: "button", className: "dsh-todo-action dsh-todo-danger", "aria-label": t("todo.remove"), disabled: busy !== null, onClick: () => applyAction(index, { kind: "remove", index }), children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconTrashOutline16, { size: 14 })
+									})
 								})] })
 							})]
 						}, `${index}:${item.content}`))

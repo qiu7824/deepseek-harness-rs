@@ -873,6 +873,7 @@ async fn bridge_api_request(request: WebRequest, handler: Arc<FetchHandler>) -> 
                 // dropped; collect its transient pages before retaining only
                 // the final bounded byte buffer.
                 unsafe { libmimalloc_sys::mi_collect(true) };
+                trim_windows_working_set();
             }
             WebBody::from(bytes)
         }
@@ -883,6 +884,23 @@ async fn bridge_api_request(request: WebRequest, handler: Arc<FetchHandler>) -> 
         }
     };
     WebResponse::from_parts(parts, body)
+}
+
+#[cfg(windows)]
+fn trim_windows_working_set() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut std::ffi::c_void;
+    }
+    #[link(name = "psapi")]
+    unsafe extern "system" {
+        fn EmptyWorkingSet(process: *mut std::ffi::c_void) -> i32;
+    }
+    // SAFETY: the pseudo-handle is valid for this process; failure is fail-soft
+    // and changes only physical page residency after allocator collection.
+    unsafe {
+        let _ = EmptyWorkingSet(GetCurrentProcess());
+    }
 }
 
 /// One booted host spine: the root context plus its registered services and

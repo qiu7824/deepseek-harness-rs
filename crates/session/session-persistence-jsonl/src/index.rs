@@ -12,13 +12,13 @@
 //!   them; it is `size:mtimeNs:ctimeNs` (source-qualified within one root).
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cordis::{Context, Service};
 use dsh_session::{
-    SessionEvent, SessionHeader, SessionId, SessionPreparation, decode_storage_record,
+    SessionEvent, SessionHeader, SessionId, SessionPreparation, StorageRecord,
+    decode_storage_record, visit_decoded_storage_record_tail,
 };
 use dsh_session_persistence::{
     PersistenceBackend, PersistenceCoordinator, PersistenceCoordinatorOptions,
@@ -176,32 +176,49 @@ fn visit_zstd_frame_events(
     on_event: &mut impl FnMut(SessionEvent) -> Result<bool, String>,
 ) -> Result<bool, String> {
     let decoder = zstd::stream::read::Decoder::new(frame).map_err(|error| error.to_string())?;
-    let mut reader = BufReader::new(decoder);
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        if reader
-            .read_until(b'\n', &mut line)
-            .map_err(|error| error.to_string())?
-            == 0
-        {
-            return Ok(true);
+    match crate::packed_stream::visit_frame(decoder, on_event) {
+        Ok(accepted) => Ok(accepted),
+        Err(crate::packed_stream::PackedStreamError::Noncanonical(_, emitted, accepting)) => {
+            let decoder =
+                zstd::stream::read::Decoder::new(frame).map_err(|error| error.to_string())?;
+            crate::packed_stream::fallback_visit_skip(decoder, emitted, accepting, on_event)
         }
-        while matches!(line.last(), Some(b'\n' | b'\r')) {
-            line.pop();
-        }
-        if line.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        let stored: serde_json::Value = serde_json::from_slice(&line)
-            .map_err(|error| format!("invalid JSONL event record: {error}"))?;
-        for event in decode_storage_record(&stored)? {
-            if !on_event(event)? {
-                std::io::copy(&mut reader, &mut std::io::sink())
-                    .map_err(|error| error.to_string())?;
-                return Ok(false);
+        Err(crate::packed_stream::PackedStreamError::Invalid(message)) => Err(message),
+    }
+}
+
+fn visit_zstd_frame_tail(
+    frame: &[u8],
+    capacity: usize,
+    on_event: &mut impl FnMut(SessionEvent) -> Result<bool, String>,
+) -> Result<bool, String> {
+    let decoder = zstd::stream::read::Decoder::new(frame).map_err(|error| error.to_string())?;
+    match crate::packed_stream::visit_tail_reader(decoder, capacity, on_event) {
+        Ok(accepted) => Ok(accepted),
+        Err(crate::packed_stream::PackedStreamError::Noncanonical(_, emitted, mut accepting)) => {
+            let decoder =
+                zstd::stream::read::Decoder::new(frame).map_err(|error| error.to_string())?;
+            let records =
+                serde_json::Deserializer::from_reader(decoder).into_iter::<StorageRecord>();
+            let mut skip = emitted;
+            for record in records {
+                let record =
+                    record.map_err(|error| format!("invalid JSONL event record: {error}"))?;
+                if accepting
+                    && !visit_decoded_storage_record_tail(record, capacity, &mut |event| {
+                        if skip > 0 {
+                            skip -= 1;
+                            return Ok(true);
+                        }
+                        on_event(event)
+                    })?
+                {
+                    accepting = false;
+                }
             }
+            Ok(accepting)
         }
+        Err(crate::packed_stream::PackedStreamError::Invalid(message)) => Err(message),
     }
 }
 
@@ -486,18 +503,34 @@ impl JsonlSessionPersistence {
         let capacity = request.max_events.saturating_add(1).max(2);
         let mut candidates = VecDeque::with_capacity(capacity);
         let mut dropped = false;
-        for frame in &scan.frames[1..] {
-            visit_zstd_frame_events(&mapping[frame.start..frame.end], &mut |event| {
+        for (frame_index, frame) in scan.frames[1..].iter().enumerate().rev() {
+            let mut frame_tail = VecDeque::with_capacity(capacity);
+            let mut frame_dropped = false;
+            visit_zstd_frame_tail(&mapping[frame.start..frame.end], capacity, &mut |event| {
                 if event.seq >= before_seq {
                     return Ok(true);
                 }
-                candidates.push_back(event);
+                frame_tail.push_back(event);
+                if frame_tail.len() > capacity {
+                    frame_tail.pop_front();
+                    frame_dropped = true;
+                }
+                Ok(true)
+            })?;
+            for event in frame_tail.into_iter().rev() {
+                candidates.push_front(event);
                 if candidates.len() > capacity {
                     candidates.pop_front();
                     dropped = true;
                 }
-                Ok(true)
-            })?;
+            }
+            if frame_dropped {
+                dropped = true;
+            }
+            if candidates.len() >= capacity {
+                dropped |= frame_index > 0;
+                break;
+            }
         }
         let after = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
         if before != after {
@@ -1125,6 +1158,51 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             visitor(&chunk)?;
         }
         Ok(())
+    }
+
+    async fn read_user_message_events(&self, id: &SessionId) -> Result<Vec<SessionEvent>, String> {
+        self.ensure_root_encoding().await?;
+        let Some(path) = self.find_log(id).await? else {
+            return Err(format!("session \"{}\" not found", id.as_str()));
+        };
+        if self.compression != JsonlCompression::Zstd {
+            return Ok(self
+                .read_from(id, 0)
+                .await?
+                .events
+                .into_iter()
+                .filter(|event| event.type_ == "user/message")
+                .collect());
+        }
+        let before = file_revision(&std::fs::metadata(&path).map_err(|error| error.to_string())?);
+        let file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
+        // SAFETY: read-only mapping of a revision-checked artifact.
+        let mapping =
+            unsafe { memmap2::MmapOptions::new().map(&file) }.map_err(|error| error.to_string())?;
+        let scan = scan_zstd_frames(&mapping)?;
+        if scan.frames.is_empty() || scan.torn_start.is_some() {
+            return Ok(self
+                .read_from(id, 0)
+                .await?
+                .events
+                .into_iter()
+                .filter(|event| event.type_ == "user/message")
+                .collect());
+        }
+        let mut messages = Vec::new();
+        for frame in &scan.frames[1..] {
+            visit_zstd_frame_tail(&mapping[frame.start..frame.end], 0, &mut |event| {
+                if event.type_ == "user/message" {
+                    messages.push(event);
+                }
+                Ok(true)
+            })?;
+        }
+        let after = file_revision(&std::fs::metadata(&path).map_err(|error| error.to_string())?);
+        if before != after {
+            return Err("session artifact changed during user-message read".to_string());
+        }
+        Ok(messages)
     }
 
     async fn read_window(

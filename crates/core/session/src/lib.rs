@@ -18,6 +18,8 @@ pub mod types;
 
 pub use chunk_rows::{
     ChunkRow, StorageRecord, TextRunData, ToolCallRunData, decode_storage_record, pack_chunk_runs,
+    visit_decoded_storage_record_events, visit_decoded_storage_record_tail,
+    visit_owned_storage_record_events, visit_storage_record_events,
 };
 pub use json::{JsonValue, is_json_value, snapshot_json_value};
 pub use known_event_types::{KNOWN_SESSION_EVENT_TYPES, is_known_session_event_type};

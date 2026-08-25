@@ -513,6 +513,27 @@ fn validate_payload(
 /// Expand a validated row back into its exact original events, in order
 /// (TS `expandRow`).
 fn expand_row(row: &ChunkRow) -> Vec<SessionEvent> {
+    let mut events = Vec::new();
+    visit_row_events(row, &mut |event| {
+        events.push(event);
+        Ok(true)
+    })
+    .expect("collecting an expanded row is infallible");
+    events
+}
+
+fn visit_row_events(
+    row: &ChunkRow,
+    on_event: &mut impl FnMut(SessionEvent) -> Result<bool, String>,
+) -> Result<bool, String> {
+    visit_row_events_from(row, 0, on_event)
+}
+
+fn visit_row_events_from(
+    row: &ChunkRow,
+    start: usize,
+    on_event: &mut impl FnMut(SessionEvent) -> Result<bool, String>,
+) -> Result<bool, String> {
     let (seq0, time0, data) = match row {
         ChunkRow::TextChunks { seq0, time0, data }
         | ChunkRow::ReasoningChunks { seq0, time0, data } => (
@@ -542,11 +563,20 @@ fn expand_row(row: &ChunkRow) -> Vec<SessionEvent> {
     };
     let (turn, step, index, dt, members, tool_call) = data;
     let kind = row.type_tag();
-    let mut events = Vec::with_capacity(members.len());
+    let start = start.min(members.len());
     let mut time = time0;
-    for (k, member) in members.iter().enumerate() {
+    for delta in dt.iter().take(start) {
+        time = time
+            .checked_add(*delta)
+            .ok_or_else(|| format!("{kind} time overflow"))?;
+    }
+    for (k, member) in members.iter().enumerate().skip(start) {
         if k > 0 {
-            time += dt[k - 1];
+            if k > start {
+                time = time
+                    .checked_add(dt[k - 1])
+                    .ok_or_else(|| format!("{kind} time overflow"))?;
+            }
         }
         let chunk = match (kind, tool_call) {
             ("text-chunks", _) => serde_json::json!({
@@ -569,28 +599,88 @@ fn expand_row(row: &ChunkRow) -> Vec<SessionEvent> {
             }
             _ => unreachable!("validateRow only returns the three row tags"),
         };
-        events.push(SessionEvent {
+        if !on_event(SessionEvent {
             type_: "assistant/chunk".to_string(),
-            seq: seq0 + k as u64,
+            seq: seq0
+                .checked_add(k as u64)
+                .ok_or_else(|| format!("{kind} seq overflow"))?,
             time,
             data: serde_json::json!({"turn": turn, "step": step, "chunk": chunk}),
             ignorable: None,
             surface_op: None,
             source_event_seqs: None,
-        });
+        })? {
+            return Ok(false);
+        }
     }
-    events
+    Ok(true)
 }
 
 /// Decode one parsed JSONL line value into the session event(s) it stores
 /// (TS `decodeStorageRecord`).
 pub fn decode_storage_record(value: &JsonValue) -> Result<Vec<SessionEvent>, String> {
-    match StorageRecord::from_json(value.clone())? {
-        StorageRecord::Row(row) => Ok(expand_row(&row)),
+    let mut events = Vec::new();
+    visit_storage_record_events(value, |event| {
+        events.push(event);
+        Ok(true)
+    })?;
+    Ok(events)
+}
+
+/// Decode one storage record while visiting each reconstructed event without
+/// retaining a potentially enormous packed chunk run.
+pub fn visit_storage_record_events(
+    value: &JsonValue,
+    on_event: impl FnMut(SessionEvent) -> Result<bool, String>,
+) -> Result<bool, String> {
+    visit_owned_storage_record_events(value.clone(), on_event)
+}
+
+/// Owned counterpart used by streaming readers to avoid deep-cloning a large
+/// packed row before expanding its members.
+pub fn visit_owned_storage_record_events(
+    value: JsonValue,
+    mut on_event: impl FnMut(SessionEvent) -> Result<bool, String>,
+) -> Result<bool, String> {
+    visit_decoded_storage_record_events(StorageRecord::from_json(value)?, on_event)
+}
+
+/// Visit an already decoded storage record without another JSON tree.
+pub fn visit_decoded_storage_record_events(
+    record: StorageRecord,
+    mut on_event: impl FnMut(SessionEvent) -> Result<bool, String>,
+) -> Result<bool, String> {
+    match record {
+        StorageRecord::Row(row) => visit_row_events(&row, &mut on_event),
         StorageRecord::Event(value) => {
             let event: SessionEvent = serde_json::from_value(value)
                 .map_err(|error| format!("malformed session event storage record: {error}"))?;
-            Ok(vec![event])
+            on_event(event)
+        }
+    }
+}
+
+/// Visit only the tail of a decoded storage record. Packed rows remain fully
+/// validated by deserialization, while skipped members never become event JSON.
+pub fn visit_decoded_storage_record_tail(
+    record: StorageRecord,
+    capacity: usize,
+    mut on_event: impl FnMut(SessionEvent) -> Result<bool, String>,
+) -> Result<bool, String> {
+    match record {
+        StorageRecord::Row(row) => {
+            let member_count = match &row {
+                ChunkRow::TextChunks { data, .. } | ChunkRow::ReasoningChunks { data, .. } => {
+                    data.texts.len()
+                }
+                ChunkRow::ToolCallChunks { data, .. } => data.args.len(),
+            };
+            visit_row_events_from(&row, member_count.saturating_sub(capacity), &mut on_event)
+        }
+        StorageRecord::Event(value) => {
+            let event: SessionEvent = serde_json::from_value(value)
+                .map_err(|error| format!("malformed session event storage record: {error}"))?;
+            on_event(event)
         }
     }
 }
