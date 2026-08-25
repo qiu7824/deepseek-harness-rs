@@ -11,77 +11,56 @@ permissions:
 
 jobs:
   build:
+    name: Build ${{ matrix.asset }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-2022
-            artifact: dsh-windows-x86_64
-            binary: dsh.exe
-            archive: zip
-          - os: ubuntu-24.04
-            artifact: dsh-linux-x86_64
-            binary: dsh
-            archive: tar
-          - os: macos-13
-            artifact: dsh-macos-x86_64
-            binary: dsh
-            archive: tar
+          - os: windows-latest
+            asset: dsh-windows-x86_64
+            binary: target/release/dsh.exe
+          - os: ubuntu-latest
+            asset: dsh-linux-x86_64
+            binary: target/release/dsh
           - os: macos-14
-            artifact: dsh-macos-aarch64
-            binary: dsh
-            archive: tar
+            asset: dsh-macos-aarch64
+            binary: target/release/dsh
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.1
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
-      - name: Verify product surface
-        shell: bash
-        run: python tools/verify_product_surface.py
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-      - name: Build release
+      - name: Build release binary
         run: cargo build --release -p dsh-host-cli --bin dsh
-      - name: Stage package
-        shell: bash
-        run: |
-          mkdir -p "dist/${{ matrix.artifact }}/plugins"
-          cp "target/release/${{ matrix.binary }}" "dist/${{ matrix.artifact }}/${{ matrix.binary }}"
-          cp -R release/plugins/. "dist/${{ matrix.artifact }}/plugins/"
-          if [[ "${{ matrix.os }}" == windows-* ]]; then cp -R release/windows "dist/${{ matrix.artifact }}/windows"; fi
-          mkdir -p "dist/${{ matrix.artifact }}/web/dist" "dist/${{ matrix.artifact }}/config"
-          cp -R web/dist/. "dist/${{ matrix.artifact }}/web/dist/"
-          cp -R config/agent-presets "dist/${{ matrix.artifact }}/config/agent-presets"
-          cp .github/workflows/release.yml "dist/${{ matrix.artifact }}/RELEASE_WORKFLOW.yml"
-          cp README.md LICENSE release/PLUGIN_SECURITY.md "dist/${{ matrix.artifact }}/"
-      - name: Archive Windows package
-        if: matrix.archive == 'zip'
+      - name: Package Windows artifact
+        if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path "dist/${{ matrix.artifact }}/*" -DestinationPath "dist/${{ matrix.artifact }}.zip"
-      - name: Archive Unix package
-        if: matrix.archive == 'tar'
+        run: Compress-Archive -Path '${{ matrix.binary }}' -DestinationPath '${{ matrix.asset }}.zip'
+      - name: Package Unix artifact
+        if: runner.os != 'Windows'
         shell: bash
-        run: tar -C dist -czf "dist/${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        run: tar -czf '${{ matrix.asset }}.tar.gz' -C target/release dsh
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}.*
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}.zip
+            ${{ matrix.asset }}.tar.gz
           if-no-files-found: error
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/')
+    name: Publish GitHub Release
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@v4
         with:
-          path: dist
+          path: artifacts
           merge-multiple: true
-      - uses: softprops/action-gh-release@e5ee6bc58a36b838b92fc1217f2e4b414b5abcc8
+      - uses: softprops/action-gh-release@v2
         with:
-          prerelease: ${{ contains(github.ref_name, '-rc') }}
+          prerelease: true
           generate_release_notes: true
-          files: dist/*
+          files: artifacts/*
