@@ -376,10 +376,14 @@ impl SessionProjectionCache {
                     },
                 );
             }
-            let rows = self
-                .persistence
-                .read_user_message_events(id)
-                .await?
+            let rail_input = self.persistence.read_user_message_events(id).await?;
+            if !identity_matches(&identity_of(&rail_input.meta), &identity_of(&metadata.meta))
+                || rail_input.last_seq != metadata.last_seq
+            {
+                return Err("session artifact changed during rail seed".to_string());
+            }
+            let rows = rail_input
+                .events
                 .iter()
                 .filter_map(dsh_session_title::user_message_rail_row)
                 .collect();
@@ -387,7 +391,7 @@ impl SessionProjectionCache {
                 dsh_session_title::USER_MESSAGE_RAIL_KEY.to_string(),
                 dsh_session_projection::ProjectionCheckpointRow {
                     ver: dsh_session_title::USER_MESSAGE_RAIL_STATE_VERSION,
-                    seq: metadata.last_seq,
+                    seq: rail_input.last_seq,
                     val: JsonValue::Array(rows),
                 },
             );

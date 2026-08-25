@@ -20,7 +20,7 @@ pub use history_window::{HistoryWindowSelection, HistoryWindowTooLarge, select_h
 pub use index::{
     SessionEventChunk, SessionInspection, SessionListMetadata, SessionLocation, SessionPersistence,
     SessionPersistenceApi, SessionPersistenceSnapshot, SessionRawArtifact, SessionReadFromResult,
-    SessionReadWindowRequest, SessionReadWindowResult,
+    SessionReadWindowRequest, SessionReadWindowResult, SessionUserMessageEvents,
 };
 pub use preparations::{
     DiscardOutcome, PreparationEntry, PreparedSource, PreparedSourceLoader,

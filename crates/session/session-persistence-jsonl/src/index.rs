@@ -1160,19 +1160,32 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         Ok(())
     }
 
-    async fn read_user_message_events(&self, id: &SessionId) -> Result<Vec<SessionEvent>, String> {
+    async fn read_user_message_events(
+        &self,
+        id: &SessionId,
+    ) -> Result<dsh_session_persistence::SessionUserMessageEvents, String> {
         self.ensure_root_encoding().await?;
         let Some(path) = self.find_log(id).await? else {
             return Err(format!("session \"{}\" not found", id.as_str()));
         };
-        if self.compression != JsonlCompression::Zstd {
-            return Ok(self
-                .read_from(id, 0)
-                .await?
+        let from_whole = |whole: dsh_session_persistence::SessionReadFromResult| {
+            let last_seq = whole
                 .events
-                .into_iter()
-                .filter(|event| event.type_ == "user/message")
-                .collect());
+                .last()
+                .map(|event| event.seq as i64)
+                .unwrap_or(-1);
+            dsh_session_persistence::SessionUserMessageEvents {
+                meta: whole.meta,
+                last_seq,
+                events: whole
+                    .events
+                    .into_iter()
+                    .filter(|event| event.type_ == "user/message")
+                    .collect(),
+            }
+        };
+        if self.compression != JsonlCompression::Zstd {
+            return Ok(from_whole(self.read_from(id, 0).await?));
         }
         let before = file_revision(&std::fs::metadata(&path).map_err(|error| error.to_string())?);
         let file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
@@ -1181,28 +1194,71 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             unsafe { memmap2::MmapOptions::new().map(&file) }.map_err(|error| error.to_string())?;
         let scan = scan_zstd_frames(&mapping)?;
         if scan.frames.is_empty() || scan.torn_start.is_some() {
-            return Ok(self
-                .read_from(id, 0)
-                .await?
-                .events
-                .into_iter()
-                .filter(|event| event.type_ == "user/message")
-                .collect());
+            return Ok(from_whole(self.read_from(id, 0).await?));
         }
+        let header = scan.frames[0];
+        let header_plaintext = decompress_zstd_frame(&mapping[header.start..header.end])?;
+        let header_line = decode_zstd_header_line_single(&header_plaintext)?;
+        let meta = parse_header_meta(&header_line)
+            .ok_or_else(|| "invalid Zstandard session header".to_string())?;
+        self.assert_stored_identity(&path, &meta, Some(id)).await?;
         let mut messages = Vec::new();
+        let mut last_seq = -1_i64;
         for frame in &scan.frames[1..] {
-            visit_zstd_frame_tail(&mapping[frame.start..frame.end], 0, &mut |event| {
+            let bytes = &mapping[frame.start..frame.end];
+            let decoder =
+                zstd::stream::read::Decoder::new(bytes).map_err(|error| error.to_string())?;
+            let mut frame_messages = Vec::new();
+            let mut frame_last_seq = -1_i64;
+            let fast = crate::packed_stream::visit_tail_reader(decoder, 1, &mut |event| {
+                frame_last_seq = frame_last_seq.max(i64::try_from(event.seq).unwrap_or(i64::MAX));
                 if event.type_ == "user/message" {
-                    messages.push(event);
+                    frame_messages.push(event);
                 }
                 Ok(true)
-            })?;
+            });
+            match fast {
+                Ok(_) => {}
+                Err(crate::packed_stream::PackedStreamError::Noncanonical(_, _, _)) => {
+                    frame_messages.clear();
+                    frame_last_seq = -1;
+                    let decoder = zstd::stream::read::Decoder::new(bytes)
+                        .map_err(|error| error.to_string())?;
+                    let records =
+                        serde_json::Deserializer::from_reader(decoder).into_iter::<StorageRecord>();
+                    for record in records {
+                        let record = record
+                            .map_err(|error| format!("invalid JSONL event record: {error}"))?;
+                        visit_decoded_storage_record_tail(
+                            record,
+                            1,
+                            &mut |event: SessionEvent| {
+                                frame_last_seq = frame_last_seq
+                                    .max(i64::try_from(event.seq).unwrap_or(i64::MAX));
+                                if event.type_ == "user/message" {
+                                    frame_messages.push(event);
+                                }
+                                Ok(true)
+                            },
+                        )?;
+                    }
+                }
+                Err(crate::packed_stream::PackedStreamError::Invalid(message)) => {
+                    return Err(message);
+                }
+            }
+            last_seq = last_seq.max(frame_last_seq);
+            messages.extend(frame_messages);
         }
         let after = file_revision(&std::fs::metadata(&path).map_err(|error| error.to_string())?);
         if before != after {
             return Err("session artifact changed during user-message read".to_string());
         }
-        Ok(messages)
+        Ok(dsh_session_persistence::SessionUserMessageEvents {
+            meta,
+            last_seq,
+            events: messages,
+        })
     }
 
     async fn read_window(

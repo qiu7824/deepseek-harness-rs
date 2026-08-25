@@ -99,6 +99,14 @@ pub struct SessionListMetadata {
     pub updated_at: i64,
 }
 
+/// User-message projection input and watermark from one immutable read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionUserMessageEvents {
+    pub meta: SessionHeader,
+    pub last_seq: i64,
+    pub events: Vec<SessionEvent>,
+}
+
 /// Durable append-only session storage. Implementations preserve contiguous,
 /// losslessly JSON-serializable events; `append` resolves only after
 /// durability, and `load` balances a complete interrupted tail without
@@ -243,14 +251,25 @@ pub trait SessionPersistenceApi: Send + Sync {
 
     /// Read only human-authored user messages for lightweight navigation
     /// projections. Backends should override this to skip packed assistant runs.
-    async fn read_user_message_events(&self, id: &SessionId) -> Result<Vec<SessionEvent>, String> {
-        Ok(self
-            .read_from(id, 0)
-            .await?
+    async fn read_user_message_events(
+        &self,
+        id: &SessionId,
+    ) -> Result<SessionUserMessageEvents, String> {
+        let whole = self.read_from(id, 0).await?;
+        let last_seq = whole
             .events
-            .into_iter()
-            .filter(|event| event.type_ == "user/message")
-            .collect())
+            .last()
+            .map(|event| event.seq as i64)
+            .unwrap_or(-1);
+        Ok(SessionUserMessageEvents {
+            meta: whole.meta,
+            last_seq,
+            events: whole
+                .events
+                .into_iter()
+                .filter(|event| event.type_ == "user/message")
+                .collect(),
+        })
     }
 
     /// Read a bounded, message-aligned history window. Backends should
