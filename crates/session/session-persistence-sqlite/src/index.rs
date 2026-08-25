@@ -24,13 +24,15 @@ use dsh_session::{SessionEvent, SessionHeader, SessionId, SessionPreparation};
 use dsh_session_persistence::{
     DEFAULT_PREPARED_SESSION_CACHE_SIZE, DEFAULT_WRITE_BATCH_MAX_DELAY_MS,
     MAX_WRITE_BATCH_DELAY_MS, PersistenceBackend, PersistenceCoordinator,
-    PersistenceCoordinatorOptions, StoredPrefix, StoredSuffix,
+    PersistenceCoordinatorOptions, SessionReadWindowRequest, SessionReadWindowResult, StoredPrefix,
+    StoredSuffix,
 };
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::schema::{
-    EventRow, JournalMode, ScanRowsResult, SessionRow, open_database, row_to_meta, scan_rows,
+    EventRow, JournalMode, ScanRowsResult, SessionRow, open_database, row_to_event, row_to_meta,
+    scan_rows,
 };
 
 /// Plugin configuration (TS `Config`).
@@ -432,6 +434,106 @@ impl SqliteSessionPersistence {
             .map_err(|error| error.to_string())
     }
 
+    fn history_window_cut(
+        &self,
+        db: &Connection,
+        id: &SessionId,
+        before_seq: u64,
+        max_messages: u64,
+    ) -> Result<u64, String> {
+        let mut statement = db
+            .prepare(
+                "SELECT seq, source_event_seqs, surface_op FROM events \
+                 WHERE session_id = ?1 AND seq < ?2 \
+                 AND type IN ('user/message', 'assistant/message') ORDER BY seq DESC",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![id.as_str(), before_seq as i64], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        let mut count = 0_u64;
+        for row in rows {
+            let (seq, sources, surface_op) = row.map_err(|error| error.to_string())?;
+            let surface_op = surface_op
+                .as_deref()
+                .map(serde_json::from_str::<dsh_session::SurfaceOp>)
+                .transpose()
+                .map_err(|error| format!("stored surfaceOp is not valid JSON: {error}"))?;
+            if !surface_op.as_ref().is_none_or(|op| op.is_append()) {
+                continue;
+            }
+            count += 1;
+            if count >= max_messages.max(1) {
+                let seq = u64::try_from(seq)
+                    .map_err(|_| format!("stored session event seq is negative: {seq}"))?;
+                let source_min = sources
+                    .as_deref()
+                    .map(serde_json::from_str::<Vec<u64>>)
+                    .transpose()
+                    .map_err(|error| format!("stored sourceEventSeqs is not valid JSON: {error}"))?
+                    .and_then(|values| values.into_iter().min());
+                return Ok(source_min.unwrap_or(seq).min(seq));
+            }
+        }
+        Ok(0)
+    }
+
+    fn history_event_count(
+        &self,
+        db: &Connection,
+        id: &SessionId,
+        start_seq: u64,
+        before_seq: u64,
+    ) -> Result<usize, String> {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id = ?1 AND seq >= ?2 AND seq < ?3",
+                params![id.as_str(), start_seq as i64, before_seq as i64],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        usize::try_from(count).map_err(|_| format!("history event count is invalid: {count}"))
+    }
+
+    fn event_rows_range(
+        &self,
+        db: &Connection,
+        id: &SessionId,
+        start_seq: u64,
+        before_seq: u64,
+    ) -> Result<Vec<EventRow>, String> {
+        let mut statement = db
+            .prepare(
+                "SELECT seq, type, time, data, source_event_seqs, surface_op, ignorable \
+                 FROM events WHERE session_id = ?1 AND seq >= ?2 AND seq < ?3 ORDER BY seq",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(
+                params![id.as_str(), start_seq as i64, before_seq as i64],
+                |row| {
+                    Ok(EventRow {
+                        seq: row.get(0)?,
+                        type_: row.get(1)?,
+                        time: row.get(2)?,
+                        data: row.get(3)?,
+                        source_event_seqs: row.get(4)?,
+                        surface_op: row.get(5)?,
+                        ignorable: row.get(6)?,
+                    })
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
     fn all_session_rows(&self, db: &Connection) -> Result<Vec<SessionRow>, String> {
         let mut statement = db
             .prepare(
@@ -603,6 +705,243 @@ impl dsh_session_persistence::SessionPersistenceApi for SqliteSessionPersistence
         self.coordinator().read_from(id, from_seq).await
     }
 
+    async fn read_event_chunk(
+        &self,
+        id: &SessionId,
+        from_seq: u64,
+        max_events: usize,
+    ) -> Result<dsh_session_persistence::SessionEventChunk, String> {
+        if max_events == 0 {
+            return Err("event chunk size must be positive".to_string());
+        }
+        self.ensure_ready().await?;
+        self.with_db(|db| {
+            if self.row_for(db, id)?.is_none() {
+                return Err(format!("session \"{}\" not found", id.as_str()));
+            }
+            let mut statement = db
+                .prepare(
+                    "SELECT seq, type, time, data, source_event_seqs, surface_op, ignorable \
+                     FROM events WHERE session_id = ?1 AND seq >= ?2 ORDER BY seq LIMIT ?3",
+                )
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map(
+                    params![id.as_str(), from_seq as i64, max_events as i64 + 1],
+                    |row| {
+                        Ok(EventRow {
+                            seq: row.get(0)?,
+                            type_: row.get(1)?,
+                            time: row.get(2)?,
+                            data: row.get(3)?,
+                            source_event_seqs: row.get(4)?,
+                            surface_op: row.get(5)?,
+                            ignorable: row.get(6)?,
+                        })
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            let mut events = Vec::with_capacity(max_events);
+            let mut expected = from_seq;
+            let mut has_more = false;
+            for row in rows {
+                let event = row_to_event(&row.map_err(|error| error.to_string())?)?;
+                if event.seq != expected {
+                    return Err(format!(
+                        "corrupt session log: seq gap (expected {expected}, got {})",
+                        event.seq
+                    ));
+                }
+                if events.len() == max_events {
+                    has_more = true;
+                    break;
+                }
+                expected += 1;
+                events.push(event);
+            }
+            Ok(dsh_session_persistence::SessionEventChunk {
+                events,
+                next_seq: has_more.then_some(expected),
+            })
+        })
+    }
+
+    async fn visit_event_chunks(
+        &self,
+        id: &SessionId,
+        max_events: usize,
+        visitor: Arc<dyn for<'a> Fn(&'a [SessionEvent]) -> Result<(), String> + Send + Sync>,
+    ) -> Result<(), String> {
+        if max_events == 0 {
+            return Err("event chunk size must be positive".to_string());
+        }
+        self.ensure_ready().await?;
+        self.with_db(|db| {
+            db.execute_batch("BEGIN")
+                .map_err(|error| error.to_string())?;
+            let outcome = (|| -> Result<(), String> {
+                if self.row_for(db, id)?.is_none() {
+                    return Err(format!("session \"{}\" not found", id.as_str()));
+                }
+                let committed_end: Option<i64> = db
+                    .query_row(
+                        "SELECT MAX(seq) FROM events WHERE session_id = ?1 AND type = 'turn/end'",
+                        [id.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let mut statement = db
+                    .prepare(
+                        "SELECT seq, type, time, data, source_event_seqs, surface_op, ignorable \
+                         FROM events WHERE session_id = ?1 ORDER BY seq",
+                    )
+                    .map_err(|error| error.to_string())?;
+                let rows = statement
+                    .query_map([id.as_str()], |row| {
+                        Ok(EventRow {
+                            seq: row.get(0)?,
+                            type_: row.get(1)?,
+                            time: row.get(2)?,
+                            data: row.get(3)?,
+                            source_event_seqs: row.get(4)?,
+                            surface_op: row.get(5)?,
+                            ignorable: row.get(6)?,
+                        })
+                    })
+                    .map_err(|error| error.to_string())?;
+                let mut expected = 0_u64;
+                let mut chunk = Vec::with_capacity(max_events);
+                for row in rows {
+                    let row = row.map_err(|error| error.to_string())?;
+                    let parsed = row_to_event(&row);
+                    let seq = u64::try_from(row.seq).ok();
+                    let valid = parsed
+                        .as_ref()
+                        .ok()
+                        .zip(seq)
+                        .filter(|(event, seq)| event.seq == *seq && *seq == expected);
+                    let Some((event, _)) = valid else {
+                        if committed_end.is_some_and(|end| row.seq <= end) {
+                            return Err(format!(
+                                "corrupt session log at committed seq {}",
+                                row.seq
+                            ));
+                        }
+                        break;
+                    };
+                    chunk.push(event.clone());
+                    expected += 1;
+                    if chunk.len() == max_events {
+                        visitor(&chunk)?;
+                        chunk.clear();
+                    }
+                }
+                if !chunk.is_empty() {
+                    visitor(&chunk)?;
+                }
+                Ok(())
+            })();
+            match outcome {
+                Ok(()) => db
+                    .execute_batch("COMMIT")
+                    .map_err(|error| error.to_string()),
+                Err(error) => {
+                    let _ = db.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })
+    }
+
+    async fn read_window(
+        &self,
+        id: &SessionId,
+        request: SessionReadWindowRequest,
+    ) -> Result<SessionReadWindowResult, String> {
+        self.ensure_ready().await?;
+        self.with_db(|db| {
+            let Some(row) = self.row_for(db, id)? else {
+                return Err(format!("session \"{}\" not found", id.as_str()));
+            };
+            let meta = row_to_meta(&row)?;
+            let before_seq = match request.before_seq {
+                Some(before) => before,
+                None => {
+                    let max_seq: Option<i64> = db
+                        .query_row(
+                            "SELECT MAX(seq) FROM events WHERE session_id = ?1",
+                            [id.as_str()],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    max_seq
+                        .map(|seq| u64::try_from(seq).map(|seq| seq.saturating_add(1)))
+                        .transpose()
+                        .map_err(|_| "stored session maximum seq is negative".to_string())?
+                        .unwrap_or(0)
+                }
+            };
+            let mut messages = request.max_messages.max(1);
+            loop {
+                let cut = self.history_window_cut(db, id, before_seq, messages)?;
+                let event_count = self.history_event_count(db, id, cut, before_seq)?;
+                if event_count <= request.max_events {
+                    let rows = self.event_rows_range(db, id, cut, before_seq)?;
+                    let ScanRowsResult { preserved, .. } = scan_rows(&rows, cut)?;
+                    return Ok(SessionReadWindowResult {
+                        meta,
+                        events: preserved,
+                        has_more: cut > 0,
+                        oversized_event_count: None,
+                    });
+                }
+                if messages == 1 {
+                    return Ok(SessionReadWindowResult {
+                        meta,
+                        events: Vec::new(),
+                        has_more: cut > 0,
+                        oversized_event_count: Some(event_count),
+                    });
+                }
+                let proportional = messages
+                    .saturating_mul(request.max_events as u64)
+                    .checked_div(event_count as u64)
+                    .unwrap_or(1)
+                    .max(1);
+                messages = proportional.min(messages - 1);
+            }
+        })
+    }
+
+    async fn read_list_metadata(
+        &self,
+        id: &SessionId,
+    ) -> Result<dsh_session_persistence::SessionListMetadata, String> {
+        self.ensure_ready().await?;
+        self.with_db(|db| {
+            let Some(row) = self.row_for(db, id)? else {
+                return Err(format!("session \"{}\" not found", id.as_str()));
+            };
+            let meta = row_to_meta(&row)?;
+            let (last_seq, has_turn, last_user_time): (i64, bool, Option<i64>) = db
+                .query_row(
+                    "SELECT COALESCE(MAX(seq), -1),
+                            EXISTS(SELECT 1 FROM events WHERE session_id = ?1 AND type = 'turn/start'),
+                            (SELECT time FROM events WHERE session_id = ?1 AND type = 'user/message' ORDER BY seq DESC LIMIT 1)
+                     FROM events WHERE session_id = ?1",
+                    [id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(dsh_session_persistence::SessionListMetadata {
+                updated_at: last_user_time.unwrap_or(meta.created_at as i64),
+                meta,
+                last_seq,
+                blank: !has_turn,
+            })
+        })
+    }
+
     async fn list(&self) -> Result<Vec<SessionHeader>, String> {
         self.ensure_ready().await?;
         self.with_db(|db| self.all_session_rows(db)?.iter().map(row_to_meta).collect())
@@ -760,5 +1099,110 @@ impl PersistenceBackend<u64> for SqliteSessionPersistence {
         self.ensure_ready().await?;
         *self.db.lock() = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod history_window_tests {
+    use super::*;
+    use dsh_session::{SESSION_FORMAT_VERSION, SurfaceOp, session_id};
+    use dsh_session_persistence::SessionPersistenceApi;
+
+    fn event(seq: u64, type_: &str, append_surface: bool) -> SessionEvent {
+        SessionEvent {
+            type_: type_.to_string(),
+            seq,
+            time: seq as i64,
+            data: serde_json::json!({}),
+            ignorable: None,
+            surface_op: append_surface.then_some(SurfaceOp::Append),
+            source_event_seqs: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn sqlite_reports_oversized_sparse_window_without_loading_event_bodies() {
+        let ctx = Context::root();
+        let backend = SqliteSessionPersistence::install(
+            &ctx,
+            SqliteConfig {
+                path: ":memory:".to_string(),
+                journal_mode: JournalMode::Delete,
+                ..SqliteConfig::default()
+            },
+        )
+        .expect("install sqlite persistence");
+        let id = session_id("sqlite-bounded-window");
+        SessionPersistenceApi::create(
+            backend.as_ref(),
+            SessionHeader {
+                version: SESSION_FORMAT_VERSION,
+                id: id.clone(),
+                created_at: 1,
+                cwd: Some("C:/workspace".to_string()),
+                parent_session: None,
+                seed_length: None,
+                origin: None,
+                delegation_depth: None,
+                agent_preset: Some("standard".to_string()),
+            },
+        )
+        .await
+        .expect("create session");
+        let mut events = Vec::with_capacity(2_002);
+        events.push(event(0, "user/message", true));
+        for seq in 1..=2_000 {
+            events.push(event(seq, "assistant/chunk", false));
+        }
+        events.push(event(2_001, "assistant/message", true));
+        SessionPersistenceApi::append(backend.as_ref(), &id, &events)
+            .await
+            .expect("append events");
+
+        let window = SessionPersistenceApi::read_window(
+            backend.as_ref(),
+            &id,
+            SessionReadWindowRequest {
+                before_seq: None,
+                max_messages: 2,
+                max_events: 512,
+            },
+        )
+        .await
+        .expect("read bounded window");
+
+        assert!(window.events.len() <= 512);
+        assert_eq!(window.events.last().map(|event| event.seq), Some(2_001));
+        assert_eq!(window.oversized_event_count, None);
+        assert!(window.has_more);
+        let metadata = SessionPersistenceApi::read_list_metadata(backend.as_ref(), &id)
+            .await
+            .expect("read list metadata");
+        assert!(metadata.blank);
+        assert_eq!(metadata.updated_at, 0);
+        assert_eq!(metadata.last_seq, 2_001);
+
+        let visited = Arc::new(Mutex::new(Vec::<Vec<u64>>::new()));
+        let visitor = {
+            let visited = visited.clone();
+            Arc::new(move |chunk: &[SessionEvent]| {
+                visited
+                    .lock()
+                    .push(chunk.iter().map(|event| event.seq).collect());
+                Ok(())
+            })
+        };
+        SessionPersistenceApi::visit_event_chunks(backend.as_ref(), &id, 1_000, visitor)
+            .await
+            .expect("visit sqlite event chunks");
+        let visited = visited.lock();
+        assert_eq!(
+            visited.iter().map(Vec::len).collect::<Vec<_>>(),
+            [1_000, 1_000, 2]
+        );
+        assert_eq!(
+            visited.iter().flatten().copied().collect::<Vec<_>>(),
+            (0..=2_001).collect::<Vec<_>>()
+        );
     }
 }

@@ -395,6 +395,124 @@ struct PendingPlan {
     plan: Option<SurfacePlan>,
 }
 
+/// Memory-bounded canonical surface fold for sequential persistence readers.
+/// It retains surface positions and only the nulled tool-result metadata
+/// required to validate later rewrites, never raw message/tool content.
+#[derive(Debug, Default)]
+pub struct StreamingSurfaceFold {
+    state: SurfaceFoldState,
+    replacements: Vec<SurfaceFoldReplacement>,
+    current_tool_results: std::collections::HashMap<u64, JsonValue>,
+    expected_seq: u64,
+}
+
+impl StreamingSurfaceFold {
+    pub fn push(&mut self, event: &SessionEvent) -> Result<(), String> {
+        if event.seq != self.expected_seq {
+            return Err(format!(
+                "session event seq {} is not contiguous; expected {}",
+                event.seq, self.expected_seq
+            ));
+        }
+        self.expected_seq += 1;
+        let Some(op) = surface_op_of(event)? else {
+            return Ok(());
+        };
+        let plan = match op {
+            SurfaceOp::Append => {
+                assert_provenance(event, &[])?;
+                Some(SurfacePlan::Append { seq: event.seq })
+            }
+            SurfaceOp::Replace { start, end } => {
+                let (start_idx, end_idx, shadowed_seqs) = replacement_range(&self.state, &op)?;
+                assert_provenance(event, &shadowed_seqs)?;
+                if event.type_ == "tool/result" {
+                    if shadowed_seqs.len() != 1 {
+                        return Err(
+                            "tool/result surface replacement must rewrite exactly one current node"
+                                .to_string(),
+                        );
+                    }
+                    let replacement = with_nulled_result_content(&event.data).ok_or_else(|| {
+                        "tool/result surface replacement may change only content".to_string()
+                    })?;
+                    let original = self
+                        .current_tool_results
+                        .get(&shadowed_seqs[0])
+                        .ok_or_else(|| {
+                            "tool/result surface replacement must target a current tool/result"
+                                .to_string()
+                        })?;
+                    if !crate::json::is_deep_equal_json(original, &replacement) {
+                        return Err(
+                            "tool/result surface replacement may change only content".to_string()
+                        );
+                    }
+                }
+                Some(SurfacePlan::Replace(SurfaceReplacePlan {
+                    seq: event.seq,
+                    start,
+                    end,
+                    start_idx,
+                    end_idx,
+                    shadowed_seqs,
+                }))
+            }
+        };
+        if let Some(replacement) = apply_surface_plan(&mut self.state, plan) {
+            for shadowed in &replacement.shadowed_seqs {
+                self.current_tool_results.remove(shadowed);
+            }
+            self.replacements.push(replacement);
+        }
+        if event.type_ == "tool/result"
+            && let Some(metadata) = with_nulled_result_content(&event.data)
+        {
+            self.current_tool_results.insert(event.seq, metadata);
+        }
+        Ok(())
+    }
+
+    pub fn finish(self) -> SurfaceFoldResult {
+        SurfaceFoldResult {
+            nodes: self.state.nodes,
+            replacements: self.replacements,
+        }
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+
+    fn event(seq: u64, surface_op: SurfaceOp, sources: Option<Vec<u64>>) -> SessionEvent {
+        SessionEvent {
+            type_: "user/message".to_string(),
+            seq,
+            time: seq as i64,
+            data: serde_json::json!({"role":"user","content":[{"type":"text","text":seq.to_string()}]}),
+            ignorable: Some(false),
+            surface_op: Some(surface_op),
+            source_event_seqs: sources,
+        }
+    }
+
+    #[test]
+    fn streaming_fold_matches_complete_fold_across_replacement_boundary() {
+        let events = vec![
+            event(0, SurfaceOp::Append, None),
+            event(1, SurfaceOp::Append, None),
+            event(2, SurfaceOp::Replace { start: 0, end: 1 }, Some(vec![0, 1])),
+        ];
+        let complete = fold_surface(&events).expect("complete fold");
+        let mut streaming = StreamingSurfaceFold::default();
+        streaming.push(&events[0]).expect("first chunk");
+        streaming.push(&events[1]).expect("second chunk");
+        streaming.push(&events[2]).expect("replacement chunk");
+        assert_eq!(streaming.finish(), complete);
+    }
+}
+
 impl SurfaceManager {
     /// Create a manager for a contiguous complete log or loaded event
     /// window starting at `base_seq`.

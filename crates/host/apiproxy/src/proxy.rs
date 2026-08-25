@@ -2391,47 +2391,6 @@ impl ApiProxyService {
         }
     }
 
-    /// Summarize one validated cold session from its complete durable prefix.
-    fn summarize_cold(
-        inspection: &dsh_session_persistence::SessionReadFromResult,
-        projections: Option<&dsh_session_projection::SessionProjectionRegistry>,
-    ) -> crate::api::sessions::SessionSummary {
-        let meta = &inspection.meta;
-        let blank = !inspection
-            .events
-            .iter()
-            .any(|event| event.type_ == "turn/start");
-        let updated_at = inspection
-            .events
-            .iter()
-            .rev()
-            .find(|event| event.type_ == "user/message")
-            .map(|event| event.time)
-            .unwrap_or_else(|| meta.created_at as i64);
-        let projection_block = projections.and_then(|registry| {
-            let checkpoint = dsh_session_projection::ProjectionCheckpoint::new();
-            let (snapshot, _) = registry.restore(&checkpoint, &inspection.events, 0).ok()?;
-            Some(crate::api::sessions::SessionProjectionsBlock {
-                as_of_seq: snapshot.as_of_seq,
-                values: serde_json::Value::Object(snapshot.values),
-            })
-        });
-        crate::api::sessions::SessionSummary {
-            session_id: meta.id.clone(),
-            updated_at,
-            running: false,
-            blank,
-            parent_session_id: meta.parent_session.clone(),
-            origin: meta.origin.as_deref().and_then(|origin| match origin {
-                "subagent" => Some(crate::api::sessions::SessionOrigin::Subagent),
-                _ => None,
-            }),
-            cwd: meta.cwd.clone(),
-            agent_preset: meta.agent_preset.clone(),
-            projections: projection_block,
-        }
-    }
-
     async fn session_list(
         &self,
         request: RpcRequest<crate::api::sessions::SessionListRequest>,
@@ -2471,6 +2430,13 @@ impl ApiProxyService {
             )
             .map(|slot| slot.as_ref().clone())
         {
+            let cache = self
+                .ctx
+                .get_typed::<Arc<dsh_session_projection_cache::SessionProjectionCache>>(
+                    "sessionProjectionCache",
+                    false,
+                )
+                .map(|slot| slot.as_ref().clone());
             let cold = match persistence.list().await {
                 Ok(cold) => cold,
                 Err(error) => {
@@ -2490,45 +2456,66 @@ impl ApiProxyService {
                 {
                     continue;
                 }
-                let stored = match persistence.read_from(&meta.id, 0).await {
-                    Ok(stored) => stored,
-                    Err(error) => {
-                        return err(
-                            request.rpc_id,
-                            RpcError::Internal(RpcErrorBody {
-                                message: format!(
-                                    "session.list: cannot read persisted session {}: {error}",
-                                    meta.id.as_str()
-                                ),
-                                details: EmptyDetails {},
-                            }),
-                        );
+                let snapshot = match cache.as_ref() {
+                    Some(cache) => {
+                        let cached = cache.cached_snapshot(&meta).filter(|snapshot| {
+                            snapshot
+                                .values
+                                .contains_key(dsh_session_title::SESSION_LIST_METADATA_KEY)
+                        });
+                        match cached {
+                            Some(snapshot) => Some(snapshot),
+                            None => match cache.cold_snapshot(&meta.id).await {
+                                Ok(snapshot) => Some(snapshot),
+                                Err(error) => {
+                                    return err(
+                                        request.rpc_id,
+                                        RpcError::Internal(RpcErrorBody {
+                                            message: format!(
+                                                "session.list: cannot read persisted projection {}: {error}",
+                                                meta.id.as_str()
+                                            ),
+                                            details: EmptyDetails {},
+                                        }),
+                                    );
+                                }
+                            },
+                        }
                     }
+                    None => None,
                 };
-                items.push(Self::summarize_cold(
-                    &stored,
-                    projection_registry.as_deref(),
-                ));
-            }
-        }
-        // Re-baseline every summary through the persisted projection cache. A
-        // newly registered projection (for example userMessageRail) forces a
-        // one-time full replay, then subsequent lists read only the cached tail.
-        if let Some(cache) = self
-            .ctx
-            .get_typed::<Arc<dsh_session_projection_cache::SessionProjectionCache>>(
-                "sessionProjectionCache",
-                false,
-            )
-            .map(|slot| slot.as_ref().clone())
-        {
-            for item in &mut items {
-                if let Ok(snapshot) = cache.cold_snapshot(&item.session_id).await {
-                    item.projections = Some(crate::api::sessions::SessionProjectionsBlock {
-                        as_of_seq: snapshot.as_of_seq,
-                        values: serde_json::Value::Object(snapshot.values),
-                    });
-                }
+                let metadata = snapshot.as_ref().and_then(|snapshot| {
+                    snapshot
+                        .values
+                        .get(dsh_session_title::SESSION_LIST_METADATA_KEY)
+                });
+                let blank = metadata
+                    .and_then(|value| value.get("blank"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true);
+                let updated_at = metadata
+                    .and_then(|value| value.get("updatedAt"))
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(meta.created_at as i64);
+                items.push(SessionSummary {
+                    session_id: meta.id.clone(),
+                    updated_at,
+                    running: false,
+                    blank,
+                    parent_session_id: meta.parent_session.clone(),
+                    origin: meta.origin.as_deref().and_then(|origin| match origin {
+                        "subagent" => Some(crate::api::sessions::SessionOrigin::Subagent),
+                        _ => None,
+                    }),
+                    cwd: meta.cwd.clone(),
+                    agent_preset: meta.agent_preset.clone(),
+                    projections: snapshot.map(|snapshot| {
+                        crate::api::sessions::SessionProjectionsBlock {
+                            as_of_seq: snapshot.as_of_seq,
+                            values: serde_json::Value::Object(snapshot.values),
+                        }
+                    }),
+                });
             }
         }
         // updatedAt descending (the TS sort).
@@ -2861,52 +2848,34 @@ impl ApiProxyService {
             crate::api::sessions::AcceptedResult { accepted: true },
         )
     }
-    /// The message-aligned history window (TS `paginate`): page boundaries
-    /// align to append-origin message boundaries, never cut mid-message.
-    /// Model-only replacement copies consume no `maxMessages` counting.
+    /// Select a bounded, message-aligned history page without first cloning
+    /// the whole log. If the requested message count spans too many raw
+    /// events, reduce the count until a safe contiguous page fits.
     fn paginate(
         events: &[dsh_session::SessionEvent],
         before_seq: Option<i64>,
         max_messages: u64,
-    ) -> (Vec<dsh_session::SessionEvent>, bool) {
-        const MESSAGE_TYPES: [&str; 2] = ["user/message", "assistant/message"];
-        let window: Vec<dsh_session::SessionEvent> = match before_seq {
-            None => events.to_vec(),
-            Some(before) => events
-                .iter()
-                .filter(|event| (event.seq as i64) < before)
-                .cloned()
-                .collect(),
-        };
-        let mut count: u64 = 0;
-        let mut cut: u64 = 0;
-        for event in window.iter().rev() {
-            if !MESSAGE_TYPES.contains(&event.type_.as_str())
-                || !event.surface_op.as_ref().is_none_or(|op| op.is_append())
-            {
-                continue;
-            }
-            count += 1;
-            let group_start = match &event.source_event_seqs {
-                Some(sources) if !sources.is_empty() => sources
-                    .iter()
-                    .copied()
-                    .min()
-                    .unwrap_or(event.seq)
-                    .min(event.seq),
-                _ => event.seq,
-            };
-            if count >= max_messages {
-                cut = group_start;
-                break;
+    ) -> Result<(Vec<dsh_session::SessionEvent>, bool), usize> {
+        const MAX_HISTORY_EVENTS: usize = 4_096;
+        let before_seq = before_seq.and_then(|value| u64::try_from(value).ok());
+        let mut messages = max_messages.max(1);
+        loop {
+            match dsh_session_persistence::select_history_window(
+                events,
+                before_seq,
+                messages,
+                MAX_HISTORY_EVENTS,
+            ) {
+                Ok(selection) => {
+                    return Ok((
+                        events[selection.start..selection.end].to_vec(),
+                        selection.has_more,
+                    ));
+                }
+                Err(_) if messages > 1 => messages = (messages / 2).max(1),
+                Err(error) => return Err(error.selection.event_count()),
             }
         }
-        let page: Vec<dsh_session::SessionEvent> = window
-            .into_iter()
-            .filter(|event| event.seq >= cut)
-            .collect();
-        let has_more = cut > 0;
-        (page, has_more)
     }
 
     async fn session_history(
@@ -2916,40 +2885,78 @@ impl ApiProxyService {
         use crate::api::sessions::HistoryEntry;
 
         let session_id = request.payload.session_id.clone();
-        // The source: an attached session is the live object; a detached
-        // one is a frozen, non-caching persistence read (TS `historySourceFor`).
+        const DEFAULT_MAX_MESSAGES: u64 = 100;
+        const MAX_HISTORY_EVENTS: usize = 4_096;
+        let requested_messages = request
+            .payload
+            .max_messages
+            .unwrap_or(DEFAULT_MAX_MESSAGES)
+            .max(1);
+        // Attached sessions already own their log; select by index and clone
+        // only the bounded page. Cold sessions delegate the same contract to
+        // persistence so the full log is never materialized in ApiProxy.
         let mut live_session: Option<dsh_session::Session> = None;
         let mut cold_header: Option<dsh_session::SessionHeader> = None;
-        let events: Vec<dsh_session::SessionEvent> =
-            match self.sessions().and_then(|store| store.get(&session_id)) {
-                Some(session) => {
-                    live_session = Some(session.clone());
-                    session.events().to_vec()
-                }
-                None => {
-                    let Some(persistence) = self
-                        .ctx
-                        .get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
-                            "sessionPersistence",
-                            false,
-                        )
-                        .map(|slot| slot.as_ref().clone())
-                    else {
+        let (page_events, has_more) = match self.sessions().and_then(|store| store.get(&session_id))
+        {
+            Some(session) => {
+                live_session = Some(session.clone());
+                match Self::paginate(
+                    session.events().as_slice(),
+                    request.payload.before_seq,
+                    requested_messages,
+                ) {
+                    Ok(page) => page,
+                    Err(required) => {
                         return err(
                             request.rpc_id,
-                            RpcError::SessionNotFound(RpcErrorBody {
-                                message: format!("session \"{session_id}\" not found"),
-                                details: crate::api::rpc::SessionIdDetails {
-                                    session_id: session_id.to_string(),
-                                },
+                            RpcError::Internal(RpcErrorBody {
+                                message: format!(
+                                    "session.history: one safe history group requires {required} events, above the {MAX_HISTORY_EVENTS} event budget"
+                                ),
+                                details: EmptyDetails {},
                             }),
                         );
-                    };
-                    match persistence.read_from(&session_id, 0).await {
-                        Ok(stored) => {
-                            cold_header = Some(stored.meta);
-                            stored.events
-                        }
+                    }
+                }
+            }
+            None => {
+                let Some(persistence) = self
+                    .ctx
+                    .get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
+                        "sessionPersistence",
+                        false,
+                    )
+                    .map(|slot| slot.as_ref().clone())
+                else {
+                    return err(
+                        request.rpc_id,
+                        RpcError::SessionNotFound(RpcErrorBody {
+                            message: format!("session \"{session_id}\" not found"),
+                            details: crate::api::rpc::SessionIdDetails {
+                                session_id: session_id.to_string(),
+                            },
+                        }),
+                    );
+                };
+                let before_seq = request
+                    .payload
+                    .before_seq
+                    .and_then(|value| u64::try_from(value).ok());
+                let mut messages = requested_messages;
+                loop {
+                    let window = match persistence
+                        .read_window(
+                            &session_id,
+                            dsh_session_persistence::SessionReadWindowRequest {
+                                before_seq,
+                                max_messages: messages,
+                                max_events: MAX_HISTORY_EVENTS,
+                            },
+                        )
+                        .await
+                    {
+                        Ok(window) => window,
                         Err(_) => {
                             return err(
                                 request.rpc_id,
@@ -2961,15 +2968,38 @@ impl ApiProxyService {
                                 }),
                             );
                         }
+                    };
+                    if let Some(required) = window.oversized_event_count {
+                        if messages > 1 {
+                            let proportional = messages
+                                .saturating_mul(MAX_HISTORY_EVENTS as u64)
+                                .checked_div(required as u64)
+                                .unwrap_or(1)
+                                .max(1);
+                            messages = proportional.min(messages - 1);
+                            continue;
+                        }
+                        return err(
+                            request.rpc_id,
+                            RpcError::Internal(RpcErrorBody {
+                                message: format!(
+                                    "session.history: one safe history group requires {required} events, above the {MAX_HISTORY_EVENTS} event budget"
+                                ),
+                                details: EmptyDetails {},
+                            }),
+                        );
                     }
+                    cold_header = Some(window.meta);
+                    break (window.events, window.has_more);
                 }
-            };
+            }
+        };
         let presentation_scope = if let Some(agent) =
             self.agents().and_then(|agents| agents.get(&session_id))
         {
             Some(agent.scope_key().clone())
         } else if let (Some(header), Some(presets)) = (cold_header.as_ref(), self.agent_presets()) {
-            let preset = dsh_agent_presets::resolve_session_preset(header, &events);
+            let preset = dsh_agent_presets::resolve_session_preset(header, &page_events);
             presets.standing_key_for(preset.as_deref()).await.ok()
         } else {
             None
@@ -2978,12 +3008,6 @@ impl ApiProxyService {
             .ctx
             .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
             .map(|slot| slot.as_ref().clone());
-        const DEFAULT_MAX_MESSAGES: u64 = 100;
-        let (page_events, has_more) = Self::paginate(
-            &events,
-            request.payload.before_seq,
-            request.payload.max_messages.unwrap_or(DEFAULT_MAX_MESSAGES),
-        );
         let page: Vec<HistoryEntry> = page_events
             .into_iter()
             .map(|event| {
@@ -3008,30 +3032,35 @@ impl ApiProxyService {
             .collect();
         let projections = if request.payload.before_seq.is_some() {
             None
-        } else {
+        } else if let Some(session) = live_session {
             self.ctx
                 .get_typed::<Arc<dsh_session_projection::SessionProjectionRegistry>>(
                     "sessionProjections",
                     false,
                 )
-                .and_then(|registry| {
-                    let snapshot = if let Some(session) = live_session {
-                        registry.snapshot(&session)
-                    } else {
-                        registry
-                            .restore(
-                                &dsh_session_projection::ProjectionCheckpoint::new(),
-                                &events,
-                                0,
-                            )
-                            .ok()?
-                            .0
-                    };
-                    Some(crate::api::sessions::SessionProjectionsBlock {
+                .map(|registry| {
+                    let snapshot = registry.snapshot(&session);
+                    crate::api::sessions::SessionProjectionsBlock {
                         as_of_seq: snapshot.as_of_seq,
                         values: serde_json::Value::Object(snapshot.values),
-                    })
+                    }
                 })
+        } else if let Some(cache) = self
+            .ctx
+            .get_typed::<Arc<dsh_session_projection_cache::SessionProjectionCache>>(
+                "sessionProjectionCache",
+                false,
+            )
+            .map(|slot| slot.as_ref().clone())
+        {
+            cache.cold_snapshot(&session_id).await.ok().map(|snapshot| {
+                crate::api::sessions::SessionProjectionsBlock {
+                    as_of_seq: snapshot.as_of_seq,
+                    values: serde_json::Value::Object(snapshot.values),
+                }
+            })
+        } else {
+            None
         };
         ok(
             request.rpc_id,
@@ -3130,8 +3159,8 @@ impl ApiProxyService {
                     }),
                 );
             };
-            let stored = match persistence.read_from(&session_id, 0).await {
-                Ok(stored) => stored,
+            let state = match persistence.read_model_selection_state(&session_id).await {
+                Ok(state) => state,
                 Err(_) => {
                     return err(
                         request.rpc_id,
@@ -3144,10 +3173,13 @@ impl ApiProxyService {
                     );
                 }
             };
-            wire_selection(
-                model_selection_from_events(&stored.events)
-                    .unwrap_or_else(|| core_selection((self.defaults.default_model_selection)())),
-            )
+            state
+                .and_then(|state| state.get("selection").cloned())
+                .filter(|selection| !selection.is_null())
+                .and_then(|selection| {
+                    serde_json::from_value::<crate::api::sessions::ModelSelection>(selection).ok()
+                })
+                .unwrap_or_else(|| (self.defaults.default_model_selection)())
         };
         let catalog = Self::build_model_catalog(&runtime).await;
         let routable = runtime
@@ -3571,7 +3603,7 @@ impl ApiProxyService {
                 let message = dsh_llm::create_user_message(
                     vec![dsh_llm::ContentBlock::Text { text: notice }],
                     dsh_llm::MessageSource::Plugin {
-                        plugin: "dsh-task-manager".to_string(),
+                        plugin: "@deepseek-ai/dsh-client-ui-conversation".to_string(),
                         form: Some(dsh_llm::ContextForm::Notice),
                         sections: None,
                         summary: Some("Task list changed by the user".to_string()),
@@ -4464,11 +4496,24 @@ impl ApiProxyService {
             );
         }
         const DEFAULT_MAX_MESSAGES: u64 = 100;
-        let (page_events, has_more) = Self::paginate(
+        let (page_events, has_more) = match Self::paginate(
             &events,
             request.payload.before_seq,
             request.payload.max_messages.unwrap_or(DEFAULT_MAX_MESSAGES),
-        );
+        ) {
+            Ok(page) => page,
+            Err(required) => {
+                return err(
+                    request.rpc_id,
+                    RpcError::Internal(RpcErrorBody {
+                        message: format!(
+                            "subagent.history: one safe history group requires {required} events, above the 4096 event budget"
+                        ),
+                        details: EmptyDetails {},
+                    }),
+                );
+            }
+        };
         let page: Vec<HistoryEntry> = page_events
             .into_iter()
             .map(|event| HistoryEntry { event, view: None })

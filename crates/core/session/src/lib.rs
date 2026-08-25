@@ -30,9 +30,9 @@ pub use store::{
     ForkError, Session, SessionForkError, SessionForkErrorCode, SessionForkSource, SessionStore,
 };
 pub use surface::{
-    SURFACE_EVENT_TYPES, SessionSurface, SurfaceFoldReplacement, SurfaceFoldResult, SurfaceManager,
-    derive_event_message, fold_surface, is_append_surface_event, is_replacement_surface_event,
-    is_surface_eligible_type, is_surface_event,
+    SURFACE_EVENT_TYPES, SessionSurface, StreamingSurfaceFold, SurfaceFoldReplacement,
+    SurfaceFoldResult, SurfaceManager, derive_event_message, fold_surface, is_append_surface_event,
+    is_replacement_surface_event, is_surface_eligible_type, is_surface_event,
 };
 pub use types::{
     AgentCancelCause, CreateSessionMeta, CreateSessionOptions, EpochHeader, RequestContext,

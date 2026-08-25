@@ -15,9 +15,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cordis::{Context, Service};
-use dsh_session::{SessionEvent, SessionHeader, SessionId, SessionPreparation};
+use dsh_session::{
+    SessionEvent, SessionHeader, SessionId, SessionPreparation, decode_storage_record,
+};
 use dsh_session_persistence::{
-    PersistenceBackend, PersistenceCoordinator, PersistenceCoordinatorOptions, StoredPrefix,
+    PersistenceBackend, PersistenceCoordinator, PersistenceCoordinatorOptions,
+    SessionReadWindowRequest, SessionReadWindowResult, StoredPrefix,
 };
 use parking_lot::Mutex;
 
@@ -135,6 +138,45 @@ fn file_revision(
             created
         ))
     }
+}
+
+fn stream_zstd_events(
+    path: &Path,
+    mut on_event: impl FnMut(SessionEvent) -> Result<bool, String>,
+) -> Result<(), String> {
+    let before = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    // SAFETY: read-only mapping of a revision-checked snapshot candidate.
+    let mapping =
+        unsafe { memmap2::MmapOptions::new().map(&file) }.map_err(|error| error.to_string())?;
+    let scan = scan_zstd_frames(&mapping)?;
+    if scan.frames.is_empty() {
+        return Err("empty or header-less Zstandard session log".to_string());
+    }
+    for frame in &scan.frames[1..] {
+        let plaintext = decompress_zstd_frame(&mapping[frame.start..frame.end])?;
+        let text = std::str::from_utf8(&plaintext)
+            .map_err(|error| format!("invalid UTF-8 in Zstandard event frame: {error}"))?;
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let stored: serde_json::Value = serde_json::from_str(line)
+                .map_err(|error| format!("invalid JSONL event record: {error}"))?;
+            for event in decode_storage_record(&stored)? {
+                if !on_event(event)? {
+                    let after =
+                        file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
+                    if before != after {
+                        return Err("session artifact changed during streaming read".to_string());
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+    let after = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
+    if before != after {
+        return Err("session artifact changed during streaming read".to_string());
+    }
+    Ok(())
 }
 
 fn is_not_found(error: &std::io::Error) -> bool {
@@ -375,6 +417,117 @@ impl JsonlSessionPersistence {
         self.assert_stored_identity(path, &prefix.meta, expected_id)
             .await?;
         Ok(prefix)
+    }
+
+    fn decode_zstd_event_frame(&self, frame: &[u8]) -> Result<Vec<SessionEvent>, String> {
+        let plaintext = decompress_zstd_frame(frame)?;
+        let text = std::str::from_utf8(&plaintext)
+            .map_err(|error| format!("stored event frame is not UTF-8: {error}"))?;
+        let mut events = Vec::new();
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let record: serde_json::Value = serde_json::from_str(line)
+                .map_err(|error| format!("stored event frame is not valid JSON: {error}"))?;
+            events.extend(
+                decode_storage_record(&record)
+                    .map_err(|error| format!("stored event frame is invalid: {error}"))?,
+            );
+        }
+        Ok(events)
+    }
+
+    async fn read_zstd_window(
+        &self,
+        path: &Path,
+        id: &SessionId,
+        request: SessionReadWindowRequest,
+    ) -> Result<Option<SessionReadWindowResult>, String> {
+        let (buffer, _) = self.read_stable_file(path).await?;
+        let scan = scan_zstd_frames(&buffer)?;
+        if scan.torn_start.is_some() || scan.frames.is_empty() {
+            return Ok(None);
+        }
+        let header = scan.frames[0];
+        let header_plaintext = decompress_zstd_frame(&buffer[header.start..header.end])?;
+        let header_line = decode_zstd_header_line_single(&header_plaintext)?;
+        let meta = parse_header_meta(&header_line)
+            .ok_or_else(|| "invalid Zstandard session header".to_string())?;
+        self.assert_stored_identity(path, &meta, Some(id)).await?;
+        let before_seq = request.before_seq.unwrap_or(u64::MAX);
+        let mut message_count = 0_u64;
+        let mut cut_seq = None;
+        let mut decoded_frames = Vec::new();
+        for index in (1..scan.frames.len()).rev() {
+            let frame = scan.frames[index];
+            let events = self.decode_zstd_event_frame(&buffer[frame.start..frame.end])?;
+            let mut min_seq = None;
+            for event in events.iter().filter(|event| event.seq < before_seq) {
+                min_seq = Some(min_seq.map_or(event.seq, |current: u64| current.min(event.seq)));
+            }
+            for event in events.iter().rev().filter(|event| event.seq < before_seq) {
+                if matches!(event.type_.as_str(), "user/message" | "assistant/message")
+                    && event.surface_op.as_ref().is_none_or(|op| op.is_append())
+                    && cut_seq.is_none()
+                {
+                    message_count += 1;
+                    if message_count >= request.max_messages.max(1) {
+                        cut_seq = Some(
+                            event
+                                .source_event_seqs
+                                .as_ref()
+                                .and_then(|sources| sources.iter().copied().min())
+                                .unwrap_or(event.seq)
+                                .min(event.seq),
+                        );
+                    }
+                }
+            }
+            decoded_frames.push(events);
+            if cut_seq.is_some_and(|cut| min_seq.is_some_and(|min| min <= cut)) {
+                break;
+            }
+        }
+        decoded_frames.reverse();
+        let candidates: Vec<SessionEvent> = decoded_frames
+            .into_iter()
+            .flatten()
+            .filter(|event| event.seq < before_seq)
+            .collect();
+        let mut messages = request.max_messages.max(1);
+        loop {
+            match dsh_session_persistence::select_history_window(
+                &candidates,
+                Some(before_seq),
+                messages,
+                request.max_events,
+            ) {
+                Ok(selection) => {
+                    let events = candidates[selection.start..selection.end].to_vec();
+                    return Ok(Some(SessionReadWindowResult {
+                        meta,
+                        events,
+                        has_more: selection.has_more,
+                        oversized_event_count: None,
+                    }));
+                }
+                Err(error) if messages > 1 => {
+                    let required = error.selection.event_count().max(1);
+                    let proportional = messages
+                        .saturating_mul(request.max_events as u64)
+                        .checked_div(required as u64)
+                        .unwrap_or(1)
+                        .max(1);
+                    messages = proportional.min(messages - 1);
+                }
+                Err(error) => {
+                    return Ok(Some(SessionReadWindowResult {
+                        meta,
+                        events: Vec::new(),
+                        has_more: error.selection.has_more,
+                        oversized_event_count: Some(error.selection.event_count()),
+                    }));
+                }
+            }
+        }
     }
 
     /// Decode complete frames and retain complete JSONL records from a torn
@@ -881,6 +1034,280 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         self.coordinator().read_from(id, from_seq).await
     }
 
+    async fn read_event_chunk(
+        &self,
+        id: &SessionId,
+        from_seq: u64,
+        max_events: usize,
+    ) -> Result<dsh_session_persistence::SessionEventChunk, String> {
+        if max_events == 0 {
+            return Err("event chunk max_events must be positive".to_string());
+        }
+        self.ensure_root_encoding().await?;
+        let Some(path) = self.find_log(id).await? else {
+            return Err(format!("session \"{}\" not found", id.as_str()));
+        };
+        if self.compression != JsonlCompression::Zstd {
+            let mut whole = self.read_from(id, from_seq).await?;
+            let has_more = whole.events.len() > max_events;
+            whole.events.truncate(max_events);
+            return Ok(dsh_session_persistence::SessionEventChunk {
+                next_seq: has_more.then(|| from_seq + whole.events.len() as u64),
+                events: whole.events,
+            });
+        }
+        let mut events = Vec::with_capacity(max_events.min(4_096));
+        let mut next_seq = None;
+        stream_zstd_events(&path, |event| {
+            if event.seq < from_seq {
+                return Ok(true);
+            }
+            if events.len() == max_events {
+                next_seq = Some(event.seq);
+                return Ok(false);
+            }
+            events.push(event);
+            Ok(true)
+        })?;
+        Ok(dsh_session_persistence::SessionEventChunk { events, next_seq })
+    }
+
+    async fn visit_event_chunks(
+        &self,
+        id: &SessionId,
+        max_events: usize,
+        visitor: Arc<dyn for<'a> Fn(&'a [SessionEvent]) -> Result<(), String> + Send + Sync>,
+    ) -> Result<(), String> {
+        if max_events == 0 {
+            return Err("event chunk max_events must be positive".to_string());
+        }
+        self.ensure_root_encoding().await?;
+        let Some(path) = self.find_log(id).await? else {
+            return Err(format!("session \"{}\" not found", id.as_str()));
+        };
+        if self.compression != JsonlCompression::Zstd {
+            let whole = self.read_from(id, 0).await?;
+            for chunk in whole.events.chunks(max_events) {
+                visitor(chunk)?;
+            }
+            return Ok(());
+        }
+        let mut chunk = Vec::with_capacity(max_events.min(4_096));
+        stream_zstd_events(&path, |event| {
+            chunk.push(event);
+            if chunk.len() == max_events {
+                visitor(&chunk)?;
+                chunk.clear();
+            }
+            Ok(true)
+        })?;
+        if !chunk.is_empty() {
+            visitor(&chunk)?;
+        }
+        Ok(())
+    }
+
+    async fn read_window(
+        &self,
+        id: &SessionId,
+        request: SessionReadWindowRequest,
+    ) -> Result<SessionReadWindowResult, String> {
+        self.ensure_root_encoding().await?;
+        let Some(path) = self.find_log(id).await? else {
+            return Err(format!("session \"{}\" not found", id.as_str()));
+        };
+        if self.compression == JsonlCompression::Zstd
+            && let Some(window) = self.read_zstd_window(&path, id, request).await?
+        {
+            return Ok(window);
+        }
+        let whole = self.read_from(id, 0).await?;
+        let mut messages = request.max_messages.max(1);
+        loop {
+            match dsh_session_persistence::select_history_window(
+                &whole.events,
+                request.before_seq,
+                messages,
+                request.max_events,
+            ) {
+                Ok(selection) => {
+                    return Ok(SessionReadWindowResult {
+                        meta: whole.meta,
+                        events: whole.events[selection.start..selection.end].to_vec(),
+                        has_more: selection.has_more,
+                        oversized_event_count: None,
+                    });
+                }
+                Err(error) if messages > 1 => {
+                    let required = error.selection.event_count().max(1);
+                    let proportional = messages
+                        .saturating_mul(request.max_events as u64)
+                        .checked_div(required as u64)
+                        .unwrap_or(1)
+                        .max(1);
+                    messages = proportional.min(messages - 1);
+                }
+                Err(error) => {
+                    return Ok(SessionReadWindowResult {
+                        meta: whole.meta,
+                        events: Vec::new(),
+                        has_more: error.selection.has_more,
+                        oversized_event_count: Some(error.selection.event_count()),
+                    });
+                }
+            }
+        }
+    }
+
+    async fn read_list_metadata(
+        &self,
+        id: &SessionId,
+    ) -> Result<dsh_session_persistence::SessionListMetadata, String> {
+        self.ensure_root_encoding().await?;
+        let Some(path) = self.find_log(id).await? else {
+            return Err(format!("session \"{}\" not found", id.as_str()));
+        };
+        if self.compression != JsonlCompression::Zstd {
+            let whole = self.read_from(id, 0).await?;
+            let blank = !whole.events.iter().any(|event| event.type_ == "turn/start");
+            let updated_at = whole
+                .events
+                .iter()
+                .rev()
+                .find(|event| event.type_ == "user/message")
+                .map(|event| event.time)
+                .unwrap_or(whole.meta.created_at as i64);
+            return Ok(dsh_session_persistence::SessionListMetadata {
+                last_seq: whole
+                    .events
+                    .last()
+                    .map(|event| event.seq as i64)
+                    .unwrap_or(-1),
+                meta: whole.meta,
+                blank,
+                updated_at,
+            });
+        }
+        let (buffer, _) = self.read_stable_file(&path).await?;
+        let scan = scan_zstd_frames(&buffer)?;
+        if scan.torn_start.is_some() || scan.frames.is_empty() {
+            let whole = self.read_from(id, 0).await?;
+            let blank = !whole.events.iter().any(|event| event.type_ == "turn/start");
+            let updated_at = whole
+                .events
+                .iter()
+                .rev()
+                .find(|event| event.type_ == "user/message")
+                .map(|event| event.time)
+                .unwrap_or(whole.meta.created_at as i64);
+            return Ok(dsh_session_persistence::SessionListMetadata {
+                last_seq: whole
+                    .events
+                    .last()
+                    .map(|event| event.seq as i64)
+                    .unwrap_or(-1),
+                meta: whole.meta,
+                blank,
+                updated_at,
+            });
+        }
+        let header = scan.frames[0];
+        let header_plaintext = decompress_zstd_frame(&buffer[header.start..header.end])?;
+        let header_line = decode_zstd_header_line_single(&header_plaintext)?;
+        let meta = parse_header_meta(&header_line)
+            .ok_or_else(|| "invalid Zstandard session header".to_string())?;
+        self.assert_stored_identity(&path, &meta, Some(id)).await?;
+        let mut blank = true;
+        let mut updated_at = meta.created_at as i64;
+        let mut last_seq = -1_i64;
+        for frame in &scan.frames[1..] {
+            for event in self.decode_zstd_event_frame(&buffer[frame.start..frame.end])? {
+                last_seq = event.seq as i64;
+                if event.type_ == "turn/start" {
+                    blank = false;
+                } else if event.type_ == "user/message" {
+                    updated_at = event.time;
+                }
+            }
+        }
+        Ok(dsh_session_persistence::SessionListMetadata {
+            meta,
+            last_seq,
+            blank,
+            updated_at,
+        })
+    }
+
+    async fn read_model_selection_state(
+        &self,
+        id: &SessionId,
+    ) -> Result<Option<serde_json::Value>, String> {
+        self.ensure_root_encoding().await?;
+        let Some(path) = self.find_log(id).await? else {
+            return Err(format!("session \"{}\" not found", id.as_str()));
+        };
+        if self.compression != JsonlCompression::Zstd {
+            return Ok(None);
+        }
+        let (buffer, _) = self.read_stable_file(&path).await?;
+        let scan = scan_zstd_frames(&buffer)?;
+        if scan.torn_start.is_some() || scan.frames.is_empty() {
+            return Ok(None);
+        }
+        let mut explicit = false;
+        let mut selection = serde_json::Value::Null;
+        for frame in &scan.frames[1..] {
+            let plaintext = decompress_zstd_frame(&buffer[frame.start..frame.end])?;
+            let text = std::str::from_utf8(&plaintext)
+                .map_err(|error| format!("invalid UTF-8 in Zstandard event frame: {error}"))?;
+            for line in text.lines().filter(|line| !line.trim().is_empty()) {
+                let stored: serde_json::Value = serde_json::from_str(line)
+                    .map_err(|error| format!("invalid JSONL event record: {error}"))?;
+                for event in decode_storage_record(&stored)? {
+                    if event.type_ == "model/selection"
+                        && event
+                            .data
+                            .get("provider")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some()
+                        && event
+                            .data
+                            .get("model")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some()
+                    {
+                        explicit = true;
+                        selection = event.data;
+                    } else if event.type_ == "request/header"
+                        && !explicit
+                        && let Some(config) = event
+                            .data
+                            .get("header")
+                            .and_then(|header| header.get("config"))
+                        && config
+                            .get("provider")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some()
+                        && config
+                            .get("model")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some()
+                    {
+                        selection = serde_json::json!({
+                            "provider": config.get("provider").cloned().unwrap_or(serde_json::Value::Null),
+                            "model": config.get("model").cloned().unwrap_or(serde_json::Value::Null),
+                            "reasoningEffort": config.get("reasoningEffort").cloned().unwrap_or(serde_json::Value::Null),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(Some(serde_json::json!({
+            "explicit": explicit,
+            "selection": selection,
+        })))
+    }
+
     async fn list(&self) -> Result<Vec<SessionHeader>, String> {
         Ok(self
             .list_artifacts()
@@ -1021,5 +1448,126 @@ impl PersistenceBackend<JsonlTornMarker> for JsonlSessionPersistence {
             .to_string_lossy()
             .to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod history_window_tests {
+    use super::*;
+    use dsh_session::{SESSION_FORMAT_VERSION, SurfaceOp, session_id};
+    use dsh_session_persistence::SessionPersistenceApi;
+
+    fn event(seq: u64, type_: &str, append_surface: bool) -> SessionEvent {
+        SessionEvent {
+            type_: type_.to_string(),
+            seq,
+            time: seq as i64,
+            data: serde_json::json!({}),
+            ignorable: None,
+            surface_op: append_surface.then_some(SurfaceOp::Append),
+            source_event_seqs: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn zstd_jsonl_reports_oversized_sparse_window() {
+        let root = std::env::temp_dir().join(format!("dsh-jsonl-window-{}", uuid::Uuid::new_v4()));
+        let ctx = Context::root();
+        let backend = JsonlSessionPersistence::install(
+            &ctx,
+            JsonlConfig {
+                root: root.to_string_lossy().to_string(),
+                compression: JsonlCompression::Zstd,
+                ..JsonlConfig::default()
+            },
+        )
+        .expect("install jsonl persistence");
+        let id = session_id("jsonl-bounded-window");
+        SessionPersistenceApi::create(
+            backend.as_ref(),
+            SessionHeader {
+                version: SESSION_FORMAT_VERSION,
+                id: id.clone(),
+                created_at: 1,
+                cwd: Some("C:/workspace".to_string()),
+                parent_session: None,
+                seed_length: None,
+                origin: None,
+                delegation_depth: None,
+                agent_preset: Some("standard".to_string()),
+            },
+        )
+        .await
+        .expect("create session");
+        let mut events = Vec::with_capacity(2_002);
+        events.push(event(0, "user/message", true));
+        for seq in 1..=2_000 {
+            events.push(event(seq, "assistant/chunk", false));
+        }
+        events.push(event(2_001, "assistant/message", true));
+        SessionPersistenceApi::append(backend.as_ref(), &id, &events)
+            .await
+            .expect("append events");
+
+        let window = SessionPersistenceApi::read_window(
+            backend.as_ref(),
+            &id,
+            SessionReadWindowRequest {
+                before_seq: None,
+                max_messages: 2,
+                max_events: 512,
+            },
+        )
+        .await
+        .expect("read bounded window");
+
+        assert!(window.events.len() <= 512);
+        assert_eq!(window.events.last().map(|event| event.seq), Some(2_001));
+        assert_eq!(window.oversized_event_count, None);
+        assert!(window.has_more);
+        let metadata = SessionPersistenceApi::read_list_metadata(backend.as_ref(), &id)
+            .await
+            .expect("read list metadata");
+        assert!(metadata.blank);
+        assert_eq!(metadata.updated_at, 0);
+        assert_eq!(metadata.last_seq, 2_001);
+
+        let first = SessionPersistenceApi::read_event_chunk(backend.as_ref(), &id, 0, 1_000)
+            .await
+            .expect("read first event chunk");
+        assert_eq!(first.events.len(), 1_000);
+        assert_eq!(first.events.first().map(|event| event.seq), Some(0));
+        assert_eq!(first.events.last().map(|event| event.seq), Some(999));
+        assert_eq!(first.next_seq, Some(1_000));
+
+        let path = backend
+            .find_log(&id)
+            .await
+            .expect("find log")
+            .expect("materialized log");
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("open log for torn-tail fixture");
+            file.write_all(&[0x28, 0xb5, 0x2f, 0xfd, 0x00])
+                .expect("append torn zstd frame");
+        }
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let visitor = {
+            let count = count.clone();
+            Arc::new(move |events: &[SessionEvent]| {
+                count.fetch_add(events.len(), std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            })
+        };
+        SessionPersistenceApi::visit_event_chunks(backend.as_ref(), &id, 512, visitor)
+            .await
+            .expect("visit ignores recoverable torn final frame");
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 2_002);
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

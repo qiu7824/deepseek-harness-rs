@@ -3,6 +3,7 @@
 //! `@deepseek-ai/dsh-session-persistence`.
 
 pub mod coordinator;
+pub mod history_window;
 pub mod index;
 pub mod invariant;
 pub mod preparations;
@@ -15,9 +16,11 @@ pub use coordinator::{
     PersistenceCoordinatorOptions, SessionFormatUnsupportedError,
     SessionPersistenceCorruptionError, StoredPrefix, StoredSuffix, session_format_version_refusal,
 };
+pub use history_window::{HistoryWindowSelection, HistoryWindowTooLarge, select_history_window};
 pub use index::{
-    SessionInspection, SessionLocation, SessionPersistence, SessionPersistenceApi,
-    SessionPersistenceSnapshot, SessionRawArtifact, SessionReadFromResult,
+    SessionEventChunk, SessionInspection, SessionListMetadata, SessionLocation, SessionPersistence,
+    SessionPersistenceApi, SessionPersistenceSnapshot, SessionRawArtifact, SessionReadFromResult,
+    SessionReadWindowRequest, SessionReadWindowResult,
 };
 pub use preparations::{
     DiscardOutcome, PreparationEntry, PreparedSource, PreparedSourceLoader,

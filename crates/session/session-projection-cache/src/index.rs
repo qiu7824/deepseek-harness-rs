@@ -318,13 +318,67 @@ impl SessionProjectionCache {
         let rail_needs_seed = cached
             .get(dsh_session_title::USER_MESSAGE_RAIL_KEY)
             .is_none_or(|row| row.ver != dsh_session_title::USER_MESSAGE_RAIL_STATE_VERSION);
+        let metadata_needs_seed = cached
+            .get(dsh_session_title::SESSION_LIST_METADATA_KEY)
+            .is_none_or(|row| row.ver != dsh_session_title::SESSION_LIST_METADATA_STATE_VERSION);
+        let model_needs_seed = cached
+            .get(dsh_session_title::MODEL_SELECTION_KEY)
+            .is_none_or(|row| row.ver != dsh_session_title::MODEL_SELECTION_STATE_VERSION);
         let mut preloaded = None;
+        let list_metadata = if metadata_needs_seed || model_needs_seed {
+            Some(self.persistence.read_list_metadata(id).await?)
+        } else {
+            None
+        };
+        if let Some(metadata) = list_metadata.as_ref() {
+            if record.as_ref().is_some_and(|record| {
+                !identity_matches(&record.identity, &identity_of(&metadata.meta))
+            }) {
+                cached.clear();
+            }
+            cached.insert(
+                dsh_session_title::SESSION_LIST_METADATA_KEY.to_string(),
+                dsh_session_projection::ProjectionCheckpointRow {
+                    ver: dsh_session_title::SESSION_LIST_METADATA_STATE_VERSION,
+                    seq: metadata.last_seq,
+                    val: serde_json::json!({
+                        "blank": metadata.blank,
+                        "updatedAt": metadata.updated_at,
+                    }),
+                },
+            );
+            if model_needs_seed
+                && let Some(state) = self.persistence.read_model_selection_state(id).await?
+            {
+                cached.insert(
+                    dsh_session_title::MODEL_SELECTION_KEY.to_string(),
+                    dsh_session_projection::ProjectionCheckpointRow {
+                        ver: dsh_session_title::MODEL_SELECTION_STATE_VERSION,
+                        seq: metadata.last_seq,
+                        val: state,
+                    },
+                );
+            }
+        }
         if rail_needs_seed {
             let whole = self.persistence.read_from(id, 0).await?;
             if record.as_ref().is_some_and(|record| {
                 !identity_matches(&record.identity, &identity_of(&whole.meta))
             }) {
                 cached.clear();
+                if let Some(metadata) = list_metadata.as_ref() {
+                    cached.insert(
+                        dsh_session_title::SESSION_LIST_METADATA_KEY.to_string(),
+                        dsh_session_projection::ProjectionCheckpointRow {
+                            ver: dsh_session_title::SESSION_LIST_METADATA_STATE_VERSION,
+                            seq: metadata.last_seq,
+                            val: serde_json::json!({
+                                "blank": metadata.blank,
+                                "updatedAt": metadata.updated_at,
+                            }),
+                        },
+                    );
+                }
             }
             cached.insert(
                 dsh_session_title::USER_MESSAGE_RAIL_KEY.to_string(),
@@ -344,17 +398,32 @@ impl SessionProjectionCache {
         if floor.is_none() {
             // No unit registered: nothing to fold, but the not-found
             // contract must hold in this topology too.
-            let probe = self.persistence.read_from(id, 0).await?;
+            let metadata = match list_metadata {
+                Some(metadata) => metadata,
+                None => self.persistence.read_list_metadata(id).await?,
+            };
             return Ok(ProjectionSnapshot {
-                as_of_seq: probe
-                    .events
-                    .last()
-                    .map(|event| event.seq as i64)
-                    .unwrap_or(-1),
+                as_of_seq: metadata.last_seq,
                 values: serde_json::Map::new(),
             });
         }
         let floor = floor.expect("checked");
+        if let Some(metadata) = list_metadata.as_ref()
+            && floor == metadata.last_seq
+        {
+            let snapshot = ProjectionSnapshot {
+                as_of_seq: cached.values().map(|row| row.seq).min().unwrap_or(-1),
+                values: registry.view_checkpoint(&cached),
+            };
+            self.put_soft(
+                id,
+                &identity_of(&metadata.meta),
+                &cached,
+                "cold-read metadata write-back",
+            )
+            .await;
+            return Ok(snapshot);
+        }
         let tail = match preloaded {
             Some(whole) if floor == 0 => whole,
             _ => self.persistence.read_from(id, floor as u64).await?,

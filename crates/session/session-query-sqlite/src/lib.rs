@@ -21,7 +21,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cordis::{ArcValue, Context, Disposer, InjectSpec, Plugin, PluginError};
-use dsh_session::{Session, SessionEvent, SessionHeader, SessionId, SessionStore, session_id};
+use dsh_session::{
+    Session, SessionEvent, SessionHeader, SessionId, SessionStore, StreamingSurfaceFold, session_id,
+};
 use dsh_session_persistence::{SessionPersistenceApi, SessionPersistenceRevision};
 use dsh_session_query::filters::surface_from_str;
 use dsh_session_query::{
@@ -227,7 +229,6 @@ struct ObservedSession {
 struct ObservedPersistedSession {
     header: SessionHeader,
     revision: SessionPersistenceRevision,
-    loaded: Option<ObservedSession>,
 }
 
 struct Observation {
@@ -328,6 +329,52 @@ struct GenState {
     last_persistence_identity: Option<u64>,
 }
 
+struct PendingReconcileTransaction {
+    db: Arc<parking_lot::Mutex<Option<Connection>>>,
+    active: bool,
+}
+
+impl PendingReconcileTransaction {
+    fn begin(db: Arc<parking_lot::Mutex<Option<Connection>>>) -> Result<Self, SessionQueryError> {
+        {
+            let guard = db.lock();
+            let connection = guard.as_ref().ok_or_else(index_closed)?;
+            connection
+                .execute_batch("BEGIN IMMEDIATE")
+                .map_err(|error| {
+                    SessionQueryError::new(
+                        SessionQueryErrorCode::SessionQueryIndexFailed,
+                        format!("session-search transaction begin failed: {error}"),
+                    )
+                })?;
+        }
+        Ok(Self { db, active: true })
+    }
+
+    fn commit(&mut self) -> Result<(), SessionQueryError> {
+        let guard = self.db.lock();
+        let connection = guard.as_ref().ok_or_else(index_closed)?;
+        connection.execute_batch("COMMIT").map_err(|error| {
+            SessionQueryError::new(
+                SessionQueryErrorCode::SessionQueryIndexFailed,
+                format!("session-search transaction commit failed: {error}"),
+            )
+        })?;
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for PendingReconcileTransaction {
+    fn drop(&mut self) {
+        if self.active {
+            if let Some(connection) = self.db.lock().as_ref() {
+                let _ = connection.execute_batch("ROLLBACK");
+            }
+        }
+    }
+}
+
 /// Concrete SQLite owner of the combined `ctx.sessionQuery` service.
 ///
 /// The `gate` serializes one operation at a time (TS `_tail`); the SQLite
@@ -339,7 +386,7 @@ pub struct SqliteSearch {
     identity_counter: Arc<AtomicU64>,
     closed: Arc<AtomicBool>,
     gate: tokio::sync::Mutex<()>,
-    db: parking_lot::Mutex<Option<Connection>>,
+    db: Arc<parking_lot::Mutex<Option<Connection>>>,
     instance: String,
     generations: parking_lot::Mutex<GenState>,
     /// Optional-persistence child fiber keeping the binding cell fresh on
@@ -406,7 +453,7 @@ impl SqliteSearch {
             identity_counter,
             closed: Arc::new(AtomicBool::new(false)),
             gate: tokio::sync::Mutex::new(()),
-            db: parking_lot::Mutex::new(None),
+            db: Arc::new(parking_lot::Mutex::new(None)),
             instance: uuid::Uuid::new_v4().to_string(),
             generations: parking_lot::Mutex::new(GenState::default()),
             _binding_fiber: Some(binding_fiber),
@@ -564,10 +611,18 @@ impl SqliteSearch {
         let observation = self.observe_stable(&persisted_by_id, signal).await?;
         assert_not_aborted(signal)?;
         let binding = &observation.persistence_binding;
+        let can_reuse_indexed = self.generations.lock().last_persistence_identity.is_none()
+            || self.generations.lock().last_persistence_identity == Some(binding.identity);
         let persistent_changes: Vec<&ObservedPersistedSession> = observation
             .persisted
             .values()
-            .filter(|entry| entry.loaded.is_some())
+            .filter(|entry| {
+                !observation.live.contains_key(entry.header.id.as_str())
+                    && !(can_reuse_indexed
+                        && persisted_by_id
+                            .get(entry.header.id.as_str())
+                            .is_some_and(|row| row.revision == entry.revision.as_str()))
+            })
             .collect();
         let persistent_deletes: Vec<&IndexedPersistedRow> = persisted_rows
             .iter()
@@ -620,50 +675,74 @@ impl SqliteSearch {
             })
             .collect();
 
+        let mut transaction = if has_writes {
+            Some(PendingReconcileTransaction::begin(self.db.clone())?)
+        } else {
+            None
+        };
+
+        if let Some(persistence) = binding.service.as_ref() {
+            for entry in &persistent_changes {
+                assert_not_aborted(signal)?;
+                index_persisted_streaming(
+                    persistence,
+                    self.db.clone(),
+                    &entry.header,
+                    &entry.revision,
+                    next_main_generation,
+                )
+                .await
+                .map_err(|message| {
+                    SessionQueryError::new(
+                        SessionQueryErrorCode::SessionQueryIndexFailed,
+                        format!("session-search streaming index failed: {message}"),
+                    )
+                })?;
+            }
+        }
+
         if has_writes {
             let db = self.db.lock();
             let db = db.as_ref().ok_or_else(index_closed)?;
-            let outcome = (|| -> Result<(), String> {
-                db.execute_batch("BEGIN IMMEDIATE")
-                    .map_err(|error| error.to_string())?;
-                for row in &persistent_deletes {
-                    delete_session(db, false, &row.id).map_err(|error| error.to_string())?;
-                }
-                for entry in &persistent_changes {
-                    let Some(loaded) = &entry.loaded else {
-                        return Err(format!(
-                            "missing loaded revision for session \"{}\"",
-                            entry.header.id.as_str()
-                        ));
-                    };
-                    replace_persisted_session(db, loaded, &entry.revision, next_main_generation)
-                        .map_err(|error| error.to_string())?;
-                }
-                if !persistent_changes.is_empty() || !persistent_deletes.is_empty() {
-                    db.execute(
-                        "UPDATE search_state SET global_generation = ?1 WHERE singleton = 1",
-                        [next_main_generation as i64],
+            for row in &persistent_deletes {
+                delete_session(db, false, &row.id).map_err(|error| {
+                    SessionQueryError::new(
+                        SessionQueryErrorCode::SessionQueryIndexFailed,
+                        error.to_string(),
                     )
-                    .map_err(|error| error.to_string())?;
-                }
-                for row in &live_deletes {
-                    delete_session(db, true, &row.id).map_err(|error| error.to_string())?;
-                }
-                for (entry, generation, persisted) in &live_replacements {
-                    replace_live_session(db, entry, *generation, *persisted)
-                        .map_err(|error| error.to_string())?;
-                }
-                db.execute_batch("COMMIT")
-                    .map_err(|error| error.to_string())?;
-                Ok(())
-            })();
-            if let Err(message) = outcome {
-                let _ = db.execute_batch("ROLLBACK");
-                return Err(SessionQueryError::new(
-                    SessionQueryErrorCode::SessionQueryIndexFailed,
-                    format!("session-search reconciliation failed: {message}"),
-                ));
+                })?;
             }
+            if !persistent_changes.is_empty() || !persistent_deletes.is_empty() {
+                db.execute(
+                    "UPDATE search_state SET global_generation = ?1 WHERE singleton = 1",
+                    [next_main_generation as i64],
+                )
+                .map_err(|error| {
+                    SessionQueryError::new(
+                        SessionQueryErrorCode::SessionQueryIndexFailed,
+                        error.to_string(),
+                    )
+                })?;
+            }
+            for row in &live_deletes {
+                delete_session(db, true, &row.id).map_err(|error| {
+                    SessionQueryError::new(
+                        SessionQueryErrorCode::SessionQueryIndexFailed,
+                        error.to_string(),
+                    )
+                })?;
+            }
+            for (entry, generation, persisted) in &live_replacements {
+                replace_live_session(db, entry, *generation, *persisted).map_err(|error| {
+                    SessionQueryError::new(
+                        SessionQueryErrorCode::SessionQueryIndexFailed,
+                        error.to_string(),
+                    )
+                })?;
+            }
+        }
+        if let Some(transaction) = transaction.as_mut() {
+            transaction.commit()?;
         }
 
         {
@@ -753,33 +832,15 @@ impl SqliteSearch {
             Err(message) => return self.persistence_failure(binding, signal, &message),
         };
         assert_not_aborted(signal)?;
-        let mut persisted = match materialize_snapshots(&before) {
+        let persisted = match materialize_snapshots(&before) {
             Ok(observed) => observed,
             Err(message) => return self.persistence_failure(binding, signal, &message),
         };
-        for entry in persisted.values_mut() {
-            if can_reuse_indexed
-                && indexed
-                    .get(entry.header.id.as_str())
-                    .is_some_and(|row| row.revision == entry.revision.as_str())
-            {
-                continue;
-            }
-            // Skip work already shadowed by a live owner.
-            if initially_live.contains(entry.header.id.as_str())
-                || sessions.get(&entry.header.id).is_some()
-            {
-                continue;
-            }
-            assert_not_aborted(signal)?;
-            let loaded = match persistence.read_from(&entry.header.id, 0).await {
-                Ok(stored) => stored,
-                Err(message) => return self.persistence_failure(binding, signal, &message),
-            };
-            assert_not_aborted(signal)?;
-            assert_session_headers_compatible(&entry.header, &loaded.meta)?;
-            entry.loaded = Some(observe_session(&loaded.meta, &loaded.events)?);
-        }
+        // Loading searchable documents is deliberately deferred until after
+        // the source snapshot has stabilized. Reconcile then builds and
+        // commits one changed session at a time, so this observation map never
+        // owns documents from multiple cold sessions.
+        let _ = (can_reuse_indexed, indexed, initially_live, sessions);
         assert_not_aborted(signal)?;
         let after = match persistence.list_snapshots().await {
             Ok(snapshots) => snapshots,
@@ -1187,6 +1248,92 @@ fn observe_live(session: &Session) -> Result<ObservedSession, SessionQueryError>
     observe_session(session.header(), &session.events())
 }
 
+async fn index_persisted_streaming(
+    persistence: &Arc<dyn SessionPersistenceApi>,
+    db: Arc<parking_lot::Mutex<Option<Connection>>>,
+    header: &SessionHeader,
+    revision: &SessionPersistenceRevision,
+    generation: u64,
+) -> Result<(), String> {
+    const CHUNK_EVENTS: usize = 1_024;
+    let fold = Arc::new(parking_lot::Mutex::new(StreamingSurfaceFold::default()));
+    let fold_visitor = {
+        let fold = fold.clone();
+        Arc::new(move |events: &[SessionEvent]| {
+            let mut fold = fold.lock();
+            for event in events {
+                fold.push(event)?;
+            }
+            Ok(())
+        })
+    };
+    persistence
+        .visit_event_chunks(&header.id, CHUNK_EVENTS, fold_visitor)
+        .await?;
+    let folded = std::mem::take(&mut *fold.lock()).finish();
+    let mut surface_by_seq = HashMap::new();
+    for seq in folded.nodes {
+        surface_by_seq.insert(seq, SessionEventSurface::Current);
+    }
+    for replacement in folded.replacements {
+        for seq in replacement.shadowed_seqs {
+            surface_by_seq.insert(seq, SessionEventSurface::Shadowed);
+        }
+    }
+    let surface_by_seq = Arc::new(surface_by_seq);
+    {
+        let db_guard = db.lock();
+        let connection = db_guard
+            .as_ref()
+            .ok_or_else(|| "search index is closed".to_string())?;
+        delete_session(connection, false, header.id.as_str())
+            .and_then(|_| insert_persisted_header(connection, header, revision, generation))
+            .map_err(|error| error.to_string())?;
+    }
+    let document_visitor = {
+        let session_id = header.id.clone();
+        let surface_by_seq = surface_by_seq.clone();
+        let db = db.clone();
+        Arc::new(move |events: &[SessionEvent]| {
+            let db_guard = db.lock();
+            let connection = db_guard
+                .as_ref()
+                .ok_or_else(|| "search index is closed".to_string())?;
+            for event in events {
+                let text = dsh_session_query::extract_session_event_text(event);
+                if text.is_empty() {
+                    continue;
+                }
+                let document = dsh_session_query::SessionEventSearchDocument {
+                    session_id: session_id.clone(),
+                    seq: event.seq,
+                    type_: event.type_.clone(),
+                    time: event.time,
+                    surface: surface_by_seq
+                        .get(&event.seq)
+                        .copied()
+                        .unwrap_or(SessionEventSurface::LogOnly),
+                    text,
+                };
+                insert_document(connection, "persisted_docs", &document)
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+    };
+    persistence
+        .visit_event_chunks(&header.id, CHUNK_EVENTS, document_visitor)
+        .await?;
+    let current = persistence.read_snapshot(&header.id).await?;
+    if current.as_ref().map(|snapshot| &snapshot.revision) != Some(revision) {
+        return Err(format!(
+            "session-search source changed while indexing session \"{}\"",
+            header.id
+        ));
+    }
+    Ok(())
+}
+
 fn observe_session(
     header: &SessionHeader,
     events: &[SessionEvent],
@@ -1220,7 +1367,6 @@ fn materialize_snapshots(
             ObservedPersistedSession {
                 header: snapshot.header.clone(),
                 revision: snapshot.revision.clone(),
-                loaded: None,
             },
         );
     }
@@ -1302,14 +1448,13 @@ fn delete_session(db: &Connection, live: bool, id: &str) -> Result<(), rusqlite:
     Ok(())
 }
 
-fn replace_persisted_session(
+fn insert_persisted_header(
     db: &Connection,
-    entry: &ObservedSession,
+    header: &SessionHeader,
     revision: &SessionPersistenceRevision,
     generation: u64,
 ) -> Result<(), rusqlite::Error> {
-    delete_session(db, false, entry.header.id.as_str())?;
-    let mut bindings = option_params(header_option_bindings(&entry.header));
+    let mut bindings = option_params(header_option_bindings(header));
     bindings.push(rusqlite::types::Value::Text(revision.as_str().to_string()));
     bindings.push(rusqlite::types::Value::Integer(generation as i64));
     db.execute(
@@ -1318,7 +1463,6 @@ fn replace_persisted_session(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         rusqlite::params_from_iter(bindings.iter()),
     )?;
-    insert_documents(db, "persisted_docs", entry)?;
     Ok(())
 }
 
@@ -1347,29 +1491,38 @@ fn replace_live_session(
     Ok(())
 }
 
+fn insert_document(
+    db: &Connection,
+    table: &str,
+    document: &dsh_session_query::SessionEventSearchDocument,
+) -> Result<(), rusqlite::Error> {
+    let text = sanitize_fts_text(&document.text);
+    let length = text.chars().count() as i64;
+    db.execute(
+        &format!(
+            "INSERT INTO {table} (text, session_id, seq, type, time, surface, codepoint_length)
+            VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ),
+        rusqlite::params![
+            text,
+            document.session_id.as_str().to_string(),
+            document.seq as i64,
+            document.type_.clone(),
+            document.time,
+            document.surface.as_str(),
+            length,
+        ],
+    )?;
+    Ok(())
+}
+
 fn insert_documents(
     db: &Connection,
     table: &str,
     entry: &ObservedSession,
 ) -> Result<(), rusqlite::Error> {
     for document in &entry.documents {
-        let text = sanitize_fts_text(&document.text);
-        let length = text.chars().count() as i64;
-        db.execute(
-            &format!(
-                "INSERT INTO {table} (text, session_id, seq, type, time, surface, codepoint_length)
-                VALUES (?, ?, ?, ?, ?, ?, ?)"
-            ),
-            rusqlite::params![
-                text,
-                document.session_id.as_str().to_string(),
-                document.seq as i64,
-                document.type_.clone(),
-                document.time,
-                document.surface.as_str(),
-                length,
-            ],
-        )?;
+        insert_document(db, table, document)?;
     }
     Ok(())
 }

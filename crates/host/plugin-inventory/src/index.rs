@@ -47,9 +47,6 @@ fn known_description(module_name: &str) -> Option<String> {
         "dsh-context-jump" => {
             Some("左侧用户消息刻度导航；无需预加载完整历史，点击时只载入目标页。".to_string())
         }
-        "dsh-task-manager" => {
-            Some("会话任务清单：创建、更新、完成和查看当前任务进度。".to_string())
-        }
         "dsh-web-preview-rs" => Some("Rust 原生网页与文档预览入口。".to_string()),
         _ => None,
     }

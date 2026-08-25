@@ -64,6 +64,41 @@ pub struct SessionReadFromResult {
     pub events: Vec<SessionEvent>,
 }
 
+/// One bounded forward event chunk for streaming consumers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionEventChunk {
+    pub events: Vec<SessionEvent>,
+    /// Seq to request next; `None` when the stored log ended in this chunk.
+    pub next_seq: Option<u64>,
+}
+
+/// One bounded, backwards history read request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionReadWindowRequest {
+    pub before_seq: Option<u64>,
+    pub max_messages: u64,
+    pub max_events: usize,
+}
+
+/// One message-aligned history window. An oversized safe group returns no
+/// events and reports the required count instead of silently cutting it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionReadWindowResult {
+    pub meta: SessionHeader,
+    pub events: Vec<SessionEvent>,
+    pub has_more: bool,
+    pub oversized_event_count: Option<usize>,
+}
+
+/// Fixed-size session-list metadata, folded without retaining event payloads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionListMetadata {
+    pub meta: SessionHeader,
+    pub last_seq: i64,
+    pub blank: bool,
+    pub updated_at: i64,
+}
+
 /// Durable append-only session storage. Implementations preserve contiguous,
 /// losslessly JSON-serializable events; `append` resolves only after
 /// durability, and `load` balances a complete interrupted tail without
@@ -165,8 +200,141 @@ pub trait SessionPersistenceApi: Send + Sync {
         from_seq: u64,
     ) -> Result<SessionReadFromResult, String>;
 
+    /// Read at most `max_events` contiguous events from `from_seq`.
+    async fn read_event_chunk(
+        &self,
+        id: &SessionId,
+        from_seq: u64,
+        max_events: usize,
+    ) -> Result<SessionEventChunk, String> {
+        if max_events == 0 {
+            return Err("event chunk max_events must be positive".to_string());
+        }
+        let mut whole = self.read_from(id, from_seq).await?;
+        let has_more = whole.events.len() > max_events;
+        whole.events.truncate(max_events);
+        let next_seq = has_more.then(|| from_seq.saturating_add(whole.events.len() as u64));
+        Ok(SessionEventChunk {
+            events: whole.events,
+            next_seq,
+        })
+    }
+
+    /// Visit a stored log in bounded forward chunks. Backends may override
+    /// this to keep one physical reader open across the complete pass.
+    async fn visit_event_chunks(
+        &self,
+        id: &SessionId,
+        max_events: usize,
+        visitor: Arc<dyn for<'a> Fn(&'a [SessionEvent]) -> Result<(), String> + Send + Sync>,
+    ) -> Result<(), String> {
+        let mut from_seq = 0;
+        loop {
+            let chunk = self.read_event_chunk(id, from_seq, max_events).await?;
+            if !chunk.events.is_empty() {
+                visitor(&chunk.events)?;
+            }
+            match chunk.next_seq {
+                Some(next) => from_seq = next,
+                None => return Ok(()),
+            }
+        }
+    }
+
+    /// Read a bounded, message-aligned history window. Backends should
+    /// override this to avoid materializing the full log; the default keeps
+    /// compatibility while preserving the explicit event-budget contract.
+    async fn read_window(
+        &self,
+        id: &SessionId,
+        request: SessionReadWindowRequest,
+    ) -> Result<SessionReadWindowResult, String> {
+        let whole = self.read_from(id, 0).await?;
+        let mut messages = request.max_messages.max(1);
+        loop {
+            match crate::select_history_window(
+                &whole.events,
+                request.before_seq,
+                messages,
+                request.max_events,
+            ) {
+                Ok(selection) => {
+                    return Ok(SessionReadWindowResult {
+                        meta: whole.meta,
+                        events: whole.events[selection.start..selection.end].to_vec(),
+                        has_more: selection.has_more,
+                        oversized_event_count: None,
+                    });
+                }
+                Err(error) if messages > 1 => {
+                    let required = error.selection.event_count().max(1);
+                    let proportional = messages
+                        .saturating_mul(request.max_events as u64)
+                        .checked_div(required as u64)
+                        .unwrap_or(1)
+                        .max(1);
+                    messages = proportional.min(messages - 1);
+                }
+                Err(error) => {
+                    return Ok(SessionReadWindowResult {
+                        meta: whole.meta,
+                        events: Vec::new(),
+                        has_more: error.selection.has_more,
+                        oversized_event_count: Some(error.selection.event_count()),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Fixed-size list metadata. Backends override this to avoid retaining a
+    /// full event log; the default preserves compatibility.
+    async fn read_list_metadata(&self, id: &SessionId) -> Result<SessionListMetadata, String> {
+        let whole = self.read_from(id, 0).await?;
+        let blank = !whole.events.iter().any(|event| event.type_ == "turn/start");
+        let updated_at = whole
+            .events
+            .iter()
+            .rev()
+            .find(|event| event.type_ == "user/message")
+            .map(|event| event.time)
+            .unwrap_or(whole.meta.created_at as i64);
+        Ok(SessionListMetadata {
+            last_seq: whole
+                .events
+                .last()
+                .map(|event| event.seq as i64)
+                .unwrap_or(-1),
+            meta: whole.meta,
+            blank,
+            updated_at,
+        })
+    }
+
+    /// Internal fixed-size model-selection projection state. Backends override
+    /// this without materializing the full log.
+    async fn read_model_selection_state(
+        &self,
+        id: &SessionId,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let _ = id;
+        Ok(None)
+    }
+
     /// Lightweight listing from metadata, without a full-log parse.
     async fn list(&self) -> Result<Vec<SessionHeader>, String>;
+
+    /// Read one materialized session's cheap change token.
+    async fn read_snapshot(
+        &self,
+        id: &SessionId,
+    ) -> Result<Option<SessionPersistenceSnapshot>, String> {
+        Ok(self
+            .list_snapshots()
+            .await?
+            .into_iter()
+            .find(|snapshot| snapshot.header.id == *id))
+    }
 
     /// List materialized sessions with cheap per-log change tokens.
     async fn list_snapshots(&self) -> Result<Vec<SessionPersistenceSnapshot>, String>;

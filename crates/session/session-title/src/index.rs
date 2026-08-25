@@ -422,6 +422,196 @@ pub fn user_message_rail_projection_definition() -> ProjectionDefinition {
     }
 }
 
+pub const MODEL_SELECTION_KEY: &str = "modelSelection";
+pub const MODEL_SELECTION_STATE_VERSION: u64 = 1;
+
+/// Fixed-size persisted model selection. Explicit `model/selection` events
+/// permanently take precedence over request headers, matching session.models.
+pub fn model_selection_projection_definition() -> ProjectionDefinition {
+    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> =
+        Arc::new(|| arc(serde_json::json!({ "explicit": false, "selection": null })));
+    let apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync> = Arc::new(
+        |state, event| {
+            let mut value = downcast::<JsonValue>(state)
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({ "explicit": false, "selection": null }));
+            if event.type_ == "model/selection" {
+                if event
+                    .data
+                    .get("provider")
+                    .and_then(JsonValue::as_str)
+                    .is_some()
+                    && event
+                        .data
+                        .get("model")
+                        .and_then(JsonValue::as_str)
+                        .is_some()
+                {
+                    value["explicit"] = JsonValue::Bool(true);
+                    value["selection"] = event.data.clone();
+                }
+            } else if event.type_ == "request/header"
+                && value.get("explicit").and_then(JsonValue::as_bool) != Some(true)
+                && let Some(config) = event
+                    .data
+                    .get("header")
+                    .and_then(|header| header.get("config"))
+                && config.get("provider").and_then(JsonValue::as_str).is_some()
+                && config.get("model").and_then(JsonValue::as_str).is_some()
+            {
+                value["selection"] = serde_json::json!({
+                    "provider": config.get("provider").cloned().unwrap_or(JsonValue::Null),
+                    "model": config.get("model").cloned().unwrap_or(JsonValue::Null),
+                    "reasoningEffort": config.get("reasoningEffort").cloned().unwrap_or(JsonValue::Null),
+                });
+            }
+            arc(value)
+        },
+    );
+    let view: Arc<dyn Fn(&ArcValue) -> ArcValue + Send + Sync> = Arc::new(|state| {
+        arc(downcast::<JsonValue>(state)
+            .and_then(|value| value.get("selection"))
+            .cloned()
+            .unwrap_or(JsonValue::Null))
+    });
+    let schema = Arc::new(|value: &ArcValue| {
+        let json = downcast::<JsonValue>(value)
+            .ok_or_else(|| "modelSelection projection must be JSON".to_string())?;
+        if json.is_null()
+            || (json.get("provider").is_some_and(JsonValue::is_string)
+                && json.get("model").is_some_and(JsonValue::is_string))
+        {
+            Ok(json.clone())
+        } else {
+            Err("modelSelection projection has an invalid shape".to_string())
+        }
+    });
+    ProjectionDefinition {
+        key: MODEL_SELECTION_KEY.to_string(),
+        schema,
+        init,
+        apply,
+        view,
+        state_version: MODEL_SELECTION_STATE_VERSION,
+    }
+}
+
+pub const SESSION_LIST_METADATA_KEY: &str = "sessionListMetadata";
+pub const SESSION_LIST_METADATA_STATE_VERSION: u64 = 1;
+
+/// Fixed-size session-list state. The fold never retains event payloads.
+pub fn session_list_metadata_projection_definition() -> ProjectionDefinition {
+    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> =
+        Arc::new(|| arc(serde_json::json!({ "blank": true, "updatedAt": null })));
+    let apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync> =
+        Arc::new(|state, event| match event.type_.as_str() {
+            "turn/start" => {
+                let mut value = downcast::<JsonValue>(state)
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({ "blank": true, "updatedAt": null }));
+                value["blank"] = JsonValue::Bool(false);
+                arc(value)
+            }
+            "user/message" => {
+                let mut value = downcast::<JsonValue>(state)
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({ "blank": true, "updatedAt": null }));
+                value["updatedAt"] = JsonValue::from(event.time);
+                arc(value)
+            }
+            _ => state.clone(),
+        });
+    let view: Arc<dyn Fn(&ArcValue) -> ArcValue + Send + Sync> = Arc::new(|state| state.clone());
+    let schema = Arc::new(|value: &ArcValue| {
+        let json = downcast::<JsonValue>(value)
+            .ok_or_else(|| "sessionListMetadata projection must be JSON".to_string())?;
+        let valid = json.get("blank").is_some_and(JsonValue::is_boolean)
+            && json
+                .get("updatedAt")
+                .is_some_and(|value| value.is_null() || value.is_i64() || value.is_u64());
+        if !valid {
+            return Err("sessionListMetadata projection has an invalid shape".to_string());
+        }
+        Ok(json.clone())
+    });
+    ProjectionDefinition {
+        key: SESSION_LIST_METADATA_KEY.to_string(),
+        schema,
+        init,
+        apply,
+        view,
+        state_version: SESSION_LIST_METADATA_STATE_VERSION,
+    }
+}
+
+#[cfg(test)]
+mod session_list_metadata_tests {
+    use super::*;
+    use cordis::downcast;
+
+    fn event(seq: u64, time: i64, type_: &str) -> SessionEvent {
+        SessionEvent {
+            type_: type_.to_string(),
+            seq,
+            time,
+            data: serde_json::json!({}),
+            ignorable: None,
+            surface_op: None,
+            source_event_seqs: None,
+        }
+    }
+
+    #[test]
+    fn model_selection_projection_prefers_explicit_selection_over_request_headers() {
+        let definition = model_selection_projection_definition();
+        let mut state = (definition.init)();
+        let mut header = event(0, 10, "request/header");
+        header.data = serde_json::json!({
+            "header": { "config": { "provider": "header", "model": "h1", "reasoningEffort": "low" } }
+        });
+        state = (definition.apply)(&state, &header);
+        let mut selected = event(1, 20, "model/selection");
+        selected.data = serde_json::json!({
+            "provider": "explicit", "model": "e1", "reasoningEffort": "high"
+        });
+        state = (definition.apply)(&state, &selected);
+        let mut later_header = event(2, 30, "request/header");
+        later_header.data = serde_json::json!({
+            "header": { "config": { "provider": "header", "model": "h2" } }
+        });
+        state = (definition.apply)(&state, &later_header);
+        let view = (definition.view)(&state);
+        let value = downcast::<JsonValue>(&view).expect("model selection must be JSON");
+        assert_eq!(
+            value,
+            &serde_json::json!({
+                "provider": "explicit", "model": "e1", "reasoningEffort": "high"
+            })
+        );
+    }
+
+    #[test]
+    fn folds_blank_and_latest_user_time_in_constant_state() {
+        let definition = session_list_metadata_projection_definition();
+        let mut state = (definition.init)();
+        for row in [
+            event(0, 10, "assistant/chunk"),
+            event(1, 20, "turn/start"),
+            event(2, 30, "user/message"),
+            event(3, 40, "tool/result"),
+            event(4, 50, "user/message"),
+        ] {
+            state = (definition.apply)(&state, &row);
+        }
+        let view = (definition.view)(&state);
+        let value = downcast::<JsonValue>(&view).expect("metadata projection must be JSON");
+        assert_eq!(
+            value,
+            &serde_json::json!({ "blank": false, "updatedAt": 50 })
+        );
+    }
+}
+
 /// Log-backed title fold plus asynchronous fallback generation (TS
 /// `SessionTitleService`).
 pub struct SessionTitleService {
@@ -432,6 +622,7 @@ pub struct SessionTitleService {
     registration: Mutex<Option<Arc<ProviderRegistration>>>,
     work: Mutex<HashMap<usize, Arc<Mutex<WorkState>>>>,
     in_flight: Arc<Inflight>,
+    projection_disposers: Arc<Mutex<Vec<Disposer>>>,
 }
 
 impl Service for SessionTitleService {
@@ -445,6 +636,14 @@ impl SessionTitleService {
     /// lifecycle, projection, session, and llm-stream listeners (TS
     /// constructor). Configuration rejection becomes `Err`.
     pub fn install(ctx: &Context, config: Config) -> Result<Arc<Self>, String> {
+        Self::install_with_registry(ctx, config, None)
+    }
+
+    pub fn install_with_registry(
+        ctx: &Context,
+        config: Config,
+        explicit_registry: Option<Arc<SessionProjectionRegistry>>,
+    ) -> Result<Arc<Self>, String> {
         assert_positive_integer("fallbackMaxWords", config.fallback_max_words)?;
         assert_positive_integer("fallbackMaxBytes", config.fallback_max_bytes)?;
         assert_positive_integer("maxTitleBytes", config.max_title_bytes)?;
@@ -462,6 +661,7 @@ impl SessionTitleService {
             registration: Mutex::new(None),
             work: Mutex::new(HashMap::new()),
             in_flight: Arc::new(Inflight::new()),
+            projection_disposers: Arc::new(Mutex::new(Vec::new())),
         });
         ctx.register_service(service.clone());
 
@@ -479,30 +679,75 @@ impl SessionTitleService {
             }),
         );
 
-        // The `title` projection unit activates only when a projection
-        // registry is composed (TS `ctx.inject(['sessionProjections'])`).
-        ctx.inject(
-            InjectSpec::new(["sessionProjections"]),
-            Arc::new(move |projection_ctx: &Context, _config: ArcValue| {
-                let projection_ctx = projection_ctx.clone();
-                Box::pin(async move {
-                    let registry: Arc<Arc<SessionProjectionRegistry>> = projection_ctx
-                        .get_typed::<Arc<SessionProjectionRegistry>>("sessionProjections", false)
-                        .ok_or_else(|| {
-                            PluginError::new(arc(
-                                "sessionProjections service is not configured".to_string()
-                            ))
-                        })?;
-                    registry
-                        .register(&projection_ctx, title_projection_definition())
-                        .map_err(|error| PluginError::new(arc(error)))?;
-                    registry
-                        .register(&projection_ctx, user_message_rail_projection_definition())
-                        .map(|_| ())
-                        .map_err(|error| PluginError::new(arc(error)))
-                })
-            }),
-        );
+        // The Host composes the registry before this service. Register
+        // synchronously in that common path so the first list/history request
+        // cannot race an inject fiber; retain injection for alternate orders.
+        if let Some(registry) = explicit_registry.or_else(|| {
+            ctx.get_typed::<Arc<SessionProjectionRegistry>>("sessionProjections", false)
+                .map(|slot| slot.as_ref().clone())
+        }) {
+            let title_disposer = registry
+                .register(ctx, title_projection_definition())
+                .map_err(|error| format!("session-title projection: {error}"))?;
+            let rail_disposer = registry
+                .register(ctx, user_message_rail_projection_definition())
+                .map_err(|error| format!("user-message-rail projection: {error}"))?;
+            let metadata_disposer = registry
+                .register(ctx, session_list_metadata_projection_definition())
+                .map_err(|error| format!("session-list-metadata projection: {error}"))?;
+            let model_disposer = registry
+                .register(ctx, model_selection_projection_definition())
+                .map_err(|error| format!("model-selection projection: {error}"))?;
+            service.projection_disposers.lock().extend([
+                title_disposer,
+                rail_disposer,
+                metadata_disposer,
+                model_disposer,
+            ]);
+        } else {
+            let projection_disposers = service.projection_disposers.clone();
+            ctx.inject(
+                InjectSpec::new(["sessionProjections"]),
+                Arc::new(move |projection_ctx: &Context, _config: ArcValue| {
+                    let projection_ctx = projection_ctx.clone();
+                    let projection_disposers = projection_disposers.clone();
+                    Box::pin(async move {
+                        let registry: Arc<Arc<SessionProjectionRegistry>> = projection_ctx
+                            .get_typed::<Arc<SessionProjectionRegistry>>(
+                                "sessionProjections",
+                                false,
+                            )
+                            .ok_or_else(|| {
+                                PluginError::new(arc(
+                                    "sessionProjections service is not configured".to_string(),
+                                ))
+                            })?;
+                        let title_disposer = registry
+                            .register(&projection_ctx, title_projection_definition())
+                            .map_err(|error| PluginError::new(arc(error)))?;
+                        let rail_disposer = registry
+                            .register(&projection_ctx, user_message_rail_projection_definition())
+                            .map_err(|error| PluginError::new(arc(error)))?;
+                        let metadata_disposer = registry
+                            .register(
+                                &projection_ctx,
+                                session_list_metadata_projection_definition(),
+                            )
+                            .map_err(|error| PluginError::new(arc(error)))?;
+                        let model_disposer = registry
+                            .register(&projection_ctx, model_selection_projection_definition())
+                            .map_err(|error| PluginError::new(arc(error)))?;
+                        projection_disposers.lock().extend([
+                            title_disposer,
+                            rail_disposer,
+                            metadata_disposer,
+                            model_disposer,
+                        ]);
+                        Ok(())
+                    })
+                }),
+            );
+        }
 
         // session/event: user messages schedule fallback + provider work;
         // request/header releases pending work with its exact route.

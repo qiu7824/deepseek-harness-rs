@@ -13,10 +13,11 @@ elif count > 1:
     raise SystemExit(f"expected one StatsLine CSS signature, found {count}")
 
 todo = "\t\t\tctx.plugin(todoDockEntry);\n"
-if todo in text:
-    text = text.replace(todo, "", 1)
-elif "ctx.plugin(todoDockEntry)" in text:
-    raise SystemExit("unexpected todo dock registration shape")
+queue = "\t\t\tctx.plugin(queueDockEntry);\n"
+if todo not in text:
+    if queue not in text:
+        raise SystemExit("expected queue dock registration was not found")
+    text = text.replace(queue, todo + queue, 1)
 
 path.write_text(text, encoding="utf-8")
-print("patched ui-conversation statistics layout and removed task dock")
+print("patched ui-conversation statistics layout and retained official task dock")

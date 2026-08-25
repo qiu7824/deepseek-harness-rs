@@ -5946,6 +5946,13 @@ window.__ModuleLoader__.load({
 			"todo.progress.active": "{active} 进行中",
 			"todo.progress.pending": "{pending} 待处理",
 			"todo.rowTitle": "更新任务清单",
+			"todo.edit": "修改任务",
+			"todo.remove": "停止并移除任务",
+			"todo.save": "保存",
+			"todo.cancelEdit": "取消修改",
+			"todo.stopTurn": "停止当前运行",
+			"todo.updateFailed": "任务清单已变化，请重试。",
+			"todo.stopFailed": "停止运行失败，请重试。",
 			"todo.completed": "{done}/{total} 已完成",
 			"chat.loadingHistory": "载入历史…",
 			"chat.loadError": "历史加载失败：{message}（{code}）",
@@ -6116,6 +6123,13 @@ window.__ModuleLoader__.load({
 			"todo.progress.active": "{active} in progress",
 			"todo.progress.pending": "{pending} pending",
 			"todo.rowTitle": "Update to-do list",
+			"todo.edit": "Edit task",
+			"todo.remove": "Stop and remove task",
+			"todo.save": "Save",
+			"todo.cancelEdit": "Cancel edit",
+			"todo.stopTurn": "Stop current run",
+			"todo.updateFailed": "The task list changed. Try again.",
+			"todo.stopFailed": "Failed to stop the current run. Try again.",
 			"todo.completed": "{done}/{total} completed",
 			"chat.loadingHistory": "Loading history…",
 			"chat.loadError": "Failed to load history: {message} ({code})",
@@ -6329,9 +6343,31 @@ window.__ModuleLoader__.load({
 				...pending > 0 ? [t("todo.progress.pending", { pending })] : []
 			].join(" · ");
 		}
-		function TodoPanel({ todos, t }) {
+		function TodoPanel({ todos, useSession, updateTodos, cancelTurn, notify, t }) {
 			const [collapsed, setCollapsed] = (0, react.useState)(true);
+			const [editing, setEditing] = (0, react.useState)(null);
+			const [busy, setBusy] = (0, react.useState)(null);
+			const running = useSession((state) => state.running);
+			const mutable = useSession((state) => state.subagent === null);
+			(0, react.useEffect)(() => {
+				if (editing !== null && (!mutable || todos[editing.index]?.content !== editing.original)) setEditing(null);
+			}, [editing, mutable, todos]);
 			if (todos.length === 0) return null;
+			const applyAction = async (index, action) => {
+				setBusy(index);
+				try {
+					await updateTodos(todos, action);
+					setEditing(null);
+				} catch {
+					notify("error", t("todo.updateFailed"));
+				} finally {
+					setBusy(null);
+				}
+			};
+			const saveEdit = () => {
+				if (editing === null || editing.value.trim() === "") return;
+				applyAction(editing.index, { kind: "edit", index: editing.index, content: editing.value.trim() });
+			};
 			return (0, react_jsx_runtime.jsx)("section", {
 				className: TodoPanel_module_css_default.root,
 				"data-testid": "todo-panel",
@@ -6365,28 +6401,62 @@ window.__ModuleLoader__.load({
 								children: collapsed ? (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronUpOutline14, {}) : (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
 							})
 						]
-					}), !collapsed && (0, react_jsx_runtime.jsx)("ul", {
+					}), !collapsed && (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("ul", {
 						className: TodoPanel_module_css_default.list,
-						children: todos.map((item) => (0, react_jsx_runtime.jsxs)("li", {
+						children: todos.map((item, index) => (0, react_jsx_runtime.jsxs)("li", {
 							className: TodoPanel_module_css_default.item,
 							"data-status": item.status,
 							children: [(0, react_jsx_runtime.jsx)("span", {
 								className: TodoPanel_module_css_default.glyph,
 								"aria-hidden": true,
 								children: (0, react_jsx_runtime.jsx)(StatusGlyph, { status: item.status })
-							}), (0, react_jsx_runtime.jsx)("span", {
+							}), editing?.index === index ? (0, react_jsx_runtime.jsx)("input", {
+								autoFocus: true,
+								className: "dsh-todo-editor",
+								"aria-label": t("todo.edit"),
+								value: editing.value,
+								onChange: (event) => setEditing({ ...editing, value: event.currentTarget.value }),
+								onKeyDown: (event) => {
+									if (event.key === "Escape") setEditing(null);
+									if (event.key === "Enter" && !event.nativeEvent.isComposing) saveEdit();
+								}
+							}) : (0, react_jsx_runtime.jsx)("span", {
 								className: TodoPanel_module_css_default.content,
 								children: item.content
+							}), mutable && (0, react_jsx_runtime.jsx)("span", {
+								className: "dsh-todo-actions",
+								children: editing?.index === index ? (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("button", {
+									type: "button", className: "dsh-todo-action", "aria-label": t("todo.save"), disabled: busy !== null || editing.value.trim() === "", onClick: saveEdit, children: "✓"
+								}), (0, react_jsx_runtime.jsx)("button", {
+									type: "button", className: "dsh-todo-action", "aria-label": t("todo.cancelEdit"), disabled: busy !== null, onClick: () => setEditing(null), children: "×"
+								})] }) : (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("button", {
+									type: "button", className: "dsh-todo-action", "aria-label": t("todo.edit"), disabled: busy !== null, onClick: () => setEditing({ index, original: item.content, value: item.content }), children: "✎"
+								}), item.status !== "completed" && (0, react_jsx_runtime.jsx)("button", {
+									type: "button", className: "dsh-todo-action dsh-todo-danger", "aria-label": t("todo.remove"), disabled: busy !== null, onClick: () => applyAction(index, { kind: "remove", index }), children: "■"
+								})] })
 							})]
-						}, item.content))
-					})]
+						}, `${index}:${item.content}`))
+					}), running && (0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						className: "dsh-todo-stop",
+						disabled: busy !== null || !mutable,
+						onClick: async () => {
+							setBusy("turn");
+							try { await cancelTurn(); } catch { notify("error", t("todo.stopFailed")); } finally { setBusy(null); }
+						},
+						children: t("todo.stopTurn")
+					})] })]
 				})
 			});
 		}
 		/** Dock adapter: reads the host-computed 'todos' projection (whole list; absent or null renders nothing). */
-		function TodoDock({ useProjection, t }) {
+		function TodoDock({ useProjection, useSession, updateTodos, cancelTurn, notify, t }) {
 			return (0, react_jsx_runtime.jsx)(TodoPanel, {
 				todos: useProjection("todos") ?? [],
+				useSession,
+				updateTodos,
+				cancelTurn,
+				notify,
 				t
 			});
 		}
@@ -6396,7 +6466,7 @@ window.__ModuleLoader__.load({
 		*/
 		const todoDockEntry = {
 			name: "conversation-todo-dock",
-			inject: ["slots"],
+			inject: ["slots", "conversation", "sessions"],
 			/**
 			* Register the plan strip before the goal and queue entries (order 0).
 			* @param ctx - registrant context (disposal rides ctx.effect inside slots.register).
@@ -6406,7 +6476,24 @@ window.__ModuleLoader__.load({
 					name: "conversation.input.dock",
 					id: "todo",
 					order: 0,
-					locale: NS
+					locale: NS,
+					inject: (sessionId) => {
+						const actx = ctx.sessions.scope(sessionId);
+						if (actx === void 0) throw new Error(`todo dock: session "${sessionId}" resolved no scope`);
+						const conversation = actx.get("conversation");
+						if (conversation === void 0) throw new Error("todo dock: conversation service unavailable");
+						return {
+							updateTodos: async (expected, action) => {
+								const rpcId = typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+								const response = await fetch("/api/session.updateTodos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "client-request", rpcId, method: "session.updateTodos", payload: { sessionId, expected, action } }) });
+								if (!response.ok) throw new Error(`session.updateTodos HTTP ${response.status}`);
+								const envelope = await response.json();
+								if (envelope.rpcId !== rpcId || !envelope.result?.ok || envelope.result.value?.accepted !== true) throw new Error(envelope.result?.error?.message ?? "session.updateTodos failed");
+							},
+							cancelTurn: () => conversation.cancel(),
+							notify: (level, text) => conversation.input.for(actx).notify(level, text)
+						};
+					}
 				}, TodoDock));
 			}
 		};
@@ -9869,6 +9956,7 @@ window.__ModuleLoader__.load({
 				input: inputHub,
 				blocks: composerBlocks
 			});
+			ctx.plugin(todoDockEntry);
 			ctx.plugin(queueDockEntry);
 			slots.register({
 				name: "details",

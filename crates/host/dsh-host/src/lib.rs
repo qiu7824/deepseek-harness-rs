@@ -866,7 +866,16 @@ async fn bridge_api_request(request: WebRequest, handler: Arc<FetchHandler>) -> 
         .await;
     let (parts, body) = response.into_parts();
     let body = match body {
-        CarrierBody::Bytes(bytes) => WebBody::from(bytes),
+        CarrierBody::Bytes(bytes) => {
+            #[cfg(windows)]
+            if bytes.len() >= 256 * 1024 {
+                // SAFETY: the typed RPC tree has already been serialized and
+                // dropped; collect its transient pages before retaining only
+                // the final bounded byte buffer.
+                unsafe { libmimalloc_sys::mi_collect(true) };
+            }
+            WebBody::from(bytes)
+        }
         CarrierBody::Stream(stream) => {
             use futures::StreamExt;
             let stream = stream.map(|item| item.map_err(|message| std::io::Error::other(message)));
@@ -1183,16 +1192,17 @@ fn compose_host_in_fiber(
     let search_path = data_root.join("search.db");
 
     let sessions = SessionStore::install(ctx);
-    let _session_projections = dsh_session_projection::SessionProjectionRegistry::install(ctx);
+    let session_projections = dsh_session_projection::SessionProjectionRegistry::install(ctx);
     let _token_meter = dsh_token_meter::TokenMeter::install(ctx, Default::default());
 
-    let _session_titles = dsh_session_title::SessionTitleService::install(
+    let _session_titles = dsh_session_title::SessionTitleService::install_with_registry(
         ctx,
         dsh_session_title::Config {
             fallback_max_words: 8,
             fallback_max_bytes: 96,
             max_title_bytes: 256,
         },
+        Some(session_projections.clone()),
     )
     .map_err(|error| format!("session-title: {error}"))?;
     // Persistence and the derived search index are installed before active
@@ -2143,6 +2153,16 @@ fn compose_host_in_fiber(
     .map_err(|error| format!("message-feedback: {error}"))?;
     let persistence_api: Arc<dyn dsh_session_persistence::SessionPersistenceApi> =
         persistence.clone();
+    let _projection_cache = dsh_session_projection_cache::SessionProjectionCache::install(
+        ctx,
+        dsh_session_projection_cache::Config {
+            write_every_events: 256,
+            write_interval_ms: 5_000,
+        },
+        &domains,
+        persistence_api.clone(),
+    )
+    .map_err(|error| format!("session-projection-cache: {error}"))?;
     let live: Arc<dyn dsh_workspace::LiveSessionStore> =
         Arc::new(dsh_workspace::StoreLiveSessions(sessions.clone()));
     let persistence_for_delete = persistence.clone();

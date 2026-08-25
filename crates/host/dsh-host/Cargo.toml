@@ -85,6 +85,7 @@ dsh-session-persistence-jsonl = { path = "../../session/session-persistence-json
 dsh-session-query = { path = "../../session/session-query" }
 dsh-session-query-sqlite = { path = "../../session/session-query-sqlite" }
 dsh-session-projection = { path = "../../session/session-projection" }
+dsh-session-projection-cache = { path = "../../session/session-projection-cache" }
 dsh-token-meter = { path = "../../llm/token-meter" }
 
 dsh-session-title = { path = "../../session/session-title" }
@@ -110,6 +111,7 @@ dsh-workflow-node = { path = "../../workflow/workflow-node" }
 dsh-user-approval = { path = "../../interaction/user-approval" }
 dsh-user-questions = { path = "../../interaction/user-questions" }
 axum = { workspace = true }
+
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
@@ -124,6 +126,10 @@ http = { workspace = true }
 indexmap = { workspace = true }
 mime_guess = { workspace = true }
 tokio-tungstenite = "0.29"
+
+[target.'cfg(windows)'.dependencies]
+libmimalloc-sys = { version = "0.1.49", features = ["extended", "v2"] }
+mimalloc = { version = "0.1.52", features = ["v2"] }
 
 [dev-dependencies]
 dsh-agent-presets = { path = "../../preset/agent-presets" }

@@ -16,6 +16,7 @@ parking_lot = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 zstd = "0.13"
+memmap2 = "0.9"
 uuid = { workspace = true }
 
 [dev-dependencies]

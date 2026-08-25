@@ -8,6 +8,59 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const MAX_CLIENT_BYTES: u64 = 2 * 1024 * 1024;
+const RETIRED_BUNDLED_PLUGINS: [&str; 1] = ["dsh-task-manager"];
+
+fn remove_retired_bundled(profile: &Path) -> Result<(), String> {
+    let package_path = profile.join("package.json");
+    let mut package: Value = match std::fs::read(&package_path) {
+        Ok(raw) => serde_json::from_slice(&raw)
+            .map_err(|error| format!("parse {}: {error}", package_path.display()))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(error) => return Err(format!("read {}: {error}", package_path.display())),
+    };
+    let mut changed = false;
+    if let Some(dependencies) = package
+        .get_mut("dependencies")
+        .and_then(Value::as_object_mut)
+    {
+        for name in RETIRED_BUNDLED_PLUGINS {
+            changed |= dependencies.remove(name).is_some();
+        }
+    }
+    let inventory_path = profile.join("plugins.json");
+    let mut inventory: Vec<Value> = std::fs::read(&inventory_path)
+        .ok()
+        .and_then(|raw| serde_json::from_slice(&raw).ok())
+        .unwrap_or_default();
+    let before = inventory.len();
+    inventory.retain(|entry| {
+        !RETIRED_BUNDLED_PLUGINS.contains(&entry.get("id").and_then(Value::as_str).unwrap_or(""))
+    });
+    changed |= inventory.len() != before;
+    for name in RETIRED_BUNDLED_PLUGINS {
+        if let Some(directory) = package_directory(profile, name)
+            && directory.exists()
+        {
+            std::fs::remove_dir_all(&directory).map_err(|error| {
+                format!("remove retired plugin {}: {error}", directory.display())
+            })?;
+            changed = true;
+        }
+    }
+    if changed {
+        std::fs::write(
+            &package_path,
+            serde_json::to_vec_pretty(&package).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("write {}: {error}", package_path.display()))?;
+        std::fs::write(
+            &inventory_path,
+            serde_json::to_vec_pretty(&inventory).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("write {}: {error}", inventory_path.display()))?;
+    }
+    Ok(())
+}
 
 fn copy_bundled_tree(source: &Path, destination: &Path) -> Result<(), String> {
     std::fs::create_dir_all(destination)
@@ -37,6 +90,7 @@ fn copy_bundled_tree(source: &Path, destination: &Path) -> Result<(), String> {
 }
 
 pub fn materialize_bundled(profile: &Path) -> Result<(), String> {
+    remove_retired_bundled(profile)?;
     let Some(root) = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(|parent| parent.join("plugins")))
@@ -336,4 +390,44 @@ pub fn compose(
         }));
     }
     Ok(disposers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retired_task_manager_is_removed_from_existing_profile() {
+        let profile =
+            std::env::temp_dir().join(format!("dsh-retired-task-manager-{}", uuid::Uuid::new_v4()));
+        let plugin = profile.join("node_modules").join("dsh-task-manager");
+        std::fs::create_dir_all(&plugin).expect("create retired plugin fixture");
+        std::fs::write(
+            profile.join("package.json"),
+            br#"{"dependencies":{"dsh-task-manager":"bundled","keep":"1.0.0"}}"#,
+        )
+        .expect("write package fixture");
+        std::fs::write(
+            profile.join("plugins.json"),
+            br#"[{"id":"dsh-task-manager","disabled":false},{"id":"keep","disabled":false}]"#,
+        )
+        .expect("write inventory fixture");
+
+        remove_retired_bundled(&profile).expect("retire bundled plugin");
+
+        let package: Value = serde_json::from_slice(
+            &std::fs::read(profile.join("package.json")).expect("read package"),
+        )
+        .expect("parse package");
+        assert!(package["dependencies"].get("dsh-task-manager").is_none());
+        assert_eq!(package["dependencies"]["keep"], "1.0.0");
+        let inventory: Vec<Value> = serde_json::from_slice(
+            &std::fs::read(profile.join("plugins.json")).expect("read inventory"),
+        )
+        .expect("parse inventory");
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0]["id"], "keep");
+        assert!(!plugin.exists());
+        std::fs::remove_dir_all(profile).expect("remove fixture");
+    }
 }

@@ -4,6 +4,10 @@
 
 use cordis::Context;
 
+#[cfg(windows)]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = Context::root();
