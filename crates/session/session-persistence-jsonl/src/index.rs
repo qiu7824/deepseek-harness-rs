@@ -11,6 +11,8 @@
 //! - The file revision omits `dev`/`ino` where the platform cannot expose
 //!   them; it is `size:mtimeNs:ctimeNs` (source-qualified within one root).
 
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -154,22 +156,12 @@ fn stream_zstd_events(
         return Err("empty or header-less Zstandard session log".to_string());
     }
     for frame in &scan.frames[1..] {
-        let plaintext = decompress_zstd_frame(&mapping[frame.start..frame.end])?;
-        let text = std::str::from_utf8(&plaintext)
-            .map_err(|error| format!("invalid UTF-8 in Zstandard event frame: {error}"))?;
-        for line in text.lines().filter(|line| !line.trim().is_empty()) {
-            let stored: serde_json::Value = serde_json::from_str(line)
-                .map_err(|error| format!("invalid JSONL event record: {error}"))?;
-            for event in decode_storage_record(&stored)? {
-                if !on_event(event)? {
-                    let after =
-                        file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
-                    if before != after {
-                        return Err("session artifact changed during streaming read".to_string());
-                    }
-                    return Ok(());
-                }
+        if !visit_zstd_frame_events(&mapping[frame.start..frame.end], &mut on_event)? {
+            let after = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
+            if before != after {
+                return Err("session artifact changed during streaming read".to_string());
             }
+            return Ok(());
         }
     }
     let after = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
@@ -177,6 +169,40 @@ fn stream_zstd_events(
         return Err("session artifact changed during streaming read".to_string());
     }
     Ok(())
+}
+
+fn visit_zstd_frame_events(
+    frame: &[u8],
+    on_event: &mut impl FnMut(SessionEvent) -> Result<bool, String>,
+) -> Result<bool, String> {
+    let decoder = zstd::stream::read::Decoder::new(frame).map_err(|error| error.to_string())?;
+    let mut reader = BufReader::new(decoder);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader
+            .read_until(b'\n', &mut line)
+            .map_err(|error| error.to_string())?
+            == 0
+        {
+            return Ok(true);
+        }
+        while matches!(line.last(), Some(b'\n' | b'\r')) {
+            line.pop();
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let stored: serde_json::Value = serde_json::from_slice(&line)
+            .map_err(|error| format!("invalid JSONL event record: {error}"))?;
+        for event in decode_storage_record(&stored)? {
+            if !on_event(event)? {
+                std::io::copy(&mut reader, &mut std::io::sink())
+                    .map_err(|error| error.to_string())?;
+                return Ok(false);
+            }
+        }
+    }
 }
 
 fn is_not_found(error: &std::io::Error) -> bool {
@@ -441,57 +467,43 @@ impl JsonlSessionPersistence {
         id: &SessionId,
         request: SessionReadWindowRequest,
     ) -> Result<Option<SessionReadWindowResult>, String> {
-        let (buffer, _) = self.read_stable_file(path).await?;
-        let scan = scan_zstd_frames(&buffer)?;
-        if scan.torn_start.is_some() || scan.frames.is_empty() {
+        let before = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
+        let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        // SAFETY: read-only mapping of the revision-checked artifact.
+        let mapping =
+            unsafe { memmap2::MmapOptions::new().map(&file) }.map_err(|error| error.to_string())?;
+        let scan = scan_zstd_frames(&mapping)?;
+        if scan.frames.is_empty() || scan.torn_start.is_some() {
             return Ok(None);
         }
         let header = scan.frames[0];
-        let header_plaintext = decompress_zstd_frame(&buffer[header.start..header.end])?;
+        let header_plaintext = decompress_zstd_frame(&mapping[header.start..header.end])?;
         let header_line = decode_zstd_header_line_single(&header_plaintext)?;
         let meta = parse_header_meta(&header_line)
             .ok_or_else(|| "invalid Zstandard session header".to_string())?;
         self.assert_stored_identity(path, &meta, Some(id)).await?;
         let before_seq = request.before_seq.unwrap_or(u64::MAX);
-        let mut message_count = 0_u64;
-        let mut cut_seq = None;
-        let mut decoded_frames = Vec::new();
-        for index in (1..scan.frames.len()).rev() {
-            let frame = scan.frames[index];
-            let events = self.decode_zstd_event_frame(&buffer[frame.start..frame.end])?;
-            let mut min_seq = None;
-            for event in events.iter().filter(|event| event.seq < before_seq) {
-                min_seq = Some(min_seq.map_or(event.seq, |current: u64| current.min(event.seq)));
-            }
-            for event in events.iter().rev().filter(|event| event.seq < before_seq) {
-                if matches!(event.type_.as_str(), "user/message" | "assistant/message")
-                    && event.surface_op.as_ref().is_none_or(|op| op.is_append())
-                    && cut_seq.is_none()
-                {
-                    message_count += 1;
-                    if message_count >= request.max_messages.max(1) {
-                        cut_seq = Some(
-                            event
-                                .source_event_seqs
-                                .as_ref()
-                                .and_then(|sources| sources.iter().copied().min())
-                                .unwrap_or(event.seq)
-                                .min(event.seq),
-                        );
-                    }
+        let capacity = request.max_events.saturating_add(1).max(2);
+        let mut candidates = VecDeque::with_capacity(capacity);
+        let mut dropped = false;
+        for frame in &scan.frames[1..] {
+            visit_zstd_frame_events(&mapping[frame.start..frame.end], &mut |event| {
+                if event.seq >= before_seq {
+                    return Ok(true);
                 }
-            }
-            decoded_frames.push(events);
-            if cut_seq.is_some_and(|cut| min_seq.is_some_and(|min| min <= cut)) {
-                break;
-            }
+                candidates.push_back(event);
+                if candidates.len() > capacity {
+                    candidates.pop_front();
+                    dropped = true;
+                }
+                Ok(true)
+            })?;
         }
-        decoded_frames.reverse();
-        let candidates: Vec<SessionEvent> = decoded_frames
-            .into_iter()
-            .flatten()
-            .filter(|event| event.seq < before_seq)
-            .collect();
+        let after = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
+        if before != after {
+            return Err("session artifact changed during history read".to_string());
+        }
+        let candidates: Vec<SessionEvent> = candidates.into_iter().collect();
         let mut messages = request.max_messages.max(1);
         loop {
             match dsh_session_persistence::select_history_window(
@@ -500,12 +512,20 @@ impl JsonlSessionPersistence {
                 messages,
                 request.max_events,
             ) {
+                Ok(selection) if dropped && selection.start == 0 => {
+                    return Ok(Some(SessionReadWindowResult {
+                        meta,
+                        events: Vec::new(),
+                        has_more: true,
+                        oversized_event_count: Some(capacity),
+                    }));
+                }
                 Ok(selection) => {
                     let events = candidates[selection.start..selection.end].to_vec();
                     return Ok(Some(SessionReadWindowResult {
                         meta,
                         events,
-                        has_more: selection.has_more,
+                        has_more: selection.has_more || dropped,
                         oversized_event_count: None,
                     }));
                 }

@@ -346,6 +346,10 @@ pub struct ApiProxyService {
     preset_switch_counter: std::sync::atomic::AtomicU64,
     /// Pending approval/question requests and live mux subscribers.
     interactions: Arc<crate::interactions::InteractionState>,
+    /// History pages can each contain thousands of JSON events. Keep their
+    /// decode/view/serialization lifetimes from overlapping when the browser
+    /// concurrently opens, gap-repairs, and jumps through one conversation.
+    history_gate: Arc<tokio::sync::Semaphore>,
 }
 
 impl cordis::Service for ApiProxyService {
@@ -416,6 +420,7 @@ impl ApiProxyService {
             preset_switches: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             preset_switch_counter: std::sync::atomic::AtomicU64::new(0),
             interactions: interactions.clone(),
+            history_gate: Arc::new(tokio::sync::Semaphore::new(1)),
         });
         ctx.register_service(service.clone());
         interactions.activate(ctx);
@@ -2884,6 +2889,11 @@ impl ApiProxyService {
     ) -> RpcResponse<serde_json::Value> {
         use crate::api::sessions::HistoryEntry;
 
+        let _history_permit = self
+            .history_gate
+            .acquire()
+            .await
+            .expect("history semaphore remains open for the service lifetime");
         let session_id = request.payload.session_id.clone();
         const DEFAULT_MAX_MESSAGES: u64 = 100;
         const MAX_HISTORY_EVENTS: usize = 4_096;
