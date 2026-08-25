@@ -446,7 +446,7 @@ impl TreeShared {
                 // syscall rather than repeated process-table scans.
                 if self.settled.load(SeqCst)
                     && self.platform == "linux"
-                    && self.linux_live(self.pid) == Some(false)
+                    && (self.linux_live)(self.pid) == Some(false)
                 {
                     return false;
                 }
