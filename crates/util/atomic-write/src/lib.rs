@@ -87,7 +87,6 @@ pub async fn write_file_atomic(
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt;
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true);
         if let Some(mode) = options.dir_mode {
@@ -121,7 +120,7 @@ pub async fn write_file_atomic(
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&temp, fs::Permissions::from_mode(options.mode)).await?;
+            fs::set_permissions(&temp, std::fs::Permissions::from_mode(options.mode)).await?;
         }
         #[cfg(not(unix))]
         {
