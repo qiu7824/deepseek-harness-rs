@@ -15,6 +15,7 @@ window.__ModuleLoader__.load({
 			sessions;
 			sessionId;
 			available;
+			saveDefault;
 			/** The shared snapshot both entries render from (uSES-safe store). */
 			store = (0, _deepseek_ai_dsh_client_runtime_client.createSnapshotStore)({
 				current: null,
@@ -32,10 +33,11 @@ window.__ModuleLoader__.load({
 			* @param sessionId - the owning session.
 			* @param available - whether this session may use Agent-bound model RPCs.
 			*/
-			constructor(sessions, sessionId, available) {
+			constructor(sessions, sessionId, available, saveDefault) {
 				this.sessions = sessions;
 				this.sessionId = sessionId;
 				this.available = available;
+				this.saveDefault = saveDefault;
 			}
 			/**
 			* Refresh the advisory directory (both entries call this on open).
@@ -108,6 +110,14 @@ window.__ModuleLoader__.load({
 					s.status = "ready";
 					s.error = null;
 				});
+				try {
+					await this.saveDefault(result.value.selected);
+				} catch (error) {
+					this.store.update((s) => {
+						s.error = error instanceof Error ? error.message : String(error);
+					});
+					throw error;
+				}
 			}
 			/**
 			* Drop the previous Host generation's projection and repull it. Clearing
@@ -191,7 +201,18 @@ window.__ModuleLoader__.load({
 				const sessions = this.ctx.get("sessions");
 				const actx = sessions.scope(sessionId);
 				if (actx === void 0) throw new Error(`ui-model-selection: session "${String(sessionId)}" resolved no scope`);
-				const directory = new ModelDirectory(this.ctx.get("connection").api.sessions, sessionId, () => sessions.subagentAddress(sessionId) === void 0);
+				const api = this.ctx.get("connection").api;
+				const directory = new ModelDirectory(api.sessions, sessionId, () => sessions.subagentAddress(sessionId) === void 0, async (selection) => {
+					const response = await api.settings.replace({
+						ns: "agent-default-model",
+						section: {
+							provider: selection.provider,
+							model: selection.model,
+							...selection.reasoningEffort === void 0 ? {} : { reasoningEffort: selection.reasoningEffort }
+						}
+					});
+					if (!response.result.ok) throw new Error(`default model update failed: ${response.result.error.message}`);
+				});
 				live.directories.set(sessionId, directory);
 				const conversation = this.ctx.get("conversation");
 				if (conversation !== void 0) {

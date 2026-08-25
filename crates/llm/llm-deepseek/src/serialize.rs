@@ -3,6 +3,10 @@ use std::collections::HashMap;
 use dsh_llm::{ContentBlock, GenerateOptions, LlmFailure, Role, content_has_image};
 use serde_json::{Map, Value, json};
 
+#[cfg(test)]
+#[path = "serialize_tests.rs"]
+mod tests;
+
 use crate::{DeepSeekReasoningEffort, RequestDefaults, ThinkingMode};
 
 fn failure(message: impl Into<String>, code: &str) -> LlmFailure {
@@ -232,11 +236,18 @@ fn serialize_messages(
 fn resolve_thinking(
     options: &GenerateOptions,
     defaults: &RequestDefaults,
-) -> Result<(Option<ThinkingMode>, Option<&'static str>), LlmFailure> {
+    reasoning_wire_format: crate::ReasoningWireFormat,
+) -> Result<(Option<ThinkingMode>, Option<String>), LlmFailure> {
     if options.purpose.as_deref() == Some("session-title") {
         return Ok((Some(ThinkingMode::Disabled), None));
     }
     let effort = if let Some(effort) = options.reasoning_effort.as_ref() {
+        if reasoning_wire_format == crate::ReasoningWireFormat::OpenAi {
+            if effort.as_str() == "off" {
+                return Ok((Some(ThinkingMode::Disabled), None));
+            }
+            return Ok((Some(ThinkingMode::Enabled), Some(effort.to_string())));
+        }
         match effort.as_str() {
             "off" => Some(DeepSeekReasoningEffort::Off),
             "low" => Some(DeepSeekReasoningEffort::Low),
@@ -269,9 +280,15 @@ fn resolve_thinking(
     }
     Ok(match effort {
         Some(DeepSeekReasoningEffort::Off) => (Some(ThinkingMode::Disabled), None),
-        Some(DeepSeekReasoningEffort::Low) => (Some(ThinkingMode::Enabled), Some("low")),
-        Some(DeepSeekReasoningEffort::High) => (Some(ThinkingMode::Enabled), Some("high")),
-        Some(DeepSeekReasoningEffort::Max) => (Some(ThinkingMode::Enabled), Some("max")),
+        Some(DeepSeekReasoningEffort::Low) => {
+            (Some(ThinkingMode::Enabled), Some("low".to_string()))
+        }
+        Some(DeepSeekReasoningEffort::High) => {
+            (Some(ThinkingMode::Enabled), Some("high".to_string()))
+        }
+        Some(DeepSeekReasoningEffort::Max) => {
+            (Some(ThinkingMode::Enabled), Some("max".to_string()))
+        }
         None => (defaults.thinking, None),
     })
 }
@@ -279,7 +296,7 @@ fn resolve_thinking(
 pub(crate) fn serialize_request_with_prepared_images(
     options: &GenerateOptions,
     defaults: &RequestDefaults,
-    include_thinking_fields: bool,
+    reasoning_wire_format: crate::ReasoningWireFormat,
     image_urls: Option<&HashMap<String, String>>,
     image_file_ids: Option<&HashMap<String, String>>,
     image_meta: Option<&HashMap<String, PreparedImageMeta>>,
@@ -298,12 +315,10 @@ pub(crate) fn serialize_request_with_prepared_images(
     body.insert("stream".to_string(), json!(true));
     body.insert("stream_options".to_string(), json!({"include_usage": true}));
 
-    let (thinking, reasoning_effort) = if include_thinking_fields {
-        resolve_thinking(options, defaults)?
-    } else {
-        (None, None)
-    };
-    if let Some(thinking) = thinking {
+    let (thinking, reasoning_effort) = resolve_thinking(options, defaults, reasoning_wire_format)?;
+    if reasoning_wire_format == crate::ReasoningWireFormat::DeepSeek
+        && let Some(thinking) = thinking
+    {
         body.insert(
             "thinking".to_string(),
             json!({

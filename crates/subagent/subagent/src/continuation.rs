@@ -21,7 +21,9 @@ use crate::child_agent::{
     apply_child_composition, capture_delegated_policy_overrides, child_session_meta,
     resolve_child_agent_options, resolve_child_depth,
 };
-use crate::descriptor::{SubagentDescriptorData, snapshot_subagent_descriptor};
+use crate::descriptor::{
+    SubagentDescriptorData, fold_subagent_descriptor, snapshot_subagent_descriptor,
+};
 use crate::descriptor_seed::seed_descriptor_turn;
 use crate::error::SubagentError;
 use crate::lifecycle::ActivationObserver;
@@ -105,7 +107,7 @@ struct MaterializeRequest<'a> {
     child_id: &'a SessionId,
     provider: &'a str,
     parent: Arc<dyn Agent>,
-    seed: &'a [SessionEvent],
+    seed: Option<&'a [SessionEvent]>,
     child_depth: u64,
     lineage_seed_length: usize,
     request: &'a SubagentStartRequest,
@@ -360,6 +362,11 @@ impl SubagentContinuationManager {
             label: spec.label.clone(),
             agent_provider,
             agent_model,
+            agent_reasoning_effort: request
+                .agent_options
+                .as_ref()
+                .and_then(|options| options.reasoning_effort.as_ref())
+                .map(ToString::to_string),
             persona: request.persona.clone(),
             tool_filter: request.tool_filter.clone(),
         })
@@ -401,7 +408,7 @@ impl SubagentContinuationManager {
                             child_id: &child_id_for_child,
                             provider: &spec.provider,
                             parent: parent.clone(),
-                            seed: &seed,
+                            seed: Some(&seed),
                             child_depth,
                             lineage_seed_length,
                             request,
@@ -453,15 +460,19 @@ impl SubagentContinuationManager {
                             activations.get(child_id.as_str()).cloned()
                         };
                         match activation {
-                            None => Err(SubagentError::new(
-                                "NOT_RESUMABLE",
-                                format!("subagent \"{child_id}\" is not resident and cold resume is not ported"),
-                            )),
-                            Some(activation) => {
-                                manager
-                                    .submit_admitted(&activation, &content, &options.source, parent, &options.signal)
-                                    .map(Some)
-                            }
+                            None => manager
+                                .cold_resume(parent, child_id, &content, &options)
+                                .await
+                                .map(Some),
+                            Some(activation) => manager
+                                .submit_admitted(
+                                    &activation,
+                                    &content,
+                                    &options.source,
+                                    parent,
+                                    &options.signal,
+                                )
+                                .map(Some),
                         }
                     }
                 })
@@ -482,6 +493,98 @@ impl SubagentContinuationManager {
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    async fn cold_resume(
+        &self,
+        parent: Arc<dyn Agent>,
+        child_id: &SessionId,
+        content: &[ContentBlock],
+        options: &SubagentFollowupOptions,
+    ) -> Result<MessageId, SubagentError> {
+        let persistence = self.require_persistence()?;
+        let loaded = persistence.inspect(child_id).await.map_err(|error| {
+            SubagentError::new(
+                "NOT_RESUMABLE",
+                format!("subagent \"{child_id}\" is unavailable: {error}"),
+            )
+        })?;
+        if (options.signal)() {
+            return Err(SubagentError::new(
+                "CANCELLED",
+                "subagent request was aborted",
+            ));
+        }
+        self.assert_admitting(parent.as_ref())?;
+        if loaded.meta.parent_session.as_ref() != Some(parent.id()) {
+            return Err(SubagentError::new(
+                "UNAUTHORIZED",
+                format!("subagent \"{child_id}\" belongs to another parent session"),
+            ));
+        }
+        let seed_length = loaded.meta.seed_length.unwrap_or(0) as usize;
+        let descriptor =
+            fold_subagent_descriptor(&loaded.events[seed_length.min(loaded.events.len())..])
+                .map_err(|error| SubagentError::new("NOT_RESUMABLE", error))?
+                .ok_or_else(|| {
+                    SubagentError::new(
+                        "NOT_RESUMABLE",
+                        format!("subagent \"{child_id}\" has no supported continuation state"),
+                    )
+                })?;
+        let SubagentDescriptorData::Continuable {
+            provider,
+            agent_provider,
+            agent_model,
+            agent_reasoning_effort,
+            persona,
+            tool_filter,
+            ..
+        } = descriptor
+        else {
+            return Err(SubagentError::new(
+                "NOT_RESUMABLE",
+                format!("subagent \"{child_id}\" is one-shot and cannot be resumed"),
+            ));
+        };
+        let request = SubagentStartRequest {
+            label: None,
+            prompt: Vec::new(),
+            parent: parent.clone(),
+            signal: options.signal.clone(),
+            agent_options: Some(dsh_agent::AgentOptions {
+                provider: agent_provider,
+                model: agent_model,
+                reasoning_effort: agent_reasoning_effort.map(dsh_llm::reasoning_effort_id),
+                ..Default::default()
+            }),
+            output_schema: None,
+            max_depth: None,
+            tool_filter,
+            persona,
+        };
+        let delegated = DelegatedPolicyOverrides::default();
+        let activation = self
+            .materialize(MaterializeRequest {
+                child_id,
+                provider: &provider,
+                parent: parent.clone(),
+                seed: None,
+                child_depth: loaded.meta.delegation_depth.unwrap_or(1),
+                lineage_seed_length: seed_length,
+                request: &request,
+                delegated_policies: &delegated,
+                signal: &options.signal,
+            })
+            .await?;
+        self.submit_materialized(
+            activation,
+            content,
+            options.source.clone(),
+            parent,
+            &options.signal,
+        )
+        .await
     }
 
     /// Interrupt one live continuable child's current turn.
@@ -731,29 +834,39 @@ impl SubagentContinuationManager {
                 persona: request.persona.clone(),
                 tool_filter: request.tool_filter.clone(),
             };
-            let registry_for_setup = registry.clone();
-            let child_id_for_setup = child_id.clone();
-            let handle = registry
-                .create(dsh_agent::CreateAgentOptions {
-                    session_id: Some(child_id_for_setup),
-                    meta: Some(child_session_meta(
-                        parent.as_ref(),
-                        child_depth,
-                        lineage_seed_length as u64,
-                    )),
-                    seed: Some(seed.to_vec()),
-                    agent_options: Some(resolve_child_agent_options(
-                        parent.as_ref(),
-                        request.agent_options.as_ref(),
-                        child_depth,
-                    )),
-                    setup: None,
-                })
-                .await
-                .map_err(|error| SubagentError::new("CHILD_CREATE_FAILED", error))?;
-            let _ = registry_for_setup;
-            if let Err(error) =
-                append_delegated_policy_overrides(handle.agent.session(), &delegated)
+            let child_options = resolve_child_agent_options(
+                parent.as_ref(),
+                request.agent_options.as_ref(),
+                child_depth,
+            );
+            let handle = if let Some(seed) = seed {
+                registry
+                    .create(dsh_agent::CreateAgentOptions {
+                        session_id: Some(child_id.clone()),
+                        meta: Some(child_session_meta(
+                            parent.as_ref(),
+                            child_depth,
+                            lineage_seed_length as u64,
+                        )),
+                        seed: Some(seed.to_vec()),
+                        agent_options: Some(child_options),
+                        setup: None,
+                    })
+                    .await
+                    .map_err(|error| SubagentError::new("CHILD_CREATE_FAILED", error))?
+            } else {
+                registry
+                    .resume(dsh_agent::ResumeAgentOptions {
+                        resume_session_id: Some(child_id.clone()),
+                        agent_options: Some(child_options),
+                        setup: None,
+                    })
+                    .await
+                    .map_err(|error| SubagentError::new("CHILD_RESUME_FAILED", error))?
+            };
+            if seed.is_some()
+                && let Err(error) =
+                    append_delegated_policy_overrides(handle.agent.session(), &delegated)
             {
                 handle.dispose.await;
                 return Err(SubagentError::new("CHILD_COMPOSE_FAILED", error));
@@ -780,10 +893,13 @@ impl SubagentContinuationManager {
             announced: false,
             poke: Arc::new(tokio::sync::Notify::new()),
         }));
+        if let Err(error) = self.acquire_ownership(&parent, child_id, &activation) {
+            let _ = self.dispose(&activation).await;
+            return Err(error);
+        }
         self.activations
             .lock()
             .insert(child_id.as_str().to_string(), activation.clone());
-        self.acquire_ownership(&parent, child_id, &activation)?;
         let child_agent = activation.lock().handle().agent.clone();
         activation.lock().observer.start(&child_agent);
         self.watch_settlement(&activation);
@@ -947,10 +1063,15 @@ impl SubagentContinuationManager {
                 }
                 let poke = activation.lock().poke.clone();
                 let child_agent = activation.lock().handle().agent.clone();
-                child_agent.when_idle().await;
-                let _ = poke.notified().await;
+                tokio::select! {
+                    _ = child_agent.when_idle() => {},
+                    _ = poke.notified() => {},
+                }
                 if activation.lock().disposal.is_some() {
                     return;
+                }
+                if Self::state_of(&activation.lock()) != ActivationState::Settled {
+                    continue;
                 }
                 let child_id = activation.lock().child_id.clone();
                 let settling = manager

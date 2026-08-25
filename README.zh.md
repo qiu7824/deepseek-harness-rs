@@ -143,7 +143,8 @@ Web插件与主应用同源运行，拥有页面级JavaScript能力。只安装�
 
 - `dsh-voice-input`：浏览器语音输入；
 - `dsh-composer-expand`：输入框展开/收起；
-- `dsh-context-jump`：按用户对话记录标题显示横向快速跳转栏，点击标题定位到对应记录。
+- `dsh-context-jump`：参考 Codex 的左侧细轨道显示对话翻页节点；悬停显示标题，点击定位，顶部/底部按钮与 `Alt+↑/↓` 可快速导航，且不占用原生会话顶部菜单；
+- `dsh-web-preview-rs`：Rust Host 原生工作区预览，提供会话隔离的文件树、Markdown/源码、图片、音视频、PDF、隔离HTML站点、元素/文本批注回填及拖放落盘。文件访问固定在当前Session关联的工作区内，拒绝目录穿越、符号链接逃逸、敏感目录和超大文件；站点预览使用启动期随机令牌与独立Origin。项目运行只接受Host探测出的固定命令，通过一次性60秒challenge二次确认，并强制采用完整WorkspaceWrite OS沙箱、凭据清洗、受管进程树和有界日志。
 
 ## 能力状态
 

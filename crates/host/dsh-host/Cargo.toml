@@ -122,6 +122,7 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 http = { workspace = true }
 indexmap = { workspace = true }
+mime_guess = { workspace = true }
 tokio-tungstenite = "0.29"
 
 [dev-dependencies]

@@ -1464,6 +1464,9 @@ window.__ModuleLoader__.load({
 			async select(id) {
 				if (this.store.getSnapshot().busy) return;
 				this.stage(id);
+				const error = await writeDefaultPreset(this.api, id);
+				if (error === void 0) this.fallback = id;
+				else this.set({ error });
 				await this.apply();
 			}
 			/**

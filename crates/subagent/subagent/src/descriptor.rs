@@ -10,7 +10,7 @@ use serde_json::Value;
 /// The current descriptor format version, stamped into every appended
 /// `subagent/descriptor` event and required verbatim by
 /// [`fold_subagent_descriptor`].
-pub const SUBAGENT_DESCRIPTOR_VERSION: u32 = 2;
+pub const SUBAGENT_DESCRIPTOR_VERSION: u32 = 3;
 
 /// The supported durable subagent identity and optional continuation
 /// composition (TS `SubagentDescriptorData`).
@@ -47,6 +47,13 @@ pub enum SubagentDescriptorData {
             rename = "agentModel"
         )]
         agent_model: Option<String>,
+        /// Resolved child reasoning effort, retained across cold resume.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "agentReasoningEffort"
+        )]
+        agent_reasoning_effort: Option<String>,
         /// Per-child persona that shadows the deployment persona on resume.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         persona: Option<String>,
@@ -155,7 +162,7 @@ fn parse_subagent_descriptor(value: &Value) -> Result<Option<SubagentDescriptorD
     let Some(version) = map.get("version").and_then(Value::as_u64) else {
         return Err("persisted subagent descriptor version must be a number".to_string());
     };
-    if version as u32 != SUBAGENT_DESCRIPTOR_VERSION {
+    if version != 2 && version as u32 != SUBAGENT_DESCRIPTOR_VERSION {
         return Ok(None);
     }
     let mode = map.get("mode").and_then(Value::as_str).unwrap_or("");
@@ -177,6 +184,7 @@ fn parse_subagent_descriptor(value: &Value) -> Result<Option<SubagentDescriptorD
                 "label",
                 "agentProvider",
                 "agentModel",
+                "agentReasoningEffort",
                 "persona",
                 "toolFilter",
             ],
@@ -199,6 +207,7 @@ fn parse_subagent_descriptor(value: &Value) -> Result<Option<SubagentDescriptorD
     };
     let agent_provider = optional_string(map, "agentProvider")?;
     let agent_model = optional_string(map, "agentModel")?;
+    let agent_reasoning_effort = optional_string(map, "agentReasoningEffort")?;
     let persona = optional_string(map, "persona")?;
     let tool_filter = match map.get("toolFilter") {
         None => None,
@@ -210,6 +219,7 @@ fn parse_subagent_descriptor(value: &Value) -> Result<Option<SubagentDescriptorD
         label: label.to_string(),
         agent_provider,
         agent_model,
+        agent_reasoning_effort,
         persona,
         tool_filter,
     }))
@@ -233,6 +243,7 @@ pub fn snapshot_subagent_descriptor(
             label,
             agent_provider,
             agent_model,
+            agent_reasoning_effort,
             persona,
             tool_filter,
             ..
@@ -242,6 +253,7 @@ pub fn snapshot_subagent_descriptor(
             label: label.clone(),
             agent_provider: agent_provider.clone(),
             agent_model: agent_model.clone(),
+            agent_reasoning_effort: agent_reasoning_effort.clone(),
             persona: persona.clone(),
             tool_filter: tool_filter.clone(),
         },

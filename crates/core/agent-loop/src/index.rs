@@ -54,6 +54,13 @@ fn assert_agent_options(options: &AgentOptions) -> Result<(), String> {
     if options.max_tokens == Some(0) {
         return Err("agent maxTokens must be a positive safe integer".to_string());
     }
+    if options
+        .reasoning_effort
+        .as_ref()
+        .is_some_and(|effort| effort.as_str().trim().is_empty())
+    {
+        return Err("agent reasoningEffort must be a non-empty string".to_string());
+    }
     Ok(())
 }
 
@@ -407,8 +414,59 @@ impl AgentLoop {
         let configured_id = entry.session_id.clone().unwrap_or_else(|| {
             session_id(format!("{}-session-{}", entry.id, uuid::Uuid::new_v4()))
         });
-        let _ = self.create(&configured_id, &entry.options, entry.cwd.as_deref());
+        self.schedule_configured_create(entry.id, configured_id, entry.options, entry.cwd);
         Ok(())
+    }
+
+    fn schedule_configured_create(
+        self: &Arc<Self>,
+        config_id: String,
+        configured_id: SessionId,
+        options: AgentOptions,
+        cwd: Option<String>,
+    ) {
+        let service = Arc::clone(self);
+        let ctx = self.ctx.clone();
+        let _ = ctx.effect(
+            "agentLoop.configuredCreate()",
+            Box::pin(async move {
+                let prepared = (|| {
+                    assert_agent_options(&options)?;
+                    let sessions = service
+                        .ctx
+                        .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
+                        .map(|arc| arc.as_ref().clone())
+                        .ok_or_else(|| "agent loop requires the sessions service".to_string())?;
+                    let session = sessions.prepare(
+                        Some(configured_id.clone()),
+                        Some(dsh_session::CreateSessionOptions {
+                            meta: Some(dsh_session::CreateSessionMeta {
+                                cwd,
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        }),
+                    )?;
+                    service.prepare(&service.ctx, &configured_id, &options, session)
+                })();
+                let result = match prepared {
+                    Ok(prepared) => prepared
+                        .publish(SessionStartSource::Startup)
+                        .await
+                        .map(|_| ()),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = result {
+                    service.report_configured_startup_failure(
+                        &config_id,
+                        "create",
+                        &configured_id,
+                        &error,
+                    );
+                }
+                None
+            }),
+        );
     }
 
     /// Report a contained declarative-start failure to identity-bound
@@ -445,34 +503,6 @@ impl AgentLoop {
         }
     }
 
-    /// Create an agent and session under one caller-supplied identity,
-    /// owned by the accessing fiber.
-    pub fn create(
-        &self,
-        id: &SessionId,
-        options: &AgentOptions,
-        cwd: Option<&str>,
-    ) -> Result<Arc<dyn Agent>, String> {
-        assert_agent_options(options)?;
-        let sessions = self
-            .ctx
-            .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
-            .map(|arc| arc.as_ref().clone())
-            .ok_or_else(|| "agent loop requires the sessions service".to_string())?;
-        let session = sessions.prepare(
-            Some(id.clone()),
-            Some(dsh_session::CreateSessionOptions {
-                meta: Some(dsh_session::CreateSessionMeta {
-                    cwd: cwd.map(str::to_string),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-        )?;
-        let prepared = self.prepare(&self.ctx, id, options, session)?;
-        Ok(prepared.publish(SessionStartSource::Startup)?.agent)
-    }
-
     async fn setup_and_publish(
         &self,
         owner_ctx: &Context,
@@ -492,7 +522,7 @@ impl AgentLoop {
             }
         }
         preparation.dispose();
-        Ok(prepared.publish(source)?)
+        prepared.publish(source).await
     }
 
     async fn resume_with(
@@ -561,7 +591,7 @@ impl AgentLoop {
 impl PreparedAgent {
     /// Enter registries, announce, notify session-start, and hand out the
     /// published handle.
-    fn publish(self: &Arc<Self>, source: SessionStartSource) -> Result<AgentHandle, String> {
+    async fn publish(self: &Arc<Self>, source: SessionStartSource) -> Result<AgentHandle, String> {
         let sessions = self
             .loop_ctx
             .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
@@ -573,21 +603,39 @@ impl PreparedAgent {
             .map(|arc| arc.as_ref().clone())
             .ok_or_else(|| "agent loop requires the agents service".to_string())?;
         let agent_dyn: Arc<dyn Agent> = self.agent.clone();
-        let mut lifecycle = self.lifecycle.lock();
-        if lifecycle.closing {
-            return Err("agent loop disposed while publishing an agent".to_string());
-        }
-        let detach_session = sessions.enter(&self.session)?;
-        let detach_agent = match agents.enter(Arc::clone(&agent_dyn), self.owner_agent.clone()) {
-            Ok(detach) => detach,
-            Err(error) => {
-                futures::executor::block_on(detach_session());
-                return Err(error);
+        {
+            let mut lifecycle = self.lifecycle.lock();
+            if lifecycle.closing {
+                return Err("agent loop disposed while publishing an agent".to_string());
             }
-        };
-        lifecycle.detach_session = Some(detach_session);
-        lifecycle.detach_agent = Some(detach_agent);
-        drop(lifecycle);
+            let detach_session = sessions.enter(&self.session)?;
+            let detach_agent = match agents.enter(Arc::clone(&agent_dyn), self.owner_agent.clone())
+            {
+                Ok(detach) => detach,
+                Err(error) => {
+                    futures::executor::block_on(detach_session());
+                    return Err(error);
+                }
+            };
+            lifecycle.detach_session = Some(detach_session);
+            lifecycle.detach_agent = Some(detach_agent);
+        }
+        if let Err(error) = sessions.announce(&self.session).await {
+            let (detach_agent, detach_session) = {
+                let mut lifecycle = self.lifecycle.lock();
+                (
+                    lifecycle.detach_agent.take(),
+                    lifecycle.detach_session.take(),
+                )
+            };
+            if let Some(detach) = detach_agent {
+                detach().await;
+            }
+            if let Some(detach) = detach_session {
+                detach().await;
+            }
+            return Err(error);
+        }
         emit_agent_event(&self.loop_ctx, &agent_dyn, "agent/session-start", |agent| {
             arc(AgentSessionStartPayload {
                 agent: Arc::clone(agent),

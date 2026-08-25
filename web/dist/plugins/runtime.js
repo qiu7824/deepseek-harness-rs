@@ -8971,6 +8971,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			*/
 			open(id) {
 				this.manager.select(id);
+				if (this.list.getSnapshot().current === id && this.watched === id) {
+					this.resolve(id)?.session.open();
+				}
 			}
 			/**
 			* Open a healthy catalog child through its direct-parent address.

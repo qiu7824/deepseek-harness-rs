@@ -10,6 +10,7 @@ cordis = { path = "../../vendor/cordis" }
 dsh-session = { path = "../../core/session" }
 dsh-session-persistence = { path = "../session-persistence" }
 dsh-session-projection = { path = "../session-projection" }
+dsh-session-title = { path = "../session-title" }
 dsh-storage-domain = { path = "../../storage/storage-domain" }
 dsh-invariants = { path = "../../util/invariants" }
 serde = { workspace = true }

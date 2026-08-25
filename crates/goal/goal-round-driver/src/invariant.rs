@@ -7,7 +7,9 @@ use cordis::{
     ArcValue, Context, EventOptions, InjectSpec, Listener, Plugin, PluginError, downcast,
     downcast_arc,
 };
-use dsh_goal::{GoalActivation, GoalPhase, GoalView, fold_goal};
+use dsh_goal::{
+    GoalActivation, GoalFoldState, GoalPhase, GoalView, apply_goal_event, empty_goal_fold_state,
+};
 use dsh_invariants::{InvariantInstaller, InvariantRegistry};
 use dsh_llm::{MessageSource, UserMessage};
 use dsh_session::{Session, SessionEvent};
@@ -22,10 +24,7 @@ fn session_key(session: &Session) -> usize {
 }
 
 /// Validate one positive goal-round message against its exact durable prefix.
-pub fn validate_goal_round_event(
-    prior: &[SessionEvent],
-    event: &SessionEvent,
-) -> Result<(), String> {
+fn validate_goal_round_state(state: &GoalFoldState, event: &SessionEvent) -> Result<(), String> {
     if event.type_ != "user/message" {
         return Ok(());
     }
@@ -43,18 +42,15 @@ pub fn validate_goal_round_event(
         return Ok(());
     }
 
-    let folded = fold_goal(prior).map_err(|error| {
-        format!("cannot reconstruct the goal before a continuation message: {error}")
-    })?;
-    let goal = folded.goal.ok_or_else(|| {
+    let goal = state.goal.clone().ok_or_else(|| {
         format!("goal round {round} cannot be reconstructed from the preceding durable goal state")
     })?;
-    let reconstructable = folded.created_at.is_some()
-        && folded.updated_at.is_some()
+    let reconstructable = state.created_at.is_some()
+        && state.updated_at.is_some()
         && goal.phase == GoalPhase::Active
         && goal.id.as_str() == goal_id
         && goal.revision == *revision
-        && *round == folded.rounds_started + 1
+        && *round == state.rounds_started + 1
         && *round <= goal.max_goal_rounds;
     if !reconstructable {
         return Err(format!(
@@ -68,9 +64,9 @@ pub fn validate_goal_round_event(
         phase: goal.phase,
         blocked_reason: goal.blocked_reason,
         max_goal_rounds: goal.max_goal_rounds,
-        rounds_started: folded.rounds_started,
-        created_at: folded.created_at.expect("checked"),
-        updated_at: folded.updated_at.expect("checked"),
+        rounds_started: state.rounds_started,
+        created_at: state.created_at.expect("checked"),
+        updated_at: state.updated_at.expect("checked"),
         activation: GoalActivation::Armed,
     };
     let expected = crate::render_goal_round_prompt(&view, *round);
@@ -82,33 +78,56 @@ pub fn validate_goal_round_event(
     Ok(())
 }
 
+pub fn validate_goal_round_event(
+    prior: &[SessionEvent],
+    event: &SessionEvent,
+) -> Result<(), String> {
+    let mut state = empty_goal_fold_state();
+    for prior_event in prior {
+        apply_goal_event(&mut state, prior_event).map_err(|error| {
+            format!("cannot reconstruct the goal before a continuation message: {error}")
+        })?;
+    }
+    validate_goal_round_state(&state, event)
+}
+
 pub fn validate_session(session: &Session) -> Result<(), String> {
     let events = session.events();
-    for (index, event) in events.iter().enumerate() {
-        validate_goal_round_event(&events[..index], event)?;
+    let mut state = empty_goal_fold_state();
+    for event in events.iter() {
+        validate_goal_round_state(&state, event)?;
+        apply_goal_event(&mut state, event)?;
     }
     Ok(())
 }
 
 fn seed_session(
     session: &Session,
-    histories: &Mutex<HashMap<usize, Vec<SessionEvent>>>,
+    states: &Mutex<HashMap<usize, GoalFoldState>>,
     fail: &Arc<dyn Fn(&str) + Send + Sync>,
 ) {
-    if let Err(error) = validate_session(session) {
-        fail(&error);
+    let events = session.events();
+    let mut state = empty_goal_fold_state();
+    for event in events.iter() {
+        if let Err(error) = validate_goal_round_state(&state, event) {
+            fail(&error);
+        }
+        if let Err(error) = apply_goal_event(&mut state, event) {
+            fail(&error);
+        }
     }
-    histories.lock().insert(
-        session_key(session),
-        session.events().iter().cloned().collect(),
-    );
+    states.lock().insert(session_key(session), state);
 }
 
 async fn install_event_checks(
     ctx: &Context,
-    histories: Arc<Mutex<HashMap<usize, Vec<SessionEvent>>>>,
+    states: Arc<Mutex<HashMap<usize, GoalFoldState>>>,
     fail: Arc<dyn Fn(&str) + Send + Sync>,
 ) {
+    let staged: Arc<Mutex<HashMap<(usize, u64), GoalFoldState>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let states_for_dispatch = states.clone();
+    let staged_for_dispatch = staged.clone();
     let fail_for_dispatch = fail.clone();
     let dispatch: Arc<Listener> = Arc::new(move |_ctx, args| {
         let event_name = args
@@ -117,6 +136,8 @@ async fn install_event_checks(
             .cloned()
             .unwrap_or_default();
         let event_args = args.get(2).and_then(downcast_arc::<Vec<ArcValue>>);
+        let states = states_for_dispatch.clone();
+        let staged = staged_for_dispatch.clone();
         let fail = fail_for_dispatch.clone();
         Box::pin(async move {
             if event_name != "session/event" {
@@ -125,20 +146,23 @@ async fn install_event_checks(
             let event_args = event_args?;
             let session = event_args
                 .first()
-                .and_then(|value| downcast::<Session>(value));
+                .and_then(|value| downcast::<Session>(value))
+                .cloned()?;
             let event = event_args
                 .get(1)
-                .and_then(|value| downcast::<SessionEvent>(value));
-            let prefix = event_args
-                .get(2)
-                .and_then(|value| downcast::<Arc<Vec<SessionEvent>>>(value))
-                .cloned();
-            let (Some(_session), Some(event), Some(prefix)) = (session, event, prefix) else {
+                .and_then(|value| downcast::<SessionEvent>(value))
+                .cloned()?;
+            let key = session_key(&session);
+            let Some(mut state) = states.lock().get(&key).cloned() else {
                 return None;
             };
-            if let Err(error) = validate_goal_round_event(prefix.as_ref(), event) {
+            if let Err(error) = validate_goal_round_state(&state, &event) {
                 fail(&error);
             }
+            if let Err(error) = apply_goal_event(&mut state, &event) {
+                fail(&error);
+            }
+            staged.lock().insert((key, event.seq), state);
             None
         })
     });
@@ -149,19 +173,30 @@ async fn install_event_checks(
     )
     .await;
 
+    let states_for_commit = states.clone();
+    let staged_for_commit = staged.clone();
+    let fail_for_commit = fail.clone();
     let commit: Arc<Listener> = Arc::new(move |_ctx, args| {
-        let histories = histories.clone();
+        let states = states_for_commit.clone();
+        let staged = staged_for_commit.clone();
+        let fail = fail_for_commit.clone();
         Box::pin(async move {
-            let session = args.first().and_then(|value| downcast::<Session>(value));
+            let session = args
+                .first()
+                .and_then(|value| downcast::<Session>(value))
+                .cloned();
             let event = args
                 .get(1)
-                .and_then(|value| downcast::<SessionEvent>(value));
-            if let (Some(session), Some(event)) = (session, event) {
-                histories
-                    .lock()
-                    .entry(session_key(session))
-                    .or_default()
-                    .push(event.clone());
+                .and_then(|value| downcast::<SessionEvent>(value))
+                .cloned();
+            let (Some(session), Some(event)) = (session, event) else {
+                return None;
+            };
+            let key = session_key(&session);
+            if let Some(state) = staged.lock().remove(&(key, event.seq)) {
+                states.lock().insert(key, state);
+            } else {
+                seed_session(&session, &states, &fail);
             }
             None
         })
@@ -180,23 +215,23 @@ pub fn installer() -> InvariantInstaller {
         install: Arc::new(|ctx: &Context, fail: Arc<dyn Fn(&str) + Send + Sync>| {
             let ctx = ctx.clone();
             Box::pin(async move {
-                let histories: Arc<Mutex<HashMap<usize, Vec<SessionEvent>>>> =
+                let states: Arc<Mutex<HashMap<usize, GoalFoldState>>> =
                     Arc::new(Mutex::new(HashMap::new()));
                 // Close publication gaps before snapshotting any existing
                 // session. The final reconciliation snapshot subsumes events
                 // observed while installation is still in progress.
-                install_event_checks(&ctx, histories.clone(), fail.clone()).await;
+                install_event_checks(&ctx, states.clone(), fail.clone()).await;
 
-                let histories_for_created = histories.clone();
+                let states_for_created = states.clone();
                 let fail_for_created = fail.clone();
                 let created: Arc<Listener> = Arc::new(move |_ctx, args| {
-                    let histories = histories_for_created.clone();
+                    let states = states_for_created.clone();
                     let fail = fail_for_created.clone();
                     Box::pin(async move {
                         if let Some(session) =
                             args.first().and_then(|value| downcast::<Session>(value))
                         {
-                            seed_session(session, &histories, &fail);
+                            seed_session(session, &states, &fail);
                         }
                         None
                     })
@@ -213,7 +248,7 @@ pub fn installer() -> InvariantInstaller {
                     .map(|slot| slot.as_ref().clone())
                 {
                     for session in store.list() {
-                        seed_session(&session, &histories, &fail);
+                        seed_session(&session, &states, &fail);
                     }
                 }
             })

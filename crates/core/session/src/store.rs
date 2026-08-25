@@ -292,12 +292,11 @@ fn assert_supported_request_header(
 pub(crate) struct SessionState {
     log: Vec<SessionEvent>,
     surface: SurfaceManager,
-    events_snapshot: Option<Arc<Vec<SessionEvent>>>,
     header_fold: Option<EpochHeader>,
     header_fold_seq: usize,
     context_fold: Option<RequestContext>,
     context_fold_seq: usize,
-    derived: Vec<Message>,
+    derived: Arc<Vec<Message>>,
     derived_nodes: usize,
     derived_generation: u64,
 }
@@ -462,11 +461,7 @@ impl Session {
     /// reused until the next append; a previously returned array does not
     /// grow later.
     pub fn events(&self) -> Arc<Vec<SessionEvent>> {
-        let state = &mut *self.inner.state.lock();
-        if state.events_snapshot.is_none() {
-            state.events_snapshot = Some(Arc::new(state.log.clone()));
-        }
-        state.events_snapshot.as_ref().unwrap().clone()
+        Arc::new(self.inner.state.lock().log.clone())
     }
 
     /// Clone only the durable tail at or after `from_seq` without
@@ -477,6 +472,20 @@ impl Session {
         };
         let state = self.inner.state.lock();
         state.log.get(start..).unwrap_or_default().to_vec()
+    }
+
+    /// Clone the prefix through the last event matching `predicate`, while
+    /// holding the session lock only once and never materializing a full-log
+    /// snapshot first.
+    pub fn prefix_through_last(
+        &self,
+        predicate: impl Fn(&SessionEvent) -> bool,
+    ) -> Vec<SessionEvent> {
+        let state = self.inner.state.lock();
+        let Some(last) = state.log.iter().rposition(predicate) else {
+            return Vec::new();
+        };
+        state.log[..=last].to_vec()
     }
 
     /// Clone one event by durable sequence without materializing the full
@@ -511,6 +520,23 @@ impl Session {
         data: JsonValue,
         intent: Option<SurfaceIntent>,
     ) -> Result<SessionEvent, String> {
+        self.append_if(type_, data, intent, |_| true)?
+            .ok_or_else(|| "unconditional session append was rejected".to_string())
+    }
+
+    /// Append only when `condition` accepts the exact durable prefix while
+    /// the session log is locked. A rejected condition writes and publishes
+    /// nothing. The condition must not call back into this Session.
+    pub fn append_if<F>(
+        &self,
+        type_: &str,
+        data: JsonValue,
+        intent: Option<SurfaceIntent>,
+        condition: F,
+    ) -> Result<Option<SessionEvent>, String>
+    where
+        F: FnOnce(&[SessionEvent]) -> bool,
+    {
         let data_snapshot = snapshot_json_value(&data).ok_or_else(|| {
             format!("session event \"{type_}\" carries non-JSON-serializable data")
         })?;
@@ -527,49 +553,44 @@ impl Session {
                 "session append cannot reenter while another append is being published".to_string(),
             );
         }
-        let outcome = (|| -> Result<(SessionEvent, Vec<(Context, Arc<Listener>)>), String> {
-            let state = &mut *self.inner.state.lock();
-            let event = SessionEvent {
-                type_: type_.to_string(),
-                seq: state.log.len() as u64,
-                time: now_ms(),
-                data: data_snapshot,
-                ignorable: None,
-                surface_op: intent.as_ref().map(|intent| intent.surface_op.clone()),
-                source_event_seqs: intent.and_then(|intent| intent.source_event_seqs),
-            };
-            state.surface.validate_next(&state.log, &event)?;
-            // Resolve the listener snapshot BEFORE the log push (callbacks
-            // run after it, exactly like the TS flow).
-            let listeners: Vec<(Context, Arc<Listener>)> = match &entry {
-                Some(entry) => {
-                    let dispatch_ctx = entry.emit_ctx.with_filter(entry.carrier.filter.clone());
-                    let prefix = match &state.events_snapshot {
-                        Some(prefix) => prefix.clone(),
-                        None => {
-                            let prefix = Arc::new(state.log.clone());
-                            state.events_snapshot = Some(prefix.clone());
-                            prefix
-                        }
-                    };
-                    // The third argument is internal-only authority context:
-                    // the immutable durable prefix before `event`. Public
-                    // session/event observers still receive two arguments.
-                    let args: Vec<ArcValue> =
-                        vec![arc(self.clone()), arc(event.clone()), arc(prefix)];
-                    entry.emit_ctx.events.collect(
-                        DispatchMode::Emit,
-                        Some(&dispatch_ctx),
-                        "session/event",
-                        &args,
-                    )
+        let outcome =
+            (|| -> Result<(Option<SessionEvent>, Vec<(Context, Arc<Listener>)>), String> {
+                let state = &mut *self.inner.state.lock();
+                if !condition(&state.log) {
+                    return Ok((None, Vec::new()));
                 }
-                None => Vec::new(),
-            };
-            state.log.push(event.clone());
-            state.events_snapshot = None;
-            Ok((event, listeners))
-        })();
+                let event = SessionEvent {
+                    type_: type_.to_string(),
+                    seq: state.log.len() as u64,
+                    time: now_ms(),
+                    data: data_snapshot,
+                    ignorable: None,
+                    surface_op: intent.as_ref().map(|intent| intent.surface_op.clone()),
+                    source_event_seqs: intent.and_then(|intent| intent.source_event_seqs),
+                };
+                state.surface.validate_next(&state.log, &event)?;
+                // Resolve the listener snapshot BEFORE the log push (callbacks
+                // run after it, exactly like the TS flow).
+                let listeners: Vec<(Context, Arc<Listener>)> = match &entry {
+                    Some(entry) => {
+                        let dispatch_ctx = entry.emit_ctx.with_filter(entry.carrier.filter.clone());
+                        // Public and internal observers receive the same compact
+                        // [session, event] shape. Invariants keep incremental
+                        // per-session folds instead of requiring an O(history)
+                        // authority prefix on every append.
+                        let args: Vec<ArcValue> = vec![arc(self.clone()), arc(event.clone())];
+                        entry.emit_ctx.events.collect(
+                            DispatchMode::Emit,
+                            Some(&dispatch_ctx),
+                            "session/event",
+                            &args,
+                        )
+                    }
+                    None => Vec::new(),
+                };
+                state.log.push(event.clone());
+                Ok((Some(event), listeners))
+            })();
         let (event, listeners) = match outcome {
             Ok(result) => result,
             Err(error) => {
@@ -580,6 +601,14 @@ impl Session {
                 }
                 return Err(error);
             }
+        };
+        let Some(event) = event else {
+            if let Some(entry) = &entry
+                && entry.finish_append()
+            {
+                entry.detach_now();
+            }
+            return Ok(None);
         };
         // TS runs observers INSIDE the guarded region while `appending` is
         // still true, so a reentrant append rejects instead of deadlocking.
@@ -596,7 +625,7 @@ impl Session {
                 entry.detach_now();
             }
         }
-        Ok(event)
+        Ok(Some(event))
     }
 
     /// The [`EpochHeader`] in force after the log's last header event.
@@ -629,24 +658,26 @@ impl Session {
 
     /// Derive the LLM message history by walking the ordered sequences of
     /// message-producing events maintained by `surfaceOp` markers.
-    pub fn derive_messages(&self) -> Result<Vec<Message>, String> {
+    pub fn derive_messages(&self) -> Result<Arc<Vec<Message>>, String> {
         let state = &mut *self.inner.state.lock();
         let nodes = state.surface.nodes(&state.log)?;
         let generation = state.surface.replace_generation(&state.log)?;
         if generation != state.derived_generation {
-            state.derived = Vec::new();
+            state.derived = Arc::new(Vec::new());
             state.derived_nodes = 0;
             state.derived_generation = generation;
         }
-        for seq in &nodes[state.derived_nodes..] {
-            if let Some(event) = state.log.get(*seq as usize)
-                && let Some(message) = derive_event_message(event)
-            {
-                state.derived.push(message);
-            }
+        if state.derived_nodes < nodes.len() {
+            let start = state.derived_nodes;
+            let additions = nodes[start..]
+                .iter()
+                .filter_map(|seq| state.log.get(*seq as usize))
+                .filter_map(derive_event_message)
+                .collect::<Vec<_>>();
+            Arc::make_mut(&mut state.derived).extend(additions);
+            state.derived_nodes = nodes.len();
         }
-        state.derived_nodes = nodes.len();
-        Ok(state.derived.clone())
+        Ok(Arc::clone(&state.derived))
     }
 
     /// Instance face of the pure per-node `deriveEventMessage` export.

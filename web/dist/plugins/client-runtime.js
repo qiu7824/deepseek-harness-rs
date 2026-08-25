@@ -7100,6 +7100,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			*  passes drop all writes once the generation moves on. */
 			openGeneration = 0;
 			loadingOlder = false;
+			/** Non-tail history window selected by the message rail. */
+			historyTargetSeq = null;
 			pending = /* @__PURE__ */ new Map();
 			pendingRev = 0;
 			pendingCache = null;
@@ -7199,6 +7201,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* @returns the prompt result (also mirrored into promptError on failure).
 			*/
 			async prompt(content, mode) {
+				await this.returnLatest();
 				this.promptError = null;
 				this.lastAgentError = null;
 				this.promptAttempted = true;
@@ -7425,6 +7428,34 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				} finally {
 					this.loadingOlder = false;
 					this.notifier.markDirty();
+				}
+			}
+			/** Replace the rendered window with the one page ending at targetSeq. */
+			async loadAround(targetSeq) {
+				if (this.openState !== "open" || !Number.isSafeInteger(targetSeq) || targetSeq < 0) return false;
+				if (this.events.some((event) => event.seq === targetSeq)) return true;
+				try {
+					const { result } = await this.history({ beforeSeq: targetSeq + 1, maxMessages: 50 });
+					if (!result.ok || !result.value.events.some((entry) => entry.event.seq === targetSeq)) return false;
+					this.historyTargetSeq = targetSeq;
+					this.installWindow(result.value.events, result.value.hasMore, void 0);
+					return true;
+				} catch (error) {
+					console.error("[web-runtime] loadAround failed:", error);
+					return false;
+				}
+			}
+			/** Restore the normal live tail after browsing a historical window. */
+			async returnLatest() {
+				if (this.historyTargetSeq === null) return;
+				this.stitching = true;
+				try {
+					const { result } = await this.history({ maxMessages: 50 });
+					if (!result.ok) throw new Error(`conversation.returnLatest failed: ${result.error.code}: ${result.error.message}`);
+					this.historyTargetSeq = null;
+					this.installWindow(result.value.events, result.value.hasMore, result.value.projections);
+				} finally {
+					this.stitching = false;
 				}
 			}
 			/** Reconnect rebuild (manager calls this on onConnected for instances that were opened):
@@ -7657,6 +7688,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			*  raw range, which lets Conversation Definitions correlate every recorded event between its
 			*  ends and lets a compaction checkpoint resolve its cited summary event. */
 			acceptLiveEvent(event, view) {
+				if (this.historyTargetSeq !== null) {
+					this.liveBuffer.push({ event, view });
+					return;
+				}
 				if (this.openState === "loading" || this.stitching) {
 					this.liveBuffer.push({
 						event,
@@ -8986,6 +9021,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			*/
 			open(id) {
 				this.manager.select(id);
+				if (this.list.getSnapshot().current === id && this.watched === id) {
+					this.resolve(id)?.session.open();
+				}
 			}
 			/**
 			* Open a healthy catalog child through its direct-parent address.

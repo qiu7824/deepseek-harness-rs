@@ -320,6 +320,9 @@ fn apply_transition(trace: &mut SessionTrace, transition: SessionTraceTransition
 #[derive(Debug, Clone)]
 struct StagedTransition {
     session: Session,
+    /// Installation/reconciliation gaps rebuild after publication, when the
+    /// session lock is no longer held. The steady state validates in O(1).
+    rebuild_after_publish: bool,
 }
 
 fn session_ptr(session: &Session) -> usize {
@@ -337,9 +340,9 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
     let staged: Arc<Mutex<HashMap<(usize, u64), StagedTransition>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    let seed_session = {
+    let seed_session: Arc<dyn Fn(&Session, &dyn Fn(&str)) + Send + Sync> = {
         let traces = Arc::clone(&traces);
-        move |session: &Session, fail: &dyn Fn(&str)| {
+        Arc::new(move |session: &Session, fail: &dyn Fn(&str)| {
             let mut trace = fresh_trace();
             for event in session.events().iter() {
                 let transition = validate_event(&trace, event, fail);
@@ -349,48 +352,8 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
                 session_ptr(session),
                 (Arc::downgrade(&session.inner), trace),
             );
-        }
+        })
     };
-    let trace_for: Arc<
-        dyn Fn(&Session, &[SessionEvent], &dyn Fn(&str)) -> SessionTrace + Send + Sync,
-    > = {
-        let traces = Arc::clone(&traces);
-        Arc::new(
-            move |session: &Session,
-                  durable_prefix: &[SessionEvent],
-                  fail: &dyn Fn(&str)|
-                  -> SessionTrace {
-                let mut guard = traces.lock();
-                let ptr = session_ptr(session);
-                let expected_last_seq = durable_prefix
-                    .last()
-                    .map(|event| event.seq as i64)
-                    .unwrap_or(-1);
-                if let Some((weak, trace)) = guard.get(&ptr) {
-                    if weak.upgrade().is_some() && trace.last_seq == expected_last_seq {
-                        return trace.clone();
-                    }
-                    guard.remove(&ptr);
-                }
-                drop(guard);
-                // `internal/dispatch` runs while Session::append owns the
-                // session state lock. Re-reading through session.events()
-                // would self-deadlock during the installation window. The
-                // append boundary supplies the exact immutable prefix before
-                // the candidate event, so rebuild from that authority context.
-                let mut trace = fresh_trace();
-                for event in durable_prefix {
-                    let transition = validate_event(&trace, event, fail);
-                    apply_transition(&mut trace, transition);
-                }
-                traces
-                    .lock()
-                    .insert(ptr, (Arc::downgrade(&session.inner), trace.clone()));
-                trace
-            },
-        )
-    };
-
     // Seed the live sessions that predate this registration.
     let sessions = ctx
         .get_typed::<Arc<SessionStore>>("sessions", false)
@@ -399,8 +362,7 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
         seed_session(&session, fail);
     }
 
-    let seed_session_created: Arc<dyn Fn(&Session, &dyn Fn(&str)) + Send + Sync> =
-        Arc::new(seed_session);
+    let seed_session_created = Arc::clone(&seed_session);
     {
         let listener: Arc<Listener> = Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
             let session = downcast::<Session>(&args[0]).expect("session arg").clone();
@@ -420,17 +382,33 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
 
     {
         let staged = Arc::clone(&staged);
+        let traces_for_publish = Arc::clone(&traces);
+        let seed_after_publish = Arc::clone(&seed_session);
         let listener: Arc<Listener> = Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
             let session = downcast::<Session>(&args[0]).expect("session arg").clone();
             let event = downcast::<SessionEvent>(&args[1])
                 .expect("event arg")
                 .clone();
             let staged = Arc::clone(&staged);
+            let traces = Arc::clone(&traces_for_publish);
+            let seed_after_publish = Arc::clone(&seed_after_publish);
             Box::pin(async move {
                 let key = (session_ptr(&session), event.seq);
                 let entry = { staged.lock().remove(&key) };
                 match entry {
-                    Some(entry) if session_ptr(&entry.session) == session_ptr(&session) => {}
+                    Some(entry) if session_ptr(&entry.session) == session_ptr(&session) => {
+                        if entry.rebuild_after_publish {
+                            seed_after_publish(&session, &|message| panic!("{message}"));
+                        } else {
+                            let trace_is_current = traces
+                                .lock()
+                                .get(&session_ptr(&session))
+                                .is_some_and(|(_, trace)| trace.last_seq == event.seq as i64);
+                            if !trace_is_current {
+                                seed_after_publish(&session, &|message| panic!("{message}"));
+                            }
+                        }
+                    }
                     _ => panic!(
                         "session/event reached publication without matching pre-commit validation"
                     ),
@@ -475,27 +453,30 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
             else {
                 return Box::pin(async { None });
             };
-            let Some(prefix) = dispatch_args
-                .get(2)
-                .and_then(|value| downcast::<Arc<Vec<SessionEvent>>>(value).cloned())
-            else {
-                return Box::pin(async { None });
-            };
             let traces = Arc::clone(&traces);
             let staged = Arc::clone(&staged);
-            let trace_for = Arc::clone(&trace_for);
             Box::pin(async move {
-                let mut trace =
-                    trace_for(&session, prefix.as_ref(), &|message| panic!("{message}"));
-                let transition = validate_event(&trace, &event, &|message| panic!("{message}"));
-                apply_transition(&mut trace, transition);
-                traces.lock().insert(
-                    session_ptr(&session),
-                    (Arc::downgrade(&session.inner), trace),
-                );
+                let ptr = session_ptr(&session);
+                let trace = traces
+                    .lock()
+                    .get(&ptr)
+                    .and_then(|(weak, trace)| weak.upgrade().is_some().then(|| trace.clone()));
+                let rebuild_after_publish = trace
+                    .as_ref()
+                    .is_none_or(|trace| trace.last_seq + 1 != event.seq as i64);
+                if let Some(mut trace) = trace.filter(|_| !rebuild_after_publish) {
+                    let transition = validate_event(&trace, &event, &|message| panic!("{message}"));
+                    apply_transition(&mut trace, transition);
+                    traces
+                        .lock()
+                        .insert(ptr, (Arc::downgrade(&session.inner), trace));
+                }
                 staged.lock().insert(
-                    (session_ptr(&session), event.seq),
-                    StagedTransition { session },
+                    (ptr, event.seq),
+                    StagedTransition {
+                        session,
+                        rebuild_after_publish,
+                    },
                 );
                 None
             })

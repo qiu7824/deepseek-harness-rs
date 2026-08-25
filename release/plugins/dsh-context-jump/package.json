@@ -1,12 +1,16 @@
 {
   "name": "dsh-context-jump",
-  "version": "1.0.0",
+  "version": "1.1.0",
+  "description": "左侧用户消息刻度导航：无需预加载完整历史，按需载入目标页并跳转。",
   "license": "MIT",
+  "homepage": "https://github.com/deepseek-ai/deepseek-harness/discussions/4237",
+  "repository": "https://www.npmjs.com/package/dsh-user-message-rail/v/0.1.5",
+  "x-derived-from": "dsh-user-message-rail@0.1.5 (MIT), adapted for paged history",
   "exports": { "./client": "./lib/client.js" },
   "dsh": {
     "client": {
       "platform": "web",
-      "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
+      "inject": ["@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-conversation"]
     }
   }
 }

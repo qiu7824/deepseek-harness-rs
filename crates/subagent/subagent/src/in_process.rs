@@ -100,6 +100,15 @@ pub async fn start_in_process_run(
         .await
         .map_err(|error| SubagentError::new("CHILD_CREATE_FAILED", error))?;
 
+    if let Err(error) = handle.agent.session().append(
+        "subagent/descriptor",
+        serde_json::to_value(&request.descriptor).expect("descriptor json"),
+        None,
+    ) {
+        handle.dispose.await;
+        return Err(SubagentError::new("CHILD_COMPOSE_FAILED", error));
+    }
+
     let structured = if let Some(schema) = request.request.output_schema.clone() {
         match crate::structured::attach_structured_runtime(handle.agent.ctx(), schema).await {
             Ok(attachment) => Some(attachment),

@@ -267,7 +267,7 @@ pub fn discover(profile: &Path) -> Result<Vec<ClientPlugin>, String> {
     Ok(plugins)
 }
 
-fn disabled_plugins(profile: &Path) -> std::collections::HashSet<String> {
+pub(crate) fn disabled_plugins(profile: &Path) -> std::collections::HashSet<String> {
     let path = profile.join("plugins.json");
     let Ok(raw) = std::fs::read(path) else {
         return std::collections::HashSet::new();
@@ -285,10 +285,7 @@ pub fn compose(
     boot_payload: &mut Value,
     profile: &Path,
 ) -> Result<Vec<dsh_host_webserver::RouteDisposer>, String> {
-    let disabled = disabled_plugins(profile);
-    let plugins = discover(profile)?
-        .into_iter()
-        .filter(|plugin| !disabled.contains(&plugin.id));
+    let plugins = discover(profile)?.into_iter();
     let entries = boot_payload
         .get_mut("entries")
         .and_then(Value::as_array_mut)

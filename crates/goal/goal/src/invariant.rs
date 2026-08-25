@@ -50,15 +50,20 @@ pub fn installer() -> InvariantInstaller {
                 let staged: Arc<parking_lot::Mutex<HashMap<(usize, u64), GoalFoldState>>> =
                     Arc::new(parking_lot::Mutex::new(HashMap::new()));
 
-                let seed = |session: &Session,
-                            states: &parking_lot::Mutex<HashMap<usize, GoalFoldState>>,
-                            fail: &Arc<dyn Fn(&str) + Send + Sync>| {
+                let seed: Arc<
+                    dyn Fn(
+                            &Session,
+                            &parking_lot::Mutex<HashMap<usize, GoalFoldState>>,
+                            &Arc<dyn Fn(&str) + Send + Sync>,
+                        ) + Send
+                        + Sync,
+                > = Arc::new(|session, states, fail| {
                     let mut state = empty_goal_fold_state();
                     for event in session.events().iter() {
                         apply_checked(&mut state, event, fail);
                     }
                     states.lock().insert(session_key(session), state);
-                };
+                });
                 // Seed every attached session.
                 if let Some(store) = ctx
                     .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
@@ -72,10 +77,12 @@ pub fn installer() -> InvariantInstaller {
                 // Seed sessions created later.
                 let states_for_created = states.clone();
                 let fail_for_created = fail.clone();
+                let seed_for_created = seed.clone();
                 let created_listener: Arc<cordis::Listener> =
                     Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
                         let states = states_for_created.clone();
                         let fail = fail_for_created.clone();
+                        let seed = seed_for_created.clone();
                         Box::pin(async move {
                             if let Some(session) =
                                 args.first().and_then(|value| downcast::<Session>(value))
@@ -94,6 +101,7 @@ pub fn installer() -> InvariantInstaller {
 
                 // Validate each event before publication, staging the
                 // candidate fold.
+                let states_for_dispatch = states.clone();
                 let staged_for_dispatch = staged.clone();
                 let fail_for_dispatch = fail.clone();
                 let dispatch_listener: Arc<cordis::Listener> =
@@ -106,6 +114,7 @@ pub fn installer() -> InvariantInstaller {
                             .get(2)
                             .and_then(|value| downcast::<Vec<ArcValue>>(value))
                             .cloned();
+                        let states = states_for_dispatch.clone();
                         let staged = staged_for_dispatch.clone();
                         let fail = fail_for_dispatch.clone();
                         Box::pin(async move {
@@ -123,25 +132,15 @@ pub fn installer() -> InvariantInstaller {
                                 .get(1)
                                 .and_then(|value| downcast::<SessionEvent>(value))
                                 .cloned();
-                            let prefix = event_args
-                                .get(2)
-                                .and_then(|value| downcast::<Arc<Vec<SessionEvent>>>(value))
-                                .cloned();
-                            let (Some(session), Some(event), Some(prefix)) =
-                                (session, event, prefix)
-                            else {
+                            let (Some(session), Some(event)) = (session, event) else {
                                 return None;
                             };
                             let key = session_key(&session);
-                            // `internal/dispatch` runs inside the Session
-                            // append lock. The third event argument is the
-                            // exact immutable prefix before this candidate;
-                            // replay it directly instead of relying on the
-                            // async session/created cache.
-                            let mut state = empty_goal_fold_state();
-                            for prior in prefix.iter() {
-                                apply_checked(&mut state, prior, &fail);
-                            }
+                            let Some(mut state) = states.lock().get(&key).cloned() else {
+                                // Installation gaps reconcile after publication, when the
+                                // session lock is no longer held.
+                                return None;
+                            };
                             apply_checked(&mut state, &event, &fail);
                             staged.lock().insert((key, event.seq), state);
                             None
@@ -158,11 +157,13 @@ pub fn installer() -> InvariantInstaller {
                 let states_for_commit = states.clone();
                 let staged_for_commit = staged.clone();
                 let fail_for_commit = fail.clone();
-                let commit_listener: Arc<cordis::Listener> = Arc::new(
-                    move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
+                let seed_for_commit = seed.clone();
+                let commit_listener: Arc<cordis::Listener> =
+                    Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
                         let states = states_for_commit.clone();
                         let staged = staged_for_commit.clone();
                         let fail = fail_for_commit.clone();
+                        let seed = seed_for_commit.clone();
                         Box::pin(async move {
                             let session = args
                                 .first()
@@ -177,17 +178,17 @@ pub fn installer() -> InvariantInstaller {
                             };
                             let key = session_key(&session);
                             let candidate = staged.lock().remove(&(key, event.seq));
-                            let Some(state) = candidate else {
-                                fail(
-                                    "session/event reached publication without matching goal-fold validation",
-                                );
-                                return None;
-                            };
-                            states.lock().insert(key, state);
+                            if let Some(state) = candidate {
+                                states.lock().insert(key, state);
+                            } else {
+                                // A listener-installation gap is reconciled after the
+                                // append lock is released. Normal steady-state events
+                                // always commit the staged O(1) fold above.
+                                seed(&session, &states, &fail);
+                            }
                             None
                         })
-                    },
-                );
+                    });
                 ctx.on(
                     "session/event",
                     commit_listener,

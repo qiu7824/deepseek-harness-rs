@@ -5702,6 +5702,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					schema: object({ "entries": array(object({
 						"entryId": intersection(string(), unknown()).readonly(),
 						"moduleName": string().readonly(),
+						"description": string().optional().readonly(),
 						"enabled": boolean().readonly(),
 						"fiberPhase": union([
 							literal(null),
@@ -5743,6 +5744,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					schema: object({ "entry": object({
 						"entryId": string().readonly(),
 						"moduleName": string().readonly(),
+						"description": string().optional().readonly(),
 						"enabled": boolean().readonly(),
 						"fiberPhase": union([
 							literal(null), literal("failed"), literal("pending"),

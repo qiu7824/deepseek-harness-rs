@@ -57,7 +57,7 @@ window.__ModuleLoader__.load({
 		/** Whether an inventory row matches the local catalog query. */
 		function matches(entry, normalizedQuery) {
 			if (normalizedQuery.length === 0) return true;
-			return [entry.moduleName, entry.entryId].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
+			return [entry.moduleName, entry.entryId, entry.description ?? ""].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
 		}
 		/** Render the read-only current Loader inventory. */
 		function PluginInventorySettingsTab({ list, setEnabled, t }) {
@@ -73,7 +73,7 @@ window.__ModuleLoader__.load({
 				setActionError(null);
 				try {
 					await setEnabled(entry.entryId, !entry.enabled);
-					setRequest((value) => value + 1);
+					window.location.reload();
 				} catch {
 					setActionError(entry.entryId);
 				} finally {
@@ -224,7 +224,10 @@ window.__ModuleLoader__.load({
 										}), open ? (0, react_jsx_runtime.jsxs)("div", {
 											className: PluginInventorySettingsTab_module_css_default.cardDetails,
 											id: detailId,
-											children: [(0, react_jsx_runtime.jsx)("code", {
+											children: [entry.description ? (0, react_jsx_runtime.jsx)("p", {
+												className: PluginInventorySettingsTab_module_css_default.status,
+												children: entry.description
+											}) : null, (0, react_jsx_runtime.jsx)("code", {
 												className: PluginInventorySettingsTab_module_css_default.entryValue,
 												"data-loader-entry": true,
 												children: entry.entryId

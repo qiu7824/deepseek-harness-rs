@@ -35,11 +35,9 @@ pub struct Config {
 /// The balanced completed-turn prefix of `parent`'s log: every event up to
 /// and including the last `turn/end`.
 pub fn completed_turn_prefix(parent: &dyn Agent) -> Vec<SessionEvent> {
-    let events = parent.session().events();
-    let Some(last_end) = events.iter().rposition(|event| event.type_ == "turn/end") else {
-        return Vec::new();
-    };
-    events[..=last_end].to_vec()
+    parent
+        .session()
+        .prefix_through_last(|event| event.type_ == "turn/end")
 }
 
 /// The fork provider.

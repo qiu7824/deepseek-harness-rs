@@ -3,6 +3,25 @@ use std::collections::BTreeMap;
 use dsh_llm::{ContentBlock, FinishReason, LlmFailure, StreamChunk, TokenUsage, call_id};
 use serde_json::{Value, json};
 
+#[cfg(test)]
+mod tests {
+    use super::request_from_chat;
+    use serde_json::json;
+
+    #[test]
+    fn maps_openai_reasoning_effort_to_responses_shape() {
+        let request = request_from_chat(&json!({
+            "model": "gpt-test",
+            "messages": [],
+            "reasoning_effort": "xhigh"
+        }))
+        .expect("convert chat request");
+        assert_eq!(request["reasoning"]["effort"], "xhigh");
+        assert_eq!(request["reasoning"]["summary"], "auto");
+        assert!(request.get("reasoning_effort").is_none());
+    }
+}
+
 fn failure(message: impl Into<String>, code: &str) -> LlmFailure {
     LlmFailure {
         message: message.into(),
@@ -110,7 +129,11 @@ pub(crate) fn request_from_chat(chat: &Value) -> Result<Value, LlmFailure> {
     if let Some(value) = chat.get("max_tokens") {
         body["max_output_tokens"] = value.clone();
     }
-    if let Some(effort) = chat.pointer("/thinking/effort").and_then(Value::as_str) {
+    if let Some(effort) = chat
+        .get("reasoning_effort")
+        .and_then(Value::as_str)
+        .or_else(|| chat.pointer("/thinking/effort").and_then(Value::as_str))
+    {
         body["reasoning"] = json!({"effort":effort, "summary":"auto"});
     }
     Ok(body)

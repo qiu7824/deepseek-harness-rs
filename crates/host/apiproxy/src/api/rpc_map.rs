@@ -8,8 +8,7 @@
 //! the TS declaration is grouped by domain, the set is identical), while
 //! the carrier layer (later milestone) owns the per-method dispatch.
 
-/// Every client-request method, lexically sorted (54 methods; the set
-/// matches the TS `RpcMethodMap` keys).
+/// Every client-request method, lexically sorted (62 methods).
 pub const CLIENT_REQUEST_METHODS: &[&str] = &[
     "agentPreset.copy",
     "agentPreset.list",
@@ -53,6 +52,7 @@ pub const CLIENT_REQUEST_METHODS: &[&str] = &[
     "session.search",
     "session.selectModel",
     "session.updateQueue",
+    "session.updateTodos",
     "settings.describe",
     "settings.mutate",
     "settings.openDocument",
@@ -78,4 +78,20 @@ pub const CLIENT_REQUEST_METHODS: &[&str] = &[
 /// over the sorted table).
 pub fn is_client_request_method(method: &str) -> bool {
     CLIENT_REQUEST_METHODS.binary_search(&method).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_methods_are_sorted_unique_and_include_todo_updates() {
+        assert_eq!(CLIENT_REQUEST_METHODS.len(), 62);
+        assert!(
+            CLIENT_REQUEST_METHODS
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+        );
+        assert!(is_client_request_method("session.updateTodos"));
+    }
 }

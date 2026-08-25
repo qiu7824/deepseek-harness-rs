@@ -752,7 +752,7 @@ impl ReactLoopAgent {
                     step,
                     &assembly.tools,
                     &system,
-                    &boundary_messages,
+                    boundary_messages.as_ref(),
                     &signal,
                 )
                 .await?;
@@ -1005,20 +1005,28 @@ impl ReactLoopAgent {
             .map(|header| header.config.clone());
         let provider = self.options.provider.clone().unwrap_or_default();
         let model = self.options.model.clone().unwrap_or_default();
-        let reasoning_effort = if persisted_config
-            .as_ref()
-            .is_some_and(|config| config.provider == provider && config.model == model)
-            && persisted_header
+        let reasoning_effort = self.options.reasoning_effort.clone().or_else(|| {
+            // Fork children carry a completed parent prefix, including its
+            // request/header. A delegation that did not explicitly request an
+            // effort must not inherit that parent's paid reasoning setting.
+            if self.options.subagent_depth.is_some() {
+                return None;
+            }
+            if persisted_config
                 .as_ref()
-                .and_then(|header| header.adapter_defaults.as_ref())
-                .is_none_or(|defaults| defaults.reasoning_effort != Some(true))
-        {
-            persisted_config
-                .as_ref()
-                .and_then(|config| config.reasoning_effort.clone())
-        } else {
-            None
-        };
+                .is_some_and(|config| config.provider == provider && config.model == model)
+                && persisted_header
+                    .as_ref()
+                    .and_then(|header| header.adapter_defaults.as_ref())
+                    .is_none_or(|defaults| defaults.reasoning_effort != Some(true))
+            {
+                persisted_config
+                    .as_ref()
+                    .and_then(|config| config.reasoning_effort.clone())
+            } else {
+                None
+            }
+        });
         let max_tokens = self.options.max_tokens;
         let seed_config = if self.request_header_logged.load(Ordering::SeqCst) {
             request_proposal(persisted_header.as_ref().expect("logged header"))

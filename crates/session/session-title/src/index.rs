@@ -328,6 +328,100 @@ pub fn title_projection_definition() -> ProjectionDefinition {
     }
 }
 
+/// Build one compact navigation row from a human-authored prompt.
+pub fn user_message_rail_row(event: &SessionEvent) -> Option<JsonValue> {
+    if event.type_ != "user/message"
+        || event
+            .data
+            .get("source")
+            .and_then(|source| source.get("kind"))
+            .and_then(JsonValue::as_str)
+            != Some("user")
+    {
+        return None;
+    }
+    let mut text = String::new();
+    let mut images = 0_u64;
+    if let Some(content) = event.data.get("content").and_then(JsonValue::as_array) {
+        for block in content {
+            match block.get("type").and_then(JsonValue::as_str) {
+                Some("text") => {
+                    if let Some(value) = block.get("text").and_then(JsonValue::as_str) {
+                        text.push_str(value);
+                    }
+                }
+                Some("image") => images += 1,
+                _ => {}
+            }
+        }
+    }
+    let preview: String = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(200)
+        .collect();
+    Some(serde_json::json!({
+        "key": event.data.get("id").and_then(JsonValue::as_str).unwrap_or(""),
+        "seq": event.seq,
+        "text": preview,
+        "images": images,
+    }))
+}
+
+/// Linear-time full-log fold used to seed a missing projection checkpoint.
+pub fn user_message_rail_rows(events: &[SessionEvent]) -> JsonValue {
+    JsonValue::Array(events.iter().filter_map(user_message_rail_row).collect())
+}
+
+pub const USER_MESSAGE_RAIL_KEY: &str = "userMessageRail";
+pub const USER_MESSAGE_RAIL_STATE_VERSION: u64 = 2;
+
+/// Lightweight user-message index for navigation without loading transcript pages.
+pub fn user_message_rail_projection_definition() -> ProjectionDefinition {
+    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> =
+        Arc::new(|| arc(JsonValue::Array(Vec::new())));
+    let apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync> =
+        Arc::new(|state, event| {
+            if event.type_ != "user/message"
+                || event
+                    .data
+                    .get("source")
+                    .and_then(|source| source.get("kind"))
+                    .and_then(JsonValue::as_str)
+                    != Some("user")
+            {
+                return state.clone();
+            }
+            let mut rows = downcast::<JsonValue>(state)
+                .and_then(JsonValue::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(row) = user_message_rail_row(event) {
+                rows.push(row);
+            }
+            arc(JsonValue::Array(rows))
+        });
+    let view: Arc<dyn Fn(&ArcValue) -> ArcValue + Send + Sync> = Arc::new(|state| state.clone());
+    let schema = Arc::new(|value: &ArcValue| {
+        let json = downcast::<JsonValue>(value)
+            .ok_or_else(|| "userMessageRail projection must be JSON".to_string())?;
+        if !json.is_array() {
+            return Err("userMessageRail projection must be an array".to_string());
+        }
+        Ok(json.clone())
+    });
+    ProjectionDefinition {
+        key: USER_MESSAGE_RAIL_KEY.to_string(),
+        schema,
+        init,
+        apply,
+        view,
+        state_version: USER_MESSAGE_RAIL_STATE_VERSION,
+    }
+}
+
 /// Log-backed title fold plus asynchronous fallback generation (TS
 /// `SessionTitleService`).
 pub struct SessionTitleService {
@@ -401,6 +495,9 @@ impl SessionTitleService {
                         })?;
                     registry
                         .register(&projection_ctx, title_projection_definition())
+                        .map_err(|error| PluginError::new(arc(error)))?;
+                    registry
+                        .register(&projection_ctx, user_message_rail_projection_definition())
                         .map(|_| ())
                         .map_err(|error| PluginError::new(arc(error)))
                 })

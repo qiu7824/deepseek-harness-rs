@@ -689,6 +689,18 @@ window.__ModuleLoader__.load({
 		* @param props.t - the browser root's locale seat.
 		* @returns the session row.
 		*/
+		function copyText(value) {
+			if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
+			const input = document.createElement("textarea");
+			input.value = value;
+			input.style.position = "fixed";
+			input.style.opacity = "0";
+			document.body.appendChild(input);
+			input.select();
+			document.execCommand("copy");
+			input.remove();
+			return Promise.resolve();
+		}
 		function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork, onArchive, drag, flat = false, t }) {
 			const row = node;
 			const title = displayTitle(node, t);
@@ -697,6 +709,11 @@ window.__ModuleLoader__.load({
 			const showStatus = statuses[0].state !== "done" || row.completed;
 			const [menuOpen, setMenuOpen] = (0, react.useState)(false);
 			const sessionMenuItems = [
+				{
+					id: "copy-id",
+					label: "复制对话 ID",
+					icon: (0, react_jsx_runtime.jsx)("span", { "aria-hidden": true, children: "⧉" })
+				},
 				{
 					id: "rename",
 					label: t("rename"),
@@ -752,7 +769,7 @@ window.__ModuleLoader__.load({
 							className: Rows_module_css_default.time,
 							children: timeLabel(row.updatedAt, now, t)
 						}),
-						!row.blank && (0, react_jsx_runtime.jsx)("span", {
+						(0, react_jsx_runtime.jsx)("span", {
 							className: Rows_module_css_default.rowActions,
 							children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, {
 								open: menuOpen,
@@ -762,6 +779,7 @@ window.__ModuleLoader__.load({
 								items: sessionMenuItems,
 								onSelect: (id) => {
 									setMenuOpen(false);
+									if (id === "copy-id") copyText(node.id).catch((reason) => console.warn("copy session id failed:", reason));
 									if (id === "rename") onRename(node.id, row.title);
 									if (id === "fork") onFork(node.id);
 									if (id === "archive") onArchive(node.id);

@@ -30,6 +30,9 @@ pub struct PluginInventoryEntry {
     pub entry_id: PluginEntryId,
     /// Exact module specifier imported by the Loader entry.
     pub module_name: String,
+    /// Human-readable package introduction when the host catalog knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Effective Loader enablement, including disabled ancestor groups.
     pub enabled: bool,
     /// `None` when the entry has no live root Fiber (wire value `null`).

@@ -314,7 +314,32 @@ impl SessionProjectionCache {
             .table
             .get(id.as_str())
             .map(|raw| serde_json::from_value(raw).expect("stored checkpoint record shape"));
-        let cached = rows_of(record.as_ref());
+        let mut cached = rows_of(record.as_ref());
+        let rail_needs_seed = cached
+            .get(dsh_session_title::USER_MESSAGE_RAIL_KEY)
+            .is_none_or(|row| row.ver != dsh_session_title::USER_MESSAGE_RAIL_STATE_VERSION);
+        let mut preloaded = None;
+        if rail_needs_seed {
+            let whole = self.persistence.read_from(id, 0).await?;
+            if record.as_ref().is_some_and(|record| {
+                !identity_matches(&record.identity, &identity_of(&whole.meta))
+            }) {
+                cached.clear();
+            }
+            cached.insert(
+                dsh_session_title::USER_MESSAGE_RAIL_KEY.to_string(),
+                dsh_session_projection::ProjectionCheckpointRow {
+                    ver: dsh_session_title::USER_MESSAGE_RAIL_STATE_VERSION,
+                    seq: whole
+                        .events
+                        .last()
+                        .map(|event| event.seq as i64)
+                        .unwrap_or(-1),
+                    val: dsh_session_title::user_message_rail_rows(&whole.events),
+                },
+            );
+            preloaded = Some(whole);
+        }
         let floor = registry.restore_floor(&cached);
         if floor.is_none() {
             // No unit registered: nothing to fold, but the not-found
@@ -330,10 +355,14 @@ impl SessionProjectionCache {
             });
         }
         let floor = floor.expect("checked");
-        let tail = self.persistence.read_from(id, floor as u64).await?;
-        let related = record
-            .as_ref()
-            .is_none_or(|record| identity_matches(&record.identity, &identity_of(&tail.meta)));
+        let tail = match preloaded {
+            Some(whole) if floor == 0 => whole,
+            _ => self.persistence.read_from(id, floor as u64).await?,
+        };
+        let related = rail_needs_seed
+            || record
+                .as_ref()
+                .is_none_or(|record| identity_matches(&record.identity, &identity_of(&tail.meta)));
         let restored = match (related, registry.restore(&cached, &tail.events, floor)) {
             (true, Ok(restored)) => restored,
             // An unrelated record, or a row overreaching the stored log end

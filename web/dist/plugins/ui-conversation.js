@@ -249,6 +249,14 @@ window.__ModuleLoader__.load({
 			async loadOlder() {
 				await this.scopedSession("loadOlder").loadOlder();
 			}
+			/** Load only the history page containing one durable event sequence. */
+			async loadAround(seq) {
+				return this.scopedSession("loadAround").loadAround(seq);
+			}
+			/** Restore the live tail after an indexed historical jump. */
+			async returnLatest() {
+				await this.scopedSession("returnLatest").returnLatest();
+			}
 			/** Resolve the caller scope's session face or throw on root contexts. */
 			scopedSession(op) {
 				const id = this.scopeId(op);
@@ -5365,6 +5373,11 @@ window.__ModuleLoader__.load({
 			const [mountedAt] = (0, react.useState)(() => Date.now());
 			const anchor = startTime ?? mountedAt;
 			const [elapsedMs, setElapsedMs] = (0, react.useState)(() => Math.max(0, Date.now() - anchor));
+			const [dotCount, setDotCount] = (0, react.useState)(1);
+			(0, react.useEffect)(() => {
+				const id = setInterval(() => setDotCount((value) => value % 3 + 1), 350);
+				return () => clearInterval(id);
+			}, []);
 			(0, react.useEffect)(() => {
 				const tick = () => {
 					setElapsedMs(Math.max(0, Date.now() - anchor));
@@ -5382,7 +5395,7 @@ window.__ModuleLoader__.load({
 				className: ChatView_module_css_default.turnStatus,
 				role: "status",
 				"aria-live": "polite",
-				children: [baseLabel, (0, react_jsx_runtime.jsxs)("span", { className: "dsh-turn-dots", "aria-hidden": true, children: [(0, react_jsx_runtime.jsx)("span", { className: "dsh-turn-dot", children: "." }), (0, react_jsx_runtime.jsx)("span", { className: "dsh-turn-dot", children: "." }), (0, react_jsx_runtime.jsx)("span", { className: "dsh-turn-dot", children: "." })] }), showClock && (0, react_jsx_runtime.jsx)("span", {
+				children: [baseLabel, (0, react_jsx_runtime.jsx)("span", { className: "dsh-turn-dots", "aria-hidden": true, children: ".".repeat(dotCount) }), showClock && (0, react_jsx_runtime.jsx)("span", {
 					className: ChatView_module_css_default.turnStatusClock,
 					"aria-hidden": true,
 					children: formatRunDuration(elapsedMs, t)
@@ -5418,7 +5431,6 @@ window.__ModuleLoader__.load({
 			}, [nodeStore, order]);
 			const listRef = (0, react.useRef)(null);
 			const columnRef = (0, react.useRef)(null);
-			const [outline, setOutline] = (0, react.useState)({ sections: [], progress: 0 });
 			const atBottomRef = (0, react.useRef)(true);
 			const [atBottom, setAtBottom] = (0, react.useState)(true);
 			/** Last position delivered or written on the main thread. */
@@ -5440,19 +5452,7 @@ window.__ModuleLoader__.load({
 			const lastNode = lastKey === null ? void 0 : nodeStore.get(lastKey);
 			const lastSteeringId = pendingSteering[pendingSteering.length - 1]?.id ?? null;
 			const followSig = `${openState}:${firstSeq}:${lastKey}:${order.length}:${running ? 1 : 0}:${lastSteeringId ?? ""}`;
-			const refreshOutline = () => {
-				const local = listRef.current;
-				if (local === null) return;
-				const el = scrollerOf(local);
-				const rows = [...local.querySelectorAll('[data-chat-flow-kind="user"],[data-chat-flow-kind="compaction"]')];
-				const sections = rows.map((row, index) => ({
-					key: row.dataset.chatAnchorKey,
-					label: row.dataset.chatFlowKind === "compaction" ? "上下文压缩" : (row.innerText.trim().split("\n")[0] || `章节 ${index + 1}`).slice(0, 48)
-				})).filter((item) => item.key !== void 0);
-				const floor = Math.max(0, el.scrollHeight - el.clientHeight);
-				const progress = floor === 0 ? 1 : Math.max(0, Math.min(1, el.scrollTop / floor));
-				setOutline((current) => current.progress === progress && current.sections.length === sections.length && current.sections.every((item, index) => item.key === sections[index]?.key && item.label === sections[index]?.label) ? current : { sections, progress });
-			};
+
 			const toBottom = (el) => {
 				anchorRef.current = null;
 				el.scrollTop = el.scrollHeight;
@@ -5534,12 +5534,7 @@ window.__ModuleLoader__.load({
 				if (isAtBottom) chatScroll.save(null);
 				else if (position !== null) chatScroll.save(position);
 				observedTopRef.current = el.scrollTop;
-				refreshOutline();
 			};
-			(0, react.useEffect)(() => {
-				const frame = requestAnimationFrame(refreshOutline);
-				return () => cancelAnimationFrame(frame);
-			}, [order, hasMore, openState]);
 			(0, react.useEffect)(() => {
 				const local = listRef.current;
 				/* v8 ignore next -- ref-null guard: effect runs after the list node commits. */
@@ -5662,23 +5657,6 @@ window.__ModuleLoader__.load({
 							children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
 						})
 					})]
-				}), outline.sections.length >= 4 && (0, react_jsx_runtime.jsxs)("nav", {
-					className: ChatView_module_css_default.outline,
-					"aria-label": "对话章节导航",
-					children: [(0, react_jsx_runtime.jsx)("span", { className: ChatView_module_css_default.outlineTrack }), (0, react_jsx_runtime.jsx)("span", {
-						className: ChatView_module_css_default.outlineProgress,
-						style: { height: `${Math.round(outline.progress * 100)}%` }
-					}), outline.sections.map((section) => (0, react_jsx_runtime.jsx)("button", {
-						type: "button",
-						className: ChatView_module_css_default.outlineDot,
-						"aria-label": `跳转到：${section.label}`,
-						title: section.label,
-						onClick: () => {
-							const local = listRef.current;
-							if (local === null) return;
-							anchorElement(local, section.key)?.scrollIntoView({ behavior: "smooth", block: "start" });
-						}
-					}, section.key))]
 				})]
 			});
 		}

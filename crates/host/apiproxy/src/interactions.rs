@@ -74,25 +74,30 @@ pub(crate) struct MuxSubscription {
 /// Resources whose lifetime is exactly one mux stream.
 pub(crate) struct MuxResources {
     _subscription: MuxSubscription,
-    listener_disposer: cordis::Disposer,
+    listener_disposers: Vec<cordis::Disposer>,
 }
 
 impl MuxResources {
-    pub(crate) fn new(subscription: MuxSubscription, listener_disposer: cordis::Disposer) -> Self {
+    pub(crate) fn new(
+        subscription: MuxSubscription,
+        listener_disposers: Vec<cordis::Disposer>,
+    ) -> Self {
         Self {
             _subscription: subscription,
-            listener_disposer,
+            listener_disposers,
         }
     }
 }
 
 impl Drop for MuxResources {
     fn drop(&mut self) {
-        let future = (self.listener_disposer)();
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            drop(runtime.spawn(future));
-        } else {
-            futures::executor::block_on(future);
+        for disposer in self.listener_disposers.drain(..).rev() {
+            let future = disposer();
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                drop(runtime.spawn(future));
+            } else {
+                futures::executor::block_on(future);
+            }
         }
     }
 }

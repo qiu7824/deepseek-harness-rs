@@ -69,20 +69,12 @@ pub fn resolve_child_depth(
     Ok(child_depth)
 }
 
-/// Resolve the child's `AgentOptions`: the parent's provider/model/maxTokens
-/// route unless the request overrides it, stamped with the child's own
-/// delegation depth.
-pub fn resolve_child_agent_options(
-    parent: &dyn Agent,
+fn resolve_child_options(
+    parent_options: &AgentOptions,
+    current_selection: Option<&dsh_agent::ModelSelection>,
     requested: Option<&AgentOptions>,
     child_depth: u64,
 ) -> AgentOptions {
-    let parent_options = parent.options();
-    let selection_name = dsh_agent::model_selection_service_name(parent.ctx());
-    let current_selection = parent
-        .ctx()
-        .get_typed::<Arc<parking_lot::Mutex<dsh_agent::ModelSelectionRef>>>(&selection_name, false)
-        .and_then(|selection| selection.lock().resolved_current());
     let mut resolved = AgentOptions {
         provider: current_selection
             .as_ref()
@@ -93,6 +85,9 @@ pub fn resolve_child_agent_options(
             .map(|selection| selection.model.clone())
             .or_else(|| parent_options.model.clone()),
         max_tokens: parent_options.max_tokens,
+        // Reasoning effort is intentionally opt-in per delegation. A parent
+        // model selection must not make every child expensive implicitly.
+        reasoning_effort: None,
         subagent_depth: Some(child_depth),
     };
     if let Some(requested) = requested {
@@ -105,8 +100,86 @@ pub fn resolve_child_agent_options(
         if requested.max_tokens.is_some() {
             resolved.max_tokens = requested.max_tokens;
         }
+        if requested.reasoning_effort.is_some() {
+            resolved.reasoning_effort = requested.reasoning_effort.clone();
+        }
     }
     resolved
+}
+
+/// Resolve the child's `AgentOptions`: the parent's provider/model/maxTokens
+/// route unless the request overrides it, stamped with the child's own
+/// delegation depth. Reasoning effort is deliberately call-only.
+pub fn resolve_child_agent_options(
+    parent: &dyn Agent,
+    requested: Option<&AgentOptions>,
+    child_depth: u64,
+) -> AgentOptions {
+    let parent_options = parent.options();
+    let selection_name = dsh_agent::model_selection_service_name(parent.ctx());
+    let current_selection = parent
+        .ctx()
+        .get_typed::<Arc<parking_lot::Mutex<dsh_agent::ModelSelectionRef>>>(&selection_name, false)
+        .and_then(|selection| selection.lock().resolved_current());
+    resolve_child_options(
+        parent_options,
+        current_selection.as_ref(),
+        requested,
+        child_depth,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_child_options;
+    use dsh_agent::{AgentOptions, ModelSelection};
+    use dsh_llm::reasoning_effort_id;
+
+    fn parent() -> AgentOptions {
+        AgentOptions {
+            provider: Some("gpt".to_string()),
+            model: Some("gpt-5.6-sol".to_string()),
+            max_tokens: Some(4096),
+            reasoning_effort: Some(reasoning_effort_id("max")),
+            subagent_depth: None,
+        }
+    }
+
+    #[test]
+    fn omitted_child_effort_does_not_inherit_parent_effort() {
+        let resolved = resolve_child_options(&parent(), None, None, 1);
+        assert_eq!(resolved.provider.as_deref(), Some("gpt"));
+        assert_eq!(resolved.model.as_deref(), Some("gpt-5.6-sol"));
+        assert!(resolved.reasoning_effort.is_none());
+        assert_eq!(resolved.subagent_depth, Some(1));
+    }
+
+    #[test]
+    fn call_effort_overrides_for_this_child() {
+        let requested = AgentOptions {
+            reasoning_effort: Some(reasoning_effort_id("max")),
+            ..AgentOptions::default()
+        };
+        let resolved = resolve_child_options(&parent(), None, Some(&requested), 2);
+        assert_eq!(
+            resolved.reasoning_effort.as_ref().map(|id| id.as_str()),
+            Some("max")
+        );
+        assert_eq!(resolved.subagent_depth, Some(2));
+    }
+
+    #[test]
+    fn current_model_selection_still_wins_for_route_only() {
+        let selection = ModelSelection {
+            provider: "other".to_string(),
+            model: "model".to_string(),
+            reasoning_effort: Some(reasoning_effort_id("high")),
+        };
+        let resolved = resolve_child_options(&parent(), Some(&selection), None, 1);
+        assert_eq!(resolved.provider.as_deref(), Some("other"));
+        assert_eq!(resolved.model.as_deref(), Some("model"));
+        assert!(resolved.reasoning_effort.is_none());
+    }
 }
 
 /// Build the child session's durable creation metadata.
@@ -123,7 +196,7 @@ pub fn child_session_meta(
         seed_length: (lineage_seed_length > 0).then_some(lineage_seed_length),
         origin: Some("subagent".to_string()),
         delegation_depth: Some(child_depth),
-        agent_preset: None,
+        agent_preset: parent_header.agent_preset.clone(),
     }
 }
 

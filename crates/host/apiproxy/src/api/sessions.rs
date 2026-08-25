@@ -417,6 +417,27 @@ pub struct SessionUpdateQueueRequest {
     pub action: QueueAction,
 }
 
+/// One user-authored mutation of an item in the projected todo list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+pub enum TodoAction {
+    Edit { index: usize, content: String },
+    Remove { index: usize },
+}
+
+/// Compare-and-swap mutation of the projected todo list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUpdateTodosRequest {
+    pub session_id: SessionId,
+    pub expected: Vec<dsh_session::TodoItem>,
+    pub action: TodoAction,
+}
+
 /// Generic `{ accepted: true }` response value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcceptedResult {
@@ -492,6 +513,12 @@ pub trait SessionsApi: Send + Sync {
     async fn update_queue(
         &self,
         request: RpcRequest<SessionUpdateQueueRequest>,
+    ) -> RpcResponse<AcceptedResult>;
+
+    /// Atomically replaces the current projected todo list when `expected` still matches.
+    async fn update_todos(
+        &self,
+        request: RpcRequest<SessionUpdateTodosRequest>,
     ) -> RpcResponse<AcceptedResult>;
 
     /// Stops an ordinary session's active turn, preserving pending inbox

@@ -127,7 +127,8 @@ Bundled plugins:
 
 - `dsh-voice-input`: browser speech input.
 - `dsh-composer-expand`: expandable composer.
-- `dsh-context-jump`: top, bottom, previous-node, and next-node navigation with on-demand older-history paging.
+- `dsh-context-jump`: a Codex-style left-side conversation rail with hover titles, click-to-jump marks, top/bottom controls, and `Alt+Up/Down` navigation without replacing the native session header.
+- `dsh-web-preview-rs`: session-scoped Rust-native workspace browser for Markdown/source, images, media, PDF, isolated HTML sites, text/element annotations, and drop-to-workspace uploads. Project execution accepts only Host-detected fixed argv after a one-shot 60-second confirmation challenge and requires full WorkspaceWrite OS-sandbox enforcement, credential scrubbing, managed process trees, and bounded logs.
 
 ## Capability status
 

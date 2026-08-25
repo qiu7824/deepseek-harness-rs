@@ -5,6 +5,9 @@ mod responses;
 mod serialize;
 mod sse;
 mod translate;
+
+#[cfg(test)]
+mod reasoning_mapping_tests;
 mod transport;
 mod upload_index;
 
@@ -70,12 +73,25 @@ pub struct RequestDefaults {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogReasoningEffort {
+    /// Stable effort id exposed to DSH callers.
+    pub id: String,
+    /// Human-readable model-menu label.
+    pub name: String,
+    /// Exact provider wire value.
+    pub wire: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeepSeekCatalogModel {
     pub id: String,
     pub name: Option<String>,
     pub description: Option<String>,
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
+    /// Optional exact-model reasoning catalog. Absence keeps the DeepSeek
+    /// adapter defaults; an explicit catalog is used by generic routes.
+    pub reasoning_efforts: Option<Vec<CatalogReasoningEffort>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -121,6 +137,7 @@ pub fn resolve_adapter_options(
                 description: None,
                 context_window: Some(DEFAULT_CONTEXT_WINDOW),
                 max_tokens: None,
+                reasoning_efforts: None,
             },
             DeepSeekCatalogModel {
                 id: "deepseek-v4-pro".to_string(),
@@ -128,6 +145,7 @@ pub fn resolve_adapter_options(
                 description: None,
                 context_window: Some(DEFAULT_CONTEXT_WINDOW),
                 max_tokens: None,
+                reasoning_efforts: None,
             },
             DeepSeekCatalogModel {
                 id: "deepseek-v4-flash-vision-exp".to_string(),
@@ -135,6 +153,7 @@ pub fn resolve_adapter_options(
                 description: None,
                 context_window: Some(DEFAULT_CONTEXT_WINDOW),
                 max_tokens: None,
+                reasoning_efforts: None,
             },
         ]
     });
@@ -196,12 +215,21 @@ pub type ApiKeyResolver = Arc<
 pub type AttachmentResolver =
     Arc<dyn Fn() -> Option<Arc<dyn dsh_attachment::AttachmentStore>> + Send + Sync>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningWireFormat {
+    /// DeepSeek's `thinking` object plus optional `reasoning_effort`.
+    DeepSeek,
+    /// OpenAI-compatible `reasoning_effort`; Responses conversion maps it to
+    /// the nested `reasoning` object.
+    OpenAi,
+}
+
 pub struct DeepSeekAdapterOptions {
     pub options: OptionsResolver,
     pub resolve_api_key: ApiKeyResolver,
     pub resolve_attachments: Option<AttachmentResolver>,
     pub provider_name: Option<String>,
-    pub include_thinking_fields: bool,
+    pub reasoning_wire_format: ReasoningWireFormat,
 }
 
 pub struct DeepSeekAdapter {
@@ -669,17 +697,54 @@ fn detail_names_file_id(detail: &str, file_id: &DeepSeekFileId) -> bool {
     })
 }
 
+fn map_reasoning_effort_for_request(
+    options: &mut GenerateOptions,
+    connection: &ResolvedDeepSeekOptions,
+    reasoning_wire_format: ReasoningWireFormat,
+) -> Result<(), LlmFailure> {
+    if reasoning_wire_format != ReasoningWireFormat::OpenAi {
+        return Ok(());
+    }
+    let Some(requested) = options.reasoning_effort.as_ref() else {
+        return Ok(());
+    };
+    let Some(catalog) = connection
+        .models
+        .iter()
+        .find(|model| model.id == options.model)
+        .and_then(|model| model.reasoning_efforts.as_ref())
+    else {
+        return Ok(());
+    };
+    let Some(effort) = catalog
+        .iter()
+        .find(|effort| effort.id == requested.as_str())
+    else {
+        return Err(failure(
+            format!(
+                "provider model \"{}\" does not support reasoning effort \"{}\"",
+                options.model,
+                requested.as_str()
+            ),
+            "UNSUPPORTED_REASONING_EFFORT",
+        ));
+    };
+    options.reasoning_effort = Some(reasoning_effort_id(&effort.wire));
+    Ok(())
+}
+
 async fn request_chunks(
     options: GenerateOptions,
     connection: ResolvedDeepSeekOptions,
     api_key: String,
     provider_name: &str,
-    include_thinking_fields: bool,
+    reasoning_wire_format: ReasoningWireFormat,
     attachment_store: Option<Arc<dyn dsh_attachment::AttachmentStore>>,
     sender: &tokio::sync::mpsc::Sender<StreamChunk>,
     cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
 ) -> Result<(), LlmFailure> {
-    let options = project_estimated_request(&options);
+    let mut options = project_estimated_request(&options);
+    map_reasoning_effort_for_request(&mut options, &connection, reasoning_wire_format)?;
     if connection.api == "openai-responses" {
         let (image_urls, image_meta) =
             resolve_image_urls(&options, attachment_store.as_ref()).await?;
@@ -691,7 +756,7 @@ async fn request_chunks(
         let chat_body = serialize::serialize_request_with_prepared_images(
             &exact_options,
             &connection.defaults,
-            include_thinking_fields,
+            reasoning_wire_format,
             Some(&image_urls),
             None,
             Some(&image_meta),
@@ -723,7 +788,7 @@ async fn request_chunks(
                     serialize::serialize_request_with_prepared_images(
                         &exact_options,
                         &connection.defaults,
-                        include_thinking_fields,
+                        reasoning_wire_format,
                         None,
                         Some(&files.ids),
                         Some(&files.image_meta),
@@ -743,7 +808,7 @@ async fn request_chunks(
                     serialize::serialize_request_with_prepared_images(
                         &exact_options,
                         &connection.defaults,
-                        include_thinking_fields,
+                        reasoning_wire_format,
                         Some(&image_urls),
                         None,
                         Some(&image_meta),
@@ -823,7 +888,7 @@ async fn request_chunks(
             let inline_body = serialize::serialize_request_with_prepared_images(
                 &exact_options,
                 &connection.defaults,
-                include_thinking_fields,
+                reasoning_wire_format,
                 Some(&image_urls),
                 None,
                 Some(&image_meta),
@@ -1042,7 +1107,7 @@ async fn drive_owned_request(
     key_resolver: ApiKeyResolver,
     attachment_resolver: Option<AttachmentResolver>,
     provider_name: String,
-    include_thinking_fields: bool,
+    reasoning_wire_format: ReasoningWireFormat,
     sender: tokio::sync::mpsc::Sender<StreamChunk>,
 ) {
     let cancelled = options.signal.clone();
@@ -1085,7 +1150,7 @@ async fn drive_owned_request(
         connection,
         api_key,
         &provider_name,
-        include_thinking_fields,
+        reasoning_wire_format,
         attachment_store,
         &sender,
         cancelled.clone(),
@@ -1140,6 +1205,63 @@ impl LlmAdapter for DeepSeekAdapter {
     ) -> LlmResolvedModelInfo {
         let options = (self.config.options)().expect("validated DeepSeek options");
         let configured = options.models.iter().find(|entry| entry.id == model);
+        if let Some(catalog) = configured.and_then(|entry| entry.reasoning_efforts.as_ref()) {
+            let efforts = catalog
+                .iter()
+                .map(|effort| LlmReasoningEffortInfo {
+                    id: reasoning_effort_id(&effort.id),
+                    name: effort.name.clone(),
+                    description: None,
+                })
+                .collect::<Vec<_>>();
+            return LlmResolvedModelInfo {
+                provider: provider.to_string(),
+                id: model.to_string(),
+                name: configured
+                    .and_then(|entry| entry.name.clone())
+                    .unwrap_or_else(|| model.to_string()),
+                description: configured.and_then(|entry| entry.description.clone()),
+                input_modalities: Some(vec![ModelModality::Text, ModelModality::Image]),
+                context: Some(LlmModelContext {
+                    context_window: configured
+                        .and_then(|entry| entry.context_window)
+                        .unwrap_or(options.default_context_window),
+                }),
+                default_max_tokens: Some(
+                    configured
+                        .and_then(|entry| entry.max_tokens)
+                        .unwrap_or(options.max_tokens),
+                ),
+                reasoning: (!efforts.is_empty()).then_some(LlmModelReasoningInfo {
+                    efforts,
+                    // A declared catalog advertises choices but does not
+                    // silently opt ordinary calls into paid reasoning.
+                    default_effort: None,
+                }),
+            };
+        }
+        if self.config.reasoning_wire_format == ReasoningWireFormat::OpenAi {
+            return LlmResolvedModelInfo {
+                provider: provider.to_string(),
+                id: model.to_string(),
+                name: configured
+                    .and_then(|entry| entry.name.clone())
+                    .unwrap_or_else(|| model.to_string()),
+                description: configured.and_then(|entry| entry.description.clone()),
+                input_modalities: Some(vec![ModelModality::Text, ModelModality::Image]),
+                context: Some(LlmModelContext {
+                    context_window: configured
+                        .and_then(|entry| entry.context_window)
+                        .unwrap_or(options.default_context_window),
+                }),
+                default_max_tokens: Some(
+                    configured
+                        .and_then(|entry| entry.max_tokens)
+                        .unwrap_or(options.max_tokens),
+                ),
+                reasoning: None,
+            };
+        }
         let effort = match options.defaults.reasoning_effort {
             Some(DeepSeekReasoningEffort::Off) => "off",
             Some(DeepSeekReasoningEffort::Low) => "low",
@@ -1203,7 +1325,7 @@ impl LlmAdapter for DeepSeekAdapter {
             .provider_name
             .clone()
             .unwrap_or_else(|| "DeepSeek".to_string());
-        let include_thinking_fields = self.config.include_thinking_fields;
+        let reasoning_wire_format = self.config.reasoning_wire_format;
         Box::pin(async_stream::stream! {
             let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
             let (cancel, cancelled) = tokio::sync::oneshot::channel();
@@ -1216,7 +1338,7 @@ impl LlmAdapter for DeepSeekAdapter {
                         .expect("DeepSeek request runtime");
                     runtime.block_on(async move {
                         tokio::select! {
-                            _ = drive_owned_request(options, options_resolver, key_resolver, attachment_resolver, provider_name, include_thinking_fields, sender) => {},
+                            _ = drive_owned_request(options, options_resolver, key_resolver, attachment_resolver, provider_name, reasoning_wire_format, sender) => {},
                             _ = cancelled => {},
                         }
                     });

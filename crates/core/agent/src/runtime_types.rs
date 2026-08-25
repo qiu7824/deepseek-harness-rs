@@ -94,6 +94,8 @@ pub struct AgentOptions {
     pub model: Option<String>,
     /// Maximum output tokens for each conversation-model request.
     pub max_tokens: Option<u64>,
+    /// Adapter-owned reasoning effort applied to this Agent's requests.
+    pub reasoning_effort: Option<dsh_llm::ReasoningEffortId>,
     /// Delegation depth: zero for a top-level agent and parent depth + 1 for
     /// a child (the TS module augmentation on `AgentOptions`).
     pub subagent_depth: Option<u64>,

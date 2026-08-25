@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 mod client_plugins;
+mod web_preview;
 
 fn packaged_resource(relative: &str) -> std::path::PathBuf {
     let adjacent = std::env::current_exe()
@@ -34,6 +35,47 @@ struct OpenAiCompatibleModelConfig {
     context_window: Option<u64>,
     #[serde(default)]
     max_tokens: Option<u64>,
+    /// Hermes-style stable effort ids mapped to exact provider wire values.
+    /// `off: null` means disabling reasoning is represented by omission.
+    #[serde(default)]
+    reasoning_efforts: Option<ReasoningEffortsConfig>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(untagged)]
+enum ReasoningEffortsConfig {
+    Disabled(bool),
+    Levels(indexmap::IndexMap<String, Option<String>>),
+}
+
+fn inferred_gpt_reasoning_efforts(
+    model_id: &str,
+) -> Option<indexmap::IndexMap<String, Option<String>>> {
+    let normalized = model_id.to_ascii_lowercase();
+    if !normalized.starts_with("gpt-5") {
+        return None;
+    }
+    Some(indexmap::IndexMap::from([
+        ("off".to_string(), None),
+        ("minimal".to_string(), Some("minimal".to_string())),
+        ("low".to_string(), Some("low".to_string())),
+        ("medium".to_string(), Some("medium".to_string())),
+        ("high".to_string(), Some("high".to_string())),
+        // Keep the stable DSH/Hermes maximum id used by existing settings,
+        // while dispatching the exact OpenAI GPT wire spelling.
+        ("max".to_string(), Some("xhigh".to_string())),
+    ]))
+}
+
+fn resolved_reasoning_efforts(
+    model: &OpenAiCompatibleModelConfig,
+) -> Option<indexmap::IndexMap<String, Option<String>>> {
+    match model.reasoning_efforts.as_ref() {
+        Some(ReasoningEffortsConfig::Levels(levels)) => Some(levels.clone()),
+        Some(ReasoningEffortsConfig::Disabled(false)) => None,
+        Some(ReasoningEffortsConfig::Disabled(true)) => None,
+        None => inferred_gpt_reasoning_efforts(&model.id),
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -72,6 +114,16 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
         Schema::number().min(1.0).step(1.0),
     );
     model.insert("maxTokens".to_string(), Schema::number().min(1.0).step(1.0));
+    model.insert(
+        "reasoningEfforts".to_string(),
+        Schema::union(vec![
+            Schema::constant(Data::Bool(false)),
+            Schema::dict(
+                Schema::union(vec![Schema::string(), Schema::constant(Data::Null)]),
+                None,
+            ),
+        ]),
+    );
 
     let mut profile = indexmap::IndexMap::new();
     profile.insert(
@@ -244,6 +296,54 @@ fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSett
                 "llm-pi-ai: provider \"{provider}\" needs at least one named model"
             ));
         }
+        const LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+        for model in &profile.models {
+            let Some(reasoning) = &model.reasoning_efforts else {
+                continue;
+            };
+            let efforts = match reasoning {
+                ReasoningEffortsConfig::Disabled(false) => continue,
+                ReasoningEffortsConfig::Disabled(true) => {
+                    return Err(format!(
+                        "llm-pi-ai: provider \"{provider}\" model \"{}\" reasoningEfforts only accepts false or a level map",
+                        model.id
+                    ));
+                }
+                ReasoningEffortsConfig::Levels(efforts) => efforts,
+            };
+            if efforts.is_empty() {
+                return Err(format!(
+                    "llm-pi-ai: provider \"{provider}\" model \"{}\" has empty reasoningEfforts",
+                    model.id
+                ));
+            }
+            for (level, wire) in efforts {
+                if !LEVELS.contains(&level.as_str()) {
+                    return Err(format!(
+                        "llm-pi-ai: provider \"{provider}\" model \"{}\" has unknown reasoning effort \"{level}\"",
+                        model.id
+                    ));
+                }
+                if level != "off" && wire.as_deref().is_none_or(str::is_empty) {
+                    return Err(format!(
+                        "llm-pi-ai: provider \"{provider}\" model \"{}\" reasoningEfforts.{level} needs a wire value",
+                        model.id
+                    ));
+                }
+                if level == "off" && wire.as_deref().is_some_and(str::is_empty) {
+                    return Err(format!(
+                        "llm-pi-ai: provider \"{provider}\" model \"{}\" reasoningEfforts.off must be null or a non-empty wire value",
+                        model.id
+                    ));
+                }
+            }
+            if !efforts.keys().any(|level| level != "off") {
+                return Err(format!(
+                    "llm-pi-ai: provider \"{provider}\" model \"{}\" offers no reasoning level beyond off",
+                    model.id
+                ));
+            }
+        }
         if profile.api_key_env.as_deref().is_none_or(str::is_empty) {
             return Err(format!(
                 "llm-pi-ai: provider \"{provider}\" needs apiKeyEnv"
@@ -277,6 +377,36 @@ impl OpenAiCompatibleAdapter {
                             description: None,
                             context_window: model.context_window,
                             max_tokens: model.max_tokens,
+                            reasoning_efforts: match model.reasoning_efforts.as_ref() {
+                                Some(ReasoningEffortsConfig::Disabled(false)) => Some(Vec::new()),
+                                Some(ReasoningEffortsConfig::Disabled(true)) => None,
+                                Some(ReasoningEffortsConfig::Levels(_)) | None => {
+                                    resolved_reasoning_efforts(model).map(|efforts| {
+                                        efforts
+                                            .iter()
+                                            .map(|(id, wire)| {
+                                                dsh_llm_deepseek::CatalogReasoningEffort {
+                                                    id: id.clone(),
+                                                    name: match id.as_str() {
+                                                        "off" => "Off",
+                                                        "minimal" => "Minimal",
+                                                        "low" => "Low",
+                                                        "medium" => "Medium",
+                                                        "high" => "High",
+                                                        "xhigh" => "Extra High",
+                                                        "max" => "Extra High",
+                                                        _ => id.as_str(),
+                                                    }
+                                                    .to_string(),
+                                                    wire: wire
+                                                        .clone()
+                                                        .unwrap_or_else(|| "off".to_string()),
+                                                }
+                                            })
+                                            .collect()
+                                    })
+                                }
+                            },
                         })
                         .collect(),
                 ),
@@ -311,7 +441,7 @@ impl OpenAiCompatibleAdapter {
                     .clone()
                     .unwrap_or_else(|| provider.to_string()),
             ),
-            include_thinking_fields: false,
+            reasoning_wire_format: dsh_llm_deepseek::ReasoningWireFormat::OpenAi,
         })
     }
 }
@@ -342,6 +472,8 @@ impl dsh_llm::LlmAdapter for OpenAiCompatibleAdapter {
     }
 
     fn stream(&self, options: &dsh_llm::GenerateOptions) -> dsh_llm::ChunkStream {
+        // The delegated adapter captures one immutable profile snapshot and
+        // maps stable effort ids to wire values inside that same request.
         self.delegate(&options.provider).stream(options)
     }
 }
@@ -766,6 +898,7 @@ pub struct HostSpine {
     pub api_proxy: Arc<ApiProxyService>,
     pub agent_presets: Arc<dsh_agent_presets::AgentPresets>,
     api_route: RouteDisposer,
+    web_preview_route: RouteDisposer,
     data_root: std::path::PathBuf,
     owns_data_root: bool,
     boot_probe_id: dsh_session::SessionId,
@@ -833,6 +966,7 @@ impl HostSpine {
         self.shutdown_result
             .get_or_init(|| async {
                 self.web_server.shutdown().await;
+                (self.web_preview_route)();
                 (self.api_route)();
 
                 let companion_fiber = self.companion_fiber.lock().clone();
@@ -881,6 +1015,7 @@ impl Drop for HostSpine {
             .load(std::sync::atomic::Ordering::SeqCst)
         {
             self.web_server.request_shutdown();
+            (self.web_preview_route)();
             (self.api_route)();
             eprintln!(
                 "dsh-host dropped without shutdown().await; stop requested and data root preserved at {}",
@@ -1115,8 +1250,8 @@ fn compose_host_in_fiber(
     // first; reverse Cordis teardown then closes terminals/jobs before the
     // subprocess provider drains any remaining trees. The model-code runtime
     // is installed only after its fail-closed OS sandbox is available.
-    let _subprocess = LocalSubprocessRuntime::install(ctx);
-    let _sandbox = LocalSandboxProvider::install(ctx, Default::default());
+    let subprocess = LocalSubprocessRuntime::install(ctx);
+    let sandbox = LocalSandboxProvider::install(ctx, Default::default());
     let _sandbox_policy = SandboxPolicyService::install(
         ctx,
         dsh_sandbox_policy::Config {
@@ -1472,7 +1607,7 @@ fn compose_host_in_fiber(
                     .map(|slot| slot.as_ref().clone())
             })),
             provider_name: None,
-            include_thinking_fields: true,
+            reasoning_wire_format: dsh_llm_deepseek::ReasoningWireFormat::DeepSeek,
         },
     ));
     let _deepseek_registration = dsh_llm_deepseek::apply(ctx, &llm, deepseek_adapter)
@@ -2011,7 +2146,7 @@ fn compose_host_in_fiber(
     let live: Arc<dyn dsh_workspace::LiveSessionStore> =
         Arc::new(dsh_workspace::StoreLiveSessions(sessions.clone()));
     let persistence_for_delete = persistence.clone();
-    dsh_workspace::WorkspaceRegistry::install(
+    let workspace_registry = dsh_workspace::WorkspaceRegistry::install(
         ctx,
         &domains,
         persistence_api,
@@ -2102,11 +2237,33 @@ fn compose_host_in_fiber(
     } else {
         Vec::new()
     };
-    let boot_script = format!(
-        "<script>window.__DSH_BOOT__={};</script>",
-        serde_json::to_string(&boot_payload).expect("web boot payload")
+    let web_preview_route = web_preview::register(
+        &web_server,
+        workspace_registry.clone(),
+        subprocess.clone(),
+        sandbox.clone(),
     );
+    let boot_profile = profile.map(|profile| data_root.join("profiles").join(profile));
     let _ = web_server.tap_index(Arc::new(move |html| {
+        let mut payload = boot_payload.clone();
+        if let Some(profile) = boot_profile.as_ref() {
+            let disabled = client_plugins::disabled_plugins(profile);
+            if let Some(entries) = payload
+                .get_mut("entries")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                entries.retain(|entry| {
+                    entry
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .is_none_or(|id| !disabled.contains(id))
+                });
+            }
+        }
+        let boot_script = format!(
+            "<script>window.__DSH_BOOT__={};</script>",
+            serde_json::to_string(&payload).expect("web boot payload")
+        );
         html.replacen("</head>", &format!("{boot_script}</head>"), 1)
     }));
     // The directory-picker seam serves the browse interaction.
@@ -2200,6 +2357,7 @@ fn compose_host_in_fiber(
         api_proxy,
         agent_presets,
         api_route,
+        web_preview_route,
         data_root,
         owns_data_root,
         boot_probe_id: session_id(format!("host-boot-{}", uuid::Uuid::new_v4())),
@@ -2415,3 +2573,58 @@ pub fn mount_companions(spine: &HostSpine) -> Result<(), String> {
 // Re-exported anchors for compositions.
 pub use dsh_agent::AgentRegistry as AgentRegistryType;
 pub use dsh_session::SessionStore as SessionStoreType;
+
+#[cfg(test)]
+mod reasoning_tests {
+    use super::{
+        OpenAiCompatibleModelConfig, ReasoningEffortsConfig, inferred_gpt_reasoning_efforts,
+        resolved_reasoning_efforts,
+    };
+
+    fn model(id: &str) -> OpenAiCompatibleModelConfig {
+        OpenAiCompatibleModelConfig {
+            id: id.to_string(),
+            name: None,
+            context_window: None,
+            max_tokens: None,
+            reasoning_efforts: None,
+        }
+    }
+
+    #[test]
+    fn gpt_five_stable_max_maps_to_openai_xhigh() {
+        let efforts = inferred_gpt_reasoning_efforts("gpt-5.6-sol").expect("GPT capability");
+        assert_eq!(
+            efforts.get("max").and_then(Clone::clone).as_deref(),
+            Some("xhigh")
+        );
+        assert!(!efforts.contains_key("xhigh"));
+    }
+
+    #[test]
+    fn unknown_models_do_not_gain_reasoning_capability() {
+        assert!(inferred_gpt_reasoning_efforts("muse-spark-1.2").is_none());
+    }
+
+    #[test]
+    fn explicit_false_disables_gpt_inference() {
+        let mut model = model("gpt-5.6-sol");
+        model.reasoning_efforts = Some(ReasoningEffortsConfig::Disabled(false));
+        assert!(resolved_reasoning_efforts(&model).is_none());
+    }
+
+    #[test]
+    fn explicit_map_overrides_gpt_inference() {
+        let mut model = model("gpt-5.6-sol");
+        model.reasoning_efforts = Some(ReasoningEffortsConfig::Levels(indexmap::IndexMap::from([
+            ("off".to_string(), None),
+            ("high".to_string(), Some("ultra".to_string())),
+        ])));
+        let efforts = resolved_reasoning_efforts(&model).expect("explicit capability");
+        assert_eq!(
+            efforts.get("high").and_then(Clone::clone).as_deref(),
+            Some("ultra")
+        );
+        assert!(!efforts.contains_key("max"));
+    }
+}

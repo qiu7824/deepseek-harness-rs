@@ -9,7 +9,7 @@ use dsh_fs_observation_policy::FsObservationActorHandle;
 use dsh_system_prompt::{PromptSection, PromptText, SystemPrompt};
 use dsh_tools::{
     FileDiff, FileLocation, ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition,
-    ToolExecution, ToolOutputDefinition,
+    ToolExecution, ToolOutputDefinition, ToolResultView,
 };
 use futures::{FutureExt, StreamExt};
 use std::sync::Arc;
@@ -129,11 +129,18 @@ fn output_object(
     + Sync
     + 'static,
     schema: serde_json::Value,
+    presentation_meta: Option<
+        Arc<
+            dyn Fn(&serde_json::Value, &serde_json::Value) -> Result<serde_json::Value, String>
+                + Send
+                + Sync,
+        >,
+    >,
 ) -> ToolOutputDefinition {
     ToolOutputDefinition {
         schema,
         render: Arc::new(render),
-        presentation_meta: None,
+        presentation_meta,
     }
 }
 
@@ -220,6 +227,7 @@ impl Service {
                     }])
                 },
                 serde_json::json!({"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"offset":{"type":"integer"},"lines":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{"number":{"type":"integer"},"text":{"type":"string"}},"required":["number","text"]}},"totalLines":{"type":"integer"}},"required":["path","offset","lines","totalLines"]}),
+                None,
             ),
             timeout_ms: None,
             is_concurrency_safe: Some(Arc::new(|_| true)),
@@ -373,6 +381,7 @@ impl Service {
                     }])
                 },
                 serde_json::json!({"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"operation":{"type":"string","enum":["create","update"]},"before":{"oneOf":[{"type":"string"},{"type":"null"}]},"after":{"type":"string"}},"required":["path","operation","before","after"]}),
+                Some(Arc::new(|_args, value| Ok(value.clone()))),
             ),
             timeout_ms: None,
             is_concurrency_safe: None,
@@ -419,7 +428,20 @@ impl Service {
                     }]),
                 })
             })),
-            present_result: None,
+            present_result: Some(Arc::new(|_args, result| {
+                if result.is_error {
+                    return None;
+                }
+                let value = result.meta.as_ref()?;
+                Some(ToolResultView::Diff {
+                    title: value["path"].as_str().map(|path| format!("Write {path}")),
+                    diffs: vec![FileDiff {
+                        path: value["path"].as_str().unwrap_or("").into(),
+                        old_text: value["before"].as_str().map(str::to_string),
+                        new_text: value["after"].as_str().unwrap_or("").into(),
+                    }],
+                })
+            })),
         }
     }
 
@@ -450,6 +472,7 @@ impl Service {
                     }])
                 },
                 serde_json::json!({"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"before":{"type":"string"},"after":{"type":"string"}},"required":["path","before","after"]}),
+                Some(Arc::new(|_args, value| Ok(value.clone()))),
             ),
             timeout_ms: None,
             is_concurrency_safe: None,
@@ -520,7 +543,20 @@ impl Service {
                     }]),
                 })
             })),
-            present_result: None,
+            present_result: Some(Arc::new(|_args, result| {
+                if result.is_error {
+                    return None;
+                }
+                let value = result.meta.as_ref()?;
+                Some(ToolResultView::Diff {
+                    title: value["path"].as_str().map(|path| format!("Edit {path}")),
+                    diffs: vec![FileDiff {
+                        path: value["path"].as_str().unwrap_or("").into(),
+                        old_text: value["before"].as_str().map(str::to_string),
+                        new_text: value["after"].as_str().unwrap_or("").into(),
+                    }],
+                })
+            })),
         }
     }
 }

@@ -69,7 +69,8 @@ pub use api::sessions::{
     SessionListResult, SessionModels, SessionOrigin, SessionProjectionsBlock, SessionPromptRequest,
     SessionPromptResult, SessionRefRequest, SessionRenameRequest, SessionRenameResult,
     SessionSearchItem, SessionSearchRequest, SessionSearchResult, SessionSelectModelRequest,
-    SessionSelectModelResult, SessionSummary, SessionUpdateQueueRequest, SessionsApi,
+    SessionSelectModelResult, SessionSummary, SessionUpdateQueueRequest, SessionUpdateTodosRequest,
+    SessionsApi, TodoAction,
 };
 pub use api::settings::{
     SettingsApi, SettingsApplies, SettingsDescribeResult, SettingsMutateRequest,

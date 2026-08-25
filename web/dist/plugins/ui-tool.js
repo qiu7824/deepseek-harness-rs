@@ -284,8 +284,33 @@ window.__ModuleLoader__.load({
 				return diffs === null ? null : { card: { diffs } };
 			}
 			const result = block.resultView?.card === "diff" ? block.resultView : null;
-			const diffs = result === null ? null : narrowDiffs(result.diffs);
+			const fallback = !block.isError && result === null && block.callView?.card === "diff" ? block.callView : null;
+			const view = result ?? fallback;
+			const diffs = view === null ? null : narrowDiffs(view.diffs);
 			return diffs === null ? null : { card: { diffs } };
+		}
+		function diffLineStats(diffs) {
+			let additions = 0;
+			let deletions = 0;
+			for (const diff of diffs) {
+				const before = diff.oldText === null || diff.oldText === "" ? [] : diff.oldText.split("\n");
+				const after = diff.newText === "" ? [] : diff.newText.split("\n");
+				if (before.length * after.length > 2e5) return null;
+				let common = 0;
+				const row = new Uint32Array(after.length + 1);
+				for (const oldLine of before) {
+					let diagonal = 0;
+					for (let j = 1; j <= after.length; j += 1) {
+						const prior = row[j];
+						row[j] = oldLine === after[j - 1] ? diagonal + 1 : Math.max(row[j], row[j - 1]);
+						diagonal = prior;
+					}
+				}
+				common = row[after.length];
+				additions += after.length - common;
+				deletions += before.length - common;
+			}
+			return { additions, deletions };
 		}
 		//#endregion
 		//#region lib/types/client/tool/models/search-card-model.js
@@ -671,6 +696,7 @@ window.__ModuleLoader__.load({
 			const failureLine = state === "error" ? errorSummary ?? null : null;
 			const summaryText = failureLine ?? summary;
 			const suffix = failureLine === null ? summarySuffix ?? null : null;
+			const diffStats = diffBody === null ? null : diffLineStats(diffBody.card.diffs);
 			const fileLink = filePath !== void 0 && onOpenFile !== void 0 && failureLine === null;
 			const toggleExpand = () => {
 				setExpanded((v) => !v);
@@ -721,6 +747,15 @@ window.__ModuleLoader__.load({
 						suffix !== null && (0, react_jsx_runtime.jsx)("span", {
 							className: ToolRow_module_css_default.summarySuffix,
 							children: suffix
+						}), diffStats !== null && (0, react_jsx_runtime.jsxs)("span", {
+							className: ToolRow_module_css_default.summarySuffix,
+							children: [(0, react_jsx_runtime.jsx)("span", {
+								style: { color: "var(--dsw-alias-state-success-primary)" },
+								children: `+${diffStats.additions}`
+							}), " ", (0, react_jsx_runtime.jsx)("span", {
+								style: { color: "var(--dsw-alias-state-error-primary)" },
+								children: `-${diffStats.deletions}`
+							})]
 						})
 					] }),
 					children: (0, react_jsx_runtime.jsxs)("div", {

@@ -19,7 +19,7 @@ pub mod invariant;
 use std::sync::Arc;
 
 use cordis::{ArcValue, Context, Disposer, Plugin, PluginError};
-use dsh_session::{TodoItem, TodoStatus, todo_write_data};
+use dsh_session::{Session, TodoItem, TodoStatus, todo_write_data};
 use dsh_tools::{
     ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition,
     ToolRunContext, ToolRuntime, validate_json_schema_value,
@@ -27,6 +27,56 @@ use dsh_tools::{
 
 pub use dsh_session::TodoItem as TodoItemType;
 pub use dsh_session::TodoStatus as TodoStatusType;
+
+/// Compare-and-swap failure for a user-authored whole-list replacement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReplaceTodosError {
+    Conflict { current: Vec<TodoItem> },
+    Invalid(String),
+    Append(String),
+}
+
+fn current_todos(events: &[dsh_session::SessionEvent]) -> Vec<TodoItem> {
+    events
+        .iter()
+        .rev()
+        .take_while(|event| event.type_ != "turn/start")
+        .find(|event| event.type_ == "todo/write")
+        .and_then(|event| event.data.get("todos"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|raw| to_todo_list(raw, true).ok())
+        .unwrap_or_default()
+}
+
+pub fn replace_if_current(
+    session: &Session,
+    expected: &[TodoItem],
+    replacement: &[TodoItem],
+    allow_parallel_in_progress: bool,
+) -> Result<dsh_session::SessionEvent, ReplaceTodosError> {
+    let raw = replacement
+        .iter()
+        .map(|todo| {
+            serde_json::json!({
+                "content": todo.content,
+                "status": status_str(todo.status),
+            })
+        })
+        .collect::<Vec<_>>();
+    let replacement =
+        to_todo_list(&raw, allow_parallel_in_progress).map_err(ReplaceTodosError::Invalid)?;
+    let data = todo_write_data(&replacement);
+    let expected = expected.to_vec();
+    match session.append_if("todo/write", data, None, move |events| {
+        current_todos(events) == expected
+    }) {
+        Ok(Some(event)) => Ok(event),
+        Ok(None) => Err(ReplaceTodosError::Conflict {
+            current: current_todos(&session.events()),
+        }),
+        Err(message) => Err(ReplaceTodosError::Append(message)),
+    }
+}
 
 /// Cordis plugin name used by loader diagnostics.
 pub const NAME: &str = "tool-todo";
@@ -342,7 +392,7 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
                 agent
                     .session()
                     .append("todo/write", todo_write_data(&todos), None)
-                    .map_err(|message| ToolBodyError::plain(message))?;
+                    .map_err(ToolBodyError::plain)?;
                 let count = |status: TodoStatus| -> i64 {
                     todos.iter().filter(|todo| todo.status == status).count() as i64
                 };
@@ -427,5 +477,101 @@ impl Plugin for ToolTodoPlugin {
             apply(ctx, &config).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
         let _ = ctx.effect("tool-todo", Box::pin(async move { Some(disposer) }));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(content: &str, status: TodoStatus) -> TodoItem {
+        TodoItem {
+            content: content.to_string(),
+            status,
+        }
+    }
+
+    fn session() -> Session {
+        Session::create(dsh_session::session_id("todo-service-test"), None, None)
+            .expect("detached test session")
+    }
+
+    fn current(session: &Session) -> Vec<TodoItem> {
+        current_todos(&session.events())
+    }
+
+    #[test]
+    fn compare_and_swap_replaces_the_current_list() {
+        let session = session();
+        let initial = vec![
+            item("implement", TodoStatus::InProgress),
+            item("verify", TodoStatus::Pending),
+        ];
+        replace_if_current(&session, &[], &initial, false).expect("initial replacement");
+        let edited = vec![
+            item("implement UI", TodoStatus::InProgress),
+            item("verify", TodoStatus::Pending),
+        ];
+        let event =
+            replace_if_current(&session, &initial, &edited, false).expect("matching replacement");
+        assert_eq!(event.type_, "todo/write");
+        assert_eq!(current(&session), edited);
+    }
+
+    #[test]
+    fn compare_and_swap_rejects_a_stale_snapshot() {
+        let session = session();
+        let current_list = vec![item("current", TodoStatus::InProgress)];
+        replace_if_current(&session, &[], &current_list, false).expect("initial replacement");
+        let error = replace_if_current(
+            &session,
+            &[item("stale", TodoStatus::InProgress)],
+            &[item("replacement", TodoStatus::InProgress)],
+            false,
+        )
+        .expect_err("stale replacement must fail");
+        assert_eq!(
+            error,
+            ReplaceTodosError::Conflict {
+                current: current_list.clone(),
+            }
+        );
+        assert_eq!(current(&session), current_list);
+    }
+
+    #[test]
+    fn a_new_turn_resets_the_current_list() {
+        let session = session();
+        replace_if_current(
+            &session,
+            &[],
+            &[item("previous turn", TodoStatus::InProgress)],
+            false,
+        )
+        .expect("initial replacement");
+        session
+            .append("turn/start", serde_json::json!({ "turn": 1 }), None)
+            .expect("turn start");
+        assert!(current(&session).is_empty());
+        replace_if_current(
+            &session,
+            &[],
+            &[item("new turn", TodoStatus::InProgress)],
+            false,
+        )
+        .expect("new turn replacement");
+    }
+
+    #[test]
+    fn compare_and_swap_reuses_tool_validation() {
+        let session = session();
+        let invalid = vec![
+            item("first", TodoStatus::InProgress),
+            item("second", TodoStatus::InProgress),
+        ];
+        let error = replace_if_current(&session, &[], &invalid, false)
+            .expect_err("parallel active todos must fail");
+        assert!(matches!(error, ReplaceTodosError::Invalid(_)));
+        assert!(current(&session).is_empty());
     }
 }

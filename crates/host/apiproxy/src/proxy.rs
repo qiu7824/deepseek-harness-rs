@@ -2354,6 +2354,7 @@ impl ApiProxyService {
     fn summarize_attached(
         &self,
         session: &dsh_session::Session,
+        projections: Option<&dsh_session_projection::SessionProjectionRegistry>,
     ) -> crate::api::sessions::SessionSummary {
         let running = self
             .agents()
@@ -2380,13 +2381,20 @@ impl ApiProxyService {
             }),
             cwd: header.cwd.clone(),
             agent_preset: header.agent_preset.clone(),
-            projections: None,
+            projections: projections.map(|registry| {
+                let snapshot = registry.snapshot(session);
+                crate::api::sessions::SessionProjectionsBlock {
+                    as_of_seq: snapshot.as_of_seq,
+                    values: serde_json::Value::Object(snapshot.values),
+                }
+            }),
         }
     }
 
     /// Summarize one validated cold session from its complete durable prefix.
     fn summarize_cold(
         inspection: &dsh_session_persistence::SessionReadFromResult,
+        projections: Option<&dsh_session_projection::SessionProjectionRegistry>,
     ) -> crate::api::sessions::SessionSummary {
         let meta = &inspection.meta;
         let blank = !inspection
@@ -2400,6 +2408,14 @@ impl ApiProxyService {
             .find(|event| event.type_ == "user/message")
             .map(|event| event.time)
             .unwrap_or_else(|| meta.created_at as i64);
+        let projection_block = projections.and_then(|registry| {
+            let checkpoint = dsh_session_projection::ProjectionCheckpoint::new();
+            let (snapshot, _) = registry.restore(&checkpoint, &inspection.events, 0).ok()?;
+            Some(crate::api::sessions::SessionProjectionsBlock {
+                as_of_seq: snapshot.as_of_seq,
+                values: serde_json::Value::Object(snapshot.values),
+            })
+        });
         crate::api::sessions::SessionSummary {
             session_id: meta.id.clone(),
             updated_at,
@@ -2412,7 +2428,7 @@ impl ApiProxyService {
             }),
             cwd: meta.cwd.clone(),
             agent_preset: meta.agent_preset.clone(),
-            projections: None,
+            projections: projection_block,
         }
     }
 
@@ -2431,10 +2447,17 @@ impl ApiProxyService {
                 }),
             );
         };
+        let projection_registry = self
+            .ctx
+            .get_typed::<Arc<dsh_session_projection::SessionProjectionRegistry>>(
+                "sessionProjections",
+                false,
+            )
+            .map(|slot| slot.as_ref().clone());
         let mut items: Vec<SessionSummary> = sessions
             .list()
             .iter()
-            .map(|session| self.summarize_attached(session))
+            .map(|session| self.summarize_attached(session, projection_registry.as_deref()))
             .collect();
         let attached: std::collections::HashSet<String> = items
             .iter()
@@ -2482,7 +2505,30 @@ impl ApiProxyService {
                         );
                     }
                 };
-                items.push(Self::summarize_cold(&stored));
+                items.push(Self::summarize_cold(
+                    &stored,
+                    projection_registry.as_deref(),
+                ));
+            }
+        }
+        // Re-baseline every summary through the persisted projection cache. A
+        // newly registered projection (for example userMessageRail) forces a
+        // one-time full replay, then subsequent lists read only the cached tail.
+        if let Some(cache) = self
+            .ctx
+            .get_typed::<Arc<dsh_session_projection_cache::SessionProjectionCache>>(
+                "sessionProjectionCache",
+                false,
+            )
+            .map(|slot| slot.as_ref().clone())
+        {
+            for item in &mut items {
+                if let Ok(snapshot) = cache.cold_snapshot(&item.session_id).await {
+                    item.projections = Some(crate::api::sessions::SessionProjectionsBlock {
+                        as_of_seq: snapshot.as_of_seq,
+                        values: serde_json::Value::Object(snapshot.values),
+                    });
+                }
             }
         }
         // updatedAt descending (the TS sort).
@@ -2557,6 +2603,77 @@ impl ApiProxyService {
         } else {
             None
         };
+        if let Some(existing_id) = session_id.as_ref() {
+            match self.resolver.resolve(existing_id).await {
+                crate::agent_lookup::ApiRemoteAgentResult::Agent(agent) => {
+                    let existing_cwd = agent.session().header().cwd.clone();
+                    if existing_cwd.as_deref() != Some(cwd.as_str()) {
+                        return err(
+                            request.rpc_id,
+                            RpcError::SessionConflict(RpcErrorBody {
+                                message: format!(
+                                    "session \"{existing_id}\" already exists with a different cwd"
+                                ),
+                                details: crate::api::rpc::SessionConflictDetails {
+                                    session_id: existing_id.to_string(),
+                                    requested_cwd: cwd,
+                                    existing_cwd,
+                                },
+                            }),
+                        );
+                    }
+                    let existing_preset = dsh_agent_presets::resolve_session_preset(
+                        agent.session().header(),
+                        &agent.session().events(),
+                    );
+                    if request.payload.agent_preset.is_some() && existing_preset != resolved_preset
+                    {
+                        return err(
+                            request.rpc_id,
+                            RpcError::AgentPresetConflict(RpcErrorBody {
+                                message: format!(
+                                    "session \"{existing_id}\" already uses a different agent preset"
+                                ),
+                                details: crate::api::rpc::AgentPresetConflictDetails {
+                                    session_id: existing_id.to_string(),
+                                    requested_preset: resolved_preset.clone().unwrap_or_default(),
+                                    existing_preset,
+                                },
+                            }),
+                        );
+                    }
+                    if let Some(workspace) = workspace
+                        && let Err(error) = workspace.attach_session(existing_id).await
+                    {
+                        return err(
+                            request.rpc_id,
+                            RpcError::Internal(RpcErrorBody {
+                                message: format!(
+                                    "session.create: workspace attach failed: {error}"
+                                ),
+                                details: EmptyDetails {},
+                            }),
+                        );
+                    }
+                    return ok(
+                        request.rpc_id,
+                        crate::api::sessions::SessionCreateResult {
+                            session_id: existing_id.clone(),
+                            agent_preset: dsh_agent_presets::resolve_session_preset(
+                                agent.session().header(),
+                                &agent.session().events(),
+                            ),
+                        },
+                    );
+                }
+                crate::agent_lookup::ApiRemoteAgentResult::Error(error)
+                    if error.code() != crate::api::rpc::RpcErrorCode::SessionNotFound =>
+                {
+                    return err(request.rpc_id, error);
+                }
+                crate::agent_lookup::ApiRemoteAgentResult::Error(_) => {}
+            }
+        }
         let meta = CreateSessionMeta {
             cwd: Some(cwd),
             agent_preset: resolved_preset.clone(),
@@ -3362,6 +3479,142 @@ impl ApiProxyService {
             ),
         }
     }
+    async fn session_update_todos(
+        &self,
+        request: RpcRequest<crate::api::sessions::SessionUpdateTodosRequest>,
+    ) -> RpcResponse<serde_json::Value> {
+        let session_id = request.payload.session_id.clone();
+        let resolved = self.resolver.resolve(&session_id).await;
+        let agent = match resolved {
+            crate::agent_lookup::ApiRemoteAgentResult::Agent(agent) => agent,
+            crate::agent_lookup::ApiRemoteAgentResult::Error(error) => {
+                return err(request.rpc_id, error);
+            }
+        };
+        if crate::agent_lookup::has_api_remote_subagent_owner(
+            &self.ctx,
+            agent.session().header(),
+            Some(&agent),
+        ) {
+            return err(
+                request.rpc_id,
+                RpcError::AgentBusy(RpcErrorBody {
+                    message: format!("session \"{session_id}\" is owned by subagent routing"),
+                    details: crate::api::rpc::ReasonDetails {
+                        reason: "todo editing is unavailable for routed child sessions".to_string(),
+                    },
+                }),
+            );
+        }
+        let mut replacement = request.payload.expected.clone();
+        let (was_active, notice) = match &request.payload.action {
+            crate::api::sessions::TodoAction::Edit { index, content } => {
+                let Some(todo) = replacement.get_mut(*index) else {
+                    return err(
+                        request.rpc_id,
+                        RpcError::BadRequest(RpcErrorBody {
+                            message: "task index is no longer valid".to_string(),
+                            details: crate::api::rpc::BadRequestDetails { issues: vec![] },
+                        }),
+                    );
+                };
+                let previous = todo.content.clone();
+                todo.content = content.trim().to_string();
+                (
+                    todo.status == dsh_session::TodoStatus::InProgress,
+                    format!(
+                        "The user changed task {} from {} to {}. Follow the updated task list.",
+                        index + 1,
+                        serde_json::to_string(&previous).expect("task content"),
+                        serde_json::to_string(&todo.content).expect("task content"),
+                    ),
+                )
+            }
+            crate::api::sessions::TodoAction::Remove { index } => {
+                if *index >= replacement.len() {
+                    return err(
+                        request.rpc_id,
+                        RpcError::BadRequest(RpcErrorBody {
+                            message: "task index is no longer valid".to_string(),
+                            details: crate::api::rpc::BadRequestDetails { issues: vec![] },
+                        }),
+                    );
+                }
+                let removed = replacement.remove(*index);
+                if removed.status == dsh_session::TodoStatus::InProgress
+                    && !replacement
+                        .iter()
+                        .any(|todo| todo.status == dsh_session::TodoStatus::InProgress)
+                    && let Some(next) = replacement
+                        .iter_mut()
+                        .find(|todo| todo.status == dsh_session::TodoStatus::Pending)
+                {
+                    next.status = dsh_session::TodoStatus::InProgress;
+                }
+                (
+                    removed.status == dsh_session::TodoStatus::InProgress,
+                    format!(
+                        "The user stopped and removed task {}: {}. Do not continue it; follow the updated task list.",
+                        index + 1,
+                        serde_json::to_string(&removed.content).expect("task content"),
+                    ),
+                )
+            }
+        };
+        match dsh_tool_todo::replace_if_current(
+            agent.session(),
+            &request.payload.expected,
+            &replacement,
+            true,
+        ) {
+            Ok(_) => {
+                let message = dsh_llm::create_user_message(
+                    vec![dsh_llm::ContentBlock::Text { text: notice }],
+                    dsh_llm::MessageSource::Plugin {
+                        plugin: "dsh-task-manager".to_string(),
+                        form: Some(dsh_llm::ContextForm::Notice),
+                        sections: None,
+                        summary: Some("Task list changed by the user".to_string()),
+                        compaction_id: None,
+                        source_command_id: None,
+                    },
+                );
+                if was_active && agent.status() == dsh_agent::AgentStatus::Running {
+                    agent.steer(message);
+                } else {
+                    agent.inject(message);
+                }
+                ok(
+                    request.rpc_id,
+                    crate::api::sessions::AcceptedResult { accepted: true },
+                )
+            }
+            Err(dsh_tool_todo::ReplaceTodosError::Conflict { .. }) => err(
+                request.rpc_id,
+                RpcError::AgentBusy(RpcErrorBody {
+                    message: "the task list changed before this edit could be applied; reopen it and retry".to_string(),
+                    details: crate::api::rpc::ReasonDetails {
+                        reason: "todo-list-changed".to_string(),
+                    },
+                }),
+            ),
+            Err(dsh_tool_todo::ReplaceTodosError::Invalid(message)) => err(
+                request.rpc_id,
+                RpcError::BadRequest(RpcErrorBody {
+                    message,
+                    details: crate::api::rpc::BadRequestDetails { issues: vec![] },
+                }),
+            ),
+            Err(dsh_tool_todo::ReplaceTodosError::Append(message)) => err(
+                request.rpc_id,
+                RpcError::Internal(RpcErrorBody {
+                    message: format!("session.updateTodos failed: {message}"),
+                    details: EmptyDetails {},
+                }),
+            ),
+        }
+    }
+
     async fn session_update_queue(
         &self,
         request: RpcRequest<crate::api::sessions::SessionUpdateQueueRequest>,
@@ -5406,6 +5659,17 @@ impl ApiProxyCarrier for ApiProxyService {
                 self.session_update_queue(RpcRequest { rpc_id, payload })
                     .await
             }
+            "session.updateTodos" => {
+                let payload: crate::api::sessions::SessionUpdateTodosRequest =
+                    match serde_json::from_value(request.payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            return err(rpc_id, bad_request("session.updateTodos", error));
+                        }
+                    };
+                self.session_update_todos(RpcRequest { rpc_id, payload })
+                    .await
+            }
             "session.prompt" => {
                 let payload: crate::api::sessions::SessionPromptRequest =
                     match serde_json::from_value(request.payload) {
@@ -5625,7 +5889,36 @@ impl ApiProxyCarrier for ApiProxyService {
         // `register` normally anchors cleanup to the root fiber. This listener
         // belongs to one connection, so transfer sole ownership to the stream.
         self.ctx.fiber.disposables.delete(&listener_disposer);
-        let resources = crate::interactions::MuxResources::new(subscription, listener_disposer);
+        let mut listener_disposers = vec![listener_disposer];
+        if let Some(projections) = self
+            .ctx
+            .get_typed::<Arc<dsh_session_projection::SessionProjectionRegistry>>(
+                "sessionProjections",
+                false,
+            )
+            .map(|slot| slot.as_ref().clone())
+        {
+            let tx_for_projection = tx.clone();
+            let projection_listener: dsh_session_projection::ProjectionChangeListener =
+                Arc::new(move |session, key, value, seq| {
+                    let _ = tx_for_projection.send(FrameRequest {
+                        rpc_id: crate::api::rpc::rpc_id(Self::fresh_id()),
+                        payload: serde_json::to_value(
+                            crate::api::events::MuxFrame::SessionProjection {
+                                session_id: session.id().clone(),
+                                key: key.to_string(),
+                                value: value.clone(),
+                                seq,
+                            },
+                        )
+                        .expect("session/projection mux frame serialization"),
+                    });
+                });
+            let projection_disposer = projections.on_changed(&self.ctx, projection_listener);
+            self.ctx.fiber.disposables.delete(&projection_disposer);
+            listener_disposers.push(projection_disposer);
+        }
+        let resources = crate::interactions::MuxResources::new(subscription, listener_disposers);
         // The open comment rides the carrier's SSE framing; the stream
         // itself yields frames until the signal aborts.
         let stream_signal = signal.clone();

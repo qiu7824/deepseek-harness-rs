@@ -159,6 +159,28 @@ fn provider_wording(inherits_conversation: bool) -> (String, String) {
     }
 }
 
+fn subagent_parameters(prompt_description: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "description": {
+                "type": "string",
+                "description": "A short (3-5 word) description of the delegated task, for display."
+            },
+            "prompt": {
+                "type": "string",
+                "description": prompt_description
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "description": "Optional adapter-owned reasoning effort for this child only. Use the exact id advertised by the selected model; built-in GPT-5 routes expose max (dispatched as OpenAI xhigh). Omit it to keep the configured/provider default behavior."
+            }
+        },
+        "required": ["description", "prompt"],
+        "additionalProperties": false
+    })
+}
+
 /// Install the tool, mirroring the provider lifecycle (TS `apply`).
 pub fn apply(ctx: &Context, config: &Config) -> Result<(), String> {
     let background_enabled = config.enable_run_in_background.unwrap_or(true);
@@ -229,21 +251,7 @@ fn mount_tool(
     let definition = ToolDefinition {
         name: tool_name.to_string(),
         description,
-        parameters: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "description": {
-                    "type": "string",
-                    "description": "A short (3-5 word) description of the delegated task, for display."
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": prompt_description
-                }
-            },
-            "required": ["description", "prompt"],
-            "additionalProperties": false
-        }),
+        parameters: subagent_parameters(&prompt_description),
         output: ToolOutputDefinition {
             schema: serde_json::json!({
                 "oneOf": [
@@ -311,6 +319,16 @@ fn mount_tool(
                         "subagent tool requires a calling agent (exec.agent was undefined)",
                     ));
                 };
+                let mut agent_options = config.agent_options.clone();
+                if let Some(effort) = args
+                    .get("reasoning_effort")
+                    .and_then(|value| value.as_str())
+                    .filter(|effort| !effort.trim().is_empty())
+                {
+                    agent_options
+                        .get_or_insert_with(AgentOptions::default)
+                        .reasoning_effort = Some(dsh_llm::ReasoningEffortId::new(effort));
+                }
                 let request = SubagentStartRequest {
                     label: args
                         .get("description")
@@ -325,7 +343,7 @@ fn mount_tool(
                     }],
                     parent: parent.clone(),
                     signal: signal.clone(),
-                    agent_options: config.agent_options.clone(),
+                    agent_options,
                     output_schema: None,
                     max_depth: config.max_depth,
                     tool_filter: config.tool_filter.clone(),
@@ -334,7 +352,7 @@ fn mount_tool(
                 let run_in_background = args
                     .get("run_in_background")
                     .and_then(|value| value.as_bool())
-                    .unwrap_or(false);
+                    .unwrap_or(continuable);
                 if run_in_background {
                     if !background_enabled {
                         return Err(ToolBodyError::plain(
@@ -503,6 +521,24 @@ impl dsh_jobs::JobHooks for SettledRunHooks {
 
     fn read_output(&self) -> Option<String> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::subagent_parameters;
+
+    #[test]
+    fn schema_exposes_optional_per_call_reasoning_effort() {
+        let schema = subagent_parameters("task");
+        assert_eq!(
+            schema.pointer("/properties/reasoning_effort/type"),
+            Some(&serde_json::json!("string"))
+        );
+        assert_eq!(
+            schema.pointer("/required"),
+            Some(&serde_json::json!(["description", "prompt"]))
+        );
     }
 }
 
