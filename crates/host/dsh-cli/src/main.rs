@@ -20,12 +20,16 @@ fn configure_allocator() {
     const ARENA_EAGER_COMMIT: libmimalloc_sys::mi_option_t = 4;
     const PURGE_DECOMMITS: libmimalloc_sys::mi_option_t = 5;
     const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+    const DISALLOW_ARENA_ALLOC: libmimalloc_sys::mi_option_t = 27;
+    const TARGET_SEGMENTS_PER_THREAD: libmimalloc_sys::mi_option_t = 35;
     // SAFETY: the mimalloc option API is not thread-safe; main calls this
     // before any application thread or async runtime exists.
     unsafe {
         libmimalloc_sys::mi_option_set(ARENA_EAGER_COMMIT, 0);
         libmimalloc_sys::mi_option_set(PURGE_DECOMMITS, 1);
         libmimalloc_sys::mi_option_set(PURGE_DELAY, 0);
+        libmimalloc_sys::mi_option_set(DISALLOW_ARENA_ALLOC, 1);
+        libmimalloc_sys::mi_option_set(TARGET_SEGMENTS_PER_THREAD, 1);
     }
 }
 
