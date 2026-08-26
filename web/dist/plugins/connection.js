@@ -5768,6 +5768,42 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		/** skill.list response value. */
 		const skillListValueSchema = object({ skills: array(skillEntrySchema) });
 		//#endregion
+		//#region ../../host/apiproxy/lib/types/api/memory.schema.js
+		/**
+		* memory domain zod schemas (names derived from map keys:
+		* memoryCategoriesValueSchema / memoryListValueSchema / …).
+		*/
+		/** Builtin category row of memory.categories. */
+		const memoryCategorySchema = object({
+			id: string().min(1),
+			label: string()
+		});
+		/** Persisted memory entry row of memory.list / memory.upsert. */
+		const memoryEntrySchema = object({
+			id: string(),
+			scope: string().min(1),
+			category: string().min(1),
+			title: string().min(1),
+			content: string().min(1),
+			enabled: boolean(),
+			revision: number()
+		});
+		object({});
+		/** memory.categories response value. */
+		const memoryCategoriesValueSchema = object({ categories: array(memoryCategorySchema) });
+		object({
+			scope: string().min(1).optional(),
+			category: string().min(1).optional()
+		});
+		/** memory.list response value. */
+		const memoryListValueSchema = object({ entries: array(memoryEntrySchema) });
+		object({ entry: memoryEntrySchema, expectedRevision: number().optional() });
+		/** memory.upsert response value. */
+		const memoryUpsertValueSchema = object({ entry: memoryEntrySchema });
+		object({ id: string().min(1), expectedRevision: number().optional() });
+		/** memory.remove response value. */
+		const memoryRemoveValueSchema = object({ removed: boolean() });
+		//#endregion
 		//#region ../../host/apiproxy/lib/types/api/agent-presets.schema.js
 		/**
 		* agent-presets domain zod schemas (names derived from map keys:
@@ -6111,6 +6147,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			"workspace.unarchiveSession": workspaceUnarchiveSessionValueSchema,
 			"workspace.deleteArchivedSession": workspaceDeleteArchivedSessionValueSchema,
 			"skill.list": skillListValueSchema,
+			"memory.categories": memoryCategoriesValueSchema,
+			"memory.list": memoryListValueSchema,
+			"memory.upsert": memoryUpsertValueSchema,
+			"memory.remove": memoryRemoveValueSchema,
 			"agentPreset.list": agentPresetListValueSchema,
 			"agentPreset.select": agentPresetSelectValueSchema,
 			"agentPreset.read": agentPresetReadValueSchema,
@@ -6332,6 +6372,12 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				deleteArchivedSession: (payload, signal) => this.callUnary("workspace.deleteArchivedSession", payload, signal)
 			};
 			skills = { list: (payload, signal) => this.callUnary("skill.list", payload, signal) };
+			memory = {
+				categories: (payload = {}, signal) => this.callUnary("memory.categories", payload, signal),
+				list: (payload = {}, signal) => this.callUnary("memory.list", payload, signal),
+				upsert: (payload, signal) => this.callUnary("memory.upsert", payload, signal),
+				remove: (payload, signal) => this.callUnary("memory.remove", payload, signal)
+			};
 			agentPresets = {
 				list: (payload, signal) => this.callUnary("agentPreset.list", payload, signal),
 				select: (payload, signal) => this.callUnary("agentPreset.select", payload, signal),

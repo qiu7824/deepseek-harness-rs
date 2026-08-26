@@ -553,7 +553,7 @@ window.__ModuleLoader__.load({
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
 			"diagnostic.corrupt": "会话记录损坏",
-			"diagnostic.unsupported": "子代理记录版本不受支持",
+			"diagnostic.unsupported": "旧版子代理记录（只读）",
 			"diagnostic.unavailable": "会话记录暂不可用",
 			"duration.seconds": "{seconds}秒",
 			"duration.minutes": "{minutes}分{seconds}秒",
@@ -589,7 +589,7 @@ window.__ModuleLoader__.load({
 		/** English dictionary, key-identical to the Chinese source of truth. */
 		const en = {
 			"diagnostic.corrupt": "corrupted session record",
-			"diagnostic.unsupported": "unsupported subagent record version",
+			"diagnostic.unsupported": "legacy subagent record (read-only)",
 			"diagnostic.unavailable": "session record temporarily unavailable",
 			"duration.seconds": "{seconds}s",
 			"duration.minutes": "{minutes}m {seconds}s",

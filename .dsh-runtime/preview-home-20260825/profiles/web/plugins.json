@@ -1,0 +1,27 @@
+[
+  {
+    "id": "dsh-composer-expand",
+    "name": "dsh-composer-expand",
+    "disabled": false
+  },
+  {
+    "id": "dsh-context-jump",
+    "name": "dsh-context-jump",
+    "disabled": false
+  },
+  {
+    "id": "dsh-task-manager",
+    "name": "dsh-task-manager",
+    "disabled": false
+  },
+  {
+    "id": "dsh-voice-input",
+    "name": "dsh-voice-input",
+    "disabled": false
+  },
+  {
+    "id": "dsh-web-preview-rs",
+    "name": "dsh-web-preview-rs",
+    "disabled": false
+  }
+]

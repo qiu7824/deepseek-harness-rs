@@ -1278,7 +1278,7 @@ fn compose_host_in_fiber(
     )
     .map_err(|error| format!("code-runtime-node: {error}"))?;
     let _jobs = LocalJobRegistry::install(ctx, Default::default());
-    let _terminals = TerminalSessionService::install(ctx);
+    let terminals = TerminalSessionService::install(ctx);
     let _terminal_shell = dsh_terminal_bash::ShellTerminalBackend::install(ctx, Default::default())
         .map_err(|error| format!("terminal-bash: {error}"))?;
     let _shell = LocalPwshExecutor::install(ctx, Default::default());
@@ -1391,10 +1391,18 @@ fn compose_host_in_fiber(
             ctx,
             dsh_settings::settings_namespace("memory")
                 .map_err(|error| format!("settings namespace: {error}"))?,
-            dsh_schemastery::Schema::object(indexmap::IndexMap::from([(
-                "enabled".to_string(),
-                dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(true)),
-            )])),
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([
+                ("enabled".to_string(), dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(true))),
+                ("userProfileEnabled".to_string(), dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(true))),
+                ("memoryBudget".to_string(), dsh_schemastery::Schema::number().min(256.0).max(20_000.0).step(1.0).default(dsh_schemastery::Data::Number(2200.0))),
+                ("profileBudget".to_string(), dsh_schemastery::Schema::number().min(128.0).max(20_000.0).step(1.0).default(dsh_schemastery::Data::Number(1375.0))),
+                ("provider".to_string(), dsh_schemastery::Schema::constant(dsh_schemastery::Data::String("builtin".to_string())).default(dsh_schemastery::Data::String("builtin".to_string()))),
+                ("contextEngine".to_string(), dsh_schemastery::Schema::constant(dsh_schemastery::Data::String("compressor".to_string())).default(dsh_schemastery::Data::String("compressor".to_string()))),
+                ("autoCompact".to_string(), dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(true))),
+                ("compactThreshold".to_string(), dsh_schemastery::Schema::number().min(0.1).max(0.95).step(0.05).default(dsh_schemastery::Data::Number(0.5))),
+                ("compactTarget".to_string(), dsh_schemastery::Schema::number().min(0.05).max(0.9).step(0.05).default(dsh_schemastery::Data::Number(0.2))),
+                ("protectRecentMessages".to_string(), dsh_schemastery::Schema::number().min(1.0).max(200.0).step(1.0).default(dsh_schemastery::Data::Number(20.0))),
+            ])),
             dsh_settings::SettingsRegisterOptions::default(),
         )
         .map_err(|error| format!("settings memory: {error}"))?;
@@ -1780,8 +1788,32 @@ fn compose_host_in_fiber(
         dsh_schemastery::Data::Object(ref object)
             if matches!(object.get("enabled"), Some(dsh_schemastery::Data::Bool(true)))
     ) {
-        dsh_tool_memory_local::install(ctx, data_root.join("memory"))
+        let memory_root = data_root.join("memory");
+        dsh_tool_memory_local::install(ctx, memory_root.clone())
             .map_err(|error| format!("memory: {error}"))?;
+        let sessions_for_memory = Arc::clone(&sessions);
+        let memory_scope_for_context = memory_scope.clone();
+        let _memory_context = system_prompt.context(
+            ctx,
+            dsh_system_prompt::PromptContext {
+                name: "memory:entries".to_string(),
+                order: 105.0,
+                text: PromptText::Provider(Arc::new(move |assembly| {
+                    let preset = assembly.field_str("sessionId")
+                        .and_then(|id| sessions_for_memory.get(&dsh_session::session_id(id)))
+                        .and_then(|session| session.header().agent_preset.clone())
+                        .unwrap_or_else(|| "default".to_string());
+                    let budget = match (memory_scope_for_context.get)() {
+                        dsh_schemastery::Data::Object(object) => match object.get("memoryBudget") {
+                            Some(dsh_schemastery::Data::Number(value)) => *value as usize,
+                            _ => 2200,
+                        },
+                        _ => 2200,
+                    };
+                    dsh_tool_memory_local::render_enabled_file(&memory_root, &preset, budget)
+                })),
+            },
+        );
     }
     if let dsh_schemastery::Data::Object(object) = (voice_scope.get)() {
         let stt_command = match object.get("sttCommand") {
@@ -1996,6 +2028,14 @@ fn compose_host_in_fiber(
     loader.core.register(
         "@deepseek-ai/dsh-tool-pwsh",
         Arc::new(PresetBuiltinPlugin::Pwsh),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-agent-tool-presentation",
+        Arc::new(dsh_agent_tool_presentation::ToolPresentationPlugin {
+            config: dsh_agent_tool_presentation::Config {
+                mode: dsh_tools::ToolPresentationMode::Code,
+            },
+        }),
     );
     loader.core.register(
         "host-plugin-inventory",
@@ -2260,6 +2300,8 @@ fn compose_host_in_fiber(
     let web_preview_route = web_preview::register(
         &web_server,
         workspace_registry.clone(),
+        agents.clone(),
+        terminals.clone(),
         subprocess.clone(),
         sandbox.clone(),
     );

@@ -35,6 +35,10 @@ pub const CLIENT_REQUEST_METHODS: &[&str] = &[
     "llm.discoverModels",
     "llm.models",
     "llm.providers",
+    "memory.categories",
+    "memory.list",
+    "memory.remove",
+    "memory.upsert",
     "messageFeedback.delete",
     "messageFeedback.list",
     "messageFeedback.put",
@@ -86,7 +90,7 @@ mod tests {
 
     #[test]
     fn request_methods_are_sorted_unique_and_include_todo_updates() {
-        assert_eq!(CLIENT_REQUEST_METHODS.len(), 62);
+        assert_eq!(CLIENT_REQUEST_METHODS.len(), 66);
         assert!(
             CLIENT_REQUEST_METHODS
                 .windows(2)

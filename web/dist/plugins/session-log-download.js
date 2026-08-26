@@ -169,7 +169,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\session-query\session-log-export\src\client\HeaderAction.module.css.mjs
-		const css = ".dSOVMq_sessionLogButton{border:1px solid var(--dsw-alias-border-l2);min-width:111px;height:32px;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family);cursor:pointer;background:0 0;border-radius:18px;justify-content:center;align-items:center;gap:4px;padding:6px 12px;font-size:13px;font-weight:400;line-height:20px;display:inline-flex}.dSOVMq_sessionLogButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.dSOVMq_sessionLogButton:disabled{color:var(--dsw-alias-label-dimmed);cursor:wait}.dSOVMq_sessionLogButton span,.dSOVMq_sessionLogButton svg{flex:none}.dSOVMq_sessionLogButton span{white-space:nowrap}";
+		const css = ".dSOVMq_sessionLogButton{border:0;width:28px;height:28px;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family);cursor:pointer;background:transparent;border-radius:8px;justify-content:center;align-items:center;padding:0;display:inline-flex}.dSOVMq_sessionLogButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.dSOVMq_sessionLogButton:disabled{color:var(--dsw-alias-label-dimmed);cursor:wait}.dSOVMq_sessionLogButton svg{flex:none}";
 		const tagId = "@deepseek-ai/dsh-session-log-export/HeaderAction.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -197,7 +197,9 @@ window.__ModuleLoader__.load({
 				onClick: () => {
 					request(sessionId);
 				},
-				children: [(0, react_jsx_runtime.jsx)("span", { children: "会话日志" }), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconDownloadOutline16, { size: 12 })]
+				"aria-label": "下载会话日志",
+				title: "下载会话日志",
+				children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconDownloadOutline16, { size: 16 })
 			}), (0, react_jsx_runtime.jsx)(SessionLogDownloadDialog, { ...props })] });
 		}
 		//#endregion

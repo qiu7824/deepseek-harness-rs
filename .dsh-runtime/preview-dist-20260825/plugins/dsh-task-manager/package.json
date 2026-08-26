@@ -1,0 +1,15 @@
+{
+  "name": "dsh-task-manager",
+  "version": "1.0.0",
+  "description": "Interactive todo progress popover for the DeepSeek Harness composer.",
+  "license": "MIT",
+  "exports": {
+    "./client": "./lib/client.js"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
+    }
+  }
+}

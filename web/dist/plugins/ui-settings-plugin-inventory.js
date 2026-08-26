@@ -73,8 +73,9 @@ window.__ModuleLoader__.load({
 				setActionError(null);
 				try {
 					await setEnabled(entry.entryId, !entry.enabled);
-					window.location.reload();
-				} catch {
+					setRequest((value) => value + 1);
+				} catch (error) {
+					console.error("[plugin-inventory] state save failed:", error);
 					setActionError(entry.entryId);
 				} finally {
 					setChanging(null);
@@ -332,9 +333,17 @@ window.__ModuleLoader__.load({
 				return result.value;
 			};
 			const setEnabled = async (entryId, enabled) => {
-				const result = await ctx.remote.pluginInventory.setEnabled({ entryId, enabled });
-				if (!result.ok) throw new Error(`pluginInventory.setEnabled failed: ${result.error.code}: ${result.error.message}`);
-				return result.value;
+				const rpcId = typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+				const response = await fetch("/api/pluginInventory.setEnabled", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ type: "client-request", rpcId, method: "pluginInventory.setEnabled", payload: { entryId, enabled } })
+				});
+				if (!response.ok) throw new Error(`pluginInventory.setEnabled HTTP ${response.status}`);
+				const envelope = await response.json();
+				if (envelope.rpcId !== rpcId) throw new Error("pluginInventory.setEnabled response id mismatch");
+				if (!envelope.result?.ok) throw new Error(envelope.result?.error?.message ?? "pluginInventory.setEnabled failed");
+				return envelope.result.value;
 			};
 			const injected = () => ({ list, setEnabled });
 			ctx.slots.inject("settings.plugins.tab", () => ctx.slots.register({

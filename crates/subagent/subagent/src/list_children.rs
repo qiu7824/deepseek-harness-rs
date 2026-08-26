@@ -14,7 +14,7 @@ use std::sync::Arc;
 use cordis::Context;
 use dsh_session::{Session, SessionHeader, SessionId, SessionStore};
 use dsh_session_persistence::SessionPersistenceApi;
-use dsh_session_projection::{ProjectionCheckpoint, SessionProjectionRegistry};
+use dsh_session_projection::SessionProjectionRegistry;
 use dsh_session_projection_cache::SessionProjectionCache;
 
 use crate::error::SubagentError;
@@ -245,7 +245,6 @@ async fn resolve_candidate_rows(
                         let has_children = subagent_parents.contains(header.id.as_str());
                         let row = resolve_cold_identity(
                             &persistence,
-                            &projections,
                             cache.as_ref(),
                             &header,
                             has_children,
@@ -353,7 +352,6 @@ fn compare_corpus_records(a: &CorpusRecord, b: &CorpusRecord) -> std::cmp::Order
 /// Resolve one cold candidate down the remaining ladder.
 async fn resolve_cold_identity(
     persistence: &Arc<dyn SessionPersistenceApi>,
-    projections: &Arc<SessionProjectionRegistry>,
     cache: Option<&Arc<SessionProjectionCache>>,
     header: &SessionHeader,
     has_children: bool,
@@ -364,16 +362,32 @@ async fn resolve_cold_identity(
         && let Ok(Some(snapshot)) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             cache.cached_snapshot(header)
         }))
+        && let Ok(metadata) = persistence.read_list_metadata(&child_id).await
+        && same_lifecycle(&metadata.meta, header)
+        && snapshot.as_of_seq == metadata.last_seq
     {
         let cached: Option<SubagentIdentityProjection> = snapshot
             .values
             .get("subagent")
             .and_then(|value| serde_json::from_value(value.clone()).ok());
-        if let Some(cached) = cached
-            && cached_seq(&cached) >= header.seed_length.unwrap_or(0)
-        {
-            return child_row(child_id, cached, "inactive", has_children);
-        }
+        return match cached {
+            Some(cached) => child_row(child_id, cached, "inactive", has_children),
+            None => match snapshot.values.get("title").and_then(serde_json::Value::as_str) {
+                Some(title) if !title.trim().is_empty() => child_row(
+                    child_id,
+                    SubagentIdentityProjection::OneShot {
+                        label: Some(title.to_string()),
+                        seq: header.seed_length.unwrap_or(0),
+                    },
+                    "inactive",
+                    has_children,
+                ),
+                _ => SubagentListEntry::Diagnostic {
+                    id: child_id,
+                    reason: "unsupported".to_string(),
+                },
+            },
+        };
     }
     if let Err(error) = assert_listing_not_cancelled(signal) {
         return SubagentListEntry::Diagnostic {
@@ -381,9 +395,9 @@ async fn resolve_cold_identity(
             reason: error.code.to_string(),
         };
     }
-    let inspected = match persistence.inspect(&child_id).await {
-        Ok(inspected) => inspected,
-        Err(_) => {
+    let before = match persistence.read_snapshot(&child_id).await {
+        Ok(Some(snapshot)) => snapshot,
+        _ => {
             assert_listing_not_cancelled(signal).ok();
             return SubagentListEntry::Diagnostic {
                 id: child_id,
@@ -391,39 +405,70 @@ async fn resolve_cold_identity(
             };
         }
     };
-    if let Err(error) = assert_listing_not_cancelled(signal) {
-        return SubagentListEntry::Diagnostic {
-            id: child_id,
-            reason: error.code.to_string(),
-        };
-    }
-    if !same_lifecycle(&inspected.meta, header) {
+    if !same_lifecycle(&before.header, header) {
         return SubagentListEntry::Diagnostic {
             id: child_id,
             reason: "corrupt".to_string(),
         };
     }
-    let identity = match projections.restore(&ProjectionCheckpoint::new(), &inspected.events, 0) {
-        Ok((snapshot, _)) => snapshot
-            .values
-            .get("subagent")
-            .and_then(|value| serde_json::from_value(value.clone()).ok()),
-        Err(_) => None,
+    const IDENTITY_CHUNK_EVENTS: usize = 256;
+    let mut from_seq = 0_u64;
+    let mut descriptor = None;
+    loop {
+        if let Err(error) = assert_listing_not_cancelled(signal) {
+            return SubagentListEntry::Diagnostic {
+                id: child_id,
+                reason: error.code.to_string(),
+            };
+        }
+        let chunk = match persistence
+            .read_event_chunk(&child_id, from_seq, IDENTITY_CHUNK_EVENTS)
+            .await
+        {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                return SubagentListEntry::Diagnostic {
+                    id: child_id,
+                    reason: "unavailable".to_string(),
+                };
+            }
+        };
+        descriptor = chunk
+            .events
+            .into_iter()
+            .find(|event| event.type_ == "subagent/descriptor");
+        if descriptor.is_some() {
+            break;
+        }
+        match chunk.next_seq {
+            Some(next) if next > from_seq => from_seq = next,
+            _ => break,
+        }
+    }
+    let after = match persistence.read_snapshot(&child_id).await {
+        Ok(Some(snapshot)) => snapshot,
+        _ => {
+            return SubagentListEntry::Diagnostic {
+                id: child_id,
+                reason: "unavailable".to_string(),
+            };
+        }
     };
+    if before.revision != after.revision || !same_lifecycle(&after.header, header) {
+        return SubagentListEntry::Diagnostic {
+            id: child_id,
+            reason: "unavailable".to_string(),
+        };
+    }
+    let identity = descriptor
+        .as_ref()
+        .and_then(crate::projection::descriptor_identity);
     match identity {
         Some(identity) => child_row(child_id, identity, "inactive", has_children),
         None => SubagentListEntry::Diagnostic {
             id: child_id,
-            reason: "corrupt".to_string(),
+            reason: "unsupported".to_string(),
         },
-    }
-}
-
-/// Read the own-suffix proof seq from one served identity.
-fn cached_seq(identity: &SubagentIdentityProjection) -> u64 {
-    match identity {
-        SubagentIdentityProjection::OneShot { seq, .. }
-        | SubagentIdentityProjection::Continuable { seq, .. } => *seq,
     }
 }
 

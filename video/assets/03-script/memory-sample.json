@@ -1,0 +1,29 @@
+{
+  "captured_at": "2026-08-24 17:24:34 +08:00",
+  "interval_seconds": 2,
+  "sample_count": 10,
+  "scope": "Same machine and time window; current running state. Node and Rust did not load the same sessions or run the same task.",
+  "node_host": {
+    "process": "node.exe",
+    "pid": 2188,
+    "working_set_mb": {"min": 163.0, "median": 163.0, "max": 163.0},
+    "private_mb": {"min": 226.9, "median": 226.9, "max": 226.9}
+  },
+  "node_esbuild": {
+    "process": "esbuild.exe",
+    "pid": 13064,
+    "working_set_mb": {"min": 55.3, "median": 55.3, "max": 55.3},
+    "private_mb": {"min": 55.4, "median": 55.4, "max": 55.4}
+  },
+  "node_tree_total_mb": {
+    "working_set": 218.3,
+    "private": 282.3
+  },
+  "rust_host": {
+    "process": "dsh.exe",
+    "pid": 14096,
+    "working_set_mb": {"min": 45.3, "median": 45.3, "max": 45.3},
+    "private_mb": {"min": 91.3, "median": 91.3, "max": 91.3}
+  },
+  "claim_boundary": "Report the observed numbers only. Do not state a multiplier or percentage reduction; this is not a same-session, same-task benchmark."
+}

@@ -1401,6 +1401,7 @@ dependencies = [
  "dsh-subagent",
  "dsh-time-context",
  "dsh-token-meter",
+ "dsh-tool-memory-local",
  "dsh-tool-todo",
  "dsh-tools",
  "dsh-user-approval",
@@ -2829,8 +2830,10 @@ dependencies = [
  "dsh-tools",
  "futures",
  "regex",
+ "serde",
  "serde_json",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

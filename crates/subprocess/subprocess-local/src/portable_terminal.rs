@@ -28,7 +28,7 @@ pub struct PortableTerminalHandle {
     pid: u32,
     foreground_id: u32,
     grace_ms: u64,
-    writer: Mutex<Option<Box<dyn Write + Send>>>,
+    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     output_receiver: Mutex<Option<futures::channel::mpsc::UnboundedReceiver<Vec<u8>>>>,
@@ -147,6 +147,8 @@ impl PortableTerminalHandle {
             }
         }
 
+        let writer = Arc::new(Mutex::new(Some(writer)));
+        let writer_for_reader = writer.clone();
         let (output_tx, output_rx) = futures::channel::mpsc::unbounded();
         let (reader_done_tx, reader_done_rx) = futures::channel::oneshot::channel();
         let mut reader_start_killer = killer.clone_killer();
@@ -155,10 +157,29 @@ impl PortableTerminalHandle {
             .spawn(move || {
                 let result = (|| -> Result<(), String> {
                     let mut buffer = vec![0u8; 16 * 1024];
+                    let mut dsr_tail = Vec::<u8>::new();
                     loop {
                         match reader.read(&mut buffer) {
                             Ok(0) => return Ok(()),
                             Ok(count) => {
+                                #[cfg(windows)]
+                                {
+                                    let mut probe = dsr_tail.clone();
+                                    probe.extend_from_slice(&buffer[..count]);
+                                    if probe.windows(4).any(|window| window == b"\x1b[6n") {
+                                        let mut locked = writer_for_reader.lock();
+                                        let writer = locked.as_mut().ok_or_else(|| {
+                                            "terminal process is closing during cursor query".to_string()
+                                        })?;
+                                        writer
+                                            .write_all(b"\x1b[1;1R")
+                                            .and_then(|()| writer.flush())
+                                            .map_err(|error| {
+                                                format!("failed to answer ConPTY cursor query: {error}")
+                                            })?;
+                                    }
+                                    dsr_tail = probe[probe.len().saturating_sub(3)..].to_vec();
+                                }
                                 if output_tx.unbounded_send(buffer[..count].to_vec()).is_err() {
                                     return Ok(());
                                 }
@@ -238,7 +259,7 @@ impl PortableTerminalHandle {
             pid,
             foreground_id,
             grace_ms: spec.grace_ms,
-            writer: Mutex::new(Some(writer)),
+            writer,
             master: Mutex::new(Some(pair.master)),
             killer: Mutex::new(killer),
             output_receiver: Mutex::new(Some(output_rx)),

@@ -206,6 +206,20 @@ pub fn resolve_adapter_options(
     })
 }
 
+fn endpoint_url(base_url: &str, api: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    let root = trimmed
+        .strip_suffix("/chat/completions")
+        .or_else(|| trimmed.strip_suffix("/responses"))
+        .unwrap_or(trimmed);
+    let suffix = if api == "openai-responses" {
+        "responses"
+    } else {
+        "chat/completions"
+    };
+    format!("{root}/{suffix}")
+}
+
 pub type OptionsResolver = Arc<dyn Fn() -> Result<ResolvedDeepSeekOptions, LlmError> + Send + Sync>;
 pub type ApiKeyResolver = Arc<
     dyn Fn(&ResolvedDeepSeekOptions) -> BoxFuture<'static, Result<Option<String>, LlmError>>
@@ -771,10 +785,7 @@ async fn request_chunks(
         )
         .await;
     }
-    let url = format!(
-        "{}/chat/completions",
-        connection.base_url.trim_end_matches('/')
-    );
+    let url = endpoint_url(&connection.base_url, "openai-completions");
     let mut file_attempt = 0_u8;
     let mut response = loop {
         let resolved_files =
@@ -1019,7 +1030,7 @@ async fn request_responses_chunks(
             "INVALID_REQUEST",
         )
     })?;
-    let url = format!("{}/responses", connection.base_url.trim_end_matches('/'));
+    let url = endpoint_url(&connection.base_url, "openai-responses");
     let mut response = transport::post(&url, api_key, encoded, attribution, None)
         .await
         .map_err(|error| {
@@ -1363,4 +1374,28 @@ pub fn apply(
     adapter: Arc<DeepSeekAdapter>,
 ) -> Result<AdapterRegistrationHandle, LlmError> {
     runtime.register_adapter(ctx, vec![PROVIDER.to_string()], adapter)
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::endpoint_url;
+
+    #[test]
+    fn completions_replaces_responses_endpoint_suffix() {
+        assert_eq!(
+            endpoint_url(
+                "https://ark.cn-beijing.volces.com/api/v3/responses",
+                "openai-completions"
+            ),
+            "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+        );
+    }
+
+    #[test]
+    fn responses_replaces_chat_completions_endpoint_suffix() {
+        assert_eq!(
+            endpoint_url("https://example.test/v1/chat/completions", "openai-responses"),
+            "https://example.test/v1/responses"
+        );
+    }
 }

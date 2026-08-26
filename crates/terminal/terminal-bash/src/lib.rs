@@ -42,9 +42,19 @@ impl Default for Config {
             vec![
                 "-NoLogo".to_string(),
                 "-NoProfile".to_string(),
-                "-NoExit".to_string(),
+                "-NonInteractive".to_string(),
                 "-Command".to_string(),
-                "function global:prompt { 'dsh> ' }".to_string(),
+                concat!(
+                    "$ErrorActionPreference='Continue'; ",
+                    "[Console]::Out.Write('dsh> '); ",
+                    "while (($line=[Console]::In.ReadLine()) -ne $null) { ",
+                    "try { $value=Invoke-Expression $line 2>&1; ",
+                    "if ($null -ne $value) { ",
+                    "$value | Out-String -Width 4096 | ForEach-Object { [Console]::Out.Write($_) } ",
+                    "} } catch { [Console]::Out.WriteLine($_.ToString()) }; ",
+                    "[Console]::Out.Write('dsh> ') }"
+                )
+                .to_string(),
             ],
         );
         #[cfg(not(windows))]
@@ -374,7 +384,13 @@ impl LocalPtySession {
                 return Err("PTY shell exited during startup".to_string());
             }
             let output = self.output.lock().snapshot().0;
-            if output.contains("dsh> ") && self.last_output.lock().elapsed() >= silence {
+            let quiet = self.last_output.lock().elapsed() >= silence;
+            #[cfg(windows)]
+            if !output.is_empty() && quiet {
+                return Ok(());
+            }
+            #[cfg(not(windows))]
+            if output.contains("dsh> ") && quiet {
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -416,6 +432,9 @@ impl TerminalBackendSession for LocalPtySession {
         let signal = request.signal.clone();
         let mut input = request.text.clone();
         if request.submit {
+            #[cfg(windows)]
+            input.push_str("\r\n");
+            #[cfg(not(windows))]
             input.push('\r');
         }
         let idle_silence = Duration::from_millis(self.config.idle_silence_ms);

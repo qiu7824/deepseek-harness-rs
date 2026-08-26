@@ -590,7 +590,8 @@ window.__ModuleLoader__.load({
 		* @returns one option per selectable preset, in roster order.
 		*/
 		function presetOptions(presets) {
-			return presets.filter((preset) => preset.broken === void 0).map((preset) => ({
+			const rustUnavailable = /* @__PURE__ */ new Set(["minimal", "cordis"]);
+			return presets.filter((preset) => preset.broken === void 0 && !rustUnavailable.has(preset.id)).map((preset) => ({
 				id: preset.id,
 				trust: preset.trust,
 				...preset.name === void 0 ? {} : { name: preset.name },
@@ -1522,7 +1523,7 @@ window.__ModuleLoader__.load({
 						this.set({
 							busy: false,
 							error: response.result.error.message,
-							current: this.fallback
+							current: this.currentSession()?.agentPreset ?? this.fallback
 						});
 						return;
 					}
@@ -1536,7 +1537,7 @@ window.__ModuleLoader__.load({
 					this.set({
 						busy: false,
 						error: messageOf(error),
-						current: this.fallback
+						current: this.currentSession()?.agentPreset ?? this.fallback
 					});
 				}
 			}

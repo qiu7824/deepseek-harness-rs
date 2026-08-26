@@ -159,7 +159,7 @@ pub fn subagent_timing_projection_definition() -> ProjectionDefinition {
 
 /// Interpret one `subagent/descriptor` event's identity; no value when the
 /// payload cannot be trusted.
-fn descriptor_identity(event: &SessionEvent) -> Option<SubagentIdentityProjection> {
+pub(crate) fn descriptor_identity(event: &SessionEvent) -> Option<SubagentIdentityProjection> {
     let descriptor = crate::descriptor::fold_subagent_descriptor(std::slice::from_ref(event))
         .ok()
         .flatten()?;

@@ -35,6 +35,7 @@ dsh-subagent = { path = "../../subagent/subagent" }
 dsh-tools = { path = "../../core/tools" }
 dsh-time-context = { path = "../../context/time-context" }
 dsh-tool-todo = { path = "../../todo/tool-todo" }
+dsh-tool-memory-local = { path = "../../memory/tool-memory-local" }
 dsh-user-approval = { path = "../../interaction/user-approval" }
 dsh-user-questions = { path = "../../interaction/user-questions" }
 dsh-workspace = { path = "../../workspace/workspace" }

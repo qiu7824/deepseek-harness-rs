@@ -1572,6 +1572,57 @@ impl ApiProxyService {
 }
 
 impl ApiProxyService {
+    fn memory_store(&self) -> Option<Arc<dsh_tool_memory_local::MemoryStore>> {
+        self.ctx
+            .get_typed::<Arc<dsh_tool_memory_local::MemoryStore>>("memoryStore", false)
+            .map(|slot| slot.as_ref().clone())
+    }
+
+    async fn memory_rpc(
+        &self,
+        rpc_id: RpcId,
+        method: &str,
+        payload: serde_json::Value,
+    ) -> RpcResponse<serde_json::Value> {
+        let Some(store) = self.memory_store() else {
+            return err(rpc_id, RpcError::Internal(RpcErrorBody {
+                message: "memory service is not composed".to_string(),
+                details: EmptyDetails {},
+            }));
+        };
+        match method {
+            "memory.categories" => ok(rpc_id, serde_json::json!({
+                "categories": dsh_tool_memory_local::BUILTIN_CATEGORIES.iter().map(|(id, label)| serde_json::json!({ "id": id, "label": label })).collect::<Vec<_>>()
+            })),
+            "memory.list" => ok(rpc_id, serde_json::json!({
+                "entries": store.list(payload.get("scope").and_then(|v| v.as_str()), payload.get("category").and_then(|v| v.as_str())).await
+            })),
+            "memory.upsert" => {
+                let entry = match serde_json::from_value::<dsh_tool_memory_local::MemoryEntry>(payload.get("entry").cloned().unwrap_or(serde_json::Value::Null)) {
+                    Ok(entry) => entry,
+                    Err(error) => return err(rpc_id, bad_request("memory.upsert", error)),
+                };
+                match store.upsert(entry, payload.get("expectedRevision").and_then(|v| v.as_u64())).await {
+                    Ok(entry) => ok(rpc_id, serde_json::json!({ "entry": entry })),
+                    Err(message) => err(rpc_id, RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} })),
+                }
+            }
+            "memory.remove" => {
+                let Some(id) = payload.get("id").and_then(|v| v.as_str()) else {
+                    return err(rpc_id, RpcError::BadRequest(RpcErrorBody {
+                        message: "memory.remove: missing id".to_string(),
+                        details: crate::api::rpc::BadRequestDetails { issues: Vec::new() },
+                    }));
+                };
+                match store.remove(id, payload.get("expectedRevision").and_then(|v| v.as_u64())).await {
+                    Ok(removed) => ok(rpc_id, serde_json::json!({ "removed": removed })),
+                    Err(message) => err(rpc_id, RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} })),
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
     fn settings_provider(&self) -> Option<Arc<dsh_settings::SettingsProvider>> {
         self.ctx
             .get_typed::<Arc<dsh_settings::SettingsProvider>>("settings", false)
@@ -3022,7 +3073,25 @@ impl ApiProxyService {
                         .await
                         .ok()
                         .map(|metadata| metadata.meta);
-                    (chunk.events, chunk.next_seq.is_some())
+                    let chunk_has_more = chunk.next_seq.is_some();
+                    match Self::paginate_forward(
+                        &chunk.events,
+                        after_seq,
+                        requested_messages,
+                    ) {
+                        Ok((events, page_has_more)) => (events, page_has_more || chunk_has_more),
+                        Err(required) => {
+                            return err(
+                                request.rpc_id,
+                                RpcError::Internal(RpcErrorBody {
+                                    message: format!(
+                                        "session.history: one safe forward history group requires {required} events, above the {MAX_HISTORY_EVENTS} event budget"
+                                    ),
+                                    details: EmptyDetails {},
+                                }),
+                            );
+                        }
+                    }
                 } else {
                     let before_seq = request
                         .payload
@@ -4871,36 +4940,48 @@ impl ApiProxyService {
                         }),
                     ));
                 }
-                match presets
-                    .recompose(agent_for_swap.ctx(), &agent_preset_for_swap)
-                    .await
-                {
-                    Ok(preset) => {
-                        // Recorded only after the swap committed: the log
-                        // states what the agent runs, and a rejected mount
-                        // leaves the previous composition.
-                        if let Err(error) = session_for_swap.append(
+                let recompose_ctx = agent_for_swap.ctx().clone();
+                let recompose_presets = presets.clone();
+                let recompose_id = agent_preset_for_swap.clone();
+                let session_for_commit = session_for_swap.clone();
+                let switched = tokio::task::spawn_blocking(move || {
+                    let preset = futures::executor::block_on(
+                        recompose_presets.recompose(&recompose_ctx, &recompose_id),
+                    )?;
+                    session_for_commit
+                        .append(
                             dsh_agent_presets::AGENT_PRESET_SELECTED,
                             dsh_agent_presets::selected_data(&preset.id),
                             None,
-                        ) {
-                            return Arc::new(err(
-                                rpc_id_for_swap,
-                                RpcError::Internal(RpcErrorBody {
-                                    message: format!(
-                                        "failed to select agent preset \"{agent_preset_for_swap}\": {error}"
-                                    ),
-                                    details: EmptyDetails {},
-                                }),
-                            ));
-                        }
-                        Arc::new(ok(
+                        )
+                        .map_err(|error| dsh_agent_presets::PresetMountError {
+                            preset_id: preset.id.clone(),
+                            reason: format!("selection log append failed: {error}"),
+                        })?;
+                    Ok::<_, dsh_agent_presets::PresetMountError>(preset)
+                })
+                .await;
+                let switched = match switched {
+                    Ok(result) => result,
+                    Err(error) => {
+                        return Arc::new(err(
                             rpc_id_for_swap,
-                            crate::api::agent_presets::AgentPresetSelectResult {
-                                agent_preset: preset.id,
-                            },
-                        ))
+                            RpcError::Internal(RpcErrorBody {
+                                message: format!(
+                                    "agent preset switch worker failed for \"{agent_preset_for_swap}\": {error}"
+                                ),
+                                details: EmptyDetails {},
+                            }),
+                        ));
                     }
+                };
+                match switched {
+                    Ok(preset) => Arc::new(ok(
+                        rpc_id_for_swap,
+                        crate::api::agent_presets::AgentPresetSelectResult {
+                            agent_preset: preset.id,
+                        },
+                    )),
                     Err(error) => Arc::new(err(
                         rpc_id_for_swap,
                         RpcError::AgentPresetInvalid(RpcErrorBody {
@@ -5576,6 +5657,9 @@ impl ApiProxyCarrier for ApiProxyService {
                     payload: request.payload,
                 })
                 .await
+            }
+            "memory.categories" | "memory.list" | "memory.upsert" | "memory.remove" => {
+                self.memory_rpc(rpc_id, method, request.payload).await
             }
             "settings.update" => {
                 let payload: crate::api::settings::SettingsUpdateRequest =

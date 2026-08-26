@@ -90,12 +90,16 @@ pub fn emit_lifecycle_edge(ctx: &Context, edge: LifecycleEdge) {
         }
     };
     for (listener_ctx, callback) in listeners {
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            futures::executor::block_on(callback(&listener_ctx, args.clone()))
-        }));
+        let listener_args = args.clone();
+        let outcome = std::thread::spawn(move || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                futures::executor::block_on(callback(&listener_ctx, listener_args))
+            }))
+        })
+        .join();
         match outcome {
-            Ok(Some(_)) | Ok(None) => {}
-            Err(_) => {
+            Ok(Ok(Some(_))) | Ok(Ok(None)) => {}
+            Ok(Err(_)) | Err(_) => {
                 ctx.logger.warn(
                     ctx,
                     vec![arc(format!("subagent: {name} listener threw: unknown"))],

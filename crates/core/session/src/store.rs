@@ -722,15 +722,32 @@ fn invoke_contained_session_observers(
 ) {
     let logger = ctx.named_logger(Some("sessions"));
     for (listener_ctx, callback) in listeners {
-        let future = callback(listener_ctx, args.to_vec());
+        let listener_ctx = listener_ctx.clone();
+        let callback = callback.clone();
+        let listener_args = args.to_vec();
         let prefix = format!("session \"{}\": {name} listener", id.as_str());
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            futures::executor::block_on(future)
-        })) {
-            Ok(_) => {}
-            Err(payload) => {
+        let runtime = tokio::runtime::Handle::try_current().ok();
+        let outcome = std::thread::spawn(move || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let future = callback(&listener_ctx, listener_args);
+                match runtime {
+                    Some(runtime) => runtime.block_on(future),
+                    None => futures::executor::block_on(future),
+                }
+            }))
+        })
+        .join();
+        match outcome {
+            Ok(Ok(_)) => {}
+            Ok(Err(payload)) => {
                 logger.warn(vec![arc(format!(
                     "{prefix} threw: {}",
+                    render_panic(payload)
+                ))]);
+            }
+            Err(payload) => {
+                logger.warn(vec![arc(format!(
+                    "{prefix} worker threw: {}",
                     render_panic(payload)
                 ))]);
             }

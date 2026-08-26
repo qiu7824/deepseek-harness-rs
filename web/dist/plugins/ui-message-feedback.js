@@ -385,12 +385,14 @@ window.__ModuleLoader__.load({
 				setFailure(result.error?.code === "version-conflict" ? t("error.conflict") : t("error.generic"));
 			}, [t]);
 			const onRate = (0, react.useCallback)((next) => {
+				seed();
 				setPending(true);
 				setFailure(null);
 				setNoteOpen(false);
 				toggle(messageId, next).then(settle);
 			}, [
 				messageId,
+				seed,
 				settle,
 				toggle
 			]);
@@ -565,10 +567,23 @@ window.__ModuleLoader__.load({
 				en
 			}), "ui-message-feedback: dictionaries");
 			const controllers = /* @__PURE__ */ new Map();
+			const call = async (method, payload) => {
+				const rpcId = typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+				const response = await fetch(`/api/messageFeedback.${method}`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ type: "client-request", rpcId, method: `messageFeedback.${method}`, payload })
+				});
+				if (!response.ok) throw new Error(`messageFeedback.${method} HTTP ${response.status}`);
+				const envelope = await response.json();
+				if (envelope.rpcId !== rpcId) throw new Error(`messageFeedback.${method} response id mismatch`);
+				return envelope.result;
+			};
+			const remote = { list: (payload) => call("list", payload), put: (payload) => call("put", payload), delete: (payload) => call("delete", payload) };
 			const controllerFor = (sessionId) => {
 				let controller = controllers.get(sessionId);
 				if (controller === void 0) {
-					controller = new MessageFeedbackController(ctx.remote.messageFeedback, sessionId);
+					controller = new MessageFeedbackController(remote, sessionId);
 					controllers.set(sessionId, controller);
 				}
 				return controller;

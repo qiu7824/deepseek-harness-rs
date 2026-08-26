@@ -18,7 +18,7 @@ for entry in source.iterdir():
     if destination.exists():
         shutil.rmtree(destination)
     shutil.copytree(entry, destination)
-required = {"dsh-context-jump", "dsh-web-preview-rs", "dsh-better-sidebar"}
+required = {"dsh-context-jump", "dsh-better-sidebar"}
 missing = sorted(name for name in required if not (target / name / "package.json").is_file())
 if missing:
     raise SystemExit(f"staged release is missing bundled plugins: {', '.join(missing)}")

@@ -79,7 +79,7 @@ window.__ModuleLoader__.load({
         disabled,
         onMouseDown: (event) => event.preventDefault(),
         onClick: toggle,
-        style: { width: "28px", height: "28px", display: "inline-flex", alignItems: "center", justifyContent: "center", border: 0, borderRadius: "6px", background: "transparent", color: listening ? "var(--dsw-alias-color-danger)" : "currentColor", cursor: disabled ? "not-allowed" : "pointer" }
+        style: { width: "28px", height: "28px", display: "inline-flex", alignItems: "center", justifyContent: "center", border: 0, borderRadius: "8px", background: listening ? "var(--dsw-alias-interactive-bg-active,rgba(127,127,137,.16))" : "var(--dsw-alias-interactive-bg-hover,rgba(127,127,137,.10))", color: listening ? "var(--dsw-alias-state-error-primary,#d92d20)" : "var(--dsw-alias-label-secondary,#667085)", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? .45 : 1 }
       }, React.createElement("svg", { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: listening ? 2.4 : 1.8, "aria-hidden": true }, React.createElement("rect", { x: 8, y: 3, width: 8, height: 12, rx: 4 }), React.createElement("path", { d: "M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6" })));
     }
 

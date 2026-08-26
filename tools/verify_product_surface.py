@@ -18,13 +18,14 @@ for required in (
     'IconTrashOutline16, { size: 14 }',
 ):
     assert required in conversation, f"official task interaction missing: {required}"
-assert not (root / "release" / "plugins" / "dsh-task-manager").exists(), "retired task-manager plugin remains bundled"
-for plugin in ("dsh-web-preview-rs", "dsh-better-sidebar"):
+for retired in ("dsh-task-manager", "dsh-web-preview-rs", "dsh-composer-expand"):
+    assert not (root / "release" / "plugins" / retired).exists(), f"retired plugin remains bundled: {retired}"
+for plugin in ("dsh-better-sidebar",):
     package = root / "release" / "plugins" / plugin / "package.json"
     client = root / "release" / "plugins" / plugin / "lib" / "client.js"
     assert package.is_file() and client.is_file(), f"bundled plugin is incomplete: {plugin}"
 better_sidebar = (root / "release" / "plugins" / "dsh-better-sidebar" / "lib" / "client.js").read_text(encoding="utf-8")
-for required in ('id: "dsh-better-sidebar"', 'conversation.session.header.utilities', 'shell.overlay', '/__dsh-preview/'):
+for required in ('id: "dsh-better-sidebar"', 'conversation.session.header.utilities', 'shell.overlay', '/__dsh-preview/', '显示工作台', 'renderMarkdown', 'file-save', 'git-status', 'git-action', 'terminal-action', 'WorkbenchPanel', 'WorkbenchTerminal', 'WorkbenchBrowser', 'data-layout":"full', 'highlightCode', 'isHtml(state.file)?"preview"', 'stage-all', 'unstage-all', 'commit-push', '提交并推送', 'DocTabs'):
     assert required in better_sidebar, f"better-sidebar Rust slice missing: {required}"
 for forbidden in ('children: "✎"', 'children: "■"', '"hero.preview": "预览版"'):
     assert forbidden not in conversation, f"retired task presentation remains: {forbidden}"
@@ -32,4 +33,12 @@ for forbidden in ("SpeechRecognition", "toggleSpeech", "speechRef", "语音输�
     assert forbidden not in conversation, f"built-in voice input remains: {forbidden}"
 for required in ("目录与运行环境", "storage-paths", "settings.paths.directoryFlow"):
     assert required in bundle, f"required settings surface missing: {required}"
+voice = (root / "release" / "plugins" / "dsh-voice-input" / "lib" / "client.js").read_text(encoding="utf-8")
+assert 'borderRadius: "8px"' in voice and "interactive-bg-hover" in voice, "voice input button style drifted"
+log_bundle = root / "web" / "dist" / "plugins" / "session-log-download.js"
+assert 'aria-label": "下载会话日志"' in log_bundle.read_text(encoding="utf-8"), "session log is not icon-only"
+import hashlib, json
+manifest_value = json.loads((root / "web" / "dist" / "plugins" / "manifest.json").read_text(encoding="utf-8"))
+log_entry = next(entry for entry in manifest_value["entries"] if entry["url"] == "/plugins/session-log-download.js")
+assert log_entry["rev"] == hashlib.sha256(log_bundle.read_bytes()).hexdigest()[:16], "session log manifest rev is stale"
 print("product surface contract verified")

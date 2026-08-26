@@ -1,0 +1,9 @@
+D:/deepwork/deepseek-harness-rs/target-memory-feature\release\deps\futures_macro-6d6d3afd055c1421.d: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\lib.rs C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\executor.rs C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\join.rs C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\select.rs C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\stream_select.rs
+
+D:/deepwork/deepseek-harness-rs/target-memory-feature\release\deps\futures_macro-6d6d3afd055c1421.dll: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\lib.rs C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\executor.rs C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\join.rs C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\select.rs C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\stream_select.rs
+
+C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\lib.rs:
+C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\executor.rs:
+C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\join.rs:
+C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\select.rs:
+C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-macro-0.3.34\src\stream_select.rs:

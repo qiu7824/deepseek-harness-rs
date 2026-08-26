@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, to_bytes};
+use dsh_agent::AgentRegistry;
 use dsh_host_webserver::{
     RouteDisposer, WebHandlerError, WebRequest, WebResponse, WebRoute, WebRouteKind, WebServer,
 };
@@ -21,10 +22,15 @@ use dsh_subprocess::{
     SubprocessCollect, SubprocessHandle, SubprocessOutputMode, SubprocessRuntime,
     SubprocessSpawnSpec, SubprocessStdinMode, SubprocessStdio,
 };
+use dsh_terminal::{
+    TerminalReadRequest, TerminalSendRequest, TerminalSessionService, TerminalSpawnRequest,
+    terminal_session_id,
+};
 use dsh_workspace::WorkspaceRegistry;
 use http::{Method, Response, StatusCode, header};
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::{Digest, Sha256};
 
 const ROUTE: &str = "/__dsh-preview";
 const MAX_TEXT_BYTES: u64 = 8 * 1024 * 1024;
@@ -113,6 +119,60 @@ struct DirectoryBody {
     truncated: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStatusEntry {
+    path: String,
+    status: String,
+    index_status: String,
+    worktree_status: String,
+    group: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStatusBody {
+    branch: String,
+    upstream: Option<String>,
+    ahead: u64,
+    behind: u64,
+    entries: Vec<GitStatusEntry>,
+    truncated: bool,
+    branches: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitActionRequest {
+    session_id: String,
+    action: String,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    branch: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalActionRequest {
+    session_id: String,
+    action: String,
+    #[serde(default)]
+    terminal_id: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitDiffBody {
+    path: String,
+    diff: String,
+    truncated: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ControlRequest {
@@ -148,6 +208,14 @@ struct ProjectStatusBody {
 #[serde(rename_all = "camelCase")]
 struct UploadBody {
     path: String,
+    size: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileSaveBody {
+    path: String,
+    etag: String,
     size: usize,
 }
 
@@ -187,6 +255,8 @@ struct PreviewState {
 
 struct PreviewService {
     registry: Arc<WorkspaceRegistry>,
+    agents: Arc<AgentRegistry>,
+    terminals: Arc<TerminalSessionService>,
     subprocess: Arc<dyn SubprocessRuntime>,
     sandbox: Arc<dyn SandboxProvider>,
     site_token: String,
@@ -236,6 +306,10 @@ fn error(status: StatusCode, code: &'static str, message: impl Into<String>) -> 
             message: message.into(),
         },
     )
+}
+
+fn content_etag(bytes: &[u8]) -> String {
+    format!("\"{:x}\"", Sha256::digest(bytes))
 }
 
 fn percent_decode(value: &str) -> Result<String, ()> {
@@ -304,6 +378,137 @@ fn safe_relative(value: &str) -> Option<PathBuf> {
         return None;
     }
     Some(path.to_path_buf())
+}
+
+async fn git_output(root: &Path, args: &[&str]) -> Result<String, WebResponse> {
+    let mut argv = vec!["-C".to_string(), root.to_string_lossy().into_owned()];
+    argv.extend(args.iter().map(|value| (*value).to_string()));
+    dsh_native_command::run_native_command("git", &argv, None)
+        .await
+        .map(|output| output.stdout)
+        .map_err(|failure| {
+            let message = if failure.stderr.trim().is_empty() {
+                failure.message
+            } else {
+                failure.stderr.trim().to_string()
+            };
+            error(StatusCode::BAD_REQUEST, "git-failed", message)
+        })
+}
+
+async fn git_status(root: &Path) -> Result<GitStatusBody, WebResponse> {
+    const MAX_GIT_ENTRIES: usize = 2_000;
+    let output = git_output(
+        root,
+        &["status", "--porcelain=v1", "--branch", "--untracked-files=normal"],
+    )
+    .await?;
+    let mut branch = String::new();
+    let mut upstream = None;
+    let mut ahead = 0_u64;
+    let mut behind = 0_u64;
+    let mut entries = Vec::new();
+    let mut truncated = false;
+    for line in output.lines() {
+        if let Some(head) = line.strip_prefix("## ") {
+            let tracking = head.split_once("...");
+            branch = tracking.map(|value| value.0).unwrap_or(head).trim().to_string();
+            if let Some((_, tail)) = tracking {
+                let (name, status) = tail.split_once(" [").unwrap_or((tail, ""));
+                upstream = Some(name.trim().to_string());
+                for part in status.trim_end_matches(']').split(',') {
+                    let part = part.trim();
+                    if let Some(value) = part.strip_prefix("ahead ") {
+                        ahead = value.parse().unwrap_or(0);
+                    }
+                    if let Some(value) = part.strip_prefix("behind ") {
+                        behind = value.parse().unwrap_or(0);
+                    }
+                }
+            }
+            continue;
+        }
+        if line.len() < 3 {
+            continue;
+        }
+        if entries.len() >= MAX_GIT_ENTRIES {
+            truncated = true;
+            break;
+        }
+        let index_status = line[0..1].to_string();
+        let worktree_status = line[1..2].to_string();
+        let group = if index_status == "?" && worktree_status == "?" {
+            "untracked"
+        } else if index_status != " " {
+            "staged"
+        } else {
+            "unstaged"
+        };
+        entries.push(GitStatusEntry {
+            status: line[..2].to_string(),
+            index_status,
+            worktree_status,
+            group,
+            path: line[3..]
+                .split(" -> ")
+                .last()
+                .unwrap_or_default()
+                .to_string(),
+        });
+    }
+    let branch_output = git_output(root, &["branch", "--format=%(refname:short)"]).await?;
+    let branches = branch_output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(500)
+        .map(str::to_string)
+        .collect();
+    Ok(GitStatusBody {
+        branch,
+        upstream,
+        ahead,
+        behind,
+        entries,
+        truncated,
+        branches,
+    })
+}
+
+async fn git_diff(root: &Path, relative: &str) -> Result<GitDiffBody, WebResponse> {
+    const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
+    let path = safe_relative(relative).ok_or_else(|| {
+        error(
+            StatusCode::BAD_REQUEST,
+            "unsafe-path",
+            "Git 路径不安全",
+        )
+    })?;
+    if path.as_os_str().is_empty() {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "path-required",
+            "缺少 Git 文件路径",
+        ));
+    }
+    let display = path.to_string_lossy().replace('\\', "/");
+    let mut output = git_output(root, &["diff", "--no-ext-diff", "--", &display]).await?;
+    if output.is_empty() {
+        output = git_output(
+            root,
+            &["diff", "--cached", "--no-ext-diff", "--", &display],
+        )
+        .await?;
+    }
+    let truncated = output.len() > MAX_DIFF_BYTES;
+    if truncated {
+        output.truncate(MAX_DIFF_BYTES);
+    }
+    Ok(GitDiffBody {
+        path: display,
+        diff: output,
+        truncated,
+    })
 }
 
 fn python_executable() -> &'static str {
@@ -634,11 +839,15 @@ fn sanitize_file_name(name: &str) -> String {
 impl PreviewService {
     fn new(
         registry: Arc<WorkspaceRegistry>,
+        agents: Arc<AgentRegistry>,
+        terminals: Arc<TerminalSessionService>,
         subprocess: Arc<dyn SubprocessRuntime>,
         sandbox: Arc<dyn SandboxProvider>,
     ) -> Arc<Self> {
         Arc::new(Self {
             registry,
+            agents,
+            terminals,
             subprocess,
             sandbox,
             site_token: uuid::Uuid::new_v4().to_string(),
@@ -649,7 +858,7 @@ impl PreviewService {
         })
     }
 
-    async fn parse_control(request: WebRequest) -> Result<ControlRequest, WebResponse> {
+    async fn parse_json<T: DeserializeOwned>(request: WebRequest) -> Result<T, WebResponse> {
         if request
             .headers()
             .get(header::CONTENT_LENGTH)
@@ -679,6 +888,309 @@ impl PreviewService {
                 "控制请求不是合法 JSON",
             )
         })
+    }
+
+    async fn save_file(&self, request: WebRequest) -> WebResponse {
+        let query = request.uri().query();
+        let session = match query_value(query, "sessionId") {
+            Ok(Some(value)) if !value.is_empty() && value.len() <= 200 => session_id(value),
+            _ => return error(StatusCode::BAD_REQUEST, "session-required", "缺少有效的 sessionId"),
+        };
+        let relative = match query_value(query, "path") {
+            Ok(Some(value)) if !value.is_empty() => value,
+            _ => return error(StatusCode::BAD_REQUEST, "path-required", "缺少文件路径"),
+        };
+        let (_, root, target) = match authorized_path(&self.registry, &session, &relative).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        let expected = request
+            .headers()
+            .get(header::IF_MATCH)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let bytes = match to_bytes(Body::new(request.into_body()), MAX_TEXT_BYTES as usize).await {
+            Ok(bytes) => bytes,
+            Err(_) => return error(StatusCode::PAYLOAD_TOO_LARGE, "body-too-large", "文件内容超过文本上限"),
+        };
+        if std::str::from_utf8(&bytes).is_err() {
+            return error(StatusCode::BAD_REQUEST, "invalid-text", "编辑内容必须是 UTF-8 文本");
+        }
+        let write = dsh_atomic_write::with_file_lock(&target, async {
+            let current = tokio::fs::read(&target).await?;
+            let current_etag = content_etag(&current);
+            if expected.as_deref() != Some(current_etag.as_str()) {
+                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, current_etag));
+            }
+            dsh_atomic_write::write_file_atomic(
+                &target,
+                &bytes,
+                dsh_atomic_write::WriteFileAtomicOptions { mode: 0o644, dir_mode: None },
+            )
+            .await?;
+            Ok::<_, std::io::Error>(())
+        })
+        .await;
+        match write {
+            Ok(Ok(())) => json_response(
+                StatusCode::OK,
+                &FileSaveBody {
+                    path: relative_display(&root, &target),
+                    etag: content_etag(&bytes),
+                    size: bytes.len(),
+                },
+            ),
+            Ok(Err(error_value))
+                if error_value.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                error(
+                    StatusCode::CONFLICT,
+                    "file-changed",
+                    "文件已被其他操作修改，请重新加载后再保存",
+                )
+            }
+            Ok(Err(_)) | Err(_) => error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "save-failed",
+                "文件保存失败",
+            ),
+        }
+    }
+
+    async fn git_action(&self, request: WebRequest) -> WebResponse {
+        let action: GitActionRequest = match Self::parse_json(request).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        let session = session_id(action.session_id);
+        let (_, root) = match workspace_root(&self.registry, &session).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        let result = match action.action.as_str() {
+            "stage-all" => git_output(&root, &["add", "-A"]).await,
+            "unstage-all" => git_output(&root, &["restore", "--staged", "."]).await,
+            "stage" | "unstage" => {
+                let Some(relative) = action.path.as_deref().and_then(safe_relative) else {
+                    return error(StatusCode::BAD_REQUEST, "unsafe-path", "Git 路径不安全");
+                };
+                if relative.as_os_str().is_empty() {
+                    return error(StatusCode::BAD_REQUEST, "path-required", "缺少 Git 文件路径");
+                }
+                let display = relative.to_string_lossy().replace('\\', "/");
+                if action.action == "stage" {
+                    git_output(&root, &["add", "--", &display]).await
+                } else {
+                    git_output(&root, &["restore", "--staged", "--", &display]).await
+                }
+            }
+            "commit" | "commit-push" => {
+                let message = action.message.as_deref().map(str::trim).unwrap_or_default();
+                if message.is_empty() || message.len() > 500 {
+                    return error(StatusCode::BAD_REQUEST, "invalid-message", "提交说明不能为空且不能超过500字");
+                }
+                match git_output(&root, &["commit", "-m", message]).await {
+                    Ok(output) if action.action == "commit-push" => match git_output(
+                        &root,
+                        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                    )
+                    .await
+                    {
+                        Ok(value) if !value.trim().is_empty() => git_output(&root, &["push"])
+                            .await
+                            .map(|pushed| format!("{output}\n{pushed}")),
+                        Ok(_) | Err(_) => return error(
+                            StatusCode::BAD_REQUEST,
+                            "upstream-required",
+                            "提交已完成，但当前分支没有配置上游，无法自动推送",
+                        ),
+                    },
+                    result => result,
+                }
+            }
+            "push" => {
+                let upstream = git_output(
+                    &root,
+                    &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                )
+                .await;
+                match upstream {
+                    Ok(value) if !value.trim().is_empty() => git_output(&root, &["push"]).await,
+                    Ok(_) => return error(
+                        StatusCode::BAD_REQUEST,
+                        "upstream-required",
+                        "当前分支没有配置上游，不能自动推送",
+                    ),
+                    Err(_) => return error(
+                        StatusCode::BAD_REQUEST,
+                        "upstream-required",
+                        "当前分支没有配置上游，不能自动推送",
+                    ),
+                }
+            }
+            "checkout" => {
+                let branch = action.branch.as_deref().map(str::trim).unwrap_or_default();
+                let known = git_output(&root, &["branch", "--format=%(refname:short)"])
+                    .await
+                    .map(|value| value.lines().any(|line| line.trim() == branch));
+                match known {
+                    Ok(true) => git_output(&root, &["checkout", "--", branch]).await,
+                    Ok(false) => return error(StatusCode::BAD_REQUEST, "unknown-branch", "只能切换到已有本地分支"),
+                    Err(response) => return response,
+                }
+            }
+            _ => return error(StatusCode::BAD_REQUEST, "unknown-action", "未知 Git 操作"),
+        };
+        match result {
+            Ok(output) => json_response(
+                StatusCode::OK,
+                &serde_json::json!({ "ok": true, "output": output }),
+            ),
+            Err(response) => response,
+        }
+    }
+
+    fn terminal_owner(
+        &self,
+        session_id_value: &str,
+    ) -> Result<Arc<dyn dsh_agent::Agent>, WebResponse> {
+        self.agents.get(&session_id(session_id_value)).ok_or_else(|| {
+            error(
+                StatusCode::CONFLICT,
+                "agent-not-live",
+                "当前会话未运行，无法使用终端",
+            )
+        })
+    }
+
+    async fn terminal_action(&self, request: WebRequest) -> WebResponse {
+        let action: TerminalActionRequest = match Self::parse_json(request).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        let owner = match self.terminal_owner(&action.session_id) {
+            Ok(owner) => owner,
+            Err(response) => return response,
+        };
+        match action.action.as_str() {
+            "open" => {
+                if self.terminals.list(&owner).len() >= 3 {
+                    return error(
+                        StatusCode::CONFLICT,
+                        "terminal-limit",
+                        "每个会话最多打开3个终端",
+                    );
+                }
+                let (_, root) = match workspace_root(
+                    &self.registry,
+                    &session_id(&action.session_id),
+                )
+                .await
+                {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                let future = match self.terminals.spawn(
+                    owner,
+                    TerminalSpawnRequest {
+                        type_: "shell".to_string(),
+                        name: None,
+                        cwd: Some(root.to_string_lossy().into_owned()),
+                    },
+                    None,
+                ) {
+                    Ok(future) => future,
+                    Err(failure) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "terminal-open-failed",
+                            failure.to_string(),
+                        );
+                    }
+                };
+                match future.await {
+                    Ok(result) => json_response(
+                        StatusCode::OK,
+                        &serde_json::json!({
+                            "id": result.session_id.as_str(),
+                            "motd": result.motd,
+                            "status": "running"
+                        }),
+                    ),
+                    Err(failure) => error(
+                        StatusCode::BAD_REQUEST,
+                        "terminal-open-failed",
+                        failure.to_string(),
+                    ),
+                }
+            }
+            "send" => {
+                let Some(id) = action.terminal_id.as_deref() else {
+                    return error(StatusCode::BAD_REQUEST, "terminal-required", "缺少终端ID");
+                };
+                let operation = match self.terminals.start_send(
+                    &owner,
+                    &terminal_session_id(id),
+                    TerminalSendRequest {
+                        text: action.text.unwrap_or_default(),
+                        submit: true,
+                        signal: None,
+                    },
+                ) {
+                    Ok(operation) => operation,
+                    Err(failure) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "terminal-send-failed",
+                            failure.to_string(),
+                        );
+                    }
+                };
+                let result = operation.done().await;
+                json_response(
+                    StatusCode::OK,
+                    &serde_json::json!({
+                        "viewport": result.viewport,
+                        "truncated": result.truncated
+                    }),
+                )
+            }
+            "close" => {
+                let Some(id) = action.terminal_id.as_deref() else {
+                    return error(StatusCode::BAD_REQUEST, "terminal-required", "缺少终端ID");
+                };
+                let future = match self.terminals.kill(
+                    &owner,
+                    &terminal_session_id(id),
+                    "sidebar terminal closed".to_string(),
+                ) {
+                    Ok(future) => future,
+                    Err(failure) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "terminal-close-failed",
+                            failure.to_string(),
+                        );
+                    }
+                };
+                match future.await {
+                    Ok(closed) => json_response(
+                        StatusCode::OK,
+                        &serde_json::json!({ "closed": closed }),
+                    ),
+                    Err(failure) => error(
+                        StatusCode::BAD_REQUEST,
+                        "terminal-close-failed",
+                        failure.to_string(),
+                    ),
+                }
+            }
+            _ => error(
+                StatusCode::BAD_REQUEST,
+                "unknown-action",
+                "未知终端操作",
+            ),
+        }
     }
 
     async fn prepare_project(&self, control: ControlRequest) -> WebResponse {
@@ -1088,6 +1600,9 @@ impl PreviewService {
                 "sandbox; default-src 'none'; img-src 'self' data: blob:; style-src 'unsafe-inline'; font-src 'self' data:",
             );
         }
+        if !site && metadata.len() <= MAX_TEXT_BYTES {
+            builder = builder.header(header::ETAG, content_etag(&bytes));
+        }
         builder
             .header(
                 header::CONTENT_LENGTH,
@@ -1131,19 +1646,22 @@ impl PreviewService {
         let operation = tail.trim_matches('/');
         if request.method() == Method::POST {
             return match operation {
-                "project-prepare" => match Self::parse_control(request).await {
+                "project-prepare" => match Self::parse_json(request).await {
                     Ok(control) => self.prepare_project(control).await,
                     Err(response) => response,
                 },
-                "project-start" => match Self::parse_control(request).await {
+                "project-start" => match Self::parse_json(request).await {
                     Ok(control) => self.start_project(control).await,
                     Err(response) => response,
                 },
-                "project-stop" => match Self::parse_control(request).await {
+                "project-stop" => match Self::parse_json(request).await {
                     Ok(control) => self.stop_project(control).await,
                     Err(response) => response,
                 },
                 "upload" => self.upload(request).await,
+                "file-save" => self.save_file(request).await,
+                "git-action" => self.git_action(request).await,
+                "terminal-action" => self.terminal_action(request).await,
                 _ => error(StatusCode::NOT_FOUND, "route-not-found", "未知预览操作"),
             };
         }
@@ -1209,6 +1727,69 @@ impl PreviewService {
                 .filter(|project| project.root == root)
                 .cloned();
             return json_response(StatusCode::OK, &project_status(project.as_ref()));
+        }
+        if operation == "git-status" {
+            let root = match workspace_root(&self.registry, &session).await {
+                Ok((_, root)) => root,
+                Err(response) => return response,
+            };
+            return match git_status(&root).await {
+                Ok(status) => json_response(StatusCode::OK, &status),
+                Err(response) => response,
+            };
+        }
+        if operation == "git-diff" {
+            let root = match workspace_root(&self.registry, &session).await {
+                Ok((_, root)) => root,
+                Err(response) => return response,
+            };
+            return match git_diff(&root, &relative).await {
+                Ok(diff) => json_response(StatusCode::OK, &diff),
+                Err(response) => response,
+            };
+        }
+        if operation == "terminal-list" {
+            let owner = match self.terminal_owner(session.as_str()) {
+                Ok(owner) => owner,
+                Err(response) => return response,
+            };
+            let entries: Vec<_> = self
+                .terminals
+                .list(&owner)
+                .into_iter()
+                .map(|entry| serde_json::json!({
+                    "id": entry.session_id.as_str(),
+                    "name": entry.name,
+                    "pid": entry.pid
+                }))
+                .collect();
+            return json_response(StatusCode::OK, &serde_json::json!({ "entries": entries }));
+        }
+        if operation == "terminal-read" {
+            let owner = match self.terminal_owner(session.as_str()) {
+                Ok(owner) => owner,
+                Err(response) => return response,
+            };
+            let id = match query_value(query, "terminalId") {
+                Ok(Some(value)) if !value.is_empty() => terminal_session_id(value),
+                _ => return error(StatusCode::BAD_REQUEST, "terminal-required", "缺少终端ID"),
+            };
+            return match self.terminals.read(
+                &owner,
+                &id,
+                TerminalReadRequest { offset: None, count: Some(500) },
+            ) {
+                Ok(result) => json_response(StatusCode::OK, &serde_json::json!({
+                    "text": result.text,
+                    "totalLines": result.total_lines,
+                    "truncated": result.truncated
+                })),
+                Err(failure) => error(
+                    StatusCode::BAD_REQUEST,
+                    "terminal-read-failed",
+                    failure.to_string(),
+                ),
+            };
         }
         let (_, root, target) = match authorized_path(&self.registry, &session, &relative).await {
             Ok(value) => value,
@@ -1284,10 +1865,12 @@ impl PreviewService {
 pub fn register(
     web_server: &Arc<WebServer>,
     registry: Arc<WorkspaceRegistry>,
+    agents: Arc<AgentRegistry>,
+    terminals: Arc<TerminalSessionService>,
     subprocess: Arc<dyn SubprocessRuntime>,
     sandbox: Arc<dyn SandboxProvider>,
 ) -> RouteDisposer {
-    let service = PreviewService::new(registry, subprocess, sandbox);
+    let service = PreviewService::new(registry, agents, terminals, subprocess, sandbox);
     web_server.register(WebRoute {
         kind: WebRouteKind::Prefix,
         path: ROUTE.to_string(),
