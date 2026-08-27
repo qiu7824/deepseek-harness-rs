@@ -3147,8 +3147,7 @@ impl ApiProxyService {
         let visitor = {
             let state = state.clone();
             Arc::new(move |events: &[dsh_session::SessionEvent]| {
-                let batch =
-                    crate::api::sessions::coalesce_history_transport_events(events.to_vec());
+                let batch = crate::api::sessions::coalesce_history_transport_batch(events.to_vec());
                 let mut state = state.lock();
                 state.compact.extend(batch);
                 state.dropped |= Self::trim_compact_history_tail(&mut state.compact, max_messages);

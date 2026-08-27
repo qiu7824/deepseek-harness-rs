@@ -289,7 +289,10 @@ pub struct SessionHistoryRequest {
 /// Coalesce transport-only Assistant text/reasoning delta runs. The durable
 /// log remains unchanged; the last event's seq/time stay authoritative so
 /// forward cursors and live stitching remain contiguous.
-pub(crate) fn coalesce_history_transport_events(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
+fn coalesce_history_transport_events_inner(
+    events: Vec<SessionEvent>,
+    strip_provenance: bool,
+) -> Vec<SessionEvent> {
     fn key(
         event: &SessionEvent,
     ) -> Option<(u64, u64, u64, String, Option<String>, Option<String>)> {
@@ -329,7 +332,10 @@ pub(crate) fn coalesce_history_transport_events(events: Vec<SessionEvent>) -> Ve
         if event.type_ == "assistant/chunk" && completed_sources.contains(&event.seq) {
             continue;
         }
-        if event.type_ == "assistant/message" && event.source_event_seqs.is_some() {
+        if strip_provenance
+            && event.type_ == "assistant/message"
+            && event.source_event_seqs.is_some()
+        {
             event.source_event_seqs = None;
         }
         let Some(event_key) = key(&event) else {
@@ -376,6 +382,14 @@ pub(crate) fn coalesce_history_transport_events(events: Vec<SessionEvent>) -> Ve
     }
     compact.shrink_to_fit();
     compact
+}
+
+pub(crate) fn coalesce_history_transport_events(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
+    coalesce_history_transport_events_inner(events, true)
+}
+
+pub(crate) fn coalesce_history_transport_batch(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
+    coalesce_history_transport_events_inner(events, false)
 }
 
 /// `session.history` response value.
@@ -774,6 +788,38 @@ mod history_paging_contract_tests {
         assert_eq!(compact[1].type_, "assistant/message");
         assert_eq!(compact[1].data["__historyEndSeq"], 4);
         assert_eq!(compact[1].source_event_seqs, None);
+    }
+
+    #[test]
+    fn history_transport_elides_completed_chunks_across_persistence_batches() {
+        let chunk = |seq| SessionEvent {
+            type_: "assistant/chunk".to_string(),
+            seq,
+            time: seq as i64,
+            data: serde_json::json!({
+                "turn": 1,
+                "step": 1,
+                "chunk": {"type": "text-delta", "index": 0, "text": "x"}
+            }),
+            ignorable: None,
+            surface_op: None,
+            source_event_seqs: None,
+        };
+        let message = SessionEvent {
+            type_: "assistant/message".to_string(),
+            seq: 513,
+            time: 513,
+            data: serde_json::json!({"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}),
+            ignorable: None,
+            surface_op: Some(dsh_session::SurfaceOp::Append),
+            source_event_seqs: Some((0..512).collect()),
+        };
+        let mut compact = coalesce_history_transport_batch((0..512).map(chunk).collect());
+        compact.extend(coalesce_history_transport_batch(vec![message]));
+        let compact = coalesce_history_transport_events(compact);
+
+        assert_eq!(compact.len(), 1);
+        assert_eq!(compact[0].type_, "assistant/message");
     }
 
     #[test]
