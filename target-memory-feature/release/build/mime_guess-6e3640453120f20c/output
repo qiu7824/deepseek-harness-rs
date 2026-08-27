@@ -1,1 +1,0 @@
-cargo:rustc-env=MIME_TYPES_GENERATED_PATH=D:/deepwork/deepseek-harness-rs/target-memory-feature\release\build\mime_guess-6e3640453120f20c\out\mime_types_generated.rs
