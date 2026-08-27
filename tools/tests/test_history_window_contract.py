@@ -16,8 +16,9 @@ class HistoryWindowContractTests(unittest.TestCase):
             "hasMoreAfter",
             "loadingNewer",
             "async loadNewer()",
-            "DEFAULT_HISTORY_POLICY",
-            "normalizeHistoryPolicy",
+            "HISTORY_PAGE_MESSAGES",
+            "HISTORY_WINDOW_PAGES",
+            "HISTORY_WINDOW_EVENTS",
             "Never cut a raw event range",
             "function eventEndSeq(event)",
         ):
@@ -59,26 +60,57 @@ class HistoryWindowContractTests(unittest.TestCase):
     def test_conversation_scroll_loads_forward_page_near_bottom(self):
         source = CONVERSATION.read_text(encoding="utf-8")
         self.assertIn("const hasMoreAfter = useSession((s) => s.hasMoreAfter)", source)
+        self.assertIn("const historyBrowsing = useSession((s) => s.historyBrowsing)", source)
         self.assertIn("const loadingNewer = useSession((s) => s.loadingNewer)", source)
-        self.assertIn("isAtBottom && hasMoreAfter && !loadingNewer", source)
+        self.assertIn("readerForwardIntentRef", source)
+        self.assertIn("!historyBrowsing || readerForwardIntentRef.current", source)
+        self.assertIn("if (historyBrowsing || !hasMoreAfter", source)
+        self.assertIn("!historyBrowsing && (appendedUser", source)
         self.assertIn("Promise.resolve(loadNewer())", source)
         self.assertIn("newerRequestRef.current", source)
-        self.assertIn("[hasMoreAfter, loadingNewer, loadNewer]", source)
+        self.assertIn("[historyBrowsing, hasMoreAfter, loadingNewer, loadNewer]", source)
         self.assertIn("floor - el.scrollTop <= 25", source)
         self.assertIn("el.scrollTop <= 80", source)
         self.assertIn("Promise.resolve(loadOlder())", source)
+        self.assertNotIn("loadOlderAnchored", source)
+        self.assertNotIn('t("chat.loadOlder")', source)
+
+    def test_runtime_exposes_history_browse_state_to_prevent_jump_scroll_feedback(self):
+        source = RUNTIME.read_text(encoding="utf-8")
+        self.assertIn("historyBrowsing: this.historyTargetSeq !== null", source)
 
     def test_loading_older_history_retains_the_newly_loaded_head(self):
         source = RUNTIME.read_text(encoding="utf-8")
         self.assertIn('this.trimHistoryWindow("tail")', source)
+        self.assertIn("eventStartSeq(older[0].event)", source)
 
-    def test_context_jump_expands_the_contiguous_window_without_replacing_it(self):
+    def test_live_history_trims_on_page_limit_before_event_limit(self):
+        source = RUNTIME.read_text(encoding="utf-8")
+        self.assertIn(
+            "if (trim && (this.historyPages.length > HISTORY_WINDOW_PAGES || this.events.length > HISTORY_WINDOW_EVENTS)) this.trimHistoryWindow(\"head\")",
+            source,
+        )
+        self.assertIn("if (this.events.length > HISTORY_WINDOW_EVENTS && this.historyPages.length === 1)", source)
+        self.assertIn("page.firstSeq = eventStartSeq(this.events[0])", source)
+        self.assertIn("page.eventCount = this.events.length", source)
+
+    def test_context_jump_uses_constant_time_targeted_history_lookup(self):
         source = (ROOT / "release" / "plugins" / "dsh-context-jump" / "lib" / "client.js").read_text(encoding="utf-8")
-        self.assertNotIn("loadAround(entry.seq)", source)
+        manifest = (ROOT / "release" / "plugins" / "dsh-context-jump" / "package.json").read_text(encoding="utf-8")
         self.assertIn("ensureTarget", source)
-        self.assertIn("await session.loadOlder()", source)
-        self.assertIn("await session.loadNewer()", source)
-        self.assertIn("if (before === after) return false", source)
+        self.assertIn("await session.loadAround(seq, true)", source)
+        self.assertIn("snapshot.chat.nodes.get(preferredKey)", source)
+        self.assertNotIn("snapshot.chat.nodes.has", source)
+        self.assertIn("frame < 12", source)
+        self.assertIn("const currentSession = () => ctx.sessions.binding(sessionId)?.session", source)
+        self.assertIn("const currentFace = () => currentSession()?.projections.faceOf", source)
+        self.assertIn("const railFace =", source)
+        self.assertIn("currentSession()?.subscribe", source)
+        self.assertIn("node?.anchorSeq === seq && node.kind === \"user\"", source)
+        self.assertNotIn("13:input-message", source)
+        self.assertIn("targetError", source)
+        self.assertNotIn("attempt < 200", source)
+        self.assertIn('"@deepseek-ai/dsh-client-ui-conversation"', manifest)
 
     def test_goal_actions_always_release_pending_after_transport_failure(self):
         source = (ROOT / "web" / "dist" / "plugins" / "ui-goal.js").read_text(encoding="utf-8")
@@ -94,6 +126,13 @@ class HistoryWindowContractTests(unittest.TestCase):
         self.assertIn("@deepseek-ai/dsh-client-ui-goal", manifest)
         self.assertIn('goal.phase === "blocked"', source)
 
+    def test_runtime_session_disposal_is_not_reported_as_durable_session_removal(self):
+        host = (ROOT / "crates" / "host" / "apiproxy" / "src" / "proxy.rs").read_text(encoding="utf-8")
+        disposed = host[host.index('// session/disposed'):host.index('// workspace/session-deleted')]
+        self.assertIn("HostFrame::SessionStatus", disposed)
+        self.assertIn("running: false", disposed)
+        self.assertNotIn("HostFrame::SessionRemoved", disposed)
+
     def test_theme_settings_include_popular_palettes_and_bing_wallpaper(self):
         theme = (ROOT / "web" / "dist" / "plugins" / "ui-theme.js").read_text(encoding="utf-8")
         host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(encoding="utf-8")
@@ -103,13 +142,25 @@ class HistoryWindowContractTests(unittest.TestCase):
         self.assertIn("/__dsh-bing-wallpaper", theme)
         self.assertIn("/__dsh-bing-wallpaper", host)
         self.assertIn('"ui-wallpaper"', host)
-        self.assertIn('"ui-history"', host)
-        self.assertIn("HistoryMemorySettings", theme)
+        self.assertNotIn('"ui-history"', host)
+        self.assertNotIn("HistoryMemorySettings", theme)
+        self.assertNotIn('id: "history-memory"', theme)
         self.assertIn("NO_SKIN", theme)
         self.assertIn("BasicAppearanceSettings", theme)
         self.assertIn('NO_SKIN ? "外观" : "皮肤与壁纸"', theme)
         for required in ("SKIN_CATALOG", "全部皮肤", "浅色皮肤", "深色皮肤", "随机皮肤", "搜索皮肤", "主题详情"):
             self.assertIn(required, theme)
+
+    def test_history_loading_uses_the_bounded_automatic_window(self):
+        runtime = RUNTIME.read_text(encoding="utf-8")
+        self.assertIn("HISTORY_PAGE_MESSAGES = 12", runtime)
+        self.assertIn("HISTORY_WINDOW_PAGES = 5", runtime)
+        self.assertIn("HISTORY_WINDOW_EVENTS = 4096", runtime)
+        self.assertNotIn("FULL_HISTORY_ON_OPEN", runtime)
+        self.assertNotIn("DEFAULT_HISTORY_POLICY", runtime)
+        self.assertNotIn("normalizeHistoryPolicy", runtime)
+        self.assertNotIn("loadHistoryPolicy", runtime)
+        self.assertNotIn('historyPolicy.mode === "full"', runtime)
 
     def test_code_graph_and_sidebar_editor_contract(self):
         graph = (ROOT / "web" / "dist" / "plugins" / "ui-code-graph.js").read_text(encoding="utf-8")

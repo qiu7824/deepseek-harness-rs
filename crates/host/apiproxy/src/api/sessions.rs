@@ -290,13 +290,15 @@ pub struct SessionHistoryRequest {
 /// log remains unchanged; the last event's seq/time stay authoritative so
 /// forward cursors and live stitching remain contiguous.
 pub(crate) fn coalesce_history_transport_events(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
-    fn key(event: &SessionEvent) -> Option<(u64, u64, u64, String)> {
+    fn key(
+        event: &SessionEvent,
+    ) -> Option<(u64, u64, u64, String, Option<String>, Option<String>)> {
         if event.type_ != "assistant/chunk" {
             return None;
         }
         let chunk = event.data.get("chunk")?;
         let kind = chunk.get("type")?.as_str()?;
-        if !matches!(kind, "text-delta" | "reasoning-delta") {
+        if !matches!(kind, "text-delta" | "reasoning-delta" | "tool-call-delta") {
             return None;
         }
         Some((
@@ -304,11 +306,32 @@ pub(crate) fn coalesce_history_transport_events(events: Vec<SessionEvent>) -> Ve
             event.data.get("step")?.as_u64()?,
             chunk.get("index")?.as_u64()?,
             kind.to_string(),
+            chunk
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            chunk
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
         ))
     }
 
+    let raw_start = events.first().map(|event| event.seq);
+    let raw_end = events.last().map(|event| event.seq);
+    let completed_sources: std::collections::HashSet<u64> = events
+        .iter()
+        .filter(|event| event.type_ == "assistant/message")
+        .flat_map(|event| event.source_event_seqs.iter().flatten().copied())
+        .collect();
     let mut compact: Vec<SessionEvent> = Vec::new();
-    for event in events {
+    for mut event in events {
+        if event.type_ == "assistant/chunk" && completed_sources.contains(&event.seq) {
+            continue;
+        }
+        if event.type_ == "assistant/message" && event.source_event_seqs.is_some() {
+            event.source_event_seqs = None;
+        }
         let Some(event_key) = key(&event) else {
             compact.push(event);
             continue;
@@ -321,28 +344,35 @@ pub(crate) fn coalesce_history_transport_events(events: Vec<SessionEvent>) -> Ve
             compact.push(event);
             continue;
         }
-        let text = event
-            .data
-            .get("chunk")
-            .and_then(|chunk| chunk.get("text"))
+        let field = if event_key.3 == "tool-call-delta" {
+            "argumentsDelta"
+        } else {
+            "text"
+        };
+        let delta = event.data["chunk"]
+            .get(field)
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
-        if let Some(existing) = previous
-            .data
-            .get("chunk")
-            .and_then(|chunk| chunk.get("text"))
+        if let Some(existing) = previous.data["chunk"]
+            .get(field)
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
         {
-            let mut joined = String::with_capacity(existing.len() + text.len());
+            let mut joined = String::with_capacity(existing.len() + delta.len());
             joined.push_str(&existing);
-            joined.push_str(text);
-            previous.data["chunk"]["text"] = serde_json::Value::String(joined);
+            joined.push_str(delta);
+            previous.data["chunk"][field] = serde_json::Value::String(joined);
             previous.data["__historyEndSeq"] = serde_json::Value::from(event.seq);
             previous.time = event.time;
         } else {
             compact.push(event);
         }
+    }
+    if let (Some(first), Some(raw_start)) = (compact.first_mut(), raw_start) {
+        first.data["__historyStartSeq"] = serde_json::Value::from(raw_start);
+    }
+    if let (Some(last), Some(raw_end)) = (compact.last_mut(), raw_end) {
+        last.data["__historyEndSeq"] = serde_json::Value::from(raw_end);
     }
     compact.shrink_to_fit();
     compact
@@ -653,6 +683,97 @@ mod history_paging_contract_tests {
             compact.iter().map(|event| event.seq).collect::<Vec<_>>(),
             vec![0, 1, 2]
         );
+    }
+
+    #[test]
+    fn history_transport_coalesces_contiguous_tool_call_argument_deltas() {
+        let make = |seq, arguments: &str| SessionEvent {
+            type_: "assistant/chunk".to_string(),
+            seq,
+            time: seq as i64,
+            data: serde_json::json!({
+                "turn": 2,
+                "step": 1,
+                "chunk": {
+                    "type": "tool-call-delta",
+                    "index": 2,
+                    "id": "call-1",
+                    "name": "write",
+                    "argumentsDelta": arguments
+                }
+            }),
+            ignorable: None,
+            surface_op: None,
+            source_event_seqs: None,
+        };
+
+        let compact = coalesce_history_transport_events(vec![
+            make(7, "{\"path\":"),
+            make(8, "\"a.txt\","),
+            make(9, "\"content\":\"x\"}"),
+        ]);
+
+        assert_eq!(compact.len(), 1);
+        assert_eq!(compact[0].seq, 7);
+        assert_eq!(compact[0].data["__historyEndSeq"], 9);
+        assert_eq!(
+            compact[0].data["chunk"]["argumentsDelta"],
+            "{\"path\":\"a.txt\",\"content\":\"x\"}"
+        );
+    }
+
+    #[test]
+    fn history_transport_elides_completed_assistant_provenance_chunks() {
+        let chunk = |seq| SessionEvent {
+            type_: "assistant/chunk".to_string(),
+            seq,
+            time: seq as i64,
+            data: serde_json::json!({
+                "turn": 1,
+                "step": 1,
+                "chunk": {"type": "text-delta", "index": 0, "text": seq.to_string()}
+            }),
+            ignorable: None,
+            surface_op: None,
+            source_event_seqs: None,
+        };
+        let message = SessionEvent {
+            type_: "assistant/message".to_string(),
+            seq: 4,
+            time: 4,
+            data: serde_json::json!({
+                "turn": 1,
+                "step": 1,
+                "message": {"id":"m1","role":"assistant","content":[{"type":"text","text":"012"}],"source":{"kind":"model","provider":"p","model":"m"}}
+            }),
+            ignorable: None,
+            surface_op: Some(dsh_session::SurfaceOp::Append),
+            source_event_seqs: Some(vec![1, 2, 3]),
+        };
+        let events = vec![
+            SessionEvent {
+                seq: 0,
+                type_: "step/start".to_string(),
+                time: 0,
+                data: serde_json::json!({"turn":1,"step":1}),
+                ignorable: None,
+                surface_op: None,
+                source_event_seqs: None,
+            },
+            chunk(1),
+            chunk(2),
+            chunk(3),
+            message.clone(),
+        ];
+
+        let compact = coalesce_history_transport_events(events);
+
+        assert_eq!(compact.len(), 2);
+        assert_eq!(compact[0].type_, "step/start");
+        assert_eq!(compact[0].data["__historyStartSeq"], 0);
+        assert_eq!(compact[1].type_, "assistant/message");
+        assert_eq!(compact[1].data["__historyEndSeq"], 4);
+        assert_eq!(compact[1].source_event_seqs, None);
     }
 
     #[test]

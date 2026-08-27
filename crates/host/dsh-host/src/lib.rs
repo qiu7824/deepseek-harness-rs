@@ -13,6 +13,33 @@ use std::sync::Arc;
 mod client_plugins;
 mod web_preview;
 
+#[cfg(windows)]
+static ALLOCATOR_COLLECT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+#[cfg(windows)]
+thread_local! {
+    static LAST_ALLOCATOR_COLLECT_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(windows)]
+pub fn request_allocator_collect() {
+    use std::sync::atomic::Ordering;
+    ALLOCATOR_COLLECT_EPOCH.fetch_add(1, Ordering::AcqRel);
+}
+
+#[cfg(windows)]
+pub fn collect_allocator_on_park() {
+    use std::sync::atomic::Ordering;
+    let epoch = ALLOCATOR_COLLECT_EPOCH.load(Ordering::Acquire);
+    LAST_ALLOCATOR_COLLECT_EPOCH.with(|last| {
+        if last.get() == epoch {
+            return;
+        }
+        unsafe { libmimalloc_sys::mi_collect(true) };
+        last.set(epoch);
+    });
+}
+
 fn packaged_resource(relative: &str) -> std::path::PathBuf {
     let adjacent = std::env::current_exe()
         .ok()
@@ -875,6 +902,8 @@ async fn bridge_api_request(request: WebRequest, handler: Arc<FetchHandler>) -> 
                 .map(|value| (name.as_str().to_string(), value.to_string()))
         })
         .collect();
+    #[cfg(windows)]
+    let collect_after_response = parts.uri.path() == "/api/session.history";
     let response = handler
         .handle(CarrierRequest {
             method: parts.method,
@@ -888,11 +917,14 @@ async fn bridge_api_request(request: WebRequest, handler: Arc<FetchHandler>) -> 
     let body = match body {
         CarrierBody::Bytes(bytes) => {
             #[cfg(windows)]
-            if bytes.len() >= 256 * 1024 {
-                // SAFETY: the typed RPC tree has already been serialized and
-                // dropped; collect its transient pages before retaining only
-                // the final bounded byte buffer.
-                unsafe { libmimalloc_sys::mi_collect(true) };
+            {
+                if collect_after_response {
+                    request_allocator_collect();
+                } else if bytes.len() >= 256 * 1024 {
+                    // SAFETY: the typed RPC tree has already been serialized
+                    // and dropped; collect this worker's transient pages.
+                    unsafe { libmimalloc_sys::mi_collect(true) };
+                }
             }
             WebBody::from(bytes)
         }
@@ -1665,50 +1697,6 @@ fn compose_host_in_fiber(
             dsh_settings::SettingsRegisterOptions::default(),
         )
         .map_err(|error| format!("settings ui-wallpaper: {error}"))?;
-    settings
-        .register(
-            ctx,
-            dsh_settings::settings_namespace("ui-history")
-                .map_err(|error| format!("settings namespace: {error}"))?,
-            dsh_schemastery::Schema::object(indexmap::IndexMap::from([
-                (
-                    "mode".to_string(),
-                    dsh_schemastery::Schema::union(vec![
-                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
-                            "low".to_string(),
-                        )),
-                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
-                            "balanced".to_string(),
-                        )),
-                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
-                            "full".to_string(),
-                        )),
-                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
-                            "custom".to_string(),
-                        )),
-                    ])
-                    .default(dsh_schemastery::Data::String("balanced".to_string())),
-                ),
-                (
-                    "maxPages".to_string(),
-                    dsh_schemastery::Schema::number()
-                        .min(1.0)
-                        .max(100.0)
-                        .step(1.0)
-                        .default(dsh_schemastery::Data::Number(5.0)),
-                ),
-                (
-                    "maxEvents".to_string(),
-                    dsh_schemastery::Schema::number()
-                        .min(256.0)
-                        .max(200_000.0)
-                        .step(1.0)
-                        .default(dsh_schemastery::Data::Number(4096.0)),
-                ),
-            ])),
-            dsh_settings::SettingsRegisterOptions::default(),
-        )
-        .map_err(|error| format!("settings ui-history: {error}"))?;
     let llm = LlmRuntime::install(ctx);
     dsh_session_title_first_prompt_llm::apply(
         ctx,

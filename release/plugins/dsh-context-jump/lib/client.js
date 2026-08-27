@@ -16,14 +16,16 @@ window.__ModuleLoader__.load({
 			"rail.aria": "你说过的话：{count} 条",
 			"tick.aria": "跳到你说的话：{text}",
 			"tick.imagesOnly": "（仅图片）",
-			"tick.images": "含图片 {count} 张"
+			"tick.images": "含图片 {count} 张",
+			"rail.targetError": "无法定位该消息，请重试"
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
 			"rail.aria": "Your messages: {count}",
 			"tick.aria": "Jump to your message: {text}",
 			"tick.imagesOnly": "(images only)",
-			"tick.images": "{count} images"
+			"tick.images": "{count} images",
+			"rail.targetError": "Unable to locate this message. Please retry."
 		};
 		//#endregion
 		//#region src/client/metrics.ts
@@ -223,10 +225,7 @@ window.__ModuleLoader__.load({
 			) ?? [];
 			const [railHeight, setRailHeight] = (0, react.useState)(() => window.innerHeight);
 			const max = maxVisibleTicks(railHeight);
-			const allEntries = (0, react.useMemo)(() => Array.isArray(indexed) && indexed.length > 0 ? indexed.map((entry) => ({
-				...entry,
-				key: `13:input-message${entry.key}`
-			})) : userEntries(order, nodes), [indexed, order, nodes]);
+			const allEntries = (0, react.useMemo)(() => Array.isArray(indexed) && indexed.length > 0 ? indexed : userEntries(order, nodes), [indexed, order, nodes]);
 			const [windowStart, setWindowStart] = (0, react.useState)(0);
 			(0, react.useEffect)(() => {
 				setWindowStart(Math.max(0, allEntries.length - max));
@@ -237,6 +236,7 @@ window.__ModuleLoader__.load({
 			entriesRef.current = entries;
 			const [active, setActive] = (0, react.useState)(null);
 			const [current, setCurrent] = (0, react.useState)(null);
+			const [targetError, setTargetError] = (0, react.useState)(null);
 			const [box, setBox] = (0, react.useState)(() => conversationBox());
 			const boxRef = (0, react.useRef)(box);
 			boxRef.current = box;
@@ -341,24 +341,36 @@ window.__ModuleLoader__.load({
 			const activate = (0, react.useCallback)(async (index) => {
 				const entry = entriesRef.current[index];
 				if (entry === void 0) return;
+				setTargetError(null);
 				let current = boxRef.current;
 				if (current === null || !current.port.isConnected || !current.flow.isConnected) return;
-				let row = findRow(current.flow, entry.key);
+				let targetKey = entry.key;
+				let row = findRow(current.flow, targetKey);
 				if (row === null && Number.isSafeInteger(entry.seq)) {
-					if (!await ensureTarget(entry.seq, entry.key)) return;
-					await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-					current = conversationBox();
-					if (current === null) return;
-					boxRef.current = current;
-					row = findRow(current.flow, entry.key);
+					targetKey = await ensureTarget(entry.seq, entry.key);
+					if (targetKey === null) {
+						setTargetError(t("rail.targetError"));
+						return;
+					}
+					for (let frame = 0; frame < 12; frame++) {
+						await new Promise((resolve) => requestAnimationFrame(resolve));
+						current = conversationBox();
+						if (current === null) continue;
+						boxRef.current = current;
+						row = findRow(current.flow, targetKey);
+						if (row !== null) break;
+					}
 				}
-				if (row === null) return;
+				if (row === null) {
+					setTargetError(t("rail.targetError"));
+					return;
+				}
 				const rect = row.getBoundingClientRect();
 				const portRect = current.port.getBoundingClientRect();
 				const target = scrollCenterTarget(current.port, rect.top - portRect.top, rect.height);
 				if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) current.port.scrollTop = target;
 				else current.port.scrollTo({ top: target, behavior: "smooth" });
-			}, [ensureTarget]);
+			}, [ensureTarget, t]);
 			if (!ready) return null;
 			const count = allEntries.length;
 			return (0, react_dom.createPortal)(/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
@@ -374,7 +386,11 @@ window.__ModuleLoader__.load({
 					if (event.key === "PageUp") { event.preventDefault(); pageTicks(-1); }
 					if (event.key === "PageDown") { event.preventDefault(); pageTicks(1); }
 				},
-				children: [entries.map((entry, index) => {
+				children: [targetError !== null && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+					role: "alert",
+					style: { position: "fixed", left: railLeft + 28, top: railCenter - 18, zIndex: 101, padding: "7px 10px", borderRadius: 6, background: "var(--dsw-alias-tooltip-bg)", color: "var(--dsw-static-neutral-bluish-00)", fontSize: 12, whiteSpace: "nowrap" },
+					children: targetError
+				}), entries.map((entry, index) => {
 					const label = snippet(entry.text, SNIPPET_MAX);
 					return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 						type: "button",
@@ -457,32 +473,48 @@ window.__ModuleLoader__.load({
 				order: 10,
 				locale: NS,
 				inject: (sessionId) => {
-					const binding = ctx.sessions.binding(sessionId);
-					const session = binding?.session;
-					const face = binding?.session.projections.faceOf("userMessageRail");
-					return {
-						railFace: {
-							subscribe: (listener) => face?.subscribe(listener) ?? (() => {}),
-							getSnapshot: () => face?.getSnapshot() ?? []
+					const currentSession = () => ctx.sessions.binding(sessionId)?.session;
+					const currentFace = () => currentSession()?.projections.faceOf("userMessageRail");
+					const railFace = {
+						subscribe: (listener) => {
+							let face = currentFace();
+							let unsubscribeFace = face?.subscribe(listener) ?? (() => {});
+							const unsubscribeSession = currentSession()?.subscribe(() => {
+								const next = currentFace();
+								if (next !== face) {
+									unsubscribeFace();
+									face = next;
+									unsubscribeFace = face?.subscribe(listener) ?? (() => {});
+								}
+								listener();
+							}) ?? (() => {});
+							return () => {
+								unsubscribeFace();
+								unsubscribeSession();
+							};
 						},
+						getSnapshot: () => currentFace()?.getSnapshot() ?? []
+					};
+					const nodeKeyAt = (session, seq, preferredKey) => {
+						const snapshot = session.getSnapshot();
+						if (snapshot.chat.nodes.get(preferredKey) !== void 0) return preferredKey;
+						for (const key of snapshot.chat.order) {
+							const node = snapshot.chat.nodes.get(key);
+							if (node?.anchorSeq === seq && node.kind === "user") return key;
+						}
+						return null;
+					};
+					return {
+						railFace,
 						ensureTarget: async (seq, key) => {
-							if (session === void 0) return false;
-							for (let attempt = 0; attempt < 200; attempt++) {
-								const snapshot = session.getSnapshot();
-								if (snapshot.chat.nodes.has(key)) return true;
-								const anchors = snapshot.chat.order.map((id) => snapshot.chat.nodes.get(id)?.anchorSeq).filter(Number.isFinite);
-								const min = anchors.length ? Math.min(...anchors) : Number.POSITIVE_INFINITY;
-								const max = anchors.length ? Math.max(...anchors) : Number.NEGATIVE_INFINITY;
-								const before = `${snapshot.chat.order[0] ?? ""}:${snapshot.chat.order.at(-1) ?? ""}:${snapshot.hasMoreBefore}:${snapshot.hasMoreAfter}`;
-								if (seq < min && snapshot.hasMoreBefore) await session.loadOlder();
-								else if (seq > max && snapshot.hasMoreAfter) await session.loadNewer();
-								else return false;
-								await new Promise((resolve) => setTimeout(resolve, 0));
-								const next = session.getSnapshot();
-								const after = `${next.chat.order[0] ?? ""}:${next.chat.order.at(-1) ?? ""}:${next.hasMoreBefore}:${next.hasMoreAfter}`;
-								if (before === after) return false;
-							}
-							return session.getSnapshot().chat.nodes.has(key);
+							const session = currentSession();
+							if (session === void 0) return null;
+							const existing = nodeKeyAt(session, seq, key);
+							if (existing !== null) return existing;
+							const loaded = await session.loadAround(seq, true);
+							await new Promise((resolve) => setTimeout(resolve, 0));
+							const found = loaded ? nodeKeyAt(session, seq, key) : null;
+							return found;
 						}
 					};
 				}

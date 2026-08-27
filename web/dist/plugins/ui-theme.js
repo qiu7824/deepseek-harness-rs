@@ -1368,13 +1368,6 @@ window.__ModuleLoader__.load({
 		function BasicAppearanceSettings(props) {
 			return (0, react_jsx_runtime.jsxs)("section", { style: { maxWidth: "760px", padding: "4px 2px 32px" }, children: [(0, react_jsx_runtime.jsx)("h2", { children: "外观" }), (0, react_jsx_runtime.jsx)("p", { style: { color: "var(--dsw-alias-label-tertiary)" }, children: "no-skin 版本不内置扩展皮肤；仍可选择浅色、深色或跟随系统。" }), (0, react_jsx_runtime.jsx)(AppearanceRow, props)] });
 		}
-		function HistoryMemorySettings({ api }) {
-			const [value, setValue] = (0, react.useState)({ mode: "balanced", maxPages: 5, maxEvents: 4096 });
-			const [status, setStatus] = (0, react.useState)("");
-			(0, react.useEffect)(() => { api.settings.describe({}).then((reply) => { if (reply.result.ok) setValue(reply.result.value.namespaces.find((item) => item.ns === "ui-history")?.value ?? value); }); }, [api]);
-			const save = async (next) => { setValue(next); setStatus("正在保存…"); const reply = await api.settings.update({ ns: "ui-history", patch: next }); setStatus(reply.result.ok ? "已保存" : reply.result.error.message); };
-			return (0, react_jsx_runtime.jsxs)("section", { style: { maxWidth: "760px", padding: "4px 2px 32px" }, children: [(0, react_jsx_runtime.jsx)("h2", { children: "历史与内存" }), (0, react_jsx_runtime.jsx)("p", { style: { color: "var(--dsw-alias-label-tertiary)" }, children: "接近顶部或底部会自动双向加载；整页是最小保留单位，绝不截断 AI 输出。事件上限是软限制，单个安全页可超过它。" }), (0, react_jsx_runtime.jsx)("select", { value: value.mode, onChange: (e) => save({ ...value, mode: e.target.value }), children: [["low","低内存（1个完整安全页）"],["balanced","平衡（5页 / 4096事件软限）"],["full","完整加载（不裁剪）"],["custom","自定义"]].map(([id,label]) => (0, react_jsx_runtime.jsx)("option", { value: id, children: label }, id)) }), value.mode === "custom" && (0, react_jsx_runtime.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "140px 180px", gap: "10px", marginTop: "16px" }, children: [(0, react_jsx_runtime.jsx)("label", { children: "最多页数" }), (0, react_jsx_runtime.jsx)("input", { type: "number", min: 1, max: 100, value: value.maxPages, onChange: (e) => setValue({ ...value, maxPages: Number(e.target.value) }) }), (0, react_jsx_runtime.jsx)("label", { children: "最多原始事件" }), (0, react_jsx_runtime.jsx)("input", { type: "number", min: 256, max: 200000, value: value.maxEvents, onChange: (e) => setValue({ ...value, maxEvents: Number(e.target.value) }) }), (0, react_jsx_runtime.jsx)("span", {}), (0, react_jsx_runtime.jsx)("button", { onClick: () => save(value), children: "保存限制" })] }), status && (0, react_jsx_runtime.jsx)("div", { style: { marginTop: "12px" }, children: status })] });
-		}
 		/**
 		* Required services: settings transport plus slots/locale for the Appearance
 		* row. `remote` carries the forwarded settings invalidation that
@@ -1427,7 +1420,6 @@ window.__ModuleLoader__.load({
 				label: NO_SKIN ? "外观" : "皮肤与壁纸",
 				inject: injected
 			}, NO_SKIN ? BasicAppearanceSettings : SkinSettings));
-			ctx.slots.inject("settings.section", () => ctx.slots.register({ name: "settings.section", id: "history-memory", order: 12, label: "历史与内存", inject: () => ({ api }) }, HistoryMemorySettings));
 		}
 		//#endregion
 		exports.SETTINGS_NS = SETTINGS_NS;

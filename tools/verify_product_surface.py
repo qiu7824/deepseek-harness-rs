@@ -53,7 +53,7 @@ conversation_source = (root / "web" / "dist" / "plugins" / "ui-conversation.js")
 connection_source = (root / "web" / "dist" / "plugins" / "connection.js").read_text(encoding="utf-8")
 for required in ("hasMoreBefore: boolean()", "hasMoreAfter: boolean()", "firstSeq: number().int().nullable()", "lastSeq: number().int().nullable()"):
     assert required in connection_source, f"directional history schema missing: {required}"
-for required in ("hasMoreBefore", "hasMoreAfter", "async loadNewer()", "DEFAULT_HISTORY_POLICY", "normalizeHistoryPolicy", "Never cut a raw event range", "bufferLive(event, view)"):
+for required in ("hasMoreBefore", "hasMoreAfter", "async loadNewer()", "HISTORY_PAGE_MESSAGES", "HISTORY_WINDOW_PAGES", "HISTORY_WINDOW_EVENTS", "Never cut a raw event range", "bufferLive(event, view)"):
     assert required in runtime_source, f"bounded bidirectional history contract missing: {required}"
 for required in ("hasMoreAfter", "loadingNewer", "Promise.resolve(loadNewer())", "Promise.resolve(loadOlder())"):
     assert required in conversation_source, f"forward history scroll trigger missing: {required}"

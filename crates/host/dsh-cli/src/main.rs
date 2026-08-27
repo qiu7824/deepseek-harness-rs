@@ -36,7 +36,11 @@ fn configure_allocator() {
 fn main() {
     #[cfg(windows)]
     configure_allocator();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
+    #[cfg(windows)]
+    runtime_builder.on_thread_park(dsh_host::collect_allocator_on_park);
+    let runtime = runtime_builder
+        .worker_threads(4)
         .enable_all()
         .build()
         .unwrap_or_else(|error| {

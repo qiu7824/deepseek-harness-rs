@@ -5422,6 +5422,7 @@ window.__ModuleLoader__.load({
 			const openError = useSession((s) => s.openError);
 			const hasMore = useSession((s) => s.hasMoreBefore);
 			const hasMoreAfter = useSession((s) => s.hasMoreAfter);
+			const historyBrowsing = useSession((s) => s.historyBrowsing);
 			const loadingOlder = useSession((s) => s.loadingOlder);
 			const loadingNewer = useSession((s) => s.loadingNewer);
 			const selectedCallId = useStore((s) => s.selection?.callId);
@@ -5452,6 +5453,10 @@ window.__ModuleLoader__.load({
 			*  scroll-driven at-bottom chrome re-render (which would snap inertial
 			*  scrolls the rest of the way to the floor). */
 			const followSigRef = (0, react.useRef)(null);
+			/** Explicit reader intent for paging toward newer history. Programmatic
+			* jump-centering scrolls do not set this latch and therefore cannot feed
+			* back into loadNewer while a historical target is active. */
+			const readerForwardIntentRef = (0, react.useRef)(false);
 			const firstKey = order[0];
 			const firstSeq = firstKey === void 0 ? null : nodeStore.get(firstKey)?.anchorSeq ?? null;
 			const lastKey = order.at(-1) ?? null;
@@ -5514,7 +5519,7 @@ window.__ModuleLoader__.load({
 				lastKeyRef.current = lastKey;
 				lastSteeringIdRef.current = lastSteeringId;
 				followSigRef.current = followSig;
-				if (appendedUser || appendedSteering || tipMoved && atBottomRef.current) toBottom(el);
+				if (!historyBrowsing && (appendedUser || appendedSteering || tipMoved && atBottomRef.current)) toBottom(el);
 			});
 			const newerRequestRef = (0, react.useRef)(false);
 			const onScrollRef = (0, react.useRef)(() => {});
@@ -5531,13 +5536,14 @@ window.__ModuleLoader__.load({
 					if (position !== null) anchorRef.current = { key: position.anchorKey, top: position.anchorTop };
 					Promise.resolve(loadOlder());
 				}
-				if (isAtBottom && hasMoreAfter && !loadingNewer && !newerRequestRef.current) {
+				if (isAtBottom && hasMoreAfter && !loadingNewer && !newerRequestRef.current && (!historyBrowsing || readerForwardIntentRef.current)) {
+					readerForwardIntentRef.current = false;
 					newerRequestRef.current = true;
 					Promise.resolve(loadNewer()).finally(() => {
 						newerRequestRef.current = false;
 					});
 				}
-				if (!movedByReader && isAtBottom) {
+				if (!historyBrowsing && !movedByReader && isAtBottom) {
 					toBottom(el);
 					return;
 				}
@@ -5558,16 +5564,33 @@ window.__ModuleLoader__.load({
 				/* v8 ignore next -- ref-null guard: effect runs after the list node commits. */
 				if (local === null) return;
 				const el = scrollerOf(local);
+				const onWheel = (event) => {
+					if (event.deltaY > 0) readerForwardIntentRef.current = true;
+					else if (event.deltaY < 0) readerForwardIntentRef.current = false;
+				};
+				const onKeyDown = (event) => {
+					if (["ArrowDown", "PageDown", "End", " "].includes(event.key)) readerForwardIntentRef.current = true;
+					else if (["ArrowUp", "PageUp", "Home"].includes(event.key)) readerForwardIntentRef.current = false;
+				};
+				const onPointerDown = () => {
+					readerForwardIntentRef.current = true;
+				};
 				const onScroll = () => {
 					onScrollRef.current();
 				};
+				el.addEventListener("wheel", onWheel, { passive: true });
+				el.addEventListener("keydown", onKeyDown);
+				el.addEventListener("pointerdown", onPointerDown);
 				el.addEventListener("scroll", onScroll, { passive: true });
 				return () => {
+					el.removeEventListener("wheel", onWheel);
+					el.removeEventListener("keydown", onKeyDown);
+					el.removeEventListener("pointerdown", onPointerDown);
 					el.removeEventListener("scroll", onScroll);
 				};
 			}, []);
 			(0, react.useEffect)(() => {
-				if (!hasMoreAfter || loadingNewer || newerRequestRef.current) return;
+				if (historyBrowsing || !hasMoreAfter || loadingNewer || newerRequestRef.current) return;
 				const local = listRef.current;
 				if (local === null) return;
 				const el = scrollerOf(local);
@@ -5577,11 +5600,11 @@ window.__ModuleLoader__.load({
 				Promise.resolve(loadNewer()).finally(() => {
 					newerRequestRef.current = false;
 				});
-			}, [hasMoreAfter, loadingNewer, loadNewer]);
+			}, [historyBrowsing, hasMoreAfter, loadingNewer, loadNewer]);
 			const followRef = (0, react.useRef)(null);
 			followRef.current = () => {
 				const local = listRef.current;
-				if (local !== null && atBottomRef.current) {
+				if (!historyBrowsing && local !== null && atBottomRef.current) {
 					const el = scrollerOf(local);
 					el.scrollTop = el.scrollHeight;
 					observedTopRef.current = el.scrollTop;
@@ -5605,19 +5628,6 @@ window.__ModuleLoader__.load({
 			(0, react.useEffect)(() => {
 				if (!loadingOlder) anchorRef.current = null;
 			}, [loadingOlder]);
-			const loadOlderAnchored = () => {
-				const local = listRef.current;
-				/* v8 ignore next -- ref-null guard: the paging button renders inside the list tree. */
-				if (local !== null) {
-					const el = scrollerOf(local);
-					const row = pagingAnchor(local, el);
-					if (row !== null && row.dataset.chatAnchorKey !== void 0) anchorRef.current = {
-						key: row.dataset.chatAnchorKey,
-						top: flowTop(row, el)
-					};
-				}
-				loadOlder();
-			};
 			return (0, react_jsx_runtime.jsx)("div", {
 				className: ChatView_module_css_default.root,
 				children: [(0, react_jsx_runtime.jsxs)("div", {
@@ -5637,15 +5647,6 @@ window.__ModuleLoader__.load({
 								children: t("chat.loadError", {
 									message: openError.message,
 									code: openError.code
-								})
-							}),
-							hasMore && (0, react_jsx_runtime.jsx)("div", {
-								className: ChatView_module_css_default.older,
-								children: (0, react_jsx_runtime.jsx)("button", {
-									type: "button",
-									disabled: loadingOlder,
-									onClick: loadOlderAnchored,
-									children: loadingOlder ? t("loading") : t("chat.loadOlder")
 								})
 							}),
 							order.map((nodeKey) => (0, react_jsx_runtime.jsx)(ChatNodeSeat, {

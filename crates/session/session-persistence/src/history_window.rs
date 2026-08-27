@@ -106,6 +106,22 @@ pub fn select_history_window(
                 has_more: end > max_events,
             });
         }
+        if max_messages <= 1
+            && max_events > 0
+            && before_seq.is_some()
+            && !events[end.saturating_sub(max_events)..end]
+                .iter()
+                .any(|event| {
+                    matches!(event.type_.as_str(), "user/message" | "assistant/message")
+                        && event.surface_op.as_ref().is_none_or(|op| op.is_append())
+                })
+        {
+            return Ok(HistoryWindowSelection {
+                start: end.saturating_sub(max_events),
+                end,
+                has_more: end > max_events,
+            });
+        }
         return Err(HistoryWindowTooLarge {
             selection,
             max_events,
@@ -192,6 +208,33 @@ mod tests {
         assert_eq!(selection.event_count(), 4_096);
         assert!(selection.has_more);
         assert_eq!(events[selection.end - 1].type_, "turn/end");
+    }
+
+    #[test]
+    fn pages_backwards_inside_one_oversized_stream() {
+        let mut events = Vec::with_capacity(10_002);
+        events.push(event(0, "user/message", true));
+        for seq in 1..=10_000 {
+            events.push(event(seq, "assistant/chunk", false));
+        }
+        let mut message = event(10_001, "assistant/message", true);
+        message.source_event_seqs = Some((1..=10_000).collect());
+        events.push(message);
+
+        let tail = select_history_window(&events, None, 1, 4_096).unwrap();
+        assert_eq!(tail.start, 5_906);
+        assert!(tail.has_more);
+
+        let previous = select_history_window(&events, Some(5_906), 1, 4_096).unwrap();
+        assert_eq!(previous.start, 1_810);
+        assert_eq!(previous.end, 5_906);
+        assert_eq!(previous.event_count(), 4_096);
+        assert!(previous.has_more);
+
+        let oldest = select_history_window(&events, Some(1_810), 1, 4_096).unwrap();
+        assert_eq!(oldest.start, 0);
+        assert_eq!(oldest.end, 1_810);
+        assert!(!oldest.has_more);
     }
 
     #[test]

@@ -89,6 +89,41 @@ fn copy_bundled_tree(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn bundled_tree_matches(source: &Path, destination: &Path) -> bool {
+    let Ok(source_entries) = std::fs::read_dir(source) else {
+        return false;
+    };
+    let Ok(destination_entries) = std::fs::read_dir(destination) else {
+        return false;
+    };
+    let mut source_names = Vec::new();
+    for entry in source_entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            return false;
+        };
+        let name = entry.file_name();
+        let target = destination.join(&name);
+        let matches = if kind.is_dir() {
+            target.is_dir() && bundled_tree_matches(&entry.path(), &target)
+        } else if kind.is_file() {
+            target.is_file() && std::fs::read(entry.path()).ok() == std::fs::read(&target).ok()
+        } else {
+            false
+        };
+        if !matches {
+            return false;
+        }
+        source_names.push(name);
+    }
+    let mut destination_names = destination_entries
+        .flatten()
+        .map(|entry| entry.file_name())
+        .collect::<Vec<_>>();
+    source_names.sort();
+    destination_names.sort();
+    source_names == destination_names
+}
+
 pub fn materialize_bundled(profile: &Path) -> Result<(), String> {
     remove_retired_bundled(profile)?;
     let Some(root) = std::env::current_exe()
@@ -137,7 +172,12 @@ pub fn materialize_bundled(profile: &Path) -> Result<(), String> {
         let Some(destination) = package_directory(profile, name) else {
             continue;
         };
-        if !destination.exists() {
+        if !bundled_tree_matches(&entry.path(), &destination) {
+            if destination.exists() {
+                std::fs::remove_dir_all(&destination).map_err(|error| {
+                    format!("refresh bundled plugin {}: {error}", destination.display())
+                })?;
+            }
             copy_bundled_tree(&entry.path(), &destination)?;
             changed = true;
         }
@@ -428,6 +468,36 @@ mod tests {
         assert_eq!(inventory.len(), 1);
         assert_eq!(inventory[0]["id"], "keep");
         assert!(!plugin.exists());
+        std::fs::remove_dir_all(profile).expect("remove fixture");
+    }
+
+    #[test]
+    fn bundled_client_plugin_refreshes_an_existing_profile_copy() {
+        let profile = std::env::temp_dir().join(format!(
+            "dsh-bundled-plugin-refresh-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let source = profile.join("source");
+        let destination = profile.join("destination");
+        std::fs::create_dir_all(source.join("lib")).expect("create source");
+        std::fs::create_dir_all(destination.join("lib")).expect("create destination");
+        std::fs::write(source.join("package.json"), br#"{"version":"2"}"#)
+            .expect("write source manifest");
+        std::fs::write(source.join("lib/client.js"), b"new").expect("write source client");
+        std::fs::write(destination.join("package.json"), br#"{"version":"1"}"#)
+            .expect("write stale manifest");
+        std::fs::write(destination.join("lib/client.js"), b"old").expect("write stale client");
+
+        copy_bundled_tree(&source, &destination).expect("refresh bundled plugin");
+
+        assert_eq!(
+            std::fs::read(destination.join("package.json")).expect("read manifest"),
+            br#"{"version":"2"}"#
+        );
+        assert_eq!(
+            std::fs::read(destination.join("lib/client.js")).expect("read client"),
+            b"new"
+        );
         std::fs::remove_dir_all(profile).expect("remove fixture");
     }
 }
