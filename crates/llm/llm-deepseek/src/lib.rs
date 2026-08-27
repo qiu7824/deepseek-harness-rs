@@ -52,6 +52,15 @@ pub const DEFAULT_IMAGE_OFFLOAD_BYTE_QUANTUM: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_INLINE_IMAGE_OFFLOAD_BYTE_QUANTUM: u64 = 10 * 1024 * 1024;
 pub const DEFAULT_IMAGE_OFFLOAD_COUNT_QUANTUM: usize = 20;
 
+/// Known provider output caps that are not normally disclosed by the
+/// OpenAI-compatible `/models` response. Exact configured metadata wins.
+pub fn inferred_model_max_tokens(model_id: &str) -> Option<u64> {
+    match model_id.to_ascii_lowercase().as_str() {
+        "glm-5.3" | "glm-5.3-flash" => Some(131_072),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThinkingMode {
     Enabled,
@@ -711,6 +720,26 @@ fn detail_names_file_id(detail: &str, file_id: &DeepSeekFileId) -> bool {
     })
 }
 
+fn model_max_tokens(model: &str, connection: &ResolvedDeepSeekOptions) -> Option<u64> {
+    let configured = connection
+        .models
+        .iter()
+        .find(|entry| entry.id.eq_ignore_ascii_case(model))
+        .and_then(|entry| entry.max_tokens);
+    match (configured, inferred_model_max_tokens(model)) {
+        (Some(configured), Some(known_limit)) => Some(configured.min(known_limit)),
+        (Some(configured), None) => Some(configured),
+        (None, inferred) => inferred,
+    }
+}
+
+fn apply_model_max_tokens(options: &mut GenerateOptions, connection: &ResolvedDeepSeekOptions) {
+    let Some(limit) = model_max_tokens(&options.model, connection) else {
+        return;
+    };
+    options.max_tokens = Some(options.max_tokens.map_or(limit, |value| value.min(limit)));
+}
+
 fn map_reasoning_effort_for_request(
     options: &mut GenerateOptions,
     connection: &ResolvedDeepSeekOptions,
@@ -758,6 +787,7 @@ async fn request_chunks(
     cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
 ) -> Result<(), LlmFailure> {
     let mut options = project_estimated_request(&options);
+    apply_model_max_tokens(&mut options, &connection);
     map_reasoning_effort_for_request(&mut options, &connection, reasoning_wire_format)?;
     if connection.api == "openai-responses" {
         let (image_urls, image_meta) =
@@ -1239,9 +1269,7 @@ impl LlmAdapter for DeepSeekAdapter {
                         .unwrap_or(options.default_context_window),
                 }),
                 default_max_tokens: Some(
-                    configured
-                        .and_then(|entry| entry.max_tokens)
-                        .unwrap_or(options.max_tokens),
+                    model_max_tokens(model, &options).unwrap_or(options.max_tokens),
                 ),
                 reasoning: (!efforts.is_empty()).then_some(LlmModelReasoningInfo {
                     efforts,
@@ -1266,9 +1294,7 @@ impl LlmAdapter for DeepSeekAdapter {
                         .unwrap_or(options.default_context_window),
                 }),
                 default_max_tokens: Some(
-                    configured
-                        .and_then(|entry| entry.max_tokens)
-                        .unwrap_or(options.max_tokens),
+                    model_max_tokens(model, &options).unwrap_or(options.max_tokens),
                 ),
                 reasoning: None,
             };
@@ -1315,9 +1341,7 @@ impl LlmAdapter for DeepSeekAdapter {
                     .unwrap_or(options.default_context_window),
             }),
             default_max_tokens: Some(
-                configured
-                    .and_then(|entry| entry.max_tokens)
-                    .unwrap_or(options.max_tokens),
+                model_max_tokens(model, &options).unwrap_or(options.max_tokens),
             ),
             reasoning: Some(LlmModelReasoningInfo {
                 efforts,
@@ -1378,7 +1402,7 @@ pub fn apply(
 
 #[cfg(test)]
 mod endpoint_tests {
-    use super::endpoint_url;
+    use super::{endpoint_url, inferred_model_max_tokens};
 
     #[test]
     fn completions_replaces_responses_endpoint_suffix() {
@@ -1394,8 +1418,20 @@ mod endpoint_tests {
     #[test]
     fn responses_replaces_chat_completions_endpoint_suffix() {
         assert_eq!(
-            endpoint_url("https://example.test/v1/chat/completions", "openai-responses"),
+            endpoint_url(
+                "https://example.test/v1/chat/completions",
+                "openai-responses"
+            ),
             "https://example.test/v1/responses"
         );
+    }
+
+    #[test]
+    fn glm_5_3_uses_its_declared_output_limit() {
+        assert_eq!(inferred_model_max_tokens("glm-5.3"), Some(131_072));
+        assert_eq!(inferred_model_max_tokens("GLM-5.3"), Some(131_072));
+        assert_eq!(inferred_model_max_tokens("glm-5.3-flash"), Some(131_072));
+        assert_eq!(inferred_model_max_tokens("GLM-5.3-FLASH"), Some(131_072));
+        assert_eq!(inferred_model_max_tokens("glm-5.2"), None);
     }
 }

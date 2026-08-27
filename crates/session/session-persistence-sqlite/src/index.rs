@@ -896,6 +896,26 @@ impl dsh_session_persistence::SessionPersistenceApi for SqliteSessionPersistence
                     });
                 }
                 if messages == 1 {
+                    if request.max_events > 0 {
+                        let bounded_start = before_seq.saturating_sub(request.max_events as u64);
+                        let rows = self.event_rows_range(db, id, bounded_start, before_seq)?;
+                        let ScanRowsResult { preserved, .. } = scan_rows(&rows, bounded_start)?;
+                        if preserved.last().is_some_and(|event| {
+                            event.type_ == "assistant/message"
+                                && event.surface_op.as_ref().is_some_and(|op| op.is_append())
+                                && event
+                                    .source_event_seqs
+                                    .as_ref()
+                                    .is_some_and(|seqs| !seqs.is_empty())
+                        }) {
+                            return Ok(SessionReadWindowResult {
+                                meta,
+                                events: preserved,
+                                has_more: bounded_start > 0,
+                                oversized_event_count: None,
+                            });
+                        }
+                    }
                     return Ok(SessionReadWindowResult {
                         meta,
                         events: Vec::new(),
@@ -1204,5 +1224,64 @@ mod history_window_tests {
             visited.iter().flatten().copied().collect::<Vec<_>>(),
             (0..=2_001).collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_bounds_one_oversized_streaming_message_to_its_renderable_tail() {
+        let ctx = Context::root();
+        let backend = SqliteSessionPersistence::install(
+            &ctx,
+            SqliteConfig {
+                path: ":memory:".to_string(),
+                journal_mode: JournalMode::Delete,
+                ..SqliteConfig::default()
+            },
+        )
+        .expect("install sqlite persistence");
+        let id = session_id("sqlite-oversized-streaming-message");
+        SessionPersistenceApi::create(
+            backend.as_ref(),
+            SessionHeader {
+                version: SESSION_FORMAT_VERSION,
+                id: id.clone(),
+                created_at: 1,
+                cwd: Some("C:/workspace".to_string()),
+                parent_session: None,
+                seed_length: None,
+                origin: None,
+                delegation_depth: None,
+                agent_preset: Some("standard".to_string()),
+            },
+        )
+        .await
+        .expect("create session");
+        let mut events = Vec::with_capacity(4_097);
+        for seq in 0..4_096 {
+            events.push(event(seq, "assistant/chunk", false));
+        }
+        let mut message = event(4_096, "assistant/message", true);
+        message.source_event_seqs = Some((0..4_096).collect());
+        events.push(message);
+        SessionPersistenceApi::append(backend.as_ref(), &id, &events)
+            .await
+            .expect("append events");
+
+        let window = SessionPersistenceApi::read_window(
+            backend.as_ref(),
+            &id,
+            SessionReadWindowRequest {
+                before_seq: None,
+                max_messages: 1,
+                max_events: 4_096,
+            },
+        )
+        .await
+        .expect("read bounded window");
+
+        assert_eq!(window.events.len(), 4_096);
+        assert_eq!(window.events.first().map(|event| event.seq), Some(1));
+        assert_eq!(window.events.last().map(|event| event.seq), Some(4_096));
+        assert_eq!(window.oversized_event_count, None);
+        assert!(window.has_more);
     }
 }

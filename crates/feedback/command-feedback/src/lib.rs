@@ -101,7 +101,7 @@ pub fn apply(ctx: &Context) -> Result<cordis::Disposer, String> {
         &ctx,
         CommandDefinition {
             name: "feedback".to_string(),
-            description: "record feedback about this session".to_string(),
+            description: "记录对此会话的反馈".to_string(),
             input: Some(CommandInputDescriptor {
                 hint: "<text>".to_string(),
             }),

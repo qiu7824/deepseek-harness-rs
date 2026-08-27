@@ -346,7 +346,8 @@ window.__ModuleLoader__.load({
 					(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "审批超时" }), (0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityValue", children: [state.timeout, " 秒"] })] }),
 					(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "目录保护" }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityValue", children: "删除文件夹必须确认" })] })
 				] }),
-				(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityRule", children: "工具调用在执行边界应用沙箱与审批策略；审批超时、拒绝或无人应答时均失败关闭。每次询问和决定写入原会话审计事件。" }),
+				(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityRule", children: "工具调用在执行边界应用沙箱与审批策略；审批超时、拒绝或无人应答时均失败关闭。代码图谱扫描只读取当前工作区源码，跳过 .git、target、node_modules、dist、build，最多扫描 800 个文件并展示 500 条结果，不写入项目。" }),
+				(0, react_jsx_runtime.jsxs)("div", { className: "dshSecuritySummary", children: [(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "图谱权限" }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityValue", children: "工作区只读" })] }), (0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "扫描上限" }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityValue", children: "800 文件" })] }), (0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "最近图谱" }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityValue", children: globalThis.__DSH_CODE_GRAPH_STATUS__ ? `${globalThis.__DSH_CODE_GRAPH_STATUS__.files} 文件 / ${globalThis.__DSH_CODE_GRAPH_STATUS__.symbols} 符号` : "尚未扫描" })] })] }),
 				state.error && (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityError", role: "alert", children: state.error }),
 				state.loading ? (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityEmpty", children: "正在读取安全审计…" }) : state.rows.length === 0 ? (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityEmpty", children: "暂无审批记录" }) : (0, react_jsx_runtime.jsxs)("table", { className: "dshSecurityTable", children: [(0, react_jsx_runtime.jsx)("thead", { children: (0, react_jsx_runtime.jsxs)("tr", { children: [(0, react_jsx_runtime.jsx)("th", { children: "时间" }), (0, react_jsx_runtime.jsx)("th", { children: "工具" }), (0, react_jsx_runtime.jsx)("th", { children: "原因" }), (0, react_jsx_runtime.jsx)("th", { children: "结果" })] }) }), (0, react_jsx_runtime.jsx)("tbody", { children: state.rows.map((row, index) => (0, react_jsx_runtime.jsxs)("tr", { children: [(0, react_jsx_runtime.jsx)("td", { children: row.time ? new Date(row.time).toLocaleString() : "-" }), (0, react_jsx_runtime.jsx)("td", { children: row.tool }), (0, react_jsx_runtime.jsx)("td", { children: row.reason }), (0, react_jsx_runtime.jsx)("td", { children: row.outcome })] }, row.sessionId + index)) })] })
 			] });
@@ -364,6 +365,60 @@ window.__ModuleLoader__.load({
 			const save=async()=>{if(!draft)return;const entry={id:draft.id??"",scope:draft.scope,category:draft.category,title:draft.title,content:draft.content,enabled:draft.enabled,revision:draft.revision??0};const reply=await api.memory.upsert({entry,...draft.revision?{expectedRevision:draft.revision}:{}});if(!reply.result.ok){setError(reply.result.error.message);return}setDraft(null);await load()};
 			const remove=async entry=>{if(!window.confirm(`删除记忆“${entry.title}”？`))return;const reply=await api.memory.remove({id:entry.id,expectedRevision:entry.revision});if(!reply.result.ok)setError(reply.result.error.message);await load()};
 			return (0,react_jsx_runtime.jsxs)("section",{className:"dshMemory",children:[(0,react_jsx_runtime.jsx)("h2",{children:"记忆与上下文"}),settings&&(0,react_jsx_runtime.jsx)("div",{className:"dshMemoryGrid",children:memoryFields.flatMap(([field,label,type,fixed])=>[(0,react_jsx_runtime.jsx)("label",{children:label},field+"-l"),type==="checkbox"?(0,react_jsx_runtime.jsx)("input",{type:"checkbox",checked:Boolean(settings.value[field]),onChange:event=>setOption(field,event.target.checked)},field):type==="fixed"?(0,react_jsx_runtime.jsx)("input",{value:fixed,disabled:true},field):(0,react_jsx_runtime.jsx)("input",{type:"number",value:settings.value[field],step:field.includes("Threshold")||field.includes("Target")?"0.05":"1",onChange:event=>setOption(field,Number(event.target.value))},field)])}),(0,react_jsx_runtime.jsx)("div",{className:"dshMemoryDivider"}),(0,react_jsx_runtime.jsx)("h2",{children:"Agent 记忆管理"}),(0,react_jsx_runtime.jsx)("div",{className:"dshMemoryHint",children:"可分类维护偏好、已有工具、已知错误、项目知识和操作约束。"}),(0,react_jsx_runtime.jsxs)("div",{className:"dshMemoryToolbar",children:[(0,react_jsx_runtime.jsx)("select",{value:scope,onChange:e=>setScope(e.target.value),children:scopes.map(id=>(0,react_jsx_runtime.jsx)("option",{value:id,children:id},id))}),(0,react_jsx_runtime.jsxs)("select",{value:category,onChange:e=>setCategory(e.target.value),children:[(0,react_jsx_runtime.jsx)("option",{value:"",children:"全部分类"}),...categories.map(item=>(0,react_jsx_runtime.jsx)("option",{value:item.id,children:item.label},item.id))]}),(0,react_jsx_runtime.jsx)("button",{onClick:()=>setDraft({scope,category:category||"custom",title:"",content:"",enabled:true}),children:"新增记忆"})]}),error&&(0,react_jsx_runtime.jsx)("div",{className:"dshMemoryError",role:"alert",children:error}),draft&&(0,react_jsx_runtime.jsxs)("div",{className:"dshMemoryItem",children:[(0,react_jsx_runtime.jsx)("input",{value:draft.title,placeholder:"标题",onChange:e=>setDraft({...draft,title:e.target.value})}),(0,react_jsx_runtime.jsx)("textarea",{value:draft.content,placeholder:"记忆内容",onChange:e=>setDraft({...draft,content:e.target.value})}),(0,react_jsx_runtime.jsxs)("div",{className:"dshMemoryToolbar",children:[(0,react_jsx_runtime.jsx)("select",{value:draft.category,onChange:e=>setDraft({...draft,category:e.target.value}),children:categories.map(item=>(0,react_jsx_runtime.jsx)("option",{value:item.id,children:item.label},item.id))}),(0,react_jsx_runtime.jsx)("label",{children:[(0,react_jsx_runtime.jsx)("input",{type:"checkbox",checked:draft.enabled,onChange:e=>setDraft({...draft,enabled:e.target.checked})})," 启用"]}),(0,react_jsx_runtime.jsx)("button",{onClick:save,children:"保存"}),(0,react_jsx_runtime.jsx)("button",{onClick:()=>setDraft(null),children:"取消"})]})]}),(0,react_jsx_runtime.jsx)("div",{className:"dshMemoryList",children:entries.length===0?(0,react_jsx_runtime.jsx)("div",{className:"dshMemoryHint",children:"暂无记忆"}):entries.map(entry=>(0,react_jsx_runtime.jsxs)("div",{className:"dshMemoryItem",children:[(0,react_jsx_runtime.jsxs)("div",{className:"dshMemoryItemHead",children:[(0,react_jsx_runtime.jsx)("strong",{children:entry.title}),(0,react_jsx_runtime.jsx)("span",{className:"dshMemoryBadge",children:categories.find(item=>item.id===entry.category)?.label??entry.category}),(0,react_jsx_runtime.jsx)("button",{onClick:()=>setDraft(entry),children:"编辑"}),(0,react_jsx_runtime.jsx)("button",{onClick:()=>remove(entry),children:"删除"})]}),(0,react_jsx_runtime.jsx)("p",{children:entry.content})]},entry.id))})]})
+		}
+		const subagentCss = ".dshSub{display:flex;flex-direction:column;gap:18px;width:100%;max-width:720px;padding:4px 2px 28px;color:var(--dsw-alias-label-primary)}.dshSub h2{margin:0;font-size:18px;font-weight:600;line-height:26px}.dshSub h3{margin:0;font-size:13px;font-weight:600;color:var(--dsw-alias-label-tertiary);text-transform:uppercase;letter-spacing:.04em}.dshSubHint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}.dshSubGroup{display:flex;flex-direction:column;gap:12px;padding:16px;border:1px solid var(--dsw-alias-border-subtle);border-radius:14px;background:var(--dsw-alias-bg-layer-1)}.dshSubGrid{display:grid;grid-template-columns:160px minmax(0,1fr);gap:12px 16px;align-items:center}.dshSubGrid>label{font-size:13px;color:var(--dsw-alias-label-secondary);text-align:right;line-height:20px}.dshSubGrid small{display:block;font-size:11px;color:var(--dsw-alias-label-tertiary);margin-top:3px;font-weight:400}.dshSub input,.dshSub select{box-sizing:border-box;width:100%;max-width:320px;border:1px solid var(--dsw-alias-border-subtle);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:inherit;padding:7px 10px;font:inherit;font-size:13px;line-height:20px;transition:border-color .15s}.dshSub input:focus,.dshSub select:focus{outline:none;border-color:var(--dsw-alias-border-emphasis)}.dshSub input[type=checkbox]{width:16px;height:16px;max-width:none;justify-self:start;cursor:pointer}.dshSub input[type=number]{max-width:160px}.dshSubError{color:var(--dsw-alias-state-error-primary);font-size:13px;padding:8px 12px;border-radius:8px;background:var(--dsw-alias-state-error-bg,rgba(255,80,80,.08))}.dshSubRow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.dshSubBadge{font-size:11px;padding:2px 8px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}";
+		if (typeof document !== "undefined" && !document.querySelector("style[data-plugin-css='dsh-subagent-settings']")) { const tag = document.createElement("style"); tag.dataset.pluginCss = "dsh-subagent-settings"; tag.textContent = subagentCss; document.head.appendChild(tag); }
+		const subagentFields = [
+			{ field: "defaultProvider", label: "子智能体提供方", type: "text", placeholder: "留空继承当前会话", hint: "例如 spawn、fork；留空则使用当前会话路由" },
+			{ field: "defaultModel", label: "子智能体模型", type: "text", placeholder: "留空继承父会话", hint: "独立模型 ID；覆盖父会话模型选择" },
+			{ field: "defaultReasoningEffort", label: "子智能体推理强度", type: "select", options: [["", "（继承/未设置）"], ["off", "关闭"], ["minimal", "极简"], ["low", "低"], ["medium", "中"], ["high", "高"], ["max", "最高（xhigh）"]], hint: "应用于所有子智能体的 LLM 请求；单工具调用仍可覆盖" },
+			{ field: "defaultMaxTokens", label: "子智能体输出上限", type: "number", placeholder: "0 = 不限制", hint: "每个子智能体单次模型响应的最大 token 数" },
+			{ field: "maxTurns", label: "子智能体轮次上限", type: "number", hint: "单次子智能体运行最多多少轮工具调用" },
+			{ field: "maxParallel", label: "并行子智能体", type: "number", hint: "单个工作流中允许并行运行的子智能体数" },
+			{ field: "maxDepth", label: "子智能体嵌套深度", type: "number", placeholder: "0 = 不限制", hint: "子智能体可以继续派生的最大深度（0 表示不限制）" },
+			{ field: "timeoutSeconds", label: "子智能体超时（秒）", type: "number", placeholder: "0 = 不限制", hint: "单次子智能体运行的总时长上限；0 表示不限制" },
+			{ field: "toolCallMode", label: "工具调用呈现", type: "select", options: [["auto", "自动"], ["code", "代码块"], ["native", "原生"]], hint: "子智能体工具调用在轨迹中的呈现方式" },
+			{ field: "serviceTier", label: "服务等级", type: "text", placeholder: "（无）", hint: "透传给支持 service_tier 的 Provider（OpenAI/Anthropic）" },
+			{ field: "apiRetryCount", label: "API 重试次数", type: "number", hint: "子智能体调用 LLM 失败时的重试次数" }
+		];
+		function SubagentSection({ api }) {
+			const [state, setState] = (0, react.useState)({ namespace: null, loading: true, error: null });
+			const load = (0, react.useCallback)(async () => {
+				try {
+					const reply = await api.settings.describe({});
+					if (!reply.result.ok) throw new Error(reply.result.error.message);
+					const ns = reply.result.value.namespaces.find((n) => n.ns === "subagent") ?? null;
+					setState({ namespace: ns, loading: false, error: null });
+				} catch (cause) {
+					setState((s) => ({ ...s, loading: false, error: cause instanceof Error ? cause.message : String(cause) }));
+				}
+			}, [api]);
+			(0, react.useEffect)(() => { load(); }, [load]);
+			const setField = async (field, value) => {
+				const ns = state.namespace;
+				if (!ns) return;
+				const reply = await api.settings.mutate({ ns: "subagent", ops: [{ op: "set", path: [field], value }], expectedRevision: ns.revision });
+				if (!reply.result.ok) {
+					setState((s) => ({ ...s, error: reply.result.error.message }));
+					await load();
+					return;
+				}
+				setState((s) => ({ ...s, namespace: reply.result.value, error: null }));
+			};
+			if (state.loading) return (0, react_jsx_runtime.jsx)("section", { className: "dshSub", children: (0, react_jsx_runtime.jsx)("div", { className: "dshSubHint", children: "正在加载子智能体设置…" }) });
+			const v = (field) => state.namespace?.value?.[field];
+			return (0, react_jsx_runtime.jsxs)("section", { className: "dshSub", children: [
+				(0, react_jsx_runtime.jsx)("h2", { children: "子智能体" }),
+				(0, react_jsx_runtime.jsx)("div", { className: "dshSubHint", children: "为所有子智能体（spawn / fork / workflow）配置默认的提供方、模型、推理强度、轮次和超时。留空或 0 表示继承父会话。" }),
+				(0, react_jsx_runtime.jsx)("div", { className: "dshSubGroup", children: (0, react_jsx_runtime.jsx)("h3", { children: "默认值与限制" }) }),
+				(0, react_jsx_runtime.jsx)("div", { className: "dshSubGroup", children: (0, react_jsx_runtime.jsx)("div", { className: "dshSubGrid", children: subagentFields.map((f) => [
+					(0, react_jsx_runtime.jsxs)("label", { htmlFor: "sub-" + f.field, children: [f.label, f.hint ? (0, react_jsx_runtime.jsx)("small", { children: f.hint }) : null] }, f.field + "-l"),
+					f.type === "select"
+						? (0, react_jsx_runtime.jsx)("select", { id: "sub-" + f.field, value: v(f.field) ?? "", onChange: (e) => setField(f.field, e.target.value), children: f.options.map(([val, label]) => (0, react_jsx_runtime.jsx)("option", { value: val, children: label }, val)) }, f.field)
+						: (0, react_jsx_runtime.jsx)("input", { id: "sub-" + f.field, type: f.type === "number" ? "number" : "text", inputMode: f.type === "number" ? "numeric" : void 0, step: f.type === "number" ? "1" : void 0, min: f.type === "number" ? "0" : void 0, value: v(f.field) ?? "", placeholder: f.placeholder, onChange: (e) => setField(f.field, f.type === "number" ? Number(e.target.value) : e.target.value) }, f.field)
+				]).flat() }) }),
+				state.error && (0, react_jsx_runtime.jsx)("div", { className: "dshSubError", role: "alert", children: state.error })
+			] });
 		}
 		const css = ".S1Gy-G_action{align-items:center;gap:8px;min-width:0;display:flex}.S1Gy-G_error{max-width:180px;color:var(--dsw-alias-state-error-primary);text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:18px;overflow:hidden}";
 		const tagId = "@deepseek-ai/dsh-client-ui-settings-general/SettingsDocumentAction.module.css";
@@ -667,6 +722,12 @@ window.__ModuleLoader__.load({
 				order: 20,
 				label: "记忆与上下文"
 			}, () => (0, react_jsx_runtime.jsx)(MemorySection, { api: connection.api })));
+			ctx.slots.inject("settings.section", () => ctx.slots.register({
+				name: "settings.section",
+				id: "subagent",
+				order: 22,
+				label: "子智能体"
+			}, () => (0, react_jsx_runtime.jsx)(SubagentSection, { api: connection.api })));
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
 				id: "security",

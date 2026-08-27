@@ -1,14 +1,10 @@
-name: Release
-
+name: 跨平台发布
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
   workflow_dispatch:
-
 permissions:
   contents: write
-
 jobs:
   build:
     strategy:
@@ -16,74 +12,94 @@ jobs:
       matrix:
         include:
           - os: windows-2022
-            artifact: dsh-windows-x86_64
+            platform: windows
+            arch: x86_64
             binary: dsh.exe
-            archive: zip
           - os: ubuntu-24.04
-            artifact: dsh-linux-x86_64
+            platform: linux
+            arch: x86_64
             binary: dsh
-            archive: tar
           - os: macos-15-intel
-            artifact: dsh-macos-x86_64
+            platform: macos
+            arch: x86_64
             binary: dsh
-            archive: tar
           - os: macos-14
-            artifact: dsh-macos-aarch64
+            platform: macos
+            arch: aarch64
             binary: dsh
-            archive: tar
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
-        with:
-          toolchain: 1.97.1
-          components: rustfmt
+        with: { toolchain: 1.97.1, components: rustfmt }
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
-      - name: Verify product surface
+      - name: 版本与产品门禁
         shell: bash
         run: |
           python tools/verify_product_surface.py
-          node --check release/plugins/dsh-better-sidebar/lib/client.js
-          node --check release/plugins/dsh-web-preview-rs/lib/client.js
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-      - name: Build release
-        run: cargo build --release -p dsh-host-cli --bin dsh
-      - name: Stage package
+          python -m unittest tools.tests.test_history_window_contract -v
+          for file in release/plugins/*/lib/client.js; do node --check "$file"; done
+          for file in web/dist/plugins/*.js; do node --check "$file"; done
+          cargo fmt --all -- --check
+      - name: 构建正式二进制
+        run: cargo build --locked --release -p dsh-host-cli --bin dsh
+      - name: 生成便携包
         shell: bash
         run: |
-          mkdir -p "dist/${{ matrix.artifact }}/plugins"
-          cp "target/release/${{ matrix.binary }}" "dist/${{ matrix.artifact }}/${{ matrix.binary }}"
-          cp -R release/plugins/. "dist/${{ matrix.artifact }}/plugins/"
-          if [[ "${{ matrix.os }}" == windows-* ]]; then cp -R release/windows "dist/${{ matrix.artifact }}/windows"; fi
-          mkdir -p "dist/${{ matrix.artifact }}/web/dist" "dist/${{ matrix.artifact }}/config"
-          cp -R web/dist/. "dist/${{ matrix.artifact }}/web/dist/"
-          cp -R config/agent-presets "dist/${{ matrix.artifact }}/config/agent-presets"
-          cp .github/workflows/release.yml "dist/${{ matrix.artifact }}/RELEASE_WORKFLOW.yml"
-          cp README.md LICENSE release/PLUGIN_SECURITY.md "dist/${{ matrix.artifact }}/"
-      - name: Archive Windows package
-        if: matrix.archive == 'zip'
+          VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.0-rc.8"
+          python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant full --version "$VERSION"
+          if [[ "${{ matrix.platform }}" == "windows" ]]; then python tools/package_release.py --platform windows --arch x86_64 --variant no-skin --version "$VERSION"; fi
+      - name: Windows 中文安装器
+        if: matrix.platform == 'windows'
         shell: pwsh
-        run: Compress-Archive -Path "dist/${{ matrix.artifact }}/*" -DestinationPath "dist/${{ matrix.artifact }}.zip"
-      - name: Archive Unix package
-        if: matrix.archive == 'tar'
+        run: |
+          $refName = "${env:GITHUB_REF_NAME}"
+          $version = if ($refName.StartsWith('v')) { $refName.Substring(1) } else { '0.1.0-rc.8' }
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=dist\deepseek-harness-rs-v$version-windows-x86_64-full" "/DOutputDir=dist" "/DVariant=full" packaging\windows\deepseek-harness-rs.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=dist\deepseek-harness-rs-v$version-windows-x86_64-no-skin" "/DOutputDir=dist" "/DVariant=no-skin" packaging\windows\deepseek-harness-rs.iss
+      - name: Linux DEB 安装包
+        if: matrix.platform == 'linux'
         shell: bash
-        run: tar -C dist -czf "dist/${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}"
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.0-rc.8"
+          STAGE="dist/deepseek-harness-rs-v${VERSION}-linux-x86_64-full"; PKG="dist/deb"; mkdir -p "$PKG/DEBIAN" "$PKG/opt/deepseek-harness-rs" "$PKG/usr/bin"
+          cp -R "$STAGE"/. "$PKG/opt/deepseek-harness-rs/"
+          printf 'Package: deepseek-harness-rs\nVersion: %s\nSection: devel\nPriority: optional\nArchitecture: amd64\nMaintainer: DeepSeek Harness-rs\nDescription: Rust native DeepSeek Harness Web Agent\n' "$VERSION" > "$PKG/DEBIAN/control"
+          ln -s /opt/deepseek-harness-rs/deepseek-harness-rs "$PKG/usr/bin/deepseek-harness-rs"
+          dpkg-deb --build "$PKG" "dist/deepseek-harness-rs-v${VERSION}-linux-x86_64.deb"
+      - name: macOS PKG 安装包
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.0-rc.8"
+          STAGE="dist/deepseek-harness-rs-v${VERSION}-macos-${{ matrix.arch }}-full"; ROOT="dist/pkgroot"; mkdir -p "$ROOT/usr/local/lib/deepseek-harness-rs" "$ROOT/usr/local/bin"; cp -R "$STAGE"/. "$ROOT/usr/local/lib/deepseek-harness-rs/"; ln -s ../lib/deepseek-harness-rs/deepseek-harness-rs "$ROOT/usr/local/bin/deepseek-harness-rs"
+          pkgbuild --root "$ROOT" --identifier io.github.qiu7824.deepseek-harness-rs --version "$VERSION" "dist/deepseek-harness-rs-v${VERSION}-macos-${{ matrix.arch }}.pkg"
+      - name: 生成校验和
+        shell: bash
+        run: |
+          cd dist; python - <<'PY'
+          import hashlib,pathlib
+          files=[p for p in pathlib.Path('.').glob('*') if p.is_file()]
+          pathlib.Path('SHA256SUMS.txt').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in sorted(files)))
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}.*
+          name: deepseek-harness-rs-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/*-portable.*
+            dist/*.exe
+            dist/*.deb
+            dist/*.pkg
+            dist/SHA256SUMS.txt
           if-no-files-found: error
-
   publish:
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          path: dist
-          merge-multiple: true
+        with: { path: dist, merge-multiple: true }
       - uses: softprops/action-gh-release@e5ee6bc58a36b838b92fc1217f2e4b414b5abcc8
         with:
           prerelease: ${{ contains(github.ref_name, '-rc') }}

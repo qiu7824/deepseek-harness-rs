@@ -1724,4 +1724,74 @@ mod history_window_tests {
         drop(backend);
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[tokio::test]
+    async fn zstd_jsonl_bounds_oversized_failed_turn_without_final_message() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-jsonl-failed-turn-{}", uuid::Uuid::new_v4()));
+        let ctx = Context::root();
+        let backend = JsonlSessionPersistence::install(
+            &ctx,
+            JsonlConfig {
+                root: root.to_string_lossy().to_string(),
+                compression: JsonlCompression::Zstd,
+                ..JsonlConfig::default()
+            },
+        )
+        .expect("install jsonl persistence");
+        let id = session_id("jsonl-oversized-failed-turn");
+        SessionPersistenceApi::create(
+            backend.as_ref(),
+            SessionHeader {
+                version: SESSION_FORMAT_VERSION,
+                id: id.clone(),
+                created_at: 1,
+                cwd: Some("D:/workspace".to_string()),
+                parent_session: None,
+                seed_length: None,
+                origin: None,
+                delegation_depth: None,
+                agent_preset: Some("standard".to_string()),
+            },
+        )
+        .await
+        .expect("create session");
+        let mut events = Vec::with_capacity(4_099);
+        for seq in 0..4_097 {
+            let mut chunk = event(seq, "assistant/chunk", false);
+            chunk.data = serde_json::json!({"turn": 1, "step": 1});
+            events.push(chunk);
+        }
+        events.push(event(4_097, "step/end", false));
+        let mut turn_end = event(4_098, "turn/end", false);
+        turn_end.data = serde_json::json!({
+            "turn": 1,
+            "reason": {"kind": "error", "error": {"code": "TRANSPORT"}}
+        });
+        events.push(turn_end);
+        SessionPersistenceApi::append(backend.as_ref(), &id, &events)
+            .await
+            .expect("append events");
+
+        let window = SessionPersistenceApi::read_window(
+            backend.as_ref(),
+            &id,
+            SessionReadWindowRequest {
+                before_seq: None,
+                max_messages: 100,
+                max_events: 4_096,
+            },
+        )
+        .await
+        .expect("read bounded failed turn");
+
+        assert_eq!(window.events.len(), 4_096);
+        assert_eq!(window.events.first().map(|event| event.seq), Some(3));
+        assert_eq!(window.events.last().map(|event| event.seq), Some(4_098));
+        assert_eq!(window.oversized_event_count, None);
+        assert!(window.has_more);
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

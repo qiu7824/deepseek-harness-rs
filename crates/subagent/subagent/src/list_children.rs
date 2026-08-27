@@ -372,7 +372,11 @@ async fn resolve_cold_identity(
             .and_then(|value| serde_json::from_value(value.clone()).ok());
         return match cached {
             Some(cached) => child_row(child_id, cached, "inactive", has_children),
-            None => match snapshot.values.get("title").and_then(serde_json::Value::as_str) {
+            None => match snapshot
+                .values
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+            {
                 Some(title) if !title.trim().is_empty() => child_row(
                     child_id,
                     SubagentIdentityProjection::OneShot {

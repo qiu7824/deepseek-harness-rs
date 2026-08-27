@@ -258,7 +258,10 @@ async fn discover_openai_compatible_models(
             context_window: item
                 .get("context_window")
                 .and_then(serde_json::Value::as_u64),
-            max_tokens: item.get("max_tokens").and_then(serde_json::Value::as_u64),
+            max_tokens: item
+                .get("max_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .or_else(|| dsh_llm_deepseek::inferred_model_max_tokens(id)),
         });
     }
     Ok(models)
@@ -518,6 +521,23 @@ use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
 const MAX_API_REQUEST_BODY_BYTES: usize = 300 * 1024 * 1024;
+
+fn display_workspace_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
+}
+
+fn workspace_context_text(cwd: Option<&str>) -> String {
+    match cwd {
+        Some(cwd) => format!(
+            "Current workspace (authoritative session working directory): {}. Use this exact path and drive for workspace-relative work; do not infer it from the Harness checkout or sandbox fallback.",
+            display_workspace_path(cwd)
+        ),
+        None => "Current workspace: unavailable because this session has no working directory. Do not infer one from the Harness checkout or sandbox fallback.".to_string(),
+    }
+}
 
 struct JsonSettingsStorage {
     path: std::path::PathBuf,
@@ -907,6 +927,7 @@ pub struct HostSpine {
     pub api_proxy: Arc<ApiProxyService>,
     pub agent_presets: Arc<dsh_agent_presets::AgentPresets>,
     api_route: RouteDisposer,
+    wallpaper_route: RouteDisposer,
     web_preview_route: RouteDisposer,
     data_root: std::path::PathBuf,
     owns_data_root: bool,
@@ -976,6 +997,7 @@ impl HostSpine {
             .get_or_init(|| async {
                 self.web_server.shutdown().await;
                 (self.web_preview_route)();
+                (self.wallpaper_route)();
                 (self.api_route)();
 
                 let companion_fiber = self.companion_fiber.lock().clone();
@@ -1025,6 +1047,7 @@ impl Drop for HostSpine {
         {
             self.web_server.request_shutdown();
             (self.web_preview_route)();
+            (self.wallpaper_route)();
             (self.api_route)();
             eprintln!(
                 "dsh-host dropped without shutdown().await; stop requested and data root preserved at {}",
@@ -1392,16 +1415,72 @@ fn compose_host_in_fiber(
             dsh_settings::settings_namespace("memory")
                 .map_err(|error| format!("settings namespace: {error}"))?,
             dsh_schemastery::Schema::object(indexmap::IndexMap::from([
-                ("enabled".to_string(), dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(true))),
-                ("userProfileEnabled".to_string(), dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(true))),
-                ("memoryBudget".to_string(), dsh_schemastery::Schema::number().min(256.0).max(20_000.0).step(1.0).default(dsh_schemastery::Data::Number(2200.0))),
-                ("profileBudget".to_string(), dsh_schemastery::Schema::number().min(128.0).max(20_000.0).step(1.0).default(dsh_schemastery::Data::Number(1375.0))),
-                ("provider".to_string(), dsh_schemastery::Schema::constant(dsh_schemastery::Data::String("builtin".to_string())).default(dsh_schemastery::Data::String("builtin".to_string()))),
-                ("contextEngine".to_string(), dsh_schemastery::Schema::constant(dsh_schemastery::Data::String("compressor".to_string())).default(dsh_schemastery::Data::String("compressor".to_string()))),
-                ("autoCompact".to_string(), dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(true))),
-                ("compactThreshold".to_string(), dsh_schemastery::Schema::number().min(0.1).max(0.95).step(0.05).default(dsh_schemastery::Data::Number(0.5))),
-                ("compactTarget".to_string(), dsh_schemastery::Schema::number().min(0.05).max(0.9).step(0.05).default(dsh_schemastery::Data::Number(0.2))),
-                ("protectRecentMessages".to_string(), dsh_schemastery::Schema::number().min(1.0).max(200.0).step(1.0).default(dsh_schemastery::Data::Number(20.0))),
+                (
+                    "enabled".to_string(),
+                    dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(true)),
+                ),
+                (
+                    "userProfileEnabled".to_string(),
+                    dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(true)),
+                ),
+                (
+                    "memoryBudget".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(256.0)
+                        .max(20_000.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(2200.0)),
+                ),
+                (
+                    "profileBudget".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(128.0)
+                        .max(20_000.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(1375.0)),
+                ),
+                (
+                    "provider".to_string(),
+                    dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                        "builtin".to_string(),
+                    ))
+                    .default(dsh_schemastery::Data::String("builtin".to_string())),
+                ),
+                (
+                    "contextEngine".to_string(),
+                    dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                        "compressor".to_string(),
+                    ))
+                    .default(dsh_schemastery::Data::String("compressor".to_string())),
+                ),
+                (
+                    "autoCompact".to_string(),
+                    dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(true)),
+                ),
+                (
+                    "compactThreshold".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(0.1)
+                        .max(0.95)
+                        .step(0.05)
+                        .default(dsh_schemastery::Data::Number(0.5)),
+                ),
+                (
+                    "compactTarget".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(0.05)
+                        .max(0.9)
+                        .step(0.05)
+                        .default(dsh_schemastery::Data::Number(0.2)),
+                ),
+                (
+                    "protectRecentMessages".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(1.0)
+                        .max(200.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(20.0)),
+                ),
             ])),
             dsh_settings::SettingsRegisterOptions::default(),
         )
@@ -1422,12 +1501,120 @@ fn compose_host_in_fiber(
             dsh_settings::SettingsRegisterOptions::default(),
         )
         .map_err(|error| format!("settings security: {error}"))?;
+    // Subagent defaults namespace: wires the "子智能体" settings section.
+    // Fields map to child agent resolution (provider/model/reasoning/maxTokens),
+    // the loop's parallel-tool-call cap, and the delegation depth cap. Fields
+    // that the runtime does not yet consume are kept so the UI can round-trip
+    // them without validation loss.
+    let subagent_scope = settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("subagent")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([
+                (
+                    "defaultProvider".to_string(),
+                    dsh_schemastery::Schema::string()
+                        .default(dsh_schemastery::Data::String(String::new())),
+                ),
+                (
+                    "defaultModel".to_string(),
+                    dsh_schemastery::Schema::string()
+                        .default(dsh_schemastery::Data::String(String::new())),
+                ),
+                (
+                    "defaultReasoningEffort".to_string(),
+                    dsh_schemastery::Schema::string()
+                        .default(dsh_schemastery::Data::String(String::new())),
+                ),
+                (
+                    "defaultMaxTokens".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(0.0)
+                        .max(1_000_000.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(0.0)),
+                ),
+                (
+                    "maxTurns".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(1.0)
+                        .max(10_000.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(250.0)),
+                ),
+                (
+                    "maxParallel".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(1.0)
+                        .max(64.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(10.0)),
+                ),
+                (
+                    "maxDepth".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(0.0)
+                        .max(32.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(0.0)),
+                ),
+                (
+                    "timeoutSeconds".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(0.0)
+                        .max(86_400.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(0.0)),
+                ),
+                (
+                    "toolCallMode".to_string(),
+                    dsh_schemastery::Schema::union(vec![
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "auto".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "code".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "native".to_string(),
+                        )),
+                    ])
+                    .default(dsh_schemastery::Data::String("auto".to_string())),
+                ),
+                (
+                    "serviceTier".to_string(),
+                    dsh_schemastery::Schema::string()
+                        .default(dsh_schemastery::Data::String(String::new())),
+                ),
+                (
+                    "apiRetryCount".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(0.0)
+                        .max(20.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(3.0)),
+                ),
+            ])),
+            dsh_settings::SettingsRegisterOptions::default(),
+        )
+        .map_err(|error| format!("settings subagent: {error}"))?;
     for (namespace, field, choices, default) in [
         ("locale", "preference", &["zh", "en"][..], None),
         (
             "ui-theme",
             "preference",
-            &["light", "dark", "system"][..],
+            &[
+                "light",
+                "dark",
+                "system",
+                "catppuccin",
+                "dracula",
+                "nord",
+                "tokyo-night",
+                "linear",
+                "notion",
+            ][..],
             Some("system"),
         ),
         (
@@ -1466,6 +1653,62 @@ fn compose_host_in_fiber(
             )
             .map_err(|error| format!("settings {namespace}: {error}"))?;
     }
+    settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("ui-wallpaper")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([(
+                "bingDaily".to_string(),
+                dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(false)),
+            )])),
+            dsh_settings::SettingsRegisterOptions::default(),
+        )
+        .map_err(|error| format!("settings ui-wallpaper: {error}"))?;
+    settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("ui-history")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([
+                (
+                    "mode".to_string(),
+                    dsh_schemastery::Schema::union(vec![
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "low".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "balanced".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "full".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "custom".to_string(),
+                        )),
+                    ])
+                    .default(dsh_schemastery::Data::String("balanced".to_string())),
+                ),
+                (
+                    "maxPages".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(1.0)
+                        .max(100.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(5.0)),
+                ),
+                (
+                    "maxEvents".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(256.0)
+                        .max(200_000.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(4096.0)),
+                ),
+            ])),
+            dsh_settings::SettingsRegisterOptions::default(),
+        )
+        .map_err(|error| format!("settings ui-history: {error}"))?;
     let llm = LlmRuntime::install(ctx);
     dsh_session_title_first_prompt_llm::apply(
         ctx,
@@ -1749,15 +1992,20 @@ fn compose_host_in_fiber(
                 let session = assembly
                     .field_str("sessionId")
                     .and_then(|id| sessions_for_context.get(&dsh_session::session_id(id)));
+                let workspace = workspace_context_text(
+                    session
+                        .as_ref()
+                        .and_then(|session| session.header().cwd.as_deref()),
+                );
                 let execution =
                     sandbox_policy_for_context.resolve(&dsh_sandbox_policy::SandboxPolicyRequest {
                         session: session.map(Arc::new),
                         mode: None,
                     });
                 format!(
-                    "Current DSH file policy: {}. The workspace boundary is {}.",
+                    "{workspace}\nCurrent DSH file policy: {}. The workspace boundary is {}.",
                     execution.mode.as_str(),
-                    execution.workspace_root
+                    display_workspace_path(&execution.workspace_root)
                 )
             })),
         },
@@ -1799,7 +2047,8 @@ fn compose_host_in_fiber(
                 name: "memory:entries".to_string(),
                 order: 105.0,
                 text: PromptText::Provider(Arc::new(move |assembly| {
-                    let preset = assembly.field_str("sessionId")
+                    let preset = assembly
+                        .field_str("sessionId")
                         .and_then(|id| sessions_for_memory.get(&dsh_session::session_id(id)))
                         .and_then(|session| session.header().agent_preset.clone())
                         .unwrap_or_else(|| "default".to_string());
@@ -1872,6 +2121,88 @@ fn compose_host_in_fiber(
         .map_err(|error| format!("subagent-spawn: {}", error.message))?;
     dsh_subagent_fork_in_process::apply(ctx, &Default::default())
         .map_err(|error| format!("subagent-fork: {}", error.message))?;
+    // Bridge the `subagent` settings namespace into the child resolver as a
+    // live snapshot service. Re-read on every `settings/updated` event so a
+    // user change takes effect for the next child without a restart.
+    let subagent_defaults = {
+        use dsh_schemastery::Data;
+        use futures::FutureExt;
+        let read = |scope: &dsh_settings::SettingsScope| {
+            dsh_subagent::SubagentDefaults::from_strings(
+                match (scope.get)() {
+                    Data::Object(ref o) => match o.get("defaultProvider") {
+                        Some(Data::String(s)) => s.as_str(),
+                        _ => "",
+                    },
+                    _ => "",
+                },
+                match (scope.get)() {
+                    Data::Object(ref o) => match o.get("defaultModel") {
+                        Some(Data::String(s)) => s.as_str(),
+                        _ => "",
+                    },
+                    _ => "",
+                },
+                match (scope.get)() {
+                    Data::Object(ref o) => match o.get("defaultReasoningEffort") {
+                        Some(Data::String(s)) => s.as_str(),
+                        _ => "",
+                    },
+                    _ => "",
+                },
+                match (scope.get)() {
+                    Data::Object(ref o) => match o.get("defaultMaxTokens") {
+                        Some(Data::Number(n)) => *n,
+                        _ => 0.0,
+                    },
+                    _ => 0.0,
+                },
+                match (scope.get)() {
+                    Data::Object(ref o) => match o.get("maxDepth") {
+                        Some(Data::Number(n)) => *n,
+                        _ => 0.0,
+                    },
+                    _ => 0.0,
+                },
+                match (scope.get)() {
+                    Data::Object(ref o) => match o.get("maxTurns") {
+                        Some(Data::Number(n)) => *n,
+                        _ => 0.0,
+                    },
+                    _ => 0.0,
+                },
+                match (scope.get)() {
+                    Data::Object(ref o) => match o.get("timeoutSeconds") {
+                        Some(Data::Number(n)) => *n,
+                        _ => 0.0,
+                    },
+                    _ => 0.0,
+                },
+            )
+        };
+        let defaults = Arc::new(read(&subagent_scope));
+        ctx.register_service(defaults.clone());
+        let bridge_scope = subagent_scope.clone();
+        let bridge_defaults = defaults.clone();
+        let listener: Arc<cordis::Listener> =
+            Arc::new(move |_ctx: &Context, args: Vec<cordis::ArcValue>| {
+                let is_subagent = args
+                    .first()
+                    .and_then(|v| v.downcast_ref::<dsh_settings::SettingsNamespace>())
+                    .is_some_and(|ns| ns.as_str() == "subagent");
+                if is_subagent {
+                    bridge_defaults.update(read(&bridge_scope));
+                }
+                async move { None }.boxed()
+            });
+        let _ = futures::executor::block_on(ctx.on(
+            "settings/updated",
+            listener,
+            cordis::EventOptions::default(),
+        ));
+        defaults
+    };
+    let _ = subagent_defaults;
     let agent_loop = AgentLoop::install(ctx, dsh_agent_loop::Config::default())
         .map_err(|error| format!("agentLoop: {error}"))?;
     let commands = CommandRuntime::install(ctx);
@@ -2284,7 +2615,11 @@ fn compose_host_in_fiber(
         serde_json::from_str(&manifest_text).expect("web plugin manifest");
     let object = boot_payload
         .as_object_mut()
-        .expect("web plugin manifest object");
+        .expect("web plugin manifest must be an object");
+    object.insert(
+        "noSkin".to_string(),
+        serde_json::Value::Bool(packaged_resource("NO_SKIN").exists()),
+    );
     object.insert("apiBase".to_string(), serde_json::json!("/api"));
     object.insert(
         "provider".to_string(),
@@ -2374,6 +2709,69 @@ fn compose_host_in_fiber(
         },
     );
     let fetch_handler = Arc::new(to_fetch_handler(api_proxy.clone()));
+    let wallpaper_route = web_server.register(WebRoute {
+        kind: WebRouteKind::Exact,
+        path: "/__dsh-bing-wallpaper".to_string(),
+        handler: Arc::new(move |_request| {
+            Box::pin(async move {
+                const META_URL: &str =
+                    "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=zh-CN";
+                const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+                let client = reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::limited(2))
+                    .build()
+                    .map_err(|error| WebHandlerError::new(error.to_string()))?;
+                let metadata: serde_json::Value = client
+                    .get(META_URL)
+                    .send()
+                    .await
+                    .map_err(|error| WebHandlerError::new(error.to_string()))?
+                    .error_for_status()
+                    .map_err(|error| WebHandlerError::new(error.to_string()))?
+                    .json()
+                    .await
+                    .map_err(|error| WebHandlerError::new(error.to_string()))?;
+                let relative = metadata
+                    .get("images")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|images| images.first())
+                    .and_then(|image| image.get("url"))
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|url| url.starts_with('/'))
+                    .ok_or_else(|| {
+                        WebHandlerError::new("Bing wallpaper metadata omitted image URL")
+                    })?;
+                let response = client
+                    .get(format!("https://www.bing.com{relative}"))
+                    .send()
+                    .await
+                    .map_err(|error| WebHandlerError::new(error.to_string()))?
+                    .error_for_status()
+                    .map_err(|error| WebHandlerError::new(error.to_string()))?;
+                let content_type = response
+                    .headers()
+                    .get(http::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .filter(|value| value.starts_with("image/"))
+                    .unwrap_or("image/jpeg")
+                    .to_string();
+                let bytes = response
+                    .bytes()
+                    .await
+                    .map_err(|error| WebHandlerError::new(error.to_string()))?;
+                if bytes.len() > MAX_IMAGE_BYTES {
+                    return Err(WebHandlerError::new("Bing wallpaper exceeds 16 MiB"));
+                }
+                http::Response::builder()
+                    .status(http::StatusCode::OK)
+                    .header(http::header::CONTENT_TYPE, content_type)
+                    .header(http::header::CACHE_CONTROL, "public, max-age=21600")
+                    .header(http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+                    .body(WebBody::from(bytes))
+                    .map_err(|error| WebHandlerError::new(error.to_string()))
+            })
+        }),
+    });
     let api_route = web_server.register(WebRoute {
         kind: WebRouteKind::Prefix,
         path: "/api".to_string(),
@@ -2419,6 +2817,7 @@ fn compose_host_in_fiber(
         api_proxy,
         agent_presets,
         api_route,
+        wallpaper_route,
         web_preview_route,
         data_root,
         owns_data_root,
@@ -2640,7 +3039,7 @@ pub use dsh_session::SessionStore as SessionStoreType;
 mod reasoning_tests {
     use super::{
         OpenAiCompatibleModelConfig, ReasoningEffortsConfig, inferred_gpt_reasoning_efforts,
-        resolved_reasoning_efforts,
+        resolved_reasoning_efforts, workspace_context_text,
     };
 
     fn model(id: &str) -> OpenAiCompatibleModelConfig {
@@ -2688,5 +3087,21 @@ mod reasoning_tests {
             Some("ultra")
         );
         assert!(!efforts.contains_key("max"));
+    }
+
+    #[test]
+    fn workspace_context_uses_human_windows_drive_path() {
+        assert_eq!(
+            workspace_context_text(Some(r"\\?\D:\deepwork\deepseek-harness-rs")),
+            "Current workspace (authoritative session working directory): D:\\deepwork\\deepseek-harness-rs. Use this exact path and drive for workspace-relative work; do not infer it from the Harness checkout or sandbox fallback."
+        );
+    }
+
+    #[test]
+    fn workspace_context_preserves_unc_path_without_device_prefix() {
+        assert_eq!(
+            workspace_context_text(Some(r"\\?\UNC\server\share\repo")),
+            r"Current workspace (authoritative session working directory): \\server\share\repo. Use this exact path and drive for workspace-relative work; do not infer it from the Harness checkout or sandbox fallback."
+        );
     }
 }

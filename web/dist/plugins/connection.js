@@ -57,6 +57,7 @@ window.__ModuleLoader__.load({
 				this.running = false;
 				this.current?.abort();
 				this.current = null;
+				this.api.invalidateSettingsDescription?.();
 			}
 			backoffDelay(attempt) {
 				const { backoffBaseMs, backoffFactor, backoffMaxMs } = this.config;
@@ -74,6 +75,7 @@ window.__ModuleLoader__.load({
 			async loop() {
 				while (this.running) {
 					const gen = ++this.generation;
+					this.api.invalidateSettingsDescription?.();
 					const ac = new AbortController();
 					this.current = ac;
 					/* v8 ignore next -- initializer placeholder: the Promise executor
@@ -5372,6 +5374,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		const sessionHistoryValueSchema = object({
 			events: array(historyEntrySchema),
 			hasMore: boolean(),
+			hasMoreBefore: boolean(),
+			hasMoreAfter: boolean(),
+			firstSeq: number().int().nullable(),
+			lastSeq: number().int().nullable(),
 			projections: sessionProjectionsBlockSchema.optional()
 		});
 		object({ sessionId: sessionIdSchema });
@@ -6177,6 +6183,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		};
 		/** Default timeout for bounded unary calls (rpc-compare 2026-07-19: a hung host must not leave callers pending forever). */
 		const DEFAULT_TIMEOUT_MS = 3e4;
+		const SETTINGS_DESCRIPTION_TTL_MS = 1e3;
 		/** URL base for in-process handler injection (fake authority, opencode precedent). */
 		const INTERNAL_BASE$1 = "http://dsh.internal";
 		/**
@@ -6193,6 +6200,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			envelopeBatch = [];
 			flushScheduled = false;
 			envelopeListeners = /* @__PURE__ */ new Set();
+			settingsDescription = null;
+			settingsDescriptionInFlight = null;
+			settingsDescriptionEpoch = 0;
 			/** @param timeoutMs - timeout for bounded unary calls; user-paced calls and streams do not use it. */
 			constructor(timeoutMs = DEFAULT_TIMEOUT_MS) {
 				this.timeoutMs = timeoutMs;
@@ -6279,6 +6289,33 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						value
 					}
 				};
+			}
+			invalidateSettingsDescription() {
+				this.settingsDescriptionEpoch += 1;
+				this.settingsDescription = null;
+				this.settingsDescriptionInFlight = null;
+			}
+			async describeSettings(payload, signal) {
+				if (signal !== void 0 || Object.keys(payload ?? {}).length > 0) return this.callUnary("settings.describe", payload, signal);
+				const now = Date.now();
+				if (this.settingsDescription !== null && now - this.settingsDescription.time < SETTINGS_DESCRIPTION_TTL_MS) return this.settingsDescription.value;
+				if (this.settingsDescriptionInFlight !== null) return this.settingsDescriptionInFlight;
+				const epoch = this.settingsDescriptionEpoch;
+				const request = this.callUnary("settings.describe", payload, signal).then((response) => {
+					if (response.result.ok && this.settingsDescriptionEpoch === epoch) this.settingsDescription = { time: Date.now(), value: response };
+					return response;
+				});
+				this.settingsDescriptionInFlight = request;
+				try {
+					return await request;
+				} finally {
+					if (this.settingsDescriptionInFlight === request) this.settingsDescriptionInFlight = null;
+				}
+			}
+			async mutateSettings(method, payload, signal) {
+				const response = await this.callUnary(method, payload, signal);
+				if (response.result.ok) this.invalidateSettingsDescription();
+				return response;
 			}
 			/** Mux stream opener; virtual for the same override reason as callUnary. */
 			openMux(_payload, signal, onOpen) {
@@ -6395,11 +6432,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				clear: (payload, signal) => this.callUnary("goal.clear", payload, signal)
 			};
 			settings = {
-				describe: (payload, signal) => this.callUnary("settings.describe", payload, signal),
+				describe: (payload, signal) => this.describeSettings(payload, signal),
 				openDocument: (payload, signal) => this.callUnary("settings.openDocument", payload, signal),
-				update: (payload, signal) => this.callUnary("settings.update", payload, signal),
-				replace: (payload, signal) => this.callUnary("settings.replace", payload, signal),
-				mutate: (payload, signal) => this.callUnary("settings.mutate", payload, signal)
+				update: (payload, signal) => this.mutateSettings("settings.update", payload, signal),
+				replace: (payload, signal) => this.mutateSettings("settings.replace", payload, signal),
+				mutate: (payload, signal) => this.mutateSettings("settings.mutate", payload, signal)
 			};
 			credentials = {
 				describe: (payload, signal) => this.callUnary("credentials.describe", payload, signal),

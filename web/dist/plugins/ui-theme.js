@@ -5,6 +5,7 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		let react_jsx_runtime = require("react/jsx-runtime");
+		let react = require("react");
 		let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
 		let _deepseek_ai_dsh_client_runtime_client = require("@deepseek-ai/dsh-client-runtime/client");
 		//#region ../../../node_modules/.pnpm/clsx@2.1.1/node_modules/clsx/dist/clsx.mjs
@@ -49,6 +50,7 @@ window.__ModuleLoader__.load({
 		* active theme.
 		*/
 		/** Cube order and icons (figma 501:30015-30017: Light, Dark, System). */
+		const NO_SKIN = globalThis.__DSH_BOOT__?.noSkin === true;
 		const CUBES = [
 			{
 				id: "light",
@@ -64,15 +66,44 @@ window.__ModuleLoader__.load({
 				id: "system",
 				labelKey: "appearance.system",
 				Icon: _deepseek_ai_dsh_client_ui_primitives.IconFollowsystemOutline16
-			}
+			},
+			...NO_SKIN ? [] : [{ id: "catppuccin", labelKey: "appearance.catppuccin", colors: ["#1e1e2e", "#cba6f7", "#89b4fa"] },
+			{ id: "dracula", labelKey: "appearance.dracula", colors: ["#282a36", "#bd93f9", "#ff79c6"] },
+			{ id: "nord", labelKey: "appearance.nord", colors: ["#2e3440", "#88c0d0", "#a3be8c"] },
+			{ id: "tokyo-night", labelKey: "appearance.tokyoNight", colors: ["#1a1b26", "#7aa2f7", "#bb9af7"] },
+			{ id: "linear", labelKey: "appearance.linear", colors: ["#08090a", "#7170ff", "#f7f8f8"] },
+			{ id: "notion", labelKey: "appearance.notion", colors: ["#f6f5f4", "#0075de", "#31302e"] }]
 		];
 		/**
 		* Render the Appearance row.
 		* @param props - composed slot props.
 		* @returns the row element tree.
 		*/
-		function AppearanceRow({ t, setTheme, useStore }) {
+		function AppearanceRow({ t, setTheme, useStore, api }) {
 			const preference = useStore((s) => s.preference);
+			const [bingDaily, setBingDaily] = (0, react.useState)(false);
+			const [wallpaperStatus, setWallpaperStatus] = (0, react.useState)("");
+			(0, react.useEffect)(() => {
+				let live = true;
+				api.settings.describe({}).then((reply) => {
+					if (!live || !reply.result.ok) return;
+					const value = reply.result.value.namespaces.find((item) => item.ns === "ui-wallpaper")?.value;
+					setBingDaily(value?.bingDaily === true);
+				});
+				return () => { live = false; };
+			}, [api]);
+			(0, react.useEffect)(() => { applyBingWallpaper(bingDaily); }, [bingDaily]);
+			const toggleWallpaper = async () => {
+				const next = !bingDaily;
+				setWallpaperStatus(t("wallpaper.saving"));
+				const reply = await api.settings.update({ ns: "ui-wallpaper", patch: { bingDaily: next } });
+				if (!reply.result.ok) {
+					setWallpaperStatus(reply.result.error.message);
+					return;
+				}
+				setBingDaily(next);
+				setWallpaperStatus(next ? t("wallpaper.enabled") : t("wallpaper.disabled"));
+			};
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: AppearanceRow_module_css_default.group,
 				children: [(0, react_jsx_runtime.jsx)("div", {
@@ -80,16 +111,16 @@ window.__ModuleLoader__.load({
 					children: t("appearance.title")
 				}), (0, react_jsx_runtime.jsx)("div", {
 					className: AppearanceRow_module_css_default.cubeRow,
-					children: CUBES.map(({ id, labelKey, Icon }) => (0, react_jsx_runtime.jsxs)("button", {
+					children: CUBES.map(({ id, labelKey, Icon, colors }) => (0, react_jsx_runtime.jsxs)("button", {
 						type: "button",
 						className: clsx(AppearanceRow_module_css_default.themeCube, preference === id && AppearanceRow_module_css_default.selected),
 						"aria-pressed": preference === id,
 						onClick: () => {
 							setTheme(id);
 						},
-						children: [(0, react_jsx_runtime.jsx)(Icon, {}), t(labelKey)]
+						children: [Icon ? (0, react_jsx_runtime.jsx)(Icon, {}) : (0, react_jsx_runtime.jsx)("span", { style: { display: "flex", gap: "4px" }, children: colors.map((color) => (0, react_jsx_runtime.jsx)("i", { style: { width: "14px", height: "14px", borderRadius: "50%", background: color, border: "1px solid rgba(127,127,127,.25)" } }, color)) }), t(labelKey)]
 					}, id))
-				})]
+				}), (0, react_jsx_runtime.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: "10px", paddingTop: "10px" }, children: [(0, react_jsx_runtime.jsx)("button", { type: "button", className: AppearanceRow_module_css_default.themeCube, "aria-pressed": bingDaily, onClick: toggleWallpaper, children: bingDaily ? t("wallpaper.on") : t("wallpaper.off") }), wallpaperStatus && (0, react_jsx_runtime.jsx)("span", { children: wallpaperStatus })] })]
 			});
 		}
 		//#endregion
@@ -125,6 +156,7 @@ window.__ModuleLoader__.load({
 			"appearance.light": "浅色",
 			"appearance.dark": "深色",
 			"appearance.system": "跟随系统"
+			,"appearance.catppuccin": "Catppuccin","appearance.dracula": "Dracula","appearance.nord": "Nord","appearance.tokyoNight": "Tokyo Night","appearance.linear": "Linear 深色","appearance.notion": "Notion 暖白","wallpaper.on": "Bing 每日壁纸：开","wallpaper.off": "Bing 每日壁纸：关","wallpaper.saving": "正在保存…","wallpaper.enabled": "已开启每日壁纸","wallpaper.disabled": "已关闭每日壁纸"
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
@@ -132,6 +164,7 @@ window.__ModuleLoader__.load({
 			"appearance.light": "Light",
 			"appearance.dark": "Dark",
 			"appearance.system": "System"
+			,"appearance.catppuccin": "Catppuccin","appearance.dracula": "Dracula","appearance.nord": "Nord","appearance.tokyoNight": "Tokyo Night","appearance.linear": "Linear Dark","appearance.notion": "Notion Warm","wallpaper.on": "Bing daily wallpaper: on","wallpaper.off": "Bing daily wallpaper: off","wallpaper.saving": "Saving…","wallpaper.enabled": "Daily wallpaper enabled","wallpaper.disabled": "Daily wallpaper disabled"
 		};
 		//#endregion
 		//#region ../../../vendor/cosmokit/src/misc.ts
@@ -932,7 +965,13 @@ window.__ModuleLoader__.load({
 		const THEME_PREFERENCES = [
 			"light",
 			"dark",
-			"system"
+			"system",
+			"catppuccin",
+			"dracula",
+			"nord",
+			"tokyo-night",
+			"linear",
+			"notion"
 		];
 		/** Settings namespace owned by the theme plugin. */
 		const THEME_SETTINGS_NAMESPACE = "ui-theme";
@@ -961,7 +1000,25 @@ window.__ModuleLoader__.load({
 			id: "dark",
 			colorScheme: "dark",
 			tokens: Object.freeze({})
-		})]);
+		}), ...NO_SKIN ? [] : [
+			["catppuccin", "dark", {"--dsw-alias-bg-base":"#1e1e2e","--dsw-alias-bg-layer-1":"#181825","--dsw-alias-bg-layer-2":"#313244","--dsw-alias-bg-overlay":"#313244","--dsw-alias-border-l1":"#45475a","--dsw-alias-border-l2":"#585b70","--dsw-alias-brand-primary":"#cba6f7","--dsw-alias-label-primary":"#cdd6f4","--dsw-alias-label-secondary":"#bac2de","--dsw-specific-sidebar-fill":"#181825"}],
+			["dracula", "dark", {"--dsw-alias-bg-base":"#282a36","--dsw-alias-bg-layer-1":"#21222c","--dsw-alias-bg-layer-2":"#44475a","--dsw-alias-bg-overlay":"#44475a","--dsw-alias-border-l1":"#44475a","--dsw-alias-border-l2":"#6272a4","--dsw-alias-brand-primary":"#bd93f9","--dsw-alias-label-primary":"#f8f8f2","--dsw-alias-label-secondary":"#d7d7d2","--dsw-specific-sidebar-fill":"#21222c"}],
+			["nord", "dark", {"--dsw-alias-bg-base":"#2e3440","--dsw-alias-bg-layer-1":"#3b4252","--dsw-alias-bg-layer-2":"#434c5e","--dsw-alias-bg-overlay":"#3b4252","--dsw-alias-border-l1":"#4c566a","--dsw-alias-border-l2":"#616e88","--dsw-alias-brand-primary":"#88c0d0","--dsw-alias-label-primary":"#eceff4","--dsw-alias-label-secondary":"#d8dee9","--dsw-specific-sidebar-fill":"#3b4252"}],
+			["tokyo-night", "dark", {"--dsw-alias-bg-base":"#1a1b26","--dsw-alias-bg-layer-1":"#16161e","--dsw-alias-bg-layer-2":"#24283b","--dsw-alias-bg-overlay":"#24283b","--dsw-alias-border-l1":"#292e42","--dsw-alias-border-l2":"#3b4261","--dsw-alias-brand-primary":"#7aa2f7","--dsw-alias-label-primary":"#c0caf5","--dsw-alias-label-secondary":"#a9b1d6","--dsw-specific-sidebar-fill":"#16161e"}],
+			["linear", "dark", {"--dsw-alias-bg-base":"#08090a","--dsw-alias-bg-layer-1":"#0f1011","--dsw-alias-bg-layer-2":"#191a1b","--dsw-alias-bg-overlay":"#191a1b","--dsw-alias-border-l1":"#23252a","--dsw-alias-border-l2":"#34343a","--dsw-alias-brand-primary":"#7170ff","--dsw-alias-label-primary":"#f7f8f8","--dsw-alias-label-secondary":"#d0d6e0","--dsw-specific-sidebar-fill":"#0f1011"}],
+			["notion", "light", {"--dsw-alias-bg-base":"#ffffff","--dsw-alias-bg-layer-1":"#f6f5f4","--dsw-alias-bg-layer-2":"#efeeec","--dsw-alias-bg-overlay":"#ffffff","--dsw-alias-border-l1":"rgba(0,0,0,.1)","--dsw-alias-border-l2":"rgba(0,0,0,.16)","--dsw-alias-brand-primary":"#0075de","--dsw-alias-label-primary":"#31302e","--dsw-alias-label-secondary":"#615d59","--dsw-specific-sidebar-fill":"#f6f5f4"}]
+		].map(([id,colorScheme,tokens])=>Object.freeze({id,colorScheme,tokens:Object.freeze(tokens)}))]);
+		const SKIN_CATALOG = Object.freeze([
+			{ id: "system", name: "跟随系统", scheme: "system", category: "基础", description: "自动跟随 Windows 或浏览器的明暗外观。", colors: ["#f7f7f8", "#17181a", "#3b82f6"] },
+			{ id: "light", name: "经典浅色", scheme: "light", category: "基础", description: "高对比度浅色工作台，适合日间和明亮环境。", colors: ["#ffffff", "#f4f5f7", "#2563eb"] },
+			{ id: "dark", name: "经典深色", scheme: "dark", category: "基础", description: "原生深色工作台，减少长时间编码的视觉刺激。", colors: ["#17181a", "#24262a", "#60a5fa"] },
+			{ id: "catppuccin", name: "Catppuccin Mocha", scheme: "dark", category: "柔和", description: "低对比度暖黑底与薰衣草强调色。", colors: ["#1e1e2e", "#cba6f7", "#89b4fa"] },
+			{ id: "dracula", name: "Dracula", scheme: "dark", category: "经典", description: "深灰紫底与高辨识度粉紫强调色。", colors: ["#282a36", "#bd93f9", "#ff79c6"] },
+			{ id: "nord", name: "Nord", scheme: "dark", category: "冷色", description: "北欧极夜色板，蓝灰背景与冰蓝强调色。", colors: ["#2e3440", "#88c0d0", "#a3be8c"] },
+			{ id: "tokyo-night", name: "Tokyo Night", scheme: "dark", category: "霓虹", description: "东京夜色背景与克制的蓝紫高光。", colors: ["#1a1b26", "#7aa2f7", "#bb9af7"] },
+			{ id: "linear", name: "Linear 深色", scheme: "dark", category: "产品", description: "近黑背景、细边框与紫色品牌强调。", colors: ["#08090a", "#7170ff", "#f7f8f8"] },
+			{ id: "notion", name: "Notion 暖白", scheme: "light", category: "产品", description: "温暖纸张底色与清晰的蓝色交互强调。", colors: ["#f6f5f4", "#0075de", "#31302e"] }
+		]);
 		const BUILTIN_INSPECT_TOKENS = Object.freeze([
 			{
 				name: "--dsw-alias-bg-base",
@@ -1139,8 +1196,10 @@ window.__ModuleLoader__.load({
 			/** Adopt the scope's accepted durable preference without writing it back. */
 			adopt() {
 				const section = this.host.getSnapshot().value;
-				if (section === void 0 || this.preference === section.preference) return;
-				this.preference = section.preference;
+				if (section === void 0) return;
+				const next = NO_SKIN && !["light", "dark", "system"].includes(section.preference) ? "system" : section.preference;
+				if (this.preference === next) return;
+				this.preference = next;
 				this.publish();
 			}
 			/**
@@ -1253,6 +1312,69 @@ window.__ModuleLoader__.load({
 				...name.startsWith("--") ? { cssVariable: name } : {}
 			};
 		}
+		function applyBingWallpaper(enabled) {
+			const body = document.body;
+			let style = document.querySelector("style[data-dsh-wallpaper-css]");
+			if (style === null) {
+				style = document.createElement("style");
+				style.dataset.dshWallpaperCss = "";
+				style.textContent = "body[data-dsh-bing-wallpaper] #root>div{background:rgba(8,9,10,.28)!important}body[data-dsh-bing-wallpaper] [class*=_frame]{background:rgba(8,9,10,.22)!important}";
+				document.head.appendChild(style);
+			}
+			body.toggleAttribute("data-dsh-bing-wallpaper", enabled);
+			if (enabled) {
+				body.style.backgroundImage = "linear-gradient(rgba(8,9,10,.68),rgba(8,9,10,.82)),url('/__dsh-bing-wallpaper')";
+				body.style.backgroundSize = "cover";
+				body.style.backgroundPosition = "center";
+				body.style.backgroundAttachment = "fixed";
+			} else {
+				body.style.removeProperty("background-image");
+				body.style.removeProperty("background-size");
+				body.style.removeProperty("background-position");
+				body.style.removeProperty("background-attachment");
+			}
+		}
+		async function restoreBingWallpaper(api) {
+			const reply = await api.settings.describe({});
+			if (!reply.result.ok) return;
+			const value = reply.result.value.namespaces.find((item) => item.ns === "ui-wallpaper")?.value;
+			applyBingWallpaper(value?.bingDaily === true);
+		}
+		const skinManagerCss = ".dshSkins{box-sizing:border-box;width:100%;max-width:980px;padding:4px 2px 32px;color:var(--dsw-alias-label-primary)}.dshSkins h2{margin:0 0 4px;font-size:18px}.dshSkinsHint{margin:0 0 18px;color:var(--dsw-alias-label-tertiary);font-size:13px}.dshSkinsToolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.dshSkinsToolbar input{min-width:220px;flex:1;height:34px;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:inherit;padding:0 10px}.dshSkinsToolbar button,.dshSkinWallpaper button{height:34px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:inherit;padding:0 11px;cursor:pointer}.dshSkinsToolbar button[data-active=true]{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}.dshSkinGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}.dshSkinCard{min-width:0;text-align:left;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-1);color:inherit;padding:0;overflow:hidden;cursor:pointer}.dshSkinCard:hover{border-color:var(--dsw-alias-border-l2);transform:translateY(-1px)}.dshSkinCard[data-active=true]{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}.dshSkinPreview{height:74px;display:flex}.dshSkinPreview i{flex:1}.dshSkinBody{padding:10px 11px}.dshSkinName{font-size:13px;font-weight:600}.dshSkinMeta{margin-top:3px;font-size:11px;color:var(--dsw-alias-label-tertiary)}.dshSkinDetails{margin-top:14px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;padding:13px;background:var(--dsw-alias-bg-layer-1)}.dshSkinDetails strong{font-size:14px}.dshSkinDetails p{margin:5px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:19px}.dshSkinWallpaper{margin-top:16px;display:flex;align-items:center;gap:10px;padding-top:16px;border-top:1px solid var(--dsw-alias-border-l1);font-size:13px}.dshSkinStatus{color:var(--dsw-alias-label-tertiary);font-size:12px}";
+		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css='dsh-skin-manager']") === null) { const tag = document.createElement("style"); tag.dataset.pluginCss = "dsh-skin-manager"; tag.textContent = skinManagerCss; document.head.appendChild(tag); }
+		function SkinSettings({ api, setTheme, useStore }) {
+			const preference = useStore((state) => state.preference);
+			const [query, setQuery] = (0, react.useState)("");
+			const [filter, setFilter] = (0, react.useState)("all");
+			const [detail, setDetail] = (0, react.useState)(preference);
+			const [bingDaily, setBingDaily] = (0, react.useState)(false);
+			const [status, setStatus] = (0, react.useState)("");
+			(0, react.useEffect)(() => { let live = true; api.settings.describe({}).then((reply) => { if (live && reply.result.ok) setBingDaily(reply.result.value.namespaces.find((item) => item.ns === "ui-wallpaper")?.value?.bingDaily === true); }); return () => { live = false; }; }, [api]);
+			const catalog = SKIN_CATALOG.filter((skin) => (filter === "all" || skin.scheme === filter) && (!query.trim() || `${skin.name} ${skin.category} ${skin.description}`.toLowerCase().includes(query.trim().toLowerCase())));
+			const selected = SKIN_CATALOG.find((skin) => skin.id === detail) ?? SKIN_CATALOG[0];
+			const choose = (skin) => { setTheme(skin.id); setDetail(skin.id); };
+			const random = () => { const choices = SKIN_CATALOG.filter((skin) => skin.id !== preference && skin.id !== "system"); choose(choices[Math.floor(Math.random() * choices.length)] ?? SKIN_CATALOG[1]); };
+			const toggleWallpaper = async () => { const next = !bingDaily; setStatus("正在保存…"); const reply = await api.settings.update({ ns: "ui-wallpaper", patch: { bingDaily: next } }); if (!reply.result.ok) { setStatus(reply.result.error.message); return; } setBingDaily(next); applyBingWallpaper(next); setStatus(next ? "已开启每日壁纸" : "已关闭每日壁纸"); };
+			return (0, react_jsx_runtime.jsxs)("section", { className: "dshSkins", children: [
+				(0, react_jsx_runtime.jsx)("h2", { children: "皮肤管理器" }),
+				(0, react_jsx_runtime.jsx)("p", { className: "dshSkinsHint", children: "独立管理完整界面皮肤；选择立即预览并持久化，刷新或重启后自动恢复。" }),
+				(0, react_jsx_runtime.jsxs)("div", { className: "dshSkinsToolbar", children: [(0, react_jsx_runtime.jsx)("input", { value: query, placeholder: "搜索皮肤", onChange: (event) => setQuery(event.target.value) }), [["all","全部皮肤"],["light","浅色皮肤"],["dark","深色皮肤"]].map(([id,label]) => (0, react_jsx_runtime.jsx)("button", { type: "button", "data-active": filter === id, onClick: () => setFilter(id), children: label }, id)), (0, react_jsx_runtime.jsx)("button", { type: "button", onClick: random, children: "随机皮肤" })] }),
+				(0, react_jsx_runtime.jsx)("div", { className: "dshSkinGrid", children: catalog.map((skin) => (0, react_jsx_runtime.jsxs)("button", { type: "button", className: "dshSkinCard", "data-active": preference === skin.id, onMouseEnter: () => setDetail(skin.id), onFocus: () => setDetail(skin.id), onClick: () => choose(skin), children: [(0, react_jsx_runtime.jsx)("span", { className: "dshSkinPreview", children: skin.colors.map((color) => (0, react_jsx_runtime.jsx)("i", { style: { background: color } }, color)) }), (0, react_jsx_runtime.jsxs)("span", { className: "dshSkinBody", children: [(0, react_jsx_runtime.jsx)("span", { className: "dshSkinName", children: skin.name }), (0, react_jsx_runtime.jsxs)("span", { className: "dshSkinMeta", children: [skin.category, " · ", skin.scheme === "dark" ? "深色" : skin.scheme === "light" ? "浅色" : "自动"] })] })] }, skin.id)) }),
+				catalog.length === 0 && (0, react_jsx_runtime.jsx)("div", { className: "dshSkinsHint", children: "没有匹配的皮肤" }),
+				(0, react_jsx_runtime.jsxs)("div", { className: "dshSkinDetails", children: [(0, react_jsx_runtime.jsxs)("strong", { children: ["主题详情 · ", selected.name] }), (0, react_jsx_runtime.jsx)("p", { children: selected.description })] }),
+				(0, react_jsx_runtime.jsxs)("div", { className: "dshSkinWallpaper", children: [(0, react_jsx_runtime.jsx)("button", { type: "button", "aria-pressed": bingDaily, onClick: toggleWallpaper, children: bingDaily ? "关闭 Bing 每日壁纸" : "开启 Bing 每日壁纸" }), (0, react_jsx_runtime.jsx)("span", { children: "壁纸会随当前皮肤添加可读性遮罩，并在启动时恢复。" }), status && (0, react_jsx_runtime.jsx)("span", { className: "dshSkinStatus", children: status })] })
+			] });
+		}
+		function BasicAppearanceSettings(props) {
+			return (0, react_jsx_runtime.jsxs)("section", { style: { maxWidth: "760px", padding: "4px 2px 32px" }, children: [(0, react_jsx_runtime.jsx)("h2", { children: "外观" }), (0, react_jsx_runtime.jsx)("p", { style: { color: "var(--dsw-alias-label-tertiary)" }, children: "no-skin 版本不内置扩展皮肤；仍可选择浅色、深色或跟随系统。" }), (0, react_jsx_runtime.jsx)(AppearanceRow, props)] });
+		}
+		function HistoryMemorySettings({ api }) {
+			const [value, setValue] = (0, react.useState)({ mode: "balanced", maxPages: 5, maxEvents: 4096 });
+			const [status, setStatus] = (0, react.useState)("");
+			(0, react.useEffect)(() => { api.settings.describe({}).then((reply) => { if (reply.result.ok) setValue(reply.result.value.namespaces.find((item) => item.ns === "ui-history")?.value ?? value); }); }, [api]);
+			const save = async (next) => { setValue(next); setStatus("正在保存…"); const reply = await api.settings.update({ ns: "ui-history", patch: next }); setStatus(reply.result.ok ? "已保存" : reply.result.error.message); };
+			return (0, react_jsx_runtime.jsxs)("section", { style: { maxWidth: "760px", padding: "4px 2px 32px" }, children: [(0, react_jsx_runtime.jsx)("h2", { children: "历史与内存" }), (0, react_jsx_runtime.jsx)("p", { style: { color: "var(--dsw-alias-label-tertiary)" }, children: "接近顶部或底部会自动双向加载；整页是最小保留单位，绝不截断 AI 输出。事件上限是软限制，单个安全页可超过它。" }), (0, react_jsx_runtime.jsx)("select", { value: value.mode, onChange: (e) => save({ ...value, mode: e.target.value }), children: [["low","低内存（1个完整安全页）"],["balanced","平衡（5页 / 4096事件软限）"],["full","完整加载（不裁剪）"],["custom","自定义"]].map(([id,label]) => (0, react_jsx_runtime.jsx)("option", { value: id, children: label }, id)) }), value.mode === "custom" && (0, react_jsx_runtime.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "140px 180px", gap: "10px", marginTop: "16px" }, children: [(0, react_jsx_runtime.jsx)("label", { children: "最多页数" }), (0, react_jsx_runtime.jsx)("input", { type: "number", min: 1, max: 100, value: value.maxPages, onChange: (e) => setValue({ ...value, maxPages: Number(e.target.value) }) }), (0, react_jsx_runtime.jsx)("label", { children: "最多原始事件" }), (0, react_jsx_runtime.jsx)("input", { type: "number", min: 256, max: 200000, value: value.maxEvents, onChange: (e) => setValue({ ...value, maxEvents: Number(e.target.value) }) }), (0, react_jsx_runtime.jsx)("span", {}), (0, react_jsx_runtime.jsx)("button", { onClick: () => save(value), children: "保存限制" })] }), status && (0, react_jsx_runtime.jsx)("div", { style: { marginTop: "12px" }, children: status })] });
+		}
 		/**
 		* Required services: settings transport plus slots/locale for the Appearance
 		* row. `remote` carries the forwarded settings invalidation that
@@ -1274,6 +1396,11 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			const theme = new ThemeRuntime(ctx, ctx.settingsScope.bind({ namespace: THEME_SETTINGS_NAMESPACE }));
 			ctx.provide("theme", theme);
+			const api = ctx.get("connection").api;
+			restoreBingWallpaper(api).catch(() => applyBingWallpaper(false));
+			ctx.effect(() => ctx.remote.$on("settings/document-updated", (namespace) => {
+				if (namespace === "ui-wallpaper") restoreBingWallpaper(api).catch(() => applyBingWallpaper(false));
+			}), "ui-theme: wallpaper settings sync");
 			ctx.effect(() => ctx.locale.register(SETTINGS_NS, {
 				zh,
 				en
@@ -1287,18 +1414,20 @@ window.__ModuleLoader__.load({
 			const injected = (actions) => {
 				bound = actions;
 				sync(theme.getTheme());
-				return { setTheme: (id) => {
+				return { api, setTheme: (id) => {
 					theme.setTheme(id);
 				} };
 			};
-			ctx.slots.inject("settings.general.item", () => ctx.slots.register({
-				name: "settings.general.item",
-				id: "appearance",
+			ctx.slots.inject("settings.section", () => ctx.slots.register({
+				name: "settings.section",
+				id: "skins",
 				order: 10,
 				store,
 				locale: SETTINGS_NS,
+				label: NO_SKIN ? "外观" : "皮肤与壁纸",
 				inject: injected
-			}, AppearanceRow));
+			}, NO_SKIN ? BasicAppearanceSettings : SkinSettings));
+			ctx.slots.inject("settings.section", () => ctx.slots.register({ name: "settings.section", id: "history-memory", order: 12, label: "历史与内存", inject: () => ({ api }) }, HistoryMemorySettings));
 		}
 		//#endregion
 		exports.SETTINGS_NS = SETTINGS_NS;

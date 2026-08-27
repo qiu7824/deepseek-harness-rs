@@ -231,7 +231,7 @@ pub fn apply(ctx: &Context) -> Result<cordis::Disposer, String> {
         ctx,
         CommandDefinition {
             name: "goal".to_string(),
-            description: "set or view the goal for a long-running task".to_string(),
+            description: "设置或查看长期任务目标".to_string(),
             input: Some(CommandInputDescriptor {
                 hint: "[<objective>|clear|edit <objective>|pause|resume]".to_string(),
             }),

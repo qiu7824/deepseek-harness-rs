@@ -40,7 +40,11 @@ pub enum SubagentDiagnosticReason {
 
 /// Complete durable direct-child catalog row.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SubagentListEntry {
     Child {
         id: SessionId,
@@ -175,4 +179,26 @@ pub trait SubagentsApi: Send + Sync {
         &self,
         request: RpcRequest<SubagentInterruptRequest>,
     ) -> RpcResponse<SubagentInterruptReceipt>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn child_catalog_entry_uses_client_wire_field_names() {
+        let entry = SubagentListEntry::Child {
+            id: dsh_session::session_id("child"),
+            activity: SubagentActivity::Inactive,
+            has_children: true,
+            mode: SubagentMode::OneShot,
+            label: None,
+        };
+
+        let value = serde_json::to_value(entry).expect("serialize child catalog entry");
+
+        assert_eq!(value.get("kind"), Some(&serde_json::json!("child")));
+        assert_eq!(value.get("hasChildren"), Some(&serde_json::json!(true)));
+        assert!(value.get("has_children").is_none());
+    }
 }

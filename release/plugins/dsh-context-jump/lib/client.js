@@ -213,7 +213,7 @@ window.__ModuleLoader__.load({
 		* arrives through the props shares (the framework session hooks and the
 		* locale seat); the component touches no ctx.
 		*/
-		function UserRail({ useSession, t, railFace, loadAround }) {
+		function UserRail({ useSession, t, railFace, ensureTarget }) {
 			const order = useSession((s) => s.chat.order);
 			const nodes = useSession((s) => s.chat.nodes);
 			const indexed = (0, react.useSyncExternalStore)(
@@ -345,7 +345,7 @@ window.__ModuleLoader__.load({
 				if (current === null || !current.port.isConnected || !current.flow.isConnected) return;
 				let row = findRow(current.flow, entry.key);
 				if (row === null && Number.isSafeInteger(entry.seq)) {
-					if (!await loadAround(entry.seq)) return;
+					if (!await ensureTarget(entry.seq, entry.key)) return;
 					await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 					current = conversationBox();
 					if (current === null) return;
@@ -358,7 +358,7 @@ window.__ModuleLoader__.load({
 				const target = scrollCenterTarget(current.port, rect.top - portRect.top, rect.height);
 				if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) current.port.scrollTop = target;
 				else current.port.scrollTo({ top: target, behavior: "smooth" });
-			}, [loadAround]);
+			}, [ensureTarget]);
 			if (!ready) return null;
 			const count = allEntries.length;
 			return (0, react_dom.createPortal)(/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
@@ -458,14 +458,32 @@ window.__ModuleLoader__.load({
 				locale: NS,
 				inject: (sessionId) => {
 					const binding = ctx.sessions.binding(sessionId);
-					const conversation = ctx.sessions.scope(sessionId)?.get("conversation");
+					const session = binding?.session;
 					const face = binding?.session.projections.faceOf("userMessageRail");
 					return {
 						railFace: {
 							subscribe: (listener) => face?.subscribe(listener) ?? (() => {}),
 							getSnapshot: () => face?.getSnapshot() ?? []
 						},
-						loadAround: (seq) => conversation?.loadAround(seq) ?? Promise.resolve(false)
+						ensureTarget: async (seq, key) => {
+							if (session === void 0) return false;
+							for (let attempt = 0; attempt < 200; attempt++) {
+								const snapshot = session.getSnapshot();
+								if (snapshot.chat.nodes.has(key)) return true;
+								const anchors = snapshot.chat.order.map((id) => snapshot.chat.nodes.get(id)?.anchorSeq).filter(Number.isFinite);
+								const min = anchors.length ? Math.min(...anchors) : Number.POSITIVE_INFINITY;
+								const max = anchors.length ? Math.max(...anchors) : Number.NEGATIVE_INFINITY;
+								const before = `${snapshot.chat.order[0] ?? ""}:${snapshot.chat.order.at(-1) ?? ""}:${snapshot.hasMoreBefore}:${snapshot.hasMoreAfter}`;
+								if (seq < min && snapshot.hasMoreBefore) await session.loadOlder();
+								else if (seq > max && snapshot.hasMoreAfter) await session.loadNewer();
+								else return false;
+								await new Promise((resolve) => setTimeout(resolve, 0));
+								const next = session.getSnapshot();
+								const after = `${next.chat.order[0] ?? ""}:${next.chat.order.at(-1) ?? ""}:${next.hasMoreBefore}:${next.hasMoreAfter}`;
+								if (before === after) return false;
+							}
+							return session.getSnapshot().chat.nodes.has(key);
+						}
 					};
 				}
 			}, UserRail));

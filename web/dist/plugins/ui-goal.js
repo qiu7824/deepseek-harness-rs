@@ -63,11 +63,18 @@ window.__ModuleLoader__.load({
 				pendingRef.current = true;
 				setPending(true);
 				setActionError(null);
-				const result = await action();
-				pendingRef.current = false;
-				setPending(false);
-				if (!result.ok) setActionError(`${result.error.message} (${result.error.code})`);
-				return result;
+				try {
+					const result = await action();
+					if (!result.ok) setActionError(`${result.error.message} (${result.error.code})`);
+					return result;
+				} catch (reason) {
+					const message = reason instanceof Error ? reason.message : String(reason);
+					setActionError(message);
+					return { ok: false, error: { code: "transport", message, details: {} } };
+				} finally {
+					pendingRef.current = false;
+					setPending(false);
+				}
 			}, []);
 			const handleEdit = (0, react.useCallback)(async () => {
 				const trimmed = draft.trim();
@@ -185,7 +192,7 @@ window.__ModuleLoader__.load({
 										children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPauseOutline16, { size: 14 })
 									})
 								}),
-								goal.phase === "paused" && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
+								(goal.phase === "paused" || goal.phase === "blocked") && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
 									label: t("action.resume"),
 									side: "bottom",
 									delayMs: 500,

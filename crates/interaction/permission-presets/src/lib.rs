@@ -586,9 +586,7 @@ impl PermissionPresetService {
                         let service_for_handler = service.clone();
                         let definition = CommandDefinition {
                             name: "permission".to_string(),
-                            description:
-                                "Switch the permission preset (sandbox mode + approval policy)"
-                                    .to_string(),
+                            description: "切换权限预设（沙箱模式和审批策略）".to_string(),
                             input: Some(CommandInputDescriptor {
                                 hint: "<preset>".to_string(),
                             }),

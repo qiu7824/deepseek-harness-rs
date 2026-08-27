@@ -400,7 +400,12 @@ async fn git_status(root: &Path) -> Result<GitStatusBody, WebResponse> {
     const MAX_GIT_ENTRIES: usize = 2_000;
     let output = git_output(
         root,
-        &["status", "--porcelain=v1", "--branch", "--untracked-files=normal"],
+        &[
+            "status",
+            "--porcelain=v1",
+            "--branch",
+            "--untracked-files=normal",
+        ],
     )
     .await?;
     let mut branch = String::new();
@@ -412,7 +417,11 @@ async fn git_status(root: &Path) -> Result<GitStatusBody, WebResponse> {
     for line in output.lines() {
         if let Some(head) = line.strip_prefix("## ") {
             let tracking = head.split_once("...");
-            branch = tracking.map(|value| value.0).unwrap_or(head).trim().to_string();
+            branch = tracking
+                .map(|value| value.0)
+                .unwrap_or(head)
+                .trim()
+                .to_string();
             if let Some((_, tail)) = tracking {
                 let (name, status) = tail.split_once(" [").unwrap_or((tail, ""));
                 upstream = Some(name.trim().to_string());
@@ -477,13 +486,8 @@ async fn git_status(root: &Path) -> Result<GitStatusBody, WebResponse> {
 
 async fn git_diff(root: &Path, relative: &str) -> Result<GitDiffBody, WebResponse> {
     const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
-    let path = safe_relative(relative).ok_or_else(|| {
-        error(
-            StatusCode::BAD_REQUEST,
-            "unsafe-path",
-            "Git 路径不安全",
-        )
-    })?;
+    let path = safe_relative(relative)
+        .ok_or_else(|| error(StatusCode::BAD_REQUEST, "unsafe-path", "Git 路径不安全"))?;
     if path.as_os_str().is_empty() {
         return Err(error(
             StatusCode::BAD_REQUEST,
@@ -494,11 +498,7 @@ async fn git_diff(root: &Path, relative: &str) -> Result<GitDiffBody, WebRespons
     let display = path.to_string_lossy().replace('\\', "/");
     let mut output = git_output(root, &["diff", "--no-ext-diff", "--", &display]).await?;
     if output.is_empty() {
-        output = git_output(
-            root,
-            &["diff", "--cached", "--no-ext-diff", "--", &display],
-        )
-        .await?;
+        output = git_output(root, &["diff", "--cached", "--no-ext-diff", "--", &display]).await?;
     }
     let truncated = output.len() > MAX_DIFF_BYTES;
     if truncated {
@@ -894,7 +894,13 @@ impl PreviewService {
         let query = request.uri().query();
         let session = match query_value(query, "sessionId") {
             Ok(Some(value)) if !value.is_empty() && value.len() <= 200 => session_id(value),
-            _ => return error(StatusCode::BAD_REQUEST, "session-required", "缺少有效的 sessionId"),
+            _ => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "session-required",
+                    "缺少有效的 sessionId",
+                );
+            }
         };
         let relative = match query_value(query, "path") {
             Ok(Some(value)) if !value.is_empty() => value,
@@ -911,21 +917,37 @@ impl PreviewService {
             .map(str::to_string);
         let bytes = match to_bytes(Body::new(request.into_body()), MAX_TEXT_BYTES as usize).await {
             Ok(bytes) => bytes,
-            Err(_) => return error(StatusCode::PAYLOAD_TOO_LARGE, "body-too-large", "文件内容超过文本上限"),
+            Err(_) => {
+                return error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "body-too-large",
+                    "文件内容超过文本上限",
+                );
+            }
         };
         if std::str::from_utf8(&bytes).is_err() {
-            return error(StatusCode::BAD_REQUEST, "invalid-text", "编辑内容必须是 UTF-8 文本");
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid-text",
+                "编辑内容必须是 UTF-8 文本",
+            );
         }
         let write = dsh_atomic_write::with_file_lock(&target, async {
             let current = tokio::fs::read(&target).await?;
             let current_etag = content_etag(&current);
             if expected.as_deref() != Some(current_etag.as_str()) {
-                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, current_etag));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    current_etag,
+                ));
             }
             dsh_atomic_write::write_file_atomic(
                 &target,
                 &bytes,
-                dsh_atomic_write::WriteFileAtomicOptions { mode: 0o644, dir_mode: None },
+                dsh_atomic_write::WriteFileAtomicOptions {
+                    mode: 0o644,
+                    dir_mode: None,
+                },
             )
             .await?;
             Ok::<_, std::io::Error>(())
@@ -940,9 +962,7 @@ impl PreviewService {
                     size: bytes.len(),
                 },
             ),
-            Ok(Err(error_value))
-                if error_value.kind() == std::io::ErrorKind::AlreadyExists =>
-            {
+            Ok(Err(error_value)) if error_value.kind() == std::io::ErrorKind::AlreadyExists => {
                 error(
                     StatusCode::CONFLICT,
                     "file-changed",
@@ -975,7 +995,11 @@ impl PreviewService {
                     return error(StatusCode::BAD_REQUEST, "unsafe-path", "Git 路径不安全");
                 };
                 if relative.as_os_str().is_empty() {
-                    return error(StatusCode::BAD_REQUEST, "path-required", "缺少 Git 文件路径");
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "path-required",
+                        "缺少 Git 文件路径",
+                    );
                 }
                 let display = relative.to_string_lossy().replace('\\', "/");
                 if action.action == "stage" {
@@ -987,23 +1011,34 @@ impl PreviewService {
             "commit" | "commit-push" => {
                 let message = action.message.as_deref().map(str::trim).unwrap_or_default();
                 if message.is_empty() || message.len() > 500 {
-                    return error(StatusCode::BAD_REQUEST, "invalid-message", "提交说明不能为空且不能超过500字");
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid-message",
+                        "提交说明不能为空且不能超过500字",
+                    );
                 }
                 match git_output(&root, &["commit", "-m", message]).await {
                     Ok(output) if action.action == "commit-push" => match git_output(
                         &root,
-                        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                        &[
+                            "rev-parse",
+                            "--abbrev-ref",
+                            "--symbolic-full-name",
+                            "@{upstream}",
+                        ],
                     )
                     .await
                     {
                         Ok(value) if !value.trim().is_empty() => git_output(&root, &["push"])
                             .await
                             .map(|pushed| format!("{output}\n{pushed}")),
-                        Ok(_) | Err(_) => return error(
-                            StatusCode::BAD_REQUEST,
-                            "upstream-required",
-                            "提交已完成，但当前分支没有配置上游，无法自动推送",
-                        ),
+                        Ok(_) | Err(_) => {
+                            return error(
+                                StatusCode::BAD_REQUEST,
+                                "upstream-required",
+                                "提交已完成，但当前分支没有配置上游，无法自动推送",
+                            );
+                        }
                     },
                     result => result,
                 }
@@ -1011,21 +1046,30 @@ impl PreviewService {
             "push" => {
                 let upstream = git_output(
                     &root,
-                    &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                    &[
+                        "rev-parse",
+                        "--abbrev-ref",
+                        "--symbolic-full-name",
+                        "@{upstream}",
+                    ],
                 )
                 .await;
                 match upstream {
                     Ok(value) if !value.trim().is_empty() => git_output(&root, &["push"]).await,
-                    Ok(_) => return error(
-                        StatusCode::BAD_REQUEST,
-                        "upstream-required",
-                        "当前分支没有配置上游，不能自动推送",
-                    ),
-                    Err(_) => return error(
-                        StatusCode::BAD_REQUEST,
-                        "upstream-required",
-                        "当前分支没有配置上游，不能自动推送",
-                    ),
+                    Ok(_) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "upstream-required",
+                            "当前分支没有配置上游，不能自动推送",
+                        );
+                    }
+                    Err(_) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "upstream-required",
+                            "当前分支没有配置上游，不能自动推送",
+                        );
+                    }
                 }
             }
             "checkout" => {
@@ -1035,7 +1079,13 @@ impl PreviewService {
                     .map(|value| value.lines().any(|line| line.trim() == branch));
                 match known {
                     Ok(true) => git_output(&root, &["checkout", "--", branch]).await,
-                    Ok(false) => return error(StatusCode::BAD_REQUEST, "unknown-branch", "只能切换到已有本地分支"),
+                    Ok(false) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "unknown-branch",
+                            "只能切换到已有本地分支",
+                        );
+                    }
                     Err(response) => return response,
                 }
             }
@@ -1054,13 +1104,15 @@ impl PreviewService {
         &self,
         session_id_value: &str,
     ) -> Result<Arc<dyn dsh_agent::Agent>, WebResponse> {
-        self.agents.get(&session_id(session_id_value)).ok_or_else(|| {
-            error(
-                StatusCode::CONFLICT,
-                "agent-not-live",
-                "当前会话未运行，无法使用终端",
-            )
-        })
+        self.agents
+            .get(&session_id(session_id_value))
+            .ok_or_else(|| {
+                error(
+                    StatusCode::CONFLICT,
+                    "agent-not-live",
+                    "当前会话未运行，无法使用终端",
+                )
+            })
     }
 
     async fn terminal_action(&self, request: WebRequest) -> WebResponse {
@@ -1081,15 +1133,11 @@ impl PreviewService {
                         "每个会话最多打开3个终端",
                     );
                 }
-                let (_, root) = match workspace_root(
-                    &self.registry,
-                    &session_id(&action.session_id),
-                )
-                .await
-                {
-                    Ok(value) => value,
-                    Err(response) => return response,
-                };
+                let (_, root) =
+                    match workspace_root(&self.registry, &session_id(&action.session_id)).await {
+                        Ok(value) => value,
+                        Err(response) => return response,
+                    };
                 let future = match self.terminals.spawn(
                     owner,
                     TerminalSpawnRequest {
@@ -1174,10 +1222,9 @@ impl PreviewService {
                     }
                 };
                 match future.await {
-                    Ok(closed) => json_response(
-                        StatusCode::OK,
-                        &serde_json::json!({ "closed": closed }),
-                    ),
+                    Ok(closed) => {
+                        json_response(StatusCode::OK, &serde_json::json!({ "closed": closed }))
+                    }
                     Err(failure) => error(
                         StatusCode::BAD_REQUEST,
                         "terminal-close-failed",
@@ -1185,11 +1232,7 @@ impl PreviewService {
                     ),
                 }
             }
-            _ => error(
-                StatusCode::BAD_REQUEST,
-                "unknown-action",
-                "未知终端操作",
-            ),
+            _ => error(StatusCode::BAD_REQUEST, "unknown-action", "未知终端操作"),
         }
     }
 
@@ -1757,11 +1800,13 @@ impl PreviewService {
                 .terminals
                 .list(&owner)
                 .into_iter()
-                .map(|entry| serde_json::json!({
-                    "id": entry.session_id.as_str(),
-                    "name": entry.name,
-                    "pid": entry.pid
-                }))
+                .map(|entry| {
+                    serde_json::json!({
+                        "id": entry.session_id.as_str(),
+                        "name": entry.name,
+                        "pid": entry.pid
+                    })
+                })
                 .collect();
             return json_response(StatusCode::OK, &serde_json::json!({ "entries": entries }));
         }
@@ -1777,13 +1822,19 @@ impl PreviewService {
             return match self.terminals.read(
                 &owner,
                 &id,
-                TerminalReadRequest { offset: None, count: Some(500) },
+                TerminalReadRequest {
+                    offset: None,
+                    count: Some(500),
+                },
             ) {
-                Ok(result) => json_response(StatusCode::OK, &serde_json::json!({
-                    "text": result.text,
-                    "totalLines": result.total_lines,
-                    "truncated": result.truncated
-                })),
+                Ok(result) => json_response(
+                    StatusCode::OK,
+                    &serde_json::json!({
+                        "text": result.text,
+                        "totalLines": result.total_lines,
+                        "truncated": result.truncated
+                    }),
+                ),
                 Err(failure) => error(
                     StatusCode::BAD_REQUEST,
                     "terminal-read-failed",

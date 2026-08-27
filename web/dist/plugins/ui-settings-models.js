@@ -174,6 +174,13 @@ window.__ModuleLoader__.load({
 			k: 1e3,
 			m: 1e6
 		};
+		const KNOWN_MODEL_MAX_TOKENS = {
+			"glm-5.3": 131072,
+			"glm-5.3-flash": 131072
+		};
+		function knownModelMaxTokens(modelId) {
+			return typeof modelId === "string" ? KNOWN_MODEL_MAX_TOKENS[modelId.trim().toLowerCase()] : void 0;
+		}
 		/**
 		* Read a typed capacity, so a user can write `256K` or `1M` instead of counting
 		* zeroes. The stored value stays a plain token count.
@@ -245,6 +252,11 @@ window.__ModuleLoader__.load({
 				if (maxTokens !== void 0 && (typeof maxTokens !== "number" || !Number.isInteger(maxTokens) || maxTokens <= 0)) return {
 					index,
 					key: "modelMaxTokensInvalid"
+				};
+				const knownLimit = knownModelMaxTokens(trimmed);
+				if (maxTokens !== void 0 && knownLimit !== void 0 && maxTokens > knownLimit) return {
+					index,
+					key: "modelMaxTokensKnownLimit"
 				};
 			}
 		}
@@ -426,7 +438,7 @@ window.__ModuleLoader__.load({
 								]
 							}), expanded.has(index) ? (0, react_jsx_runtime.jsxs)("div", {
 								className: ModelsSection_module_css_default["modelAdvanced"],
-								children: [capacityField(model, index, "contextWindow", props.defaultContextWindow), capacityField(model, index, "maxTokens", props.defaultMaxTokens)]
+								children: [capacityField(model, index, "contextWindow", props.defaultContextWindow), capacityField(model, index, "maxTokens", knownModelMaxTokens(model.id) ?? props.defaultMaxTokens)]
 							}) : null]
 						}, index))
 					}),
@@ -964,7 +976,7 @@ window.__ModuleLoader__.load({
 									type: "text",
 									inputMode: "numeric",
 									value: capacityText(model, index, "maxTokens"),
-									placeholder: CAPACITY_HINT.maxTokens,
+									placeholder: formatCapacity(knownModelMaxTokens(model.id) ?? Number(CAPACITY_HINT.maxTokens.replace("K", "000"))),
 									"aria-label": `${t("modelMaxTokens")} ${index + 1}`,
 									disabled,
 									onChange: (event) => {
@@ -2500,6 +2512,7 @@ window.__ModuleLoader__.load({
 			modelNameInvalid: "Display name cannot be empty.",
 			modelContextInvalid: "Context window must be a positive count, like 131072, 256K, or 1M.",
 			modelMaxTokensInvalid: "Max output tokens must be a positive count, like 8192, 64K, or 1M.",
+			modelMaxTokensKnownLimit: "This model supports at most 131072 output tokens.",
 			advancedHint: "Other fields live in settings.yaml; edit that section directly.",
 			modelCapacityInvalid: "A capacity must be a number, optionally suffixed K or M.",
 			modelDuplicate: "Each model ID may appear once.",
@@ -2596,6 +2609,7 @@ window.__ModuleLoader__.load({
 			modelNameInvalid: "显示名称不能为空。",
 			modelContextInvalid: "上下文窗口必须是正数，例如 131072、256K 或 1M。",
 			modelMaxTokensInvalid: "最大输出 token 数必须是正数，例如 8192、64K 或 1M。",
+			modelMaxTokensKnownLimit: "该模型最大支持 131072 个输出 token。",
 			advancedHint: "其余字段在 settings.yaml 中，请直接编辑对应段。",
 			modelCapacityInvalid: "容量需为数字，可加 K 或 M 后缀。",
 			modelDuplicate: "每个模型 ID 只能出现一次。",

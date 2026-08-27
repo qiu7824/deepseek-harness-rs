@@ -392,7 +392,7 @@ impl PlanModeController {
                         let service_for_handler = service.clone();
                         let definition = CommandDefinition {
                             name: "plan".to_string(),
-                            description: "Enter or leave plan mode".to_string(),
+                            description: "进入或退出计划模式".to_string(),
                             input: Some(CommandInputDescriptor {
                                 hint: "[off|message]".to_string(),
                             }),

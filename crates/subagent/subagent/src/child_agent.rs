@@ -17,8 +17,94 @@ use cordis::Context;
 use dsh_agent::{Agent, AgentOptions};
 use dsh_session::{CreateSessionMeta, Session};
 use dsh_tools::ToolRestriction;
+use parking_lot::RwLock;
 
 use crate::depth::delegation_depth_of;
+
+/// Host-supplied default `AgentOptions` for every newly spawned child,
+/// sourced from the `subagent` settings namespace. A host composition fiber
+/// keeps the snapshot current on `settings/updated`. Fields are `Option` so
+/// an unset value defers to the existing inheritance chain (parent options,
+/// current model selection, call-time override).
+#[derive(Debug, Clone, Default)]
+pub struct SubagentDefaults {
+    inner: Arc<RwLock<SubagentDefaultsInner>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SubagentDefaultsInner {
+    provider: Option<String>,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    max_tokens: Option<u64>,
+    max_depth: Option<u64>,
+    max_turns: Option<u64>,
+    timeout_seconds: Option<u64>,
+}
+
+impl SubagentDefaults {
+    /// Construct from raw field strings (typically sourced from settings).
+    /// Empty strings map to `None`; numeric parse failures are ignored so a
+    /// malformed user value cannot prevent child creation.
+    pub fn from_strings(
+        provider: &str,
+        model: &str,
+        reasoning_effort: &str,
+        max_tokens: f64,
+        max_depth: f64,
+        max_turns: f64,
+        timeout_seconds: f64,
+    ) -> Self {
+        let clean = |s: &str| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        };
+        let num = |n: f64| {
+            if n > 0.0 && n.is_finite() {
+                Some(n as u64)
+            } else {
+                None
+            }
+        };
+        Self {
+            inner: Arc::new(RwLock::new(SubagentDefaultsInner {
+                provider: clean(provider),
+                model: clean(model),
+                reasoning_effort: clean(reasoning_effort),
+                max_tokens: num(max_tokens),
+                max_depth: num(max_depth),
+                max_turns: num(max_turns),
+                timeout_seconds: num(timeout_seconds),
+            })),
+        }
+    }
+
+    /// Replace the snapshot atomically (called on settings change).
+    pub fn update(&self, next: SubagentDefaults) {
+        let mut guard = self.inner.write();
+        *guard = next.inner.read().clone();
+    }
+
+    fn read(&self) -> parking_lot::RwLockReadGuard<'_, SubagentDefaultsInner> {
+        self.inner.read()
+    }
+}
+
+/// Cordis service marker so the host can locate the snapshot on `ctx`.
+impl cordis::Service for SubagentDefaults {
+    fn service_name(&self) -> &'static str {
+        "subagentDefaults"
+    }
+}
+
+fn ctx_defaults(ctx: &Context) -> Option<Arc<SubagentDefaults>> {
+    ctx.get_typed::<Arc<SubagentDefaults>>("subagentDefaults", false)
+        .map(|slot| slot.as_ref().clone())
+}
 
 /// Thrown when starting a child would exceed the requested depth cap.
 #[derive(Debug, Clone)]
@@ -74,20 +160,39 @@ fn resolve_child_options(
     current_selection: Option<&dsh_agent::ModelSelection>,
     requested: Option<&AgentOptions>,
     child_depth: u64,
+    defaults: Option<&SubagentDefaults>,
 ) -> AgentOptions {
+    // Priority: call-time requested > settings defaults > parent/current route.
+    // `default_provider`/`default_model` only win when no parent route is
+    // already selected, mirroring the existing inheritance model.
+    let (default_provider, default_model, default_effort, default_max_tokens) = defaults
+        .map(|d| {
+            let g = d.read();
+            (
+                g.provider.clone(),
+                g.model.clone(),
+                g.reasoning_effort.clone(),
+                g.max_tokens,
+            )
+        })
+        .unwrap_or((None, None, None, None));
+
     let mut resolved = AgentOptions {
         provider: current_selection
             .as_ref()
             .map(|selection| selection.provider.clone())
-            .or_else(|| parent_options.provider.clone()),
+            .or_else(|| parent_options.provider.clone())
+            .or(default_provider),
         model: current_selection
             .as_ref()
             .map(|selection| selection.model.clone())
-            .or_else(|| parent_options.model.clone()),
-        max_tokens: parent_options.max_tokens,
-        // Reasoning effort is intentionally opt-in per delegation. A parent
-        // model selection must not make every child expensive implicitly.
-        reasoning_effort: None,
+            .or_else(|| parent_options.model.clone())
+            .or(default_model),
+        max_tokens: parent_options.max_tokens.or(default_max_tokens),
+        // Reasoning effort remains opt-in per delegation; a settings default,
+        // if provided, applies only when neither parent nor request specify
+        // one (the existing code intentionally clears inherited effort).
+        reasoning_effort: default_effort.map(dsh_llm::reasoning_effort_id),
         subagent_depth: Some(child_depth),
     };
     if let Some(requested) = requested {
@@ -121,12 +226,21 @@ pub fn resolve_child_agent_options(
         .ctx()
         .get_typed::<Arc<parking_lot::Mutex<dsh_agent::ModelSelectionRef>>>(&selection_name, false)
         .and_then(|selection| selection.lock().resolved_current());
+    let defaults = ctx_defaults(parent.ctx());
     resolve_child_options(
         parent_options,
         current_selection.as_ref(),
         requested,
         child_depth,
+        defaults.as_deref(),
     )
+}
+
+/// Resolve the configured default max depth, if the `subagent` settings
+/// namespace specified one. `None` (or 0) means "no cap" and is translated
+/// to `None` at the call site so the existing `max_depth` parameter wins.
+pub fn configured_max_depth(ctx: &Context) -> Option<u64> {
+    ctx_defaults(ctx).and_then(|d| d.read().max_depth)
 }
 
 #[cfg(test)]
@@ -147,7 +261,7 @@ mod tests {
 
     #[test]
     fn omitted_child_effort_does_not_inherit_parent_effort() {
-        let resolved = resolve_child_options(&parent(), None, None, 1);
+        let resolved = resolve_child_options(&parent(), None, None, 1, None);
         assert_eq!(resolved.provider.as_deref(), Some("gpt"));
         assert_eq!(resolved.model.as_deref(), Some("gpt-5.6-sol"));
         assert!(resolved.reasoning_effort.is_none());
@@ -160,7 +274,7 @@ mod tests {
             reasoning_effort: Some(reasoning_effort_id("max")),
             ..AgentOptions::default()
         };
-        let resolved = resolve_child_options(&parent(), None, Some(&requested), 2);
+        let resolved = resolve_child_options(&parent(), None, Some(&requested), 2, None);
         assert_eq!(
             resolved.reasoning_effort.as_ref().map(|id| id.as_str()),
             Some("max")
@@ -175,10 +289,32 @@ mod tests {
             model: "model".to_string(),
             reasoning_effort: Some(reasoning_effort_id("high")),
         };
-        let resolved = resolve_child_options(&parent(), Some(&selection), None, 1);
+        let resolved = resolve_child_options(&parent(), Some(&selection), None, 1, None);
         assert_eq!(resolved.provider.as_deref(), Some("other"));
         assert_eq!(resolved.model.as_deref(), Some("model"));
         assert!(resolved.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn defaults_apply_when_no_parent_route_or_request() {
+        let defaults = SubagentDefaults::from_strings(
+            "sub-provider",
+            "sub-model",
+            "low",
+            2048.0,
+            2.0,
+            100.0,
+            60.0,
+        );
+        let resolved =
+            resolve_child_options(&AgentOptions::default(), None, None, 1, Some(&defaults));
+        assert_eq!(resolved.provider.as_deref(), Some("sub-provider"));
+        assert_eq!(resolved.model.as_deref(), Some("sub-model"));
+        assert_eq!(
+            resolved.reasoning_effort.as_ref().map(|id| id.as_str()),
+            Some("low")
+        );
+        assert_eq!(resolved.max_tokens, Some(2048));
     }
 }
 

@@ -2228,8 +2228,8 @@ window.__ModuleLoader__.load({
 		function messageOf(error) {
 			return error instanceof Error ? error.message : String(error);
 		}
-		/** List archived sessions and expose restore / restore-and-open actions. */
-		function ArchivedSessionsSection({ close, useSessions, useWorkspaces, unarchiveSession, deleteArchivedSession, open, t }) {
+		/** List archived sessions and expose restore / delete actions. */
+		function ArchivedSessionsSection({ useSessions, useWorkspaces, unarchiveSession, deleteArchivedSession, t }) {
 			const sessions = useSessions((state) => state);
 			const workspaces = useWorkspaces((state) => state);
 			const [busyId, setBusyId] = (0, react.useState)();
@@ -2237,15 +2237,12 @@ window.__ModuleLoader__.load({
 			const [error, setError] = (0, react.useState)();
 			const workspaceBySession = /* @__PURE__ */ new Map();
 			for (const workspace of workspaces.items) for (const sessionId of workspace.sessionIds) if (!workspaceBySession.has(sessionId)) workspaceBySession.set(sessionId, workspace.title);
-			const restore = async (sessionId, shouldOpen) => {
+			const restore = async (sessionId) => {
 				setBusyId(sessionId);
 				setError(void 0);
 				try {
 					await unarchiveSession(sessionId);
-					if (shouldOpen) {
-						open(sessionId);
-						close();
-					}
+
 				} catch (reason) {
 					setError(messageOf(reason));
 				} finally {
@@ -2311,19 +2308,10 @@ window.__ModuleLoader__.load({
 										children: [
 											(0, react_jsx_runtime.jsx)("button", {
 												type: "button",
-												className: ArchivedSessionsSection_module_css_default.secondary,
-												disabled: busy || summary === void 0,
-												onClick: () => {
-													restore(sessionId, true);
-												},
-												children: t("archive.view")
-											}),
-											(0, react_jsx_runtime.jsx)("button", {
-												type: "button",
 												className: ArchivedSessionsSection_module_css_default.primary,
 												disabled: busy,
 												onClick: () => {
-													restore(sessionId, false);
+													restore(sessionId);
 												},
 												children: t("archive.restore")
 											}),
@@ -2424,9 +2412,8 @@ window.__ModuleLoader__.load({
 			"menu.archiveSession": "归档会话",
 			"archive.nav": "归档管理",
 			"archive.title": "归档会话",
-			"archive.description": "归档只会隐藏会话，完整记录仍会保留。你可以查看、恢复，或永久删除记录。",
+			"archive.description": "归档只会隐藏会话，完整记录仍会保留。你可以恢复或永久删除记录。",
 			"archive.empty": "暂无归档会话",
-			"archive.view": "查看",
 			"archive.restore": "恢复",
 			"archive.delete": "删除",
 			"archive.deleteConfirm": "永久删除“{name}”？",
@@ -2504,9 +2491,8 @@ window.__ModuleLoader__.load({
 			"menu.archiveSession": "Archive session",
 			"archive.nav": "Archive",
 			"archive.title": "Archived sessions",
-			"archive.description": "Archiving only hides a session; its complete record is retained. View, restore, or permanently delete it here.",
+			"archive.description": "Archiving only hides a session; its complete record is retained. Restore or permanently delete it here.",
 			"archive.empty": "No archived sessions",
-			"archive.view": "View",
 			"archive.restore": "Restore",
 			"archive.delete": "Delete",
 			"archive.deleteConfirm": "Permanently delete “{name}”?",
@@ -2629,10 +2615,7 @@ window.__ModuleLoader__.load({
 			});
 			const archivedSessionsInjected = () => ({
 				unarchiveSession: (sessionId) => ctx.workspaces.unarchiveSession(sessionId),
-				deleteArchivedSession: (sessionId) => ctx.workspaces.deleteArchivedSession(sessionId),
-				open: (sessionId) => {
-					ctx.sessions.open(sessionId);
-				}
+				deleteArchivedSession: (sessionId) => ctx.workspaces.deleteArchivedSession(sessionId)
 			});
 			ctx.slots.inject("sidebar.workspaces", () => ctx.slots.register({
 				name: "sidebar.workspaces",

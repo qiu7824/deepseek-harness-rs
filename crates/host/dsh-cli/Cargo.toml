@@ -35,3 +35,6 @@ mimalloc = { version = "0.1.52", features = ["v2"] }
 libmimalloc-sys = { version = "0.1.49", features = ["extended", "v2"] }
 
 [dev-dependencies]
+
+[build-dependencies]
+winresource = "0.1"

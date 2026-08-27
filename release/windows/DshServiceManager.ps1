@@ -5,8 +5,8 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
 $script:ScriptRoot = Split-Path -Parent $PSCommandPath
-$script:Root = if (Test-Path (Join-Path $script:ScriptRoot 'dsh.exe')) { $script:ScriptRoot } else { Split-Path -Parent $script:ScriptRoot }
-$script:Exe = Join-Path $script:Root 'dsh.exe'
+$script:Root = if (Test-Path (Join-Path $script:ScriptRoot 'deepseek harness-rs.exe')) { $script:ScriptRoot } else { Split-Path -Parent $script:ScriptRoot }
+$script:Exe = Join-Path $script:Root 'deepseek harness-rs.exe'
 $script:RunDir = Join-Path $script:Root 'run'
 $script:LogDir = Join-Path $script:Root 'logs'
 $script:PidFile = Join-Path $script:RunDir 'dsh.pid'
@@ -58,15 +58,15 @@ function Stop-Dsh {
 }
 
 [xml]$xaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="DeepSeek Harness 运行管理器" Width="620" Height="430" MinWidth="560" MinHeight="390" WindowStartupLocation="CenterScreen" Background="#F5F7FA" FontFamily="Microsoft YaHei UI">
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="DeepSeek Harness-rs 运行管理器" Width="720" Height="500" MinWidth="620" MinHeight="440" WindowStartupLocation="CenterScreen" Background="#0B0D10" FontFamily="Microsoft YaHei UI">
   <Window.Resources>
-    <Style TargetType="Button"><Setter Property="Height" Value="38"/><Setter Property="Padding" Value="18,0"/><Setter Property="Margin" Value="0,0,10,0"/><Setter Property="Background" Value="#FFFFFF"/><Setter Property="BorderBrush" Value="#D7DCE3"/><Setter Property="Cursor" Value="Hand"/></Style>
+    <Style TargetType="Button"><Setter Property="Height" Value="40"/><Setter Property="Padding" Value="18,0"/><Setter Property="Margin" Value="0,0,10,10"/><Setter Property="Foreground" Value="#F7F8F8"/><Setter Property="Background" Value="#191B20"/><Setter Property="BorderBrush" Value="#343840"/><Setter Property="Cursor" Value="Hand"/></Style>
   </Window.Resources>
   <Grid Margin="24"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-    <StackPanel><TextBlock Text="DeepSeek Harness" FontSize="26" FontWeight="SemiBold" Foreground="#172033"/><TextBlock Text="正式 Web 服务运行管理" Margin="0,6,0,20" Foreground="#667085"/></StackPanel>
-    <Border Grid.Row="1" Background="White" BorderBrush="#E1E5EA" BorderThickness="1" CornerRadius="10" Padding="18"><StackPanel><TextBlock x:Name="StatusTitle" FontSize="18" FontWeight="SemiBold"/><TextBlock x:Name="StatusDetail" Margin="0,8,0,0" Foreground="#667085"/><TextBlock x:Name="Address" Margin="0,6,0,0" Text="http://127.0.0.1:58080/" Foreground="#175CD3"/></StackPanel></Border>
+    <StackPanel><TextBlock Text="DeepSeek Harness-rs" FontSize="28" FontWeight="SemiBold" Foreground="#F7F8F8"/><TextBlock Text="Rust 原生 Web Agent · 正式运行入口" Margin="0,6,0,20" Foreground="#8A8F98"/></StackPanel>
+    <Border Grid.Row="1" Background="#111318" BorderBrush="#2B2F36" BorderThickness="1" CornerRadius="12" Padding="20"><StackPanel><TextBlock x:Name="StatusTitle" FontSize="19" FontWeight="SemiBold"/><TextBlock x:Name="StatusDetail" Margin="0,8,0,0" Foreground="#AAB0BA"/><TextBlock x:Name="Address" Margin="0,8,0,0" Text="http://127.0.0.1:58080/" Foreground="#7AA2F7"/></StackPanel></Border>
     <WrapPanel Grid.Row="2" Margin="0,18,0,18"><Button x:Name="StartButton" Content="启动" Background="#175CD3" Foreground="White"/><Button x:Name="StopButton" Content="停止"/><Button x:Name="RestartButton" Content="重启"/><Button x:Name="OpenButton" Content="打开网页"/><Button x:Name="LogButton" Content="日志目录"/></WrapPanel>
-    <TextBox Grid.Row="3" x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Background="#101828" Foreground="#D0D5DD" BorderThickness="0" Padding="14" FontFamily="Consolas"/>
+    <TextBox Grid.Row="3" x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Background="#050607" Foreground="#C9D1D9" BorderBrush="#2B2F36" BorderThickness="1" Padding="14" FontFamily="Consolas"/>
   </Grid>
 </Window>
 '@
@@ -78,7 +78,7 @@ function Write-UiLog([string]$text) { $ui.LogBox.AppendText("$(Get-Date -Format 
 function Refresh-State {
     $state = Get-ServiceState
     $ui.StatusTitle.Text = if ($state.Running) { '运行中' } else { '已停止' }
-    $ui.StatusTitle.Foreground = if ($state.Running) { '#027A48' } else { '#B42318' }
+    $ui.StatusTitle.Foreground = if ($state.Running) { '#69D28A' } else { '#FF6E6E' }
     $ui.StatusDetail.Text = $state.Detail
     $ui.StartButton.IsEnabled = -not $state.Running
     $ui.StopButton.IsEnabled = $state.Running
@@ -92,7 +92,7 @@ $ui.OpenButton.Add_Click({ Start-Process "http://127.0.0.1:$Port/" })
 $ui.LogButton.Add_Click({ Start-Process explorer.exe $script:LogDir })
 $timer = [System.Windows.Threading.DispatcherTimer]::new(); $timer.Interval = [TimeSpan]::FromSeconds(2); $timer.Add_Tick({ Refresh-State }); $timer.Start()
 $ui.StatusTitle.Text = '正在检测'
-$ui.StatusDetail.Text = "服务入口：dsh.exe web --port $Port"
+$ui.StatusDetail.Text = "服务入口：deepseek harness-rs.exe web --port $Port"
 Write-UiLog "管理器已就绪；正在检测服务状态"
 $window.Add_ContentRendered({ Refresh-State })
 [void]$window.ShowDialog()

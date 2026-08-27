@@ -2,7 +2,7 @@ use dsh_llm::{GenerateOptions, reasoning_effort_id};
 
 use crate::{
     CatalogReasoningEffort, DeepSeekCatalogModel, DeepSeekConfig, ReasoningWireFormat,
-    map_reasoning_effort_for_request, resolve_adapter_options,
+    apply_model_max_tokens, map_reasoning_effort_for_request, resolve_adapter_options,
 };
 
 fn request(effort: &str) -> GenerateOptions {
@@ -62,6 +62,24 @@ fn deepseek_wire_keeps_stable_id() {
         options.reasoning_effort.as_ref().map(|id| id.as_str()),
         Some("max")
     );
+}
+
+#[test]
+fn glm_flash_uses_model_limit_for_legacy_request_value() {
+    let mut options = request("max");
+    options.model = "glm-5.3-flash".to_string();
+    options.max_tokens = Some(256_000);
+    apply_model_max_tokens(&mut options, &connection());
+    assert_eq!(options.max_tokens, Some(131_072));
+}
+
+#[test]
+fn unknown_model_keeps_its_request_value() {
+    let mut options = request("max");
+    options.model = "private-preview".to_string();
+    options.max_tokens = Some(256_000);
+    apply_model_max_tokens(&mut options, &connection());
+    assert_eq!(options.max_tokens, Some(256_000));
 }
 
 #[test]

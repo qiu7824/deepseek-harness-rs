@@ -57,6 +57,83 @@ enum ResumeFailure {
 
 type SharedResume = Shared<BoxFuture<'static, Result<Arc<dyn Agent>, ResumeFailure>>>;
 
+#[derive(Default)]
+struct RetirementGates {
+    inner: Arc<Mutex<HashMap<SessionId, RetirementGate>>>,
+    next_token: std::sync::atomic::AtomicU64,
+}
+
+struct RetirementGate {
+    token: u64,
+    done: tokio::sync::watch::Receiver<bool>,
+    publish_done: tokio::sync::watch::Sender<bool>,
+}
+
+pub(crate) struct RetirementGuard {
+    session_id: SessionId,
+    token: u64,
+    inner: Arc<Mutex<HashMap<SessionId, RetirementGate>>>,
+}
+
+impl Drop for RetirementGuard {
+    fn drop(&mut self) {
+        let publish = {
+            let mut inner = self.inner.lock();
+            let is_current = inner
+                .get(&self.session_id)
+                .is_some_and(|gate| gate.token == self.token);
+            if !is_current {
+                return;
+            }
+            inner.remove(&self.session_id).map(|gate| gate.publish_done)
+        };
+        if let Some(publish) = publish {
+            let _ = publish.send(true);
+        }
+    }
+}
+
+impl RetirementGates {
+    fn begin(&self, session_id: &SessionId) -> RetirementGuard {
+        let token = self
+            .next_token
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        let (publish_done, done) = tokio::sync::watch::channel(false);
+        self.inner.lock().insert(
+            session_id.clone(),
+            RetirementGate {
+                token,
+                done,
+                publish_done,
+            },
+        );
+        RetirementGuard {
+            session_id: session_id.clone(),
+            token,
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    async fn wait(&self, session_id: &SessionId) {
+        loop {
+            let receiver = self
+                .inner
+                .lock()
+                .get(session_id)
+                .map(|gate| gate.done.clone());
+            let Some(mut receiver) = receiver else {
+                return;
+            };
+            while !*receiver.borrow() {
+                if receiver.changed().await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
 /// Result of resolving one session identity to its live Agent.
 pub enum ApiRemoteAgentResult {
     Agent(Arc<dyn Agent>),
@@ -117,6 +194,8 @@ pub struct AgentResolver {
     ctx: Context,
     options: Arc<ApiRemoteAgentOptions>,
     resumes: Mutex<HashMap<SessionId, SharedResume>>,
+    retirements: RetirementGates,
+    admissions: Mutex<HashMap<SessionId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
 }
 
 impl AgentResolver {
@@ -125,6 +204,8 @@ impl AgentResolver {
             ctx: ctx.clone(),
             options: Arc::new(options),
             resumes: Mutex::new(HashMap::new()),
+            retirements: RetirementGates::default(),
+            admissions: Mutex::new(HashMap::new()),
         })
     }
 
@@ -156,9 +237,28 @@ impl AgentResolver {
         &self.ctx
     }
 
+    pub(crate) fn admission(&self, session_id: &SessionId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut admissions = self.admissions.lock();
+        admissions.retain(|_, gate| gate.strong_count() > 0);
+        if let Some(gate) = admissions
+            .get(session_id)
+            .and_then(std::sync::Weak::upgrade)
+        {
+            return gate;
+        }
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        admissions.insert(session_id.clone(), Arc::downgrade(&gate));
+        gate
+    }
+
+    pub(crate) fn begin_retirement(&self, session_id: &SessionId) -> RetirementGuard {
+        self.retirements.begin(session_id)
+    }
+
     /// Resolve one session identity to its live Agent (live reuse, single
     /// -flight cold resume, ownership fences).
     pub async fn resolve(&self, session_id: &SessionId) -> ApiRemoteAgentResult {
+        self.retirements.wait(session_id).await;
         if let Some(fenced) = self.fenced_live_agent(session_id) {
             return fenced;
         }
@@ -278,6 +378,30 @@ impl AgentResolver {
 
 /// The cold-inspection step (free function so the single-flight closure
 /// stays testable and the resolver stays clonable).
+#[cfg(test)]
+mod retirement_gate_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn wait_blocks_until_exact_retirement_guard_drops() {
+        let gates = Arc::new(RetirementGates::default());
+        let id = dsh_session::session_id("retiring");
+        let guard = gates.begin(&id);
+        let waiter = {
+            let gates = Arc::clone(&gates);
+            let id = id.clone();
+            tokio::spawn(async move { gates.wait(&id).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        drop(guard);
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter released")
+            .expect("waiter task");
+    }
+}
+
 async fn inspect_cold(
     ctx: &Context,
     session_id: &SessionId,

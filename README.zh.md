@@ -172,9 +172,11 @@ cargo build --release -p dsh-host-cli --bin dsh
 ```bash
 cargo fmt --all -- --check
 python tools/verify_product_surface.py
+python -m unittest discover -s tools/tests -p "test_memory_*.py" -v
+python tools/validate_memory_baseline.py --report docs/memory/production-baseline.jsonl --markdown docs/memory/production-baseline.md
 cargo test -p dsh-llm-deepseek --all-targets
-cargo test -p dsh-host --test boot -- --test-threads=1
-cargo test -p dsh-host-cli --test web -- --test-threads=1
+cargo test -p dsh-host --lib -- --test-threads=1
+cargo test -p dsh-host-cli --lib -- --test-threads=1
 ```
 
 ## 安全边界

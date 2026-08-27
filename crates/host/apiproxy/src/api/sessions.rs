@@ -286,12 +286,80 @@ pub struct SessionHistoryRequest {
     pub max_messages: Option<u64>,
 }
 
+/// Coalesce transport-only Assistant text/reasoning delta runs. The durable
+/// log remains unchanged; the last event's seq/time stay authoritative so
+/// forward cursors and live stitching remain contiguous.
+pub(crate) fn coalesce_history_transport_events(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
+    fn key(event: &SessionEvent) -> Option<(u64, u64, u64, String)> {
+        if event.type_ != "assistant/chunk" {
+            return None;
+        }
+        let chunk = event.data.get("chunk")?;
+        let kind = chunk.get("type")?.as_str()?;
+        if !matches!(kind, "text-delta" | "reasoning-delta") {
+            return None;
+        }
+        Some((
+            event.data.get("turn")?.as_u64()?,
+            event.data.get("step")?.as_u64()?,
+            chunk.get("index")?.as_u64()?,
+            kind.to_string(),
+        ))
+    }
+
+    let mut compact: Vec<SessionEvent> = Vec::new();
+    for event in events {
+        let Some(event_key) = key(&event) else {
+            compact.push(event);
+            continue;
+        };
+        let Some(previous) = compact.last_mut() else {
+            compact.push(event);
+            continue;
+        };
+        if key(previous).as_ref() != Some(&event_key) {
+            compact.push(event);
+            continue;
+        }
+        let text = event
+            .data
+            .get("chunk")
+            .and_then(|chunk| chunk.get("text"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if let Some(existing) = previous
+            .data
+            .get("chunk")
+            .and_then(|chunk| chunk.get("text"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        {
+            let mut joined = String::with_capacity(existing.len() + text.len());
+            joined.push_str(&existing);
+            joined.push_str(text);
+            previous.data["chunk"]["text"] = serde_json::Value::String(joined);
+            previous.data["__historyEndSeq"] = serde_json::Value::from(event.seq);
+            previous.time = event.time;
+        } else {
+            compact.push(event);
+        }
+    }
+    compact.shrink_to_fit();
+    compact
+}
+
 /// `session.history` response value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionHistoryResult {
     pub events: Vec<HistoryEntry>,
+    /// Compatibility bit: beforeSeq/tail requests report older pages; afterSeq
+    /// requests report newer pages. New clients use the directional fields.
     pub has_more: bool,
+    pub has_more_before: bool,
+    pub has_more_after: bool,
+    pub first_seq: Option<i64>,
+    pub last_seq: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub projections: Option<SessionProjectionsBlock>,
 }
@@ -528,4 +596,81 @@ pub trait SessionsApi: Send + Sync {
     /// Stops an ordinary session's active turn, preserving pending inbox
     /// work.
     async fn cancel(&self, request: RpcRequest<SessionRefRequest>) -> RpcResponse<AcceptedResult>;
+}
+
+#[cfg(test)]
+mod history_paging_contract_tests {
+    use super::*;
+
+    #[test]
+    fn history_transport_coalesces_contiguous_text_deltas() {
+        let events: Vec<SessionEvent> = (0..4)
+            .map(|seq| SessionEvent {
+                type_: "assistant/chunk".to_string(),
+                seq,
+                time: seq as i64,
+                data: serde_json::json!({
+                    "turn": 1,
+                    "step": 2,
+                    "chunk": {"type": "text-delta", "index": 0, "text": seq.to_string()}
+                }),
+                ignorable: None,
+                surface_op: None,
+                source_event_seqs: None,
+            })
+            .collect();
+
+        let compact = coalesce_history_transport_events(events);
+
+        assert_eq!(compact.len(), 1);
+        assert_eq!(compact[0].seq, 0);
+        assert_eq!(compact[0].data["__historyEndSeq"], 3);
+        assert_eq!(compact[0].data["chunk"]["text"], "0123");
+    }
+
+    #[test]
+    fn history_transport_preserves_delta_boundaries() {
+        let make = |seq, step, kind: &str, text: &str| SessionEvent {
+            type_: "assistant/chunk".to_string(),
+            seq,
+            time: seq as i64,
+            data: serde_json::json!({
+                "turn": 1,
+                "step": step,
+                "chunk": {"type": kind, "index": 0, "text": text}
+            }),
+            ignorable: None,
+            surface_op: None,
+            source_event_seqs: None,
+        };
+        let compact = coalesce_history_transport_events(vec![
+            make(0, 1, "text-delta", "a"),
+            make(1, 2, "text-delta", "b"),
+            make(2, 2, "reasoning-delta", "c"),
+        ]);
+        assert_eq!(compact.len(), 3);
+        assert_eq!(
+            compact.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn history_result_serializes_bidirectional_window_cursors() {
+        let value = serde_json::to_value(SessionHistoryResult {
+            events: Vec::new(),
+            has_more: true,
+            has_more_before: false,
+            has_more_after: true,
+            first_seq: Some(30),
+            last_seq: Some(79),
+            projections: None,
+        })
+        .expect("history result serializes");
+
+        assert_eq!(value["hasMoreBefore"], false);
+        assert_eq!(value["hasMoreAfter"], true);
+        assert_eq!(value["firstSeq"], 30);
+        assert_eq!(value["lastSeq"], 79);
+    }
 }

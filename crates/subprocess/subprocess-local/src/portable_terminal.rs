@@ -169,13 +169,16 @@ impl PortableTerminalHandle {
                                     if probe.windows(4).any(|window| window == b"\x1b[6n") {
                                         let mut locked = writer_for_reader.lock();
                                         let writer = locked.as_mut().ok_or_else(|| {
-                                            "terminal process is closing during cursor query".to_string()
+                                            "terminal process is closing during cursor query"
+                                                .to_string()
                                         })?;
                                         writer
                                             .write_all(b"\x1b[1;1R")
                                             .and_then(|()| writer.flush())
                                             .map_err(|error| {
-                                                format!("failed to answer ConPTY cursor query: {error}")
+                                                format!(
+                                                    "failed to answer ConPTY cursor query: {error}"
+                                                )
                                             })?;
                                     }
                                     dsr_tail = probe[probe.len().saturating_sub(3)..].to_vec();

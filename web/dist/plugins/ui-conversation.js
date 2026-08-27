@@ -249,6 +249,10 @@ window.__ModuleLoader__.load({
 			async loadOlder() {
 				await this.scopedSession("loadOlder").loadOlder();
 			}
+			/** Pull one newer page while browsing an indexed historical window. */
+			async loadNewer() {
+				await this.scopedSession("loadNewer").loadNewer();
+			}
 			/** Load only the history page containing one durable event sequence. */
 			async loadAround(seq) {
 				return this.scopedSession("loadAround").loadAround(seq);
@@ -5406,7 +5410,7 @@ window.__ModuleLoader__.load({
 		* The chat view slot entry: pure component over the composed props; each
 		* ordered business Node crosses the keyed renderer seat.
 		*/
-		function ChatView({ useSession, useSessions, useStore, renderSlot, sessionId, openFile, loadOlder, loadImage, inspectCall, chatScroll, forkAt, fileMentions, t }) {
+		function ChatView({ useSession, useSessions, useStore, renderSlot, sessionId, openFile, loadOlder, loadNewer, loadImage, inspectCall, chatScroll, forkAt, fileMentions, t }) {
 			const order = useSession((s) => s.chat.order);
 			const nodeStore = useSession((s) => s.chat.nodes);
 			const timeline = useSession((s) => s.chat.timeline);
@@ -5416,8 +5420,10 @@ window.__ModuleLoader__.load({
 			const runningCalls = useSession((s) => s.runningCalls);
 			const openState = useSession((s) => s.openState);
 			const openError = useSession((s) => s.openError);
-			const hasMore = useSession((s) => s.hasMore);
+			const hasMore = useSession((s) => s.hasMoreBefore);
+			const hasMoreAfter = useSession((s) => s.hasMoreAfter);
 			const loadingOlder = useSession((s) => s.loadingOlder);
+			const loadingNewer = useSession((s) => s.loadingNewer);
 			const selectedCallId = useStore((s) => s.selection?.callId);
 			const pendingSteering = (0, react.useMemo)(() => inbox.filter((item) => item.placement === "steering"), [inbox]);
 			const runningTurnStart = (0, react.useMemo)(() => runningTurnStartTime(timeline), [timeline]);
@@ -5510,6 +5516,7 @@ window.__ModuleLoader__.load({
 				followSigRef.current = followSig;
 				if (appendedUser || appendedSteering || tipMoved && atBottomRef.current) toBottom(el);
 			});
+			const newerRequestRef = (0, react.useRef)(false);
 			const onScrollRef = (0, react.useRef)(() => {});
 			onScrollRef.current = () => {
 				const local = listRef.current;
@@ -5519,6 +5526,17 @@ window.__ModuleLoader__.load({
 				const floor = Math.max(0, el.scrollHeight - el.clientHeight);
 				const movedByReader = Math.abs(el.scrollTop - Math.min(observedTopRef.current, floor)) > .5;
 				const isAtBottom = movedByReader ? floor - el.scrollTop <= 25 : atBottomRef.current;
+				if (el.scrollTop <= 80 && hasMore && !loadingOlder && anchorRef.current === null) {
+					const position = scrollPosition(local, el);
+					if (position !== null) anchorRef.current = { key: position.anchorKey, top: position.anchorTop };
+					Promise.resolve(loadOlder());
+				}
+				if (isAtBottom && hasMoreAfter && !loadingNewer && !newerRequestRef.current) {
+					newerRequestRef.current = true;
+					Promise.resolve(loadNewer()).finally(() => {
+						newerRequestRef.current = false;
+					});
+				}
 				if (!movedByReader && isAtBottom) {
 					toBottom(el);
 					return;
@@ -5548,6 +5566,18 @@ window.__ModuleLoader__.load({
 					el.removeEventListener("scroll", onScroll);
 				};
 			}, []);
+			(0, react.useEffect)(() => {
+				if (!hasMoreAfter || loadingNewer || newerRequestRef.current) return;
+				const local = listRef.current;
+				if (local === null) return;
+				const el = scrollerOf(local);
+				const floor = Math.max(0, el.scrollHeight - el.clientHeight);
+				if (floor - el.scrollTop > 25) return;
+				newerRequestRef.current = true;
+				Promise.resolve(loadNewer()).finally(() => {
+					newerRequestRef.current = false;
+				});
+			}, [hasMoreAfter, loadingNewer, loadNewer]);
 			const followRef = (0, react.useRef)(null);
 			followRef.current = () => {
 				const local = listRef.current;
@@ -9930,6 +9960,7 @@ window.__ModuleLoader__.load({
 						loadOlder: () => {
 							scoped.loadOlder();
 						},
+						loadNewer: () => scoped.loadNewer(),
 						loadImage: (attachment) => conversation.resolveImage(sessionId, attachment),
 						inspectCall: (callId) => {
 							actions.setInspect({ callId });

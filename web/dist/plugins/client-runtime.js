@@ -7081,6 +7081,23 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		* the {@link SessionFace} slice (ISession verbs + the snapshot source); the
 		* remaining public members are manager/runtime entry points.
 		*/
+		const DEFAULT_HISTORY_POLICY = Object.freeze({ mode: "balanced", maxPages: 5, maxEvents: 4096 });
+		let historyPolicy = DEFAULT_HISTORY_POLICY;
+		function normalizeHistoryPolicy(value) {
+			const mode = ["low", "balanced", "full", "custom"].includes(value?.mode) ? value.mode : "balanced";
+			if (mode === "low") return { mode, maxPages: 1, maxEvents: 4096 };
+			if (mode === "full") return { mode, maxPages: Number.POSITIVE_INFINITY, maxEvents: Number.POSITIVE_INFINITY };
+			if (mode === "balanced") return { mode, maxPages: 5, maxEvents: 4096 };
+			return { mode, maxPages: Math.max(1, Math.min(100, Number(value?.maxPages) || 5)), maxEvents: Math.max(256, Math.min(200000, Number(value?.maxEvents) || 4096)) };
+		}
+		function adoptHistoryPolicy(value) {
+			historyPolicy = normalizeHistoryPolicy(value);
+			globalThis.__DSH_HISTORY_POLICY__ = historyPolicy;
+		}
+		function eventEndSeq(event) {
+			const end = event?.data?.__historyEndSeq;
+			return Number.isSafeInteger(end) && end >= event.seq ? end : event.seq;
+		}
 		var Session = class {
 			sessionId;
 			api;
@@ -7092,6 +7109,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			views = [];
 			baseSeq = 0;
 			hasMore = false;
+			hasMoreBefore = false;
+			hasMoreAfter = false;
+			historyPages = [];
 			openState = "cold";
 			openError = null;
 			openPromise = null;
@@ -7100,6 +7120,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			*  passes drop all writes once the generation moves on. */
 			openGeneration = 0;
 			loadingOlder = false;
+			loadingNewer = false;
 			/** Non-tail history window selected by the message rail. */
 			historyTargetSeq = null;
 			pending = /* @__PURE__ */ new Map();
@@ -7393,9 +7414,41 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				this.openPromise = promise;
 				return promise;
 			}
+			pageMeta(entries) {
+				return {
+					firstSeq: entries[0]?.event.seq ?? 0,
+					lastSeq: entries.length === 0 ? -1 : eventEndSeq(entries[entries.length - 1].event),
+					eventCount: entries.length
+				};
+			}
+			trimHistoryWindow(dropFrom) {
+				let drop = 0;
+				const limits = historyPolicy;
+				while (this.historyPages.length > limits.maxPages || this.events.length - drop > limits.maxEvents) {
+					const page = dropFrom === "head" ? this.historyPages.shift() : this.historyPages.pop();
+					if (page === void 0) break;
+					if (dropFrom === "head") {
+						drop += page.eventCount;
+						this.hasMoreBefore = true;
+					} else {
+						this.hasMoreAfter = true;
+						this.events.splice(Math.max(0, this.events.length - page.eventCount), page.eventCount);
+						this.views.splice(Math.max(0, this.views.length - page.eventCount), page.eventCount);
+					}
+				}
+				if (drop > 0) {
+					this.events.splice(0, drop);
+					this.views.splice(0, drop);
+				}
+				// Never cut a raw event range: one page is the minimum retention unit.
+				// A single oversized safe page may exceed the soft event limit, preserving
+				// assistant chunks/message provenance instead of hiding visible output.
+				this.baseSeq = this.events[0]?.seq ?? 0;
+				this.conversation.replaceWindow(this.events.map((event, index) => ({ event, view: this.views[index] })), this.hasMoreBefore);
+			}
 			/** Page up: pull one earlier page with the window's first seq as beforeSeq and prepend. */
 			async loadOlder() {
-				if (this.openState !== "open" || !this.hasMore || this.loadingOlder) return;
+				if (this.openState !== "open" || !this.hasMoreBefore || this.loadingOlder) return;
 				this.loadingOlder = true;
 				this.notifier.markDirty();
 				try {
@@ -7406,27 +7459,63 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					if (!result.ok) return;
 					const older = result.value.events;
 					if (older.length === 0) {
-						this.hasMore = result.value.hasMore;
-						this.conversation.prepend([], this.hasMore);
+						this.hasMoreBefore = result.value.hasMoreBefore;
+						this.hasMore = this.hasMoreBefore;
+						this.conversation.prepend([], this.hasMoreBefore);
 						return;
 					}
 					const tail = older[older.length - 1];
-					if (tail === void 0 || tail.event.seq + 1 !== this.baseSeq) {
-						console.error(`[web-runtime] history page discontinuous: tail seq ${tail?.event.seq} vs baseSeq ${this.baseSeq}`);
+					if (tail === void 0 || eventEndSeq(tail.event) + 1 !== this.baseSeq) {
+						console.error(`[web-runtime] history page discontinuous: tail seq ${tail === void 0 ? "missing" : eventEndSeq(tail.event)} vs baseSeq ${this.baseSeq}`);
 						this.hasMore = false;
 						this.conversation.prepend([], false);
 						return;
 					}
 					this.events = [...older.map((e) => e.event), ...this.events];
 					this.views = [...older.map((e) => e.view), ...this.views];
+					this.historyPages.unshift(this.pageMeta(older));
 					/* v8 ignore next -- the ?? arm needs older[0] undefined, but the empty-page branch above already returned. */
 					this.baseSeq = older[0]?.event.seq ?? this.baseSeq;
-					this.hasMore = result.value.hasMore;
-					this.conversation.prepend(older.map(conversationInput), this.hasMore);
+					this.hasMoreBefore = result.value.hasMoreBefore;
+					this.hasMore = this.hasMoreBefore;
+					this.conversation.prepend(older.map(conversationInput), this.hasMoreBefore);
+					this.trimHistoryWindow("tail");
 				} catch (error) {
 					console.error("[web-runtime] loadOlder failed:", error);
 				} finally {
 					this.loadingOlder = false;
+					this.notifier.markDirty();
+				}
+			}
+			/** Page down from an indexed historical window and rejoin the live tail. */
+			async loadNewer() {
+				if (this.openState !== "open" || !this.hasMoreAfter || this.loadingNewer) return;
+				const tailSeq = this.windowTailSeq();
+				if (tailSeq === null) return;
+				const generation = this.openGeneration;
+				this.loadingNewer = true;
+				this.notifier.markDirty();
+				try {
+					const { result } = await this.history({ afterSeq: tailSeq + 1, maxMessages: 50 });
+					if (generation !== this.openGeneration || !result.ok) return;
+					const newer = result.value.events.filter((entry) => entry.event.seq > tailSeq);
+					if (newer.length > 0) {
+						this.historyPages.push(this.pageMeta(newer));
+						for (const entry of newer) this.appendLive(entry.event, entry.view);
+						this.trimHistoryWindow("head");
+					}
+					this.hasMoreAfter = result.value.hasMoreAfter;
+					if (!this.hasMoreAfter) {
+						this.historyTargetSeq = null;
+						const buffered = this.liveBuffer;
+						this.liveBuffer = [];
+						for (const item of buffered) this.appendLive(item.event, item.view);
+						this.trimHistoryWindow("head");
+					}
+				} catch (error) {
+					console.error("[web-runtime] loadNewer failed:", error);
+				} finally {
+					this.loadingNewer = false;
 					this.notifier.markDirty();
 				}
 			}
@@ -7438,7 +7527,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					const { result } = await this.history({ afterSeq: targetSeq, maxMessages: 50 });
 					if (!result.ok || !result.value.events.some((entry) => entry.event.seq === targetSeq)) return false;
 					this.historyTargetSeq = targetSeq;
-					this.installWindow(result.value.events, result.value.hasMore, void 0);
+					this.installWindow(result.value.events, result.value.hasMore, void 0, {
+						hasMoreBefore: result.value.hasMoreBefore,
+						hasMoreAfter: result.value.hasMoreAfter
+					});
 					return true;
 				} catch (error) {
 					console.error("[web-runtime] loadAround failed:", error);
@@ -7471,6 +7563,13 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				this.events = [];
 				this.views = [];
 				this.baseSeq = 0;
+				this.hasMore = false;
+				this.hasMoreBefore = false;
+				this.hasMoreAfter = false;
+				this.historyPages = [];
+				this.loadingOlder = false;
+				this.loadingNewer = false;
+				this.historyTargetSeq = null;
 				this.pending.clear();
 				this.pendingRev++;
 				this.subscribedLastSeq = null;
@@ -7638,6 +7737,14 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						if (result.ok) this.installWindow(result.value.events, result.value.hasMore, result.value.projections);
 					}
 					this.openState = "open";
+					if (historyPolicy.mode === "full") {
+						let previousBase = -1;
+						while (generation === this.openGeneration && this.hasMoreBefore && this.baseSeq !== previousBase) {
+							previousBase = this.baseSeq;
+							await this.loadOlder();
+							await new Promise((resolve) => setTimeout(resolve, 0));
+						}
+					}
 				} catch (error) {
 					if (generation !== this.openGeneration) return;
 					this.openState = "error";
@@ -7655,17 +7762,23 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			*  A carried projections block seeds the value store (higher seq wins, so a stale
 			*  baseline cannot overwrite a newer push frame); the window events themselves are
 			*  never folded — the host is the only computation site. */
-			installWindow(entries, hasMore, projections) {
+			installWindow(entries, hasMore, projections, windowState = {}) {
 				this.events = entries.map((e) => e.event);
 				this.views = entries.map((e) => e.view);
 				this.baseSeq = this.events[0]?.seq ?? 0;
-				this.hasMore = hasMore;
+				this.hasMoreBefore = windowState.hasMoreBefore ?? hasMore;
+				this.hasMoreAfter = windowState.hasMoreAfter ?? false;
+				this.hasMore = this.hasMoreBefore;
+				this.historyPages = entries.length === 0 ? [] : [this.pageMeta(entries)];
 				if (this.events.some((event) => event.type === "turn/start")) this.firstPromptPendingTurn = false;
-				this.conversation.replaceWindow(entries.map(conversationInput), hasMore);
+				this.conversation.replaceWindow(entries.map(conversationInput), this.hasMoreBefore);
 				if (projections !== void 0) this.projections.seed(projections);
-				const buffered = this.liveBuffer;
-				this.liveBuffer = [];
-				for (const item of buffered) this.appendLive(item.event, item.view);
+				if (this.historyTargetSeq === null) {
+					const buffered = this.liveBuffer;
+					this.liveBuffer = [];
+					for (const item of buffered) this.appendLive(item.event, item.view);
+				}
+				this.trimHistoryWindow("head");
 				this.notifier.markDirty();
 			}
 			/** Seq-guarded append shared by stitching and the open-state live path. */
@@ -7680,7 +7793,12 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					event,
 					view
 				});
+				if (this.events.length > historyPolicy.maxEvents) this.trimHistoryWindow("head");
 				return queueChanged ? "immediate" : publication;
+			}
+			bufferLive(event, view) {
+				this.liveBuffer.push({ event, view });
+				if (this.liveBuffer.length > 4096) this.liveBuffer.splice(0, this.liveBuffer.length - 4096);
 			}
 			/** Land a live session/event (open/repair in flight -> buffer; overlapping seq -> drop;
 			*  a seq gap -> buffer + tail-page repull instead of appending a hole (a gap is an
@@ -7689,23 +7807,17 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			*  ends and lets a compaction checkpoint resolve its cited summary event. */
 			acceptLiveEvent(event, view) {
 				if (this.historyTargetSeq !== null) {
-					this.liveBuffer.push({ event, view });
+					this.bufferLive(event, view);
 					return;
 				}
 				if (this.openState === "loading" || this.stitching) {
-					this.liveBuffer.push({
-						event,
-						view
-					});
+					this.bufferLive(event, view);
 					return;
 				}
 				if (this.openState !== "open") return;
 				const tailSeq = this.windowTailSeq();
 				if (tailSeq !== null && event.seq > tailSeq + 1) {
-					this.liveBuffer.push({
-						event,
-						view
-					});
+					this.bufferLive(event, view);
 					this.repairGap();
 					return;
 				}
@@ -7735,7 +7847,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			}
 			windowTailSeq() {
 				const tail = this.events[this.events.length - 1];
-				return tail === void 0 ? null : tail.seq;
+				return tail === void 0 ? null : eventEndSeq(tail);
 			}
 			buildSnapshot() {
 				if (this.pendingCache === null || this.pendingCache.rev !== this.pendingRev) this.pendingCache = {
@@ -7764,8 +7876,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					removed: this.removed,
 					openState: this.openState,
 					openError: this.openError,
-					hasMore: this.hasMore,
+					hasMore: this.hasMoreBefore,
+					hasMoreBefore: this.hasMoreBefore,
+					hasMoreAfter: this.hasMoreAfter,
 					loadingOlder: this.loadingOlder,
+					loadingNewer: this.loadingNewer,
 					promptError: this.promptError,
 					blank: this.blankBit,
 					lastAgentError: this.lastAgentError
@@ -10560,6 +10675,14 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				views: new ConversationViewRegistry(ctx)
 			};
 			const connection = ctx.get("connection");
+			const loadHistoryPolicy = () => connection.api.settings.describe({}).then((reply) => {
+				if (!reply.result.ok) return;
+				adoptHistoryPolicy(reply.result.value.namespaces.find((item) => item.ns === "ui-history")?.value);
+			}).catch(() => adoptHistoryPolicy(DEFAULT_HISTORY_POLICY));
+			loadHistoryPolicy();
+			ctx.effect(() => ctx.remote.$on("settings/document-updated", (namespace) => {
+				if (namespace === "ui-history") loadHistoryPolicy();
+			}), "runtime: history policy sync");
 			const sessions = new SessionRuntime(ctx, connection.api, ctx.remote, conversation);
 			ctx.typert.contexts.registerClient("agent", { identity: (candidate) => sessions.scopeOf(candidate) });
 			const workspaces = new WorkspaceRuntime(ctx, connection.api, sessions);

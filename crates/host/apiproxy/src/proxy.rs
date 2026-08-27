@@ -451,6 +451,57 @@ impl ApiProxyService {
         agent
     }
 
+    fn spawn_idle_retirement(&self, agent: Arc<dyn Agent>) {
+        let session_id = agent.id().clone();
+        let admission = self.resolver.admission(&session_id);
+        let resolver = Arc::clone(&self.resolver);
+        let handles = Arc::clone(&self.owned_agent_handles);
+        let sessions = self.sessions();
+        let agents = self.agents();
+        tokio::spawn(async move {
+            agent.when_idle().await;
+            let _admission = admission.lock().await;
+            let _retirement = resolver.begin_retirement(&session_id);
+            if agent.inbox().has_pending() {
+                return;
+            }
+            let Some(agents) = agents else {
+                return;
+            };
+            if agents
+                .get(&session_id)
+                .is_none_or(|current| !Arc::ptr_eq(&current, &agent))
+                || agents
+                    .list()
+                    .iter()
+                    .any(|child| agents.is_owned_by(child.id(), &agent))
+            {
+                return;
+            }
+            let Some(sessions) = sessions else {
+                return;
+            };
+            if sessions.flush(agent.session()).await.is_err() {
+                return;
+            }
+            let dispose = {
+                let mut handles = handles.lock();
+                let exact = handles
+                    .get(&session_id)
+                    .is_some_and(|owned| Arc::ptr_eq(&owned.agent, &agent));
+                if !exact {
+                    return;
+                }
+                handles
+                    .remove(&session_id)
+                    .and_then(|mut owned| owned.dispose.take())
+            };
+            if let Some(dispose) = dispose {
+                dispose.await;
+            }
+        });
+    }
+
     fn sessions(&self) -> Option<Arc<dsh_session::SessionStore>> {
         self.ctx
             .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
@@ -1314,7 +1365,14 @@ impl ApiProxyService {
             Arc::new(move |goals, agent| {
                 let goal_ref = Self::goal_verb_ref(&goal_ref);
                 match verb {
-                    GoalVerb::Pause => goals.pause(&agent, &goal_ref),
+                    GoalVerb::Pause => {
+                        let view = goals.pause(&agent, &goal_ref)?;
+                        agent.cancel(
+                            dsh_session::AgentCancelCause::User,
+                            Some(&dsh_agent::CancelOptions { keep_inbox: true }),
+                        );
+                        Ok(view)
+                    }
                     GoalVerb::Resume => goals.resume(&agent, &goal_ref),
                     GoalVerb::Complete => goals.complete(&agent, &goal_ref),
                 }
@@ -1585,38 +1643,76 @@ impl ApiProxyService {
         payload: serde_json::Value,
     ) -> RpcResponse<serde_json::Value> {
         let Some(store) = self.memory_store() else {
-            return err(rpc_id, RpcError::Internal(RpcErrorBody {
-                message: "memory service is not composed".to_string(),
-                details: EmptyDetails {},
-            }));
+            return err(
+                rpc_id,
+                RpcError::Internal(RpcErrorBody {
+                    message: "memory service is not composed".to_string(),
+                    details: EmptyDetails {},
+                }),
+            );
         };
         match method {
-            "memory.categories" => ok(rpc_id, serde_json::json!({
-                "categories": dsh_tool_memory_local::BUILTIN_CATEGORIES.iter().map(|(id, label)| serde_json::json!({ "id": id, "label": label })).collect::<Vec<_>>()
-            })),
-            "memory.list" => ok(rpc_id, serde_json::json!({
-                "entries": store.list(payload.get("scope").and_then(|v| v.as_str()), payload.get("category").and_then(|v| v.as_str())).await
-            })),
+            "memory.categories" => ok(
+                rpc_id,
+                serde_json::json!({
+                    "categories": dsh_tool_memory_local::BUILTIN_CATEGORIES.iter().map(|(id, label)| serde_json::json!({ "id": id, "label": label })).collect::<Vec<_>>()
+                }),
+            ),
+            "memory.list" => ok(
+                rpc_id,
+                serde_json::json!({
+                    "entries": store.list(payload.get("scope").and_then(|v| v.as_str()), payload.get("category").and_then(|v| v.as_str())).await
+                }),
+            ),
             "memory.upsert" => {
-                let entry = match serde_json::from_value::<dsh_tool_memory_local::MemoryEntry>(payload.get("entry").cloned().unwrap_or(serde_json::Value::Null)) {
+                let entry = match serde_json::from_value::<dsh_tool_memory_local::MemoryEntry>(
+                    payload
+                        .get("entry")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                ) {
                     Ok(entry) => entry,
                     Err(error) => return err(rpc_id, bad_request("memory.upsert", error)),
                 };
-                match store.upsert(entry, payload.get("expectedRevision").and_then(|v| v.as_u64())).await {
+                match store
+                    .upsert(
+                        entry,
+                        payload.get("expectedRevision").and_then(|v| v.as_u64()),
+                    )
+                    .await
+                {
                     Ok(entry) => ok(rpc_id, serde_json::json!({ "entry": entry })),
-                    Err(message) => err(rpc_id, RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} })),
+                    Err(message) => err(
+                        rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message,
+                            details: EmptyDetails {},
+                        }),
+                    ),
                 }
             }
             "memory.remove" => {
                 let Some(id) = payload.get("id").and_then(|v| v.as_str()) else {
-                    return err(rpc_id, RpcError::BadRequest(RpcErrorBody {
-                        message: "memory.remove: missing id".to_string(),
-                        details: crate::api::rpc::BadRequestDetails { issues: Vec::new() },
-                    }));
+                    return err(
+                        rpc_id,
+                        RpcError::BadRequest(RpcErrorBody {
+                            message: "memory.remove: missing id".to_string(),
+                            details: crate::api::rpc::BadRequestDetails { issues: Vec::new() },
+                        }),
+                    );
                 };
-                match store.remove(id, payload.get("expectedRevision").and_then(|v| v.as_u64())).await {
+                match store
+                    .remove(id, payload.get("expectedRevision").and_then(|v| v.as_u64()))
+                    .await
+                {
                     Ok(removed) => ok(rpc_id, serde_json::json!({ "removed": removed })),
-                    Err(message) => err(rpc_id, RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} })),
+                    Err(message) => err(
+                        rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message,
+                            details: EmptyDetails {},
+                        }),
+                    ),
                 }
             }
             _ => unreachable!(),
@@ -3074,11 +3170,7 @@ impl ApiProxyService {
                         .ok()
                         .map(|metadata| metadata.meta);
                     let chunk_has_more = chunk.next_seq.is_some();
-                    match Self::paginate_forward(
-                        &chunk.events,
-                        after_seq,
-                        requested_messages,
-                    ) {
+                    match Self::paginate_forward(&chunk.events, after_seq, requested_messages) {
                         Ok((events, page_has_more)) => (events, page_has_more || chunk_has_more),
                         Err(required) => {
                             return err(
@@ -3163,6 +3255,13 @@ impl ApiProxyService {
             .ctx
             .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
             .map(|slot| slot.as_ref().clone());
+        let first_seq = page_events
+            .first()
+            .and_then(|event| i64::try_from(event.seq).ok());
+        let last_seq = page_events
+            .last()
+            .and_then(|event| i64::try_from(event.seq).ok());
+        let page_events = crate::api::sessions::coalesce_history_transport_events(page_events);
         let page: Vec<HistoryEntry> = page_events
             .into_iter()
             .map(|event| {
@@ -3185,6 +3284,16 @@ impl ApiProxyService {
                 HistoryEntry { event, view }
             })
             .collect();
+        let has_more_before = if request.payload.after_seq.is_some() {
+            first_seq.is_some_and(|seq| seq > 0)
+        } else {
+            has_more
+        };
+        let has_more_after = if request.payload.after_seq.is_some() {
+            has_more
+        } else {
+            request.payload.before_seq.is_some()
+        };
         let projections =
             if request.payload.before_seq.is_some() || request.payload.after_seq.is_some() {
                 None
@@ -3221,6 +3330,10 @@ impl ApiProxyService {
         ok(
             request.rpc_id,
             crate::api::sessions::SessionHistoryResult {
+                has_more_before,
+                has_more_after,
+                first_seq,
+                last_seq,
                 events: page,
                 has_more,
                 projections,
@@ -3964,6 +4077,11 @@ impl ApiProxyService {
                 }
             },
         };
+        let admission = self
+            .resolver
+            .admission(&request.payload.session_id)
+            .lock_owned()
+            .await;
         let resolved = self.resolver.resolve(&request.payload.session_id).await;
         let agent = match resolved {
             crate::agent_lookup::ApiRemoteAgentResult::Agent(agent) => agent,
@@ -4103,6 +4221,8 @@ impl ApiProxyService {
             PromptMode::Steer => agent.steer(message),
             PromptMode::Queue => agent.followup(message),
         }
+        self.spawn_idle_retirement(Arc::clone(&agent));
+        drop(admission);
         ok(
             request.rpc_id,
             crate::api::sessions::SessionPromptResult {

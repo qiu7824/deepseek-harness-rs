@@ -40,7 +40,7 @@ pub fn apply(ctx: &cordis::Context) -> Result<cordis::Disposer, String> {
         ctx,
         CommandDefinition {
             name: "compact".to_string(),
-            description: "Compact older conversation history".to_string(),
+            description: "压缩较早的会话历史".to_string(),
             input: None,
             record_input: Some(false),
             handler: Arc::new(move |invocation: &CommandInvocation| {
