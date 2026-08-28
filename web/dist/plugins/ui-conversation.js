@@ -5832,8 +5832,7 @@ window.__ModuleLoader__.load({
 				...command === void 0 ? {} : { command }
 			}, approval.key);
 		}
-		function ApprovalDock({ useSession, t }) {
-			const matched = useSession((snapshot) => snapshot.pending.find((item) => item.kind === "approval") ?? null);
+		function ApprovalDock({ useSession, t, matched }) {
 			if (matched === null) return null;
 			return (0, react_jsx_runtime.jsx)(ApprovalPanel, { matched, useSession, t }, matched.key);
 		}
@@ -7119,7 +7118,7 @@ window.__ModuleLoader__.load({
 					hero && (0, react_jsx_runtime.jsx)(HeroGlow, { className: ConversationRoot_module_css_default.heroGlow }),
 					hero && (0, react_jsx_runtime.jsx)(HeroShell, { t }),
 					hero && heroWorkspaceRow,
-					zone !== void 0 && renderSlot("conversation.input.dock", zone),
+					zone !== void 0 && renderSlot("conversation.input.dock", { ...zone, matched: selectApproval({ interactions: pending }) }),
 					inputBar
 				]
 			});

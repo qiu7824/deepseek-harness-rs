@@ -121,6 +121,14 @@ class HistoryWindowContractTests(unittest.TestCase):
         self.assertIn("ApprovalDock", conversation)
         self.assertNotIn('name: "conversation.composer",\n\t\t\t\tselect: selectApproval', conversation)
 
+    def test_approval_dock_reuses_the_existing_flow_without_nested_snapshot_subscription(self):
+        conversation = CONVERSATION.read_text(encoding="utf-8")
+        start = conversation.index("function ApprovalDock")
+        end = conversation.index("function ApprovalFlow", start)
+        dock = conversation[start:end]
+        self.assertIn("matched", dock)
+        self.assertNotIn("useSession(", dock)
+
     def test_settings_describe_is_singleflight_and_write_invalidated(self):
         source = CONNECTION.read_text(encoding="utf-8")
         for required in (
