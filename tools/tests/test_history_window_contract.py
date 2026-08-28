@@ -54,6 +54,16 @@ class HistoryWindowContractTests(unittest.TestCase):
         self.assertIn("cwd: humanWorkspacePath(g.cwd)", source)
         self.assertIn("copyText: row.cwd", source)
 
+    def test_stop_control_is_non_submitting_and_reports_cancel_failures(self):
+        conversation = CONVERSATION.read_text(encoding="utf-8")
+        runtime = RUNTIME.read_text(encoding="utf-8")
+        self.assertIn('type: "button"', conversation[conversation.index("interruptible &&"):conversation.index("primaryLabel", conversation.index("interruptible &&"))])
+        self.assertIn("let stopPending = false", conversation)
+        self.assertIn("await scopedConversation(sessions, sessionId).cancel()", conversation)
+        self.assertIn("stopPending = false", conversation)
+        self.assertNotIn("scopedConversation(sessions, sessionId).cancel().catch(() => {})", conversation)
+        self.assertIn('op: "stop"', runtime)
+
     def test_settings_describe_is_singleflight_and_write_invalidated(self):
         source = CONNECTION.read_text(encoding="utf-8")
         for required in (

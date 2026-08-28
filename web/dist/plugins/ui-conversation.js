@@ -9879,6 +9879,7 @@ window.__ModuleLoader__.load({
 					const conversation = concreteConversation(ctx);
 					const shell = inputHub.shell(sessionId);
 					const inputTriggers = inputHub.inputTriggers(sessionId);
+					let stopPending = false;
 					return {
 						keyboard: shell,
 						addImages: (files) => {
@@ -9910,8 +9911,16 @@ window.__ModuleLoader__.load({
 								}
 							});
 						},
-						stop: () => {
-							scopedConversation(sessions, sessionId).cancel().catch(() => {});
+						stop: async () => {
+							if (stopPending) return;
+							stopPending = true;
+							try {
+								await scopedConversation(sessions, sessionId).cancel();
+							} catch {
+								// Session.cancel already publishes the normalized failure through promptError.
+							} finally {
+								stopPending = false;
+							}
 						},
 						command: async (line) => {
 							const session = sessions.binding(sessionId)?.session;
