@@ -244,6 +244,12 @@ window.__ModuleLoader__.load({
 				const initial = conversationBox();
 				return initial === null ? null : stripLeft(initial.port);
 			});
+			const railLeftRef = (0, react.useRef)(railLeft);
+			railLeftRef.current = railLeft;
+			const railHeightRef = (0, react.useRef)(railHeight);
+			railHeightRef.current = railHeight;
+			const currentRef = (0, react.useRef)(current);
+			currentRef.current = current;
 			const [popoverTop, setPopoverTop] = (0, react.useState)(null);
 			const popoverRef = (0, react.useRef)(null);
 			const rafRef = (0, react.useRef)(0);
@@ -259,11 +265,26 @@ window.__ModuleLoader__.load({
 			*  center, so the scroll highlight follows the conversation. */
 			const refresh = (0, react.useCallback)(() => {
 				const next = conversationBox();
-				setBox((prev) => prev !== null && next !== null && prev.port === next.port && prev.flow === next.flow ? prev : next);
-				setRailLeft(next === null ? null : stripLeft(next.port));
-				setRailHeight(window.innerHeight);
+				const previousBox = boxRef.current;
+				if (!(previousBox !== null && next !== null && previousBox.port === next.port && previousBox.flow === next.flow) && previousBox !== next) {
+					boxRef.current = next;
+					setBox(next);
+				}
+				const nextLeft = next === null ? null : stripLeft(next.port);
+				if (railLeftRef.current !== nextLeft) {
+					railLeftRef.current = nextLeft;
+					setRailLeft(nextLeft);
+				}
+				const nextHeight = window.innerHeight;
+				if (railHeightRef.current !== nextHeight) {
+					railHeightRef.current = nextHeight;
+					setRailHeight(nextHeight);
+				}
 				if (next === null) {
-					setCurrent(null);
+					if (currentRef.current !== null) {
+						currentRef.current = null;
+						setCurrent(null);
+					}
 					return;
 				}
 				const { port, flow } = next;
@@ -281,7 +302,10 @@ window.__ModuleLoader__.load({
 						best = index;
 					}
 				});
-				setCurrent(best);
+				if (currentRef.current !== best) {
+					currentRef.current = best;
+					setCurrent(best);
+				}
 			}, []);
 			/** Coalesce any number of triggers into one layout + highlight per frame. */
 			const scheduleRefresh = (0, react.useCallback)(() => {
@@ -317,13 +341,9 @@ window.__ModuleLoader__.load({
 				current.port.addEventListener("scroll", onScroll, { passive: true });
 				return () => current.port.removeEventListener("scroll", onScroll);
 			}, [box, scheduleRefresh]);
-			(0, react.useLayoutEffect)(() => {
-				refresh();
-			}, [
-				refresh,
-				ready,
-				entries
-			]);
+			(0, react.useEffect)(() => {
+				scheduleRefresh();
+			}, [scheduleRefresh, ready, entries]);
 			/** Keep the popover below and right of the active tick (top-aligned with the
 			*  tick line) and inside the window. */
 			(0, react.useLayoutEffect)(() => {
