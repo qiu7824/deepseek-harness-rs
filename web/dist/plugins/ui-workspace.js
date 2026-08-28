@@ -86,6 +86,10 @@ window.__ModuleLoader__.load({
 			const base = cwd.replace(/[/\\]+$/, "").split(/[/\\]/).pop();
 			return base !== void 0 && base !== "" ? base : cwd;
 		}
+		/** Convert Windows extended-length paths to the ordinary form used by hover/copy UI. */
+		function humanWorkspacePath(value) {
+			return String(value ?? "").replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "");
+		}
 		/** Recency comparator: newest first, id as the deterministic tiebreak (ids are unique per group). */
 		function byRecency(a, b) {
 			if (b.updatedAt !== a.updatedAt) return b.updatedAt - a.updatedAt;
@@ -199,7 +203,7 @@ window.__ModuleLoader__.load({
 				groups.push({
 					key: g.key,
 					workspaceId: g.workspaceId,
-					cwd: g.cwd,
+					cwd: humanWorkspacePath(g.cwd),
 					createdAt: g.createdAt,
 					label: g.label,
 					sessionCount: g.sessions.length,

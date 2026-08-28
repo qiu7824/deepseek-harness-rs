@@ -46,6 +46,14 @@ class HistoryWindowContractTests(unittest.TestCase):
         self.assertNotIn('"archive.view":', source)
         self.assertNotIn("查看、恢复", source)
 
+    def test_workspace_hover_uses_human_windows_path(self):
+        source = (ROOT / "web" / "dist" / "plugins" / "ui-workspace.js").read_text(encoding="utf-8")
+        self.assertIn("function humanWorkspacePath(value)", source)
+        self.assertIn('replace(/^\\\\\\\\\\?\\\\UNC\\\\/i, "\\\\\\\\")', source)
+        self.assertIn('replace(/^\\\\\\\\\\?\\\\/, "")', source)
+        self.assertIn("cwd: humanWorkspacePath(g.cwd)", source)
+        self.assertIn("copyText: row.cwd", source)
+
     def test_settings_describe_is_singleflight_and_write_invalidated(self):
         source = CONNECTION.read_text(encoding="utf-8")
         for required in (
