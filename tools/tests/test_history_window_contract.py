@@ -78,8 +78,32 @@ class HistoryWindowContractTests(unittest.TestCase):
         self.assertIn("answered || approval.data.rememberable === false", conversation)
         self.assertNotIn("unansweredApproval", host)
         self.assertNotIn("UnansweredApprovalPolicy", approval)
-        self.assertIn("unwrap_or(ApprovalOutcome::Rejected)", approval)
+        self.assertIn("Ok(ApprovalOutcome::Unavailable) | Err(_) => unattended", approval)
         self.assertIn('"allowed-always"', invariant)
+
+    def test_security_shield_exposes_complete_persisted_controls(self):
+        host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(encoding="utf-8")
+        ui = (ROOT / "web" / "dist" / "plugins" / "ui-settings-general.js").read_text(encoding="utf-8")
+        for field in (
+            "unattendedPolicy",
+            "riskToolPolicy",
+            "outsideWritePolicy",
+            "sensitiveReadPolicy",
+            "credentialShellPolicy",
+        ):
+            self.assertIn(f'"{field}"', host)
+            self.assertIn(field, ui)
+        self.assertIn('api.settings.mutate({ ns: "security"', ui)
+        self.assertIn('expectedRevision: state.namespace.revision', ui)
+        self.assertIn('value: "allow-safe-only"', ui)
+        self.assertIn('value: "ask-every-time"', ui)
+        self.assertIn("硬阻断始终生效", ui)
+
+    def test_security_settings_does_not_fan_out_session_history(self):
+        ui = (ROOT / "web" / "dist" / "plugins" / "ui-settings-general.js").read_text(encoding="utf-8")
+        section = ui[ui.index("function SecuritySection"):ui.index("//#endregion", ui.index("function SecuritySection"))]
+        self.assertNotIn("api.sessions.list", section)
+        self.assertNotIn("api.sessions.history", section)
 
     def test_settings_describe_is_singleflight_and_write_invalidated(self):
         source = CONNECTION.read_text(encoding="utf-8")

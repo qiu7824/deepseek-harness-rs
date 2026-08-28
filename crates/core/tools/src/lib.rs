@@ -35,8 +35,12 @@ pub use schema::{
     ToolArgsError, ValueSchemaAnnotations, ValueSchemaSpec, parameter_schema_spec_to_json_schema,
     validate_args, value_schema_spec_to_json_schema,
 };
+pub use security_policy::{
+    CredentialShellPolicy, OutsideWritePolicy, RiskToolPolicy, SecurityPolicyConfig,
+    SecurityPolicyState, SensitiveReadPolicy,
+};
 pub use types::{CodeDispatchEventData, CodeDispatchStartEventData};
 
-pub fn install_security_policy(ctx: &cordis::Context) {
-    security_policy::install(ctx);
+pub fn install_security_policy(ctx: &cordis::Context, config: SecurityPolicyState) {
+    security_policy::install(ctx, config);
 }

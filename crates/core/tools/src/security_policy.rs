@@ -2,6 +2,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use cordis::{Context, EventOptions, Listener, NextFn, arc, downcast_arc};
+use parking_lot::RwLock;
 use serde_json::Value as JsonValue;
 
 use crate::{PreToolDecision, ToolExecution};
@@ -18,6 +19,45 @@ pub(crate) enum SecurityDecision {
         reason: String,
     },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RiskToolPolicy {
+    #[default]
+    Ask,
+    Deny,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutsideWritePolicy {
+    #[default]
+    AskDirectory,
+    AskEveryTime,
+    Deny,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SensitiveReadPolicy {
+    #[default]
+    Ask,
+    Deny,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CredentialShellPolicy {
+    #[default]
+    Strict,
+    Ask,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SecurityPolicyConfig {
+    pub risk_tool_policy: RiskToolPolicy,
+    pub outside_write_policy: OutsideWritePolicy,
+    pub sensitive_read_policy: SensitiveReadPolicy,
+    pub credential_shell_policy: CredentialShellPolicy,
+}
+
+pub type SecurityPolicyState = Arc<RwLock<SecurityPolicyConfig>>;
 
 const SENSITIVE_COMPONENTS: &[&str] = &[
     ".env",
@@ -163,7 +203,13 @@ fn classify_tool_security(
     arguments: &JsonValue,
     workspace: Option<&str>,
 ) -> SecurityDecision {
-    classify_tool_security_for_actor(tool, arguments, workspace, false)
+    classify_tool_security_with_config(
+        tool,
+        arguments,
+        workspace,
+        false,
+        &SecurityPolicyConfig::default(),
+    )
 }
 
 fn classify_tool_security_for_actor(
@@ -171,6 +217,22 @@ fn classify_tool_security_for_actor(
     arguments: &JsonValue,
     workspace: Option<&str>,
     is_subagent: bool,
+) -> SecurityDecision {
+    classify_tool_security_with_config(
+        tool,
+        arguments,
+        workspace,
+        is_subagent,
+        &SecurityPolicyConfig::default(),
+    )
+}
+
+fn classify_tool_security_with_config(
+    tool: &str,
+    arguments: &JsonValue,
+    workspace: Option<&str>,
+    is_subagent: bool,
+    config: &SecurityPolicyConfig,
 ) -> SecurityDecision {
     match tool {
         "read" | "read_file" => {
@@ -185,6 +247,11 @@ fn classify_tool_security_for_actor(
                 if is_subagent {
                     return SecurityDecision::Deny {
                         reason: "子代理不得访问敏感路径".to_string(),
+                    };
+                }
+                if config.sensitive_read_policy == SensitiveReadPolicy::Deny {
+                    return SecurityDecision::Deny {
+                        reason: "安全盾策略禁止读取敏感路径".to_string(),
                     };
                 }
                 SecurityDecision::Ask {
@@ -219,21 +286,42 @@ fn classify_tool_security_for_actor(
             if path_is_in_workspace(&path, workspace) {
                 return SecurityDecision::Allow;
             }
+            if config.outside_write_policy == OutsideWritePolicy::Deny {
+                return SecurityDecision::Deny {
+                    reason: "安全盾策略禁止写入工作区外路径".to_string(),
+                };
+            }
             let directory = path.parent().unwrap_or(&path);
             SecurityDecision::Ask {
                 reason: "写入工作区外路径需要用户确认".to_string(),
-                grant_key: Some(format!("write-dir:{}", normalized_key(directory))),
-                rememberable: true,
+                grant_key: (config.outside_write_policy == OutsideWritePolicy::AskDirectory)
+                    .then(|| format!("write-dir:{}", normalized_key(directory))),
+                rememberable: config.outside_write_policy == OutsideWritePolicy::AskDirectory,
             }
         }
         "pwsh" | "bash" | "terminal" => {
             let command = shell_command(arguments);
             if contains_credential_reference(command) && contains_network_exfiltration(command) {
-                return SecurityDecision::Deny {
-                    reason: "安全盾已阻止凭据提取或外传命令".to_string(),
+                return if config.credential_shell_policy == CredentialShellPolicy::Ask
+                    && !is_subagent
+                {
+                    SecurityDecision::Ask {
+                        reason: "命令可能提取或外传凭据，需要用户确认".to_string(),
+                        grant_key: None,
+                        rememberable: false,
+                    }
+                } else {
+                    SecurityDecision::Deny {
+                        reason: "安全盾已阻止凭据提取或外传命令".to_string(),
+                    }
                 };
             }
             if destructive_shell(command) {
+                if config.risk_tool_policy == RiskToolPolicy::Deny {
+                    return SecurityDecision::Deny {
+                        reason: "安全盾策略禁止执行破坏性命令".to_string(),
+                    };
+                }
                 return SecurityDecision::Ask {
                     reason: "破坏性命令需要用户确认".to_string(),
                     grant_key: Some(format!("shell:{tool}:{}", command.trim())),
@@ -246,13 +334,14 @@ fn classify_tool_security_for_actor(
     }
 }
 
-pub(crate) fn install(ctx: &Context) {
-    let listener: Arc<Listener> = Arc::new(|_ctx, args| {
+pub(crate) fn install(ctx: &Context, config: SecurityPolicyState) {
+    let listener: Arc<Listener> = Arc::new(move |_ctx, args| {
         let execution = args
             .first()
             .and_then(|value| downcast_arc::<Arc<ToolExecution>>(value))
             .map(|slot| slot.as_ref().clone());
         let next = args.last().and_then(|value| downcast_arc::<NextFn>(value));
+        let config = config.read().clone();
         Box::pin(async move {
             let Some(execution) = execution else {
                 return Some(arc(PreToolDecision::Deny {
@@ -267,11 +356,12 @@ pub(crate) fn install(ctx: &Context) {
                 agent.options().subagent_depth.unwrap_or(0) > 0
                     || agent.session().header().origin.as_deref() == Some("subagent")
             });
-            match classify_tool_security_for_actor(
+            match classify_tool_security_with_config(
                 &execution.name,
                 &execution.arguments,
                 workspace,
                 is_subagent,
+                &config,
             ) {
                 SecurityDecision::Allow => match next {
                     Some(next) => Some(next.call().await),
@@ -299,7 +389,11 @@ pub(crate) fn install(ctx: &Context) {
 
 #[cfg(test)]
 mod tests {
-    use super::{SecurityDecision, classify_tool_security, classify_tool_security_for_actor};
+    use super::{
+        OutsideWritePolicy, RiskToolPolicy, SecurityDecision, SecurityPolicyConfig,
+        SensitiveReadPolicy, classify_tool_security, classify_tool_security_for_actor,
+        classify_tool_security_with_config,
+    };
     use serde_json::json;
 
     #[test]
@@ -312,6 +406,26 @@ mod tests {
                 reason: "读取敏感路径需要用户确认".to_string(),
                 grant_key: None,
                 rememberable: false,
+            }
+        );
+    }
+
+    #[test]
+    fn sensitive_read_deny_policy_blocks_without_approval() {
+        let decision = classify_tool_security_with_config(
+            "read",
+            &json!({"file_path": ".env"}),
+            Some("D:/workspace"),
+            false,
+            &SecurityPolicyConfig {
+                sensitive_read_policy: SensitiveReadPolicy::Deny,
+                ..SecurityPolicyConfig::default()
+            },
+        );
+        assert_eq!(
+            decision,
+            SecurityDecision::Deny {
+                reason: "安全盾策略禁止读取敏感路径".to_string(),
             }
         );
     }
@@ -345,6 +459,43 @@ mod tests {
             }
             other => panic!("expected scoped ask, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn outside_write_each_time_policy_never_emits_a_rememberable_grant() {
+        let decision = classify_tool_security_with_config(
+            "write",
+            &json!({"file_path": "../outside/report.txt", "content": "x"}),
+            Some("D:/workspace"),
+            false,
+            &SecurityPolicyConfig {
+                outside_write_policy: OutsideWritePolicy::AskEveryTime,
+                ..SecurityPolicyConfig::default()
+            },
+        );
+        assert!(matches!(
+            decision,
+            SecurityDecision::Ask {
+                grant_key: None,
+                rememberable: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn outside_write_deny_policy_blocks_without_approval() {
+        let decision = classify_tool_security_with_config(
+            "write",
+            &json!({"file_path": "../outside/report.txt", "content": "x"}),
+            Some("D:/workspace"),
+            false,
+            &SecurityPolicyConfig {
+                outside_write_policy: OutsideWritePolicy::Deny,
+                ..SecurityPolicyConfig::default()
+            },
+        );
+        assert!(matches!(decision, SecurityDecision::Deny { .. }));
     }
 
     #[test]
@@ -394,6 +545,26 @@ mod tests {
             } => assert!(key.starts_with("shell:pwsh:")),
             other => panic!("expected command-scoped ask, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn risk_tool_deny_policy_blocks_destructive_shell_without_approval() {
+        let decision = classify_tool_security_with_config(
+            "pwsh",
+            &json!({"command": "Remove-Item -Recurse -Force ./target"}),
+            Some("D:/workspace"),
+            false,
+            &SecurityPolicyConfig {
+                risk_tool_policy: RiskToolPolicy::Deny,
+                ..SecurityPolicyConfig::default()
+            },
+        );
+        assert_eq!(
+            decision,
+            SecurityDecision::Deny {
+                reason: "安全盾策略禁止执行破坏性命令".to_string(),
+            }
+        );
     }
 
     #[test]

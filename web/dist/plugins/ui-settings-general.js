@@ -299,7 +299,7 @@ window.__ModuleLoader__.load({
 				children: renderSlot("settings.general.item", {})
 			});
 		}
-		const securityCss = ".dshSecurity{box-sizing:border-box;flex-direction:column;gap:18px;width:100%;padding:4px 2px 24px;display:flex;color:var(--dsw-alias-label-primary)}.dshSecurity h2{font-size:18px;line-height:26px;margin:0}.dshSecuritySummary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.dshSecurityCard{border:1px solid var(--dsw-alias-border-subtle);border-radius:12px;padding:12px;background:var(--dsw-alias-bg-layer-1)}.dshSecurityLabel{font-size:12px;color:var(--dsw-alias-label-tertiary)}.dshSecurityValue{font-size:14px;font-weight:500;margin-top:4px}.dshSecurityRule{font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}.dshSecurityTable{width:100%;border-collapse:collapse;font-size:12px}.dshSecurityTable th,.dshSecurityTable td{text-align:left;padding:8px;border-bottom:1px solid var(--dsw-alias-border-subtle);vertical-align:top}.dshSecurityTable th{color:var(--dsw-alias-label-tertiary);font-weight:400}.dshSecurityEmpty{font-size:13px;color:var(--dsw-alias-label-tertiary);padding:14px 0}.dshSecurityError{color:var(--dsw-alias-state-error-primary);font-size:13px}";
+		const securityCss = ".dshSecurity{box-sizing:border-box;flex-direction:column;gap:18px;width:100%;padding:4px 2px 24px;display:flex;color:var(--dsw-alias-label-primary)}.dshSecurityControls{display:grid;grid-template-columns:180px minmax(0,360px);gap:12px 16px;align-items:center}.dshSecurityControls label{font-size:13px;color:var(--dsw-alias-label-secondary);text-align:right}.dshSecurityControls select,.dshSecurityControls input{box-sizing:border-box;width:100%;border:1px solid var(--dsw-alias-border-subtle);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:inherit;padding:7px 10px;font:inherit;font-size:13px}.dshSecurity h2{font-size:18px;line-height:26px;margin:0}.dshSecuritySummary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.dshSecurityCard{border:1px solid var(--dsw-alias-border-subtle);border-radius:12px;padding:12px;background:var(--dsw-alias-bg-layer-1)}.dshSecurityLabel{font-size:12px;color:var(--dsw-alias-label-tertiary)}.dshSecurityValue{font-size:14px;font-weight:500;margin-top:4px}.dshSecurityRule{font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}.dshSecurityTable{width:100%;border-collapse:collapse;font-size:12px}.dshSecurityTable th,.dshSecurityTable td{text-align:left;padding:8px;border-bottom:1px solid var(--dsw-alias-border-subtle);vertical-align:top}.dshSecurityTable th{color:var(--dsw-alias-label-tertiary);font-weight:400}.dshSecurityEmpty{font-size:13px;color:var(--dsw-alias-label-tertiary);padding:14px 0}.dshSecurityError{color:var(--dsw-alias-state-error-primary);font-size:13px}";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css='dsh-security-shield']") === null) {
 			const tag = document.createElement("style");
 			tag.dataset.pluginCss = "dsh-security-shield";
@@ -307,49 +307,57 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		function SecuritySection({ api }) {
-			const [state, setState] = (0, react.useState)({ loading: true, error: null, timeout: 30, preset: "workspace-write", rows: [] });
-			(0, react.useEffect)(() => {
-				let cancelled = false;
-				(async () => {
-					try {
-						const [settingsReply, sessionsReply] = await Promise.all([api.settings.describe({}), api.sessions.list({})]);
-						if (!settingsReply.result.ok) throw new Error(settingsReply.result.error.message);
-						if (!sessionsReply.result.ok) throw new Error(sessionsReply.result.error.message);
-						const namespaces = settingsReply.result.value.namespaces ?? [];
-						const security = namespaces.find((entry) => entry.ns === "security")?.value ?? {};
-						const permission = namespaces.find((entry) => entry.ns === "permission")?.value ?? {};
-						const audits = [];
-						for (const session of (sessionsReply.result.value.items ?? []).slice(0, 50)) {
-							const historyReply = await api.sessions.history({ sessionId: session.sessionId });
-							if (!historyReply.result.ok) continue;
-							const pending = new Map();
-							for (const event of historyReply.result.value.events ?? []) {
-								if (event.type === "approval/asked") pending.set(event.data?.id, event);
-								if (event.type === "approval/decided") {
-									const asked = pending.get(event.data?.id);
-									audits.push({ sessionId: session.sessionId, time: event.timestamp ?? asked?.timestamp, tool: asked?.data?.toolName ?? "-", reason: asked?.data?.reason ?? "-", outcome: event.data?.outcome ?? "unavailable" });
-								}
-							}
-						}
-						audits.sort((a, b) => String(b.time ?? "").localeCompare(String(a.time ?? "")));
-						if (!cancelled) setState({ loading: false, error: null, timeout: security.approvalTimeoutSeconds ?? 30, preset: permission.defaultPreset ?? "workspace-write", rows: audits.slice(0, 100) });
-					} catch (error) {
-						if (!cancelled) setState((previous) => ({ ...previous, loading: false, error: error instanceof Error ? error.message : String(error) }));
-					}
-				})();
-				return () => { cancelled = true; };
+			const [state, setState] = (0, react.useState)({ loading: true, error: null, namespace: null, timeout: 30, preset: "workspace-write" });
+			const load = (0, react.useCallback)(async () => {
+				try {
+					const settingsReply = await api.settings.describe({});
+					if (!settingsReply.result.ok) throw new Error(settingsReply.result.error.message);
+					const namespaces = settingsReply.result.value.namespaces ?? [];
+					const securityNamespace = namespaces.find((entry) => entry.ns === "security") ?? null;
+					const security = securityNamespace?.value ?? {};
+					const permission = namespaces.find((entry) => entry.ns === "permission")?.value ?? {};
+					setState({ loading: false, error: null, namespace: securityNamespace, timeout: security.approvalTimeoutSeconds ?? 30, preset: permission.defaultPreset ?? "workspace-write" });
+				} catch (error) {
+					setState((previous) => ({ ...previous, loading: false, error: error instanceof Error ? error.message : String(error) }));
+				}
 			}, [api]);
+			(0, react.useEffect)(() => { load(); }, [load]);
+			const setField = async (field, value) => {
+				if (!state.namespace) return;
+				const reply = await api.settings.mutate({ ns: "security", ops: [{ op: "set", path: [field], value }], expectedRevision: state.namespace.revision });
+				if (!reply.result.ok) {
+					setState((previous) => ({ ...previous, error: reply.result.error.message }));
+					await load();
+					return;
+				}
+				setState((previous) => ({ ...previous, namespace: reply.result.value, timeout: reply.result.value.value?.approvalTimeoutSeconds ?? previous.timeout, error: null }));
+			};
+			const securityValue = (field, fallback) => state.namespace?.value?.[field] ?? fallback;
 			return (0, react_jsx_runtime.jsxs)("section", { className: "dshSecurity", children: [
 				(0, react_jsx_runtime.jsx)("h2", { children: "安全盾" }),
+				state.namespace && (0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityControls", children: [
+					(0, react_jsx_runtime.jsx)("label", { htmlFor: "security-timeout", children: "审批超时（秒）" }),
+					(0, react_jsx_runtime.jsx)("input", { id: "security-timeout", type: "number", min: 5, max: 300, step: 1, value: securityValue("approvalTimeoutSeconds", 30), onChange: (event) => setField("approvalTimeoutSeconds", Number(event.target.value)) }),
+					(0, react_jsx_runtime.jsx)("label", { htmlFor: "security-unattended", children: "无人确认策略" }),
+					(0, react_jsx_runtime.jsxs)("select", { id: "security-unattended", value: securityValue("unattendedPolicy", "deny"), onChange: (event) => setField("unattendedPolicy", event.target.value), children: [(0, react_jsx_runtime.jsx)("option", { value: "deny", children: "拒绝（推荐）" }), (0, react_jsx_runtime.jsx)("option", { value: "allow-safe-only", children: "仅允许安全操作" }), (0, react_jsx_runtime.jsx)("option", { value: "allow-all", children: "允许全部可审批操作" })] }),
+					(0, react_jsx_runtime.jsx)("label", { htmlFor: "security-risk", children: "风险工具" }),
+					(0, react_jsx_runtime.jsxs)("select", { id: "security-risk", value: securityValue("riskToolPolicy", "ask"), onChange: (event) => setField("riskToolPolicy", event.target.value), children: [(0, react_jsx_runtime.jsx)("option", { value: "ask", children: "每次询问" }), (0, react_jsx_runtime.jsx)("option", { value: "deny", children: "直接拒绝" })] }),
+					(0, react_jsx_runtime.jsx)("label", { htmlFor: "security-outside-write", children: "工作区外写入" }),
+					(0, react_jsx_runtime.jsxs)("select", { id: "security-outside-write", value: securityValue("outsideWritePolicy", "ask-directory"), onChange: (event) => setField("outsideWritePolicy", event.target.value), children: [(0, react_jsx_runtime.jsx)("option", { value: "ask-directory", children: "按目录询问，可永久允许" }), (0, react_jsx_runtime.jsx)("option", { value: "ask-every-time", children: "每次询问" }), (0, react_jsx_runtime.jsx)("option", { value: "deny", children: "直接拒绝" })] }),
+					(0, react_jsx_runtime.jsx)("label", { htmlFor: "security-sensitive-read", children: "敏感路径读取" }),
+					(0, react_jsx_runtime.jsxs)("select", { id: "security-sensitive-read", value: securityValue("sensitiveReadPolicy", "ask"), onChange: (event) => setField("sensitiveReadPolicy", event.target.value), children: [(0, react_jsx_runtime.jsx)("option", { value: "ask", children: "询问且不可记忆" }), (0, react_jsx_runtime.jsx)("option", { value: "deny", children: "直接拒绝" })] }),
+					(0, react_jsx_runtime.jsx)("label", { htmlFor: "security-credential-shell", children: "凭据 Shell" }),
+					(0, react_jsx_runtime.jsxs)("select", { id: "security-credential-shell", value: securityValue("credentialShellPolicy", "strict"), onChange: (event) => setField("credentialShellPolicy", event.target.value), children: [(0, react_jsx_runtime.jsx)("option", { value: "strict", children: "严格阻断" }), (0, react_jsx_runtime.jsx)("option", { value: "ask", children: "仅可疑操作询问" })] })
+				] }),
 				(0, react_jsx_runtime.jsxs)("div", { className: "dshSecuritySummary", children: [
 					(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "审批模式" }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityValue", children: state.preset })] }),
 					(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "审批超时" }), (0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityValue", children: [state.timeout, " 秒"] })] }),
 					(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "目录保护" }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityValue", children: "删除文件夹必须确认" })] })
 				] }),
-				(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityRule", children: "工具调用在执行边界应用沙箱与审批策略；审批超时、拒绝或无人应答时均失败关闭。代码图谱扫描只读取当前工作区源码，跳过 .git、target、node_modules、dist、build，最多扫描 800 个文件并展示 500 条结果，不写入项目。" }),
+				(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityRule", children: "工具调用在执行边界应用沙箱与审批策略；审批超时、拒绝或无人应答时均失败关闭。凭据提取与外传、子代理敏感路径访问等硬阻断始终生效，不受宽松策略影响。代码图谱扫描只读取当前工作区源码，跳过 .git、target、node_modules、dist、build，最多扫描 800 个文件并展示 500 条结果，不写入项目。" }),
 				(0, react_jsx_runtime.jsxs)("div", { className: "dshSecuritySummary", children: [(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "图谱权限" }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityValue", children: "工作区只读" })] }), (0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "扫描上限" }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityValue", children: "800 文件" })] }), (0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityCard", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityLabel", children: "最近图谱" }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityValue", children: globalThis.__DSH_CODE_GRAPH_STATUS__ ? `${globalThis.__DSH_CODE_GRAPH_STATUS__.files} 文件 / ${globalThis.__DSH_CODE_GRAPH_STATUS__.symbols} 符号` : "尚未扫描" })] })] }),
 				state.error && (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityError", role: "alert", children: state.error }),
-				state.loading ? (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityEmpty", children: "正在读取安全审计…" }) : state.rows.length === 0 ? (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityEmpty", children: "暂无审批记录" }) : (0, react_jsx_runtime.jsxs)("table", { className: "dshSecurityTable", children: [(0, react_jsx_runtime.jsx)("thead", { children: (0, react_jsx_runtime.jsxs)("tr", { children: [(0, react_jsx_runtime.jsx)("th", { children: "时间" }), (0, react_jsx_runtime.jsx)("th", { children: "工具" }), (0, react_jsx_runtime.jsx)("th", { children: "原因" }), (0, react_jsx_runtime.jsx)("th", { children: "结果" })] }) }), (0, react_jsx_runtime.jsx)("tbody", { children: state.rows.map((row, index) => (0, react_jsx_runtime.jsxs)("tr", { children: [(0, react_jsx_runtime.jsx)("td", { children: row.time ? new Date(row.time).toLocaleString() : "-" }), (0, react_jsx_runtime.jsx)("td", { children: row.tool }), (0, react_jsx_runtime.jsx)("td", { children: row.reason }), (0, react_jsx_runtime.jsx)("td", { children: row.outcome })] }, row.sessionId + index)) })] })
+				state.loading && (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityEmpty", children: "正在读取安全设置…" })
 			] });
 		}
 		//#endregion

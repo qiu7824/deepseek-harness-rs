@@ -10,6 +10,8 @@
 
 use std::sync::Arc;
 
+use futures::FutureExt;
+
 mod client_plugins;
 mod web_preview;
 
@@ -1611,14 +1613,82 @@ fn compose_host_in_fiber(
             ctx,
             dsh_settings::settings_namespace("security")
                 .map_err(|error| format!("settings namespace: {error}"))?,
-            dsh_schemastery::Schema::object(indexmap::IndexMap::from([(
-                "approvalTimeoutSeconds".to_string(),
-                dsh_schemastery::Schema::number()
-                    .min(5.0)
-                    .max(300.0)
-                    .step(1.0)
-                    .default(dsh_schemastery::Data::Number(30.0)),
-            )])),
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([
+                (
+                    "approvalTimeoutSeconds".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(5.0)
+                        .max(300.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(30.0)),
+                ),
+                (
+                    "unattendedPolicy".to_string(),
+                    dsh_schemastery::Schema::union(vec![
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "deny".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "allow-safe-only".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "allow-all".to_string(),
+                        )),
+                    ])
+                    .default(dsh_schemastery::Data::String("deny".to_string())),
+                ),
+                (
+                    "riskToolPolicy".to_string(),
+                    dsh_schemastery::Schema::union(vec![
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "ask".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "deny".to_string(),
+                        )),
+                    ])
+                    .default(dsh_schemastery::Data::String("ask".to_string())),
+                ),
+                (
+                    "outsideWritePolicy".to_string(),
+                    dsh_schemastery::Schema::union(vec![
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "ask-directory".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "ask-every-time".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "deny".to_string(),
+                        )),
+                    ])
+                    .default(dsh_schemastery::Data::String("ask-directory".to_string())),
+                ),
+                (
+                    "sensitiveReadPolicy".to_string(),
+                    dsh_schemastery::Schema::union(vec![
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "ask".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "deny".to_string(),
+                        )),
+                    ])
+                    .default(dsh_schemastery::Data::String("ask".to_string())),
+                ),
+                (
+                    "credentialShellPolicy".to_string(),
+                    dsh_schemastery::Schema::union(vec![
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "strict".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "ask".to_string(),
+                        )),
+                    ])
+                    .default(dsh_schemastery::Data::String("strict".to_string())),
+                ),
+            ])),
             dsh_settings::SettingsRegisterOptions::default(),
         )
         .map_err(|error| format!("settings security: {error}"))?;
@@ -2087,6 +2157,72 @@ fn compose_host_in_fiber(
             })),
         },
     );
+    let security_policy_state: dsh_tools::SecurityPolicyState =
+        Arc::new(parking_lot::RwLock::new({
+            let value = (security_scope.get)();
+            let object = match value {
+                dsh_schemastery::Data::Object(object) => object,
+                _ => indexmap::IndexMap::new(),
+            };
+            let text = |key: &str| match object.get(key) {
+                Some(dsh_schemastery::Data::String(value)) => value.as_str(),
+                _ => "",
+            };
+            dsh_tools::SecurityPolicyConfig {
+                risk_tool_policy: if text("riskToolPolicy") == "deny" {
+                    dsh_tools::RiskToolPolicy::Deny
+                } else {
+                    dsh_tools::RiskToolPolicy::Ask
+                },
+                outside_write_policy: match text("outsideWritePolicy") {
+                    "deny" => dsh_tools::OutsideWritePolicy::Deny,
+                    "ask-every-time" => dsh_tools::OutsideWritePolicy::AskEveryTime,
+                    _ => dsh_tools::OutsideWritePolicy::AskDirectory,
+                },
+                sensitive_read_policy: if text("sensitiveReadPolicy") == "deny" {
+                    dsh_tools::SensitiveReadPolicy::Deny
+                } else {
+                    dsh_tools::SensitiveReadPolicy::Ask
+                },
+                credential_shell_policy: if text("credentialShellPolicy") == "ask" {
+                    dsh_tools::CredentialShellPolicy::Ask
+                } else {
+                    dsh_tools::CredentialShellPolicy::Strict
+                },
+            }
+        }));
+    let watched_security_policy = Arc::clone(&security_policy_state);
+    let _security_policy_watch = (security_scope.watch)(Arc::new(move |next, _previous| {
+        if let dsh_schemastery::Data::Object(object) = next {
+            let text = |key: &str| match object.get(key) {
+                Some(dsh_schemastery::Data::String(value)) => value.as_str(),
+                _ => "",
+            };
+            *watched_security_policy.write() = dsh_tools::SecurityPolicyConfig {
+                risk_tool_policy: if text("riskToolPolicy") == "deny" {
+                    dsh_tools::RiskToolPolicy::Deny
+                } else {
+                    dsh_tools::RiskToolPolicy::Ask
+                },
+                outside_write_policy: match text("outsideWritePolicy") {
+                    "deny" => dsh_tools::OutsideWritePolicy::Deny,
+                    "ask-every-time" => dsh_tools::OutsideWritePolicy::AskEveryTime,
+                    _ => dsh_tools::OutsideWritePolicy::AskDirectory,
+                },
+                sensitive_read_policy: if text("sensitiveReadPolicy") == "deny" {
+                    dsh_tools::SensitiveReadPolicy::Deny
+                } else {
+                    dsh_tools::SensitiveReadPolicy::Ask
+                },
+                credential_shell_policy: if text("credentialShellPolicy") == "ask" {
+                    dsh_tools::CredentialShellPolicy::Ask
+                } else {
+                    dsh_tools::CredentialShellPolicy::Strict
+                },
+            };
+        }
+        Box::pin(async {})
+    }));
     let tools = ToolRuntime::install(
         ctx,
         dsh_tools::Config {
@@ -2095,7 +2231,7 @@ fn compose_host_in_fiber(
         },
     )
     .map_err(|error| format!("tools: {error}"))?;
-    dsh_tools::install_security_policy(ctx);
+    dsh_tools::install_security_policy(ctx, security_policy_state);
     let install_timeout_policy = dsh_timeout_policy::apply(ctx);
     futures::executor::block_on(install_timeout_policy());
     let _fs = dsh_fs_local::LocalFileSystem::install(
@@ -2310,6 +2446,34 @@ fn compose_host_in_fiber(
             timeout_ms: approval_timeout_ms,
         },
     );
+    let read_approval_runtime = |value: &dsh_schemastery::Data| {
+        let object = match value {
+            dsh_schemastery::Data::Object(object) => object,
+            _ => return (30_000, dsh_user_approval::UnattendedPolicy::Deny),
+        };
+        let timeout = match object.get("approvalTimeoutSeconds") {
+            Some(dsh_schemastery::Data::Number(value)) => (*value as u64) * 1_000,
+            _ => 30_000,
+        };
+        let unattended = match object.get("unattendedPolicy") {
+            Some(dsh_schemastery::Data::String(value)) if value == "allow-all" => {
+                dsh_user_approval::UnattendedPolicy::AllowAll
+            }
+            Some(dsh_schemastery::Data::String(value)) if value == "allow-safe-only" => {
+                dsh_user_approval::UnattendedPolicy::AllowSafeOnly
+            }
+            _ => dsh_user_approval::UnattendedPolicy::Deny,
+        };
+        (timeout, unattended)
+    };
+    let (runtime_timeout, runtime_unattended) = read_approval_runtime(&(security_scope.get)());
+    approval.set_runtime_options(runtime_timeout, runtime_unattended);
+    let watched_approval = Arc::clone(&approval);
+    let _approval_settings_watch = (security_scope.watch)(Arc::new(move |next, _previous| {
+        let (timeout, unattended) = read_approval_runtime(next);
+        watched_approval.set_runtime_options(timeout, unattended);
+        async move {}.boxed()
+    }));
     let permission_presets =
         dsh_permission_presets::PermissionPresetService::install(ctx, Default::default())
             .map_err(|error| format!("permission-presets: {error}"))?;

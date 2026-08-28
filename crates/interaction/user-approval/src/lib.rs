@@ -92,6 +92,13 @@ pub enum ApprovalPolicy {
     Never,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnattendedPolicy {
+    Deny,
+    AllowSafeOnly,
+    AllowAll,
+}
+
 #[cfg(test)]
 mod policy_tests {
     use super::ApprovalOutcome;
@@ -214,16 +221,21 @@ pub struct ApprovalService {
     ctx: Context,
     config: Config,
     grants: grants::GrantStore,
+    timeout_ms: std::sync::atomic::AtomicU64,
+    unattended: std::sync::atomic::AtomicU8,
 }
 
 impl ApprovalService {
     /// Create the service, register it as `approval`, and mount the
     /// system-prompt policy context (TS constructor + `ctx.inject`).
     pub fn install(ctx: &Context, config: Config) -> Arc<Self> {
+        let timeout_ms = config.timeout_ms.unwrap_or(30_000);
         let service = Arc::new(Self {
             ctx: ctx.clone(),
             config,
             grants: grants::GrantStore::default(),
+            timeout_ms: std::sync::atomic::AtomicU64::new(timeout_ms),
+            unattended: std::sync::atomic::AtomicU8::new(0),
         });
         ctx.register_service(service.clone());
 
@@ -287,6 +299,27 @@ impl ApprovalService {
     /// config`; the permission-presets seam reads `config.policy`).
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    pub fn set_runtime_options(&self, timeout_ms: u64, unattended: UnattendedPolicy) {
+        use std::sync::atomic::Ordering;
+        self.timeout_ms.store(timeout_ms, Ordering::Release);
+        self.unattended.store(
+            match unattended {
+                UnattendedPolicy::Deny => 0,
+                UnattendedPolicy::AllowSafeOnly => 1,
+                UnattendedPolicy::AllowAll => 2,
+            },
+            Ordering::Release,
+        );
+    }
+
+    fn unattended_outcome(&self) -> ApprovalOutcome {
+        if self.unattended.load(std::sync::atomic::Ordering::Acquire) == 2 {
+            ApprovalOutcome::AllowedOnce
+        } else {
+            ApprovalOutcome::Rejected
+        }
     }
 
     /// Switch one live agent's policy and queue the transition for its next
@@ -409,11 +442,13 @@ impl ApprovalService {
                 Err(_) => ApprovalOutcome::Unavailable,
             }
         };
-        let timeout_ms = self.config.timeout_ms.unwrap_or(30_000);
+        let timeout_ms = self.timeout_ms.load(std::sync::atomic::Ordering::Acquire);
+        let unattended = self.unattended_outcome();
         let timed_answer = async move {
-            tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), answer)
-                .await
-                .unwrap_or(ApprovalOutcome::Rejected)
+            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), answer).await {
+                Ok(ApprovalOutcome::Unavailable) | Err(_) => unattended,
+                Ok(outcome) => outcome,
+            }
         };
         let Some(signal) = &req.signal else {
             return timed_answer.await;
