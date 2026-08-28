@@ -5883,7 +5883,7 @@ window.__ModuleLoader__.load({
 								children: t("approval.allowOnce")
 							}), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 								variant: "primary",
-								disabled: answered,
+								disabled: answered || approval.data.rememberable === false,
 								onClick: () => {
 									answer("allowed-always");
 								},

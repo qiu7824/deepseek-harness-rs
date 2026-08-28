@@ -347,8 +347,14 @@ impl ToolExecutionResult {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PreToolDecision {
     Allow,
-    Deny { reason: String },
-    Ask { reason: Option<String> },
+    Deny {
+        reason: String,
+    },
+    Ask {
+        reason: Option<String>,
+        grant_key: Option<String>,
+        rememberable: bool,
+    },
 }
 
 /// Post-dispatch decision.
@@ -934,7 +940,14 @@ impl ToolRuntime {
             let gate = downcast_arc::<PreToolDecision>(&gate)
                 .unwrap_or_else(|| panic!("tools/pre-execute listener returned no decision"));
             let (decision, approval_cancelled) = match &*gate {
-                PreToolDecision::Ask { reason } => self.service_ask(&run_ctx, reason.clone()).await,
+                PreToolDecision::Ask {
+                    reason,
+                    grant_key,
+                    rememberable,
+                } => {
+                    self.service_ask(&run_ctx, reason.clone(), grant_key.clone(), *rememberable)
+                        .await
+                }
                 PreToolDecision::Allow => (PreToolDecision::Allow, false),
                 PreToolDecision::Deny { reason } => (
                     PreToolDecision::Deny {
@@ -1260,6 +1273,8 @@ impl ToolRuntime {
         &self,
         run_ctx: &ToolRunContext,
         reason: Option<String>,
+        grant_key: Option<String>,
+        rememberable: bool,
     ) -> (PreToolDecision, bool) {
         let Some(agent) = run_ctx.agent.clone() else {
             return (
@@ -1287,8 +1302,8 @@ impl ToolRuntime {
             tool_name: run_ctx.name.clone(),
             call_id: Some(run_ctx.call_id.as_str().to_string()),
             reason: reason.clone(),
-            grant_key: Some(format!("tool:{}", run_ctx.name)),
-            rememberable: true,
+            grant_key,
+            rememberable,
             signal: Some(signal),
         };
         match approval.request(&request).await {

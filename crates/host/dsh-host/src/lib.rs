@@ -40,6 +40,89 @@ pub fn collect_allocator_on_park() {
     });
 }
 
+struct CollectAfterBytesInner<F: FnOnce()> {
+    bytes: Vec<u8>,
+    collect: parking_lot::Mutex<Option<F>>,
+}
+
+impl<F: FnOnce()> AsRef<[u8]> for CollectAfterBytesInner<F> {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl<F: FnOnce()> Drop for CollectAfterBytesInner<F> {
+    fn drop(&mut self) {
+        if let Some(collect) = self.collect.get_mut().take() {
+            collect();
+        }
+    }
+}
+
+fn bytes_then_collect_stream<F>(
+    bytes: Vec<u8>,
+    collect: F,
+) -> impl futures::Stream<Item = Result<axum::body::Bytes, std::convert::Infallible>>
+where
+    F: FnOnce() + Send + 'static,
+{
+    let bytes = axum::body::Bytes::from_owner(CollectAfterBytesInner {
+        bytes,
+        collect: parking_lot::Mutex::new(Some(collect)),
+    });
+    futures::stream::once(async move { Ok(bytes) })
+}
+
+#[cfg(windows)]
+fn collect_allocator_after_response() {
+    // The response byte buffer has reached body EOS or was dropped. Collect
+    // the current HTTP worker, notify every Tokio worker through the park
+    // epoch, and also run one collection on the blocking pool where JSONL /
+    // SQLite work may have allocated transient pages.
+    unsafe { libmimalloc_sys::mi_collect(true) };
+    request_allocator_collect();
+}
+
+#[cfg(test)]
+mod allocator_response_lifecycle_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn history_body_requests_collection_only_after_end_of_stream() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let mut stream = Box::pin(super::bytes_then_collect_stream(vec![1, 2, 3], move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        let bytes = stream.next().await.unwrap().unwrap();
+        assert_eq!(bytes.as_ref(), &[1, 2, 3]);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(stream.next().await.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(bytes);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dropped_history_body_still_requests_collection() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let mut stream = Box::pin(super::bytes_then_collect_stream(vec![1, 2, 3], move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        let bytes = stream.next().await.unwrap().unwrap();
+        drop(stream);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(bytes);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+}
+
 fn packaged_resource(relative: &str) -> std::path::PathBuf {
     let adjacent = std::env::current_exe()
         .ok()
@@ -919,7 +1002,13 @@ async fn bridge_api_request(request: WebRequest, handler: Arc<FetchHandler>) -> 
             #[cfg(windows)]
             {
                 if collect_after_response {
-                    request_allocator_collect();
+                    return WebResponse::from_parts(
+                        parts,
+                        WebBody::from_stream(bytes_then_collect_stream(
+                            bytes,
+                            collect_allocator_after_response,
+                        )),
+                    );
                 } else if bytes.len() >= 256 * 1024 {
                     // SAFETY: the typed RPC tree has already been serialized
                     // and dropped; collect this worker's transient pages.
@@ -2006,6 +2095,7 @@ fn compose_host_in_fiber(
         },
     )
     .map_err(|error| format!("tools: {error}"))?;
+    dsh_tools::install_security_policy(ctx);
     let install_timeout_policy = dsh_timeout_policy::apply(ctx);
     futures::executor::block_on(install_timeout_policy());
     let _fs = dsh_fs_local::LocalFileSystem::install(

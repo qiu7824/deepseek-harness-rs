@@ -49,6 +49,8 @@ pub fn install(ctx: &Context, config: Config) -> Result<(), String> {
             {
                 return Some(arc(PreToolDecision::Ask {
                     reason: Some("Computer Use 将操作桌面或浏览器，需要用户确认".to_string()),
+                    grant_key: Some("tool:computer_use".to_string()),
+                    rememberable: true,
                 }));
             }
             let Some(next) = next else {

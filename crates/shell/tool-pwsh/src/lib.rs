@@ -100,6 +100,16 @@ impl ToolPwshService {
                 {
                     return Some(arc(PreToolDecision::Ask {
                         reason: Some("删除文件夹需要用户确认".to_string()),
+                        grant_key: Some(format!(
+                            "shell:pwsh:{}",
+                            execution
+                                .arguments
+                                .get("command")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default()
+                                .trim()
+                        )),
+                        rememberable: true,
                     }));
                 }
                 let Some(next) = next else {

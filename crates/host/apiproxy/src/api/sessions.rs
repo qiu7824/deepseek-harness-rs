@@ -293,9 +293,7 @@ fn coalesce_history_transport_events_inner(
     events: Vec<SessionEvent>,
     strip_provenance: bool,
 ) -> Vec<SessionEvent> {
-    fn key(
-        event: &SessionEvent,
-    ) -> Option<(u64, u64, u64, String, Option<String>, Option<String>)> {
+    fn key(event: &SessionEvent) -> Option<(u64, u64, u64, &str, Option<&str>, Option<&str>)> {
         if event.type_ != "assistant/chunk" {
             return None;
         }
@@ -308,15 +306,9 @@ fn coalesce_history_transport_events_inner(
             event.data.get("turn")?.as_u64()?,
             event.data.get("step")?.as_u64()?,
             chunk.get("index")?.as_u64()?,
-            kind.to_string(),
-            chunk
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned),
-            chunk
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned),
+            kind,
+            chunk.get("id").and_then(serde_json::Value::as_str),
+            chunk.get("name").and_then(serde_json::Value::as_str),
         ))
     }
 
@@ -346,7 +338,7 @@ fn coalesce_history_transport_events_inner(
             compact.push(event);
             continue;
         };
-        if key(previous).as_ref() != Some(&event_key) {
+        if key(previous) != Some(event_key) {
             compact.push(event);
             continue;
         }
@@ -359,15 +351,8 @@ fn coalesce_history_transport_events_inner(
             .get(field)
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
-        if let Some(existing) = previous.data["chunk"]
-            .get(field)
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-        {
-            let mut joined = String::with_capacity(existing.len() + delta.len());
-            joined.push_str(&existing);
-            joined.push_str(delta);
-            previous.data["chunk"][field] = serde_json::Value::String(joined);
+        if let Some(serde_json::Value::String(existing)) = previous.data["chunk"].get_mut(field) {
+            existing.push_str(delta);
             previous.data["__historyEndSeq"] = serde_json::Value::from(event.seq);
             previous.time = event.time;
         } else {
@@ -390,6 +375,24 @@ pub(crate) fn coalesce_history_transport_events(events: Vec<SessionEvent>) -> Ve
 
 pub(crate) fn coalesce_history_transport_batch(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
     coalesce_history_transport_events_inner(events, false)
+}
+
+struct CountingWriter(usize);
+
+impl std::io::Write for CountingWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(crate) fn serialized_event_len(event: &SessionEvent) -> usize {
+    let mut writer = CountingWriter(0);
+    serde_json::to_writer(&mut writer, event).map_or(0, |_| writer.0)
 }
 
 /// `session.history` response value.
@@ -670,6 +673,68 @@ mod history_paging_contract_tests {
         assert_eq!(compact[0].seq, 0);
         assert_eq!(compact[0].data["__historyEndSeq"], 3);
         assert_eq!(compact[0].data["chunk"]["text"], "0123");
+    }
+
+    #[test]
+    fn history_transport_appends_into_the_existing_string_buffer() {
+        let mut initial = String::with_capacity(4_096);
+        initial.push('a');
+        let initial_ptr = initial.as_ptr();
+        let make = |seq, text: String| {
+            let mut chunk = serde_json::Map::new();
+            chunk.insert(
+                "type".to_string(),
+                serde_json::Value::String("text-delta".to_string()),
+            );
+            chunk.insert("index".to_string(), serde_json::Value::from(0));
+            chunk.insert("text".to_string(), serde_json::Value::String(text));
+            let mut data = serde_json::Map::new();
+            data.insert("turn".to_string(), serde_json::Value::from(1));
+            data.insert("step".to_string(), serde_json::Value::from(1));
+            data.insert("chunk".to_string(), serde_json::Value::Object(chunk));
+            SessionEvent {
+                type_: "assistant/chunk".to_string(),
+                seq,
+                time: seq as i64,
+                data: serde_json::Value::Object(data),
+                ignorable: None,
+                surface_op: None,
+                source_event_seqs: None,
+            }
+        };
+
+        let compact = coalesce_history_transport_events(vec![
+            make(0, initial),
+            make(1, "b".to_string()),
+            make(2, "c".to_string()),
+        ]);
+        let merged = compact[0].data["chunk"]["text"]
+            .as_str()
+            .expect("merged text");
+
+        assert_eq!(merged, "abc");
+        assert_eq!(
+            merged.as_ptr(),
+            initial_ptr,
+            "the preallocated buffer must be reused"
+        );
+    }
+
+    #[test]
+    fn serialized_event_length_matches_json_without_allocating_a_vec() {
+        let event = SessionEvent {
+            type_: "user/message".to_string(),
+            seq: 7,
+            time: 9,
+            data: serde_json::json!({"message":{"role":"user","content":[{"type":"text","text":"hello"}]}}),
+            ignorable: None,
+            surface_op: Some(dsh_session::SurfaceOp::Append),
+            source_event_seqs: None,
+        };
+        assert_eq!(
+            serialized_event_len(&event),
+            serde_json::to_vec(&event).unwrap().len()
+        );
     }
 
     #[test]

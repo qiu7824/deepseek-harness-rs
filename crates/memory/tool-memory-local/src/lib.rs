@@ -281,6 +281,8 @@ pub fn install(ctx: &Context, root: PathBuf) -> Result<(), String> {
             {
                 return Some(arc(PreToolDecision::Ask {
                     reason: Some("写入或删除长期记忆需要用户确认".to_string()),
+                    grant_key: Some("tool:memory-mutation".to_string()),
+                    rememberable: true,
                 }));
             }
             let Some(next) = next else {

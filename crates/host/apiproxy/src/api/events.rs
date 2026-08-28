@@ -126,6 +126,9 @@ pub enum MuxFrame {
         call_id: Option<CallId>,
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        grant_key: Option<String>,
+        rememberable: bool,
     },
     #[serde(rename = "approval/resolved")]
     ApprovalResolved {

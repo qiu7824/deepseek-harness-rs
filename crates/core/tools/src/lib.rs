@@ -9,6 +9,7 @@ pub mod index;
 pub mod json_schema;
 pub mod presentation;
 pub mod schema;
+mod security_policy;
 pub mod types;
 
 pub use index::{
@@ -35,3 +36,7 @@ pub use schema::{
     validate_args, value_schema_spec_to_json_schema,
 };
 pub use types::{CodeDispatchEventData, CodeDispatchStartEventData};
+
+pub fn install_security_policy(ctx: &cordis::Context) {
+    security_policy::install(ctx);
+}

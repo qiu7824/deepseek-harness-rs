@@ -39,6 +39,8 @@ pub fn install(ctx: &Context, config: Config) -> Result<(), String> {
                     reason: Some(
                         "语音转写将允许外部 STT 命令读取所选本地音频文件，需要用户确认".to_string(),
                     ),
+                    grant_key: Some("tool:voice-input".to_string()),
+                    rememberable: true,
                 }));
             }
             match next {

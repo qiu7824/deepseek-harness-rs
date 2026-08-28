@@ -54,10 +54,15 @@ async fn pick_macos(signal: &AbortSignal) -> Option<String> {
 
 /// Open the Windows folder chooser through PowerShell's native WinForms dialog.
 #[cfg(windows)]
+fn windows_picker_script() -> &'static str {
+    r#"[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='Select workspace directory'; $d.RootFolder=[System.Environment+SpecialFolder]::MyComputer; $d.ShowNewFolderButton=$true; if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){$d.SelectedPath}"#
+}
+
+#[cfg(windows)]
 async fn pick_windows(signal: &AbortSignal) -> Option<String> {
     let abort = signal.clone();
     let signal_flag: dsh_native_command::NativeCommandAbort = Arc::new(move || abort.aborted());
-    let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='Select workspace directory'; $d.RootFolder=[System.Environment+SpecialFolder]::MyComputer; $d.ShowNewFolderButton=$true; if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){$d.SelectedPath}"#;
+    let script = windows_picker_script();
     match dsh_native_command::run_native_command(
         "powershell.exe",
         vec![
@@ -182,4 +187,20 @@ impl Plugin for NativeDirectoryPickerPlugin {
 #[allow(unused)]
 fn _vocab() {
     let _ = arc(());
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::windows_picker_script;
+
+    #[test]
+    fn windows_picker_forces_utf8_before_emitting_selected_path() {
+        let script = windows_picker_script();
+        assert!(
+            script.starts_with(
+                "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+            ),
+            "PowerShell 5.1 otherwise emits selected paths in the active OEM code page"
+        );
+    }
 }

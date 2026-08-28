@@ -3090,7 +3090,7 @@ impl ApiProxyService {
     fn compact_history_bytes(events: &[dsh_session::SessionEvent]) -> usize {
         events
             .iter()
-            .map(|event| serde_json::to_vec(event).map_or(0, |encoded| encoded.len()))
+            .map(crate::api::sessions::serialized_event_len)
             .sum()
     }
 

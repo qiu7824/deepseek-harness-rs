@@ -5615,7 +5615,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				approvalId: approvalRequestIdSchema,
 				toolName: string(),
 				callId: string().optional(),
-				reason: string().optional()
+				reason: string().optional(),
+				grantKey: string().optional(),
+				rememberable: boolean()
 			}),
 			object({
 				type: literal("approval/resolved"),

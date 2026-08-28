@@ -47,6 +47,8 @@ struct PendingApproval {
     tool_name: String,
     call_id: Option<String>,
     reason: Option<String>,
+    grant_key: Option<String>,
+    rememberable: bool,
     resolve: oneshot::Sender<ApprovalOutcome>,
 }
 
@@ -404,6 +406,8 @@ impl InteractionState {
             tool_name: request.tool_name.clone(),
             call_id: request.call_id.clone(),
             reason: request.reason.clone(),
+            grant_key: request.grant_key.clone(),
+            rememberable: request.rememberable,
             resolve,
         };
         let frame = approval_requested_frame(&pending);
@@ -633,12 +637,16 @@ fn approval_requested_frame(pending: &PendingApproval) -> FrameRequest {
         "sessionId": pending.session_id,
         "approvalId": pending.approval_id,
         "toolName": pending.tool_name,
+        "rememberable": pending.rememberable,
     });
     if let Some(call_id) = &pending.call_id {
         payload["callId"] = serde_json::json!(call_id);
     }
     if let Some(reason) = &pending.reason {
         payload["reason"] = serde_json::json!(reason);
+    }
+    if let Some(grant_key) = &pending.grant_key {
+        payload["grantKey"] = serde_json::json!(grant_key);
     }
     FrameRequest {
         rpc_id: pending.rpc_id.clone(),
