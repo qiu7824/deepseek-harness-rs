@@ -24,8 +24,8 @@ use dsh_session::{SessionEvent, SessionHeader, SessionId, SessionPreparation};
 use dsh_session_persistence::{
     DEFAULT_PREPARED_SESSION_CACHE_SIZE, DEFAULT_WRITE_BATCH_MAX_DELAY_MS,
     MAX_WRITE_BATCH_DELAY_MS, PersistenceBackend, PersistenceCoordinator,
-    PersistenceCoordinatorOptions, SessionReadWindowRequest, SessionReadWindowResult, StoredPrefix,
-    StoredSuffix,
+    PersistenceCoordinatorOptions, SessionReadForwardWindowRequest, SessionReadWindowRequest,
+    SessionReadWindowResult, StoredPrefix, StoredSuffix,
 };
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -766,6 +766,84 @@ impl dsh_session_persistence::SessionPersistenceApi for SqliteSessionPersistence
         })
     }
 
+    async fn read_forward_window(
+        &self,
+        id: &SessionId,
+        request: SessionReadForwardWindowRequest,
+    ) -> Result<SessionReadWindowResult, String> {
+        if request.max_events == 0 {
+            return Err("forward window max_events must be positive".to_string());
+        }
+        self.ensure_ready().await?;
+        self.with_db(|db| {
+            let Some(row) = self.row_for(db, id)? else {
+                return Err(format!("session \"{}\" not found", id.as_str()));
+            };
+            let meta = row_to_meta(&row)?;
+            let mut statement = db
+                .prepare(
+                    "SELECT seq, type, time, data, source_event_seqs, surface_op, ignorable \
+                     FROM events WHERE session_id = ?1 AND seq >= ?2 ORDER BY seq LIMIT ?3",
+                )
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map(
+                    params![
+                        id.as_str(),
+                        request.after_seq as i64,
+                        request.max_events as i64 + 1
+                    ],
+                    |row| {
+                        Ok(EventRow {
+                            seq: row.get(0)?,
+                            type_: row.get(1)?,
+                            time: row.get(2)?,
+                            data: row.get(3)?,
+                            source_event_seqs: row.get(4)?,
+                            surface_op: row.get(5)?,
+                            ignorable: row.get(6)?,
+                        })
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            let mut events = Vec::new();
+            let mut messages = 0_u64;
+            let mut has_more = false;
+            let mut expected = request.after_seq;
+            let mut message_boundary_reached = false;
+            for row in rows {
+                let event = row_to_event(&row.map_err(|error| error.to_string())?)?;
+                if event.seq != expected {
+                    return Err(format!(
+                        "corrupt session log: seq gap (expected {expected}, got {})",
+                        event.seq
+                    ));
+                }
+                if message_boundary_reached || events.len() >= request.max_events {
+                    has_more = true;
+                    break;
+                }
+                let is_message =
+                    matches!(event.type_.as_str(), "user/message" | "assistant/message")
+                        && event.surface_op.as_ref().is_none_or(|op| op.is_append());
+                expected += 1;
+                events.push(event);
+                if is_message {
+                    messages += 1;
+                    if messages >= request.max_messages.max(1) {
+                        message_boundary_reached = true;
+                    }
+                }
+            }
+            Ok(SessionReadWindowResult {
+                meta,
+                events,
+                has_more,
+                oversized_event_count: None,
+            })
+        })
+    }
+
     async fn visit_event_chunks(
         &self,
         id: &SessionId,
@@ -1126,7 +1204,7 @@ impl PersistenceBackend<u64> for SqliteSessionPersistence {
 mod history_window_tests {
     use super::*;
     use dsh_session::{SESSION_FORMAT_VERSION, SurfaceOp, session_id};
-    use dsh_session_persistence::SessionPersistenceApi;
+    use dsh_session_persistence::{SessionPersistenceApi, SessionReadForwardWindowRequest};
 
     fn event(seq: u64, type_: &str, append_surface: bool) -> SessionEvent {
         SessionEvent {
@@ -1283,5 +1361,126 @@ mod history_window_tests {
         assert_eq!(window.events.last().map(|event| event.seq), Some(4_096));
         assert_eq!(window.oversized_event_count, None);
         assert!(window.has_more);
+    }
+
+    #[tokio::test]
+    async fn sqlite_forward_window_reports_no_more_at_exact_eof() {
+        let ctx = Context::root();
+        let backend = SqliteSessionPersistence::install(
+            &ctx,
+            SqliteConfig {
+                path: ":memory:".to_string(),
+                journal_mode: JournalMode::Delete,
+                ..SqliteConfig::default()
+            },
+        )
+        .expect("install sqlite persistence");
+        let id = session_id("sqlite-forward-window-eof");
+        SessionPersistenceApi::create(
+            backend.as_ref(),
+            SessionHeader {
+                version: SESSION_FORMAT_VERSION,
+                id: id.clone(),
+                created_at: 1,
+                cwd: Some("D:/workspace".to_string()),
+                parent_session: None,
+                seed_length: None,
+                origin: None,
+                delegation_depth: None,
+                agent_preset: Some("standard".to_string()),
+            },
+        )
+        .await
+        .expect("create session");
+        SessionPersistenceApi::append(
+            backend.as_ref(),
+            &id,
+            &[
+                event(0, "user/message", true),
+                event(1, "assistant/message", true),
+            ],
+        )
+        .await
+        .expect("append events");
+
+        let window = SessionPersistenceApi::read_forward_window(
+            backend.as_ref(),
+            &id,
+            SessionReadForwardWindowRequest {
+                after_seq: 0,
+                max_messages: 2,
+                max_events: 4_096,
+            },
+        )
+        .await
+        .expect("read forward window");
+
+        assert_eq!(window.events.len(), 2);
+        assert!(!window.has_more);
+    }
+
+    #[tokio::test]
+    async fn sqlite_forward_window_rejects_sequence_gaps() {
+        let ctx = Context::root();
+        let backend = SqliteSessionPersistence::install(
+            &ctx,
+            SqliteConfig {
+                path: ":memory:".to_string(),
+                journal_mode: JournalMode::Delete,
+                ..SqliteConfig::default()
+            },
+        )
+        .expect("install sqlite persistence");
+        let id = session_id("sqlite-forward-window-gap");
+        SessionPersistenceApi::create(
+            backend.as_ref(),
+            SessionHeader {
+                version: SESSION_FORMAT_VERSION,
+                id: id.clone(),
+                created_at: 1,
+                cwd: Some("D:/workspace".to_string()),
+                parent_session: None,
+                seed_length: None,
+                origin: None,
+                delegation_depth: None,
+                agent_preset: Some("standard".to_string()),
+            },
+        )
+        .await
+        .expect("create session");
+        SessionPersistenceApi::append(
+            backend.as_ref(),
+            &id,
+            &[
+                event(0, "user/message", true),
+                event(1, "assistant/message", true),
+            ],
+        )
+        .await
+        .expect("append events");
+        backend
+            .with_db(|db| {
+                db.execute(
+                    "UPDATE events SET seq = 2 WHERE session_id = ?1 AND seq = 1",
+                    [id.as_str()],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .expect("create sequence gap");
+
+        let error = SessionPersistenceApi::read_forward_window(
+            backend.as_ref(),
+            &id,
+            SessionReadForwardWindowRequest {
+                after_seq: 0,
+                max_messages: 2,
+                max_events: 4_096,
+            },
+        )
+        .await
+        .expect_err("sequence gap must fail");
+
+        assert!(error.contains("seq gap"), "error: {error}");
     }
 }

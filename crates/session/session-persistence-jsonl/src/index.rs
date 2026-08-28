@@ -22,7 +22,8 @@ use dsh_session::{
 };
 use dsh_session_persistence::{
     PersistenceBackend, PersistenceCoordinator, PersistenceCoordinatorOptions,
-    SessionReadWindowRequest, SessionReadWindowResult, StoredPrefix,
+    SessionReadForwardWindowRequest, SessionReadWindowRequest, SessionReadWindowResult,
+    StoredPrefix,
 };
 use parking_lot::Mutex;
 
@@ -219,6 +220,33 @@ fn visit_zstd_frame_tail(
             Ok(accepting)
         }
         Err(crate::packed_stream::PackedStreamError::Invalid(message)) => Err(message),
+    }
+}
+
+fn forward_window_from_chunk(
+    meta: SessionHeader,
+    chunk: dsh_session_persistence::SessionEventChunk,
+    max_messages: u64,
+) -> SessionReadWindowResult {
+    let mut messages = 0_u64;
+    let mut end = chunk.events.len();
+    for (index, event) in chunk.events.iter().enumerate() {
+        if matches!(event.type_.as_str(), "user/message" | "assistant/message")
+            && event.surface_op.as_ref().is_none_or(|op| op.is_append())
+        {
+            messages += 1;
+            if messages >= max_messages.max(1) {
+                end = index + 1;
+                break;
+            }
+        }
+    }
+    let has_more = end < chunk.events.len() || chunk.next_seq.is_some();
+    SessionReadWindowResult {
+        meta,
+        events: chunk.events.into_iter().take(end).collect(),
+        has_more,
+        oversized_event_count: None,
     }
 }
 
@@ -1125,6 +1153,71 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         Ok(dsh_session_persistence::SessionEventChunk { events, next_seq })
     }
 
+    async fn read_forward_window(
+        &self,
+        id: &SessionId,
+        request: SessionReadForwardWindowRequest,
+    ) -> Result<SessionReadWindowResult, String> {
+        if request.max_events == 0 {
+            return Err("forward window max_events must be positive".to_string());
+        }
+        self.ensure_root_encoding().await?;
+        let Some(path) = self.find_log(id).await? else {
+            return Err(format!("session \"{}\" not found", id.as_str()));
+        };
+        if self.compression != JsonlCompression::Zstd {
+            let chunk = self
+                .read_event_chunk(id, request.after_seq, request.max_events)
+                .await?;
+            return Ok(forward_window_from_chunk(
+                self.read_list_metadata(id).await?.meta,
+                chunk,
+                request.max_messages,
+            ));
+        }
+        let mut events = Vec::new();
+        let mut messages = 0_u64;
+        let mut has_more = false;
+        let mut message_boundary_reached = false;
+        let mut expected = request.after_seq;
+        stream_zstd_events(&path, |event| {
+            if event.seq < request.after_seq {
+                return Ok(true);
+            }
+            if event.seq != expected {
+                return Err(format!(
+                    "corrupt session log: seq gap (expected {expected}, got {})",
+                    event.seq
+                ));
+            }
+            if message_boundary_reached {
+                has_more = true;
+                return Ok(false);
+            }
+            if events.len() >= request.max_events {
+                has_more = true;
+                return Ok(false);
+            }
+            let is_message = matches!(event.type_.as_str(), "user/message" | "assistant/message")
+                && event.surface_op.as_ref().is_none_or(|op| op.is_append());
+            expected += 1;
+            events.push(event);
+            if is_message {
+                messages += 1;
+                if messages >= request.max_messages.max(1) {
+                    message_boundary_reached = true;
+                }
+            }
+            Ok(true)
+        })?;
+        Ok(SessionReadWindowResult {
+            meta: self.read_list_metadata(id).await?.meta,
+            events,
+            has_more,
+            oversized_event_count: None,
+        })
+    }
+
     async fn visit_event_chunks(
         &self,
         id: &SessionId,
@@ -1609,7 +1702,7 @@ impl PersistenceBackend<JsonlTornMarker> for JsonlSessionPersistence {
 mod history_window_tests {
     use super::*;
     use dsh_session::{SESSION_FORMAT_VERSION, SurfaceOp, session_id};
-    use dsh_session_persistence::SessionPersistenceApi;
+    use dsh_session_persistence::{SessionPersistenceApi, SessionReadForwardWindowRequest};
 
     fn event(seq: u64, type_: &str, append_surface: bool) -> SessionEvent {
         SessionEvent {
@@ -1720,6 +1813,140 @@ mod history_window_tests {
             .await
             .expect("visit ignores recoverable torn final frame");
         assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 2_002);
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn zstd_jsonl_forward_window_stops_at_requested_message_boundary() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-jsonl-forward-window-{}", uuid::Uuid::new_v4()));
+        let ctx = Context::root();
+        let backend = JsonlSessionPersistence::install(
+            &ctx,
+            JsonlConfig {
+                root: root.to_string_lossy().to_string(),
+                compression: JsonlCompression::Zstd,
+                ..JsonlConfig::default()
+            },
+        )
+        .expect("install jsonl persistence");
+        let id = session_id("jsonl-forward-window");
+        SessionPersistenceApi::create(
+            backend.as_ref(),
+            SessionHeader {
+                version: SESSION_FORMAT_VERSION,
+                id: id.clone(),
+                created_at: 1,
+                cwd: Some("D:/workspace".to_string()),
+                parent_session: None,
+                seed_length: None,
+                origin: None,
+                delegation_depth: None,
+                agent_preset: Some("standard".to_string()),
+            },
+        )
+        .await
+        .expect("create session");
+        let mut events = Vec::new();
+        for seq in 0..6_000 {
+            let type_ = if seq % 100 == 0 {
+                "user/message"
+            } else if seq % 100 == 99 {
+                "assistant/message"
+            } else {
+                "assistant/chunk"
+            };
+            events.push(event(
+                seq,
+                type_,
+                matches!(type_, "user/message" | "assistant/message"),
+            ));
+        }
+        SessionPersistenceApi::append(backend.as_ref(), &id, &events)
+            .await
+            .expect("append events");
+
+        let window = SessionPersistenceApi::read_forward_window(
+            backend.as_ref(),
+            &id,
+            SessionReadForwardWindowRequest {
+                after_seq: 4_000,
+                max_messages: 2,
+                max_events: 4_096,
+            },
+        )
+        .await
+        .expect("read forward window");
+
+        assert_eq!(window.events.first().map(|event| event.seq), Some(4_000));
+        assert_eq!(window.events.last().map(|event| event.seq), Some(4_099));
+        assert_eq!(window.events.len(), 100);
+        assert!(window.has_more);
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn zstd_jsonl_forward_window_reports_no_more_at_exact_eof() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-jsonl-forward-window-eof-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let ctx = Context::root();
+        let backend = JsonlSessionPersistence::install(
+            &ctx,
+            JsonlConfig {
+                root: root.to_string_lossy().to_string(),
+                compression: JsonlCompression::Zstd,
+                ..JsonlConfig::default()
+            },
+        )
+        .expect("install jsonl persistence");
+        let id = session_id("jsonl-forward-window-eof");
+        SessionPersistenceApi::create(
+            backend.as_ref(),
+            SessionHeader {
+                version: SESSION_FORMAT_VERSION,
+                id: id.clone(),
+                created_at: 1,
+                cwd: Some("D:/workspace".to_string()),
+                parent_session: None,
+                seed_length: None,
+                origin: None,
+                delegation_depth: None,
+                agent_preset: Some("standard".to_string()),
+            },
+        )
+        .await
+        .expect("create session");
+        SessionPersistenceApi::append(
+            backend.as_ref(),
+            &id,
+            &[
+                event(0, "user/message", true),
+                event(1, "assistant/message", true),
+            ],
+        )
+        .await
+        .expect("append events");
+
+        let window = SessionPersistenceApi::read_forward_window(
+            backend.as_ref(),
+            &id,
+            SessionReadForwardWindowRequest {
+                after_seq: 0,
+                max_messages: 2,
+                max_events: 4_096,
+            },
+        )
+        .await
+        .expect("read forward window");
+
+        assert_eq!(window.events.len(), 2);
+        assert!(!window.has_more);
 
         drop(backend);
         let _ = std::fs::remove_dir_all(root);

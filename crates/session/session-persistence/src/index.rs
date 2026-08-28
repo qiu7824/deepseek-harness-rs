@@ -80,6 +80,14 @@ pub struct SessionReadWindowRequest {
     pub max_events: usize,
 }
 
+/// One bounded forward history read starting at an indexed event sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionReadForwardWindowRequest {
+    pub after_seq: u64,
+    pub max_messages: u64,
+    pub max_events: usize,
+}
+
 /// One message-aligned history window. An oversized safe group returns no
 /// events and reports the required count instead of silently cutting it.
 #[derive(Debug, Clone, PartialEq)]
@@ -225,6 +233,39 @@ pub trait SessionPersistenceApi: Send + Sync {
         Ok(SessionEventChunk {
             events: whole.events,
             next_seq,
+        })
+    }
+
+    /// Read a bounded, message-aligned forward page for indexed jumps.
+    /// Backends should override this to stop decoding when the page is full.
+    async fn read_forward_window(
+        &self,
+        id: &SessionId,
+        request: SessionReadForwardWindowRequest,
+    ) -> Result<SessionReadWindowResult, String> {
+        let chunk = self
+            .read_event_chunk(id, request.after_seq, request.max_events)
+            .await?;
+        let mut messages = 0_u64;
+        let mut end = chunk.events.len();
+        for (index, event) in chunk.events.iter().enumerate() {
+            if matches!(event.type_.as_str(), "user/message" | "assistant/message")
+                && event.surface_op.as_ref().is_none_or(|op| op.is_append())
+            {
+                messages += 1;
+                if messages >= request.max_messages.max(1) {
+                    end = index + 1;
+                    break;
+                }
+            }
+        }
+        let has_more = end < chunk.events.len() || chunk.next_seq.is_some();
+        let meta = self.read_list_metadata(id).await?.meta;
+        Ok(SessionReadWindowResult {
+            meta,
+            events: chunk.events.into_iter().take(end).collect(),
+            has_more,
+            oversized_event_count: None,
         })
     }
 

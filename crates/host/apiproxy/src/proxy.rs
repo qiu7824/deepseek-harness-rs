@@ -3102,23 +3102,18 @@ impl ApiProxyService {
     ) -> Result<(Vec<dsh_session::SessionEvent>, bool), String> {
         const MAX_HISTORY_EVENTS: usize = 4_096;
         const MAX_COMPACT_BYTES: usize = 8 * 1024 * 1024;
-        let chunk = persistence
-            .read_event_chunk(session_id, from_seq, MAX_HISTORY_EVENTS)
+        let window = persistence
+            .read_forward_window(
+                session_id,
+                dsh_session_persistence::SessionReadForwardWindowRequest {
+                    after_seq: from_seq,
+                    max_messages,
+                    max_events: MAX_HISTORY_EVENTS,
+                },
+            )
             .await?;
-        let mut end = chunk.events.len();
-        let mut messages = 0_u64;
-        for (index, event) in chunk.events.iter().enumerate() {
-            if Self::history_message(event) {
-                messages += 1;
-                if messages >= max_messages.max(1) {
-                    end = index + 1;
-                    break;
-                }
-            }
-        }
-        let has_more = end < chunk.events.len() || chunk.next_seq.is_some();
-        let mut compact =
-            crate::api::sessions::coalesce_history_transport_events(chunk.events[..end].to_vec());
+        let has_more = window.has_more;
+        let mut compact = crate::api::sessions::coalesce_history_transport_events(window.events);
         if Self::compact_history_bytes(&compact) > MAX_COMPACT_BYTES {
             return Err(format!(
                 "session.history: targeted compact window exceeds the {MAX_COMPACT_BYTES} byte budget"
