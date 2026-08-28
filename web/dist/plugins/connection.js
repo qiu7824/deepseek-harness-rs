@@ -5478,7 +5478,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		object({
 			sessionId: sessionIdSchema,
 			approvalId: approvalRequestIdSchema,
-			outcome: union([literal("allowed-once"), literal("rejected")])
+			outcome: union([literal("allowed-once"), literal("allowed-always"), literal("rejected")])
 		});
 		/**
 		* One wire task view. `kind` stays an open string because producer plugins
@@ -5623,6 +5623,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				approvalId: approvalRequestIdSchema,
 				outcome: union([
 					literal("allowed-once"),
+					literal("allowed-always"),
 					literal("rejected"),
 					literal("cancelled"),
 					literal("unavailable")
@@ -9942,7 +9943,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 								reason: "bad-response"
 							});
 							const value = message.result.value;
-							if (value.approvalId !== pendingApprovalId || value.outcome !== "allowed-once" && value.outcome !== "rejected") return Promise.resolve({
+							if (value.approvalId !== pendingApprovalId || value.outcome !== "allowed-once" && value.outcome !== "allowed-always" && value.outcome !== "rejected") return Promise.resolve({
 								accepted: false,
 								reason: "bad-response"
 							});

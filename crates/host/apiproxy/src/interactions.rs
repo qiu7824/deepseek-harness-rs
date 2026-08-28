@@ -470,6 +470,7 @@ impl InteractionState {
             }
             let outcome = match payload.outcome {
                 ApprovalClientOutcome::AllowedOnce => ApprovalOutcome::AllowedOnce,
+                ApprovalClientOutcome::AllowedAlways => ApprovalOutcome::AllowedAlways,
                 ApprovalClientOutcome::Rejected => ApprovalOutcome::Rejected,
             };
             let pending = inner

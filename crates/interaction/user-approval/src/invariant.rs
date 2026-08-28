@@ -33,7 +33,13 @@ pub const NAME: &str = "user-approval-invariant";
 /// Service required before the companion can reserve package ownership.
 pub const INJECT: [&str; 1] = ["invariants"];
 
-const APPROVAL_OUTCOMES: &[&str] = &["allowed-once", "rejected", "cancelled", "unavailable"];
+const APPROVAL_OUTCOMES: &[&str] = &[
+    "allowed-once",
+    "allowed-always",
+    "rejected",
+    "cancelled",
+    "unavailable",
+];
 const APPROVAL_POLICIES: &[&str] = &["ask", "never"];
 
 /// Per-session trace (TS `ApprovalTrace`): the open turn and the pending

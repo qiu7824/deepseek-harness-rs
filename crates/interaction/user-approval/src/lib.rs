@@ -17,6 +17,7 @@
 //!   `None` (the TS fold returns the raw string; the invariant companion
 //!   flags unknown policies anyway).
 
+pub mod grants;
 pub mod invariant;
 
 use std::sync::Arc;
@@ -47,6 +48,7 @@ pub fn approval_request_id(id: impl Into<String>) -> ApprovalRequestId {
 #[serde(rename_all = "kebab-case")]
 pub enum ApprovalOutcome {
     AllowedOnce,
+    AllowedAlways,
     Rejected,
     Cancelled,
     Unavailable,
@@ -56,6 +58,7 @@ impl ApprovalOutcome {
     pub fn as_str(&self) -> &'static str {
         match self {
             ApprovalOutcome::AllowedOnce => "allowed-once",
+            ApprovalOutcome::AllowedAlways => "allowed-always",
             ApprovalOutcome::Rejected => "rejected",
             ApprovalOutcome::Cancelled => "cancelled",
             ApprovalOutcome::Unavailable => "unavailable",
@@ -66,6 +69,7 @@ impl ApprovalOutcome {
     pub fn from_str(value: &str) -> Option<Self> {
         match value {
             "allowed-once" => Some(ApprovalOutcome::AllowedOnce),
+            "allowed-always" => Some(ApprovalOutcome::AllowedAlways),
             "rejected" => Some(ApprovalOutcome::Rejected),
             "cancelled" => Some(ApprovalOutcome::Cancelled),
             "unavailable" => Some(ApprovalOutcome::Unavailable),
@@ -86,6 +90,20 @@ impl ApprovalOutcome {
 pub enum ApprovalPolicy {
     Ask,
     Never,
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::ApprovalOutcome;
+
+    #[test]
+    fn allowed_always_round_trips_through_audit_vocabulary() {
+        assert_eq!(ApprovalOutcome::AllowedAlways.as_str(), "allowed-always");
+        assert_eq!(
+            ApprovalOutcome::from_str("allowed-always"),
+            Some(ApprovalOutcome::AllowedAlways)
+        );
+    }
 }
 
 impl ApprovalPolicy {
@@ -171,6 +189,10 @@ pub struct ApprovalRequest {
     pub call_id: Option<String>,
     /// The asker's human-readable explanation of WHY it is asking.
     pub reason: Option<String>,
+    /// Canonical session-scoped grant key, when this action may be remembered.
+    pub grant_key: Option<String>,
+    /// Whether an explicit `allowed-always` answer may persist the grant key.
+    pub rememberable: bool,
     /// Aborting withdraws the question.
     pub signal: Option<ApprovalAbort>,
 }
@@ -191,6 +213,7 @@ pub struct Config {
 pub struct ApprovalService {
     ctx: Context,
     config: Config,
+    grants: grants::GrantStore,
 }
 
 impl ApprovalService {
@@ -200,6 +223,7 @@ impl ApprovalService {
         let service = Arc::new(Self {
             ctx: ctx.clone(),
             config,
+            grants: grants::GrantStore::default(),
         });
         ctx.register_service(service.clone());
 
@@ -317,6 +341,13 @@ impl ApprovalService {
                     .to_string(),
             );
         }
+        if req
+            .grant_key
+            .as_deref()
+            .is_some_and(|key| self.grants.is_granted(session.id().as_str(), key))
+        {
+            return Ok(ApprovalOutcome::AllowedAlways);
+        }
         let id = approval_request_id(uuid::Uuid::new_v4().to_string());
         let mut asked = serde_json::json!({
             "id": id.as_str(),
@@ -328,8 +359,15 @@ impl ApprovalService {
         if let Some(reason) = &req.reason {
             asked["reason"] = serde_json::json!(reason);
         }
+        asked["rememberable"] = serde_json::json!(req.rememberable);
         session.append("approval/asked", asked, None)?;
-        let outcome = self.decide(req, session).await;
+        let mut outcome = self.decide(req, session).await;
+        if outcome == ApprovalOutcome::AllowedAlways {
+            match (req.rememberable, req.grant_key.as_deref()) {
+                (true, Some(key)) => self.grants.grant(session.id().as_str(), key),
+                _ => outcome = ApprovalOutcome::AllowedOnce,
+            }
+        }
         session.append(
             "approval/decided",
             serde_json::json!({ "id": id.as_str(), "outcome": outcome.as_str() }),
@@ -375,7 +413,7 @@ impl ApprovalService {
         let timed_answer = async move {
             tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), answer)
                 .await
-                .unwrap_or(ApprovalOutcome::Unavailable)
+                .unwrap_or(ApprovalOutcome::Rejected)
         };
         let Some(signal) = &req.signal else {
             return timed_answer.await;

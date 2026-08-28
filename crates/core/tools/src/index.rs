@@ -1287,10 +1287,15 @@ impl ToolRuntime {
             tool_name: run_ctx.name.clone(),
             call_id: Some(run_ctx.call_id.as_str().to_string()),
             reason: reason.clone(),
+            grant_key: Some(format!("tool:{}", run_ctx.name)),
+            rememberable: true,
             signal: Some(signal),
         };
         match approval.request(&request).await {
-            Ok(dsh_user_approval::ApprovalOutcome::AllowedOnce) => (PreToolDecision::Allow, false),
+            Ok(
+                dsh_user_approval::ApprovalOutcome::AllowedOnce
+                | dsh_user_approval::ApprovalOutcome::AllowedAlways,
+            ) => (PreToolDecision::Allow, false),
             Ok(dsh_user_approval::ApprovalOutcome::Cancelled) => (
                 PreToolDecision::Deny {
                     reason: "approval request was cancelled".to_string(),

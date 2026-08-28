@@ -64,6 +64,20 @@ class HistoryWindowContractTests(unittest.TestCase):
         self.assertNotIn("scopedConversation(sessions, sessionId).cancel().catch(() => {})", conversation)
         self.assertIn('op: "stop"', runtime)
 
+    def test_approval_protocol_is_fail_closed_with_three_decisions(self):
+        connection = CONNECTION.read_text(encoding="utf-8")
+        conversation = CONVERSATION.read_text(encoding="utf-8")
+        host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(encoding="utf-8")
+        approval = (ROOT / "crates" / "interaction" / "user-approval" / "src" / "lib.rs").read_text(encoding="utf-8")
+        invariant = (ROOT / "crates" / "interaction" / "user-approval" / "src" / "invariant.rs").read_text(encoding="utf-8")
+        self.assertIn('literal("allowed-always")', connection)
+        self.assertIn('answer("allowed-always")', conversation)
+        self.assertIn('"approval.allowAlways": "始终允许"', conversation)
+        self.assertNotIn("unansweredApproval", host)
+        self.assertNotIn("UnansweredApprovalPolicy", approval)
+        self.assertIn("unwrap_or(ApprovalOutcome::Rejected)", approval)
+        self.assertIn('"allowed-always"', invariant)
+
     def test_settings_describe_is_singleflight_and_write_invalidated(self):
         source = CONNECTION.read_text(encoding="utf-8")
         for required in (

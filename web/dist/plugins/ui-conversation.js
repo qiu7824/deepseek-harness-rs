@@ -5881,6 +5881,13 @@ window.__ModuleLoader__.load({
 									answer("allowed-once");
 								},
 								children: t("approval.allowOnce")
+							}), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+								variant: "primary",
+								disabled: answered,
+								onClick: () => {
+									answer("allowed-always");
+								},
+								children: t("approval.allowAlways")
 							})]
 						})
 					]
@@ -6036,6 +6043,7 @@ window.__ModuleLoader__.load({
 			"approval.escalation": "工具 {toolName} 请求越权执行",
 			"approval.reject": "拒绝",
 			"approval.allowOnce": "允许一次",
+			"approval.allowAlways": "始终允许",
 			"ask.rowTitle": "提问",
 			"ask.waiting": "等待回答",
 			"ask.cancelled": "已取消",
@@ -6213,6 +6221,7 @@ window.__ModuleLoader__.load({
 			"approval.escalation": "Tool {toolName} requests privileged execution",
 			"approval.reject": "Reject",
 			"approval.allowOnce": "Allow once",
+			"approval.allowAlways": "Always allow",
 			"ask.rowTitle": "Ask question",
 			"ask.waiting": "waiting",
 			"ask.cancelled": "cancelled",
