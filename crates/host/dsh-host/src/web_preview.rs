@@ -13,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, to_bytes};
 use dsh_agent::AgentRegistry;
+use dsh_code_graph::{CodeIndex, GraphSnapshot};
 use dsh_host_webserver::{
     RouteDisposer, WebHandlerError, WebRequest, WebResponse, WebRoute, WebRouteKind, WebServer,
 };
@@ -260,6 +261,7 @@ struct PreviewService {
     subprocess: Arc<dyn SubprocessRuntime>,
     sandbox: Arc<dyn SandboxProvider>,
     site_token: String,
+    code_index: CodeIndex,
     state: Mutex<PreviewState>,
 }
 
@@ -851,6 +853,7 @@ impl PreviewService {
             subprocess,
             sandbox,
             site_token: uuid::Uuid::new_v4().to_string(),
+            code_index: CodeIndex::new(),
             state: Mutex::new(PreviewState {
                 challenges: HashMap::new(),
                 projects: HashMap::new(),
@@ -1841,6 +1844,15 @@ impl PreviewService {
                     failure.to_string(),
                 ),
             };
+        }
+        if operation == "code-graph" {
+            let root = match workspace_root(&self.registry, &session).await {
+                Ok((_, root)) => root,
+                Err(response) => return response,
+            };
+            let graph = self.code_index.get(&root);
+            let snapshot = GraphSnapshot::from_graph(&graph, &root);
+            return json_response(StatusCode::OK, &snapshot);
         }
         let (_, root, target) = match authorized_path(&self.registry, &session, &relative).await {
             Ok(value) => value,

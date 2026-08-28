@@ -5832,6 +5832,11 @@ window.__ModuleLoader__.load({
 				...command === void 0 ? {} : { command }
 			}, approval.key);
 		}
+		function ApprovalDock({ useSession, t }) {
+			const matched = useSession((snapshot) => snapshot.pending.find((item) => item.kind === "approval") ?? null);
+			if (matched === null) return null;
+			return (0, react_jsx_runtime.jsx)(ApprovalPanel, { matched, useSession, t }, matched.key);
+		}
 		function ApprovalFlow({ pending, command, t }) {
 			const [answered, setAnswered] = (0, react.useState)(false);
 			const answer = (outcome) => {
@@ -9946,11 +9951,11 @@ window.__ModuleLoader__.load({
 				}
 			}, InputBar);
 			slots.register({
-				name: "conversation.composer",
-				select: selectApproval,
-				priority: 1,
+				name: "conversation.input.dock",
+				id: "approval",
+				order: -100,
 				locale: NS
-			}, ApprovalPanel);
+			}, ApprovalDock);
 			slots.register({
 				name: "conversation.view",
 				id: "chat",

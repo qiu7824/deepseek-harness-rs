@@ -26,6 +26,7 @@ dsh-atomic-write = { path = "../../util/atomic-write" }
 dsh-attachment = { path = "../../attachment/attachment" }
 dsh-attachment-local = { path = "../../attachment/attachment-local" }
 dsh-code-runtime-node = { path = "../../code-runtime/code-runtime-node" }
+dsh-code-graph = { path = "../../code-graph/code-graph" }
 dsh-commands = { path = "../../interaction/commands" }
 dsh-cordis-loader = { path = "../../vendor/loader" }
 dsh-command-goal = { path = "../../goal/command-goal" }

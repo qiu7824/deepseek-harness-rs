@@ -1,0 +1,25 @@
+[package]
+name = "dsh-code-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native tree-sitter code graph port for the Rust Harness workspace UI"
+
+[dependencies]
+serde = { workspace = true }
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-html = "0.23"
+tree-sitter-php = "0.24"
+ignore = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

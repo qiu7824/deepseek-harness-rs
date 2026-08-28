@@ -95,8 +95,8 @@ class HistoryWindowContractTests(unittest.TestCase):
             self.assertIn(field, ui)
         self.assertIn('api.settings.mutate({ ns: "security"', ui)
         self.assertIn('expectedRevision: state.namespace.revision', ui)
-        self.assertIn('value: "allow-safe-only"', ui)
-        self.assertIn('value: "ask-every-time"', ui)
+        self.assertIn('["allow-safe-only", "仅允许安全操作"]', ui)
+        self.assertIn('["ask-every-time", "每次询问"]', ui)
         self.assertIn("硬阻断始终生效", ui)
 
     def test_security_settings_does_not_fan_out_session_history(self):
@@ -104,6 +104,22 @@ class HistoryWindowContractTests(unittest.TestCase):
         section = ui[ui.index("function SecuritySection"):ui.index("//#endregion", ui.index("function SecuritySection"))]
         self.assertNotIn("api.sessions.list", section)
         self.assertNotIn("api.sessions.history", section)
+
+    def test_security_settings_is_grouped_and_excludes_unrelated_code_graph_status(self):
+        ui = (ROOT / "web" / "dist" / "plugins" / "ui-settings-general.js").read_text(encoding="utf-8")
+        section = ui[ui.index("function SecuritySection"):ui.index("//#endregion", ui.index("function SecuritySection"))]
+        self.assertIn("dshSecurityGroup", ui)
+        self.assertIn("审批行为", section)
+        self.assertIn("工具与路径", section)
+        self.assertNotIn("图谱权限", section)
+        self.assertNotIn("__DSH_CODE_GRAPH_STATUS__", section)
+
+    def test_approval_is_rendered_in_the_conversation_flow_not_only_as_composer_takeover(self):
+        conversation = CONVERSATION.read_text(encoding="utf-8")
+        self.assertIn('name: "conversation.input.dock"', conversation)
+        self.assertIn('id: "approval"', conversation)
+        self.assertIn("ApprovalDock", conversation)
+        self.assertNotIn('name: "conversation.composer",\n\t\t\t\tselect: selectApproval', conversation)
 
     def test_settings_describe_is_singleflight_and_write_invalidated(self):
         source = CONNECTION.read_text(encoding="utf-8")
@@ -230,15 +246,13 @@ class HistoryWindowContractTests(unittest.TestCase):
         sidebar = (ROOT / "release" / "plugins" / "dsh-better-sidebar" / "lib" / "client.js").read_text(encoding="utf-8")
         for required in ("代码图谱", "符号列表", "查找引用", "调用者", "被调用者", "调用链", "文件依赖", "影响面"):
             self.assertIn(required, graph)
-        for required in ("buildGraph", "dependencyNames", "wordLines", "references", "calls", "deps"):
+        for required in ("/__dsh-preview/code-graph", "references", "calls", "deps"):
             self.assertIn(required, graph)
-        self.assertIn("await buildGraph(files)", graph)
-        self.assertIn("fileIndex%8===7", graph)
-        self.assertIn("defs.length===1", graph)
-        self.assertIn("MAX_GRAPH_FILE_CHARS", graph)
-        self.assertIn("MAX_GRAPH_TOTAL_CHARS", graph)
-        self.assertIn("text.charCodeAt(index)===10", graph)
-        self.assertNotIn('defs.find(def=>def.path===file.path)', graph)
+        self.assertNotIn("extractSymbols", graph)
+        self.assertNotIn("wordLines", graph)
+        host_graph = (ROOT / "crates" / "code-graph" / "code-graph" / "src" / "lib.rs").read_text(encoding="utf-8")
+        self.assertIn('engine: "rust-tree-sitter"', host_graph)
+        self.assertIn("GraphSnapshot::from_graph", host_graph)
         self.assertIn("ui-code-graph.js", manifest)
         self.assertIn("overflow:auto", sidebar)
         self.assertIn("numberedCode", sidebar)

@@ -28,6 +28,7 @@ members = [
   "crates/acp/*",
   "crates/sdk/*",
   "crates/code-runtime/*",
+  "crates/code-graph/*",
   "crates/workflow/*",
   "crates/jobs/*",
   "crates/goal/*",
