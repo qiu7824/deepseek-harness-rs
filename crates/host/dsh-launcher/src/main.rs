@@ -117,9 +117,9 @@ fn system_prefers_chinese() -> bool {
             fn GetUserDefaultUILanguage() -> u16;
         }
         let language = unsafe { GetUserDefaultUILanguage() };
-        return language == 0x0004
+        language == 0x0004
             || matches!(language & 0x03ff, 0x0004)
-            || matches!(language, 0x0804 | 0x1004);
+            || matches!(language, 0x0804 | 0x1004)
     }
     #[cfg(not(windows))]
     {
