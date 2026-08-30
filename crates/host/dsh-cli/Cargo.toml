@@ -9,6 +9,7 @@ description = "dsh command-line entry: profile boot, plugin forwarding, and conf
 name = "dsh"
 path = "src/main.rs"
 
+
 [dependencies]
 dsh-acp = { path = "../../acp/acp" }
 dsh-app-boot = { path = "../../boot/app-boot" }

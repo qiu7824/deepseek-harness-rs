@@ -42,7 +42,7 @@ jobs:
           for file in web/dist/plugins/*.js; do node --check "$file"; done
           cargo fmt --all -- --check
       - name: 构建正式二进制
-        run: cargo build --locked --release -p dsh-host-cli --bin dsh -p dsh-launcher --bin dsh-launcher
+        run: cargo build --locked --release -p dsh-host-cli --bin dsh -p dsh-launcher --bin dsh-launcher -p dsh-skin-installer --bin dsh-skin-installer
       - name: 生成便携包
         shell: bash
         run: |

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import pathlib
 import tarfile
@@ -9,7 +10,7 @@ import zipfile
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SKIN_MARKER = b"\n__DSH_SKIN_PAYLOAD__\n"
+SKIN_MARKER = b"\n__DSH_SKIN_PAYLOAD_V1_4F92C3A7__\n"
 
 
 def main() -> None:
@@ -98,10 +99,14 @@ def main() -> None:
         raise SystemExit("skin payload presence does not match package variant")
     if has_skin_payload:
         payload = file_bytes[skin_entry]
+        if args.platform == "windows" and not payload.startswith(b"MZ"):
+            raise SystemExit("Windows skin payload is not a PE executable")
+        if args.platform != "windows" and payload.startswith(b"#!"):
+            raise SystemExit("skin payload depends on a script runtime")
         if SKIN_MARKER not in payload:
             raise SystemExit("skin executable has no embedded skin payload")
         embedded = payload.rsplit(SKIN_MARKER, 1)[1]
-        with zipfile.ZipFile(__import__("io").BytesIO(embedded)) as package:
+        with zipfile.ZipFile(io.BytesIO(embedded)) as package:
             embedded_names = package.namelist()
             if not any(name.startswith("skins/") for name in embedded_names):
                 raise SystemExit("skin executable has an empty skin payload")

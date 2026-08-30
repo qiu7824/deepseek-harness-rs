@@ -27,12 +27,20 @@ struct Copy {
     restart: &'static str,
     open_web: &'static str,
     open_logs: &'static str,
+    install_skins: &'static str,
     refresh: &'static str,
     quit: &'static str,
     status: &'static str,
     done: &'static str,
     missing_host: &'static str,
     foreign_port: &'static str,
+    start_failed: &'static str,
+    stop_failed: &'static str,
+    wait_failed: &'static str,
+    open_failed: &'static str,
+    shell_open_failed: &'static str,
+    skin_installed: &'static str,
+    skin_failed: &'static str,
     lock_error: &'static str,
 }
 
@@ -47,12 +55,20 @@ fn chinese_copy() -> Copy {
         restart: "重启",
         open_web: "打开网页",
         open_logs: "日志目录",
+        install_skins: "安装皮肤",
         refresh: "刷新状态",
         quit: "退出",
         status: "状态",
         done: "操作完成",
-        missing_host: "未找到正式核心程序",
+        missing_host: "未找到程序",
         foreign_port: "58080 已由外部进程占用；启动器拒绝停止非本次启动的进程",
+        start_failed: "启动失败",
+        stop_failed: "停止失败",
+        wait_failed: "等待进程退出失败",
+        open_failed: "打开失败",
+        shell_open_failed: "系统打开命令失败",
+        skin_installed: "皮肤安装完成，刷新网页后生效",
+        skin_failed: "皮肤安装失败",
         lock_error: "启动器状态锁已损坏",
     }
 }
@@ -68,12 +84,20 @@ fn english_copy() -> Copy {
         restart: "Restart",
         open_web: "Open Web",
         open_logs: "Open Logs",
+        install_skins: "Install Skins",
         refresh: "Refresh",
         quit: "Quit",
         status: "Status",
         done: "Operation completed",
-        missing_host: "Production host executable was not found",
+        missing_host: "Executable was not found",
         foreign_port: "Port 58080 is owned by another process; the launcher will not stop it",
+        start_failed: "Start failed",
+        stop_failed: "Stop failed",
+        wait_failed: "Waiting for process exit failed",
+        open_failed: "Open failed",
+        shell_open_failed: "System open command failed",
+        skin_installed: "Skins installed; refresh the Web UI to apply them",
+        skin_failed: "Skin installation failed",
         lock_error: "Launcher state lock is poisoned",
     }
 }
@@ -173,7 +197,7 @@ impl ServiceController {
         command.creation_flags(0x08000000);
         let child = command
             .spawn()
-            .map_err(|error| format!("启动失败：{error}"))?;
+            .map_err(|error| format!("{}: {error}", self.copy.start_failed))?;
         self.child = Some(child);
         Ok(())
     }
@@ -185,10 +209,12 @@ impl ServiceController {
             }
             return Ok(());
         };
-        child.kill().map_err(|error| format!("停止失败：{error}"))?;
+        child
+            .kill()
+            .map_err(|error| format!("{}: {error}", self.copy.stop_failed))?;
         child
             .wait()
-            .map_err(|error| format!("等待进程退出失败：{error}"))?;
+            .map_err(|error| format!("{}: {error}", self.copy.wait_failed))?;
         Ok(())
     }
 
@@ -198,13 +224,29 @@ impl ServiceController {
     }
 
     fn open_web(&self) -> Result<(), String> {
-        open_target(ADDRESS)
+        open_target(ADDRESS, self.copy)
     }
 
     fn open_logs(&self) -> Result<(), String> {
         let log_dir = self.root.join("logs");
         fs::create_dir_all(&log_dir).map_err(|error| error.to_string())?;
-        open_target(log_dir.as_os_str().to_string_lossy().as_ref())
+        open_target(log_dir.as_os_str().to_string_lossy().as_ref(), self.copy)
+    }
+
+    fn install_skins(&self) -> Result<String, String> {
+        let payload = self.root.join(skin_payload_name());
+        if !payload.is_file() {
+            return Err(format!("{}: {}", self.copy.missing_host, payload.display()));
+        }
+        let status = Command::new(payload)
+            .arg(self.root.join("web").join("dist"))
+            .current_dir(&self.root)
+            .status()
+            .map_err(|error| error.to_string())?;
+        status
+            .success()
+            .then(|| self.copy.skin_installed.to_string())
+            .ok_or_else(|| self.copy.skin_failed.to_string())
     }
 }
 
@@ -224,6 +266,7 @@ enum Message {
     Restart,
     OpenWeb,
     OpenLogs,
+    InstallSkins,
     Refresh,
     Quit,
 }
@@ -262,14 +305,14 @@ impl State {
             .unwrap_or(false);
     }
 
-    fn run(&mut self, action: impl FnOnce(&mut ServiceController) -> Result<(), String>) {
+    fn run(&mut self, action: impl FnOnce(&mut ServiceController) -> Result<String, String>) {
         let result = self
             .controller
             .lock()
             .map_err(|_| self.copy.lock_error.to_string())
             .and_then(|mut controller| action(&mut controller));
         self.status = match result {
-            Ok(()) => self.copy.done.to_string(),
+            Ok(message) => message,
             Err(error) => error,
         };
         self.refresh();
@@ -301,6 +344,10 @@ fn view(state: &State) -> Element<Message> {
         row([
             button(state.copy.open_web).on_click(Message::OpenWeb),
             button(state.copy.open_logs).on_click(Message::OpenLogs),
+            button(state.copy.install_skins).on_click(Message::InstallSkins),
+        ])
+        .gap(Dp::new(8.0)),
+        row([
             button(state.copy.refresh).on_click(Message::Refresh),
             button(state.copy.quit).on_click(Message::Quit),
         ])
@@ -313,11 +360,27 @@ fn view(state: &State) -> Element<Message> {
 
 fn update(state: &mut State, message: Message, cx: &mut UpdateContext<'_>) {
     match message {
-        Message::Start => state.run(ServiceController::start),
-        Message::Stop => state.run(ServiceController::stop),
-        Message::Restart => state.run(ServiceController::restart),
-        Message::OpenWeb => state.run(|controller| controller.open_web()),
-        Message::OpenLogs => state.run(|controller| controller.open_logs()),
+        Message::Start => state.run(|controller| {
+            controller.start()?;
+            Ok(controller.copy.done.to_string())
+        }),
+        Message::Stop => state.run(|controller| {
+            controller.stop()?;
+            Ok(controller.copy.done.to_string())
+        }),
+        Message::Restart => state.run(|controller| {
+            controller.restart()?;
+            Ok(controller.copy.done.to_string())
+        }),
+        Message::OpenWeb => state.run(|controller| {
+            controller.open_web()?;
+            Ok(controller.copy.done.to_string())
+        }),
+        Message::OpenLogs => state.run(|controller| {
+            controller.open_logs()?;
+            Ok(controller.copy.done.to_string())
+        }),
+        Message::InstallSkins => state.run(|controller| controller.install_skins()),
         Message::Refresh => {
             state.refresh();
             state.status = if state.running {
@@ -347,7 +410,15 @@ fn core_executable_name() -> &'static str {
     }
 }
 
-fn open_target(target: &str) -> Result<(), String> {
+fn skin_payload_name() -> &'static str {
+    if cfg!(windows) {
+        "deepseek-harness-rs-skin.exe"
+    } else {
+        "deepseek-harness-rs-skin"
+    }
+}
+
+fn open_target(target: &str, copy: Copy) -> Result<(), String> {
     #[cfg(windows)]
     let status = Command::new("rundll32.exe")
         .arg("url.dll,FileProtocolHandler")
@@ -358,10 +429,10 @@ fn open_target(target: &str) -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let status = Command::new("xdg-open").arg(target).status();
     status
-        .map_err(|error| format!("打开失败：{error}"))?
+        .map_err(|error| format!("{}: {error}", copy.open_failed))?
         .success()
         .then_some(())
-        .ok_or_else(|| "系统打开命令失败".to_string())
+        .ok_or_else(|| copy.shell_open_failed.to_string())
 }
 
 #[cfg(test)]
@@ -391,8 +462,8 @@ fn main() -> Result<(), zsui::stable::Error> {
     let copy = localized_copy();
     window(copy.title)
         .app_name("DeepSeek Harness-rs")
-        .size(560, 330)
-        .min_size(500, 300)
+        .size(600, 390)
+        .min_size(540, 350)
         .resizable(false)
         .release_view_when_hidden()
         .stateful(State::new(controller), view, update)

@@ -5,9 +5,11 @@ import json
 import pathlib
 import shutil
 import stat
+import sys
 import tarfile
 import zipfile
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from build_skin_payload import build_skin_payload
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -43,6 +45,7 @@ def main() -> None:
     launcher_output = binary_name(args.platform, "dsh-launcher")
     shutil.copy2(core_source, stage / core_output)
     shutil.copy2(launcher_source, stage / launcher_output)
+    skin_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh-skin-installer")
     if args.platform != "windows":
         for executable in (stage / core_output, stage / launcher_output):
             executable.chmod(
@@ -62,7 +65,14 @@ def main() -> None:
     skin_payload = None
     if args.variant == "skin":
         skin_payload = binary_name(args.platform, "deepseek-harness-rs-skin")
-        build_skin_payload(stage / skin_payload)
+        build_skin_payload(skin_source, stage / skin_payload)
+        if args.platform != "windows":
+            (stage / skin_payload).chmod(
+                (stage / skin_payload).stat().st_mode
+                | stat.S_IXUSR
+                | stat.S_IXGRP
+                | stat.S_IXOTH
+            )
 
     manifest = {
         "name": suffix,

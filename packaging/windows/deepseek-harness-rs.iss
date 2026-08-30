@@ -17,12 +17,17 @@
 #ifndef ChineseMessages
 #define ChineseMessages "ChineseSimplified.isl"
 #endif
+#if Variant == "core"
+#define MyAppId "{{A6F42843-79DD-4FA1-91D2-0B71F8974B78}"
+#else
+#define MyAppId "{{7D47BC56-AB4A-4E87-8E62-652A319F6C4F}"
+#endif
 [Setup]
-AppId={{A6F42843-79DD-4FA1-91D2-0B71F8974B78}
+AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher=DeepSeek Harness-rs
-DefaultDirName={localappdata}\Programs\DeepSeek Harness-rs
+DefaultDirName={localappdata}\Programs\DeepSeek Harness-rs\{#Variant}
 DefaultGroupName=DeepSeek Harness-rs
 OutputDir={#OutputDir}
 OutputBaseFilename=deepseek-harness-rs-v{#MyAppVersion}-windows-x86_64-{#Variant}-setup

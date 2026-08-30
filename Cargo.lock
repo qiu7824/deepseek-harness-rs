@@ -2636,6 +2636,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-skin-installer"
+version = "0.1.0-rc.8"
+dependencies = [
+ "winresource",
+ "zip",
+]
+
+[[package]]
 name = "dsh-spill"
 version = "0.1.0-rc.8"
 dependencies = [
