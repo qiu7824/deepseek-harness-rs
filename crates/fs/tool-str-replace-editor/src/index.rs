@@ -832,11 +832,11 @@ impl ToolStrReplaceEditorService {
                 "properties": {
                     "command": { "type": "string", "enum": ["view", "create", "str_replace", "insert"], "description": "The commands to run. Allowed options are: `view`, `create`, `str_replace`, `insert`." },
                     "path": { "type": "string", "description": "Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`." },
-                    "file_text": { "type": "string", "description": "Required parameter of `create` command, with the content of the file to be created." },
-                    "insert_line": { "type": "integer", "description": "Required parameter of `insert` command. The `new_str` will be inserted AFTER the line `insert_line` of `path`." },
-                    "new_str": { "type": "string", "description": "Optional parameter of `str_replace` command containing the new string (if not given, no string will be added). Required parameter of `insert` command containing the string to insert." },
-                    "old_str": { "type": "string", "description": "Required parameter of `str_replace` command containing the string in `path` to replace." },
-                    "view_range": { "type": "array", "items": { "type": "integer" }, "description": "Optional parameter of `view` command when `path` points to a file. If none is given, the full file is shown. If provided, the file will be shown in the indicated line number range, e.g. [11, 12] will show lines 11 and 12. Indexing at 1 to start. Setting `[start_line, -1]` shows all lines from `start_line` to the end of the file." },
+                    "file_text": { "oneOf": [{ "type": "string" }, { "type": "null" }], "description": "Required string parameter of `create` command. A null placeholder is treated as omitted by commands that do not use it." },
+                    "insert_line": { "oneOf": [{ "type": "integer" }, { "type": "null" }], "description": "Required integer parameter of `insert` command. A null placeholder is treated as omitted by commands that do not use it." },
+                    "new_str": { "oneOf": [{ "type": "string" }, { "type": "null" }], "description": "Optional string parameter of `str_replace` and required string parameter of `insert`. Null is accepted only as an unused-command placeholder; omit this field to delete a str_replace match." },
+                    "old_str": { "oneOf": [{ "type": "string" }, { "type": "null" }], "description": "Required string parameter of `str_replace`. A null placeholder is treated as omitted by commands that do not use it." },
+                    "view_range": { "oneOf": [{ "type": "array", "items": { "type": "integer" } }, { "type": "null" }], "description": "Optional view line range. Omitted or null selects the full file." },
                 },
                 "required": ["command", "path"],
             }),
@@ -892,6 +892,11 @@ impl ToolStrReplaceEditorService {
                                 .await
                             }
                             "str_replace" => {
+                                if args.get("new_str").is_some_and(serde_json::Value::is_null) {
+                                    return Err(ToolBodyError::plain(
+                                        "Parameter `new_str` must be omitted or contain a string for command: str_replace",
+                                    ));
+                                }
                                 replace_in_file(
                                     &ctx,
                                     &fs,
@@ -959,6 +964,127 @@ fn data_from_json(value: &serde_json::Value) -> Data {
                 .map(|(key, value)| (key.clone(), data_from_json(value)))
                 .collect(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod nullable_placeholder_tests {
+    use super::*;
+
+    fn test_service() -> Arc<ToolStrReplaceEditorService> {
+        let ctx = Context::root();
+        dsh_invariants::InvariantRegistry::new(
+            &ctx,
+            dsh_invariants::InvariantConfig {
+                enabled: true,
+                ..dsh_invariants::InvariantConfig::default()
+            },
+        );
+        dsh_system_prompt::SystemPrompt::install(&ctx, dsh_system_prompt::Config::default())
+            .expect("system prompt");
+        dsh_tools::ToolRuntime::install(&ctx, dsh_tools::Config::default()).expect("tools");
+        let root =
+            std::env::temp_dir().join(format!("dsh-editor-null-schema-{}", uuid::Uuid::new_v4()));
+        dsh_fs_local::LocalFileSystem::install(
+            &ctx,
+            dsh_fs_local::Config {
+                cwd: Some(root.to_string_lossy().into_owned()),
+                diff_basis_max_bytes: None,
+            },
+        )
+        .expect("filesystem");
+        ToolStrReplaceEditorService::install(&ctx, Config::default()).expect("editor service")
+    }
+
+    #[tokio::test]
+    async fn editor_schema_accepts_null_for_command_specific_placeholders() {
+        let service = test_service();
+        let schema = &service.definition().parameters;
+
+        for field in [
+            "file_text",
+            "insert_line",
+            "new_str",
+            "old_str",
+            "view_range",
+        ] {
+            let variants = schema["properties"][field]["oneOf"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{field} must expose oneOf"));
+            assert!(
+                variants.iter().any(
+                    |variant| variant.get("type").and_then(|value| value.as_str()) == Some("null")
+                ),
+                "{field} must allow a null placeholder: {variants:#?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn null_placeholders_execute_only_when_unused_by_the_selected_command() {
+        let service = test_service();
+        let definition = service.definition();
+        let tools = service
+            .ctx
+            .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
+            .expect("tools service")
+            .as_ref()
+            .clone();
+        let path = std::env::temp_dir()
+            .join(format!("dsh-editor-null-call-{}.txt", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .into_owned();
+        let created = tools
+            .execute(dsh_tools::ToolExecutionInput {
+                call_id: dsh_llm::call_id("nullable-placeholders-create"),
+                root_call_id: None,
+                name: definition.name.clone(),
+                arguments: serde_json::json!({
+                    "command": "create",
+                    "path": path,
+                    "file_text": "hello",
+                    "insert_line": null,
+                    "new_str": null,
+                    "old_str": null,
+                    "view_range": null,
+                }),
+                agent: None,
+                parent: None,
+                signal: Arc::new(|| false),
+            })
+            .await;
+        assert!(
+            !created.is_error,
+            "unused null placeholders must execute: {:?}",
+            created.error.as_ref().map(|error| error.message.as_str())
+        );
+
+        let invalid = tools
+            .execute(dsh_tools::ToolExecutionInput {
+                call_id: dsh_llm::call_id("nullable-placeholders-invalid"),
+                root_call_id: None,
+                name: definition.name,
+                arguments: serde_json::json!({
+                    "command": "str_replace",
+                    "path": std::env::temp_dir()
+                        .join("dsh-editor-unused")
+                        .to_string_lossy(),
+                    "old_str": "hello",
+                    "new_str": null,
+                }),
+                agent: None,
+                parent: None,
+                signal: Arc::new(|| false),
+            })
+            .await;
+        assert!(
+            invalid
+                .error
+                .as_ref()
+                .expect("str_replace new_str=null must fail")
+                .message
+                .contains("must be omitted or contain a string")
+        );
     }
 }
 

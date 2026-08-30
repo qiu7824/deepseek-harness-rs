@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           python tools/verify_product_surface.py
-          python -m unittest tools.tests.test_history_window_contract -v
+          python -m unittest tools.tests.test_history_window_contract tools.tests.test_product_surface_contract tools.tests.test_v012_surface_contract -v
           for file in release/plugins/*/lib/client.js; do node --check "$file"; done
           for file in web/dist/plugins/*.js; do node --check "$file"; done
           cargo fmt --all -- --check
@@ -49,6 +49,12 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.0-rc.8"
           python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant full --version "$VERSION"
           if [[ "${{ matrix.platform }}" == "windows" ]]; then python tools/package_release.py --platform windows --arch x86_64 --variant no-skin --version "$VERSION"; fi
+      - name: 核验便携包内容
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.0-rc.8"
+          python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant full --version "$VERSION"
+          if [[ "${{ matrix.platform }}" == "windows" ]]; then python tools/verify_release_package.py --platform windows --arch x86_64 --variant no-skin --version "$VERSION"; fi
       - name: Windows 中文安装器
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -56,8 +62,9 @@ jobs:
           $refName = "${env:GITHUB_REF_NAME}"
           $version = if ($refName.StartsWith('v')) { $refName.Substring(1) } else { '0.1.0-rc.8' }
           choco install innosetup -y --no-progress
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=dist\deepseek-harness-rs-v$version-windows-x86_64-full" "/DOutputDir=dist" "/DVariant=full" packaging\windows\deepseek-harness-rs.iss
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=dist\deepseek-harness-rs-v$version-windows-x86_64-no-skin" "/DOutputDir=dist" "/DVariant=no-skin" packaging\windows\deepseek-harness-rs.iss
+          $language = "$env:GITHUB_WORKSPACE\packaging\windows\ChineseSimplified.isl"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-full" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "/DIconFile=$env:GITHUB_WORKSPACE\packaging\windows\deepseek-black.ico" "/DChineseMessages=$language" "/DVariant=full" packaging\windows\deepseek-harness-rs.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-no-skin" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "/DIconFile=$env:GITHUB_WORKSPACE\packaging\windows\deepseek-black.ico" "/DChineseMessages=$language" "/DVariant=no-skin" packaging\windows\deepseek-harness-rs.iss
       - name: Linux DEB 安装包
         if: matrix.platform == 'linux'
         shell: bash

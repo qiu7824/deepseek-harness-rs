@@ -152,6 +152,7 @@ async fn run_group(
 ) -> Result<GroupOutcome, String> {
     let mut state = GroupState {
         slots: (0..group.len()).map(|_| None).collect(),
+        run_contexts: (0..group.len()).map(|_| None).collect(),
         call_seqs: (0..group.len()).map(|_| None).collect(),
         next_to_start: 0,
         committed: 0,
@@ -162,25 +163,64 @@ async fn run_group(
         in_flight: InFlight::new(),
     };
 
-    fill_pool(
-        tools,
-        session,
-        max_parallel_tool_calls,
-        turn,
-        step,
-        group,
-        mode,
-        &signal,
-        &accept_context,
-        &mut state,
-    )
-    .await?;
+    let initial_fill = tokio::select! {
+        biased;
+        _ = wait_until_aborted(&signal) => false,
+        result = fill_pool(
+            tools,
+            session,
+            max_parallel_tool_calls,
+            turn,
+            step,
+            group,
+            mode,
+            &signal,
+            &accept_context,
+            &mut state,
+        ) => {
+            result?;
+            true
+        },
+    };
+    if !initial_fill {
+        state.aborted = true;
+        cancel_uncommitted_started(
+            tools,
+            session,
+            turn,
+            step,
+            group,
+            &accept_context,
+            &mut state,
+        )?;
+    }
     while !state.in_flight.is_empty() {
         if let Some(failure) = &state.scheduler_failure {
             drain(&mut state.in_flight).await;
             return Err(failure.clone());
         }
-        let (index, exec, outcome) = state.in_flight.next().await.expect("in-flight pool");
+        let settled = tokio::select! {
+            biased;
+            _ = wait_until_aborted(&signal) => None,
+            settled = state.in_flight.next() => settled,
+        };
+        let Some((index, exec, outcome)) = settled else {
+            state.aborted = true;
+            state.in_flight.clear();
+            // Dropping the dispatch futures is the cancellation boundary for
+            // non-cooperative tools. The durable log still needs one result
+            // for every call already announced before those futures vanish.
+            cancel_uncommitted_started(
+                tools,
+                session,
+                turn,
+                step,
+                group,
+                &accept_context,
+                &mut state,
+            )?;
+            break;
+        };
         match outcome {
             DispatchOutcome::PostResult(result) => {
                 state.slots[index] = Some(Slot {
@@ -203,6 +243,7 @@ async fn run_group(
             turn,
             step,
             group,
+            &signal,
             &accept_context,
             &mut state,
         )
@@ -245,8 +286,71 @@ async fn run_group(
     })
 }
 
+async fn wait_until_aborted(signal: &AbortPredicate) {
+    while !signal() {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+fn cancel_uncommitted_started(
+    tools: &Arc<ToolRuntime>,
+    session: &Session,
+    turn: u64,
+    step: u64,
+    group: &[PlannedCall],
+    accept_context: &ContextAcceptor,
+    state: &mut GroupState,
+) -> Result<(), String> {
+    for index in state.committed..state.started {
+        let Some(call_seq) = state.call_seqs[index] else {
+            continue;
+        };
+        let result = if let Some(slot) = state.slots[index].take() {
+            // Dispatch has already settled. Preserve that real outcome rather
+            // than rewriting a completed side effect as ABORTED merely because
+            // an earlier model-ordered call was still pending at cancellation.
+            // The caller signal is now set, so bypass post-execute and run the
+            // captured definition finalizer/result notification exactly once.
+            tools.finish_scheduled(slot.exec, slot.result)
+        } else if let Some(run_ctx) = state.run_contexts[index].take() {
+            tools.finish_cancelled_scheduled(run_ctx, true, None)
+        } else {
+            Arc::new(aborted_before_dispatch_result())
+        };
+        append_tool_result(session, turn, step, &group[index].block, &result, call_seq)?;
+        for context in &result.additional_contexts {
+            (accept_context)(context.clone());
+        }
+        state.concluded |= result.concludes_turn;
+    }
+    state.committed = state.started;
+    Ok(())
+}
+
+fn aborted_before_dispatch_result() -> ToolExecutionResult {
+    ToolExecutionResult {
+        content: vec![dsh_llm::ContentBlock::Text {
+            text: "Error: tool call aborted before dispatch".to_string(),
+        }],
+        is_error: true,
+        error: Some(dsh_tools::ToolFailure {
+            message: "tool call aborted before dispatch".to_string(),
+            info: Some(dsh_tools::ToolErrorInfo {
+                name: "AbortError".to_string(),
+                code: TOOL_ABORTED_BEFORE_DISPATCH.to_string(),
+            }),
+        }),
+        value: None,
+        meta: None,
+        additional_contexts: Vec::new(),
+        concludes_turn: false,
+        canonical_token: 0,
+    }
+}
+
 struct GroupState {
     slots: Vec<Option<Slot>>,
+    run_contexts: Vec<Option<Arc<ToolRunContext>>>,
     call_seqs: Vec<Option<u64>>,
     next_to_start: usize,
     committed: usize,
@@ -295,6 +399,7 @@ async fn fill_pool(
         let prepared = tools.prepare_scheduled(group[index].exec.clone()).await;
         match prepared {
             Preparation::Dispatch { run_ctx } => {
+                state.run_contexts[index] = Some(Arc::clone(&run_ctx));
                 let tools_for_dispatch = Arc::clone(tools);
                 state.in_flight.push(Box::pin(async move {
                     let outcome = tools_for_dispatch
@@ -318,7 +423,17 @@ async fn fill_pool(
                 });
             }
         }
-        commit_ready(tools, session, turn, step, group, accept_context, state).await?;
+        commit_ready(
+            tools,
+            session,
+            turn,
+            step,
+            group,
+            signal,
+            accept_context,
+            state,
+        )
+        .await?;
         if signal() {
             state.aborted = true;
         }
@@ -334,6 +449,7 @@ async fn commit_ready(
     turn: u64,
     step: u64,
     group: &[PlannedCall],
+    signal: &AbortPredicate,
     accept_context: &ContextAcceptor,
     state: &mut GroupState,
 ) -> Result<(), String> {
@@ -342,10 +458,27 @@ async fn commit_ready(
             break;
         }
         let slot = state.slots[state.committed].take().expect("checked");
+        state.run_contexts[state.committed] = None;
         let result = if slot.needs_post {
-            tools
-                .finalize_scheduled(Arc::clone(&slot.exec), Arc::clone(&slot.result))
-                .await
+            let finalized = tokio::select! {
+                biased;
+                _ = wait_until_aborted(signal) => None,
+                result = tools.finalize_scheduled(
+                    Arc::clone(&slot.exec),
+                    Arc::clone(&slot.result),
+                ) => Some(result),
+            };
+            match finalized {
+                Some(result) => result,
+                None => {
+                    state.aborted = true;
+                    tools.finish_cancelled_scheduled(
+                        Arc::clone(&slot.exec),
+                        true,
+                        Some(Arc::clone(&slot.result)),
+                    )
+                }
+            }
         } else {
             tools.finish_scheduled(Arc::clone(&slot.exec), Arc::clone(&slot.result))
         };

@@ -101,7 +101,105 @@ pub enum UnattendedPolicy {
 
 #[cfg(test)]
 mod policy_tests {
-    use super::ApprovalOutcome;
+    use std::sync::Arc;
+
+    use cordis::Context;
+    use dsh_agent::{
+        Agent, AgentCancelCause, AgentOptions, AgentStatus, CancelOptions, Inbox,
+        InboxNotifications, InboxTarget,
+    };
+    use dsh_scope::ScopeKey;
+    use dsh_session::{Session, SessionStore, UserMessage, session_id};
+    use futures::future::BoxFuture;
+
+    use super::{
+        ApprovalOutcome, ApprovalPolicy, ApprovalRequest, ApprovalService, Config,
+        effective_approval_policy,
+    };
+
+    struct TestAgent {
+        id: dsh_session::SessionId,
+        options: AgentOptions,
+        session: Session,
+        inbox: Inbox,
+        ctx: Context,
+        scope_key: ScopeKey,
+    }
+
+    impl Agent for TestAgent {
+        fn id(&self) -> &dsh_session::SessionId {
+            &self.id
+        }
+
+        fn options(&self) -> &AgentOptions {
+            &self.options
+        }
+
+        fn session(&self) -> &Session {
+            &self.session
+        }
+
+        fn inbox(&self) -> &Inbox {
+            &self.inbox
+        }
+
+        fn status(&self) -> AgentStatus {
+            AgentStatus::Running
+        }
+
+        fn ctx(&self) -> &Context {
+            &self.ctx
+        }
+
+        fn scope_key(&self) -> &ScopeKey {
+            &self.scope_key
+        }
+
+        fn cancel(&self, _cause: AgentCancelCause, _options: Option<&CancelOptions>) {}
+
+        fn when_idle(&self) -> BoxFuture<'static, ()> {
+            Box::pin(async {})
+        }
+
+        fn run_maintenance(
+            &self,
+            _task: Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>,
+        ) -> BoxFuture<'static, ()> {
+            Box::pin(async {})
+        }
+
+        fn send(&self, _message: UserMessage, _target: InboxTarget, _wakeup: bool) {}
+
+        fn followup(&self, _message: UserMessage) {}
+
+        fn steer(&self, _message: UserMessage) {}
+
+        fn inject(&self, _message: UserMessage) {}
+    }
+
+    async fn agent(ctx: &Context, name: &str) -> Arc<dyn Agent> {
+        let store = ctx
+            .get_typed::<Arc<SessionStore>>("sessions", false)
+            .map(|slot| slot.as_ref().clone())
+            .unwrap_or_else(|| SessionStore::install(ctx));
+        let id = session_id(name);
+        let session = store
+            .create(ctx, Some(id.clone()), None)
+            .await
+            .expect("session");
+        session
+            .append("turn/start", serde_json::json!({ "turn": 1 }), None)
+            .expect("open turn");
+        let inbox = Inbox::new(&session, InboxNotifications::default()).expect("inbox");
+        Arc::new(TestAgent {
+            id,
+            options: AgentOptions::default(),
+            session,
+            inbox,
+            ctx: ctx.clone(),
+            scope_key: ScopeKey::new(),
+        })
+    }
 
     #[test]
     fn allowed_always_round_trips_through_audit_vocabulary() {
@@ -110,6 +208,107 @@ mod policy_tests {
             ApprovalOutcome::from_str("allowed-always"),
             Some(ApprovalOutcome::AllowedAlways)
         );
+    }
+
+    #[tokio::test]
+    async fn allowed_always_resumes_once_then_reuses_the_session_grant() {
+        let ctx = Context::root();
+        SessionStore::install(&ctx);
+        let service = ApprovalService::install(
+            &ctx,
+            Config {
+                policy: Some(ApprovalPolicy::Ask),
+                timeout_ms: Some(1_000),
+            },
+        );
+        let listener: Arc<cordis::Listener> =
+            Arc::new(|_, _| Box::pin(async { Some(cordis::arc(ApprovalOutcome::AllowedAlways)) }));
+        ctx.events.register(
+            &ctx,
+            "approval test answerer",
+            "approval/request",
+            listener,
+            &cordis::EventOptions::default(),
+        );
+        let agent = agent(&ctx, "approval-grant").await;
+        let request = ApprovalRequest {
+            agent: Arc::clone(&agent),
+            tool_name: "terminal".to_string(),
+            call_id: Some("call-1".to_string()),
+            reason: Some("run command".to_string()),
+            grant_key: Some("terminal:command".to_string()),
+            rememberable: true,
+            signal: None,
+        };
+
+        assert_eq!(
+            service.request(&request).await.expect("first approval"),
+            ApprovalOutcome::AllowedAlways
+        );
+        let second = ApprovalRequest {
+            call_id: Some("call-2".to_string()),
+            ..request
+        };
+        assert_eq!(
+            service.request(&second).await.expect("remembered approval"),
+            ApprovalOutcome::AllowedAlways
+        );
+        let events = agent.session().events();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.type_ == "approval/asked")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.type_ == "approval/decided")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn non_rememberable_allowed_always_is_downgraded_in_the_audit_pair() {
+        let ctx = Context::root();
+        SessionStore::install(&ctx);
+        let service = ApprovalService::install(&ctx, Config::default());
+        let listener: Arc<cordis::Listener> =
+            Arc::new(|_, _| Box::pin(async { Some(cordis::arc(ApprovalOutcome::AllowedAlways)) }));
+        ctx.events.register(
+            &ctx,
+            "approval test answerer",
+            "approval/request",
+            listener,
+            &cordis::EventOptions::default(),
+        );
+        let agent = agent(&ctx, "approval-unremembered").await;
+        let outcome = service
+            .request(&ApprovalRequest {
+                agent: Arc::clone(&agent),
+                tool_name: "read".to_string(),
+                call_id: Some("call-1".to_string()),
+                reason: Some("read sensitive file".to_string()),
+                grant_key: Some("read:sensitive".to_string()),
+                rememberable: false,
+                signal: None,
+            })
+            .await
+            .expect("approval");
+
+        assert_eq!(outcome, ApprovalOutcome::AllowedOnce);
+        let decided = agent
+            .session()
+            .events()
+            .iter()
+            .rev()
+            .find(|event| event.type_ == "approval/decided")
+            .expect("approval/decided")
+            .clone();
+        assert_eq!(decided.data["outcome"], "allowed-once");
+        assert_eq!(effective_approval_policy(&agent.session().events()), None);
     }
 }
 

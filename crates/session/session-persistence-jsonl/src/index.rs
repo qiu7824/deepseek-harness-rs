@@ -1662,6 +1662,15 @@ impl PersistenceBackend<JsonlTornMarker> for JsonlSessionPersistence {
         torn_marker: Option<JsonlTornMarker>,
         closers: &[SessionEvent],
     ) -> Result<(), String> {
+        if let Some(torn) = &torn_marker {
+            tracing::warn!(
+                session_id = %meta.id.as_str(),
+                truncate_to = torn.truncate_to,
+                recovered_events = torn.recovered_events.len(),
+                synthetic_closers = closers.len(),
+                "repairing a truncated session log tail"
+            );
+        }
         let mut repaired = Vec::new();
         if let Some(torn) = &torn_marker {
             self.repair(meta, torn.truncate_to).await?;

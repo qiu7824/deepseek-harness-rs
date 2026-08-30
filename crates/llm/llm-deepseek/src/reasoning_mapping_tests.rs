@@ -36,6 +36,7 @@ fn connection() -> crate::ResolvedDeepSeekOptions {
                 name: "Extra High".to_string(),
                 wire: "xhigh".to_string(),
             }]),
+            image_input: Some(true),
         }]),
         ..DeepSeekConfig::default()
     })

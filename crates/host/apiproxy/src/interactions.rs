@@ -709,3 +709,145 @@ fn bad_response() -> RpcReceipt {
         reason: RpcReceiptReason::BadResponse,
     }
 }
+
+#[cfg(test)]
+mod approval_response_tests {
+    use super::*;
+
+    fn pending(
+        session_id: &dsh_session::SessionId,
+        approval_id: &ApprovalRequestId,
+    ) -> (PendingApproval, oneshot::Receiver<ApprovalOutcome>) {
+        let (resolve, outcome) = oneshot::channel();
+        (
+            PendingApproval {
+                rpc_id: rpc_id("approval-rpc"),
+                session_id: session_id.clone(),
+                approval_id: approval_id.clone(),
+                tool_name: "terminal".to_string(),
+                call_id: Some("call-1".to_string()),
+                reason: Some("run command".to_string()),
+                grant_key: Some("terminal:command".to_string()),
+                rememberable: true,
+                resolve,
+            },
+            outcome,
+        )
+    }
+
+    fn response(
+        rpc_id: &RpcId,
+        session_id: &dsh_session::SessionId,
+        approval_id: &ApprovalRequestId,
+        outcome: ApprovalClientOutcome,
+    ) -> ClientResponse {
+        ClientResponse {
+            kind: crate::api::rpc::ClientResponseType::ClientResponse,
+            rpc_id: rpc_id.clone(),
+            result: WireRpcResult::Ok {
+                ok: True,
+                value: Some(
+                    serde_json::to_value(ApprovalResponsePayload {
+                        session_id: session_id.clone(),
+                        approval_id: approval_id.clone(),
+                        outcome,
+                    })
+                    .expect("approval response payload"),
+                ),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_response_is_single_claim_and_resolves_the_exact_waiter() {
+        let state = InteractionState::new();
+        let session_id = dsh_session::session_id("approval-session");
+        let approval_id = approval_request_id("approval-1");
+        let rpc_id = rpc_id("approval-rpc");
+        let (pending, outcome) = pending(&session_id, &approval_id);
+        state
+            .inner
+            .lock()
+            .pending_approvals
+            .insert(rpc_id.clone(), pending);
+
+        let receipt = state.respond(response(
+            &rpc_id,
+            &session_id,
+            &approval_id,
+            ApprovalClientOutcome::AllowedOnce,
+        ));
+        assert!(matches!(receipt, RpcReceipt::Accepted { .. }));
+        assert_eq!(
+            outcome.await.expect("approval waiter"),
+            ApprovalOutcome::AllowedOnce
+        );
+
+        let duplicate = state.respond(response(
+            &rpc_id,
+            &session_id,
+            &approval_id,
+            ApprovalClientOutcome::Rejected,
+        ));
+        assert!(matches!(
+            duplicate,
+            RpcReceipt::Rejected {
+                reason: RpcReceiptReason::NotPending,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn mismatched_approval_response_is_rejected_without_consuming_pending() {
+        let state = InteractionState::new();
+        let session_id = dsh_session::session_id("approval-session");
+        let approval_id = approval_request_id("approval-1");
+        let rpc_id = rpc_id("approval-rpc");
+        let (pending, _outcome) = pending(&session_id, &approval_id);
+        state
+            .inner
+            .lock()
+            .pending_approvals
+            .insert(rpc_id.clone(), pending);
+
+        let receipt = state.respond(response(
+            &rpc_id,
+            &dsh_session::session_id("other-session"),
+            &approval_id,
+            ApprovalClientOutcome::AllowedAlways,
+        ));
+        assert!(matches!(
+            receipt,
+            RpcReceipt::Rejected {
+                reason: RpcReceiptReason::BadResponse,
+                ..
+            }
+        ));
+        assert!(state.inner.lock().pending_approvals.contains_key(&rpc_id));
+    }
+
+    #[test]
+    fn reconnect_subscription_replays_the_pending_approval() {
+        let state = InteractionState::new();
+        let session_id = dsh_session::session_id("approval-session");
+        let approval_id = approval_request_id("approval-1");
+        let rpc_id = rpc_id("approval-rpc");
+        let (pending, _outcome) = pending(&session_id, &approval_id);
+        state
+            .inner
+            .lock()
+            .pending_approvals
+            .insert(rpc_id.clone(), pending);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let _subscription = state.subscribe(tx);
+        let frame = rx.try_recv().expect("replayed pending approval");
+        assert_eq!(frame.rpc_id, rpc_id);
+        assert_eq!(frame.payload["type"], "approval/requested");
+        assert_eq!(frame.payload["sessionId"], session_id.as_str());
+        assert_eq!(frame.payload["approvalId"], approval_id.as_str());
+        assert_eq!(frame.payload["callId"], "call-1");
+        assert_eq!(frame.payload["rememberable"], true);
+    }
+}

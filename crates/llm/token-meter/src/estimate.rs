@@ -33,9 +33,11 @@ pub fn estimate_content(blocks: &[ContentBlock]) -> u64 {
             ContentBlock::ToolResult { content, .. } => {
                 tokens += estimate_content(content) + BLOCK_OVERHEAD
             }
-            other => {
-                // Unknown blocks retain a conservative structural JSON price.
-                let json = serde_json::to_string(other).unwrap_or_default();
+            ContentBlock::Image { attachment } => {
+                // Provider-neutral folds retain structural pricing. The
+                // routed token meter replaces this with visual pricing only
+                // when the selected adapter declares one.
+                let json = serde_json::to_string(attachment).unwrap_or_default();
                 tokens += BLOCK_OVERHEAD + ceil_div(json.chars().count(), CHARS_PER_TOKEN)
             }
         }

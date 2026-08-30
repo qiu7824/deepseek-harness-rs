@@ -245,7 +245,7 @@ pub fn configured_max_depth(ctx: &Context) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_child_options;
+    use super::{SubagentDefaults, resolve_child_options};
     use dsh_agent::{AgentOptions, ModelSelection};
     use dsh_llm::reasoning_effort_id;
 

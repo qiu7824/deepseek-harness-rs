@@ -522,6 +522,7 @@ impl OpenAiCompatibleAdapter {
                                     })
                                 }
                             },
+                            image_input: None,
                         })
                         .collect(),
                 ),
@@ -676,6 +677,85 @@ fn json_to_settings_data(value: &serde_json::Value) -> dsh_schemastery::Data {
     }
 }
 
+fn migrate_legacy_theme_settings(
+    mut document: indexmap::IndexMap<String, dsh_schemastery::Data>,
+) -> indexmap::IndexMap<String, dsh_schemastery::Data> {
+    const RETIRED: [&str; 7] = [
+        "system",
+        "catppuccin",
+        "dracula",
+        "nord",
+        "tokyo-night",
+        "linear",
+        "notion",
+    ];
+    let Some(dsh_schemastery::Data::Object(theme)) = document.get_mut("ui-theme") else {
+        return document;
+    };
+    let should_migrate = matches!(
+        theme.get("preference"),
+        Some(dsh_schemastery::Data::String(preference))
+            if RETIRED.contains(&preference.as_str())
+    );
+    if should_migrate {
+        theme.insert(
+            "preference".to_string(),
+            dsh_schemastery::Data::String("light".to_string()),
+        );
+    }
+    document
+}
+
+#[cfg(test)]
+mod theme_settings_migration_tests {
+    use super::migrate_legacy_theme_settings;
+    use dsh_schemastery::Data;
+    use indexmap::IndexMap;
+
+    fn preference(document: &IndexMap<String, Data>) -> Option<&str> {
+        let Data::Object(theme) = document.get("ui-theme")? else {
+            return None;
+        };
+        let Data::String(preference) = theme.get("preference")? else {
+            return None;
+        };
+        Some(preference)
+    }
+
+    fn document(preference: &str) -> IndexMap<String, Data> {
+        let mut theme = IndexMap::new();
+        theme.insert(
+            "preference".to_string(),
+            Data::String(preference.to_string()),
+        );
+        let mut document = IndexMap::new();
+        document.insert("ui-theme".to_string(), Data::Object(theme));
+        document
+    }
+
+    #[test]
+    fn retired_theme_preferences_migrate_to_default_light() {
+        for retired in [
+            "system",
+            "catppuccin",
+            "dracula",
+            "nord",
+            "tokyo-night",
+            "linear",
+            "notion",
+        ] {
+            let migrated = migrate_legacy_theme_settings(document(retired));
+            assert_eq!(preference(&migrated), Some("light"));
+        }
+    }
+
+    #[test]
+    fn current_skin_preference_is_preserved() {
+        let migrated = migrate_legacy_theme_settings(document("whale-song"));
+        assert_eq!(preference(&migrated), Some("whale-song"));
+    }
+}
+
 #[async_trait::async_trait]
 impl dsh_settings::SettingsStorage for JsonSettingsStorage {
     fn writable(&self) -> bool {
@@ -700,6 +780,7 @@ impl dsh_settings::SettingsStorage for JsonSettingsStorage {
         let dsh_schemastery::Data::Object(document) = data else {
             return Err("settings document must be an object".to_string());
         };
+        let document = migrate_legacy_theme_settings(document);
         *self.document.lock() = document.clone();
         Ok(document)
     }
@@ -889,6 +970,9 @@ async fn pump_websocket_downlink(
     )
     .await;
     let signal = AbortSignal::new();
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    heartbeat.tick().await;
     let frame_request = FrameRequest {
         rpc_id: rpc_id(uuid::Uuid::new_v4().to_string()),
         payload: serde_json::json!({}),
@@ -900,6 +984,12 @@ async fn pump_websocket_downlink(
     };
     loop {
         tokio::select! {
+            _ = heartbeat.tick() => {
+                websocket
+                    .send(Message::Ping(Vec::new().into()))
+                    .await
+                    .map_err(|error| WebHandlerError::new(error.to_string()))?;
+            }
             frame = frames.next() => {
                 let Some(frame) = frame else { break; };
                 let method = frame.payload.get("type").and_then(serde_json::Value::as_str).unwrap_or("stream/error");
@@ -1790,24 +1880,48 @@ fn compose_host_in_fiber(
             dsh_settings::SettingsRegisterOptions::default(),
         )
         .map_err(|error| format!("settings subagent: {error}"))?;
+    let theme_preference_schema = dsh_schemastery::Schema::union(
+        [
+            "light",
+            "dark",
+            "whale-song",
+            "blue-fantasy",
+            "harbor",
+            "xp",
+            "dragon-heir",
+            "minecraft",
+            "trading",
+            "miku",
+            "deepseek-official",
+        ]
+        .into_iter()
+        .map(|choice| {
+            dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(choice.to_string()))
+        })
+        .collect(),
+    )
+    .default(dsh_schemastery::Data::String("light".to_string()));
+    settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("ui-theme")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([
+                ("preference".to_string(), theme_preference_schema),
+                (
+                    "fontSize".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(12.0)
+                        .max(17.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(14.0)),
+                ),
+            ])),
+            dsh_settings::SettingsRegisterOptions::default(),
+        )
+        .map_err(|error| format!("settings ui-theme: {error}"))?;
     for (namespace, field, choices, default) in [
         ("locale", "preference", &["zh", "en"][..], None),
-        (
-            "ui-theme",
-            "preference",
-            &[
-                "light",
-                "dark",
-                "system",
-                "catppuccin",
-                "dracula",
-                "nord",
-                "tokyo-night",
-                "linear",
-                "notion",
-            ][..],
-            Some("system"),
-        ),
         (
             "ui-conversation",
             "busyEnter",
@@ -2335,6 +2449,10 @@ fn compose_host_in_fiber(
         .map_err(|error| format!("subagent-spawn: {}", error.message))?;
     dsh_subagent_fork_in_process::apply(ctx, &Default::default())
         .map_err(|error| format!("subagent-fork: {}", error.message))?;
+    dsh_subagent_codex::apply(ctx, &Default::default())
+        .map_err(|error| format!("subagent-codex: {error}"))?;
+    dsh_subagent_claude_code::apply(ctx, &Default::default())
+        .map_err(|error| format!("subagent-claude-code: {error}"))?;
     // Bridge the `subagent` settings namespace into the child resolver as a
     // live snapshot service. Re-read on every `settings/updated` event so a
     // user change takes effect for the next child without a restart.

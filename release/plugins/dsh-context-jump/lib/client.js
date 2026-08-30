@@ -187,6 +187,8 @@ window.__ModuleLoader__.load({
 		const PREVIEW_MAX = 200;
 		/** Accessible tick-label cap; the popover carries the full preview. */
 		const SNIPPET_MAX = 64;
+		/** Stable absent projection snapshot required by useSyncExternalStore. */
+		const EMPTY_RAIL_ENTRIES = [];
 		/** Popover edge clearance inside the window. */
 		const POPOVER_EDGE = 8;
 		/** Find the settled flow row for one node key (keys are opaque ids, so match
@@ -513,7 +515,7 @@ window.__ModuleLoader__.load({
 								unsubscribeSession();
 							};
 						},
-						getSnapshot: () => currentFace()?.getSnapshot() ?? []
+						getSnapshot: () => currentFace()?.getSnapshot() ?? EMPTY_RAIL_ENTRIES
 					};
 					const nodeKeyAt = (session, seq, preferredKey) => {
 						const snapshot = session.getSnapshot();

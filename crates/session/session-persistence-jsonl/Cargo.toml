@@ -18,6 +18,7 @@ tokio = { workspace = true }
 zstd = "0.13"
 memmap2 = "0.9"
 uuid = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -68,17 +68,17 @@ pub fn extract_symbols(source: &str, lang: Lang) -> Option<Vec<Symbol>> {
                 has_def = true;
             }
         }
-        if let (Some(name), true) = (name, has_def) {
-            if seen.insert((ds, de)) {
-                symbols.push(Symbol {
-                    name,
-                    kind: kind.to_string(),
-                    start_line: dsr + 1,
-                    end_line: der + 1,
-                    start_byte: ds,
-                    end_byte: de,
-                });
-            }
+        if let (Some(name), true) = (name, has_def)
+            && seen.insert((ds, de))
+        {
+            symbols.push(Symbol {
+                name,
+                kind: kind.to_string(),
+                start_line: dsr + 1,
+                end_line: der + 1,
+                start_byte: ds,
+                end_byte: de,
+            });
         }
     }
     Some(symbols)

@@ -92,15 +92,15 @@ fn extract_calls(source: &str, lang: Lang, syms: &[Symbol]) -> Vec<RawCall> {
                 })
                 .filter(|s| s.start_line <= line && line <= s.end_line)
                 .max_by_key(|s| s.start_line);
-            if let Some(caller) = caller {
-                if caller.name != callee_name {
-                    calls.push(RawCall {
-                        caller_name: caller.name.clone(),
-                        caller_line: caller.start_line,
-                        callee_name,
-                        line,
-                    });
-                }
+            if let Some(caller) = caller
+                && caller.name != callee_name
+            {
+                calls.push(RawCall {
+                    caller_name: caller.name.clone(),
+                    caller_line: caller.start_line,
+                    callee_name,
+                    line,
+                });
             }
         }
     }
@@ -312,10 +312,10 @@ impl CodeIndex {
         let root = super::canonical(root);
         let files = collect_files(&root);
         let fp = fingerprint(&files);
-        if let Some((cfp, g)) = self.cache.lock().unwrap().as_ref() {
-            if *cfp == fp {
-                return g.clone();
-            }
+        if let Some((cfp, g)) = self.cache.lock().unwrap().as_ref()
+            && *cfp == fp
+        {
+            return g.clone();
         }
         let g = Arc::new(build_from_files(&root, files));
         *self.cache.lock().unwrap() = Some((fp, g.clone()));

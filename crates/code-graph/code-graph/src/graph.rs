@@ -231,10 +231,10 @@ impl CodeGraph {
         let mut deps = HashSet::new();
         for sid in ids {
             for (cid, _) in self.trace_callers(sid, max_depth) {
-                if let Some(n) = self.node(cid) {
-                    if n.file != fb {
-                        deps.insert(n.file.clone());
-                    }
+                if let Some(n) = self.node(cid)
+                    && n.file != fb
+                {
+                    deps.insert(n.file.clone());
                 }
             }
         }

@@ -11,8 +11,8 @@
 //!   writes the `signal` cell, and caller/wrapper fusion composes the two
 //!   predicates (no listener cleanup — predicates leak nothing).
 //! - The TS `WeakMap` registries (deferred contexts, cancellation state,
-//!   content finalizers, canonical markers, concluding executions) key by
-//!   the execution token in one `Mutex<HashMap>`.
+//!   content finalizers, concluding executions) collapse into state owned by
+//!   [`ToolRunContext`], so completing or dropping a call releases it.
 //! - `ToolExecutionResult` is one struct (value present exactly on
 //!   success, `error` exactly on failure) instead of the discriminated
 //!   union; canonical marking rides a rebuild with `canonical_token`.
@@ -508,7 +508,6 @@ pub struct ToolRuntime {
     #[allow(dead_code)]
     max_parallel_sub_calls: u64,
     next_token: AtomicU64,
-    executions: Mutex<HashMap<u64, Arc<Mutex<ExecutionState>>>>,
     code_transport: Mutex<Option<Arc<ToolDefinition>>>,
 }
 
@@ -541,7 +540,6 @@ impl ToolRuntime {
                 default_mode,
                 max_parallel_sub_calls,
                 next_token: AtomicU64::new(1),
-                executions: Mutex::new(HashMap::new()),
                 code_transport: Mutex::new(None),
             })
         };
@@ -855,7 +853,6 @@ impl ToolRuntime {
             caller_signal: signal,
             finalizer: finalizer_for.clone(),
         }));
-        self.executions.lock().insert(token, Arc::clone(&state));
         let run_ctx = Arc::new(ToolRunContext {
             execution: Arc::clone(&execution),
             state,
@@ -1155,6 +1152,23 @@ impl ToolRuntime {
         };
         self.notify_result(&run_ctx, Arc::clone(&final_result));
         final_result
+    }
+
+    /// Complete a scheduler-cancelled call through the same definition
+    /// finalizer and `tools/result` notification path as an ordinary result.
+    /// The scheduler supplies whether dispatch had already begun so the
+    /// canonical abort code stays accurate even when its future is dropped,
+    /// plus any settled pre-post result whose deferred contexts must survive
+    /// cancellation.
+    pub fn finish_cancelled_scheduled(
+        &self,
+        run_ctx: Arc<ToolRunContext>,
+        body_invoked: bool,
+        prior: Option<Arc<ToolExecutionResult>>,
+    ) -> Arc<ToolExecutionResult> {
+        run_ctx.state.lock().body_invoked |= body_invoked;
+        let result = self.cancellation_result(&run_ctx, prior);
+        self.finish_scheduled(run_ctx, result)
     }
 
     fn apply_post_decision(
@@ -1750,3 +1764,82 @@ fn tool_error_from_panic(payload: Box<dyn std::any::Any + Send>) -> ToolBodyErro
 /// dsh-agent-loop milestone.
 #[allow(dead_code)]
 pub(crate) struct ToolRuntimeSchedulerMarker;
+
+#[cfg(test)]
+mod execution_lifetime_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn test_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: "lifetime-probe".to_string(),
+            description: "complete one call".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            output: ToolOutputDefinition {
+                schema: serde_json::json!({ "type": "string" }),
+                render: Arc::new(|_, value| {
+                    Ok(vec![ContentBlock::Text {
+                        text: value.as_str().unwrap_or_default().to_string(),
+                    }])
+                }),
+                presentation_meta: None,
+            },
+            timeout_ms: None,
+            is_concurrency_safe: None,
+            execute: Arc::new(|_, _| Box::pin(async { Ok(serde_json::json!("ok")) })),
+            finalize_content: None,
+            present_call: None,
+            present_result: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_execution_releases_its_call_state() {
+        let ctx = Context::root();
+        dsh_system_prompt::SystemPrompt::install(&ctx, dsh_system_prompt::Config::default())
+            .expect("system prompt");
+        let tools = ToolRuntime::install(&ctx, Config::default()).expect("tools");
+        tools.register(&ctx, test_tool()).expect("register tool");
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let drop_flag = Arc::new(DropFlag(Arc::clone(&dropped)));
+        let signal: AbortPredicate = {
+            let drop_flag = Arc::clone(&drop_flag);
+            Arc::new(move || {
+                let _ = &drop_flag;
+                false
+            })
+        };
+
+        let result = tools
+            .execute(ToolExecutionInput {
+                call_id: dsh_llm::call_id("lifetime-probe-call"),
+                root_call_id: None,
+                name: "lifetime-probe".to_string(),
+                arguments: serde_json::json!({}),
+                agent: None,
+                parent: None,
+                signal,
+            })
+            .await;
+        assert!(!result.is_error, "result={:?}", result.error);
+        drop(drop_flag);
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "completed execution retained its caller-owned state"
+        );
+    }
+}

@@ -9,8 +9,9 @@
 //!   ()>`); the loop re-types at its call sites.
 //! - `AbortSignal` parameters are omitted until the cancellation-signal
 //!   wiring lands with the loop.
-//! - `AssembleContext.agent` (the TS declaration merge) has no field yet;
-//!   `assemble_context_for` sets the scope only.
+//! - `AssembleContext.agent` (the TS declaration merge) is represented by
+//!   scalar `sessionId`/`provider`/`model`/`cwd` fields plus the Agent scope,
+//!   avoiding a live trait object inside the prompt assembly value.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -101,6 +101,8 @@ pub struct DeepSeekCatalogModel {
     /// Optional exact-model reasoning catalog. Absence keeps the DeepSeek
     /// adapter defaults; an explicit catalog is used by generic routes.
     pub reasoning_efforts: Option<Vec<CatalogReasoningEffort>>,
+    /// Whether this exact catalog route accepts image input.
+    pub image_input: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -147,6 +149,7 @@ pub fn resolve_adapter_options(
                 context_window: Some(DEFAULT_CONTEXT_WINDOW),
                 max_tokens: None,
                 reasoning_efforts: None,
+                image_input: Some(false),
             },
             DeepSeekCatalogModel {
                 id: "deepseek-v4-pro".to_string(),
@@ -155,6 +158,7 @@ pub fn resolve_adapter_options(
                 context_window: Some(DEFAULT_CONTEXT_WINDOW),
                 max_tokens: None,
                 reasoning_efforts: None,
+                image_input: Some(false),
             },
             DeepSeekCatalogModel {
                 id: "deepseek-v4-flash-vision-exp".to_string(),
@@ -163,6 +167,7 @@ pub fn resolve_adapter_options(
                 context_window: Some(DEFAULT_CONTEXT_WINDOW),
                 max_tokens: None,
                 reasoning_efforts: None,
+                image_input: Some(true),
             },
         ]
     });
@@ -410,6 +415,242 @@ fn project_estimated_request(options: &GenerateOptions) -> GenerateOptions {
         },
     );
     projected
+}
+
+fn request_image_dimensions(width: u64, height: u64, max_pixels: u64) -> (u64, u64) {
+    if width == 0 || height == 0 || width.saturating_mul(height) <= max_pixels {
+        return (width.max(1), height.max(1));
+    }
+    let scale = (max_pixels as f64 / (width as f64 * height as f64)).sqrt();
+    (
+        ((width as f64 * scale).floor() as u64).max(1),
+        ((height as f64 * scale).floor() as u64).max(1),
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ImageGridResize {
+    grid_height: u64,
+    grid_width: u64,
+    best_height: u64,
+    best_width: u64,
+    tokens: u64,
+}
+
+fn image_grid_tokens(grid_height: u64, grid_width: u64) -> u64 {
+    let mut tokens = grid_height.saturating_mul(grid_width + 1).saturating_add(2);
+    if grid_height % 2 == 1 {
+        tokens = tokens.saturating_add(grid_width + 1);
+    }
+    tokens.saturating_add((grid_height.div_ceil(2) * (grid_width + 1) % 2) * 2)
+}
+
+fn solve_image_resize_ratio(height: u64, width: u64, budget: u64) -> ImageGridResize {
+    const PATCH: u64 = 14;
+    const DOWNSAMPLE: u64 = 3;
+    let aspect = height as f64 / width as f64;
+    let ideal_grid_width = (((budget - 2) as f64 / aspect) + 0.25).sqrt() - 0.5;
+    let ideal_grid_height = ideal_grid_width * aspect;
+    let (best_height, best_width) = if ideal_grid_width < 1.0 {
+        let grid_width = 1u64;
+        let mut grid_height = (budget - 2) / (grid_width + 1);
+        if grid_height % 2 == 1 {
+            grid_height -= 1;
+        }
+        (
+            grid_height * PATCH * DOWNSAMPLE,
+            grid_width * PATCH * DOWNSAMPLE,
+        )
+    } else if ideal_grid_height < 2.0 {
+        let grid_height = 2u64;
+        let grid_width = (budget - 2) / grid_height - 1;
+        assert!(
+            grid_width > 1,
+            "deepseek image tokens: no grid fits the token budget"
+        );
+        (
+            grid_height * PATCH * DOWNSAMPLE,
+            grid_width * PATCH * DOWNSAMPLE,
+        )
+    } else {
+        let grid_width = ideal_grid_width.trunc() as u64;
+        let mut grid_height = ideal_grid_height.trunc() as u64;
+        if grid_height % 2 == 1 {
+            grid_height -= 1;
+        }
+        let width_scale = (grid_width * PATCH * DOWNSAMPLE) as f64 / width as f64;
+        let height_scale = (grid_height * PATCH * DOWNSAMPLE) as f64 / height as f64;
+        let scale = width_scale.min(height_scale);
+        (
+            ((height as f64 * scale / PATCH as f64).trunc() as u64) * PATCH,
+            ((width as f64 * scale / PATCH as f64).trunc() as u64) * PATCH,
+        )
+    };
+    let grid_height = (best_height / PATCH).div_ceil(DOWNSAMPLE);
+    let grid_width = (best_width / PATCH).div_ceil(DOWNSAMPLE);
+    ImageGridResize {
+        grid_height,
+        grid_width,
+        best_height,
+        best_width,
+        tokens: image_grid_tokens(grid_height, grid_width),
+    }
+}
+
+fn resize_image_once(width: u64, height: u64) -> ImageGridResize {
+    const PATCH: u64 = 14;
+    const DOWNSAMPLE: u64 = 3;
+    const MAX_TOKENS: u64 = 384;
+    const PAD: u64 = 3;
+    const MIN_PIXELS: u64 = 384 * 384;
+    let mut width = width.max(1);
+    let mut height = height.max(1);
+    if width > height.saturating_mul(8) {
+        width = height.saturating_mul(8);
+    }
+    let pixels = width.saturating_mul(height);
+    if pixels < MIN_PIXELS {
+        let scale = (MIN_PIXELS as f64 / pixels as f64).sqrt();
+        width = (width as f64 * scale).trunc() as u64;
+        height = (height as f64 * scale).trunc() as u64;
+    }
+    let padded_width = width.div_ceil(PATCH) * PATCH;
+    let padded_height = height.div_ceil(PATCH) * PATCH;
+    let grid_height = (padded_height / PATCH).div_ceil(DOWNSAMPLE);
+    let grid_width = (padded_width / PATCH).div_ceil(DOWNSAMPLE);
+    let budget = MAX_TOKENS - PAD;
+    let mut resize = ImageGridResize {
+        grid_height,
+        grid_width,
+        best_height: padded_height,
+        best_width: padded_width,
+        tokens: image_grid_tokens(grid_height, grid_width),
+    };
+    if resize.tokens > budget {
+        resize = solve_image_resize_ratio(height, width, budget);
+        let mut reduced = budget;
+        while resize.tokens > budget {
+            reduced -= 1;
+            resize = solve_image_resize_ratio(height, width, reduced);
+        }
+    }
+    resize.tokens += PAD;
+    resize
+}
+
+fn deepseek_image_tokens(width: u64, height: u64) -> u64 {
+    let mut current = resize_image_once(width, height);
+    for _ in 1..10 {
+        let next = resize_image_once(current.best_width, current.best_height);
+        if next == current {
+            return current.tokens;
+        }
+        current = next;
+    }
+    panic!("deepseek image tokens: resize did not converge for {width}x{height}")
+}
+
+fn model_modalities(model: Option<&DeepSeekCatalogModel>) -> Vec<ModelModality> {
+    if model.and_then(|model| model.image_input).unwrap_or(false) {
+        vec![ModelModality::Text, ModelModality::Image]
+    } else {
+        vec![ModelModality::Text]
+    }
+}
+
+#[cfg(test)]
+mod image_pricing_tests {
+    use super::*;
+
+    #[test]
+    fn image_token_pricing_matches_provider_reference_values() {
+        for (width, height, expected) in [
+            (100, 100, 117),
+            (384, 384, 117),
+            (640, 480, 209),
+            (800, 800, 349),
+            (1024, 768, 357),
+            (1920, 1080, 369),
+            (2000, 2000, 349),
+            (5000, 5000, 349),
+            (300, 50, 101),
+            (9000, 1, 113),
+            (16, 8192, 381),
+            (100, 4036, 253),
+            (4921, 353, 289),
+            (97, 7289, 245),
+        ] {
+            assert_eq!(
+                deepseek_image_tokens(width, height),
+                expected,
+                "unexpected image token price for {width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn vision_route_prices_images_and_text_route_substitutes_them() {
+        let resolved = resolve_adapter_options(&DeepSeekConfig::default()).expect("options");
+        let adapter = DeepSeekAdapter::new(DeepSeekAdapterOptions {
+            options: Arc::new(move || Ok(resolved.clone())),
+            resolve_api_key: Arc::new(|_| Box::pin(async { Ok(None) })),
+            resolve_attachments: None,
+            provider_name: None,
+            reasoning_wire_format: ReasoningWireFormat::DeepSeek,
+        });
+        let image = dsh_llm::ImageAttachmentRef {
+            attachment_id: "sha256:vision".to_string(),
+            media_type: Some("image/png".to_string()),
+            bytes: Some(2048),
+            width: Some(800),
+            height: Some(800),
+            name: None,
+        };
+
+        let vision = adapter
+            .image_request_pricing(PROVIDER, "deepseek-v4-flash-vision-exp")
+            .expect("vision pricing")(&[image.clone()]);
+        assert_eq!(vision[0].visual_tokens, 349);
+        assert!(vision[0].text.contains("request image 800x800px"));
+
+        let text = adapter
+            .image_request_pricing(PROVIDER, "deepseek-v4-flash")
+            .expect("text pricing")(&[image]);
+        assert_eq!(text[0].visual_tokens, 0);
+        assert!(text[0].text.contains("text-only"));
+    }
+
+    #[tokio::test]
+    async fn model_metadata_advertises_only_declared_image_routes() {
+        let resolved = resolve_adapter_options(&DeepSeekConfig::default()).expect("options");
+        let adapter = DeepSeekAdapter::new(DeepSeekAdapterOptions {
+            options: Arc::new(move || Ok(resolved.clone())),
+            resolve_api_key: Arc::new(|_| Box::pin(async { Ok(None) })),
+            resolve_attachments: None,
+            provider_name: None,
+            reasoning_wire_format: ReasoningWireFormat::DeepSeek,
+        });
+        let listed = adapter.list_models(PROVIDER).await;
+        let flash = listed
+            .iter()
+            .find(|model| model.id == "deepseek-v4-flash")
+            .expect("flash model");
+        let vision = listed
+            .iter()
+            .find(|model| model.id == "deepseek-v4-flash-vision-exp")
+            .expect("vision model");
+        assert_eq!(flash.input_modalities, Some(vec![ModelModality::Text]));
+        assert_eq!(
+            vision.input_modalities,
+            Some(vec![ModelModality::Text, ModelModality::Image])
+        );
+
+        let uncatalogued = adapter.resolve_model(PROVIDER, "future-model", None).await;
+        assert_eq!(
+            uncatalogued.input_modalities,
+            Some(vec![ModelModality::Text])
+        );
+    }
 }
 
 fn project_exact_request(
@@ -1221,6 +1462,52 @@ impl LlmAdapter for DeepSeekAdapter {
             .map(|options| options.retry_policy)
     }
 
+    fn image_request_pricing(
+        &self,
+        _provider: &str,
+        model: &str,
+    ) -> Option<dsh_llm::LlmImageRequestPricing> {
+        let options = (self.config.options)().ok()?;
+        let image_input = options
+            .models
+            .iter()
+            .find(|entry| entry.id == model)
+            .and_then(|entry| entry.image_input)
+            .unwrap_or(false);
+        let model = model.to_string();
+        Some(Arc::new(move |images| {
+            if !image_input {
+                return images
+                    .iter()
+                    .map(|image| dsh_llm::LlmImageRequestPrice {
+                        visual_tokens: 0,
+                        text: format!(
+                            "[image {} is unavailable to text-only model {model}]",
+                            image.attachment_id
+                        ),
+                    })
+                    .collect();
+            }
+            images
+                .iter()
+                .map(|image| {
+                    let (width, height) = request_image_dimensions(
+                        image.width.unwrap_or(1),
+                        image.height.unwrap_or(1),
+                        640_000,
+                    );
+                    dsh_llm::LlmImageRequestPrice {
+                        visual_tokens: deepseek_image_tokens(width, height),
+                        text: format!(
+                            "Image {}; request image {}x{}px.",
+                            image.attachment_id, width, height
+                        ),
+                    }
+                })
+                .collect()
+        }))
+    }
+
     async fn list_models(&self, provider: &str) -> Vec<LlmModelInfo> {
         let Ok(options) = (self.config.options)() else {
             return Vec::new();
@@ -1228,12 +1515,15 @@ impl LlmAdapter for DeepSeekAdapter {
         options
             .models
             .into_iter()
-            .map(|model| LlmModelInfo {
-                provider: provider.to_string(),
-                name: model.name.clone().unwrap_or_else(|| model.id.clone()),
-                id: model.id,
-                description: model.description,
-                input_modalities: Some(vec![ModelModality::Text, ModelModality::Image]),
+            .map(|model| {
+                let input_modalities = model_modalities(Some(&model));
+                LlmModelInfo {
+                    provider: provider.to_string(),
+                    name: model.name.clone().unwrap_or_else(|| model.id.clone()),
+                    id: model.id,
+                    description: model.description,
+                    input_modalities: Some(input_modalities),
+                }
             })
             .collect()
     }
@@ -1262,7 +1552,7 @@ impl LlmAdapter for DeepSeekAdapter {
                     .and_then(|entry| entry.name.clone())
                     .unwrap_or_else(|| model.to_string()),
                 description: configured.and_then(|entry| entry.description.clone()),
-                input_modalities: Some(vec![ModelModality::Text, ModelModality::Image]),
+                input_modalities: Some(model_modalities(configured)),
                 context: Some(LlmModelContext {
                     context_window: configured
                         .and_then(|entry| entry.context_window)
@@ -1287,7 +1577,7 @@ impl LlmAdapter for DeepSeekAdapter {
                     .and_then(|entry| entry.name.clone())
                     .unwrap_or_else(|| model.to_string()),
                 description: configured.and_then(|entry| entry.description.clone()),
-                input_modalities: Some(vec![ModelModality::Text, ModelModality::Image]),
+                input_modalities: Some(model_modalities(configured)),
                 context: Some(LlmModelContext {
                     context_window: configured
                         .and_then(|entry| entry.context_window)
@@ -1334,7 +1624,7 @@ impl LlmAdapter for DeepSeekAdapter {
                 .and_then(|entry| entry.name.clone())
                 .unwrap_or_else(|| model.to_string()),
             description: configured.and_then(|entry| entry.description.clone()),
-            input_modalities: Some(vec![ModelModality::Text, ModelModality::Image]),
+            input_modalities: Some(model_modalities(configured)),
             context: Some(LlmModelContext {
                 context_window: configured
                     .and_then(|entry| entry.context_window)

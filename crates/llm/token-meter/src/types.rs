@@ -39,6 +39,7 @@ pub struct TokenMeasurement {
 pub struct TokenSurfaceNode {
     pub seq: u64,
     pub tokens: u64,
+    pub heuristic_tokens: u64,
 }
 
 /// Durable cumulative provider usage for a complete session log.

@@ -62,9 +62,12 @@ impl Config {
 fn mime_for(path: &Path) -> &'static str {
     match path.extension().and_then(|value| value.to_str()) {
         Some("html") => "text/html; charset=utf-8",
-        Some("js") => "text/javascript; charset=utf-8",
+        Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
         Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
         Some("json") => "application/json",
         Some("map") => "application/json",
         Some("webmanifest") => "application/manifest+json",
@@ -287,5 +290,23 @@ impl Plugin for FrontendStaticPlugin {
         apply(ctx, config)
             .map(|_| ())
             .map_err(|error| PluginError::new(arc(error)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mime_for;
+    use std::path::Path;
+
+    #[test]
+    fn skin_asset_extensions_use_browser_mime_types() {
+        assert_eq!(
+            mime_for(Path::new("hooks.mjs")),
+            "text/javascript; charset=utf-8"
+        );
+        assert_eq!(mime_for(Path::new("art.png")), "image/png");
+        assert_eq!(mime_for(Path::new("art.jpg")), "image/jpeg");
+        assert_eq!(mime_for(Path::new("art.jpeg")), "image/jpeg");
+        assert_eq!(mime_for(Path::new("art.webp")), "image/webp");
     }
 }

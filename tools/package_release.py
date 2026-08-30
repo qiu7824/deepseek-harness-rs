@@ -18,6 +18,7 @@ def main():
     if a.platform!='windows': (stage/output).chmod((stage/output).stat().st_mode|stat.S_IXUSR|stat.S_IXGRP|stat.S_IXOTH)
     copy_tree(ROOT/'release'/'plugins',stage/'plugins')
     copy_tree(ROOT/'web'/'dist',stage/'web'/'dist')
+    if a.variant=='no-skin': shutil.rmtree(stage/'web'/'dist'/'skins',ignore_errors=True)
     copy_tree(ROOT/'config'/'agent-presets',stage/'config'/'agent-presets')
     for name in ['README.md','README.zh.md','LICENSE','THIRD_PARTY_NOTICES.md']:
         if (ROOT/name).exists(): shutil.copy2(ROOT/name,stage/name)

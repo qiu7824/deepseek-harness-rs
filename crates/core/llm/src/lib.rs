@@ -61,8 +61,8 @@ pub use retry_policy::{
 };
 pub use runtime::{
     AdapterRegistrationHandle, ChunkStream, DirectoryRegistrationHandle, LlmAdapter, LlmError,
-    LlmErrorOptions, LlmRuntime, PreparedLlmCall, StreamFactory, assert_usable_api_key,
-    generate_options_config_equals,
+    LlmErrorOptions, LlmImageRequestPrice, LlmImageRequestPricing, LlmRuntime, PreparedLlmCall,
+    StreamFactory, assert_usable_api_key, generate_options_config_equals,
 };
 pub use types::{
     ContentBlock, FinishReason, GenerateOptions, ImageAttachmentRef, LlmCallConfig,

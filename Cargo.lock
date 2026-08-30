@@ -1331,6 +1331,8 @@ dependencies = [
  "dsh-storage-domain",
  "dsh-storage-json",
  "dsh-subagent",
+ "dsh-subagent-claude-code",
+ "dsh-subagent-codex",
  "dsh-subagent-fork-in-process",
  "dsh-subagent-spawn-in-process",
  "dsh-subprocess",
@@ -2025,6 +2027,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "uuid",
  "zstd",
 ]
@@ -2493,6 +2496,23 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "dsh-subagent-claude-code"
+version = "0.1.0-rc.8"
+dependencies = [
+ "async-trait",
+ "cordis",
+ "dsh-agent",
+ "dsh-llm",
+ "dsh-session",
+ "dsh-subagent",
+ "dsh-subprocess",
+ "futures",
+ "parking_lot",
  "tokio",
  "uuid",
 ]

@@ -324,6 +324,222 @@ struct OwnedAgentHandle {
 type OwnedAgentHandles =
     Arc<parking_lot::Mutex<std::collections::HashMap<dsh_session::SessionId, OwnedAgentHandle>>>;
 
+async fn retire_idle_agent(
+    resolver: &Arc<crate::agent_lookup::AgentResolver>,
+    handles: &OwnedAgentHandles,
+    sessions: Option<Arc<dsh_session::SessionStore>>,
+    agents: Option<Arc<dsh_agent::AgentRegistry>>,
+    agent: Arc<dyn Agent>,
+) {
+    let session_id = agent.id().clone();
+    let _retirement = resolver.begin_retirement(&session_id);
+    if agent.status() != dsh_agent::AgentStatus::Idle || agent.inbox().has_pending() {
+        return;
+    }
+    let Some(agents) = agents else {
+        return;
+    };
+    if agents
+        .get(&session_id)
+        .is_none_or(|current| !Arc::ptr_eq(&current, &agent))
+        || agents
+            .list()
+            .iter()
+            .any(|child| agents.is_owned_by(child.id(), &agent))
+    {
+        return;
+    }
+    let Some(sessions) = sessions else {
+        return;
+    };
+    if sessions.flush(agent.session()).await.is_err() {
+        return;
+    }
+    let dispose = {
+        let mut handles = handles.lock();
+        let exact = handles
+            .get(&session_id)
+            .is_some_and(|owned| Arc::ptr_eq(&owned.agent, &agent));
+        if !exact {
+            return;
+        }
+        handles
+            .remove(&session_id)
+            .and_then(|mut owned| owned.dispose.take())
+    };
+    if let Some(dispose) = dispose {
+        dispose.await;
+    }
+}
+
+#[cfg(test)]
+mod idle_retirement_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use dsh_agent::{
+        AgentCancelCause, AgentOptions, AgentStatus, CancelOptions, Inbox, InboxNotifications,
+        InboxTarget,
+    };
+    use dsh_scope::ScopeKey;
+    use dsh_session::{Session, SessionId, UserMessage, session_id};
+
+    struct StatusAgent {
+        id: SessionId,
+        options: AgentOptions,
+        session: Session,
+        inbox: Inbox,
+        ctx: Context,
+        scope_key: ScopeKey,
+        running: AtomicBool,
+    }
+
+    impl Agent for StatusAgent {
+        fn id(&self) -> &SessionId {
+            &self.id
+        }
+
+        fn options(&self) -> &AgentOptions {
+            &self.options
+        }
+
+        fn session(&self) -> &Session {
+            &self.session
+        }
+
+        fn inbox(&self) -> &Inbox {
+            &self.inbox
+        }
+
+        fn status(&self) -> AgentStatus {
+            if self.running.load(Ordering::SeqCst) {
+                AgentStatus::Running
+            } else {
+                AgentStatus::Idle
+            }
+        }
+
+        fn ctx(&self) -> &Context {
+            &self.ctx
+        }
+
+        fn scope_key(&self) -> &ScopeKey {
+            &self.scope_key
+        }
+
+        fn cancel(&self, _cause: AgentCancelCause, _options: Option<&CancelOptions>) {}
+
+        fn when_idle(&self) -> BoxFuture<'static, ()> {
+            Box::pin(async {})
+        }
+
+        fn run_maintenance(
+            &self,
+            _task: Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>,
+        ) -> BoxFuture<'static, ()> {
+            Box::pin(async {})
+        }
+
+        fn send(&self, _message: UserMessage, _target: InboxTarget, _wakeup: bool) {}
+
+        fn followup(&self, _message: UserMessage) {}
+
+        fn steer(&self, _message: UserMessage) {}
+
+        fn inject(&self, _message: UserMessage) {}
+    }
+
+    #[tokio::test]
+    async fn stale_idle_observation_does_not_retire_a_running_agent() {
+        let ctx = Context::root();
+        let sessions = dsh_session::SessionStore::install(&ctx);
+        let agents = dsh_agent::AgentRegistry::install(&ctx);
+        let service = ApiProxyService::install(&ctx, ApiProxyDefaults::default());
+        let id = session_id("stale-idle-retirement");
+        let session = sessions
+            .create(&ctx, Some(id.clone()), None)
+            .await
+            .expect("session");
+        let inbox = Inbox::new(&session, InboxNotifications::default()).expect("inbox");
+        let concrete = Arc::new(StatusAgent {
+            id,
+            options: AgentOptions::default(),
+            session,
+            inbox,
+            ctx: ctx.clone(),
+            scope_key: ScopeKey::new(),
+            running: AtomicBool::new(true),
+        });
+        let agent: Arc<dyn Agent> = concrete.clone();
+        let detach = agents.enter(agent.clone(), None).expect("enter agent");
+        agents.announce(&agent).await.expect("announce agent");
+
+        let disposed = Arc::new(AtomicBool::new(false));
+        let disposed_for_future = Arc::clone(&disposed);
+        service.retain_owned_handle(dsh_agent::AgentHandle {
+            agent: agent.clone(),
+            dispose: Box::pin(async move {
+                disposed_for_future.store(true, Ordering::SeqCst);
+            }),
+        });
+
+        service.retire_idle_agent_for_test(agent.clone()).await;
+
+        assert!(
+            !disposed.load(Ordering::SeqCst),
+            "a stale idle observation must not dispose an Agent that is already running again"
+        );
+        assert!(
+            service.owned_agent_handles.lock().contains_key(agent.id()),
+            "the owner handle must remain available for the running lifecycle"
+        );
+
+        detach().await;
+    }
+
+    #[tokio::test]
+    async fn truly_idle_agent_releases_its_owner_handle() {
+        let ctx = Context::root();
+        let sessions = dsh_session::SessionStore::install(&ctx);
+        let agents = dsh_agent::AgentRegistry::install(&ctx);
+        let service = ApiProxyService::install(&ctx, ApiProxyDefaults::default());
+        let id = session_id("idle-agent-retirement");
+        let session = sessions
+            .create(&ctx, Some(id.clone()), None)
+            .await
+            .expect("session");
+        let inbox = Inbox::new(&session, InboxNotifications::default()).expect("inbox");
+        let concrete = Arc::new(StatusAgent {
+            id,
+            options: AgentOptions::default(),
+            session,
+            inbox,
+            ctx: ctx.clone(),
+            scope_key: ScopeKey::new(),
+            running: AtomicBool::new(false),
+        });
+        let agent: Arc<dyn Agent> = concrete.clone();
+        let detach = agents.enter(agent.clone(), None).expect("enter agent");
+        agents.announce(&agent).await.expect("announce agent");
+
+        let disposed = Arc::new(AtomicBool::new(false));
+        let disposed_for_future = Arc::clone(&disposed);
+        service.retain_owned_handle(dsh_agent::AgentHandle {
+            agent: agent.clone(),
+            dispose: Box::pin(async move {
+                disposed_for_future.store(true, Ordering::SeqCst);
+            }),
+        });
+
+        service.retire_idle_agent_for_test(agent.clone()).await;
+
+        assert!(disposed.load(Ordering::SeqCst));
+        assert!(!service.owned_agent_handles.lock().contains_key(agent.id()));
+
+        detach().await;
+    }
+}
+
 /// The composed `ctx.apiProxy` service.
 pub struct ApiProxyService {
     ctx: Context,
@@ -461,45 +677,20 @@ impl ApiProxyService {
         tokio::spawn(async move {
             agent.when_idle().await;
             let _admission = admission.lock().await;
-            let _retirement = resolver.begin_retirement(&session_id);
-            if agent.inbox().has_pending() {
-                return;
-            }
-            let Some(agents) = agents else {
-                return;
-            };
-            if agents
-                .get(&session_id)
-                .is_none_or(|current| !Arc::ptr_eq(&current, &agent))
-                || agents
-                    .list()
-                    .iter()
-                    .any(|child| agents.is_owned_by(child.id(), &agent))
-            {
-                return;
-            }
-            let Some(sessions) = sessions else {
-                return;
-            };
-            if sessions.flush(agent.session()).await.is_err() {
-                return;
-            }
-            let dispose = {
-                let mut handles = handles.lock();
-                let exact = handles
-                    .get(&session_id)
-                    .is_some_and(|owned| Arc::ptr_eq(&owned.agent, &agent));
-                if !exact {
-                    return;
-                }
-                handles
-                    .remove(&session_id)
-                    .and_then(|mut owned| owned.dispose.take())
-            };
-            if let Some(dispose) = dispose {
-                dispose.await;
-            }
+            retire_idle_agent(&resolver, &handles, sessions, agents, agent).await;
         });
+    }
+
+    #[cfg(test)]
+    async fn retire_idle_agent_for_test(&self, agent: Arc<dyn Agent>) {
+        retire_idle_agent(
+            &self.resolver,
+            &self.owned_agent_handles,
+            self.sessions(),
+            self.agents(),
+            agent,
+        )
+        .await;
     }
 
     fn sessions(&self) -> Option<Arc<dsh_session::SessionStore>> {

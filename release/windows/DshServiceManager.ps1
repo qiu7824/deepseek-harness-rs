@@ -3,6 +3,7 @@ param([int]$Port = 58080)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
 $script:ScriptRoot = Split-Path -Parent $PSCommandPath
 $script:Root = if (Test-Path (Join-Path $script:ScriptRoot 'deepseek harness-rs.exe')) { $script:ScriptRoot } else { Split-Path -Parent $script:ScriptRoot }
@@ -57,6 +58,21 @@ function Stop-Dsh {
     Remove-Item $script:PidFile -Force -ErrorAction SilentlyContinue
 }
 
+$script:TrayIcon = [System.Windows.Forms.NotifyIcon]::new()
+$script:TrayIcon.Text = 'DeepSeek Harness-rs'
+$script:TrayIcon.Icon = [System.Drawing.SystemIcons]::Application
+$script:TrayIcon.Visible = $true
+$script:TrayMenu = [System.Windows.Forms.ContextMenuStrip]::new()
+$script:TrayStatusItem = $script:TrayMenu.Items.Add('正在检测服务状态')
+$script:TrayStatusItem.Enabled = $false
+$script:TrayStartItem = $script:TrayMenu.Items.Add('启动服务')
+$script:TrayStopItem = $script:TrayMenu.Items.Add('停止服务')
+$script:TrayOpenItem = $script:TrayMenu.Items.Add('打开网页')
+[void]$script:TrayMenu.Items.Add('-')
+$script:TrayShowItem = $script:TrayMenu.Items.Add('显示运行管理器')
+$script:TrayExitItem = $script:TrayMenu.Items.Add('退出托盘')
+$script:TrayIcon.ContextMenuStrip = $script:TrayMenu
+
 [xml]$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="DeepSeek Harness-rs 运行管理器" Width="720" Height="500" MinWidth="620" MinHeight="440" WindowStartupLocation="CenterScreen" Background="#0B0D10" FontFamily="Microsoft YaHei UI">
   <Window.Resources>
@@ -83,6 +99,10 @@ function Refresh-State {
     $ui.StartButton.IsEnabled = -not $state.Running
     $ui.StopButton.IsEnabled = $state.Running
     $ui.RestartButton.IsEnabled = $state.Running
+    $script:TrayStatusItem.Text = if ($state.Running) { "运行中 · 端口 $Port" } else { '服务已停止' }
+    $script:TrayStartItem.Enabled = -not $state.Running
+    $script:TrayStopItem.Enabled = $state.Running
+    $script:TrayIcon.Text = if ($state.Running) { "DeepSeek Harness-rs · 运行中 ($Port)" } else { 'DeepSeek Harness-rs · 已停止' }
 }
 function Invoke-Safe([scriptblock]$action, [string]$ok) { try { & $action; Start-Sleep -Milliseconds 350; Refresh-State; Write-UiLog $ok } catch { Write-UiLog "错误：$($_.Exception.Message)"; Refresh-State } }
 $ui.StartButton.Add_Click({ Invoke-Safe { Start-Dsh } '启动命令已执行' })
@@ -90,6 +110,25 @@ $ui.StopButton.Add_Click({ Invoke-Safe { Stop-Dsh } '停止命令已执行' })
 $ui.RestartButton.Add_Click({ Invoke-Safe { Stop-Dsh; Start-Sleep -Milliseconds 300; Start-Dsh } '重启命令已执行' })
 $ui.OpenButton.Add_Click({ Start-Process "http://127.0.0.1:$Port/" })
 $ui.LogButton.Add_Click({ Start-Process explorer.exe $script:LogDir })
+$script:TrayStartItem.Add_Click({ Invoke-Safe { Start-Dsh } '托盘启动命令已执行' })
+$script:TrayStopItem.Add_Click({ Invoke-Safe { Stop-Dsh } '托盘停止命令已执行' })
+$script:TrayOpenItem.Add_Click({ Start-Process "http://127.0.0.1:$Port/" })
+$script:TrayShowItem.Add_Click({ $window.Show(); $window.Activate() })
+$script:TrayIcon.Add_DoubleClick({ $window.Show(); $window.Activate() })
+$script:TrayExitItem.Add_Click({
+    $script:TrayIcon.Visible = $false
+    $script:TrayIcon.Dispose()
+    $window.Tag = 'exit'
+    $window.Close()
+})
+$window.Add_Closing({
+    param($sender, $eventArgs)
+    if ($window.Tag -ne 'exit') {
+        $eventArgs.Cancel = $true
+        $window.Hide()
+        $script:TrayIcon.ShowBalloonTip(1500, 'DeepSeek Harness-rs', '运行管理器已缩小到右下角托盘。', [System.Windows.Forms.ToolTipIcon]::Info)
+    }
+})
 $timer = [System.Windows.Threading.DispatcherTimer]::new(); $timer.Interval = [TimeSpan]::FromSeconds(2); $timer.Add_Tick({ Refresh-State }); $timer.Start()
 $ui.StatusTitle.Text = '正在检测'
 $ui.StatusDetail.Text = "服务入口：deepseek harness-rs.exe web --port $Port"
@@ -97,3 +136,5 @@ Write-UiLog "管理器已就绪；正在检测服务状态"
 $window.Add_ContentRendered({ Refresh-State })
 [void]$window.ShowDialog()
 $timer.Stop()
+$script:TrayIcon.Visible = $false
+$script:TrayIcon.Dispose()

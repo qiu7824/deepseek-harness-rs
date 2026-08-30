@@ -36,13 +36,25 @@ use crate::error::INVALID_CREDENTIAL_CODE;
 use crate::message::{Message, MessageSource, Role};
 use crate::retry_policy::{ResolvedRetryPolicy, resolve_retry_policy};
 use crate::types::{
-    FinishReason, GenerateOptions, LlmCallConfig, LlmCallConfigAdapterDefaults,
+    FinishReason, GenerateOptions, ImageAttachmentRef, LlmCallConfig, LlmCallConfigAdapterDefaults,
     LlmConfigurableProvider, LlmDiscoveredModel, LlmFailure, LlmModelContext,
     LlmModelDiscoveryRequest, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, StreamChunk,
 };
 
 /// A chunk stream (the TS `AsyncIterable<StreamChunk>`).
 pub type ChunkStream = futures::stream::BoxStream<'static, StreamChunk>;
+
+/// Request price of one ordered image occurrence under one exact route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LlmImageRequestPrice {
+    pub visual_tokens: u64,
+    pub text: String,
+}
+
+/// Synchronous route-owned request-image pricing. The callback returns one
+/// aligned price for every supplied image occurrence.
+pub type LlmImageRequestPricing =
+    Arc<dyn Fn(&[ImageAttachmentRef]) -> Vec<LlmImageRequestPrice> + Send + Sync>;
 
 /// A stream factory: `GenerateOptions → ChunkStream` (the `llm/stream`
 /// waterfall payload).
@@ -182,6 +194,15 @@ pub trait LlmAdapter: Send + Sync {
 
     /// Return the provider-owned retry policy captured with this route.
     fn provider_retry_policy(&self, _provider: &str) -> Option<ResolvedRetryPolicy> {
+        None
+    }
+
+    /// Resolve provider-side request-image pricing for one exact model route.
+    fn image_request_pricing(
+        &self,
+        _provider: &str,
+        _model: &str,
+    ) -> Option<LlmImageRequestPricing> {
         None
     }
 
@@ -672,6 +693,19 @@ impl LlmRuntime {
     #[allow(clippy::result_large_err)]
     pub fn provider_retry_policy(&self, provider: &str) -> Result<ResolvedRetryPolicy, LlmError> {
         Ok(self.registration(provider)?.retry_policy.clone())
+    }
+
+    /// Resolve route-owned request-image pricing. Unknown routes degrade to
+    /// `None` because durable history can outlive adapter registration.
+    pub fn image_request_pricing(
+        &self,
+        provider: &str,
+        model: &str,
+    ) -> Option<LlmImageRequestPricing> {
+        self.adapters
+            .lock()
+            .get(provider)
+            .and_then(|registration| registration.adapter.image_request_pricing(provider, model))
     }
 
     /// Discover models advertised by one registered provider. Catalog

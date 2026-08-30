@@ -510,18 +510,6 @@ fn validate_payload(
         .collect())
 }
 
-/// Expand a validated row back into its exact original events, in order
-/// (TS `expandRow`).
-fn expand_row(row: &ChunkRow) -> Vec<SessionEvent> {
-    let mut events = Vec::new();
-    visit_row_events(row, &mut |event| {
-        events.push(event);
-        Ok(true)
-    })
-    .expect("collecting an expanded row is infallible");
-    events
-}
-
 fn visit_row_events(
     row: &ChunkRow,
     on_event: &mut impl FnMut(SessionEvent) -> Result<bool, String>,
@@ -571,12 +559,10 @@ fn visit_row_events_from(
             .ok_or_else(|| format!("{kind} time overflow"))?;
     }
     for (k, member) in members.iter().enumerate().skip(start) {
-        if k > 0 {
-            if k > start {
-                time = time
-                    .checked_add(dt[k - 1])
-                    .ok_or_else(|| format!("{kind} time overflow"))?;
-            }
+        if k > 0 && k > start {
+            time = time
+                .checked_add(dt[k - 1])
+                .ok_or_else(|| format!("{kind} time overflow"))?;
         }
         let chunk = match (kind, tool_call) {
             ("text-chunks", _) => serde_json::json!({
@@ -640,7 +626,7 @@ pub fn visit_storage_record_events(
 /// packed row before expanding its members.
 pub fn visit_owned_storage_record_events(
     value: JsonValue,
-    mut on_event: impl FnMut(SessionEvent) -> Result<bool, String>,
+    on_event: impl FnMut(SessionEvent) -> Result<bool, String>,
 ) -> Result<bool, String> {
     visit_decoded_storage_record_events(StorageRecord::from_json(value)?, on_event)
 }

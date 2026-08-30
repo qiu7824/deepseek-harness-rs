@@ -13,8 +13,9 @@
 //! - The `sessionPersistence` service base has no backend contract yet, so
 //!   `resume` always reports the not-configured error until a backend
 //!   lands.
-//! - The `systemPrompt` variables (`provider`/`model`/`cwd`) reading
-//!   `context.agent` are skipped until `AssembleContext.agent` lands.
+//! - The `systemPrompt` variables read the equivalent scalar fields materialized
+//!   by `assemble_context_for` instead of retaining the live Agent in the
+//!   assembly object.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -297,6 +298,16 @@ impl AgentLoop {
             ctx,
             "cwd",
             Arc::new(|context| context.field_str("cwd").map(str::to_string)),
+        );
+        let _provider_variable = system_prompt.variable(
+            ctx,
+            "provider",
+            Arc::new(|context| context.field_str("provider").map(str::to_string)),
+        );
+        let _model_variable = system_prompt.variable(
+            ctx,
+            "model",
+            Arc::new(|context| context.field_str("model").map(str::to_string)),
         );
 
         // User-owned parallelism cap (optional settings seam).

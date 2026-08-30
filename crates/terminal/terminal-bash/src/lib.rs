@@ -557,3 +557,37 @@ impl TerminalBackendSession for LocalPtySession {
         self.terminal.terminate()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::BoundedText;
+
+    #[test]
+    fn bounded_scrollback_preserves_utf8_boundaries() {
+        let mut text = BoundedText::default();
+        text.append("甲乙丙丁", 7, None);
+        let (value, truncated) = text.snapshot();
+        assert!(truncated);
+        assert!(value.is_char_boundary(value.len()));
+        assert_eq!(value, "丙丁");
+    }
+
+    #[test]
+    fn independent_send_cursor_only_returns_new_output() {
+        let mut text = BoundedText::default();
+        text.append("first\n", 1024, None);
+        assert_eq!(text.consume().delta, "first\n");
+        assert!(text.consume().delta.is_empty());
+        text.append("second\n", 1024, None);
+        assert_eq!(text.consume().delta, "second\n");
+    }
+
+    #[test]
+    fn line_cap_keeps_the_newest_complete_lines() {
+        let mut text = BoundedText::default();
+        text.append("one\ntwo\nthree\n", 1024, Some(2));
+        let (value, truncated) = text.snapshot();
+        assert!(truncated);
+        assert_eq!(value, "two\nthree\n");
+    }
+}

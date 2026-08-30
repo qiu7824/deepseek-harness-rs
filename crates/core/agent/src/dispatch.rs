@@ -160,6 +160,18 @@ pub fn assemble_context_for(agent: &Arc<dyn Agent>) -> AssembleContext {
         "sessionId".to_string(),
         serde_json::Value::String(agent.session().id().to_string()),
     );
+    if let Some(provider) = &agent.options().provider {
+        fields.insert(
+            "provider".to_string(),
+            serde_json::Value::String(provider.clone()),
+        );
+    }
+    if let Some(model) = &agent.options().model {
+        fields.insert(
+            "model".to_string(),
+            serde_json::Value::String(model.clone()),
+        );
+    }
     if let Some(cwd) = &agent.session().header().cwd {
         fields.insert("cwd".to_string(), serde_json::Value::String(cwd.clone()));
     }

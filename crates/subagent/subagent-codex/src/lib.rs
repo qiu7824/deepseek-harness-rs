@@ -352,10 +352,20 @@ impl SubagentProvider for CodexProvider {
             }
             wire.write(&json!({ "jsonrpc": "2.0", "method": "initialized" }))
                 .await?;
+            // Forward the configured model selected for this individual Codex child.
+            let model = request
+                .request
+                .agent_options
+                .as_ref()
+                .and_then(|options| options.model.clone());
+            let mut thread_params = json!({ "cwd": cwd, "ephemeral": true });
+            if let Some(model) = model {
+                thread_params["model"] = Value::String(model);
+            }
             let thread = wire
                 .request(
                     "thread/start",
-                    json!({ "cwd": cwd, "ephemeral": true }),
+                    thread_params,
                     &child,
                     &request.request.signal,
                 )

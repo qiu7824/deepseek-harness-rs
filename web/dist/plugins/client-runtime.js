@@ -7128,6 +7128,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			/** Session-owned business Context engine over the contiguous raw window. */
 			conversation;
 			running = false;
+			/** Monotonic count of authoritative running relays; guards prompt RPC races even when the boolean returns to its starting value. */
+			runningRevision = 0;
 			address;
 			parentAvailable = false;
 			/**
@@ -7219,12 +7221,13 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* @returns the prompt result (also mirrored into promptError on failure).
 			*/
 			async prompt(content, mode) {
-				await this.returnLatest();
 				this.promptError = null;
 				this.lastAgentError = null;
 				this.promptAttempted = true;
 				if (this.blankBit) this.firstPromptPendingTurn = true;
 				this.notifier.markDirty();
+				await this.returnLatest();
+				const runningRevisionAtStart = this.runningRevision;
 				let result;
 				try {
 					if (this.address === void 0) result = (await this.api.sessions.prompt({
@@ -7275,10 +7278,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					this.notifier.markDirty();
 					return result;
 				}
-				if (result.value.accepted) {
-					this.running = true;
-					this.notifier.markDirty();
-				}
+				if (result.value.accepted && this.runningRevision === runningRevisionAtStart) this.handleRunning(true);
 				if (this.blankBit) {
 					this.blankBit = false;
 					this.options.onEngaged?.(this);
@@ -7646,6 +7646,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* @param running - the new running state.
 			*/
 			handleRunning(running) {
+				this.runningRevision += 1;
 				if (running && this.blankBit) {
 					this.blankBit = false;
 					this.notifier.markDirty();

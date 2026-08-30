@@ -1,0 +1,19 @@
+[package]
+name = "dsh-subagent-claude-code"
+version = "0.1.0-rc.8"
+edition = "2024"
+license = "MIT"
+description = "Real out-of-process Claude Code one-shot subagent provider"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-subagent = { path = "../subagent" }
+dsh-subprocess = { path = "../../subprocess/subprocess" }
+async-trait = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }

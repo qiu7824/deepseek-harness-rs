@@ -171,9 +171,22 @@ fn subagent_parameters(prompt_description: &str) -> serde_json::Value {
                 "type": "string",
                 "description": prompt_description
             },
+            "provider": {
+                "type": "string",
+                "description": "Optional requested provider route for this child only. It must name a provider registered in the parent Host."
+            },
+            "model": {
+                "type": "string",
+                "description": "Optional requested model id for this child only. The selected provider validates the id."
+            },
             "reasoning_effort": {
                 "type": "string",
                 "description": "Optional adapter-owned reasoning effort for this child only. Use the exact id advertised by the selected model; built-in GPT-5 routes expose max (dispatched as OpenAI xhigh). Omit it to keep the configured/provider default behavior."
+            },
+            "max_tokens": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional maximum output tokens for this child only."
             }
         },
         "required": ["description", "prompt"],
@@ -181,10 +194,12 @@ fn subagent_parameters(prompt_description: &str) -> serde_json::Value {
     })
 }
 
+fn resolve_requested_provider(mounted: &str, requested: Option<&str>) -> String {
+    requested.unwrap_or(mounted).to_string()
+}
+
 /// Install the tool, mirroring the provider lifecycle (TS `apply`).
 pub fn apply(ctx: &Context, config: &Config) -> Result<(), String> {
-    let background_enabled = config.enable_run_in_background.unwrap_or(true);
-    let continuable = config.background_mode.as_deref() == Some("continuable");
     let tool_name = config
         .tool_name
         .clone()
@@ -204,16 +219,7 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<(), String> {
             config.provider
         ));
     };
-    mount_tool(
-        ctx,
-        &tools,
-        &subagents,
-        provider,
-        config,
-        background_enabled,
-        continuable,
-        &tool_name,
-    )
+    mount_tool(ctx, &tools, &subagents, provider, config, &tool_name)
 }
 
 fn mount_tool(
@@ -222,10 +228,10 @@ fn mount_tool(
     subagents: &Arc<SubagentRuntime>,
     provider: Arc<dyn SubagentProvider>,
     config: &Config,
-    background_enabled: bool,
-    continuable: bool,
     tool_name: &str,
 ) -> Result<(), String> {
+    let background_enabled = config.enable_run_in_background.unwrap_or(true);
+    let continuable = config.background_mode.as_deref() == Some("continuable");
     if let Some(max_depth) = config.max_depth {
         if !provider.capabilities().depth_limit {
             return Err(format!(
@@ -320,6 +326,27 @@ fn mount_tool(
                     ));
                 };
                 let mut agent_options = config.agent_options.clone();
+                let requested_provider = args
+                    .get("provider")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let requested_model = args
+                    .get("model")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                if requested_model.is_some() && requested_provider.is_none() {
+                    return Err(ToolBodyError::plain(
+                        "requested provider/model route needs `provider` whenever `model` is set",
+                    ));
+                }
+                let provider = resolve_requested_provider(&provider, requested_provider);
+                if let Some(model) = requested_model {
+                    agent_options
+                        .get_or_insert_with(AgentOptions::default)
+                        .model = Some(model.to_string());
+                }
                 if let Some(effort) = args
                     .get("reasoning_effort")
                     .and_then(|value| value.as_str())
@@ -328,6 +355,14 @@ fn mount_tool(
                     agent_options
                         .get_or_insert_with(AgentOptions::default)
                         .reasoning_effort = Some(dsh_llm::ReasoningEffortId::new(effort));
+                }
+                if let Some(max_tokens) = args.get("max_tokens").and_then(|value| value.as_u64()) {
+                    if max_tokens == 0 {
+                        return Err(ToolBodyError::plain("max_tokens must be at least 1"));
+                    }
+                    agent_options
+                        .get_or_insert_with(AgentOptions::default)
+                        .max_tokens = Some(max_tokens);
                 }
                 let request = SubagentStartRequest {
                     label: args
@@ -456,20 +491,19 @@ struct SettledRunHooks {
     cancelled: Arc<parking_lot::Mutex<bool>>,
 }
 
+type SubagentStartFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<Arc<dyn SubagentRun>, dsh_subagent::SubagentError>>
+            + Send,
+    >,
+>;
+
 impl SettledRunHooks {
-    fn new(
-        start: std::pin::Pin<
-            Box<
-                dyn std::future::Future<
-                        Output = Result<Arc<dyn SubagentRun>, dsh_subagent::SubagentError>,
-                    > + Send,
-            >,
-        >,
-    ) -> Self {
+    fn new(start: SubagentStartFuture) -> Self {
         let cancelled = Arc::new(parking_lot::Mutex::new(false));
         let cancelled_for_task = cancelled.clone();
         let handle = tokio::spawn(async move {
-            let outcome = match start.await {
+            match start.await {
                 Ok(run) => settle_run(&run).await,
                 Err(error) => {
                     if *cancelled_for_task.lock() {
@@ -486,8 +520,7 @@ impl SettledRunHooks {
                         }
                     }
                 }
-            };
-            outcome
+            }
         });
         Self {
             run: parking_lot::Mutex::new(Some(handle)),
@@ -521,24 +554,6 @@ impl dsh_jobs::JobHooks for SettledRunHooks {
 
     fn read_output(&self) -> Option<String> {
         None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::subagent_parameters;
-
-    #[test]
-    fn schema_exposes_optional_per_call_reasoning_effort() {
-        let schema = subagent_parameters("task");
-        assert_eq!(
-            schema.pointer("/properties/reasoning_effort/type"),
-            Some(&serde_json::json!("string"))
-        );
-        assert_eq!(
-            schema.pointer("/required"),
-            Some(&serde_json::json!(["description", "prompt"]))
-        );
     }
 }
 
@@ -587,5 +602,44 @@ impl Plugin for ToolSubagentPlugin {
             Config::default()
         };
         apply(ctx, &config).map_err(|error| PluginError::from(anyhow::anyhow!(error)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_requested_provider, subagent_parameters};
+
+    #[test]
+    fn schema_exposes_optional_per_call_reasoning_effort() {
+        let schema = subagent_parameters("task");
+        assert_eq!(
+            schema.pointer("/properties/reasoning_effort/type"),
+            Some(&serde_json::json!("string"))
+        );
+        assert_eq!(
+            schema.pointer("/required"),
+            Some(&serde_json::json!(["description", "prompt"]))
+        );
+    }
+
+    #[test]
+    fn schema_exposes_optional_per_call_route() {
+        let schema = subagent_parameters("task");
+        for field in ["provider", "model", "reasoning_effort", "max_tokens"] {
+            assert!(
+                schema.pointer(&format!("/properties/{field}")).is_some(),
+                "missing per-call field {field}"
+            );
+        }
+        assert_eq!(
+            schema.pointer("/required"),
+            Some(&serde_json::json!(["description", "prompt"]))
+        );
+    }
+
+    #[test]
+    fn per_call_provider_overrides_the_mounted_provider() {
+        assert_eq!(resolve_requested_provider("spawn", Some("codex")), "codex");
+        assert_eq!(resolve_requested_provider("spawn", None), "spawn");
     }
 }

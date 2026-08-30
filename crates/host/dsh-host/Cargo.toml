@@ -97,6 +97,8 @@ dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }
 dsh-subagent = { path = "../../subagent/subagent" }
 dsh-subagent-spawn-in-process = { path = "../../subagent/subagent-spawn" }
 dsh-subagent-fork-in-process = { path = "../../subagent/subagent-fork" }
+dsh-subagent-codex = { path = "../../subagent/subagent-codex" }
+dsh-subagent-claude-code = { path = "../../subagent/subagent-claude-code" }
 dsh-tool-subagent = { path = "../../subagent/tool-subagent" }
 dsh-tool-subagent-control = { path = "../../subagent/tool-subagent-control" }
 dsh-terminal = { path = "../../terminal/terminal" }

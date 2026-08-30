@@ -11,6 +11,12 @@
 #ifndef Variant
 #define Variant "full"
 #endif
+#ifndef IconFile
+#define IconFile "deepseek-black.ico"
+#endif
+#ifndef ChineseMessages
+#define ChineseMessages "ChineseSimplified.isl"
+#endif
 [Setup]
 AppId={{A6F42843-79DD-4FA1-91D2-0B71F8974B78}
 AppName={#MyAppName}
@@ -26,11 +32,11 @@ WizardStyle=modern
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-SetupIconFile=packaging\windows\deepseek-black.ico
+SetupIconFile={#IconFile}
 UninstallDisplayIcon={app}\deepseek harness-rs.exe
 ShowLanguageDialog=no
 [Languages]
-Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "chinesesimp"; MessagesFile: "{#ChineseMessages}"
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："; Flags: unchecked
 [Files]

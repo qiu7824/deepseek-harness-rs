@@ -986,6 +986,18 @@ window.__ModuleLoader__.load({
 				this.publish();
 			}
 			/**
+			* Clear only the exact ordinary-send snapshot that the Host accepted. If
+			* the user edited the draft or changed images while the RPC was pending,
+			* leave the newer local state intact instead of erasing it as a stale
+			* settlement.
+			*/
+			commitAcceptedSend(draft, imageIds) {
+				if (this.snapshot.draft !== draft) return false;
+				if (this.imageIds.length !== imageIds.length || this.imageIds.some((id, index) => id !== imageIds[index])) return false;
+				this.commitSend(imageIds);
+				return true;
+			}
+			/**
 			* Clear the draft as a successful-send commit: no undo unit is recorded and
 			* the undo history is cut, so Ctrl/Cmd-Z cannot resurrect sent content
 			* (the command path gets the same discipline from submit-settled success).
@@ -1442,24 +1454,26 @@ window.__ModuleLoader__.load({
 				return actx === void 0 ? void 0 : this.controller(actx);
 			}
 			/**
-			* Default sink: optimistic clear + prompt. The session is always a real
-			* host entity (materialized when its workspace was picked), so there is
-			* exactly one path; a failed first prompt is an ordinary prompt failure
-			* (error strip via promptError, draft restored only while untouched).
+			* Default sink: keep the draft visible until the Host has durably admitted
+			* the prompt, then commit-clear it. A transport or business rejection keeps
+			* the exact draft and image ownership in place and surfaces one notice;
+			* there is no late restore that can overwrite text typed after Enter.
 			*/
-			sink(session, text, imageIds, mode) {
+			async sink(session, text, imageIds, mode) {
 				if (text === "" && imageIds.length === 0) return;
 				const shell = this.shells.get(session.sessionId);
-				shell?.commitSend(imageIds);
-				this.conversation().sendSession(session, text, imageIds, mode).catch(() => {
+				try {
+					await this.conversation().sendSession(session, text, imageIds, mode);
+					if (this.shells.get(session.sessionId) === shell) shell?.commitAcceptedSend(text, imageIds);
+				} catch (error) {
 					if (this.shells.get(session.sessionId) === shell) {
-						shell?.restoreImages(imageIds);
-						if (shell?.snapshot.draft === "") shell.setDraft(text);
+						const message = error instanceof Error ? error.message : String(error);
+						shell?.notify("error", message);
 						return;
 					}
 					const conversation = this.rootCtx.get("conversation");
 					for (const id of imageIds) conversation?.releaseDraftImage(id);
-				});
+				}
 			}
 			/**
 			* Steer every still-pending queued message into the running turn, in FIFO
@@ -6986,7 +7000,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-conversation\src\client\skeleton\ConversationRoot.module.css.mjs
-		const css$6 = ".c9AePG_root{background:var(--dsw-alias-bg-base);--dsh-chat-content-width:748px;--dsh-composer-card-max-width:calc(var(--dsh-chat-content-width) + 32px);--dsh-composer-side-clearance:16px;--dsh-composer-dock-inset:8px;flex-direction:column;min-width:0;height:100%;display:flex}.c9AePG_header{border-bottom:1px solid #0000;flex:none;padding:12px 28px 0 20px;position:relative}.c9AePG_header:after{content:\"\";z-index:0;background:var(--dsw-alias-border-l2);pointer-events:none;height:1px;position:absolute;bottom:1px;left:0;right:0}.c9AePG_headerHidden{display:none}.c9AePG_titleRow{align-items:center;gap:0;min-height:32px;display:flex}.c9AePG_titleCluster{flex:1;align-items:center;gap:10px;min-width:0;display:flex}.c9AePG_crumbs{white-space:nowrap;align-items:center;gap:4px;min-width:0;display:flex;overflow:hidden}.c9AePG_crumbSeg{align-items:center;gap:4px;min-width:0;display:inline-flex}.c9AePG_crumbSep{color:var(--dsw-alias-label-caption);font-size:14px;line-height:20px}.c9AePG_crumb{max-width:220px;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;cursor:pointer;background:0 0;border:none;border-radius:12px;padding:4px 8px;font-size:14px;line-height:20px;overflow:hidden}.c9AePG_crumb:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.c9AePG_crumbCurrent{color:var(--dsw-alias-label-primary);cursor:default;font-weight:500}.c9AePG_headerActions{flex:none;align-items:center;gap:8px;display:flex}.c9AePG_headerUtilities{flex:none;align-items:center;gap:8px;margin-left:20px;display:flex}.c9AePG_headerUtilities:empty{display:none}.c9AePG_tabs{z-index:1;gap:36px;margin-top:4px;padding-left:8px;display:flex;position:relative}.c9AePG_tab{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;padding:0 0 11px;font-size:13px;font-weight:500;line-height:16px;position:relative}.c9AePG_tab:after{content:\"\";background:0 0;border-radius:2px;height:2px;position:absolute;bottom:1px;left:0;right:0}.c9AePG_tabActive{color:var(--dsw-alias-state-business-primary)}.c9AePG_tabActive:after{background:var(--dsw-alias-state-business-primary)}.c9AePG_viewArea{flex-direction:column;flex:1;min-height:0;display:flex}.c9AePG_composerStack{--dsh-composer-stack-gap:6px;gap:var(--dsh-composer-stack-gap);flex-direction:column;display:flex}.c9AePG_composerSeat{--dsh-composer-text-max-height:336px;flex-direction:column;flex:none;display:flex}.c9AePG_root[data-phase=active]{overflow:hidden}.c9AePG_root[data-phase=active] .c9AePG_header{flex:none}.c9AePG_scrollBody{scrollbar-gutter:stable;flex-direction:column;flex:1;min-height:0;display:flex;overflow:hidden auto}.c9AePG_root[data-phase=active] .c9AePG_viewArea{flex:1 0 auto;min-height:auto}.c9AePG_root[data-phase=active] .c9AePG_composerSeat{z-index:7;background:linear-gradient(180deg, color-mix(in srgb, var(--dsw-alias-bg-base) 0%, transparent) 0px, var(--dsw-alias-bg-base) 36px);position:sticky;bottom:0}.c9AePG_scrollBody:has([data-conversation-composer-overlay]){scrollbar-gutter:auto;position:relative;overflow:hidden auto}.c9AePG_scrollBody:has([data-conversation-composer-overlay])>[data-slot=conversation\\.session]>.c9AePG_viewArea{flex:1 1 0;min-height:0;overflow:hidden}.c9AePG_scrollBody:has([data-conversation-composer-overlay])>.c9AePG_composerSeat{right:var(--dsh-scrollbar-width);position:absolute;bottom:0;left:0}.c9AePG_composerHero{width:min(calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)), 100%);z-index:1;align-self:center;gap:8px;padding-bottom:32px;position:relative}.c9AePG_heroGlow{z-index:-1;aspect-ratio:1051/468;pointer-events:none;width:135.438%;position:absolute;bottom:92px;left:50%;transform:translate(-50%,50%)}.c9AePG_heroWorkspaceRow{align-items:center;gap:2px;min-width:0;margin-top:4px;padding-left:20px;display:flex}.c9AePG_root[data-phase=hero] .c9AePG_scrollBody{justify-content:center;overflow-y:auto}.c9AePG_root[data-phase=settling] .c9AePG_composerSeat{visibility:hidden}";
+		const css$6 = ".c9AePG_root{background:var(--dsw-alias-bg-base);--dsh-chat-content-width:var(--dsh-chat-user-width,clamp(680px,calc(var(--dsh-conversation-column-width,0px) * .64),920px));--dsh-composer-card-max-width:calc(var(--dsh-chat-content-width) + 32px);--dsh-composer-side-clearance:16px;--dsh-composer-dock-inset:8px;flex-direction:column;min-width:0;height:100%;display:flex;position:relative}.c9AePG_widthHandle{z-index:4;cursor:col-resize;touch-action:none;background:transparent;border:0;width:18px;padding:0;position:absolute;top:0;bottom:0}.c9AePG_widthHandle[data-width-handle=left]{left:max(0px,calc(50% - var(--dsh-chat-content-width) / 2 - 18px))}.c9AePG_widthHandle[data-width-handle=right]{right:max(0px,calc(50% - var(--dsh-chat-content-width) / 2 - 18px))}.c9AePG_widthHandle:after{content:\"\";opacity:0;background:var(--dsw-alias-brand-primary);border-radius:2px;width:2px;position:absolute;top:25%;bottom:25%;left:8px;transition:opacity .15s}.c9AePG_widthHandle:hover:after,.c9AePG_widthHandle:focus-visible:after{opacity:.65}.c9AePG_header{border-bottom:1px solid #0000;flex:none;padding:12px 28px 0 20px;position:relative}.c9AePG_header:after{content:\"\";z-index:0;background:var(--dsw-alias-border-l2);pointer-events:none;height:1px;position:absolute;bottom:1px;left:0;right:0}.c9AePG_headerHidden{display:none}.c9AePG_titleRow{align-items:center;gap:0;min-height:32px;display:flex}.c9AePG_titleCluster{flex:1;align-items:center;gap:10px;min-width:0;display:flex}.c9AePG_crumbs{white-space:nowrap;align-items:center;gap:4px;min-width:0;display:flex;overflow:hidden}.c9AePG_crumbSeg{align-items:center;gap:4px;min-width:0;display:inline-flex}.c9AePG_crumbSep{color:var(--dsw-alias-label-caption);font-size:14px;line-height:20px}.c9AePG_crumb{max-width:220px;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;cursor:pointer;background:0 0;border:none;border-radius:12px;padding:4px 8px;font-size:14px;line-height:20px;overflow:hidden}.c9AePG_crumb:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.c9AePG_crumbCurrent{color:var(--dsw-alias-label-primary);cursor:default;font-weight:500}.c9AePG_headerActions{flex:none;align-items:center;gap:8px;display:flex}.c9AePG_headerUtilities{flex:none;align-items:center;gap:8px;margin-left:20px;display:flex}.c9AePG_headerUtilities:empty{display:none}.c9AePG_tabs{z-index:1;gap:36px;margin-top:4px;padding-left:8px;display:flex;position:relative}.c9AePG_tab{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;padding:0 0 11px;font-size:13px;font-weight:500;line-height:16px;position:relative}.c9AePG_tab:after{content:\"\";background:0 0;border-radius:2px;height:2px;position:absolute;bottom:1px;left:0;right:0}.c9AePG_tabActive{color:var(--dsw-alias-state-business-primary)}.c9AePG_tabActive:after{background:var(--dsw-alias-state-business-primary)}.c9AePG_viewArea{flex-direction:column;flex:1;min-height:0;display:flex}.c9AePG_composerStack{--dsh-composer-stack-gap:6px;gap:var(--dsh-composer-stack-gap);flex-direction:column;display:flex}.c9AePG_composerSeat{--dsh-composer-text-max-height:336px;flex-direction:column;flex:none;display:flex}.c9AePG_root[data-phase=active]{overflow:hidden}.c9AePG_root[data-phase=active] .c9AePG_header{flex:none}.c9AePG_scrollBody{scrollbar-gutter:stable;flex-direction:column;flex:1;min-height:0;display:flex;overflow:hidden auto}.c9AePG_root[data-phase=active] .c9AePG_viewArea{flex:1 0 auto;min-height:auto}.c9AePG_root[data-phase=active] .c9AePG_composerSeat{z-index:7;background:linear-gradient(180deg, color-mix(in srgb, var(--dsw-alias-bg-base) 0%, transparent) 0px, var(--dsw-alias-bg-base) 36px);position:sticky;bottom:0}.c9AePG_scrollBody:has([data-conversation-composer-overlay]){scrollbar-gutter:auto;position:relative;overflow:hidden auto}.c9AePG_scrollBody:has([data-conversation-composer-overlay])>[data-slot=conversation\\.session]>.c9AePG_viewArea{flex:1 1 0;min-height:0;overflow:hidden}.c9AePG_scrollBody:has([data-conversation-composer-overlay])>.c9AePG_composerSeat{right:var(--dsh-scrollbar-width);position:absolute;bottom:0;left:0}.c9AePG_composerHero{width:min(calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)), 100%);z-index:1;align-self:center;gap:8px;padding-bottom:32px;position:relative}.c9AePG_heroGlow{z-index:-1;aspect-ratio:1051/468;pointer-events:none;width:135.438%;position:absolute;bottom:92px;left:50%;transform:translate(-50%,50%)}.c9AePG_heroWorkspaceRow{align-items:center;gap:2px;min-width:0;margin-top:4px;padding-left:20px;display:flex}.c9AePG_root[data-phase=hero] .c9AePG_scrollBody{justify-content:center;overflow-y:auto}.c9AePG_root[data-phase=settling] .c9AePG_composerSeat{visibility:hidden}";
 		const tagId$6 = "@deepseek-ai/dsh-client-ui-conversation/ConversationRoot.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$6) + "]") === null) {
 			const tag = document.createElement("style");
@@ -7017,10 +7031,44 @@ window.__ModuleLoader__.load({
 			"crumbCurrent": "c9AePG_crumbCurrent",
 			"composerSeat": "c9AePG_composerSeat",
 			"tabs": "c9AePG_tabs",
-			"titleCluster": "c9AePG_titleCluster"
+			"titleCluster": "c9AePG_titleCluster",
+			"widthHandle": "c9AePG_widthHandle"
 		};
 		//#endregion
 		//#region lib/types/client/skeleton/ConversationRoot.js
+		const WIDTH_PREF_KEY = "dsh.conversation.contentWidth";
+		const CONTENT_MIN = 640;
+		const CONTENT_EDGE_BUDGET = 176;
+		function readWidthPreference() {
+			try {
+				const raw = localStorage.getItem(WIDTH_PREF_KEY);
+				if (raw === null) return null;
+				const value = Number(raw);
+				return Number.isFinite(value) && value > 0 ? value : null;
+			} catch {
+				return null;
+			}
+		}
+		function WidthHandle({ side, rootRef, onWidth }) {
+			const onPointerDown = (event) => {
+				if (event.button !== 0 || rootRef.current === null) return;
+				event.preventDefault();
+				const move = (next) => {
+					const rect = rootRef.current?.getBoundingClientRect();
+					if (rect === void 0) return;
+					const edge = side === "left" ? next.clientX - rect.left : rect.right - next.clientX;
+					const width = Math.round(Math.max(CONTENT_MIN, Math.min(rect.width - CONTENT_EDGE_BUDGET, (rect.width / 2 - edge) * 2)));
+					onWidth(width);
+				};
+				const up = () => {
+					window.removeEventListener("pointermove", move);
+					window.removeEventListener("pointerup", up);
+				};
+				window.addEventListener("pointermove", move);
+				window.addEventListener("pointerup", up, { once: true });
+			};
+			return (0, react_jsx_runtime.jsx)("button", { type: "button", className: ConversationRoot_module_css_default.widthHandle, "data-width-handle": side, "aria-label": side === "left" ? "调整对话宽度左边界" : "调整对话宽度右边界", onPointerDown });
+		}
 		function ConversationRoot({ sessionId, useSession, useSessions, useWorkspaces, useInput, useComposerBlock, renderSlot, renderSlotChain, selectWorkspace, t }) {
 			const openState = useSession((s) => s.openState);
 			const composerPhase = useSession((s) => s.composerPhase);
@@ -7034,6 +7082,21 @@ window.__ModuleLoader__.load({
 			const [pickerOpen, setPickerOpen] = (0, react.useState)(false);
 			const [pendingWorkspaceId, setPendingWorkspaceId] = (0, react.useState)();
 			const pickerAnchor = (0, react.useRef)(null);
+			const rootRef = (0, react.useRef)(null);
+			const [contentWidth, setContentWidth] = (0, react.useState)(readWidthPreference);
+			const setWidth = (width) => {
+				setContentWidth(width);
+				try { localStorage.setItem(WIDTH_PREF_KEY, String(width)); } catch {}
+			};
+			(0, react.useEffect)(() => {
+				const root = rootRef.current;
+				if (root === null) return;
+				const publish = () => root.style.setProperty("--dsh-conversation-column-width", `${root.clientWidth}px`);
+				publish();
+				const observer = new ResizeObserver(publish);
+				observer.observe(root);
+				return () => observer.disconnect();
+			}, []);
 			const seatObserver = (0, react.useRef)(null);
 			const seatResizeRef = (0, react.useCallback)((seat) => {
 				seatObserver.current?.disconnect();
@@ -7137,9 +7200,11 @@ window.__ModuleLoader__.load({
 				children: composer
 			});
 			return (0, react_jsx_runtime.jsxs)("div", {
+				ref: rootRef,
 				className: ConversationRoot_module_css_default.root,
 				"data-phase": phase,
-				children: [renderSlot("conversation.session.header", {}), (0, react_jsx_runtime.jsxs)("div", {
+				style: contentWidth === null ? void 0 : { "--dsh-chat-user-width": `${contentWidth}px` },
+				children: [(0, react_jsx_runtime.jsx)(WidthHandle, { side: "left", rootRef, onWidth: setWidth }), (0, react_jsx_runtime.jsx)(WidthHandle, { side: "right", rootRef, onWidth: setWidth }), renderSlot("conversation.session.header", {}), (0, react_jsx_runtime.jsxs)("div", {
 					className: ConversationRoot_module_css_default.scrollBody,
 					"data-conversation-scroll": "",
 					children: [renderSlot("conversation.session", {}), composerSeat]
