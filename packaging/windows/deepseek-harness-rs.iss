@@ -9,7 +9,7 @@
 #define OutputDir "dist"
 #endif
 #ifndef Variant
-#define Variant "full"
+#define Variant "core"
 #endif
 #ifndef IconFile
 #define IconFile "deepseek-black.ico"
@@ -33,17 +33,23 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 SetupIconFile={#IconFile}
-UninstallDisplayIcon={app}\deepseek harness-rs.exe
-ShowLanguageDialog=no
+UninstallDisplayIcon={app}\dsh-launcher.exe
+ShowLanguageDialog=auto
+LanguageDetectionMethod=uilanguage
 [Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "chinesesimp"; MessagesFile: "{#ChineseMessages}"
 [Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："; Flags: unchecked
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional tasks:"; Flags: unchecked; Languages: english
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："; Flags: unchecked; Languages: chinesesimp
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 [Icons]
-Name: "{group}\DeepSeek Harness-rs 运行管理器"; Filename: "{app}\启动DeepSeek Harness-rs.cmd"; WorkingDir: "{app}"
-Name: "{autodesktop}\DeepSeek Harness-rs"; Filename: "{app}\启动DeepSeek Harness-rs.cmd"; WorkingDir: "{app}"; Tasks: desktopicon
-Name: "{group}\卸载 DeepSeek Harness-rs"; Filename: "{uninstallexe}"
+Name: "{group}\DeepSeek Harness-rs Launcher"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"; Languages: english
+Name: "{group}\DeepSeek Harness-rs 启动器"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"; Languages: chinesesimp
+Name: "{autodesktop}\DeepSeek Harness-rs"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\Uninstall DeepSeek Harness-rs"; Filename: "{uninstallexe}"; Languages: english
+Name: "{group}\卸载 DeepSeek Harness-rs"; Filename: "{uninstallexe}"; Languages: chinesesimp
 [Run]
-Filename: "{app}\启动DeepSeek Harness-rs.cmd"; Description: "打开 DeepSeek Harness-rs"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\dsh-launcher.exe"; Description: "Launch DeepSeek Harness-rs"; Flags: postinstall nowait skipifsilent; Languages: english
+Filename: "{app}\dsh-launcher.exe"; Description: "启动 DeepSeek Harness-rs"; Flags: postinstall nowait skipifsilent; Languages: chinesesimp

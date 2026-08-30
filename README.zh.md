@@ -17,10 +17,11 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 ## Windows快速启动
 
-解压完整包后运行：
+默认下载 `core` 包；它不包含扩展皮肤。解压后直接运行三平台统一的 ZSUI 原生启动器：
 
-```powershell
-.\dsh.exe web
+```text
+Windows: dsh-launcher.exe
+Linux/macOS: ./dsh-launcher
 ```
 
 默认地址：
@@ -29,40 +30,20 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 http://127.0.0.1:58080/
 ```
 
-Windows包同时提供PowerShell 7 + WPF管理器：
+启动器由固定 commit 的 ZSUI 构建，不依赖 CMD、PowerShell、WebView 或额外运行时；负责启动、停止、重启正式 `deepseek-harness-rs web` 进程以及打开网页、日志目录。Windows 安装器和启动器按系统 UI 语言自动显示简体中文或英文。
 
-最简单的方式是直接双击：
+需要扩展皮肤时，另行下载 `skin` 包并运行其中的 `deepseek-harness-rs-skin`（Windows 为 `.exe`）；它只把皮肤资产安装到同目录的 `web/dist/skins`，默认 `core` 包始终不携带皮肤资源。
 
-```text
-windows\启动DSH管理器.cmd
-```
-
-如果机器没有PowerShell 7，CMD会显示并自动复制一键安装命令。当前Windows x64安装命令为：
-
-```cmd
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$u='https://github.com/PowerShell/PowerShell/releases/download/v7.6.5/PowerShell-7.6.5-win-x64.msi'; $p='$env:TEMP\PowerShell-7.6.5-win-x64.msi'; Invoke-WebRequest $u -OutFile $p; Start-Process msiexec.exe -Verb RunAs -Wait -ArgumentList '/i',$p,'/qn','ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=1','ENABLE_PSREMOTING=1','REGISTER_MANIFEST=1'; Remove-Item $p -Force"
-```
-
-安装需要管理员授权。完成后重新双击`启动DSH管理器.cmd`。
-
-也可以从终端启动：
-
-```powershell
-pwsh -NoProfile -STA -WindowStyle Hidden -File .\windows\DshServiceManager.ps1
-```
-
-它只负责启动、停止、重启正式`dsh.exe web`进程以及打开网页、日志目录，不负责配置Provider、模型或凭据。
-
-## Linux和macOS
+## 命令行入口
 
 ```bash
-./dsh web
+./deepseek-harness-rs web
 ```
 
 如需指定端口：
 
 ```bash
-./dsh web --port 58080
+./deepseek-harness-rs web --port 58080
 ```
 
 ## 数据、Profile与工作区
@@ -164,7 +145,7 @@ Web插件与主应用同源运行，拥有页面级JavaScript能力。只安装�
 工具链固定为Rust 1.97.1：
 
 ```bash
-cargo build --release -p dsh-host-cli --bin dsh
+cargo build --release -p dsh-host-cli --bin dsh -p dsh-launcher --bin dsh-launcher
 ```
 
 基础门禁：

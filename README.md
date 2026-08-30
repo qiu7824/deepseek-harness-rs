@@ -19,16 +19,11 @@ A complete package contains the binary, `web/dist`, `config/agent-presets`, bund
 
 ## Quick start
 
-Windows:
+The default download is the `core` package, which contains no extension skins. Launch the shared ZSUI native manager:
 
-```powershell
-.\dsh.exe web
-```
-
-Linux and macOS:
-
-```bash
-./dsh web
+```text
+Windows: dsh-launcher.exe
+Linux/macOS: ./dsh-launcher
 ```
 
 The default URL is:
@@ -37,23 +32,9 @@ The default URL is:
 http://127.0.0.1:58080/
 ```
 
-The Windows package also includes a PowerShell 7 + WPF service manager:
+The launcher is built with ZSUI at a fixed commit and requires no CMD, PowerShell, WebView, or extra runtime. It starts, stops, and restarts the real `deepseek-harness-rs web` process and opens the Web UI or log directory. The Windows installer and launcher automatically use Simplified Chinese or English from the operating-system UI language.
 
-The simplest option is to double-click:
-
-```text
-windows\启动DSH管理器.cmd
-```
-
-If PowerShell 7 is missing, the CMD launcher displays and copies a one-command Windows x64 MSI installation command. Installation requires administrator approval; double-click the CMD again after installation. See the Chinese README for the exact localized command.
-
-Or launch it from a terminal:
-
-```powershell
-pwsh -NoProfile -STA -WindowStyle Hidden -File .\windows\DshServiceManager.ps1
-```
-
-It starts, stops, and restarts the real `dsh.exe web` process and opens the Web UI or log directory. It does not configure providers, models, credentials, or accounts.
+For extension skins, download the separate `skin` package and run `deepseek-harness-rs-skin` (`.exe` on Windows). It installs only the skin payload into the adjacent `web/dist/skins`; the default `core` archive never bundles skin assets.
 
 ## Data, profiles, and workspaces
 
@@ -148,7 +129,7 @@ Bundled plugins:
 Rust is pinned to 1.97.1:
 
 ```bash
-cargo build --release -p dsh-host-cli --bin dsh
+cargo build --release -p dsh-host-cli --bin dsh -p dsh-launcher --bin dsh-launcher
 ```
 
 Core gates:

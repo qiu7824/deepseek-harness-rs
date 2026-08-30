@@ -42,19 +42,19 @@ jobs:
           for file in web/dist/plugins/*.js; do node --check "$file"; done
           cargo fmt --all -- --check
       - name: 构建正式二进制
-        run: cargo build --locked --release -p dsh-host-cli --bin dsh
+        run: cargo build --locked --release -p dsh-host-cli --bin dsh -p dsh-launcher --bin dsh-launcher
       - name: 生成便携包
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.0-rc.8"
-          python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant full --version "$VERSION"
-          if [[ "${{ matrix.platform }}" == "windows" ]]; then python tools/package_release.py --platform windows --arch x86_64 --variant no-skin --version "$VERSION"; fi
+          python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant core --version "$VERSION"
+          python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant skin --version "$VERSION"
       - name: 核验便携包内容
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.0-rc.8"
-          python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant full --version "$VERSION"
-          if [[ "${{ matrix.platform }}" == "windows" ]]; then python tools/verify_release_package.py --platform windows --arch x86_64 --variant no-skin --version "$VERSION"; fi
+          python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant core --version "$VERSION"
+          python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant skin --version "$VERSION"
       - name: Windows 中文安装器
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -63,14 +63,14 @@ jobs:
           $version = if ($refName.StartsWith('v')) { $refName.Substring(1) } else { '0.1.0-rc.8' }
           choco install innosetup -y --no-progress
           $language = "$env:GITHUB_WORKSPACE\packaging\windows\ChineseSimplified.isl"
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-full" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "/DIconFile=$env:GITHUB_WORKSPACE\packaging\windows\deepseek-black.ico" "/DChineseMessages=$language" "/DVariant=full" packaging\windows\deepseek-harness-rs.iss
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-no-skin" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "/DIconFile=$env:GITHUB_WORKSPACE\packaging\windows\deepseek-black.ico" "/DChineseMessages=$language" "/DVariant=no-skin" packaging\windows\deepseek-harness-rs.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-core" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "/DIconFile=$env:GITHUB_WORKSPACE\packaging\windows\deepseek-black.ico" "/DChineseMessages=$language" "/DVariant=core" packaging\windows\deepseek-harness-rs.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-skin" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "/DIconFile=$env:GITHUB_WORKSPACE\packaging\windows\deepseek-black.ico" "/DChineseMessages=$language" "/DVariant=skin" packaging\windows\deepseek-harness-rs.iss
       - name: Linux DEB 安装包
         if: matrix.platform == 'linux'
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.0-rc.8"
-          STAGE="dist/deepseek-harness-rs-v${VERSION}-linux-x86_64-full"; PKG="dist/deb"; mkdir -p "$PKG/DEBIAN" "$PKG/opt/deepseek-harness-rs" "$PKG/usr/bin"
+          STAGE="dist/deepseek-harness-rs-v${VERSION}-linux-x86_64-core"; PKG="dist/deb"; mkdir -p "$PKG/DEBIAN" "$PKG/opt/deepseek-harness-rs" "$PKG/usr/bin"
           cp -R "$STAGE"/. "$PKG/opt/deepseek-harness-rs/"
           printf 'Package: deepseek-harness-rs\nVersion: %s\nSection: devel\nPriority: optional\nArchitecture: amd64\nMaintainer: DeepSeek Harness-rs\nDescription: Rust native DeepSeek Harness Web Agent\n' "$VERSION" > "$PKG/DEBIAN/control"
           ln -s /opt/deepseek-harness-rs/deepseek-harness-rs "$PKG/usr/bin/deepseek-harness-rs"
@@ -80,7 +80,7 @@ jobs:
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.0-rc.8"
-          STAGE="dist/deepseek-harness-rs-v${VERSION}-macos-${{ matrix.arch }}-full"; ROOT="dist/pkgroot"; mkdir -p "$ROOT/usr/local/lib/deepseek-harness-rs" "$ROOT/usr/local/bin"; cp -R "$STAGE"/. "$ROOT/usr/local/lib/deepseek-harness-rs/"; ln -s ../lib/deepseek-harness-rs/deepseek-harness-rs "$ROOT/usr/local/bin/deepseek-harness-rs"
+          STAGE="dist/deepseek-harness-rs-v${VERSION}-macos-${{ matrix.arch }}-core"; ROOT="dist/pkgroot"; mkdir -p "$ROOT/usr/local/lib/deepseek-harness-rs" "$ROOT/usr/local/bin"; cp -R "$STAGE"/. "$ROOT/usr/local/lib/deepseek-harness-rs/"; ln -s ../lib/deepseek-harness-rs/deepseek-harness-rs "$ROOT/usr/local/bin/deepseek-harness-rs"
           pkgbuild --root "$ROOT" --identifier io.github.qiu7824.deepseek-harness-rs --version "$VERSION" "dist/deepseek-harness-rs-v${VERSION}-macos-${{ matrix.arch }}.pkg"
       - name: 生成校验和
         shell: bash

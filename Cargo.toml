@@ -54,6 +54,7 @@ members = [
   "crates/host/plugin-inventory",
   "crates/host/apiproxy",
   "crates/host/dsh-cli",
+  "crates/host/dsh-launcher",
   # "crates/app/*",
   # "apps/*",
 ]

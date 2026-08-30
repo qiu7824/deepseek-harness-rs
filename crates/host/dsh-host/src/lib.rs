@@ -2978,7 +2978,7 @@ fn compose_host_in_fiber(
         .expect("web plugin manifest must be an object");
     object.insert(
         "noSkin".to_string(),
-        serde_json::Value::Bool(packaged_resource("NO_SKIN").exists()),
+        serde_json::Value::Bool(!packaged_resource("web/dist/skins").is_dir()),
     );
     object.insert("apiBase".to_string(), serde_json::json!("/api"));
     object.insert(
