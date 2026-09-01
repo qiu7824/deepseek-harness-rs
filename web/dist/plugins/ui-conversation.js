@@ -2647,6 +2647,214 @@ window.__ModuleLoader__.load({
 			const value = usage.outputTokens;
 			return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 		}
+		function isTurnUsageSessionEvent(event) {
+			return event.type !== "chunkrow/text-chunks" && event.type !== "chunkrow/reasoning-chunks" && event.type !== "chunkrow/tool-call-chunks";
+		}
+		function turnUsageCount(value) {
+			return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+		}
+		function turnUsageSum(values) {
+			let total = 0;
+			for (const value of values) {
+				total += value;
+				if (!Number.isSafeInteger(total)) return void 0;
+			}
+			return total;
+		}
+		function turnUsageMessageRoute(message) {
+			const { provider, model } = message.source;
+			return provider.length > 0 && model.length > 0 ? {
+				provider,
+				model
+			} : void 0;
+		}
+		function normalizeTurnUsage(usage, route) {
+			const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, totalTokens } = usage;
+			if (!turnUsageCount(inputTokens) || !turnUsageCount(outputTokens)) return void 0;
+			if (cacheReadTokens !== void 0 && !turnUsageCount(cacheReadTokens)) return void 0;
+			if (cacheWriteTokens !== void 0 && !turnUsageCount(cacheWriteTokens)) return void 0;
+			if (reasoningTokens !== void 0 && (!turnUsageCount(reasoningTokens) || reasoningTokens > outputTokens)) return;
+			const knownPrompt = turnUsageSum([
+				inputTokens,
+				...cacheReadTokens === void 0 ? [] : [cacheReadTokens],
+				...cacheWriteTokens === void 0 ? [] : [cacheWriteTokens]
+			]);
+			if (knownPrompt === void 0) return void 0;
+			let exactTotal;
+			if (totalTokens !== void 0) {
+				if (!turnUsageCount(totalTokens)) return void 0;
+				const exactPrompt = totalTokens - outputTokens;
+				if (!turnUsageCount(exactPrompt) || exactPrompt < knownPrompt) return void 0;
+				if (cacheReadTokens !== void 0 && cacheWriteTokens !== void 0 && exactPrompt !== knownPrompt) return;
+				exactTotal = totalTokens;
+			} else {
+				if (cacheReadTokens === void 0 || cacheWriteTokens === void 0) return void 0;
+				const derivedTotal = turnUsageSum([knownPrompt, outputTokens]);
+				if (derivedTotal === void 0) return void 0;
+				exactTotal = derivedTotal;
+			}
+			return {
+				inputTokens,
+				outputTokens,
+				totalTokens: exactTotal,
+				...cacheReadTokens === void 0 ? {} : { cacheReadTokens },
+				...cacheWriteTokens === void 0 ? {} : { cacheWriteTokens },
+				...reasoningTokens === void 0 ? {} : { reasoningTokens },
+				...route === void 0 ? {} : { route }
+			};
+		}
+		function aggregateTurnUsageAttempts(attempts) {
+			if (attempts.length === 0) return void 0;
+			const inputTokens = turnUsageSum(attempts.map((attempt) => attempt.inputTokens));
+			const outputTokens = turnUsageSum(attempts.map((attempt) => attempt.outputTokens));
+			const totalTokens = turnUsageSum(attempts.map((attempt) => attempt.totalTokens));
+			if (inputTokens === void 0 || outputTokens === void 0 || totalTokens === void 0) return void 0;
+			const cacheRead = attempts.map((attempt) => attempt.cacheReadTokens);
+			const cacheWrite = attempts.map((attempt) => attempt.cacheWriteTokens);
+			const reasoning = attempts.map((attempt) => attempt.reasoningTokens);
+			const cacheReadTokens = cacheRead.every(turnUsageCount) ? turnUsageSum(cacheRead) : void 0;
+			const cacheWriteTokens = cacheWrite.every(turnUsageCount) ? turnUsageSum(cacheWrite) : void 0;
+			const reasoningTokens = reasoning.every(turnUsageCount) ? turnUsageSum(reasoning) : void 0;
+			let routes;
+			const attributed = attempts.map((attempt) => attempt.route);
+			if (attributed.every((route) => route !== void 0)) {
+				const unique = /* @__PURE__ */ new Map();
+				for (const route of attributed) unique.set(`${route.provider}\0${route.model}`, route);
+				routes = [...unique.values()];
+			}
+			return {
+				uncachedInputTokens: inputTokens,
+				outputTokens,
+				totalTokens,
+				...cacheReadTokens === void 0 ? {} : { cacheReadTokens },
+				...cacheWriteTokens === void 0 ? {} : { cacheWriteTokens },
+				...reasoningTokens === void 0 ? {} : { reasoningTokens },
+				...routes === void 0 ? {} : { routes }
+			};
+		}
+		function sameTurnUsageAttempt(state, turn, step) {
+			return state.turn === turn && state.step === step;
+		}
+		/**
+		* Fold one complete Turn's durable attempt lifecycle into exact token accounting.
+		*
+		* No attempt is inferred from a usage sample. Any missing lifecycle boundary,
+		* incomplete attempt usage, unsafe count, or contradictory exact total makes
+		* the whole disclosure unavailable.
+		* @param events - Turn-local durable events from `turn/start` through `turn/end`.
+		* @returns exact aggregate usage, or undefined when it cannot be proven.
+		*/
+		function deriveTurnTokenUsage(events) {
+			let state = { kind: "idle" };
+			const attempts = [];
+			let turn;
+			let sawEnd = false;
+			let invalid = false;
+			const closeOpen = (route) => {
+				if (state.kind !== "open" || state.sample === void 0) return false;
+				const normalized = normalizeTurnUsage(state.sample, route);
+				if (normalized === void 0) return false;
+				attempts.push(normalized);
+				return true;
+			};
+			for (const event of events) {
+				if (invalid) break;
+				if (event.type === "turn/start") {
+					if (turn !== void 0 || state.kind !== "idle") invalid = true;
+					else turn = event.data.turn;
+					continue;
+				}
+				if (turn === void 0) {
+					invalid = true;
+					break;
+				}
+				if (event.type === "turn/end") {
+					if (event.data.turn !== turn || state.kind !== "idle" || sawEnd) invalid = true;
+					else sawEnd = true;
+					continue;
+				}
+				if (sawEnd) {
+					invalid = true;
+					break;
+				}
+				if (event.type === "step/start") {
+					if (event.data.turn !== turn || state.kind !== "idle") invalid = true;
+					else state = {
+						kind: "open",
+						turn,
+						step: event.data.step
+					};
+					continue;
+				}
+				if (event.type === "llm/retry-started") {
+					if (event.data.turn !== turn || state.kind !== "settled" || state.by !== "retry" || !sameTurnUsageAttempt(state, event.data.turn, event.data.step)) invalid = true;
+					else state = {
+						kind: "open",
+						turn,
+						step: event.data.step
+					};
+					continue;
+				}
+				if (event.type === "assistant/chunk") {
+					if (event.data.turn !== turn || state.kind !== "open" || !sameTurnUsageAttempt(state, event.data.turn, event.data.step)) {
+						invalid = true;
+						continue;
+					}
+					if (event.data.chunk.type === "usage") state = {
+						...state,
+						sample: event.data.chunk.usage
+					};
+					else if (event.data.chunk.type === "finish" && (event.data.chunk.reason.kind === "error" || event.data.chunk.reason.kind === "aborted")) if (!closeOpen()) invalid = true;
+					else state = {
+						kind: "finishClosed",
+						turn,
+						step: event.data.step
+					};
+					continue;
+				}
+				if (event.type === "assistant/message") {
+					if (event.data.turn !== turn || state.kind !== "open" || !sameTurnUsageAttempt(state, event.data.turn, event.data.step)) {
+						invalid = true;
+						continue;
+					}
+					if (event.data.usage !== void 0) state = {
+						...state,
+						sample: event.data.usage
+					};
+					if (!closeOpen(turnUsageMessageRoute(event.data.message))) invalid = true;
+					else state = {
+						kind: "settled",
+						turn,
+						step: event.data.step,
+						by: "message"
+					};
+					continue;
+				}
+				if (event.type === "llm/retry") {
+					if (event.data.turn !== turn || state.kind === "idle" || !sameTurnUsageAttempt(state, event.data.turn, event.data.step)) {
+						invalid = true;
+						continue;
+					}
+					if (state.kind === "settled" || state.kind === "open" && !closeOpen()) invalid = true;
+					if (!invalid) state = {
+						kind: "settled",
+						turn,
+						step: event.data.step,
+						by: "retry"
+					};
+					continue;
+				}
+				if (event.type === "step/end") {
+					if (event.data.turn !== turn || state.kind === "idle" || !sameTurnUsageAttempt(state, event.data.turn, event.data.step)) {
+						invalid = true;
+						continue;
+					}
+					if (state.kind === "open" && !closeOpen()) invalid = true;
+					if (!invalid) state = { kind: "idle" };
+				}
+			}
+			return invalid || !sawEnd || state.kind !== "idle" ? void 0 : aggregateTurnUsageAttempts(attempts);
+		}
 		/**
 		* Read one assistant node's TTFT, decode wall time, and output tokens.
 		* @param node - A settled assistant node.
@@ -3295,7 +3503,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-conversation\src\client\skeleton\InputBar.module.css.mjs
-		const css$17 = "@font-face{font-family:DshChipCell;src:url(data:font/ttf;base64,AAEAAAAKAIAAAwAgT1MvMkT8SmIAAAEoAAAAYGNtYXAADQBPAAABkAAAADRnbHlmAAAAAAAAAcwAAAABaGVhZCwtPGoAAACsAAAANmhoZWEDIg7bAAAA5AAAACRobXR4EZQAAAAAAYgAAAAIbG9jYQAAAAAAAAHEAAAABm1heHAAAwACAAABCAAAACBuYW1lvljk2gAAAdAAAABscG9zdNNweNQAAAI8AAAALQABAAAAAQAAdia1tV8PPPUAAwPoAAAAAOaLfcUAAAAA5ot9xQAAAAAAAAAAAAAAAwACAAAAAAAAAAEAAAMg/zgAAA+gAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAACAAEAAAACAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwjKAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAAPz8/PwAA//z//AMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAB9AAAD6AAAAAAAAIAAAADAAAAFAADAAEAAAAUAAQAIAAAAAQABAABAAD//P//AAD//P//AAUAAQAAAAAAAAAAAAAAAAAAAAAAAAAEADYAAQAAAAAAAQALAAAAAQAAAAAAAgAHAAsAAwABBAkAAQAWABIAAwABBAkAAgAOAChEc2hDaGlwQ2VsbFJlZ3VsYXIARABzAGgAQwBoAGkAcABDAGUAbABsAFIAZQBnAHUAbABhAHIAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAABAgZvYmpyZXAAAAA=)format(\"truetype\")}.Uzx--a_root{padding:0 var(--dsh-composer-side-clearance) 8px;flex-direction:column;align-items:center;display:flex}.Uzx--a_hero{padding:0 var(--dsh-composer-side-clearance)}.Uzx--a_notice{width:100%;max-width:var(--dsh-composer-card-max-width);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);border-radius:8px;margin-bottom:6px;padding:4px 8px;font-size:12px;line-height:18px}.Uzx--a_noticeError{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}.Uzx--a_card{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width);border:1px solid var(--dsw-alias-border-l2-darkmode-thin);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv2);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:22px;flex-direction:column;gap:12px;padding-top:10px;font-size:16px;line-height:24px;display:flex;position:relative}.Uzx--a_cardWorkspaceTrigger{cursor:pointer;border-color:#0000}.Uzx--a_cardWorkspaceTrigger:after{content:\"\";background:var(--dsw-alias-border-l4);pointer-events:none;border-radius:22px;transition:background-color .1s;position:absolute;inset:-1px;-webkit-mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\");mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\")}.Uzx--a_cardWorkspaceTrigger :disabled{pointer-events:none}.Uzx--a_cardWorkspaceTrigger:hover:after{background:var(--dsw-alias-state-business-primary)}.Uzx--a_accessory{align-items:center;gap:8px;padding:10px 12px 0;display:flex}.Uzx--a_attachments{min-width:0;padding:4px 12px 0}.Uzx--a_overlayAnchor{height:0;position:absolute;inset:0 0 auto}.Uzx--a_scroll{max-height:var(--dsh-composer-text-max-height);overflow-y:auto}.Uzx--a_grow{position:relative}.Uzx--a_backdrop{color:var(--dsw-alias-label-primary);pointer-events:none;position:absolute;inset:0;overflow:hidden}.Uzx--a_hlToken{color:var(--dsw-alias-state-warn-label);background-color:#0000}.Uzx--a_hlSegment{color:#0000;background-color:#0000;border-radius:4px}.Uzx--a_hint{color:var(--dsw-alias-label-caption)}.Uzx--a_pending{background:var(--dsw-alias-state-business-primary);border-radius:50%;width:8px;height:8px;animation:1s ease-in-out infinite alternate Uzx--a_input-pending}@keyframes Uzx--a_input-pending{0%{opacity:.35}to{opacity:1}}.Uzx--a_input{resize:none;color:#0000;width:100%;height:100%;caret-color:var(--dsw-alias-state-business-primary);background:0 0;border:none;outline:none;position:absolute;inset:0;overflow:hidden}.Uzx--a_input,.Uzx--a_mirror,.Uzx--a_backdrop{box-sizing:border-box;font-family:\"DshChipCell\", var(--dsw-font-family);font-size:inherit;line-height:inherit;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;padding:4px 12px 0 16px}.Uzx--a_input::placeholder{color:var(--dsw-alias-label-caption);user-select:none}.Uzx--a_input:disabled{color:var(--dsw-alias-label-tertiary);cursor:not-allowed}.Uzx--a_input[aria-haspopup=menu]{cursor:pointer}.Uzx--a_mirror{visibility:hidden;pointer-events:none}.Uzx--a_hero .Uzx--a_mirror{min-height:52px}.Uzx--a_row{justify-content:space-between;align-items:center;gap:12px;min-width:0;padding:2px 8px 6px;display:flex;container-type:inline-size}.Uzx--a_tools,.Uzx--a_modes,.Uzx--a_trailing{align-items:center;min-width:0;display:flex}.Uzx--a_tools{gap:16px}.Uzx--a_modes{gap:12px}.Uzx--a_trailing{flex:none;gap:12px}.Uzx--a_add{background:var(--dsw-specific-selector);width:28px;height:28px;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;display:grid}.Uzx--a_add:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}.Uzx--a_add:disabled{opacity:.5;cursor:default}.Uzx--a_select{max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;appearance:none;background-color:#0000;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\");background-position:right 4px center;background-repeat:no-repeat;background-size:12px 12px;border:none;border-radius:8px;outline:none;padding:0 20px 0 8px;font-size:13px;font-weight:500;line-height:20px}.Uzx--a_select:hover:not(:disabled){background-color:var(--dsw-alias-interactive-bg-hover)}.Uzx--a_select:disabled{opacity:.5;cursor:default}.Uzx--a_primary{background:var(--dsw-alias-button-info-fill);color:#fff;cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;width:34px;height:34px;transition:background-color .1s;display:grid;transform:translateY(-2px)}.Uzx--a_primary:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}.Uzx--a_primary:disabled{opacity:.4;cursor:default}.Uzx--a_retry{color:inherit;cursor:pointer;background:0 0;border:1px solid;border-radius:4px;margin-left:8px;padding:1px 8px;font-size:12px}.Uzx--a_textRef{color:var(--dsw-alias-state-business-primary);-webkit-box-decoration-break:clone;box-decoration-break:clone;background-color:#0000}.Uzx--a_textRef:after{display:none}.Uzx--a_chip{background:#6187d838;border-radius:6px;position:relative}.Uzx--a_chip:before{content:\"￼\";color:#0000}.Uzx--a_chipLabel{width:calc(138.889% - 10px);color:var(--dsw-alias-label-primary);white-space:nowrap;justify-content:center;align-items:center;display:flex;position:absolute;top:50%;left:50%;overflow:hidden;transform:translate(-50%,-50%)scale(.72)}.Uzx--a_chipInvalid{opacity:.7;background:#d8616133;text-decoration:line-through}";
+		const css$17 = "@font-face{font-family:DshChipCell;src:url(data:font/ttf;base64,AAEAAAAKAIAAAwAgT1MvMkT8SmIAAAEoAAAAYGNtYXAADQBPAAABkAAAADRnbHlmAAAAAAAAAcwAAAABaGVhZCwtPGoAAACsAAAANmhoZWEDIg7bAAAA5AAAACRobXR4EZQAAAAAAYgAAAAIbG9jYQAAAAAAAAHEAAAABm1heHAAAwACAAABCAAAACBuYW1lvljk2gAAAdAAAABscG9zdNNweNQAAAI8AAAALQABAAAAAQAAdia1tV8PPPUAAwPoAAAAAOaLfcUAAAAA5ot9xQAAAAAAAAAAAAAAAwACAAAAAAAAAAEAAAMg/zgAAA+gAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAACAAEAAAACAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwjKAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAAPz8/PwAA//z//AMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAB9AAAD6AAAAAAAAIAAAADAAAAFAADAAEAAAAUAAQAIAAAAAQABAABAAD//P//AAD//P//AAUAAQAAAAAAAAAAAAAAAAAAAAAAAAAEADYAAQAAAAAAAQALAAAAAQAAAAAAAgAHAAsAAwABBAkAAQAWABIAAwABBAkAAgAOAChEc2hDaGlwQ2VsbFJlZ3VsYXIARABzAGgAQwBoAGkAcABDAGUAbABsAFIAZQBnAHUAbABhAHIAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAABAgZvYmpyZXAAAAA=)format(\"truetype\")}.Uzx--a_root{padding:0 var(--dsh-composer-side-clearance) 8px;flex-direction:column;align-items:center;display:flex}.Uzx--a_hero{padding:0 var(--dsh-composer-side-clearance)}.Uzx--a_notice{width:100%;max-width:var(--dsh-composer-card-max-width);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);border-radius:8px;margin-bottom:6px;padding:4px 8px;font-size:12px;line-height:18px}.Uzx--a_noticeError{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}.Uzx--a_card{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width);border:1px solid var(--dsw-alias-border-l2-darkmode-thin);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv2);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:22px;flex-direction:column;gap:12px;padding-top:10px;font-size:16px;line-height:24px;display:flex;position:relative}.Uzx--a_cardWorkspaceTrigger{cursor:pointer;border-color:#0000}.Uzx--a_cardWorkspaceTrigger:after{content:\"\";background:var(--dsw-alias-border-l4);pointer-events:none;border-radius:22px;transition:background-color .1s;position:absolute;inset:-1px;-webkit-mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\");mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\")}.Uzx--a_cardWorkspaceTrigger :disabled{pointer-events:none}.Uzx--a_cardWorkspaceTrigger:hover:after{background:var(--dsw-alias-state-business-primary)}.Uzx--a_accessory{align-items:center;gap:8px;padding:10px 12px 0;display:flex}.Uzx--a_attachments{min-width:0;padding:4px 12px 0}.Uzx--a_overlayAnchor{height:0;position:absolute;inset:0 0 auto}.Uzx--a_scroll{max-height:var(--dsh-composer-text-max-height);margin-right:4px;overflow-y:auto}.Uzx--a_scroll::-webkit-scrollbar-track{margin-top:8px}.Uzx--a_grow{position:relative}.Uzx--a_backdrop{color:var(--dsw-alias-label-primary);pointer-events:none;position:absolute;inset:0;overflow:hidden}.Uzx--a_hlToken{color:var(--dsw-alias-state-warn-label);background-color:#0000}.Uzx--a_hlSegment{color:#0000;background-color:#0000;border-radius:4px}.Uzx--a_hint{color:var(--dsw-alias-label-caption)}.Uzx--a_pending{background:var(--dsw-alias-state-business-primary);border-radius:50%;width:8px;height:8px;animation:1s ease-in-out infinite alternate Uzx--a_input-pending}@keyframes Uzx--a_input-pending{0%{opacity:.35}to{opacity:1}}.Uzx--a_input{resize:none;color:#0000;width:100%;height:100%;caret-color:var(--dsw-alias-state-business-primary);background:0 0;border:none;outline:none;position:absolute;inset:0;overflow:hidden}.Uzx--a_input,.Uzx--a_mirror,.Uzx--a_backdrop{box-sizing:border-box;font-family:\"DshChipCell\", var(--dsw-font-family);font-size:inherit;line-height:inherit;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;padding:4px 12px 0 16px}.Uzx--a_input::placeholder{color:var(--dsw-alias-label-caption);user-select:none}.Uzx--a_input:disabled{color:var(--dsw-alias-label-tertiary);cursor:not-allowed}.Uzx--a_input[aria-haspopup=menu]{cursor:pointer}.Uzx--a_mirror{visibility:hidden;pointer-events:none}.Uzx--a_hero .Uzx--a_mirror{min-height:52px}.Uzx--a_row{justify-content:space-between;align-items:center;gap:12px;min-width:0;padding:2px 8px 6px;display:flex;container-type:inline-size}.Uzx--a_tools,.Uzx--a_modes,.Uzx--a_trailing{align-items:center;min-width:0;display:flex}.Uzx--a_tools{gap:16px}.Uzx--a_modes{gap:12px}.Uzx--a_trailing{flex:none;gap:12px}.Uzx--a_add{background:var(--dsw-specific-selector);width:28px;height:28px;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;display:grid}.Uzx--a_add:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}.Uzx--a_add:disabled{opacity:.5;cursor:default}.Uzx--a_select{max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;appearance:none;background-color:#0000;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\");background-position:right 4px center;background-repeat:no-repeat;background-size:12px 12px;border:none;border-radius:8px;outline:none;padding:0 20px 0 8px;font-size:13px;font-weight:500;line-height:20px}.Uzx--a_select:hover:not(:disabled){background-color:var(--dsw-alias-interactive-bg-hover)}.Uzx--a_select:disabled{opacity:.5;cursor:default}.Uzx--a_primary{background:var(--dsw-alias-button-info-fill);color:#fff;cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;width:34px;height:34px;transition:background-color .1s;display:grid;transform:translateY(-2px)}.Uzx--a_primary:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}.Uzx--a_primary:disabled{opacity:.4;cursor:default}.Uzx--a_retry{color:inherit;cursor:pointer;background:0 0;border:1px solid;border-radius:4px;margin-left:8px;padding:1px 8px;font-size:12px}.Uzx--a_textRef{color:var(--dsw-alias-state-business-primary);-webkit-box-decoration-break:clone;box-decoration-break:clone;background-color:#0000}.Uzx--a_textRef:after{display:none}.Uzx--a_chip{background:#6187d838;border-radius:6px;position:relative}.Uzx--a_chip:before{content:\"￼\";color:#0000}.Uzx--a_chipLabel{width:calc(138.889% - 10px);color:var(--dsw-alias-label-primary);white-space:nowrap;justify-content:center;align-items:center;display:flex;position:absolute;top:50%;left:50%;overflow:hidden;transform:translate(-50%,-50%)scale(.72)}.Uzx--a_chipInvalid{opacity:.7;background:#d8616133;text-decoration:line-through}";
 		const tagId$17 = "@deepseek-ai/dsh-client-ui-conversation/InputBar.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$17) + "]") === null) {
 			const tag = document.createElement("style");
@@ -4840,7 +5048,7 @@ window.__ModuleLoader__.load({
 		* @param props - Copy text, event time, clock side, branch callback, className.
 		* @returns The actions row element.
 		*/
-		function MessageIconActions({ text, time, runMs, ttftMs, tokensPerSecond, clock, onBranch, branchUnavailable = false, className, extraActions, t }) {
+		function MessageIconActions({ text, time, runMs, ttftMs, tokensPerSecond, clock, onBranch, branchUnavailable = false, className, extraActions, usageAction, t }) {
 			const day = useCalendarDay();
 			const reasonId = (0, react.useId)();
 			const [copied, setCopied] = (0, react.useState)(false);
@@ -4952,6 +5160,7 @@ window.__ModuleLoader__.load({
 						})
 					}),
 					extraActions,
+					usageAction,
 					onBranch !== void 0 && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
 						label: branchUnavailable ? t("message.branchUnavailable") : t("message.branch"),
 						side: "bottom",
@@ -6050,6 +6259,19 @@ window.__ModuleLoader__.load({
 			"message.ranFor": "用时 {duration}",
 			"message.ttft": "首 token {seconds}秒",
 			"message.tokensPerSecond": "{tps} tok/s",
+			"message.turnUsage.title": "本轮用量",
+			"message.turnUsage.consumed": "用量 {total}",
+			"message.turnUsage.model": "提供方 / 模型",
+			"message.turnUsage.cacheHit": "缓存命中",
+			"message.turnUsage.input": "未缓存输入",
+			"message.turnUsage.cacheRead": "缓存读取",
+			"message.turnUsage.cacheWrite": "缓存写入",
+			"message.turnUsage.output": "输出",
+			"message.turnUsage.reasoning": "（其中推理 {tokens}）",
+			"message.turnTime.title": "本轮用时和速度",
+			"message.turnTime.duration": "本轮总用时",
+			"message.turnTime.speed": "输出速度（TPS）",
+			"message.turnTime.ttft": "首 token 用时（TTFT）",
 			"duration.seconds": "{seconds}秒",
 			"duration.minutes": "{minutes}分{seconds}秒",
 			"command.running": "执行中…",
@@ -6228,6 +6450,19 @@ window.__ModuleLoader__.load({
 			"message.ranFor": "Ran for {duration}",
 			"message.ttft": "TTFT {seconds}s",
 			"message.tokensPerSecond": "{tps} tok/s",
+			"message.turnUsage.title": "Turn usage",
+			"message.turnUsage.consumed": "Usage {total}",
+			"message.turnUsage.model": "Provider / model",
+			"message.turnUsage.cacheHit": "Cache hit",
+			"message.turnUsage.input": "Uncached input",
+			"message.turnUsage.cacheRead": "Cache read",
+			"message.turnUsage.cacheWrite": "Cache write",
+			"message.turnUsage.output": "Output",
+			"message.turnUsage.reasoning": " ({tokens} reasoning)",
+			"message.turnTime.title": "Turn time and speed",
+			"message.turnTime.duration": "Total run time",
+			"message.turnTime.speed": "Tokens per second (TPS)",
+			"message.turnTime.ttft": "Time to first token (TTFT)",
 			"duration.seconds": "{seconds}s",
 			"duration.minutes": "{minutes}m {seconds}s",
 			"command.running": "Running…",
@@ -6964,6 +7199,30 @@ window.__ModuleLoader__.load({
 				})]
 			});
 		}
+		const HERO_SWIM_UP_PATH = _deepseek_ai_dsh_client_ui_primitives.FISH_LOGO_PATH;
+		const HERO_SWIM_DOWN_PATH = _deepseek_ai_dsh_client_ui_primitives.FISH_LOGO_PATH;
+		const HERO_REDUCED_MOTION_QUERY = "prefers-reduced-motion: reduce";
+		function HeroFish({ hovering }) {
+			const viewBox = _deepseek_ai_dsh_client_ui_primitives.FISH_LOGO_VIEWBOX ?? { width: 23.16, height: 17.04 };
+			return (0, react_jsx_runtime.jsx)("svg", {
+				className: HeroShell_module_css_default.fish,
+				width: 34,
+				height: 34 * viewBox.height / viewBox.width,
+				viewBox: `0 0 ${viewBox.width} ${viewBox.height}`,
+				fill: "none",
+				"aria-hidden": true,
+				children: (0, react_jsx_runtime.jsx)("path", {
+					d: _deepseek_ai_dsh_client_ui_primitives.FISH_LOGO_PATH,
+					fill: "currentColor",
+					children: hovering && (0, react_jsx_runtime.jsx)("animate", {
+						attributeName: "d",
+						values: `${_deepseek_ai_dsh_client_ui_primitives.FISH_LOGO_PATH};${HERO_SWIM_UP_PATH};${HERO_SWIM_DOWN_PATH};${_deepseek_ai_dsh_client_ui_primitives.FISH_LOGO_PATH}`,
+						dur: "1.6s",
+						repeatCount: "indefinite"
+					})
+				})
+			});
+		}
 		/**
 		* Render the hero chrome (headline only; no glow, no composer, no workspace
 		* row — the glow is the owner's {@link HeroGlow}).
@@ -6971,6 +7230,8 @@ window.__ModuleLoader__.load({
 		* @returns the centered hero element tree.
 		*/
 		function HeroShell({ t, children }) {
+			const [hovering, setHovering] = (0, react.useState)(false);
+			void HERO_REDUCED_MOTION_QUERY;
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: HeroShell_module_css_default.root,
 				children: [(0, react_jsx_runtime.jsxs)("div", {
@@ -6980,10 +7241,11 @@ window.__ModuleLoader__.load({
 						children: [
 							(0, react_jsx_runtime.jsx)("span", {
 								className: HeroShell_module_css_default.fishHitbox,
-								children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.FishLogo, {
-									size: 34,
-									className: HeroShell_module_css_default.fish
-								})
+								onMouseEnter: () => {
+									if (window.matchMedia("(hover: hover) and (prefers-reduced-motion: no-preference)").matches) setHovering(true);
+								},
+								onMouseLeave: () => setHovering(false),
+								children: (0, react_jsx_runtime.jsx)(HeroFish, { hovering })
 							}),
 							(0, react_jsx_runtime.jsx)("span", {
 								className: HeroShell_module_css_default.headlineText,
@@ -9077,6 +9339,7 @@ window.__ModuleLoader__.load({
 				if (candidate !== void 0 && (latestTranscriptSeq === void 0 || candidate > latestTranscriptSeq)) latestTranscriptSeq = candidate;
 			}
 			const metrics = deriveTurnMetrics(finalized.map((candidate) => candidate.finalNode)).get(end.event.data.turn);
+			const tokenUsage = context.start?.event.type === "turn/start" ? deriveTurnTokenUsage(context.matches.map((match) => match.event).filter(isTurnUsageSessionEvent)) : void 0;
 			return {
 				turn: end.event.data.turn,
 				seq: end.event.seq,
@@ -9084,7 +9347,8 @@ window.__ModuleLoader__.load({
 				closing,
 				branchUnavailable: closing === null || latestTranscriptSeq !== closing.finalNode.seq,
 				...metrics?.ttftMs === void 0 ? {} : { ttftMs: metrics.ttftMs },
-				...metrics?.tokensPerSecond === void 0 ? {} : { tokensPerSecond: metrics.tokensPerSecond }
+				...metrics?.tokensPerSecond === void 0 ? {} : { tokensPerSecond: metrics.tokensPerSecond },
+				...tokenUsage === void 0 ? {} : { tokenUsage }
 			};
 		}
 		/** Completed-turn footer Definition independent of any Assistant row. */
@@ -9561,6 +9825,105 @@ window.__ModuleLoader__.load({
 			return blocks.flatMap((block) => block.kind === "text" ? [block.text] : []).join("");
 		}
 		//#endregion
+		//#region lib/types/client/chat/TurnUsagePanel.js
+		const turnStatStyleId = "dsh-turn-stat-dialogs";
+		if (typeof document !== "undefined" && document.getElementById(turnStatStyleId) === null) {
+			const style = document.createElement("style");
+			style.id = turnStatStyleId;
+			style.textContent = ".dshTurnStatRoot{position:relative;display:inline-flex}.dshTurnStatTrigger{height:28px;border:0;border-radius:14px;padding:4px 8px;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit}.dshTurnStatTrigger:hover,.dshTurnStatTrigger[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}.dshTurnStatDialog{position:absolute;right:0;bottom:calc(100% + 8px);z-index:1100;box-sizing:border-box;min-width:min(320px,calc(100vw - 24px));max-width:min(440px,calc(100vw - 24px));border:1px solid var(--dsw-alias-border-inverted);border-radius:12px;padding:14px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}.dshTurnStatTitle{margin:0 0 10px;color:var(--dsw-alias-label-primary);font-weight:600}.dshTurnStatDetails{display:grid;grid-template-columns:minmax(100px,auto) minmax(0,1fr);gap:6px 16px;margin:0}.dshTurnStatDetails dt{color:var(--dsw-alias-label-tertiary)}.dshTurnStatDetails dd{margin:0;color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}";
+			document.head.appendChild(style);
+		}
+		function turnUsageBuckets(value) {
+			if (typeof value !== "object" || value === null) return null;
+			const requiredNumber = (key) => typeof value[key] === "number" && Number.isFinite(value[key]) && value[key] >= 0 ? value[key] : 0;
+			const optionalNumber = (key) => value[key] === void 0 ? void 0 : typeof value[key] === "number" && Number.isFinite(value[key]) && value[key] >= 0 ? value[key] : void 0;
+			const uncachedInputTokens = requiredNumber("uncachedInputTokens") || requiredNumber("inputTokens");
+			const outputTokens = requiredNumber("outputTokens");
+			const cacheReadTokens = optionalNumber("cacheReadTokens");
+			const cacheWriteTokens = optionalNumber("cacheWriteTokens");
+			const reasoningTokens = optionalNumber("reasoningTokens");
+			const explicitTotal = optionalNumber("totalTokens");
+			const totalTokens = explicitTotal ?? uncachedInputTokens + outputTokens + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0);
+			if (totalTokens <= 0) return null;
+			return {
+				uncachedInputTokens,
+				outputTokens,
+				totalTokens,
+				...cacheReadTokens === void 0 ? {} : { cacheReadTokens },
+				...cacheWriteTokens === void 0 ? {} : { cacheWriteTokens },
+				...reasoningTokens === void 0 ? {} : { reasoningTokens },
+				routes: value.routes
+			};
+		}
+		function useTurnStatDialog() {
+			const [open, setOpen] = (0, react.useState)(false);
+			const rootRef = (0, react.useRef)(null);
+			(0, react.useEffect)(() => {
+				if (!open) return;
+				const close = (event) => {
+					if (event.key === "Escape" || rootRef.current !== null && !rootRef.current.contains(event.target)) setOpen(false);
+				};
+				document.addEventListener("keydown", close);
+				document.addEventListener("pointerdown", close);
+				return () => {
+					document.removeEventListener("keydown", close);
+					document.removeEventListener("pointerdown", close);
+				};
+			}, [open]);
+			return { open, setOpen, rootRef };
+		}
+		function TurnUsagePanel({ usage, t }) {
+			const normalized = turnUsageBuckets(usage);
+			const { open, setOpen, rootRef } = useTurnStatDialog();
+			if (normalized === null) return null;
+			const routes = Array.isArray(normalized.routes) ? normalized.routes.map((route) => `${route.provider}/${route.model}`).join(", ") : "";
+			const promptTokens = normalized.totalTokens - normalized.outputTokens;
+			const cacheHit = normalized.cacheReadTokens !== void 0 && promptTokens > 0 ? `${Math.round(normalized.cacheReadTokens / promptTokens * 1e3) / 10}%` : null;
+			return (0, react_jsx_runtime.jsxs)("span", {
+				ref: rootRef,
+				className: "dshTurnStatRoot",
+				children: [(0, react_jsx_runtime.jsx)("button", {
+					type: "button",
+					className: "dshTurnStatTrigger",
+					"aria-haspopup": "dialog",
+					"aria-expanded": open,
+					onClick: () => setOpen(!open),
+					children: t("message.turnUsage.consumed", { total: formatTokens(normalized.totalTokens) })
+				}), open && (0, react_jsx_runtime.jsxs)("div", {
+					className: "dshTurnStatDialog",
+					role: "dialog",
+					"aria-label": t("message.turnUsage.title"),
+					children: [(0, react_jsx_runtime.jsx)("div", { className: "dshTurnStatTitle", children: t("message.turnUsage.title") }), (0, react_jsx_runtime.jsxs)("dl", {
+						className: "dshTurnStatDetails",
+						children: [routes !== "" && (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("dt", { children: t("message.turnUsage.model") }), (0, react_jsx_runtime.jsx)("dd", { children: routes })] }), cacheHit !== null && (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("dt", { children: t("message.turnUsage.cacheHit") }), (0, react_jsx_runtime.jsx)("dd", { children: cacheHit })] }), (0, react_jsx_runtime.jsx)("dt", { children: t("message.turnUsage.input") }), (0, react_jsx_runtime.jsx)("dd", { children: formatExactTokens(normalized.uncachedInputTokens) }), normalized.cacheReadTokens !== void 0 && (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("dt", { children: t("message.turnUsage.cacheRead") }), (0, react_jsx_runtime.jsx)("dd", { children: formatExactTokens(normalized.cacheReadTokens) })] }), normalized.cacheWriteTokens !== void 0 && (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("dt", { children: t("message.turnUsage.cacheWrite") }), (0, react_jsx_runtime.jsx)("dd", { children: formatExactTokens(normalized.cacheWriteTokens) })] }), (0, react_jsx_runtime.jsx)("dt", { children: t("message.turnUsage.output") }), (0, react_jsx_runtime.jsx)("dd", { children: `${formatExactTokens(normalized.outputTokens)}${normalized.reasoningTokens !== void 0 ? ` ${t("message.turnUsage.reasoning", { tokens: formatExactTokens(normalized.reasoningTokens) })}` : ""}` })]
+					})]
+				})]
+			});
+		}
+		function TurnTimePanel({ runMs, tokensPerSecond, ttftMs, t }) {
+			const { open, setOpen, rootRef } = useTurnStatDialog();
+			return (0, react_jsx_runtime.jsxs)("span", {
+				ref: rootRef,
+				className: "dshTurnStatRoot",
+				children: [(0, react_jsx_runtime.jsx)("button", {
+					type: "button",
+					className: "dshTurnStatTrigger",
+					"aria-haspopup": "dialog",
+					"aria-expanded": open,
+					onClick: () => setOpen(!open),
+					children: t("message.ranFor", { duration: formatRunDuration(runMs, t) })
+				}), open && (0, react_jsx_runtime.jsxs)("div", {
+					className: "dshTurnStatDialog",
+					role: "dialog",
+					"aria-label": t("message.turnTime.title"),
+					children: [(0, react_jsx_runtime.jsx)("div", { className: "dshTurnStatTitle", children: t("message.turnTime.title") }), (0, react_jsx_runtime.jsxs)("dl", {
+						className: "dshTurnStatDetails",
+						children: [(0, react_jsx_runtime.jsx)("dt", { children: t("message.turnTime.duration") }), (0, react_jsx_runtime.jsx)("dd", { children: formatRunDuration(runMs, t) }), tokensPerSecond !== void 0 && (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("dt", { children: t("message.turnTime.speed") }), (0, react_jsx_runtime.jsx)("dd", { children: t("message.tokensPerSecond", { tps: formatTokensPerSecond(tokensPerSecond) }) })] }), ttftMs !== void 0 && (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("dt", { children: t("message.turnTime.ttft") }), (0, react_jsx_runtime.jsx)("dd", { children: t("duration.seconds", { seconds: formatLatencySeconds(ttftMs) }) })] })]
+					})]
+				})]
+			});
+		}
+		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-conversation\src\client\chat\TurnTailNodeView.module.css.mjs
 		const css = "._7E5VPG_root{flex-direction:column;gap:16px;display:flex}._7E5VPG_actions{margin-left:-6px}";
 		const tagId = "@deepseek-ai/dsh-client-ui-conversation/TurnTailNodeView.module.css";
@@ -9613,6 +9976,15 @@ window.__ModuleLoader__.load({
 					branchUnavailable: data.branchUnavailable || hasLaterChatNode,
 					className: TurnTailNodeView_module_css_default.actions,
 					extraActions: assistantActions,
+					usageAction: (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [turnUsageBuckets(data.tokenUsage) !== null && (0, react_jsx_runtime.jsx)(TurnUsagePanel, {
+						usage: data.tokenUsage,
+						t
+					}), runMs !== void 0 && (0, react_jsx_runtime.jsx)(TurnTimePanel, {
+						runMs,
+						tokensPerSecond: data.tokensPerSecond,
+						ttftMs: data.ttftMs,
+						t
+					})] }),
 					t
 				})]
 			});

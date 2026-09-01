@@ -10,7 +10,20 @@ name = "dsh-launcher"
 path = "src/main.rs"
 
 [dependencies]
-zsui = { git = "https://github.com/qiu7824/zsui.git", rev = "7449fe614af769e02b500294ea4a9442498ddf8c", default-features = false, features = ["window", "button", "label"] }
+dsh-home-paths = { path = "../../util/home-paths" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+semver = "1.0"
+ureq = { version = "3.1", features = ["json"] }
+zsui = { path = "../../vendor/zsui", default-features = false, features = ["window", "button", "icon", "label", "toggle"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Registry",
+  "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 [build-dependencies]
 winresource = "0.1"

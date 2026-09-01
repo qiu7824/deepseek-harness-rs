@@ -5,8 +5,11 @@ pub mod index;
 pub mod invariant;
 pub mod types;
 
-pub use index::{NAME, PluginInventoryGateway, PluginInventoryGatewayPlugin, SERVICE_NAME};
+pub use index::{
+    NAME, PluginInventoryGateway, PluginInventoryGatewayPlugin, SERVICE_NAME, composition_inventory,
+};
 pub use types::{
-    PluginEntryId, PluginFiberPhase, PluginInventoryEntry, PluginInventorySnapshot,
-    PluginSetEnabledRequest, PluginSetEnabledResult,
+    PluginEntryId, PluginFiberPhase, PluginInventoryEntry, PluginInventoryPreset,
+    PluginInventoryPresetRow, PluginInventorySnapshot, PluginSetEnabledRequest,
+    PluginSetEnabledResult,
 };

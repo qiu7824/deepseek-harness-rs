@@ -21,6 +21,8 @@ use crate::fetch::handler::AbortSignal;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostDescribeResult {
+    /// Resolved Harness data home used by the running Host.
+    pub home: String,
     /// The host app's package version.
     pub version: String,
     /// The host process working directory.

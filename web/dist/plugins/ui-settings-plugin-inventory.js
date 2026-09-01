@@ -7,8 +7,45 @@ window.__ModuleLoader__.load({
 		let react_jsx_runtime = require("react/jsx-runtime");
 		let react = require("react");
 		let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
-		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-settings-plugin-inventory\src\client\PluginInventorySettingsTab.module.css.mjs
-		const css = ".RhEyka_section{width:100%;max-width:760px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:14px;display:flex}.RhEyka_catalogHeading h3,.RhEyka_status,.RhEyka_failure p{margin:0}.RhEyka_status,.RhEyka_failure{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}.RhEyka_failure{color:var(--dsw-alias-state-error-primary);align-items:center;gap:10px;display:flex}.RhEyka_failure button{border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;background:0 0;border-radius:6px;padding:4px 10px}.RhEyka_catalog{flex-direction:column;gap:12px;display:flex}.RhEyka_search{width:100%;color:var(--dsw-alias-label-tertiary);align-items:center;display:flex;position:relative}.RhEyka_search>svg{pointer-events:none;position:absolute;left:12px}.RhEyka_search input{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);width:100%;height:36px;color:var(--dsw-alias-label-primary);font:inherit;border-radius:8px;outline:none;padding:0 34px 0 36px;font-size:13px}.RhEyka_search input::placeholder{color:var(--dsw-alias-label-tertiary)}.RhEyka_search input:focus-visible{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 2px color-mix(in srgb, var(--dsw-alias-state-business-primary) 18%, transparent)}.RhEyka_catalogHeading{align-items:baseline;gap:7px;padding:0 2px;display:flex}.RhEyka_catalogHeading h3{font-size:13px;font-weight:600;line-height:20px}.RhEyka_catalogHeading span{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;font-size:12px;line-height:18px}.RhEyka_cards{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:10px;margin:0;padding:0;list-style:none;display:grid}.RhEyka_card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:10px;min-width:0;overflow:hidden}.RhEyka_card[data-open=true]{border-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-shadow-lv1)}.RhEyka_cardContent{box-sizing:border-box;width:100%;min-height:52px;color:inherit;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;display:flex}.RhEyka_cardContent:hover,.RhEyka_card[data-open=true]>.RhEyka_cardContent{background:var(--dsw-alias-interactive-bg-hover)}.RhEyka_cardContent:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-2px}.RhEyka_cardTitle{text-overflow:ellipsis;white-space:nowrap;min-width:0;font-size:14px;font-weight:600;line-height:20px;overflow:hidden}.RhEyka_cardTrailing{color:var(--dsw-alias-label-tertiary);flex:none;align-items:center;gap:7px;display:inline-flex}.RhEyka_statusDot{background:var(--dsw-alias-label-tertiary);border-radius:999px;flex:none;width:7px;height:7px;display:inline-block}.RhEyka_statusDot[data-phase=active]{background:var(--dsw-alias-state-success-primary)}.RhEyka_statusDot[data-phase=failed]{background:var(--dsw-alias-state-error-primary)}.RhEyka_statusDot[data-phase=loading]{background:var(--dsw-alias-state-business-primary)}.RhEyka_configTag{background:var(--dsw-alias-bg-layer-1);min-height:20px;color:var(--dsw-alias-label-secondary);white-space:nowrap;border-radius:5px;align-items:center;padding:1px 6px;font-size:11px;line-height:16px;display:inline-flex}.RhEyka_configTag[data-enabled=true]{background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);color:var(--dsw-alias-state-success-primary)}.RhEyka_chevron{color:var(--dsw-alias-label-tertiary);flex:none}.RhEyka_card[data-open=true] .RhEyka_chevron{transform:rotate(180deg)}.RhEyka_cardDetails{border-top:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-module-platform);padding:10px 14px 12px}.RhEyka_entryValue{overflow-wrap:anywhere;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code);font-size:12px;line-height:18px;display:block}.RhEyka_details{grid-template-columns:76px minmax(0,1fr);gap:6px 10px;margin:8px 0 0;display:grid}.RhEyka_details div{display:contents}.RhEyka_details dt{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:17px}.RhEyka_details dd{overflow-wrap:anywhere;min-width:0;color:var(--dsw-alias-label-secondary);margin:0;font-size:12px;line-height:17px}.RhEyka_visuallyHidden{clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;width:1px;height:1px;position:absolute;overflow:hidden}@media (prefers-reduced-motion:no-preference){.RhEyka_chevron{transition:transform .14s var(--ds-ease-in-out)}}@media (width<=680px){.RhEyka_cards{grid-template-columns:minmax(0,1fr)}}";
+		//#region ../../preset/agent-presets/src/display.ts
+		const BUILT_IN_PRESET_KEYS = {
+			standard: {
+				name: "presetStandardName",
+				description: "presetStandardDescription"
+			},
+			ptc: {
+				name: "presetPtcName",
+				description: "presetPtcDescription"
+			},
+			minimal: {
+				name: "presetMinimalName",
+				description: "presetMinimalDescription"
+			},
+			cordis: {
+				name: "presetCordisName",
+				description: "presetCordisDescription"
+			}
+		};
+		/**
+		* Resolve preset display copy without making user-authored metadata translatable.
+		* @param preset - roster row whose copy is being rendered.
+		* @param t - active locale lookup covering {@link BuiltInPresetCopyKey}.
+		* @returns localized copy for a known shipped preset, otherwise file metadata.
+		*/
+		function presetDisplayText(preset, t) {
+			const keys = preset.trust === "system" ? BUILT_IN_PRESET_KEYS[preset.id] : void 0;
+			if (keys !== void 0) return {
+				name: t(keys.name),
+				description: t(keys.description)
+			};
+			return {
+				name: preset.name ?? preset.id,
+				...preset.description === void 0 ? {} : { description: preset.description }
+			};
+		}
+		//#endregion
+		//#region \0dsh-css:D:\deepwork\_upstream_deepseek_harness_v012a2\packages\client\ui-settings-plugin-inventory\src\client\PluginInventorySettingsTab.module.css.mjs
+		const css = ".a2nWpa_section{width:100%;max-width:760px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:14px;display:flex}.a2nWpa_catalogHeading h3,.a2nWpa_status,.a2nWpa_failure p{margin:0}.a2nWpa_status,.a2nWpa_failure{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}.a2nWpa_failure{color:var(--dsw-alias-state-error-primary);align-items:center;gap:10px;display:flex}.a2nWpa_failure button{border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;background:0 0;border-radius:6px;padding:4px 10px}.a2nWpa_catalog{flex-direction:column;gap:12px;display:flex}.a2nWpa_search{width:100%;color:var(--dsw-alias-label-tertiary);align-items:center;display:flex;position:relative}.a2nWpa_search>svg{pointer-events:none;position:absolute;left:12px}.a2nWpa_search input{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);width:100%;height:36px;color:var(--dsw-alias-label-primary);font:inherit;border-radius:8px;outline:none;padding:0 34px 0 36px;font-size:13px}.a2nWpa_search input::placeholder{color:var(--dsw-alias-label-tertiary)}.a2nWpa_search input:focus-visible{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 2px color-mix(in srgb, var(--dsw-alias-state-business-primary) 18%, transparent)}.a2nWpa_catalogHeading{align-items:baseline;gap:7px;padding:0 2px;display:flex}.a2nWpa_catalogHeading h3{font-size:13px;font-weight:600;line-height:20px}.a2nWpa_catalogHeading span{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;font-size:12px;line-height:18px}.a2nWpa_cards{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:10px;margin:0;padding:0;list-style:none;display:grid}.a2nWpa_card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:10px;min-width:0;overflow:hidden}.a2nWpa_card[data-open=true]{border-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-shadow-lv1)}.a2nWpa_cardContent{box-sizing:border-box;width:100%;min-height:52px;color:inherit;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;display:flex}.a2nWpa_cardContent:hover,.a2nWpa_card[data-open=true]>.a2nWpa_cardContent{background:var(--dsw-alias-interactive-bg-hover)}.a2nWpa_cardContent:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-2px}.a2nWpa_cardTitle{text-overflow:ellipsis;white-space:nowrap;min-width:0;font-size:14px;font-weight:600;line-height:20px;overflow:hidden}.a2nWpa_cardTrailing{color:var(--dsw-alias-label-tertiary);flex:none;align-items:center;gap:7px;display:inline-flex}.a2nWpa_statusDot{background:var(--dsw-alias-label-tertiary);border-radius:999px;flex:none;width:7px;height:7px;display:inline-block}.a2nWpa_statusDot[data-phase=active]{background:var(--dsw-alias-state-success-primary)}.a2nWpa_statusDot[data-phase=failed]{background:var(--dsw-alias-state-error-primary)}.a2nWpa_statusDot[data-phase=loading]{background:var(--dsw-alias-state-business-primary)}.a2nWpa_configTag{background:var(--dsw-alias-bg-layer-1);min-height:20px;color:var(--dsw-alias-label-secondary);white-space:nowrap;border-radius:5px;align-items:center;padding:1px 6px;font-size:11px;line-height:16px;display:inline-flex}.a2nWpa_configTag[data-kind=enabled]{background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);color:var(--dsw-alias-state-success-primary)}.a2nWpa_configTag[data-kind=preset]{background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent);color:var(--dsw-alias-state-business-primary)}.a2nWpa_configTag[data-kind=conditional]{background:color-mix(in srgb, var(--dsw-alias-state-warning-primary,#b45309) 12%, transparent);color:var(--dsw-alias-state-warning-primary,#b45309)}.a2nWpa_configTag[data-kind=failed]{background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);color:var(--dsw-alias-state-error-primary)}.a2nWpa_group{flex-direction:column;gap:10px;display:flex}.a2nWpa_groupTitleRow{align-items:center;gap:8px;min-height:32px;display:flex}.a2nWpa_group+.a2nWpa_group{border-top:1px solid var(--dsw-alias-border-l2);padding-top:14px}.a2nWpa_headerEnd{margin-left:auto}.a2nWpa_groupToggle{color:inherit;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;flex:none;align-items:center;gap:8px;padding:0;display:flex}.a2nWpa_groupToggle:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}.a2nWpa_groupToggle>.a2nWpa_chevron{transform:rotate(-90deg)}.a2nWpa_groupToggle[aria-expanded=true]>.a2nWpa_chevron{transform:none}.a2nWpa_groupTitle{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.a2nWpa_groupSub{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;flex-wrap:wrap;gap:4px 8px;margin:-6px 0 0 20px;font-size:12px;line-height:18px;display:flex}.a2nWpa_failedCount{color:var(--dsw-alias-state-error-primary)}.a2nWpa_switcher{white-space:nowrap;background:var(--dsw-alias-bg-module-platform);height:36px;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;border:none;border-radius:18px;flex:none;align-items:center;gap:12px;padding:0 14px;font-size:14px;line-height:22px;display:inline-flex}.a2nWpa_switcher:hover{background:var(--dsw-alias-interactive-bg-hover)}.a2nWpa_switcher:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}.a2nWpa_switcher>.a2nWpa_chevron{flex:none}.a2nWpa_switcherLabel{text-overflow:ellipsis;max-width:240px;overflow:hidden}.a2nWpa_groupBody{flex-direction:column;gap:10px;display:flex}.a2nWpa_brokenNote{background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent);color:var(--dsw-alias-state-error-primary);overflow-wrap:anywhere;white-space:pre-line;border-radius:8px;margin:0;padding:8px 10px;font-size:12.5px;line-height:18px}.a2nWpa_hint{color:var(--dsw-alias-label-tertiary);flex-wrap:wrap;align-items:baseline;gap:4px 8px;margin:0;font-size:12.5px;line-height:18px;display:flex}.a2nWpa_jumpLink{color:var(--dsw-alias-state-business-primary);font:inherit;cursor:pointer;background:0 0;border:0;padding:0;font-size:12.5px}.a2nWpa_enabledIn{flex-wrap:wrap;align-items:baseline;gap:4px 10px;display:flex}.a2nWpa_card[data-failed=true]{border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent)}.a2nWpa_chevron{color:var(--dsw-alias-label-tertiary);flex:none}.a2nWpa_card[data-open=true] .a2nWpa_chevron{transform:rotate(180deg)}.a2nWpa_cardDetails{border-top:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-module-platform);padding:10px 14px 12px}.a2nWpa_entryValue{overflow-wrap:anywhere;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code);font-size:12px;line-height:18px;display:block}.a2nWpa_details{grid-template-columns:76px minmax(0,1fr);gap:6px 10px;margin:8px 0 0;display:grid}.a2nWpa_details div{display:contents}.a2nWpa_details dt{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:17px}.a2nWpa_details dd{overflow-wrap:anywhere;min-width:0;color:var(--dsw-alias-label-secondary);margin:0;font-size:12px;line-height:17px}.a2nWpa_visuallyHidden{clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;width:1px;height:1px;position:absolute;overflow:hidden}@media (prefers-reduced-motion:no-preference){.a2nWpa_chevron{transition:transform .14s var(--ds-ease-in-out)}}@media (width<=680px){.a2nWpa_cards{grid-template-columns:minmax(0,1fr)}}";
 		const tagId = "@deepseek-ai/dsh-client-ui-settings-plugin-inventory/PluginInventorySettingsTab.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -18,24 +55,38 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var PluginInventorySettingsTab_module_css_default = {
-			"failure": "RhEyka_failure",
-			"cardDetails": "RhEyka_cardDetails",
-			"catalogHeading": "RhEyka_catalogHeading",
-			"cards": "RhEyka_cards",
-			"configTag": "RhEyka_configTag",
-			"statusDot": "RhEyka_statusDot",
-			"cardTrailing": "RhEyka_cardTrailing",
-			"status": "RhEyka_status",
-			"cardContent": "RhEyka_cardContent",
-			"catalog": "RhEyka_catalog",
-			"card": "RhEyka_card",
-			"chevron": "RhEyka_chevron",
-			"search": "RhEyka_search",
-			"entryValue": "RhEyka_entryValue",
-			"cardTitle": "RhEyka_cardTitle",
-			"section": "RhEyka_section",
-			"visuallyHidden": "RhEyka_visuallyHidden",
-			"details": "RhEyka_details"
+			"brokenNote": "a2nWpa_brokenNote",
+			"card": "a2nWpa_card",
+			"cardContent": "a2nWpa_cardContent",
+			"cardDetails": "a2nWpa_cardDetails",
+			"cardTitle": "a2nWpa_cardTitle",
+			"cardTrailing": "a2nWpa_cardTrailing",
+			"cards": "a2nWpa_cards",
+			"catalog": "a2nWpa_catalog",
+			"catalogHeading": "a2nWpa_catalogHeading",
+			"chevron": "a2nWpa_chevron",
+			"configTag": "a2nWpa_configTag",
+			"details": "a2nWpa_details",
+			"enabledIn": "a2nWpa_enabledIn",
+			"entryValue": "a2nWpa_entryValue",
+			"failedCount": "a2nWpa_failedCount",
+			"failure": "a2nWpa_failure",
+			"group": "a2nWpa_group",
+			"groupBody": "a2nWpa_groupBody",
+			"groupSub": "a2nWpa_groupSub",
+			"groupTitle": "a2nWpa_groupTitle",
+			"groupTitleRow": "a2nWpa_groupTitleRow",
+			"groupToggle": "a2nWpa_groupToggle",
+			"headerEnd": "a2nWpa_headerEnd",
+			"hint": "a2nWpa_hint",
+			"jumpLink": "a2nWpa_jumpLink",
+			"search": "a2nWpa_search",
+			"section": "a2nWpa_section",
+			"status": "a2nWpa_status",
+			"statusDot": "a2nWpa_statusDot",
+			"switcher": "a2nWpa_switcher",
+			"switcherLabel": "a2nWpa_switcherLabel",
+			"visuallyHidden": "a2nWpa_visuallyHidden"
 		};
 		//#endregion
 		//#region lib/types/client/PluginInventorySettingsTab.js
@@ -54,70 +105,228 @@ window.__ModuleLoader__.load({
 		function moduleShortName(moduleName) {
 			return (moduleName.startsWith("@") ? moduleName.slice(moduleName.indexOf("/") + 1) : moduleName).replace(/^cordis:/, "").replace(/^cordis-plugin-/, "").replace(/^dsh-(?:host-|client-)?/, "");
 		}
-		/** Whether an inventory row matches the local catalog query. */
-		function matches(entry, normalizedQuery) {
+		/** Whether one row's module name or entry id matches the catalog query. */
+		function matches(moduleName, entryId, normalizedQuery) {
 			if (normalizedQuery.length === 0) return true;
-			return [entry.moduleName, entry.entryId, entry.description ?? ""].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
+			return [moduleName, ...entryId === null ? [] : [entryId]].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
 		}
-		/** Render the read-only current Loader inventory. */
-		function PluginInventorySettingsTab({ list, setEnabled, t }) {
-			const catalogId = (0, react.useId)();
+		/** The roster row shown when the preset switcher has no explicit choice. */
+		function fallbackPreset(presets) {
+			return presets.find((preset) => preset.isDefault) ?? presets[0];
+		}
+		/** The switcher's display label for one preset. */
+		function presetLabel(preset, t, presetName) {
+			const name = presetName(preset);
+			if (preset.broken !== void 0) return t("presetOptionBroken", { name });
+			if (preset.isDefault) return t("presetOptionDefault", { name });
+			return name;
+		}
+		/** One expandable plugin card; the caller owns the trailing status content. */
+		function PluginCard({ rowKey, moduleName, entryId, trailing, ariaLabel, failed, expanded, onToggle, children }) {
+			const open = expanded === rowKey;
+			const detailId = `plugin-details-${encodeURIComponent(rowKey)}`;
+			return (0, react_jsx_runtime.jsxs)("li", {
+				className: PluginInventorySettingsTab_module_css_default.card,
+				"data-plugin-entry": entryId ?? void 0,
+				"data-plugin-module": moduleName,
+				"data-failed": failed ? "true" : void 0,
+				"data-open": open ? "true" : void 0,
+				children: [(0, react_jsx_runtime.jsxs)("button", {
+					className: PluginInventorySettingsTab_module_css_default.cardContent,
+					type: "button",
+					"aria-expanded": open,
+					"aria-controls": detailId,
+					"aria-label": ariaLabel,
+					onClick: () => {
+						onToggle(rowKey);
+					},
+					children: [(0, react_jsx_runtime.jsx)("strong", {
+						className: PluginInventorySettingsTab_module_css_default.cardTitle,
+						title: moduleName,
+						children: moduleShortName(moduleName)
+					}), (0, react_jsx_runtime.jsxs)("span", {
+						className: PluginInventorySettingsTab_module_css_default.cardTrailing,
+						children: [trailing, (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {
+							className: PluginInventorySettingsTab_module_css_default.chevron,
+							size: 12,
+							"aria-hidden": "true"
+						})]
+					})]
+				}), open ? (0, react_jsx_runtime.jsx)("div", {
+					className: PluginInventorySettingsTab_module_css_default.cardDetails,
+					id: detailId,
+					children
+				}) : null]
+			});
+		}
+		/** Detail rows shared by every card: the Loader identity, then labeled facts. */
+		function CardFacts({ moduleName, moduleLabel, entryId, facts }) {
+			return (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [entryId === null ? null : (0, react_jsx_runtime.jsx)("code", {
+				className: PluginInventorySettingsTab_module_css_default.entryValue,
+				"data-loader-entry": true,
+				children: entryId
+			}), (0, react_jsx_runtime.jsxs)("dl", {
+				className: PluginInventorySettingsTab_module_css_default.details,
+				children: [(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("dt", { children: moduleLabel }), (0, react_jsx_runtime.jsx)("dd", { children: moduleName })] }), facts.map(([label, value]) => (0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("dt", { children: label }), (0, react_jsx_runtime.jsx)("dd", { children: value })] }, label))]
+			})] });
+		}
+		/** Status dot naming a live root-fiber phase; rows with no live fiber show none. */
+		function PhaseDot({ phase, t }) {
+			const status = phaseLabel(phase, t);
+			return (0, react_jsx_runtime.jsx)("span", {
+				className: PluginInventorySettingsTab_module_css_default.statusDot,
+				"data-phase": phase,
+				role: "img",
+				"aria-label": status,
+				title: status
+			});
+		}
+		/** Enablement tag; `kind` selects the palette. */
+		function StateTag({ kind, label }) {
+			return (0, react_jsx_runtime.jsx)("span", {
+				className: PluginInventorySettingsTab_module_css_default.configTag,
+				"data-kind": kind,
+				children: label
+			});
+		}
+		/** Render the read-only plugin inventory: agent presets first, then the global plane. */
+		function PluginInventorySettingsTab({ list, presetName, t }) {
+			const sectionId = (0, react.useId)();
 			const [request, setRequest] = (0, react.useState)(0);
 			const [query, setQuery] = (0, react.useState)("");
 			const [expanded, setExpanded] = (0, react.useState)(null);
-			const [changing, setChanging] = (0, react.useState)(null);
-			const [actionError, setActionError] = (0, react.useState)(null);
+			const [chosenPreset, setChosenPreset] = (0, react.useState)(null);
+			const [switcherOpen, setSwitcherOpen] = (0, react.useState)(false);
+			const [presetOpen, setPresetOpen] = (0, react.useState)(null);
+			const [globalOpen, setGlobalOpen] = (0, react.useState)(null);
 			const [state, setState] = (0, react.useState)({ status: "loading" });
-			const toggle = async (entry) => {
-				setChanging(entry.entryId);
-				setActionError(null);
-				try {
-					await setEnabled(entry.entryId, !entry.enabled);
-					setRequest((value) => value + 1);
-				} catch (error) {
-					console.error("[plugin-inventory] state save failed:", error);
-					setActionError(entry.entryId);
-				} finally {
-					setChanging(null);
-				}
-			};
 			(0, react.useEffect)(() => {
 				let current = true;
-				const read = async () => {
-					let last;
-					for (let attempt = 0; attempt < 3; attempt += 1) {
-						try {
-							return await list();
-						} catch (error) {
-							last = error;
-							if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
-						}
-					}
-					throw last;
-				};
-				Promise.resolve().then(read).then((snapshot) => {
+				Promise.resolve().then(() => list()).then((snapshot) => {
 					if (current) setState({
 						status: "ready",
 						snapshot
 					});
-				}, (error) => {
-					if (current) setState({
-						status: "error",
-						message: error instanceof Error ? error.message : String(error)
-					});
+				}, () => {
+					if (current) setState({ status: "error" });
 				});
 				return () => {
 					current = false;
 				};
 			}, [list, request]);
 			const normalizedQuery = query.trim().toLocaleLowerCase();
-			const filteredEntries = (0, react.useMemo)(() => state.status === "ready" ? state.snapshot.entries.filter((entry) => matches(entry, normalizedQuery)) : [], [normalizedQuery, state]);
-			(0, react.useEffect)(() => {
-				if (expanded !== null && !filteredEntries.some((entry) => entry.entryId === expanded)) setExpanded(null);
-			}, [expanded, filteredEntries]);
+			const searching = normalizedQuery.length > 0;
+			const snapshot = state.status === "ready" ? state.snapshot : void 0;
+			const presets = snapshot?.agentPresets ?? [];
+			const selected = presets.find((preset) => preset.id === chosenPreset) ?? fallbackPreset(presets);
+			/** Presets that actually enable a module, keyed by module name. */
+			const enabledIn = (0, react.useMemo)(() => {
+				const found = /* @__PURE__ */ new Map();
+				for (const preset of presets) for (const row of preset.rows) {
+					if (row.enabled !== true) continue;
+					const groups = found.get(row.moduleName);
+					if (groups === void 0) found.set(row.moduleName, [preset]);
+					else if (!groups.includes(preset)) groups.push(preset);
+				}
+				return found;
+			}, [presets]);
+			const entries = snapshot?.entries ?? [];
+			const failedEntries = [];
+			const regularEntries = [];
+			for (const entry of entries) if (entry.fiberPhase === "failed") failedEntries.push(entry);
+			else regularEntries.push(entry);
+			const entryMatch = (entry) => matches(entry.moduleName, entry.entryId, normalizedQuery);
+			const rowMatch = (row) => matches(row.moduleName, row.entryId, normalizedQuery);
+			const filteredFailed = failedEntries.filter(entryMatch);
+			const filteredRegular = regularEntries.filter(entryMatch);
+			const globalCount = filteredFailed.length + filteredRegular.length;
+			const selectedRows = selected === void 0 ? [] : selected.rows.filter(rowMatch);
+			const otherPresetMatches = searching ? presets.filter((preset) => preset !== selected && preset.rows.some(rowMatch)) : [];
+			const otherMatchCount = otherPresetMatches.reduce((total, preset) => total + preset.rows.filter(rowMatch).length, 0);
+			const presetEffectiveOpen = searching || (presetOpen ?? true);
+			const globalEffectiveOpen = searching || (globalOpen ?? presets.length === 0);
+			const nothingMatches = searching && globalCount === 0 && selectedRows.length === 0 && otherPresetMatches.length === 0;
 			const retry = () => {
 				setState({ status: "loading" });
 				setRequest((value) => value + 1);
+			};
+			const toggleRow = (key) => {
+				setExpanded((current) => current === key ? null : key);
+			};
+			/** Trailing status and detail facts for one row of the selected preset. */
+			const presetRowCard = (preset, row, index) => {
+				const key = `preset:${preset.id}:${String(index)}`;
+				const title = moduleShortName(row.moduleName);
+				const failed = row.fiberPhase === "failed";
+				const stateText = failed ? t("failedTag") : row.enabled === true ? t("enabledTag") : row.enabled === false ? t("disabledTag") : t("conditionalTag");
+				const kind = failed ? "failed" : row.enabled === true ? "enabled" : row.enabled === false ? "disabled" : "conditional";
+				return (0, react_jsx_runtime.jsx)(PluginCard, {
+					rowKey: key,
+					moduleName: row.moduleName,
+					entryId: row.entryId,
+					failed,
+					expanded,
+					onToggle: toggleRow,
+					ariaLabel: `${title}, ${stateText}`,
+					trailing: (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [row.enabled === true && !failed && row.fiberPhase !== null ? (0, react_jsx_runtime.jsx)(PhaseDot, {
+						phase: row.fiberPhase,
+						t
+					}) : null, (0, react_jsx_runtime.jsx)(StateTag, {
+						kind,
+						label: stateText
+					})] }),
+					children: (0, react_jsx_runtime.jsx)(CardFacts, {
+						moduleName: row.moduleName,
+						moduleLabel: t("moduleLabel"),
+						entryId: row.entryId,
+						facts: [
+							[t("fromPreset"), presetName(preset)],
+							[t("configuration"), stateText],
+							...row.fiberPhase === null ? [] : [[t("runtime"), phaseLabel(row.fiberPhase, t)]],
+							...row.condition === void 0 ? [] : [[t("condition"), (0, react_jsx_runtime.jsx)("code", { children: row.condition }, "condition")]]
+						]
+					})
+				}, key);
+			};
+			/** One global-plane row; a preset-provided row carries the presets that enable it. */
+			const globalRowCard = (entry, providers) => {
+				const key = `global:${entry.entryId}`;
+				const title = moduleShortName(entry.moduleName);
+				const failed = entry.fiberPhase === "failed";
+				const stateText = failed ? t("failedTag") : providers !== void 0 ? t("presetEnabledTag") : t(entry.enabled ? "enabledTag" : "disabledTag");
+				const kind = failed ? "failed" : providers !== void 0 ? "preset" : entry.enabled ? "enabled" : "disabled";
+				return (0, react_jsx_runtime.jsx)(PluginCard, {
+					rowKey: key,
+					moduleName: entry.moduleName,
+					entryId: entry.entryId,
+					failed,
+					expanded,
+					onToggle: toggleRow,
+					ariaLabel: `${title}, ${stateText}`,
+					trailing: (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [entry.enabled && !failed && entry.fiberPhase !== null ? (0, react_jsx_runtime.jsx)(PhaseDot, {
+						phase: entry.fiberPhase,
+						t
+					}) : null, (0, react_jsx_runtime.jsx)(StateTag, {
+						kind,
+						label: stateText
+					})] }),
+					children: (0, react_jsx_runtime.jsx)(CardFacts, {
+						moduleName: entry.moduleName,
+						moduleLabel: t("moduleLabel"),
+						entryId: entry.entryId,
+						facts: providers !== void 0 ? [[t("configuration"), t("presetProvidedDetail")], [t("enabledIn"), (0, react_jsx_runtime.jsxs)("span", {
+							className: PluginInventorySettingsTab_module_css_default.enabledIn,
+							children: [(0, react_jsx_runtime.jsx)("span", { children: providers.map((preset) => presetName(preset)).join(" · ") }), (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: PluginInventorySettingsTab_module_css_default.jumpLink,
+								onClick: () => {
+									setChosenPreset(providers[0].id);
+								},
+								children: t("viewInPreset")
+							})]
+						})]] : [[t("configuration"), t(entry.enabled ? "enabledTag" : "disabledTag")], ...entry.enabled ? [[t("runtime"), phaseLabel(entry.fiberPhase, t)]] : []]
+					})
+				}, key);
 			};
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: PluginInventorySettingsTab_module_css_default.section,
@@ -131,14 +340,14 @@ window.__ModuleLoader__.load({
 						className: PluginInventorySettingsTab_module_css_default.failure,
 						children: [(0, react_jsx_runtime.jsx)("p", {
 							role: "alert",
-							children: `${t("error")} ${state.message}`
+							children: t("error")
 						}), (0, react_jsx_runtime.jsx)("button", {
 							type: "button",
 							onClick: retry,
 							children: t("retry")
 						})]
 					}) : null,
-					state.status === "ready" ? (0, react_jsx_runtime.jsxs)("div", {
+					snapshot !== void 0 ? (0, react_jsx_runtime.jsxs)("div", {
 						className: PluginInventorySettingsTab_module_css_default.catalog,
 						children: [
 							(0, react_jsx_runtime.jsxs)("label", {
@@ -160,95 +369,158 @@ window.__ModuleLoader__.load({
 									})
 								]
 							}),
-							(0, react_jsx_runtime.jsxs)("div", {
-								className: PluginInventorySettingsTab_module_css_default.catalogHeading,
-								children: [(0, react_jsx_runtime.jsx)("h3", { children: t("catalog") }), (0, react_jsx_runtime.jsx)("span", {
-									"data-plugin-count": filteredEntries.length,
-									children: filteredEntries.length
-								})]
-							}),
-							state.snapshot.entries.length === 0 ? (0, react_jsx_runtime.jsx)("p", {
+							entries.length === 0 && presets.length === 0 ? (0, react_jsx_runtime.jsx)("p", {
 								className: PluginInventorySettingsTab_module_css_default.status,
 								children: t("empty")
 							}) : null,
-							state.snapshot.entries.length > 0 && filteredEntries.length === 0 ? (0, react_jsx_runtime.jsx)("p", {
+							nothingMatches ? (0, react_jsx_runtime.jsx)("p", {
 								className: PluginInventorySettingsTab_module_css_default.status,
 								children: t("emptySearch")
 							}) : null,
-							filteredEntries.length > 0 ? (0, react_jsx_runtime.jsx)("ul", {
-								className: PluginInventorySettingsTab_module_css_default.cards,
-								children: filteredEntries.map((entry) => {
-									const status = phaseLabel(entry.fiberPhase, t);
-									const title = moduleShortName(entry.moduleName);
-									const configuration = t(entry.enabled ? "enabledTag" : "disabledTag");
-									const open = expanded === entry.entryId;
-									const detailId = `${catalogId}-details-${encodeURIComponent(entry.entryId)}`;
-									return (0, react_jsx_runtime.jsxs)("li", {
-										className: PluginInventorySettingsTab_module_css_default.card,
-										"data-plugin-entry": entry.entryId,
-										"data-open": open ? "true" : void 0,
+							selected !== void 0 ? (0, react_jsx_runtime.jsxs)("section", {
+								className: PluginInventorySettingsTab_module_css_default.group,
+								"data-plugin-scope": "preset",
+								"data-preset-id": selected.id,
+								children: [
+									(0, react_jsx_runtime.jsxs)("div", {
+										className: PluginInventorySettingsTab_module_css_default.groupTitleRow,
 										children: [(0, react_jsx_runtime.jsxs)("button", {
-											className: PluginInventorySettingsTab_module_css_default.cardContent,
 											type: "button",
-											"aria-expanded": open,
-											"aria-controls": detailId,
-											"aria-label": entry.enabled ? `${title}, ${status}, ${configuration}` : `${title}, ${configuration}`,
+											className: PluginInventorySettingsTab_module_css_default.groupToggle,
+											"aria-expanded": presetEffectiveOpen,
+											"aria-controls": `${sectionId}-preset`,
 											onClick: () => {
-												setExpanded((current) => current === entry.entryId ? null : entry.entryId);
+												setPresetOpen(!presetEffectiveOpen);
 											},
-											children: [(0, react_jsx_runtime.jsx)("strong", {
-												className: PluginInventorySettingsTab_module_css_default.cardTitle,
-												title: entry.moduleName,
-												children: title
-											}), (0, react_jsx_runtime.jsxs)("span", {
-												className: PluginInventorySettingsTab_module_css_default.cardTrailing,
-												children: [
-													entry.enabled ? (0, react_jsx_runtime.jsx)("span", {
-														className: PluginInventorySettingsTab_module_css_default.statusDot,
-														"data-phase": entry.fiberPhase ?? "unobserved",
-														role: "img",
-														"aria-label": status,
-														title: status
-													}) : null,
-													(0, react_jsx_runtime.jsx)("span", {
-														className: PluginInventorySettingsTab_module_css_default.configTag,
-														"data-enabled": entry.enabled ? "true" : "false",
-														children: configuration
-													}),
-													(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {
-														className: PluginInventorySettingsTab_module_css_default.chevron,
-														size: 12,
-														"aria-hidden": "true"
-													})
-												]
+											children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {
+												className: PluginInventorySettingsTab_module_css_default.chevron,
+												size: 12,
+												"aria-hidden": "true"
+											}), (0, react_jsx_runtime.jsx)("span", {
+												className: PluginInventorySettingsTab_module_css_default.groupTitle,
+												children: t("presetTitle")
 											})]
-										}), open ? (0, react_jsx_runtime.jsxs)("div", {
-											className: PluginInventorySettingsTab_module_css_default.cardDetails,
-											id: detailId,
-											children: [entry.description ? (0, react_jsx_runtime.jsx)("p", {
-												className: PluginInventorySettingsTab_module_css_default.status,
-												children: entry.description
-											}) : null, (0, react_jsx_runtime.jsx)("code", {
-												className: PluginInventorySettingsTab_module_css_default.entryValue,
-												"data-loader-entry": true,
-												children: entry.entryId
-											}), (0, react_jsx_runtime.jsxs)("dl", {
-												className: PluginInventorySettingsTab_module_css_default.details,
-												children: [(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("dt", { children: t("configuration") }), (0, react_jsx_runtime.jsx)("dd", { children: configuration })] }), entry.enabled ? (0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("dt", { children: t("cordis") }), (0, react_jsx_runtime.jsx)("dd", { children: status })] }) : null]
-											}), (0, react_jsx_runtime.jsx)("button", {
-												type: "button",
-												disabled: changing === entry.entryId,
-												"data-plugin-toggle": entry.entryId,
-												onClick: () => toggle(entry),
-												children: changing === entry.entryId ? t("saving") : t(entry.enabled ? "disable" : "enable")
-											}), actionError === entry.entryId ? (0, react_jsx_runtime.jsx)("p", {
+										}), (0, react_jsx_runtime.jsx)("div", {
+											className: PluginInventorySettingsTab_module_css_default.headerEnd,
+											children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, {
+												open: switcherOpen,
+												onClose: () => {
+													setSwitcherOpen(false);
+												},
+												items: presets.map((preset) => ({
+													id: preset.id,
+													label: presetLabel(preset, t, presetName)
+												})),
+												selectedId: selected.id,
+												onSelect: (id) => {
+													setSwitcherOpen(false);
+													setChosenPreset(id);
+												},
+												align: "end",
+												portal: true,
+												anchor: (0, react_jsx_runtime.jsxs)("button", {
+													type: "button",
+													className: PluginInventorySettingsTab_module_css_default.switcher,
+													"aria-haspopup": "menu",
+													"aria-expanded": switcherOpen,
+													"aria-label": t("switcherLabel"),
+													onClick: () => {
+														setSwitcherOpen((value) => !value);
+													},
+													children: [(0, react_jsx_runtime.jsx)("span", {
+														className: PluginInventorySettingsTab_module_css_default.switcherLabel,
+														children: presetLabel(selected, t, presetName)
+													}), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {
+														className: PluginInventorySettingsTab_module_css_default.chevron,
+														"aria-hidden": "true"
+													})]
+												})
+											})
+										})]
+									}),
+									(0, react_jsx_runtime.jsxs)("p", {
+										className: PluginInventorySettingsTab_module_css_default.groupSub,
+										children: [t("presetSubtitle"), (0, react_jsx_runtime.jsx)("span", {
+											"data-preset-plugin-count": selectedRows.length,
+											children: ` · ${String(selectedRows.length)} ${t("countUnit")}`
+										})]
+									}),
+									presetEffectiveOpen ? (0, react_jsx_runtime.jsxs)("div", {
+										id: `${sectionId}-preset`,
+										className: PluginInventorySettingsTab_module_css_default.groupBody,
+										children: [
+											selected.broken !== void 0 ? (0, react_jsx_runtime.jsx)("p", {
+												className: PluginInventorySettingsTab_module_css_default.brokenNote,
 												role: "alert",
-												className: PluginInventorySettingsTab_module_css_default.failure,
-												children: t("actionError")
-											}) : null]
-										}) : null]
-									}, entry.entryId);
-								})
+												children: selected.broken
+											}) : null,
+											selectedRows.length > 0 ? (0, react_jsx_runtime.jsx)("ul", {
+												className: PluginInventorySettingsTab_module_css_default.cards,
+												children: selectedRows.map((row, index) => presetRowCard(selected, row, index))
+											}) : null,
+											otherMatchCount > 0 ? (0, react_jsx_runtime.jsxs)("p", {
+												className: PluginInventorySettingsTab_module_css_default.hint,
+												children: [t("matchesInOtherPresets", { count: String(otherMatchCount) }), otherPresetMatches.map((preset) => (0, react_jsx_runtime.jsx)("button", {
+													type: "button",
+													className: PluginInventorySettingsTab_module_css_default.jumpLink,
+													onClick: () => {
+														setChosenPreset(preset.id);
+													},
+													children: presetName(preset)
+												}, preset.id))]
+											}) : null
+										]
+									}) : null
+								]
+							}) : null,
+							entries.length > 0 ? (0, react_jsx_runtime.jsxs)("section", {
+								className: PluginInventorySettingsTab_module_css_default.group,
+								"data-plugin-scope": "global",
+								children: [
+									(0, react_jsx_runtime.jsx)("div", {
+										className: PluginInventorySettingsTab_module_css_default.groupTitleRow,
+										children: (0, react_jsx_runtime.jsxs)("button", {
+											type: "button",
+											className: PluginInventorySettingsTab_module_css_default.groupToggle,
+											"aria-expanded": globalEffectiveOpen,
+											"aria-controls": `${sectionId}-global`,
+											onClick: () => {
+												setGlobalOpen(!globalEffectiveOpen);
+											},
+											children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {
+												className: PluginInventorySettingsTab_module_css_default.chevron,
+												size: 12,
+												"aria-hidden": "true"
+											}), (0, react_jsx_runtime.jsx)("span", {
+												className: PluginInventorySettingsTab_module_css_default.groupTitle,
+												children: t("globalTitle")
+											})]
+										})
+									}),
+									(0, react_jsx_runtime.jsxs)("p", {
+										className: PluginInventorySettingsTab_module_css_default.groupSub,
+										children: [
+											t("globalSubtitle"),
+											(0, react_jsx_runtime.jsx)("span", {
+												"data-plugin-count": globalCount,
+												children: ` · ${String(globalCount)} ${t("countUnit")}`
+											}),
+											filteredFailed.length > 0 ? (0, react_jsx_runtime.jsxs)("span", {
+												className: PluginInventorySettingsTab_module_css_default.failedCount,
+												children: [
+													filteredFailed.length,
+													" ",
+													t("failedCountLabel")
+												]
+											}) : null
+										]
+									}),
+									globalEffectiveOpen && globalCount > 0 ? (0, react_jsx_runtime.jsxs)("ul", {
+										className: PluginInventorySettingsTab_module_css_default.cards,
+										id: `${sectionId}-global`,
+										children: [filteredFailed.map((entry) => globalRowCard(entry)), filteredRegular.map((entry) => globalRowCard(entry, entry.enabled ? void 0 : enabledIn.get(entry.moduleName)))]
+									}) : null
+								]
 							}) : null
 						]
 					}) : null
@@ -265,22 +537,36 @@ window.__ModuleLoader__.load({
 			error: "暂时无法读取插件。",
 			retry: "重试",
 			search: "搜索插件",
-			catalog: "插件列表",
 			empty: "暂无插件。",
 			emptySearch: "没有匹配的插件。",
+			presetTitle: "会话插件",
+			presetSubtitle: "由 Agent 预设按会话组成",
+			countUnit: "个",
+			switcherLabel: "选择要查看的 Agent 预设",
+			presetOptionDefault: "{name}（默认）",
+			presetOptionBroken: "{name}（加载失败）",
+			globalTitle: "全局插件",
+			globalSubtitle: "系统与所有会话共用",
+			presetProvidedDetail: "全局已停用，由 Agent 预设按会话提供",
+			enabledIn: "启用于",
+			viewInPreset: "去预设分组查看",
+			matchesInOtherPresets: "其他预设中还有 {count} 个匹配：",
+			failedCountLabel: "个失败",
 			enabledTag: "已启用",
 			disabledTag: "已停用",
-			enable: "启用",
-			disable: "停用",
-			saving: "正在保存…",
-			actionError: "插件状态保存失败。",
+			conditionalTag: "条件启用",
+			presetEnabledTag: "预设中启用",
+			failedTag: "启动失败",
+			moduleLabel: "完整名称",
+			fromPreset: "来自",
+			condition: "禁用条件",
 			configuration: "配置状态",
-			cordis: "Cordis 状态",
-			unobserved: "未挂载",
+			runtime: "运行状态",
+			unobserved: "未运行",
 			pending: "等待依赖",
 			loadingPhase: "加载中",
-			active: "已挂载",
-			failed: "挂载失败",
+			active: "运行中",
+			failed: "启动失败",
 			unloading: "卸载中"
 		};
 		/** English dictionary checked against the Chinese key set. */
@@ -290,22 +576,36 @@ window.__ModuleLoader__.load({
 			error: "Plugins are temporarily unavailable.",
 			retry: "Retry",
 			search: "Search plugins",
-			catalog: "Plugin list",
 			empty: "No plugins are available.",
 			emptySearch: "No matching plugins.",
+			presetTitle: "Session plugins",
+			presetSubtitle: "Composed per session by agent presets",
+			countUnit: "plugins",
+			switcherLabel: "Choose the agent preset to inspect",
+			presetOptionDefault: "{name} (default)",
+			presetOptionBroken: "{name} (failed to load)",
+			globalTitle: "Global plugins",
+			globalSubtitle: "Shared by the system and every session",
+			presetProvidedDetail: "Disabled globally; agent presets provide it per session",
+			enabledIn: "Enabled in",
+			viewInPreset: "View in the preset group",
+			matchesInOtherPresets: "{count} more matches in other presets: ",
+			failedCountLabel: "failed",
 			enabledTag: "Enabled",
 			disabledTag: "Disabled",
-			enable: "Enable",
-			disable: "Disable",
-			saving: "Saving…",
-			actionError: "Failed to save the plugin state.",
+			conditionalTag: "Conditional",
+			presetEnabledTag: "Enabled via presets",
+			failedTag: "Failed",
+			moduleLabel: "Module",
+			fromPreset: "From",
+			condition: "Disabled when",
 			configuration: "Configuration",
-			cordis: "Cordis status",
-			unobserved: "Not mounted",
+			runtime: "Status",
+			unobserved: "Not running",
 			pending: "Waiting for dependencies",
 			loadingPhase: "Loading",
-			active: "Mounted",
-			failed: "Mount failed",
+			active: "Running",
+			failed: "Failed to start",
 			unloading: "Unloading"
 		};
 		//#endregion
@@ -332,20 +632,12 @@ window.__ModuleLoader__.load({
 				if (!result.ok) throw new Error(`pluginInventory.list failed: ${result.error.code}: ${result.error.message}`);
 				return result.value;
 			};
-			const setEnabled = async (entryId, enabled) => {
-				const rpcId = typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-				const response = await fetch("/api/pluginInventory.setEnabled", {
-					method: "POST",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ type: "client-request", rpcId, method: "pluginInventory.setEnabled", payload: { entryId, enabled } })
-				});
-				if (!response.ok) throw new Error(`pluginInventory.setEnabled HTTP ${response.status}`);
-				const envelope = await response.json();
-				if (envelope.rpcId !== rpcId) throw new Error("pluginInventory.setEnabled response id mismatch");
-				if (!envelope.result?.ok) throw new Error(envelope.result?.error?.message ?? "pluginInventory.setEnabled failed");
-				return envelope.result.value;
-			};
-			const injected = () => ({ list, setEnabled });
+			const agentPresetCopy = ctx.locale.bind("settings.agentPreset");
+			const presetName = (preset) => presetDisplayText(preset, agentPresetCopy).name;
+			const injected = () => ({
+				list,
+				presetName
+			});
 			ctx.slots.inject("settings.plugins.tab", () => ctx.slots.register({
 				name: "settings.plugins.tab",
 				id: "all",

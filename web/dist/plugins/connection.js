@@ -9,8 +9,10 @@ window.__ModuleLoader__.load({
 			backoffBaseMs: 500,
 			backoffFactor: 2,
 			backoffMaxMs: 1e4,
-			streamOpenTimeoutMs: 3e3
+			generationReadyTimeoutMs: 3e3
 		};
+		const MANUAL_RECONNECT = /* @__PURE__ */ new Error("connection: manual reconnect requested");
+		const NETWORK_STATE_CHANGED = /* @__PURE__ */ new Error("connection: browser network state changed");
 		function sleep(ms, signal) {
 			return new Promise((resolve) => {
 				const t = setTimeout(done, ms);
@@ -22,24 +24,33 @@ window.__ModuleLoader__.load({
 				}
 			});
 		}
+		function waitForAbort(signal) {
+			if (signal.aborted) return Promise.resolve();
+			return new Promise((resolve) => {
+				signal.addEventListener("abort", () => {
+					resolve();
+				}, { once: true });
+			});
+		}
 		/**
-		* Opens both streams and keeps iterating (pull mode: nothing reads the socket and the tap
-		* never fires unless someone for-awaits), reconnecting with exponential backoff on loss.
+		* Opens the registered generation source, reconnecting with exponential backoff on loss.
 		* State (generation/attempt) is instance-private, never in the store.
-		* The pump body feeds each frame to a sink (sink exceptions must
-		* not kill the pump — a broken business layer must not drag down the connection layer).
+		* Sink exceptions do not kill the generation loop.
 		*/
 		var ConnectionController = class {
-			api;
+			source;
 			sinks;
 			generation = 0;
 			attempt = 0;
 			current = null;
+			retryDelay = null;
 			running = false;
-			lastState = null;
+			immediateRetry = false;
+			networkAvailable = true;
+			lastState;
 			config;
-			constructor(api, sinks = {}, config = {}) {
-				this.api = api;
+			constructor(source, sinks = {}, config = {}) {
+				this.source = source;
 				this.sinks = sinks;
 				this.config = {
 					...CONNECTION_DEFAULTS,
@@ -52,17 +63,51 @@ window.__ModuleLoader__.load({
 				this.running = true;
 				this.loop();
 			}
-			/** Stop the loop and abort the current generation's streams. */
+			/** Stop the loop and abort the current generation source. */
 			stop() {
 				this.running = false;
 				this.current?.abort();
 				this.current = null;
-				this.api.invalidateSettingsDescription?.();
+				this.retryDelay?.abort();
+				this.retryDelay = null;
+			}
+			/** Reset the retry sequence and replace the current generation or retry delay immediately. */
+			reconnect() {
+				if (!this.running) return;
+				this.attempt = 0;
+				this.immediateRetry = true;
+				this.emitState("connecting");
+				if (!this.isRunning()) return;
+				this.current?.abort(MANUAL_RECONNECT);
+				this.retryDelay?.abort(MANUAL_RECONNECT);
+			}
+			/**
+			* Suspend automatic retries while offline and restart backoff when the network returns.
+			* @param available - whether the browser reports network access.
+			*/
+			setNetworkAvailable(available) {
+				if (this.networkAvailable === available) return;
+				this.networkAvailable = available;
+				this.attempt = 0;
+				this.immediateRetry = false;
+				if (!this.running) return;
+				this.emitState(available ? "connecting" : "disconnected");
+				if (!this.isRunning()) return;
+				this.current?.abort(NETWORK_STATE_CHANGED);
+				this.retryDelay?.abort(NETWORK_STATE_CHANGED);
+			}
+			backoffCap(attempt) {
+				const { backoffBaseMs, backoffFactor, backoffMaxMs } = this.config;
+				return Math.min(backoffMaxMs, backoffBaseMs * backoffFactor ** Math.max(0, attempt - 1));
 			}
 			backoffDelay(attempt) {
-				const { backoffBaseMs, backoffFactor, backoffMaxMs } = this.config;
-				const cap = Math.min(backoffMaxMs, backoffBaseMs * backoffFactor ** Math.max(0, attempt - 1));
+				const cap = this.backoffCap(attempt);
 				return cap / 2 + Math.random() * (cap / 2);
+			}
+			isFinalBackoffTier(attempt) {
+				const cap = this.backoffCap(attempt);
+				const nextCap = this.backoffCap(attempt + 1);
+				return cap >= this.config.backoffMaxMs || !Number.isFinite(nextCap) || nextCap <= cap;
 			}
 			/** Read through a method: stop() flips the flag across awaits, so narrowing from the loop condition must not stick. */
 			isRunning() {
@@ -73,51 +118,100 @@ window.__ModuleLoader__.load({
 				return this.isRunning() && !controller.signal.aborted;
 			}
 			async loop() {
+				let retry = false;
 				while (this.running) {
+					if (!this.networkAvailable && !this.immediateRetry) {
+						const retryDelay = new AbortController();
+						this.retryDelay = retryDelay;
+						this.emitState("disconnected");
+						await waitForAbort(retryDelay.signal);
+						if (this.retryDelay === retryDelay) this.retryDelay = null;
+						if (!this.isRunning()) return;
+						retry = true;
+						continue;
+					}
+					let manualAttempt = false;
+					if (retry) {
+						const immediate = this.immediateRetry;
+						this.immediateRetry = false;
+						if (immediate) this.attempt = 0;
+						manualAttempt = immediate;
+						if (!immediate && this.attempt > 0 && this.isFinalBackoffTier(this.attempt)) {
+							const retryDelay = new AbortController();
+							this.retryDelay = retryDelay;
+							this.emitState("disconnected");
+							await waitForAbort(retryDelay.signal);
+							if (this.retryDelay === retryDelay) this.retryDelay = null;
+							continue;
+						}
+						const attempt = ++this.attempt;
+						this.emitState("connecting");
+						if (!this.isRunning()) return;
+						if (!immediate) {
+							const retryDelay = new AbortController();
+							this.retryDelay = retryDelay;
+							await sleep(this.backoffDelay(attempt), retryDelay.signal);
+							if (this.retryDelay === retryDelay) this.retryDelay = null;
+							if (!this.isRunning()) return;
+							if (retryDelay.signal.aborted) continue;
+						}
+						console.warn(`[connection] connection lost, retry #${String(attempt)}`);
+						this.callSink(() => {
+							this.sinks.onReconnectRequested?.();
+						});
+						if (!this.isRunning()) return;
+					}
 					const gen = ++this.generation;
-					this.api.invalidateSettingsDescription?.();
 					const ac = new AbortController();
 					this.current = ac;
-					/* v8 ignore next -- initializer placeholder: the Promise executor
-					* below runs synchronously and replaces it before anyone can call it. */
-					let muxOpened = () => {};
-					/* v8 ignore next -- same placeholder pattern as muxOpened. */
-					let hostOpened = () => {};
-					const streamsOpen = Promise.all([new Promise((resolve) => {
-						muxOpened = resolve;
-					}), new Promise((resolve) => {
-						hostOpened = resolve;
-					})]);
+					let sourceReady = false;
+					let resolveReady;
+					let rejectReady;
+					let rejectSourceLost;
+					const ready = new Promise((resolve, reject) => {
+						resolveReady = resolve;
+						rejectReady = reject;
+					});
+					const sourceLost = new Promise((_resolve, reject) => {
+						rejectSourceLost = reject;
+					});
+					const reportReady = (host) => {
+						if (sourceReady) return;
+						sourceReady = true;
+						resolveReady(host);
+					};
 					const failed = new Promise((resolve) => {
 						const settle = () => {
 							if (gen === this.generation && !ac.signal.aborted) ac.abort();
 							resolve();
 						};
-						this.pumpStream(this.api.events.mux({}, ac.signal, muxOpened), this.sinks.onMuxEnvelope, settle);
-						this.pumpStream(this.api.events.host({}, ac.signal, hostOpened), this.sinks.onHostEnvelope, settle);
+						Promise.resolve().then(() => this.source(ac.signal, reportReady)).then(() => {
+							const error = /* @__PURE__ */ new Error("connection generation ended");
+							if (!sourceReady) rejectReady(error);
+							rejectSourceLost(error);
+							settle();
+						}, (error) => {
+							const failure = error instanceof Error ? error : new Error("connection generation failed", { cause: error });
+							if (!sourceReady) rejectReady(failure);
+							rejectSourceLost(failure);
+							settle();
+						});
 					});
 					try {
-						const timeout = new AbortController();
-						const [description] = await Promise.all([this.api.host.describe({}), Promise.race([streamsOpen, sleep(this.config.streamOpenTimeoutMs, timeout.signal)])]);
-						timeout.abort();
-						const descriptionResult = description.result;
-						if (!descriptionResult.ok) throw new Error(`host.describe failed: ${descriptionResult.error.code}: ${descriptionResult.error.message}`);
+						const host = await Promise.race([waitForReady(ready, this.config.generationReadyTimeoutMs, ac.signal), sourceLost]);
 						if (ac.signal.aborted) throw new Error("generation aborted during readiness handshake");
 						this.attempt = 0;
 						this.emitState("connected");
 						if (this.isGenerationActive(ac)) this.callSink(() => {
-							this.sinks.onConnected?.(descriptionResult.value);
+							this.sinks.onConnected?.(host);
 						});
 					} catch {
 						if (!ac.signal.aborted) ac.abort();
 					}
 					await failed;
 					if (!this.isRunning()) return;
-					this.emitState("reconnecting");
-					this.attempt += 1;
-					console.warn(`[web-runtime] connection lost, retry #${this.attempt}`);
-					const idle = new AbortController();
-					await sleep(this.backoffDelay(this.attempt), idle.signal);
+					if (manualAttempt) this.attempt = 0;
+					retry = true;
 				}
 			}
 			/** Deduplicated state emission (sink isolation applies). */
@@ -126,26 +220,41 @@ window.__ModuleLoader__.load({
 				this.lastState = state;
 				this.callSink(() => this.sinks.onStateChange?.(state));
 			}
-			async pumpStream(stream, sink, onEnd) {
-				try {
-					for await (const envelope of stream) {
-						if (envelope.payload.type === "stream/error") break;
-						if (sink !== void 0) this.callSink(() => {
-							sink(envelope);
-						});
-					}
-				} catch {}
-				onEnd();
-			}
 			/** Sink exception isolation: a business-layer throw is logged only, never affecting pump or reconnect semantics. */
 			callSink(fn) {
 				try {
 					fn();
 				} catch (error) {
-					console.error("[web-runtime] connection sink threw:", error);
+					console.error("[connection] connection sink threw:", error);
 				}
 			}
 		};
+		/** Await source readiness without letting a stalled carrier wedge startup forever. */
+		function waitForReady(ready, timeoutMs, signal) {
+			return new Promise((resolve, reject) => {
+				let settled = false;
+				const timeout = setTimeout(() => {
+					finish({ error: /* @__PURE__ */ new Error(`connection generation was not ready within ${String(timeoutMs)}ms`) });
+				}, timeoutMs);
+				const aborted = () => {
+					finish({ error: new Error("connection generation aborted", { cause: signal.reason }) });
+				};
+				const finish = (outcome) => {
+					if (settled) return;
+					settled = true;
+					clearTimeout(timeout);
+					signal.removeEventListener("abort", aborted);
+					if ("error" in outcome) reject(outcome.error);
+					else resolve(outcome.value);
+				};
+				signal.addEventListener("abort", aborted, { once: true });
+				ready.then((value) => {
+					finish({ value });
+				}, (error) => {
+					finish({ error });
+				});
+			});
+		}
 		//#endregion
 		//#region ../../llm/llm/lib/types/brand.js
 		/**
@@ -4896,256 +5005,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		*/
 		const rpcIdSchema = string();
 		/** Error body: discriminated by code, per-branch details aligned to RpcErrorDetailsMap; details is required. */
-		const rpcErrorSchema = discriminatedUnion("code", [
-			object({
-				code: literal("bad-request"),
-				message: string(),
-				details: object({ issues: array(custom()) })
-			}),
-			object({
-				code: literal("cancelled"),
-				message: string(),
-				details: object({})
-			}),
-			object({
-				code: literal("session-not-found"),
-				message: string(),
-				details: object({ sessionId: string() })
-			}),
-			object({
-				code: literal("model-unavailable"),
-				message: string(),
-				details: object({
-					provider: string(),
-					model: string()
-				})
-			}),
-			object({
-				code: literal("session-conflict"),
-				message: string(),
-				details: object({
-					sessionId: string(),
-					requestedCwd: string(),
-					existingCwd: string().optional()
-				})
-			}),
-			object({
-				code: literal("invalid-time-zone"),
-				message: string(),
-				details: object({ value: string() })
-			}),
-			object({
-				code: literal("workspace-attach-failed"),
-				message: string(),
-				details: object({
-					sessionId: string(),
-					workspaceId: string()
-				})
-			}),
-			object({
-				code: literal("workspace-not-found"),
-				message: string(),
-				details: object({ workspaceId: string() })
-			}),
-			object({
-				code: literal("workspace-invalid-path"),
-				message: string(),
-				details: object({ path: string() })
-			}),
-			object({
-				code: literal("workspace-name-conflict"),
-				message: string(),
-				details: object({ name: string() })
-			}),
-			object({
-				code: literal("workspace-move-invalid"),
-				message: string(),
-				details: object({
-					workspaceId: string(),
-					sessionId: string(),
-					beforeSessionId: string().optional()
-				})
-			}),
-			object({
-				code: literal("directory-unreadable"),
-				message: string(),
-				details: object({ path: string() })
-			}),
-			object({
-				code: literal("directory-exists"),
-				message: string(),
-				details: object({ path: string() })
-			}),
-			object({
-				code: literal("directory-create-failed"),
-				message: string(),
-				details: object({ path: string() })
-			}),
-			object({
-				code: literal("directory-picker-unavailable"),
-				message: string(),
-				details: object({ capability: string() })
-			}),
-			object({
-				code: literal("agent-preset-read-only"),
-				message: string(),
-				details: object({
-					agentPreset: string(),
-					reason: string()
-				})
-			}),
-			object({
-				code: literal("agent-preset-locked"),
-				message: string(),
-				details: object({
-					sessionId: string(),
-					agentPreset: string()
-				})
-			}),
-			object({
-				code: literal("agent-preset-conflict"),
-				message: string(),
-				details: object({
-					sessionId: string(),
-					requestedPreset: string(),
-					existingPreset: string().optional()
-				})
-			}),
-			object({
-				code: literal("agent-preset-not-found"),
-				message: string(),
-				details: object({
-					agentPreset: string(),
-					available: array(string())
-				})
-			}),
-			object({
-				code: literal("agent-preset-invalid"),
-				message: string(),
-				details: object({
-					agentPreset: string(),
-					reason: string()
-				})
-			}),
-			object({
-				code: literal("agent-busy"),
-				message: string(),
-				details: object({ reason: string() })
-			}),
-			object({
-				code: literal("attachment-error"),
-				message: string(),
-				details: object({ reason: string() })
-			}),
-			object({
-				code: literal("queue-item-not-found"),
-				message: string(),
-				details: object({ itemId: string() })
-			}),
-			object({
-				code: literal("steer-unavailable"),
-				message: string(),
-				details: object({ itemId: string() })
-			}),
-			object({
-				code: literal("command-error"),
-				message: string(),
-				details: object({})
-			}),
-			object({
-				code: literal("unknown-command"),
-				message: string(),
-				details: object({})
-			}),
-			object({
-				code: literal("settings-rejected"),
-				message: string(),
-				details: object({ ns: string() })
-			}),
-			object({
-				code: literal("settings-not-exposed"),
-				message: string(),
-				details: object({ ns: string() })
-			}),
-			object({
-				code: literal("settings-conflict"),
-				message: string(),
-				details: object({
-					ns: string(),
-					expected: number(),
-					actual: number()
-				})
-			}),
-			object({
-				code: literal("credential-rejected"),
-				message: string(),
-				details: object({ ref: string() })
-			}),
-			object({
-				code: literal("model-discovery-failed"),
-				message: string(),
-				details: object({
-					settingsNs: string(),
-					baseURL: string().optional()
-				})
-			}),
-			object({
-				code: literal("title-invalid"),
-				message: string(),
-				details: object({ sessionId: string() })
-			}),
-			object({
-				code: literal("fork-unavailable"),
-				message: string(),
-				details: object({ sessionId: string() })
-			}),
-			object({
-				code: literal("subagent-parent-unavailable"),
-				message: string(),
-				details: object({ parentSessionId: string() })
-			}),
-			object({
-				code: literal("subagent-not-found"),
-				message: string(),
-				details: object({
-					parentSessionId: string(),
-					childSessionId: string()
-				})
-			}),
-			object({
-				code: literal("subagent-catalog-diagnostic"),
-				message: string(),
-				details: object({
-					parentSessionId: string(),
-					childSessionId: string(),
-					reason: union([
-						literal("corrupt"),
-						literal("unsupported"),
-						literal("unavailable")
-					])
-				})
-			}),
-			object({
-				code: literal("subagent-not-resumable"),
-				message: string(),
-				details: object({ childSessionId: string() })
-			}),
-			object({
-				code: literal("subagent-unauthorized"),
-				message: string(),
-				details: object({ childSessionId: string() })
-			}),
-			object({
-				code: literal("subagent-delivery-unavailable"),
-				message: string(),
-				details: object({ childSessionId: string() })
-			}),
-			object({
-				code: literal("internal"),
-				message: string(),
-				details: object({})
-			})
-		]);
+		const rpcErrorSchema = object({
+			code: string(),
+			message: string(),
+			details: record(string(), unknown())
+		});
 		/**
 		* Business success/failure result schema (generic, reusable).
 		* @param value - Schema for the business value.
@@ -5726,6 +5590,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		object({});
 		/** host.describe response value. */
 		const hostDescribeValueSchema = object({
+			home: string(),
 			version: string(),
 			cwd: string(),
 			provider: string().optional(),
@@ -9421,6 +9286,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					},
 					host: {
 						describe: (request) => ok(request, {
+							home: FIXTURE_HOME,
 							version: "0.0.0-fixture",
 							cwd: "/tmp/fixture",
 							attachedSessions,
@@ -10233,29 +10099,68 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		const ENDPOINT_SEGMENT_PATTERN = /^[A-Za-z0-9_$.-]+$/;
 		/**
 		* Create the browser-backed generic RPC caller.
+		* @param doFetch - transport override; defaults to the page's global fetch.
+		* @param openStream - optional worker-local Gateway stream carrier.
 		* @returns caller that owns request correlation and response-envelope validation.
 		*/
-		function createWebConnectionRpc() {
-			return { async call(channel, endpoint, payload, signal) {
-				assertTarget(channel, endpoint);
-				const rpcId = RpcId(randomUuid());
-				const message = {
-					type: "client-request",
-					rpcId,
-					method: endpoint,
-					payload
-				};
-				const response = await globalThis.fetch(new URL(`${channel}/${endpoint}`, resolveBase()), {
-					method: "POST",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify(message),
-					...signal === void 0 ? {} : { signal }
-				});
-				if (!response.ok) throw new Error(`transport failure for ${channel}/${endpoint}: HTTP ${response.status}`);
-				const full = serverResponseSchema.parse(await response.json());
-				if (full.rpcId !== rpcId) throw new Error(`rpcId mismatch for ${endpoint}: sent ${rpcId}, got ${full.rpcId}`);
-				return full.result;
-			} };
+		function createWebConnectionRpc(doFetch, openStream) {
+			const send = doFetch ?? ((input, init) => globalThis.fetch(input, init));
+			return {
+				async call(channel, endpoint, payload, signal) {
+					assertTarget(channel, endpoint);
+					const rpcId = RpcId(randomUuid());
+					const message = {
+						type: "client-request",
+						rpcId,
+						method: endpoint,
+						payload
+					};
+					const response = await send(new URL(`${channel}/${endpoint}`, resolveBase()), {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify(message),
+						...signal === void 0 ? {} : { signal }
+					});
+					if (!response.ok) throw new Error(`transport failure for ${channel}/${endpoint}: HTTP ${response.status}`);
+					const full = parseConnectionResponse(await response.json());
+					if (full.rpcId !== rpcId) throw new Error(`rpcId mismatch for ${endpoint}: sent ${rpcId}, got ${full.rpcId}`);
+					return full.result;
+				},
+				...openStream === void 0 ? {} : { open(channel, endpoint, payload, signal) {
+					assertTarget(channel, endpoint);
+					if (channel !== "/api") throw new Error(`connection: worker-local streams require the /api channel, got ${JSON.stringify(channel)}`);
+					return openStream(endpoint, payload, signal);
+				} }
+			};
+		}
+		function parseConnectionResponse(value) {
+			if (!isRecord(value) || value.type !== "server-response" || typeof value.rpcId !== "string") throw new TypeError("connection: invalid server-response envelope");
+			const result = value.result;
+			if (!isRecord(result)) throw new TypeError("connection: invalid server-response result");
+			if (result.ok === true) return {
+				rpcId: RpcId(value.rpcId),
+				result: {
+					ok: true,
+					value: result.value
+				}
+			};
+			if (result.ok !== false || !isRecord(result.error)) throw new TypeError("connection: invalid server-response result");
+			const error = result.error;
+			if (typeof error.code !== "string" || typeof error.message !== "string" || !isRecord(error.details)) throw new TypeError("connection: invalid server-response failure");
+			return {
+				rpcId: RpcId(value.rpcId),
+				result: {
+					ok: false,
+					error: {
+						code: error.code,
+						message: error.message,
+						details: error.details
+					}
+				}
+			};
+		}
+		function isRecord(value) {
+			return typeof value === "object" && value !== null && !Array.isArray(value);
 		}
 		function resolveBase() {
 			const location = globalThis.location;
@@ -10286,6 +10191,24 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		//#region lib/types/client/index.js
 		/** Required services (none — this is the wire root). */
 		const inject = [];
+		function watchBrowserNetwork(controller) {
+			const browser = globalThis.window;
+			const initiallyAvailable = browser?.navigator?.onLine;
+			if (browser === void 0 || initiallyAvailable === void 0) return () => {};
+			const online = () => {
+				controller.setNetworkAvailable(true);
+			};
+			const offline = () => {
+				controller.setNetworkAvailable(false);
+			};
+			controller.setNetworkAvailable(initiallyAvailable);
+			browser.addEventListener("online", online);
+			browser.addEventListener("offline", offline);
+			return () => {
+				browser.removeEventListener("online", online);
+				browser.removeEventListener("offline", offline);
+			};
+		}
 		/**
 		* Client plugin body: pick the api by page mode and provide ctx.connection.
 		* @param ctx - client cordis context.
@@ -10294,51 +10217,110 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			const pageLocation = typeof location === "undefined" ? void 0 : location;
 			const fixtureClient = pageLocation !== void 0 && new URLSearchParams(pageLocation.search).has("fixture") ? new FixtureApiClient() : void 0;
 			const api = fixtureClient ?? new WebApiClient();
-			const rpc = fixtureClient?.rpc ?? createWebConnectionRpc();
-			let started = false;
-			let description;
-			const descriptionListeners = /* @__PURE__ */ new Set();
-			const publishDescription = (next) => {
-				if (Object.is(description, next)) return;
-				description = next;
-				for (const listener of [...descriptionListeners]) try {
+			const transport = globalThis.__DSH_TRANSPORT__;
+			const rpc = fixtureClient?.rpc ?? createWebConnectionRpc(transport?.fetch, transport?.openStream);
+			let generationSource;
+			let owner;
+			let generationId = 0;
+			let generation;
+			let state;
+			const generationListeners = /* @__PURE__ */ new Set();
+			const stateListeners = /* @__PURE__ */ new Set();
+			const publishGeneration = (next) => {
+				if (Object.is(generation, next)) return;
+				generation = next;
+				for (const listener of [...generationListeners]) try {
 					listener();
 				} catch (error) {
-					console.error("[web-runtime] host-description listener threw:", error);
+					console.error("[connection] generation listener threw:", error);
 				}
+			};
+			const publishState = (next) => {
+				if (state === next) return;
+				state = next;
+				for (const listener of [...stateListeners]) try {
+					listener();
+				} catch (error) {
+					console.error("[connection] state listener threw:", error);
+				}
+			};
+			const releaseOwner = (current) => {
+				if (owner !== current) return;
+				owner = void 0;
+				current.stopNetworkWatch();
+				current.controller.stop();
+				publishGeneration(void 0);
+				publishState(void 0);
 			};
 			const handle = {
 				api,
-				isLoopback: pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),
-				hostDescription: {
-					getSnapshot: () => description,
+				isLoopback: transport?.ownsHost === true || pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),
+				generation: {
+					getSnapshot: () => generation,
 					subscribe: (listener) => {
-						descriptionListeners.add(listener);
+						generationListeners.add(listener);
 						return () => {
-							descriptionListeners.delete(listener);
+							generationListeners.delete(listener);
+						};
+					}
+				},
+				state: {
+					getSnapshot: () => state,
+					subscribe: (listener) => {
+						stateListeners.add(listener);
+						return () => {
+							stateListeners.delete(listener);
 						};
 					}
 				},
 				rpc,
+				reconnect() {
+					owner?.controller.reconnect();
+				},
+				registerGenerationSource(source) {
+					if (generationSource !== void 0) throw new Error("connection: a generation source is already registered");
+					generationSource = source;
+					return () => {
+						if (generationSource !== source) return;
+						generationSource = void 0;
+						const current = owner;
+						if (current?.source === source) releaseOwner(current);
+					};
+				},
 				start(sinks, config) {
-					if (started) throw new Error("connection: the stream loop is already owned by another consumer");
-					started = true;
-					const controller = new ConnectionController(api, {
+					if (owner !== void 0) throw new Error("connection: the stream loop is already owned by another consumer");
+					const source = generationSource;
+					if (source === void 0) throw new Error("connection: no generation source is registered");
+					const token = {};
+					const ownsGeneration = () => owner?.token === token;
+					const controller = new ConnectionController(source, {
 						...sinks,
-						onConnected: (next) => {
-							publishDescription(next);
-							if (!Object.is(description, next)) return;
-							sinks.onConnected?.(next);
+						onConnected: (host) => {
+							const nextGeneration = {
+								id: ++generationId,
+								host
+							};
+							publishGeneration(nextGeneration);
+							if (!ownsGeneration() || !Object.is(generation, nextGeneration)) return;
+							sinks.onConnected?.(host);
 						},
 						onStateChange: (state) => {
-							if (state === "reconnecting") publishDescription(void 0);
+							if (state !== "connected") publishGeneration(void 0);
+							if (!ownsGeneration()) return;
+							publishState(state);
 							sinks.onStateChange?.(state);
 						}
 					}, config ?? {});
+					const current = {
+						token,
+						source,
+						controller,
+						stopNetworkWatch: watchBrowserNetwork(controller)
+					};
+					owner = current;
 					controller.start();
 					return { stop: () => {
-						controller.stop();
-						publishDescription(void 0);
+						releaseOwner(current);
 					} };
 				}
 			};

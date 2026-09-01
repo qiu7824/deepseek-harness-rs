@@ -284,33 +284,8 @@ window.__ModuleLoader__.load({
 				return diffs === null ? null : { card: { diffs } };
 			}
 			const result = block.resultView?.card === "diff" ? block.resultView : null;
-			const fallback = !block.isError && result === null && block.callView?.card === "diff" ? block.callView : null;
-			const view = result ?? fallback;
-			const diffs = view === null ? null : narrowDiffs(view.diffs);
+			const diffs = result === null ? null : narrowDiffs(result.diffs);
 			return diffs === null ? null : { card: { diffs } };
-		}
-		function diffLineStats(diffs) {
-			let additions = 0;
-			let deletions = 0;
-			for (const diff of diffs) {
-				const before = diff.oldText === null || diff.oldText === "" ? [] : diff.oldText.split("\n");
-				const after = diff.newText === "" ? [] : diff.newText.split("\n");
-				if (before.length * after.length > 2e5) return null;
-				let common = 0;
-				const row = new Uint32Array(after.length + 1);
-				for (const oldLine of before) {
-					let diagonal = 0;
-					for (let j = 1; j <= after.length; j += 1) {
-						const prior = row[j];
-						row[j] = oldLine === after[j - 1] ? diagonal + 1 : Math.max(row[j], row[j - 1]);
-						diagonal = prior;
-					}
-				}
-				common = row[after.length];
-				additions += after.length - common;
-				deletions += before.length - common;
-			}
-			return { additions, deletions };
 		}
 		//#endregion
 		//#region lib/types/client/tool/models/search-card-model.js
@@ -620,7 +595,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-tool\src\client\tool\components\ToolRow.module.css.mjs
-		const css$3 = ".CYEYBq_root{flex-direction:column;display:flex}.CYEYBq_row{position:relative;overflow:hidden}.CYEYBq_root[data-state=running] .CYEYBq_row:after{content:\"\";background:linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent) 55%, transparent 100%);pointer-events:none;width:300px;animation:2.6s ease-out infinite CYEYBq_dsh-tool-row-sweep;position:absolute;top:0;bottom:0;left:0}@keyframes CYEYBq_dsh-tool-row-sweep{0%{left:-300px}90%,to{left:100%}}.CYEYBq_leading{flex-shrink:0}.CYEYBq_root[data-tool^=cordis_] .CYEYBq_leading,.CYEYBq_root[data-tool^=cordis_] .CYEYBq_title{color:var(--dsw-alias-state-business-primary)}.CYEYBq_root[data-tool^=cordis_] .CYEYBq_title{font-weight:500}.CYEYBq_root[data-tool^=cordis_] .CYEYBq_sep{background:var(--dsw-alias-state-business-primary)}.CYEYBq_chevron{color:var(--dsw-alias-label-secondary)}.CYEYBq_title{font-weight:400}.CYEYBq_sep{background:var(--dsw-alias-label-caption);border-radius:1px;flex:none;width:2px;height:2px;margin:0 8px}.CYEYBq_summary{text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--dsw-alias-label-tertiary);flex:auto;font-size:14px;line-height:24px;overflow:hidden}.CYEYBq_summarySuffix{white-space:nowrap;color:var(--dsw-alias-label-tertiary);flex:none;margin-left:4px;font-size:14px;line-height:24px}.CYEYBq_fileLink{text-overflow:ellipsis;white-space:nowrap;min-width:0;font:inherit;text-align:left;color:var(--dsw-alias-label-secondary);text-decoration:underline;text-decoration-color:var(--dsw-alias-label-quaternary);text-underline-offset:3px;cursor:pointer;background:0 0;border:none;flex:auto;margin:0;padding:0;font-size:14px;line-height:24px;overflow:hidden}.CYEYBq_fileLink:hover{color:var(--dsw-alias-label-primary);text-decoration-color:currentColor}.CYEYBq_errorSummary{color:var(--dsw-alias-state-error-primary)}.CYEYBq_bodyWrap{flex-direction:column;display:flex}.CYEYBq_inspectButton{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);cursor:pointer;opacity:0;border-radius:999px;align-self:flex-start;align-items:center;gap:4px;margin:4px 0 2px 4px;padding:2px 8px;font-size:11px;line-height:16px;transition:opacity .1s;display:inline-flex}.CYEYBq_root:hover .CYEYBq_inspectButton,.CYEYBq_inspectButton:focus-visible{opacity:1}.CYEYBq_inspectButton:hover{background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}.CYEYBq_bodyScroll{max-height:260px;overflow-y:auto}.CYEYBq_ioCard{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-markdown-code-block);font:var(--dsw-font-markdown-code-block-small);border-radius:12px;flex-direction:column;margin:4px 0 4px 4px;display:flex}.CYEYBq_ioSection{grid-template-columns:max-content 1fr;align-items:baseline;column-gap:14px;max-height:150px;padding:12px 16px;display:grid;overflow-y:auto}.CYEYBq_ioSection::-webkit-scrollbar-thumb{background-clip:padding-box;border:2px solid #0000;border-radius:6px}.CYEYBq_ioSection::-webkit-scrollbar-track{margin:6px 0}.CYEYBq_ioLabel{color:var(--dsw-alias-label-caption);align-self:start;position:sticky;top:0}.CYEYBq_ioDivider{background:var(--dsw-alias-border-l2);flex:none;height:1px}.CYEYBq_ioText{white-space:pre-wrap;word-break:break-word;min-width:0;color:var(--dsw-alias-label-secondary)}.CYEYBq_ioText[data-error]{color:var(--dsw-alias-state-error-primary)}.CYEYBq_codeBody,.CYEYBq_terminalBody,.CYEYBq_diffBody,.CYEYBq_readBody,.CYEYBq_searchBody,.CYEYBq_webBody{margin:4px 0 4px 4px}.CYEYBq_searchRecovery{white-space:pre-wrap;overflow-wrap:anywhere;font:var(--dsw-font-xs-13);color:var(--dsw-alias-label-tertiary);margin:4px 0 4px 4px}.CYEYBq_codeBody{--dsl-code-block-content-font:var(--dsw-font-markdown-code-block-small)}.CYEYBq_terminalBody{--dsl-terminal-font:var(--dsw-font-markdown-code-block-small);--dsl-terminal-line-height:18px;--dsl-terminal-output-max-height:224px;border:1px solid var(--dsw-alias-border-l1)}.CYEYBq_visuallyHidden{clip:rect(0 0 0 0);white-space:nowrap;width:1px;height:1px;position:absolute;overflow:hidden}";
+		const css$3 = ".CYEYBq_root{flex-direction:column;display:flex}.CYEYBq_row{position:relative;overflow:hidden}.CYEYBq_root[data-state=running] .CYEYBq_row:after{content:\"\";background:linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent) 55%, transparent 100%);pointer-events:none;width:300px;animation:2.6s ease-out infinite CYEYBq_dsh-tool-row-sweep;position:absolute;top:0;bottom:0;left:0}@keyframes CYEYBq_dsh-tool-row-sweep{0%{left:-300px}90%,to{left:100%}}.CYEYBq_leading{flex-shrink:0}.CYEYBq_root[data-tool^=cordis_] .CYEYBq_leading,.CYEYBq_root[data-tool^=cordis_] .CYEYBq_title{color:var(--dsw-alias-state-business-primary)}.CYEYBq_root[data-tool^=cordis_] .CYEYBq_title{font-weight:500}.CYEYBq_root[data-tool^=cordis_] .CYEYBq_sep{background:var(--dsw-alias-state-business-primary)}.CYEYBq_chevron{color:var(--dsw-alias-label-secondary)}.CYEYBq_title{font-weight:400}.CYEYBq_sep{background:var(--dsw-alias-label-caption);border-radius:1px;flex:none;width:2px;height:2px;margin:0 8px}.CYEYBq_summary{text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--dsw-alias-label-tertiary);flex:auto;font-size:14px;line-height:24px;overflow:hidden}.CYEYBq_summarySuffix{white-space:nowrap;color:var(--dsw-alias-label-tertiary);flex:none;margin-left:4px;font-size:14px;line-height:24px}.CYEYBq_fileLink{text-overflow:ellipsis;white-space:nowrap;min-width:0;font:inherit;text-align:left;color:var(--dsw-alias-label-secondary);text-decoration:underline dotted;text-decoration-color:var(--dsw-alias-label-tertiary);text-underline-offset:3px;text-decoration-thickness:1px;cursor:pointer;background:0 0;border:none;flex:auto;margin:0;padding:0;font-size:14px;line-height:24px;overflow:hidden}.CYEYBq_fileLink:hover{color:var(--dsw-alias-label-primary);text-decoration-color:currentColor}.CYEYBq_errorSummary{color:var(--dsw-alias-state-error-primary)}.CYEYBq_bodyWrap{flex-direction:column;display:flex}.CYEYBq_inspectButton{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);cursor:pointer;opacity:0;border-radius:999px;align-self:flex-start;align-items:center;gap:4px;margin:4px 0 2px 4px;padding:2px 8px;font-size:11px;line-height:16px;transition:opacity .1s;display:inline-flex}.CYEYBq_root:hover .CYEYBq_inspectButton,.CYEYBq_inspectButton:focus-visible{opacity:1}.CYEYBq_inspectButton:hover{background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}.CYEYBq_bodyScroll{max-height:260px;overflow-y:auto}.CYEYBq_ioCard{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-markdown-code-block);font:var(--dsw-font-markdown-code-block-small);border-radius:12px;flex-direction:column;margin:4px 0 4px 4px;display:flex}.CYEYBq_ioSection{grid-template-columns:max-content 1fr;align-items:baseline;column-gap:14px;max-height:150px;padding:12px 16px;display:grid;overflow-y:auto}.CYEYBq_ioSection::-webkit-scrollbar-thumb{background-clip:padding-box;border:2px solid #0000;border-radius:6px}.CYEYBq_ioSection::-webkit-scrollbar-track{margin:6px 0}.CYEYBq_ioLabel{color:var(--dsw-alias-label-caption);align-self:start;position:sticky;top:0}.CYEYBq_ioDivider{background:var(--dsw-alias-border-l2);flex:none;height:1px}.CYEYBq_ioText{white-space:pre-wrap;word-break:break-word;min-width:0;color:var(--dsw-alias-label-secondary)}.CYEYBq_ioText[data-error]{color:var(--dsw-alias-state-error-primary)}.CYEYBq_codeBody,.CYEYBq_terminalBody,.CYEYBq_diffBody,.CYEYBq_readBody,.CYEYBq_searchBody,.CYEYBq_webBody{margin:4px 0 4px 4px}.CYEYBq_searchRecovery{white-space:pre-wrap;overflow-wrap:anywhere;font:var(--dsw-font-xs-13);color:var(--dsw-alias-label-tertiary);margin:4px 0 4px 4px}.CYEYBq_codeBody{--dsl-code-block-content-font:var(--dsw-font-markdown-code-block-small)}.CYEYBq_terminalBody{--dsl-terminal-font:var(--dsw-font-markdown-code-block-small);--dsl-terminal-line-height:18px;--dsl-terminal-output-max-height:224px;border:1px solid var(--dsw-alias-border-l1)}.CYEYBq_visuallyHidden{clip:rect(0 0 0 0);white-space:nowrap;width:1px;height:1px;position:absolute;overflow:hidden}";
 		const tagId$3 = "@deepseek-ai/dsh-client-ui-tool/ToolRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$3) + "]") === null) {
 			const tag = document.createElement("style");
@@ -682,6 +657,17 @@ window.__ModuleLoader__.load({
 				default: return null;
 			}
 		}
+		function diffTotals(diffs) {
+			let added = 0;
+			let removed = 0;
+			for (const diff of diffs) {
+				const oldLines = typeof diff.oldText === "string" ? diff.oldText.split("\n").length : 0;
+				const newLines = typeof diff.newText === "string" ? diff.newText.split("\n").length : 0;
+				added += Math.max(0, newLines - oldLines);
+				removed += Math.max(0, oldLines - newLines);
+			}
+			return { added, removed };
+		}
 		function ToolRow({ t, variant, toolName, icon, title, summary, summarySuffix, body, output, errorSummary, terminal, diff, read, search, web, state, filePath, onOpenFile, inspect }) {
 			const [expanded, setExpanded] = (0, react.useState)(false);
 			const terminalBody = terminal ?? null;
@@ -695,8 +681,12 @@ window.__ModuleLoader__.load({
 			const status = stateStatus$1(state, t);
 			const failureLine = state === "error" ? errorSummary ?? null : null;
 			const summaryText = failureLine ?? summary;
-			const suffix = failureLine === null ? summarySuffix ?? null : null;
-			const diffStats = diffBody === null ? null : diffLineStats(diffBody.card.diffs);
+			const diffStat = (0, react.useMemo)(() => {
+				if (diffBody === null) return null;
+				const { added, removed } = diffTotals(diffBody.card.diffs);
+				return `+${added} -${removed}`;
+			}, [diffBody]);
+			const suffix = failureLine === null ? summarySuffix ?? diffStat : null;
 			const fileLink = filePath !== void 0 && onOpenFile !== void 0 && failureLine === null;
 			const toggleExpand = () => {
 				setExpanded((v) => !v);
@@ -747,15 +737,6 @@ window.__ModuleLoader__.load({
 						suffix !== null && (0, react_jsx_runtime.jsx)("span", {
 							className: ToolRow_module_css_default.summarySuffix,
 							children: suffix
-						}), diffStats !== null && (0, react_jsx_runtime.jsxs)("span", {
-							className: ToolRow_module_css_default.summarySuffix,
-							children: [(0, react_jsx_runtime.jsx)("span", {
-								style: { color: "var(--dsw-alias-state-success-primary)" },
-								children: `+${diffStats.additions}`
-							}), " ", (0, react_jsx_runtime.jsx)("span", {
-								style: { color: "var(--dsw-alias-state-error-primary)" },
-								children: `-${diffStats.deletions}`
-							})]
 						})
 					] }),
 					children: (0, react_jsx_runtime.jsxs)("div", {

@@ -12,6 +12,7 @@ dsh-brand = { path = "../../util/brand" }
 dsh-invariants = { path = "../../util/invariants" }
 dsh-llm = { path = "../../core/llm" }
 dsh-session = { path = "../../core/session" }
+dsh-session-projection = { path = "../../session/session-projection" }
 dsh-tools = { path = "../../core/tools" }
 async-trait = { workspace = true }
 anyhow = { workspace = true }

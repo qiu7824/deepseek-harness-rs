@@ -10693,28 +10693,33 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			ctx.typert.contexts.registerClient("agent", { identity: (candidate) => sessions.scopeOf(candidate) });
 			const workspaces = new WorkspaceRuntime(ctx, connection.api, sessions);
 			ctx.effect(() => workspaces.startInitialSelection(), "runtime: initial Workspace selection");
-			const loop = connection.start({
-				onMuxEnvelope: (envelope) => {
-					sessions.handleMuxEnvelope(envelope);
-				},
-				onHostEnvelope: (envelope) => {
-					sessions.handleHostEnvelope(envelope);
-					workspaces.handleHostEnvelope(envelope);
-					const frame = envelope.payload;
-					if (frame.type === "host/remote-event") ctx.remote.$dispatch(frame.event, frame.args);
-				},
-				onConnected: () => {
-					sessions.handleConnected();
-					workspaces.handleConnected();
-					ctx.emit("connection/reset");
-				},
-				onStateChange: (state) => {
-					if (state === "reconnecting") sessions.handleDisconnected();
+			let generation;
+			const syncGeneration = () => {
+				const next = connection.generation.getSnapshot();
+				if (Object.is(generation, next)) return;
+				generation = next;
+				if (next === void 0) {
+					sessions.handleDisconnected();
+					return;
 				}
+				sessions.handleConnected();
+				workspaces.handleConnected();
+				ctx.emit("connection/reset");
+			};
+			const unsubscribeGeneration = connection.generation.subscribe(syncGeneration);
+			const unsubscribeMux = ctx.on("connection/mux-envelope", (envelope) => {
+				sessions.handleMuxEnvelope(envelope);
 			});
+			const unsubscribeHost = ctx.on("connection/host-envelope", (envelope) => {
+				sessions.handleHostEnvelope(envelope);
+				workspaces.handleHostEnvelope(envelope);
+			});
+			syncGeneration();
 			ctx.effect(() => () => {
-				loop.stop();
-			}, "runtime: connection stream loop");
+				unsubscribeGeneration();
+				unsubscribeMux();
+				unsubscribeHost();
+			}, "runtime: connection generation observation");
 		}
 		//#endregion
 		exports.ConversationEventRegistry = ConversationEventRegistry;

@@ -192,6 +192,19 @@ pub type WebIndexTap = Arc<dyn Fn(&str) -> String + Send + Sync>;
 /// I/O adapter so handlers can use the tokio `AsyncRead`/`AsyncWrite` traits.
 pub type WebUpgraded = TokioIo<Upgraded>;
 
+/// Server-side WebSocket stream over a Hyper upgrade. The explicit config
+/// leaves enough pre-handshake write capacity for Hyper's buffered 101 bytes.
+pub async fn accept_websocket(
+    upgraded: WebUpgraded,
+) -> tokio_tungstenite::WebSocketStream<WebUpgraded> {
+    tokio_tungstenite::WebSocketStream::from_raw_socket(
+        upgraded,
+        tungstenite::protocol::Role::Server,
+        Some(websocket_server_config()),
+    )
+    .await
+}
+
 /// Upgrade route handler. Returning `Err` or panicking destroys the socket.
 pub type WebUpgradeHandler = Arc<
     dyn Fn(WebRequest, WebUpgraded) -> BoxFuture<'static, Result<(), WebHandlerError>>
@@ -437,7 +450,7 @@ impl WebServer {
                             }
                         });
                         let mut connections = server.connections.lock();
-                        connections.retain(|task| !task.is_finished());
+                        prune_finished_tasks(&mut connections);
                         connections.push(connection);
                     }
                     Err(error) => {
@@ -512,7 +525,6 @@ impl WebServer {
             .get("sec-websocket-key")
             .and_then(|value| value.to_str().ok())
             .map(|key| tungstenite::handshake::derive_accept_key(key.as_bytes()));
-        let weak = Arc::downgrade(self);
         let task = tokio::spawn(async move {
             match on_upgrade.await {
                 Ok(upgraded) => {
@@ -541,13 +553,9 @@ impl WebServer {
                     ))]);
                 }
             }
-            if let Some(server) = weak.upgrade() {
-                let mut tasks = server.upgrade_tasks.lock();
-                tasks.retain(|task| !task.is_finished());
-            }
         });
         let mut tasks = self.upgrade_tasks.lock();
-        tasks.retain(|task| !task.is_finished());
+        prune_finished_tasks(&mut tasks);
         tasks.push(task);
 
         let mut builder = Response::builder().status(StatusCode::SWITCHING_PROTOCOLS);
@@ -650,6 +658,16 @@ fn is_upgrade_request(request: &WebRequest) -> bool {
         .unwrap_or(false)
 }
 
+fn websocket_server_config() -> tungstenite::protocol::WebSocketConfig {
+    tungstenite::protocol::WebSocketConfig::default()
+        .write_buffer_size(128 * 1024)
+        .max_write_buffer_size(usize::MAX)
+}
+
+fn prune_finished_tasks(tasks: &mut Vec<JoinHandle<()>>) {
+    tasks.retain(|task| !task.is_finished());
+}
+
 fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_string()
@@ -676,5 +694,33 @@ impl Plugin for WebServerPlugin {
             .await
             .map(|_| ())
             .map_err(|error| PluginError::new(arc(error)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn websocket_upgrade_config_preserves_hyper_handshake_bytes() {
+        let config = websocket_server_config();
+        assert!(config.write_buffer_size >= 128 * 1024);
+        assert_eq!(config.max_write_buffer_size, usize::MAX);
+    }
+
+    #[tokio::test]
+    async fn completed_transport_handles_are_pruned_without_aborting_live_work() {
+        let completed = tokio::spawn(async {});
+        while !completed.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let live = tokio::spawn(futures::future::pending::<()>());
+        let mut tasks = vec![completed, live];
+
+        prune_finished_tasks(&mut tasks);
+
+        assert_eq!(tasks.len(), 1);
+        assert!(!tasks[0].is_finished());
+        tasks[0].abort();
     }
 }

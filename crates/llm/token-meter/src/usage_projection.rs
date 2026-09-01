@@ -72,8 +72,8 @@ fn validate_projection_schema(value: &Value) -> Result<Value, String> {
 
 /// Token-meter's session projection unit (TS `tokenUsageProjectionDefinition`).
 pub fn token_usage_projection_definition() -> ProjectionDefinition {
-    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> =
-        Arc::new(|| arc(serde_json::json!({"totals": zero_buckets(), "last": Value::Null})));
+    let init: Arc<dyn Fn(&dsh_session::SessionHeader) -> ArcValue + Send + Sync> =
+        Arc::new(|_header| arc(serde_json::json!({"totals": zero_buckets(), "last": Value::Null})));
     let apply: ProjectionApply = Arc::new(|state_value: &ArcValue, event: &SessionEvent| {
         let state: &Value = cordis::downcast(state_value).expect("tokenUsage state");
         let (turn, step, usage): (u64, u64, &Value) = if event.type_ == "assistant/chunk" {
@@ -198,8 +198,8 @@ fn validate_pressure_schema(value: &Value) -> Result<Value, String> {
 /// Token-meter's context-occupancy projection unit (TS
 /// `contextPressureProjectionDefinition`).
 pub fn context_pressure_projection_definition() -> ProjectionDefinition {
-    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> =
-        Arc::new(|| arc(serde_json::json!({"surfaceTokens": 0})));
+    let init: Arc<dyn Fn(&dsh_session::SessionHeader) -> ArcValue + Send + Sync> =
+        Arc::new(|_header| arc(serde_json::json!({"surfaceTokens": 0})));
     let apply: ProjectionApply = Arc::new(|state_value: &ArcValue, event: &SessionEvent| {
         let state: &Value = cordis::downcast(state_value).expect("contextPressure state");
         let claim: Option<ShadowPriceClaim> = state

@@ -27,6 +27,14 @@ window.__ModuleLoader__.load({
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-settings-general\src\client\SettingsRoot.module.css.mjs
 		const css$3 = "._7h7_Oq_trigger{box-sizing:border-box;cursor:pointer;width:calc(100% + 8px);height:34px;color:var(--dsw-alias-label-primary);background:0 0;border:none;border-radius:12px;flex:none;align-items:center;gap:8px;margin:4px -4px;padding:6px 2px 6px 10px;font-family:inherit;font-size:14px;line-height:22px;display:flex;overflow:hidden}._7h7_Oq_trigger:hover{background:var(--dsw-alias-interactive-bg-hover)}._7h7_Oq_trigger._7h7_Oq_rail{border-radius:50%;justify-content:center;gap:0;width:36px;height:36px;margin:8px 0 10px;padding:0}._7h7_Oq_triggerLabel{white-space:nowrap;overflow:hidden}._7h7_Oq_overlay{z-index:1000;justify-content:center;align-items:center;display:flex;position:fixed;inset:0}._7h7_Oq_mask{background:var(--dsw-alias-bg-mask-1);backdrop-filter:var(--dsw-mask-blur);position:absolute;inset:0}._7h7_Oq_panel{z-index:1;background:var(--dsw-alias-bg-layer-2);width:800px;max-width:calc(100vw - 48px);height:min(800px,100vh - 48px);box-shadow:var(--dsw-shadow-lv3);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:24px;display:flex;position:relative;overflow:hidden}._7h7_Oq_nav{box-sizing:border-box;flex-direction:column;flex:none;gap:18px;width:188px;padding:22px 12px 0;display:flex}._7h7_Oq_navTitle{color:var(--dsw-alias-label-primary);padding:0 12px;font-size:16px;font-weight:500;line-height:24px}._7h7_Oq_navList{flex-direction:column;gap:4px;display:flex}._7h7_Oq_navCell{box-sizing:border-box;cursor:pointer;height:40px;color:var(--dsw-alias-label-primary);text-align:left;background:0 0;border:none;border-radius:12px;align-items:center;gap:8px;padding:9px 16px 9px 12px;font-family:inherit;font-size:14px;font-weight:400;line-height:22px;display:flex}._7h7_Oq_navCell:hover{background:var(--dsw-specific-sidebar-nav-item-hover)}._7h7_Oq_navCell._7h7_Oq_active{background:var(--dsw-specific-sidebar-nav-item-active)}._7h7_Oq_navIcon{flex:none}._7h7_Oq_navLabel{white-space:nowrap;text-overflow:ellipsis;flex:1;min-width:0;overflow:hidden}._7h7_Oq_content{flex-direction:column;flex:1;min-width:0;display:flex}._7h7_Oq_header{box-sizing:border-box;flex:none;justify-content:space-between;align-items:flex-start;gap:8px;height:54px;padding:20px 14px 8px 10px;display:flex}._7h7_Oq_actions{justify-content:flex-end;align-items:center;gap:8px;min-width:0;margin-left:auto;display:flex}._7h7_Oq_close{cursor:pointer;width:28px;height:28px;color:var(--dsw-alias-label-primary);background:0 0;border:none;border-radius:28px;justify-content:center;align-items:center;padding:0;display:inline-flex}._7h7_Oq_close:hover{background:var(--dsw-alias-interactive-bg-hover)}._7h7_Oq_options{flex:1;min-height:0;padding:0 24px 24px;overflow-y:auto}._7h7_Oq_hiddenLabel{clip:rect(0 0 0 0);white-space:nowrap;width:1px;height:1px;position:absolute;overflow:hidden}";
+		const connectionIndicatorCss = ".dshConnectionIndicator{box-sizing:border-box;display:inline-grid;grid-template-columns:14px max-content;align-items:center;column-gap:4px;height:32px;padding:0 10px;border:0;border-radius:8px;font:500 12px/18px inherit;white-space:nowrap}.dshConnectionIndicatorWarning{background:var(--dsw-alias-state-warn-tertiary);color:var(--dsw-alias-state-warn-label);cursor:pointer}.dshConnectionIndicatorWarning:focus-visible{outline:2px solid var(--dsw-alias-state-warn-label);outline-offset:2px}.dshConnectionIndicatorSuccess{background:var(--dsw-alias-state-success-tertiary);color:var(--dsw-alias-state-success-primary)}.dshConnectionIndicatorLabel{display:grid}.dshConnectionStateLabel,.dshConnectionHoverLabel{grid-area:1/1}.dshConnectionHoverLabel{visibility:hidden}.dshConnectionIndicatorWarning:is(:hover,:focus-visible) .dshConnectionStateLabel{visibility:hidden}.dshConnectionIndicatorWarning:is(:hover,:focus-visible) .dshConnectionHoverLabel{visibility:visible}";
+		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css='dsh-connection-indicator']") === null) {
+			const tag = document.createElement("style");
+			tag.dataset.plugin = "@deepseek-ai/dsh-client-ui-settings-general";
+			tag.dataset.pluginCss = "dsh-connection-indicator";
+			tag.textContent = connectionIndicatorCss;
+			document.head.appendChild(tag);
+		}
 		const tagId$3 = "@deepseek-ai/dsh-client-ui-settings-general/SettingsRoot.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$3) + "]") === null) {
 			const tag = document.createElement("style");
@@ -173,20 +181,50 @@ window.__ModuleLoader__.load({
 		* @param props - composed slot props (contract/slots.ts).
 		* @returns the settings shell element tree.
 		*/
+		function ConnectionRecoveryIndicator({ state, reconnect, t }) {
+			if (state !== "disconnected" && state !== "connecting" && state !== "recovered") return null;
+			if (state === "recovered") return (0, react_jsx_runtime.jsxs)("div", {
+				className: "dshConnectionIndicator dshConnectionIndicatorSuccess",
+				role: "status",
+				"aria-label": t("connection.connected"),
+				children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCheckOutline16, { size: 14 }), (0, react_jsx_runtime.jsx)("span", { children: t("connection.connected") })]
+			});
+			const connecting = state === "connecting";
+			return (0, react_jsx_runtime.jsxs)("button", {
+				type: "button",
+				className: "dshConnectionIndicator dshConnectionIndicatorWarning",
+				"data-phase": state,
+				"aria-label": t(connecting ? "connection.restart" : "connection.reconnect"),
+				onClick: reconnect,
+				children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconWarningOutline16, { size: 14 }), (0, react_jsx_runtime.jsxs)("span", {
+					className: "dshConnectionIndicatorLabel",
+					children: [(0, react_jsx_runtime.jsx)("span", { className: "dshConnectionStateLabel", children: connecting ? `${t("connection.connecting")}…` : t("connection.error") }), (0, react_jsx_runtime.jsx)("span", { className: "dshConnectionHoverLabel", children: t("connection.retry") })]
+				})]
+			});
+		}
 		function SettingsRoot(props) {
-			const { wide, useSections, useOnboardingSteps, useSessions, renderSlot } = props;
+			const { wide, reconnect, useConnectionState, useSections, useOnboardingSteps, useSessions, renderSlot, t } = props;
 			const [open, setOpen] = (0, react.useState)(false);
 			const [activeId, setActiveId] = (0, react.useState)(void 0);
 			const [completedOnboarding, setCompletedOnboarding] = (0, react.useState)(() => /* @__PURE__ */ new Set());
+			const [showRecovery, setShowRecovery] = (0, react.useState)(false);
+			const triggerButton = (0, react.useRef)(null);
+			const wasOpen = (0, react.useRef)(open);
 			const close = (0, react.useCallback)(() => {
 				setOpen(false);
 				setActiveId(void 0);
 			}, []);
+			(0, react.useEffect)(() => {
+				if (wasOpen.current && !open) triggerButton.current?.focus();
+				wasOpen.current = open;
+			}, [open]);
 			const openSection = (0, react.useCallback)((id) => {
 				setActiveId(id);
 				setOpen(true);
 			}, []);
 			const rows = useSections((s) => s);
+			const connectionState = useConnectionState((state) => state);
+			const previousConnectionState = (0, react.useRef)(connectionState);
 			const onboardingSteps = useOnboardingSteps((s) => s);
 			const onboardingActive = useSessions((state) => state.phase === "ready" && (state.current === void 0 || state.byId[state.current]?.blank === true));
 			const onboardingStep = onboardingActive ? onboardingSteps.find((step) => !completedOnboarding.has(step.id)) : void 0;
@@ -194,22 +232,50 @@ window.__ModuleLoader__.load({
 				if (onboardingActive) return;
 				setCompletedOnboarding(/* @__PURE__ */ new Set());
 			}, [onboardingActive]);
+			(0, react.useLayoutEffect)(() => {
+				const previous = previousConnectionState.current;
+				previousConnectionState.current = connectionState;
+				if (connectionState !== "connected") {
+					setShowRecovery(false);
+					return;
+				}
+				if (previous !== "disconnected" && previous !== "connecting") return;
+				setShowRecovery(true);
+				const timeout = window.setTimeout(() => {
+					setShowRecovery(false);
+				}, 2e3);
+				return () => {
+					window.clearTimeout(timeout);
+				};
+			}, [connectionState]);
 			const completeOnboardingStep = (0, react.useCallback)((id) => {
 				setCompletedOnboarding((previous) => {
 					if (previous.has(id)) return previous;
 					return new Set([...previous, id]);
 				});
 			}, []);
+			let connectionIndicator;
+			if (connectionState === "disconnected") connectionIndicator = "disconnected";
+			else if (connectionState === "connecting") connectionIndicator = "connecting";
+			else if (showRecovery) connectionIndicator = "recovered";
 			return (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-				(0, react_jsx_runtime.jsx)("button", {
-					type: "button",
-					className: clsx(SettingsRoot_module_css_default.trigger, !wide && SettingsRoot_module_css_default.rail),
-					"aria-haspopup": "dialog",
-					"aria-expanded": open,
-					onClick: () => {
-						setOpen(true);
-					},
-					children: renderSlot("settings.trigger", { wide })
+				(0, react_jsx_runtime.jsxs)("div", {
+					className: clsx(SettingsRoot_module_css_default.triggerRow, !wide && SettingsRoot_module_css_default.railRow),
+					children: [(0, react_jsx_runtime.jsx)("button", {
+						ref: triggerButton,
+						type: "button",
+						className: clsx(SettingsRoot_module_css_default.trigger, !wide && SettingsRoot_module_css_default.rail),
+						"aria-haspopup": "dialog",
+						"aria-expanded": open,
+						onClick: () => {
+							setOpen(true);
+						},
+						children: renderSlot("settings.trigger", { wide })
+					}), (0, react_jsx_runtime.jsx)(ConnectionRecoveryIndicator, {
+						state: wide ? connectionIndicator : void 0,
+						reconnect,
+						t
+					})]
 				}),
 				open && (0, react_jsx_runtime.jsx)(SettingsPanel, {
 					rows,
@@ -555,7 +621,13 @@ window.__ModuleLoader__.load({
 			"close": "关闭",
 			"openDocument": "打开配置文件",
 			"openDocument.error": "无法打开配置文件",
-			"general.nav": "通用设置"
+			"general.nav": "通用设置",
+			"connection.error": "连接异常",
+			"connection.retry": "立即重连",
+			"connection.connecting": "连接中",
+			"connection.connected": "连接成功",
+			"connection.reconnect": "连接异常，点击立即重连",
+			"connection.restart": "连接中，点击立即重连"
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
@@ -564,7 +636,13 @@ window.__ModuleLoader__.load({
 			"close": "Close",
 			"openDocument": "Open configuration file",
 			"openDocument.error": "Could not open configuration file",
-			"general.nav": "General"
+			"general.nav": "General",
+			"connection.error": "Disconnected",
+			"connection.retry": "Reconnect now",
+			"connection.connecting": "Connecting",
+			"connection.connected": "Connected",
+			"connection.reconnect": "Disconnected, reconnect now",
+			"connection.restart": "Connecting, restart now"
 		};
 		//#endregion
 		//#region lib/types/client/index.js
@@ -608,48 +686,55 @@ window.__ModuleLoader__.load({
 			let rows = [];
 			let onboardingVersion = -1;
 			let onboardingSteps = [];
-			const shellInjected = () => ({ hooks: {
-				sections: {
-					getSnapshot: () => {
-						const version = ctx.slots.getVersion("settings.section");
-						const revision = ctx.locale.getSnapshot().revision;
-						if (version !== rowsVersion || revision !== rowsRevision) {
-							rowsVersion = version;
-							rowsRevision = revision;
-							rows = ctx.slots.entries("settings.section").map((e) => ({
-								/* v8 ignore next -- list-slot registration requires id (SlotCore rejects an entry without one) */
-								id: e.options.id ?? "",
-								order: e.options.order ?? 0,
-								label: (0, _deepseek_ai_dsh_client_ui_slots.resolveSlotLabel)(e.options.label) ?? ""
-							})).sort((a, b) => a.order - b.order);
-						}
-						return rows;
-					},
-					subscribe: (listener) => {
-						const offLedger = ctx.slots.subscribe("settings.section", listener);
-						const offLocale = ctx.locale.subscribe(listener);
-						return () => {
-							offLedger();
-							offLocale();
-						};
-					}
+			const shellInjected = () => ({
+				reconnect: () => {
+					connection.reconnect();
 				},
-				onboardingSteps: {
-					getSnapshot: () => {
-						const version = ctx.slots.getVersion("settings.onboarding");
-						if (version !== onboardingVersion) {
-							onboardingVersion = version;
-							onboardingSteps = ctx.slots.entries("settings.onboarding").map((e) => ({
-								/* v8 ignore next -- list-slot registration requires id */
-								id: e.options.id ?? "",
-								order: e.options.order ?? 0
-							})).sort((a, b) => a.order - b.order);
+				t: ctx.locale.bind(NS),
+				hooks: {
+					connectionState: connection.state,
+					sections: {
+						getSnapshot: () => {
+							const version = ctx.slots.getVersion("settings.section");
+							const revision = ctx.locale.getSnapshot().revision;
+							if (version !== rowsVersion || revision !== rowsRevision) {
+								rowsVersion = version;
+								rowsRevision = revision;
+								rows = ctx.slots.entries("settings.section").map((e) => ({
+									/* v8 ignore next -- list-slot registration requires id (SlotCore rejects an entry without one) */
+									id: e.options.id ?? "",
+									order: e.options.order ?? 0,
+									label: (0, _deepseek_ai_dsh_client_ui_slots.resolveSlotLabel)(e.options.label) ?? ""
+								})).sort((a, b) => a.order - b.order);
+							}
+							return rows;
+						},
+						subscribe: (listener) => {
+							const offLedger = ctx.slots.subscribe("settings.section", listener);
+							const offLocale = ctx.locale.subscribe(listener);
+							return () => {
+								offLedger();
+								offLocale();
+							};
 						}
-						return onboardingSteps;
 					},
-					subscribe: (listener) => ctx.slots.subscribe("settings.onboarding", listener)
+					onboardingSteps: {
+						getSnapshot: () => {
+							const version = ctx.slots.getVersion("settings.onboarding");
+							if (version !== onboardingVersion) {
+								onboardingVersion = version;
+								onboardingSteps = ctx.slots.entries("settings.onboarding").map((e) => ({
+									/* v8 ignore next -- list-slot registration requires id */
+									id: e.options.id ?? "",
+									order: e.options.order ?? 0
+								})).sort((a, b) => a.order - b.order);
+							}
+							return onboardingSteps;
+						},
+						subscribe: (listener) => ctx.slots.subscribe("settings.onboarding", listener)
+					}
 				}
-			} });
+			});
 			ctx.slots.inject("sidebar.settings", () => ctx.slots.register({
 				name: "sidebar.settings",
 				children: {

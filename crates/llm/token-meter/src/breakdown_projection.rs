@@ -28,7 +28,7 @@ fn validate_breakdown_schema(value: &Value) -> Result<Value, String> {
 /// Token-meter's context-composition projection unit (TS
 /// `contextBreakdownProjectionDefinition`).
 pub fn context_breakdown_projection_definition() -> ProjectionDefinition {
-    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> = Arc::new(|| {
+    let init: Arc<dyn Fn(&dsh_session::SessionHeader) -> ArcValue + Send + Sync> = Arc::new(|_| {
         arc(serde_json::json!({
             "systemTokens": 0,
             "toolsTokens": 0,

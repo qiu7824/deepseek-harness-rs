@@ -76,7 +76,7 @@ pub fn subagent_timing_projection_definition() -> ProjectionDefinition {
                 .unwrap_or(serde_json::Value::Null);
             Ok(parsed)
         }),
-        init: Arc::new(|| timing_state(false, 0, None, None)),
+        init: Arc::new(|_header| timing_state(false, 0, None, None)),
         apply: Arc::new(|state: &ArcValue, event: &SessionEvent| {
             let value = downcast::<serde_json::Value>(state).expect("timing state is plain JSON");
             if event.type_ == "turn/start" {
@@ -190,7 +190,7 @@ pub fn subagent_identity_projection_definition() -> ProjectionDefinition {
                 .unwrap_or(serde_json::Value::Null);
             Ok(parsed)
         }),
-        init: Arc::new(|| arc(serde_json::json!({}))),
+        init: Arc::new(|_header| arc(serde_json::json!({}))),
         apply: Arc::new(|state: &ArcValue, event: &SessionEvent| {
             if event.type_ != "subagent/descriptor" {
                 return state.clone();

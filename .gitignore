@@ -1,12 +1,13 @@
 # Runtime and local profile state
 .dsh-runtime/
+/.env
 
 # Rust build outputs
 target/
 target-*/
 
 # Generated release packages
-dist/
+/dist/
 
 # Python caches
 __pycache__/

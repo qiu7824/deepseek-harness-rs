@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cordis::{
     ArcValue, Context, Disposer, EventOptions, Listener, Service, arc, downcast, make_disposer,
 };
-use dsh_session::{Session, SessionEvent};
+use dsh_session::{Session, SessionEvent, SessionHeader};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -48,7 +48,7 @@ pub struct ProjectionDefinition {
     /// returns the JSON snapshot served to consumers.
     pub schema: ProjectionSchema,
     /// State for the empty log.
-    pub init: Arc<dyn Fn() -> ArcValue + Send + Sync>,
+    pub init: Arc<dyn Fn(&SessionHeader) -> ArcValue + Send + Sync>,
     /// Pure transition: previous state + one committed event → next state.
     /// Return the SAME `Arc` when the event is not the unit's.
     pub apply: ProjectionApply,
@@ -216,6 +216,13 @@ impl SessionProjectionRegistry {
         Ok(dispose)
     }
 
+    /// The registered projection keys, sorted for deterministic diagnostics.
+    pub fn keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.registrations.lock().keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
     /// Subscribe to the change feed (an effect on the caller context's
     /// fiber; TS `onChanged`).
     pub fn on_changed(
@@ -326,6 +333,7 @@ impl SessionProjectionRegistry {
     /// `restore`); its synchronous throws become `Err`.
     pub fn restore(
         &self,
+        header: &SessionHeader,
         checkpoint: &ProjectionCheckpoint,
         events: &[SessionEvent],
         base_seq: i64,
@@ -352,7 +360,7 @@ impl SessionProjectionRegistry {
             let row = row.filter(|_row| usable);
             let mut state: ArcValue = match row {
                 Some(row) => arc(row.val.clone()),
-                None => (def.init)(),
+                None => (def.init)(header),
             };
             let from = row.map(|row| row.seq).unwrap_or(base_seq - 1);
             for event in events {
@@ -421,7 +429,10 @@ impl SessionProjectionRegistry {
                         // exact), then take the normal gate.
                         let events = session.events();
                         let prefix = &events[..event.seq as usize];
-                        cells.insert(session.identity(), build_cell(&registration.def, prefix));
+                        cells.insert(
+                            session.identity(),
+                            build_cell(&registration.def, session.header(), prefix),
+                        );
                         cells
                             .get_mut(&session.identity())
                             .expect("cell just inserted")
@@ -445,8 +456,12 @@ impl SessionProjectionRegistry {
 }
 
 /// Fold one unit from init over `events` (TS `buildCell`).
-fn build_cell(def: &ProjectionDefinition, events: &[SessionEvent]) -> UnitCell {
-    let mut state = (def.init)();
+fn build_cell(
+    def: &ProjectionDefinition,
+    header: &SessionHeader,
+    events: &[SessionEvent],
+) -> UnitCell {
+    let mut state = (def.init)(header);
     for event in events {
         state = (def.apply)(&state, event);
     }
@@ -467,7 +482,7 @@ fn cell_for(registration: &Registration, session: &Session) -> UnitCell {
         };
     }
     let events = session.events();
-    let built = build_cell(&registration.def, &events);
+    let built = build_cell(&registration.def, session.header(), &events);
     registration.cells.lock().insert(
         identity,
         UnitCell {

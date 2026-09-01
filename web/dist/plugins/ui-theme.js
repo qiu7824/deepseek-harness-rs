@@ -962,11 +962,9 @@ window.__ModuleLoader__.load({
 		const THEME_PREFERENCES = [
 			"light",
 			"dark",
-			"whale-song",
 			"blue-fantasy",
 			"harbor",
 			"xp",
-			"dragon-heir",
 			"minecraft",
 			"trading",
 			"miku",
@@ -1011,15 +1009,13 @@ window.__ModuleLoader__.load({
 		const SKIN_CATALOG = Object.freeze([
 			{ id: "light", name: "默认浅色", nameEn: "Default Light", scheme: "light", category: "默认", description: "DeepSeek Harness 内置浅色界面。", colors: ["#ffffff", "#f4f5f7", "#2563eb"] },
 			{ id: "dark", name: "默认深色", nameEn: "Default Dark", scheme: "dark", category: "默认", description: "DeepSeek Harness 内置深色界面。", colors: ["#17181a", "#24262a", "#60a5fa"] },
-			{ id: "whale-song", name: "鲸吟", nameEn: "Whale Song", scheme: "adaptive", category: "dsh-market #1", description: "深海鲸语女神背景 · 冰蓝海洋调色板 · 金色细线点缀。", colors: ["#071827", "#4d8fd4", "#dab35b"] },
 			{ id: "blue-fantasy", name: "蓝色幻想", nameEn: "Blue Fantasy", scheme: "adaptive", category: "dsh-market #2", description: "鲸鱼插画背景 · periwinkle 靛蓝调色板 · 半透明面板。", colors: ["#10152d", "#4a5fa8", "#c6cdf4"] },
 			{ id: "harbor", name: "夕港", nameEn: "Harbor", scheme: "adaptive", category: "dsh-market #3", description: "暮光蓝港 · 日落橙辉 · 半透明夜色面板。", colors: ["#141a2e", "#ff9d5c", "#d9d9e8"] },
 			{ id: "xp", name: "Windows XP (Luna)", nameEn: "Windows XP Luna", scheme: "adaptive", category: "dsh-market #4", description: "Luna 蓝窗口条 · 绿色开始按钮 · Bliss 蓝天桌面。", colors: ["#ece9d8", "#316ac5", "#3d9f43"] },
-			{ id: "dragon-heir", name: "龙的传人", nameEn: "Dragon Heir", scheme: "adaptive", category: "dsh-market #5", description: "不屈龙魂 · 万里长城双主题 · 朱砂龙印。", colors: ["#17130f", "#c3272b", "#d3b883"] },
 			{ id: "minecraft", name: "Minecraft 方块世界", nameEn: "Minecraft Voxel", scheme: "adaptive", category: "dsh-market #6", description: "动态全景天空盒 · 方块按钮 · 告示牌输入框。", colors: ["#232a1d", "#7cbd4b", "#f6e55e"] },
 			{ id: "trading", name: "交易终端", nameEn: "Trading Terminal", scheme: "adaptive", category: "dsh-market #7", description: "实时行情跑马灯 · 红涨绿跌交易终端。", colors: ["#060b0d", "#f23645", "#2fde8e"] },
 			{ id: "miku", name: "初音未来 · 电子歌姬", nameEn: "Hatsune Miku", scheme: "adaptive", category: "dsh-market #8", description: "蓝紫双马尾 · 01 编号 · 音符波形。", colors: ["#10152a", "#2e9bff", "#ec4bb0"] },
-			{ id: "deepseek-official", name: "DeepSeek Harness 官方", nameEn: "DeepSeek Harness Official", scheme: "adaptive", category: "deepseek.com/harness/en", description: "官方品牌蓝、DM Sans 字体、通透玻璃表面与深浅双主题。", colors: ["#f9f8f8", "#4d6bfe", "#101113"] }
+			{ id: "deepseek-official", name: "DeepSeek Harness 官方", nameEn: "DeepSeek Harness Official", scheme: "adaptive", category: "www.deepseek.com/harness/", description: "完整参照官方 Harness 的品牌蓝、DM Sans 字体、玻璃表面与深浅主题。", colors: ["#f9f8f8", "#4d6bfe", "#101113"] }
 		]);
 		const BUILTIN_INSPECT_TOKENS = Object.freeze([
 			{
@@ -1194,6 +1190,24 @@ window.__ModuleLoader__.load({
 				if (isThemePreference(id)) this.host.set(THEME_PREFERENCE_FIELD, id);
 				this.publish();
 			}
+			async applyTheme(id) {
+				if (!this.themes.some((theme) => theme.id === id)) throw new Error(`theme "${id}" is not registered`);
+				if (id === this.preference) return this.getTheme();
+				const previous = this.preference;
+				try {
+					await activateSkinAssets(id);
+				} catch (error) {
+					clearActiveSkinAssets();
+					try {
+						await restoreActiveSkinAssets(previous);
+					} catch (restoreError) {
+						console.error("skin rollback failed", restoreError);
+					}
+					throw error;
+				}
+				this.setTheme(id);
+				return this.getTheme();
+			}
 			/** Adopt the scope's accepted durable preference without writing it back. */
 			adopt() {
 				const section = this.host.getSnapshot().value;
@@ -1341,15 +1355,19 @@ window.__ModuleLoader__.load({
 			activeSkinAssets.activation += 1;
 			clearActiveSkinAssets();
 		}
-		function loadSkinStylesheet(href) {
-			return new Promise((resolve, reject) => {
-				const link = document.createElement("link");
-				link.rel = "stylesheet";
-				link.href = href;
-				link.onload = () => resolve(link);
-				link.onerror = () => { link.remove(); reject(new Error(`skin stylesheet failed: ${href}`)); };
-				document.head.appendChild(link);
-			});
+		function responseContentType(response) {
+			return response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() ?? "";
+		}
+		async function loadSkinStylesheet(href) {
+			const response = await fetch(href, { cache: "no-store" });
+			if (!response.ok) throw new Error(`skin stylesheet failed: ${href}`);
+			if (responseContentType(response) !== "text/css") throw new Error(`skin stylesheet returned ${responseContentType(response) || "unknown content"}: ${href}`);
+			const css = await response.text();
+			const style = document.createElement("style");
+			style.dataset.dshSkinStylesheet = href;
+			style.textContent = css;
+			document.head.appendChild(style);
+			return style;
 		}
 		function skinThemeMode() {
 			return document.body.hasAttribute("data-ds-dark-theme") ? "dark" : "light";
@@ -1393,7 +1411,9 @@ window.__ModuleLoader__.load({
 			const activation = activeSkinAssets.activation;
 			const manifestResponse = await fetch(`/skins/${skinId}/skin.json`, { cache: "no-store" });
 			if (!manifestResponse.ok) throw new Error(`skin manifest failed: ${skinId}`);
+			if (responseContentType(manifestResponse) !== "application/json") throw new Error(`skin manifest returned ${responseContentType(manifestResponse) || "unknown content"}: ${skinId}`);
 			const manifest = await manifestResponse.json();
+			if (manifest?.id !== skinId) throw new Error(`skin manifest identity mismatch: ${skinId}`);
 			const links = [];
 			try {
 				const stylesheet = manifest.contributes?.stylesheet;
@@ -1473,31 +1493,6 @@ window.__ModuleLoader__.load({
 			const value = reply.result.value.namespaces.find((item) => item.ns === "ui-wallpaper")?.value;
 			applyBingWallpaper(value?.bingDaily === true);
 		}
-		const skinManagerCss = ".dshSkinPicker{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:14px;border:1px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1);padding:16px}.dshSkinPicker label{display:grid;gap:6px;font-size:13px}.dshSkinPicker select{width:100%;min-width:280px;height:38px;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;background:var(--dsw-alias-bg-overlay);color:inherit;padding:0 11px}.dshSkinPickerMeta{min-width:190px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}.dshSkins{box-sizing:border-box;width:100%;max-width:820px;padding:4px 2px 32px;color:var(--dsw-alias-label-primary)}.dshSkins h2{margin:0 0 4px;font-size:18px}.dshSkinsHint{margin:0 0 18px;color:var(--dsw-alias-label-tertiary);font-size:13px}.dshSkinWallpaper{margin-top:16px;display:flex;align-items:center;gap:10px;padding-top:16px;border-top:1px solid var(--dsw-alias-border-l1);font-size:13px}.dshSkinWallpaper button{height:34px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:inherit;padding:0 11px;cursor:pointer}.dshSkinStatus{color:var(--dsw-alias-label-tertiary);font-size:12px}@media(max-width:720px){.dshSkinPicker{grid-template-columns:1fr}.dshSkinPicker select{min-width:0}.dshSkinPickerMeta{min-width:0}}";
-		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css='dsh-skin-manager']") === null) { const tag = document.createElement("style"); tag.dataset.pluginCss = "dsh-skin-manager"; tag.textContent = skinManagerCss; document.head.appendChild(tag); }
-		function SkinSettings({ api, setTheme, useStore }) {
-			const preference = useStore((state) => state.preference);
-			const selectedSkin = SKIN_CATALOG.find((skin) => skin.id === preference) ?? SKIN_CATALOG[0];
-			const [bingDaily, setBingDaily] = (0, react.useState)(false);
-			const [status, setStatus] = (0, react.useState)("");
-			(0, react.useEffect)(() => { let live = true; api.settings.describe({}).then((reply) => { if (live && reply.result.ok) setBingDaily(reply.result.value.namespaces.find((item) => item.ns === "ui-wallpaper")?.value?.bingDaily === true); }); return () => { live = false; }; }, [api]);
-			const choose = async (skin) => {
-				setStatus("正在应用…");
-				try {
-					await setTheme(skin.id);
-					setStatus("已应用");
-				} catch (error) {
-					setStatus(error instanceof Error ? error.message : String(error));
-				}
-			};
-			const toggleWallpaper = async () => { const next = !bingDaily; setStatus("正在保存…"); const reply = await api.settings.update({ ns: "ui-wallpaper", patch: { bingDaily: next } }); if (!reply.result.ok) { setStatus(reply.result.error.message); return; } setBingDaily(next); applyBingWallpaper(next); setStatus(next ? "已开启每日壁纸" : "已关闭每日壁纸"); };
-			return (0, react_jsx_runtime.jsxs)("section", { className: "dshSkins", children: [
-				(0, react_jsx_runtime.jsx)("h2", { children: "皮肤" }),
-				(0, react_jsx_runtime.jsx)("p", { className: "dshSkinsHint", children: "两套默认皮肤、dsh-market 当前前 8 套预设和 DeepSeek Harness 官方皮肤。选择后立即应用并持久化。" }),
-				(0, react_jsx_runtime.jsxs)("div", { className: "dshSkinPicker", children: [(0, react_jsx_runtime.jsxs)("label", { children: [(0, react_jsx_runtime.jsx)("span", { children: "当前皮肤" }), (0, react_jsx_runtime.jsx)("select", { value: selectedSkin.id, onChange: (event) => { void choose(SKIN_CATALOG.find((skin) => skin.id === event.target.value) ?? SKIN_CATALOG[0]); }, children: SKIN_CATALOG.map((skin) => (0, react_jsx_runtime.jsx)("option", { value: skin.id, "data-dsh-skin-option": skin.id, children: `${skin.name} · ${skin.nameEn}` }, skin.id)) })] }), (0, react_jsx_runtime.jsxs)("div", { className: "dshSkinPickerMeta", children: [(0, react_jsx_runtime.jsx)("strong", { children: selectedSkin.category }), (0, react_jsx_runtime.jsx)("div", { children: selectedSkin.description })] })] }),
-				(0, react_jsx_runtime.jsxs)("div", { className: "dshSkinWallpaper", children: [(0, react_jsx_runtime.jsx)("button", { type: "button", "aria-pressed": bingDaily, onClick: toggleWallpaper, children: bingDaily ? "关闭 Bing 每日壁纸" : "开启 Bing 每日壁纸" }), (0, react_jsx_runtime.jsx)("span", { children: "壁纸会随当前皮肤添加可读性遮罩，并在启动时恢复。" }), status && (0, react_jsx_runtime.jsx)("span", { className: "dshSkinStatus", children: status })] })
-			] });
-		}
 		function BasicAppearanceSettings(props) {
 			return (0, react_jsx_runtime.jsxs)("section", { style: { maxWidth: "760px", padding: "4px 2px 32px" }, children: [(0, react_jsx_runtime.jsx)("h2", { children: "外观" }), (0, react_jsx_runtime.jsx)("p", { style: { color: "var(--dsw-alias-label-tertiary)" }, children: "no-skin 版本不内置扩展皮肤；仅保留默认浅色与默认深色。" }), (0, react_jsx_runtime.jsx)(AppearanceRow, props), (0, react_jsx_runtime.jsx)(FontSizeRow, props)] });
 		}
@@ -1548,21 +1543,18 @@ window.__ModuleLoader__.load({
 			const injected = (actions) => {
 				bound = actions;
 				sync(theme.getTheme());
-				return { api, setTheme: async (id) => {
-					await activateSkinAssets(id);
-					theme.setTheme(id);
-				}, setFontSize: (px) => theme.setFontSize(px) };
+				return { api, setTheme: (id) => theme.applyTheme(id), setFontSize: (px) => theme.setFontSize(px) };
 			};
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
-				id: "skins",
-				order: 10,
+				id: "appearance",
+				order: 5,
 				store,
 				locale: SETTINGS_NS,
-				label: NO_SKIN ? "外观" : "皮肤与壁纸",
+				label: "外观",
 				inject: injected
-			}, NO_SKIN ? BasicAppearanceSettings : (props) => (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(SkinSettings, props), (0, react_jsx_runtime.jsx)(FontSizeRow, props)] })));
-			ctx.effect(() => () => cancelActiveSkinAssets(), "ui-theme: active skin assets");
+			}, BasicAppearanceSettings));
+			if (!NO_SKIN) ctx.effect(() => () => cancelActiveSkinAssets(), "ui-theme: active skin assets");
 		}
 		//#endregion
 		exports.SETTINGS_NS = SETTINGS_NS;

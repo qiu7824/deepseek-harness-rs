@@ -295,7 +295,7 @@ pub fn todos_projection() -> dsh_session_projection::ProjectionDefinition {
     dsh_session_projection::ProjectionDefinition {
         key: "todos".to_string(),
         schema: Arc::new(todos_schema),
-        init: Arc::new(|| cordis::arc(serde_json::Value::Null)),
+        init: Arc::new(|_header| cordis::arc(serde_json::Value::Null)),
         apply: Arc::new(|state: &ArcValue, event: &dsh_session::SessionEvent| {
             if event.type_ == "todo/write" {
                 cordis::arc(

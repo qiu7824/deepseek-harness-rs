@@ -7,15 +7,19 @@ description = "Read-only projection of the current Cordis Loader plugin entries.
 
 [dependencies]
 cordis = { path = "../../vendor/cordis" }
+dsh-agent-presets = { path = "../../preset/agent-presets" }
 dsh-brand = { path = "../../util/brand" }
 dsh-cordis-loader = { path = "../../vendor/loader" }
+dsh-cordis-include = { path = "../../vendor/include" }
 dsh-invariants = { path = "../../util/invariants" }
 async-trait = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 indexmap = { workspace = true }
+tempfile = "3"

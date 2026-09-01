@@ -75,7 +75,7 @@ pub(crate) struct MuxSubscription {
 
 /// Resources whose lifetime is exactly one mux stream.
 pub(crate) struct MuxResources {
-    _subscription: MuxSubscription,
+    _subscription: Option<MuxSubscription>,
     listener_disposers: Vec<cordis::Disposer>,
 }
 
@@ -85,7 +85,14 @@ impl MuxResources {
         listener_disposers: Vec<cordis::Disposer>,
     ) -> Self {
         Self {
-            _subscription: subscription,
+            _subscription: Some(subscription),
+            listener_disposers,
+        }
+    }
+
+    pub(crate) fn listeners(listener_disposers: Vec<cordis::Disposer>) -> Self {
+        Self {
+            _subscription: None,
             listener_disposers,
         }
     }
@@ -101,6 +108,34 @@ impl Drop for MuxResources {
                 futures::executor::block_on(future);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod stream_resource_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn listener_only_resources_dispose_exactly_once_on_drop() {
+        let disposed = Arc::new(AtomicUsize::new(0));
+        let disposed_for_callback = disposed.clone();
+        let disposer = make_disposer(move || {
+            let disposed = disposed_for_callback.clone();
+            Box::pin(async move {
+                disposed.fetch_add(1, Ordering::SeqCst);
+            })
+        });
+
+        drop(MuxResources::listeners(vec![disposer]));
+        for _ in 0..20 {
+            if disposed.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(disposed.load(Ordering::SeqCst), 1);
     }
 }
 

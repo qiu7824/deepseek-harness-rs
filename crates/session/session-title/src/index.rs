@@ -297,7 +297,8 @@ pub fn fold_session_title(events: &[SessionEvent]) -> Option<SessionTitleSnapsho
 /// The `title` projection unit (TS registration inside the constructor):
 /// pure last-wins fold of `session/title` events.
 pub fn title_projection_definition() -> ProjectionDefinition {
-    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> = Arc::new(|| arc(JsonValue::Null));
+    let init: Arc<dyn Fn(&dsh_session::SessionHeader) -> ArcValue + Send + Sync> =
+        Arc::new(|_header| arc(JsonValue::Null));
     let apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync> =
         Arc::new(|state, event| {
             if event.type_ == "session/title" {
@@ -380,8 +381,8 @@ pub const USER_MESSAGE_RAIL_STATE_VERSION: u64 = 2;
 
 /// Lightweight user-message index for navigation without loading transcript pages.
 pub fn user_message_rail_projection_definition() -> ProjectionDefinition {
-    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> =
-        Arc::new(|| arc(JsonValue::Array(Vec::new())));
+    let init: Arc<dyn Fn(&dsh_session::SessionHeader) -> ArcValue + Send + Sync> =
+        Arc::new(|_header| arc(JsonValue::Array(Vec::new())));
     let apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync> =
         Arc::new(|state, event| {
             if event.type_ != "user/message"
@@ -428,8 +429,8 @@ pub const MODEL_SELECTION_STATE_VERSION: u64 = 1;
 /// Fixed-size persisted model selection. Explicit `model/selection` events
 /// permanently take precedence over request headers, matching session.models.
 pub fn model_selection_projection_definition() -> ProjectionDefinition {
-    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> =
-        Arc::new(|| arc(serde_json::json!({ "explicit": false, "selection": null })));
+    let init: Arc<dyn Fn(&dsh_session::SessionHeader) -> ArcValue + Send + Sync> =
+        Arc::new(|_header| arc(serde_json::json!({ "explicit": false, "selection": null })));
     let apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync> = Arc::new(
         |state, event| {
             let mut value = downcast::<JsonValue>(state)
@@ -501,8 +502,8 @@ pub const SESSION_LIST_METADATA_STATE_VERSION: u64 = 1;
 
 /// Fixed-size session-list state. The fold never retains event payloads.
 pub fn session_list_metadata_projection_definition() -> ProjectionDefinition {
-    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> =
-        Arc::new(|| arc(serde_json::json!({ "blank": true, "updatedAt": null })));
+    let init: Arc<dyn Fn(&dsh_session::SessionHeader) -> ArcValue + Send + Sync> =
+        Arc::new(|_header| arc(serde_json::json!({ "blank": true, "updatedAt": null })));
     let apply: Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Send + Sync> =
         Arc::new(|state, event| match event.type_.as_str() {
             "turn/start" => {
@@ -549,6 +550,20 @@ mod session_list_metadata_tests {
     use super::*;
     use cordis::downcast;
 
+    fn test_header() -> dsh_session::SessionHeader {
+        dsh_session::SessionHeader {
+            version: dsh_session::SESSION_FORMAT_VERSION,
+            id: dsh_session::session_id("projection-test"),
+            created_at: 0,
+            cwd: None,
+            parent_session: None,
+            seed_length: None,
+            origin: None,
+            delegation_depth: None,
+            agent_preset: None,
+        }
+    }
+
     fn event(seq: u64, time: i64, type_: &str) -> SessionEvent {
         SessionEvent {
             type_: type_.to_string(),
@@ -564,7 +579,7 @@ mod session_list_metadata_tests {
     #[test]
     fn model_selection_projection_prefers_explicit_selection_over_request_headers() {
         let definition = model_selection_projection_definition();
-        let mut state = (definition.init)();
+        let mut state = (definition.init)(&test_header());
         let mut header = event(0, 10, "request/header");
         header.data = serde_json::json!({
             "header": { "config": { "provider": "header", "model": "h1", "reasoningEffort": "low" } }
@@ -593,7 +608,7 @@ mod session_list_metadata_tests {
     #[test]
     fn folds_blank_and_latest_user_time_in_constant_state() {
         let definition = session_list_metadata_projection_definition();
-        let mut state = (definition.init)();
+        let mut state = (definition.init)(&test_header());
         for row in [
             event(0, 10, "assistant/chunk"),
             event(1, 20, "turn/start"),

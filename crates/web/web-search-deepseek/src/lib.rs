@@ -12,6 +12,7 @@ use futures::future::BoxFuture;
 
 pub type ApiKeyResolver =
     Arc<dyn Fn() -> BoxFuture<'static, Result<Option<String>, String>> + Send + Sync>;
+pub type RequestRecorder = Arc<dyn Fn(&serde_json::Value) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Options {
@@ -23,7 +24,7 @@ pub struct Options {
     pub api_version: String,
     pub max_tokens: u64,
     pub max_uses: u64,
-    pub record_request: Option<Arc<dyn Fn(&serde_json::Value) + Send + Sync>>,
+    pub record_request: Option<RequestRecorder>,
 }
 
 pub struct DeepSeekSearchProvider {
@@ -43,20 +44,18 @@ impl DeepSeekSearchProvider {
     }
 
     async fn api_key(&self) -> Result<String, WebError> {
-        if let Some(value) = &self.options.api_key {
-            if !value.trim().is_empty() {
-                return Ok(value.clone());
-            }
+        if let Some(value) = &self.options.api_key
+            && !value.trim().is_empty()
+        {
+            return Ok(value.clone());
         }
-        if let Some(resolve) = &self.options.resolve_api_key {
-            if let Some(value) = resolve()
+        if let Some(resolve) = &self.options.resolve_api_key
+            && let Some(value) = resolve()
                 .await
                 .map_err(|error| WebError::new("WEB_PROVIDER_CREDENTIAL_MISSING", error))?
-            {
-                if !value.trim().is_empty() {
-                    return Ok(value);
-                }
-            }
+            && !value.trim().is_empty()
+        {
+            return Ok(value);
         }
         Err(WebError::new(
             "WEB_PROVIDER_CREDENTIAL_MISSING",
@@ -192,7 +191,7 @@ impl WebSearchProvider for DeepSeekSearchProvider {
         let url = format!("{}/messages", self.options.base_url.trim_end_matches('/'));
         let request_future = self
             .client
-            .post(url)
+            .post(&url)
             .header("x-api-key", &api_key)
             .bearer_auth(&api_key)
             .header("anthropic-version", &self.options.api_version)
@@ -201,7 +200,9 @@ impl WebSearchProvider for DeepSeekSearchProvider {
         tokio::pin!(request_future);
         let response = loop {
             tokio::select! {
-                response = &mut request_future => break response.map_err(|error| WebError::new("WEB_PROVIDER_ERROR", error.to_string()))?,
+                response = &mut request_future => break response.map_err(|error| {
+                    search_endpoint_error(&url, format!("DeepSeek search request failed: {error}"))
+                })?,
                 _ = tokio::time::sleep(Duration::from_millis(10)) => {
                     if cancelled() { return Err(WebError::new("WEB_ABORTED", "web search aborted")); }
                 }
@@ -211,14 +212,58 @@ impl WebSearchProvider for DeepSeekSearchProvider {
         let value = response
             .json::<serde_json::Value>()
             .await
-            .map_err(|error| WebError::new("WEB_PROVIDER_ERROR", error.to_string()))?;
+            .map_err(|error| {
+                search_endpoint_error(
+                    &url,
+                    format!("DeepSeek returned an unprocessable response body: {error}"),
+                )
+            })?;
         if !status.is_success() {
             let message = value
                 .pointer("/error/message")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("DeepSeek web search request failed");
-            return Err(WebError::new("WEB_PROVIDER_ERROR", message));
+            return Err(search_endpoint_error(
+                &url,
+                format!("DeepSeek API error (HTTP {}): {message}", status.as_u16()),
+            ));
         }
-        Self::project(value)
+        Self::project(value).map_err(|error| search_endpoint_error(&url, error.to_string()))
+    }
+}
+
+fn search_endpoint_error(endpoint: &str, message: impl AsRef<str>) -> WebError {
+    WebError::new(
+        "WEB_PROVIDER_ERROR",
+        format!(
+            "{}\n\nThe web search request used endpoint {:?}. Search endpoint configuration is separate from chat. If that endpoint is not intended, guide the user to Settings > Plugins > Plugin configuration > Web search, where they can change and save Endpoint. If that settings page is unavailable, the user can set DEEPSEEK_SEARCH_BASE_URL or configure web-search-deepseek.baseURL to a trusted Anthropic-compatible Messages API base. Only the user should choose or change the endpoint.",
+            message.as_ref(),
+            endpoint
+        ),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_error_names_the_actual_endpoint_and_recovery_surface() {
+        let endpoint = "https://search.example.invalid/anthropic/v1/messages";
+        let error =
+            search_endpoint_error(endpoint, "DeepSeek search request failed: connection reset");
+
+        assert_eq!(error.code(), "WEB_PROVIDER_ERROR");
+        assert!(error.to_string().contains(endpoint));
+        assert!(
+            error
+                .to_string()
+                .contains("Settings > Plugins > Plugin configuration > Web search")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("Only the user should choose or change the endpoint")
+        );
     }
 }

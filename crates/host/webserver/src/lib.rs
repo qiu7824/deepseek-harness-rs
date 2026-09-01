@@ -11,5 +11,5 @@ pub mod invariant;
 pub use index::{
     Config, Host, RouteDisposer, WebHandlerError, WebIndexTap, WebRequest, WebResponse, WebRoute,
     WebRouteHandler, WebRouteKind, WebServer, WebServerPlugin, WebUpgradeHandler, WebUpgradeRoute,
-    WebUpgraded,
+    WebUpgraded, accept_websocket,
 };

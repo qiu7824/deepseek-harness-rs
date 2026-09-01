@@ -12,6 +12,7 @@
 pub mod domain;
 pub mod invariant;
 pub mod persistence;
+pub mod projection;
 pub mod runtime;
 pub mod tools;
 pub mod transaction;
@@ -24,6 +25,7 @@ use cordis::{
     ArcValue, Context, EventOptions, InjectSpec, Listener, Plugin, PluginError, downcast,
 };
 use dsh_agent::{AgentLifecyclePayload, AgentRegistry, AgentStatus, AgentStatusPayload};
+use dsh_session_projection::SessionProjectionRegistry;
 
 pub use crate::domain::{
     MIN_EVERY_INTERVAL_SECONDS, SCHEDULE_CHANGE_VERSION, ScheduleInputError, ScheduleLogError,
@@ -33,6 +35,7 @@ pub use crate::domain::{
     resolve_every_occurrence, schedule_view,
 };
 pub use crate::persistence::{SchedulePersistenceError, flush_schedule_persistence};
+pub use crate::projection::schedule_projection_definition;
 pub use crate::runtime::ScheduleRuntime;
 pub use crate::tools::register_schedule_tools;
 pub use crate::transaction::run_schedule_transaction;
@@ -47,6 +50,15 @@ pub const INJECT: [&str; 4] = ["agents", "sessions", "tools", "sessionPersistenc
 /// Install Schedule only for root agents published after this plugin loads
 /// (TS `apply`).
 pub fn apply(ctx: &Context) {
+    if let Some(registry) = ctx
+        .get_typed::<Arc<SessionProjectionRegistry>>("sessionProjections", false)
+        .map(|slot| slot.as_ref().clone())
+    {
+        registry
+            .register(ctx, schedule_projection_definition())
+            .expect("schedule projection registration");
+    }
+
     let runtimes: Arc<parking_lot::Mutex<HashMap<usize, cordis::Disposer>>> =
         Arc::new(parking_lot::Mutex::new(HashMap::new()));
     let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
