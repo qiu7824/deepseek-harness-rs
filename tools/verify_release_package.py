@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import pathlib
+import re
 import subprocess
 import tarfile
 import zipfile
@@ -12,6 +13,13 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SKIN_MARKER = b"\n__DSH_SKIN_PAYLOAD_V1_4F92C3A7__\n"
+SAFE_RELEASE_COMPONENT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
+
+
+def validated_release_component(field: str, value: str) -> str:
+    if SAFE_RELEASE_COMPONENT.fullmatch(value) is None or value in {".", ".."}:
+        raise ValueError(f"invalid {field}: {value!r}")
+    return value
 
 
 def main() -> None:
@@ -21,8 +29,10 @@ def main() -> None:
     parser.add_argument("--variant", choices=["core", "skin", "free"], required=True)
     parser.add_argument("--version", required=True)
     args = parser.parse_args()
+    arch = validated_release_component("arch", args.arch)
+    version = validated_release_component("version", args.version)
 
-    suffix = f"deepseek-harness-rs-v{args.version}-{args.platform}-{args.arch}-{args.variant}"
+    suffix = f"deepseek-harness-rs-v{version}-{args.platform}-{arch}-{args.variant}"
     archive = ROOT / "dist" / (
         f"{suffix}-portable.zip" if args.platform == "windows" else f"{suffix}-portable.tar.gz"
     )
@@ -127,9 +137,9 @@ def main() -> None:
 
     expected_manifest = {
         "name": suffix,
-        "version": args.version,
+        "version": version,
         "platform": args.platform,
-        "arch": args.arch,
+        "arch": arch,
         "variant": args.variant,
         "entry": f"dsh-launcher{executable_suffix}",
         "host": f"deepseek-harness-rs{executable_suffix}",
@@ -177,7 +187,7 @@ def main() -> None:
     if hashlib.sha256(staged_host.read_bytes()).digest() != hashlib.sha256(release_host.read_bytes()).digest():
         raise SystemExit("packaged host does not match target/release host")
     version_output = subprocess.check_output([str(staged_host), "--version"], text=True).strip()
-    if version_output.rsplit(" ", 1)[-1] != args.version:
+    if version_output.rsplit(" ", 1)[-1] != version:
         raise SystemExit(f"packaged host version mismatch: {version_output}")
 
     plugin_manifest_name = prefix + "web/dist/plugins/manifest.json"

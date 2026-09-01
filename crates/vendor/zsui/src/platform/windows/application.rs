@@ -152,13 +152,6 @@ impl WindowsWin32MessageLoop {
     pub fn run_with_windows(
         windows: &[WindowsWin32OwnedMainWindowHandles],
     ) -> WindowsWin32MessageLoopResult {
-        Self::run_with_windows_and_status_items(windows, None)
-    }
-
-    pub fn run_with_windows_and_status_items(
-        windows: &[WindowsWin32OwnedMainWindowHandles],
-        mut status_items: Option<&mut WindowsWin32StatusItemHost>,
-    ) -> WindowsWin32MessageLoopResult {
         let mut msg: MSG = unsafe { zeroed() };
         loop {
             let code = unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) };
@@ -173,44 +166,6 @@ impl WindowsWin32MessageLoop {
                 .any(|window| window.translate_accelerator(&msg))
             {
                 continue;
-            }
-            if let Some(host) = status_items.as_deref_mut() {
-                if host.owns_callback_message(&msg) {
-                    let event = host.callback_event(&msg);
-                    if matches!(event, WM_LBUTTONUP | WM_LBUTTONDBLCLK) {
-                        let _ = execute_windows_win32_status_command(
-                            windows
-                                .first()
-                                .map(WindowsWin32OwnedMainWindowHandles::main)
-                                .unwrap_or(null_mut()),
-                            &Command::ShowMainWindow,
-                        );
-                        continue;
-                    }
-                    if matches!(event, WM_RBUTTONUP | WM_CONTEXTMENU) {
-                        if let Ok(NativeStatusMenuCommandResult::Dispatched(command)) =
-                            host.present_status_item_menu_at_cursor(0)
-                        {
-                            let owner = windows
-                                .first()
-                                .map(WindowsWin32OwnedMainWindowHandles::main)
-                                .unwrap_or(null_mut());
-                            if !execute_windows_win32_status_command(owner, &command) {
-                                if let Some(report) =
-                                    dispatch_windows_win32_window_view_input(owner, |route| {
-                                        route.dispatch_app_command(command)
-                                    })
-                                {
-                                    for lifecycle in &report.window_lifecycle_commands {
-                                        let _ =
-                                            execute_windows_win32_status_command(owner, lifecycle);
-                                    }
-                                }
-                            }
-                        }
-                        continue;
-                    }
-                }
             }
             unsafe {
                 TranslateMessage(&msg);
@@ -287,6 +242,7 @@ pub fn create_owned_windows_for_specs_with_routes(
     clear_windows_win32_window_view_input_routes();
     clear_windows_win32_window_shell_input_routes();
     clear_windows_win32_window_menu_command_tables();
+    clear_windows_win32_status_item_routes();
     let capabilities = HostCapabilities::windows_native_window_host();
     let mut host = WindowsWin32MainWindowHost::new();
     let mut handles = Vec::new();
@@ -311,9 +267,7 @@ pub fn create_owned_windows_for_specs_with_routes(
                     set_windows_win32_window_shell_input_route(created.main, route.clone());
                 }
                 host.apply_main_window_appearance(created.main);
-                if !created.quick.is_null() {
-                    host.apply_main_window_appearance(created.quick);
-                }
+                host.apply_main_window_appearance(created.quick);
                 let mut owned = WindowsWin32OwnedMainWindowHandles::new(created);
                 if let Some(icon_path) = icon_path.as_deref() {
                     let icon = WindowsWin32OwnedAppIconResource::from_icon_path(icon_path)?;
@@ -569,6 +523,7 @@ fn system_metric(metric: i32) -> i32 {
     unsafe { GetSystemMetrics(metric).max(1) }
 }
 
+
 pub fn run_windows_win32_native_window_event_loop(specs: &[WindowSpec]) -> ZsuiResult<()> {
     run_windows_win32_native_window_event_loop_with_status_items(specs, &[])
 }
@@ -642,10 +597,7 @@ pub fn run_windows_win32_native_window_event_loop_with_routes_and_status_items(
         }
         _status_item_host = Some(host);
     }
-    match WindowsWin32MessageLoop::run_with_windows_and_status_items(
-        &_handles,
-        _status_item_host.as_mut(),
-    ) {
+    match WindowsWin32MessageLoop::run_with_windows(&_handles) {
         WindowsWin32MessageLoopResult::Quit(_) => Ok(()),
         WindowsWin32MessageLoopResult::Failed => Err(ZsuiError::host(
             "windows_win32_message_loop",

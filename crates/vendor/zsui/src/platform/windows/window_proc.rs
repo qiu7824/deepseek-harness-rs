@@ -4,6 +4,14 @@ pub unsafe extern "system" fn zsui_win32_default_window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    let taskbar_created_message = windows_win32_taskbar_created_message();
+    if taskbar_created_message != 0 && msg == taskbar_created_message {
+        restore_windows_win32_status_items(hwnd);
+        return 0;
+    }
+    if dispatch_windows_win32_status_item_callback(hwnd, msg, wparam, lparam).is_some() {
+        return 0;
+    }
     match msg {
         WM_NCCREATE => {
             let create_params =
@@ -46,23 +54,16 @@ pub unsafe extern "system" fn zsui_win32_default_window_proc(
         WM_CLOSE => {
             if take_windows_win32_window_close_approval(hwnd) {
                 DefWindowProcW(hwnd, msg, wparam, lparam)
+            } else if dispatch_windows_win32_window_close_requested(hwnd)
+                .is_some_and(|report| report.handled && !report.quit_requested)
+            {
+                0
             } else {
-                match dispatch_windows_win32_window_close_requested(hwnd) {
-                    Some(report) if report.handled => {
-                        for command in &report.window_lifecycle_commands {
-                            let _ = execute_windows_win32_status_command(hwnd, command);
-                        }
-                        if report.quit_requested {
-                            DefWindowProcW(hwnd, msg, wparam, lparam)
-                        } else {
-                            0
-                        }
-                    }
-                    _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
         }
         WM_NCDESTROY => {
+            clear_windows_win32_status_item_routes_for_owner(hwnd);
             let state = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0)
                 as *mut WindowsWindowCreateParams;
             let role = if state.is_null() {

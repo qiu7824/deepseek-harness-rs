@@ -1,4 +1,14 @@
 
+fn windows_win32_window_lifecycle_action(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::ShowMainWindow
+            | Command::HideMainWindow
+            | Command::ToggleMainWindow
+            | Command::Quit
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 enum WindowsSharedInputKind {
     PointerDown(Option<crate::ViewHitTarget>),
@@ -183,7 +193,7 @@ impl WindowsWin32ViewInputRoute {
         if let Some(command) = self
             .shared_runtime
             .window_close_request_command()
-            .filter(|command| windows_win32_window_lifecycle_action(command).is_some())
+            .filter(|command| windows_win32_window_lifecycle_action(command))
         {
             report.handled = true;
             report.app_command_count = report.app_command_count.max(1);
@@ -477,7 +487,7 @@ impl WindowsWin32ViewInputRoute {
             self.shared_runtime
                 .pending_app_commands()
                 .iter()
-                .filter(|command| windows_win32_window_lifecycle_action(command).is_some())
+                .filter(|command| windows_win32_window_lifecycle_action(command))
                 .cloned(),
         );
         #[cfg(feature = "canvas")]

@@ -58,7 +58,7 @@ impl MacosAppKitStatusItemHost {
         command_handler: Option<Rc<dyn Fn(Command)>>,
     ) -> ZsuiResult<()> {
         let mut menu = crate::macos_appkit_menu::MacosAppKitMenuService::new()?;
-        menu.set_detached_menu(&tray.menu)?;
+        menu.set_detached_menu(&tray.current_menu())?;
         if let Some(command_handler) = command_handler {
             menu.set_command_handler(move |command| command_handler(command));
         }

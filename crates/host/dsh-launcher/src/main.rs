@@ -15,6 +15,9 @@ use std::{
     ptr,
 };
 
+#[cfg(target_os = "macos")]
+use std::os::unix::ffi::OsStrExt;
+
 use serde::{Deserialize, Serialize};
 use zsui::stable::Dp;
 use zsui::{
@@ -355,12 +358,16 @@ fn stop_process_platform(identity: &ProcessIdentity) -> io::Result<()> {
     }
 }
 
-#[cfg(not(windows))]
-fn stop_process_platform(_identity: &ProcessIdentity) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "persistent launcher-owned process stop is only implemented on Windows",
-    ))
+#[cfg(unix)]
+fn stop_process_platform(identity: &ProcessIdentity) -> io::Result<()> {
+    let pid = i32::try_from(identity.pid)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "PID does not fit pid_t"))?;
+    let status = unsafe { libc::kill(pid, libc::SIGTERM) };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 #[cfg(windows)]
@@ -400,20 +407,133 @@ fn inspect_process_platform(pid: u32) -> io::Result<ProcessIdentity> {
     result
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn inspect_process_platform(pid: u32) -> io::Result<ProcessIdentity> {
-    if pid == std::process::id() {
-        Ok(ProcessIdentity {
-            pid,
-            creation_time: 0,
-            executable: std::env::current_exe()?,
-        })
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "process identity inspection is only implemented on Windows",
-        ))
+    let executable = fs::read_link(format!("/proc/{pid}/exe"))?;
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let creation_time = linux_process_start_time(&stat)?;
+    Ok(ProcessIdentity {
+        pid,
+        creation_time,
+        executable,
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_process_start_time(stat: &str) -> io::Result<u64> {
+    let after_command = stat
+        .rfind(") ")
+        .map(|index| &stat[index + 2..])
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid Linux process stat"))?;
+    after_command
+        .split_whitespace()
+        .nth(19)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing Linux process start time",
+            )
+        })?
+        .parse::<u64>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+#[cfg(target_os = "macos")]
+fn inspect_process_platform(pid: u32) -> io::Result<ProcessIdentity> {
+    let pid = i32::try_from(pid)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "PID does not fit pid_t"))?;
+    let status = unsafe { libc::kill(pid, 0) };
+    if status != 0 {
+        return Err(io::Error::last_os_error());
     }
+    let executable = process_executable_macos(pid)?;
+    let creation_time = process_creation_time_macos(pid)?;
+    Ok(ProcessIdentity {
+        pid: pid as u32,
+        creation_time,
+        executable,
+    })
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct ProcBsdInfo {
+    pbi_flags: u32,
+    pbi_status: u32,
+    pbi_xstatus: u32,
+    pbi_pid: u32,
+    pbi_ppid: u32,
+    pbi_uid: u32,
+    pbi_gid: u32,
+    pbi_ruid: u32,
+    pbi_rgid: u32,
+    pbi_svuid: u32,
+    pbi_svgid: u32,
+    rfu_1: u32,
+    pbi_comm: [i8; 16],
+    pbi_name: [i8; 32],
+    pbi_nfiles: u32,
+    pbi_pgid: u32,
+    pbi_pjobc: u32,
+    e_tdev: u32,
+    e_tpgid: u32,
+    pbi_nice: i32,
+    pbi_start_tvsec: u64,
+    pbi_start_tvusec: u64,
+}
+
+#[cfg(target_os = "macos")]
+fn process_creation_time_macos(pid: i32) -> io::Result<u64> {
+    const PROC_PIDTBSDINFO: i32 = 3;
+    let mut info: ProcBsdInfo = unsafe { std::mem::zeroed() };
+    unsafe extern "C" {
+        fn proc_pidinfo(
+            pid: i32,
+            flavor: i32,
+            arg: u64,
+            buffer: *mut core::ffi::c_void,
+            buffersize: i32,
+        ) -> i32;
+    }
+    let expected = size_of::<ProcBsdInfo>();
+    let length = unsafe {
+        proc_pidinfo(
+            pid,
+            PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut ProcBsdInfo).cast::<core::ffi::c_void>(),
+            expected as i32,
+        )
+    };
+    if length != expected as i32 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(info
+        .pbi_start_tvsec
+        .saturating_mul(1_000_000)
+        .saturating_add(info.pbi_start_tvusec))
+}
+
+#[cfg(target_os = "macos")]
+fn process_executable_macos(pid: i32) -> io::Result<PathBuf> {
+    const BUFFER_LEN: usize = 4_096;
+    let mut buffer = [0_u8; BUFFER_LEN];
+    unsafe extern "C" {
+        fn proc_pidpath(pid: i32, buffer: *mut core::ffi::c_void, buffersize: u32) -> i32;
+    }
+    let length = unsafe {
+        proc_pidpath(
+            pid,
+            buffer.as_mut_ptr().cast::<core::ffi::c_void>(),
+            BUFFER_LEN as u32,
+        )
+    };
+    if length <= 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(
+        &buffer[..length as usize],
+    )))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1333,7 +1453,17 @@ fn main() -> Result<(), zsui::ZsuiError> {
             copy,
             tray_ownership,
             autostart_enabled().unwrap_or(false),
-        ));
+        ))
+        .dynamic_menu({
+            let controller = Arc::clone(&controller);
+            move || {
+                let ownership = controller
+                    .lock()
+                    .map(|mut controller| controller.ownership())
+                    .unwrap_or(ServiceOwnership::ForeignPort);
+                tray_menu_spec(copy, ownership, autostart_enabled().unwrap_or(false))
+            }
+        });
     let command_controller = Arc::clone(&controller);
     NativeWindowBuilder::new(copy.title)
         .app_name("DeepSeek Harness-rs")
@@ -1437,6 +1567,25 @@ mod tests {
         assert!(source.contains("let home = active_home(&self.root);"));
         assert!(source.contains("LauncherStateFile::owned("));
         assert!(source.contains("home,"));
+    }
+
+    #[test]
+    fn unix_launcher_inspects_and_stops_the_spawned_host_process() {
+        let source = include_str!("main.rs");
+        assert!(source.contains("/proc/{pid}/exe"));
+        assert!(source.contains("libc::kill(pid, libc::SIGTERM)"));
+        assert!(source.contains("libc::kill(pid, 0)"));
+        assert!(source.contains("fn process_creation_time_macos(pid: i32)"));
+    }
+
+    #[test]
+    fn linux_process_start_time_parser_handles_spaces_and_parentheses_in_comm() {
+        let mut fields = vec!["S".to_string()];
+        fields.extend((4..=21).map(|field| field.to_string()));
+        fields.push("987654".to_string());
+        fields.push("0".to_string());
+        let stat = format!("42 (host worker) helper) {}", fields.join(" "));
+        assert_eq!(super::linux_process_start_time(&stat).unwrap(), 987654);
     }
 
     #[test]
@@ -1556,8 +1705,8 @@ mod tests {
         assert!(source.contains(".tray(tray)"));
         for required in [
             "Shell_NotifyIconW",
-            "present_status_item_menu_at_cursor",
-            "execute_windows_win32_status_command",
+            "dispatch_windows_win32_status_item_callback",
+            "dispatch_windows_win32_app_command",
         ] {
             assert!(
                 tray.contains(required) || application.contains(required),
@@ -1565,19 +1714,19 @@ mod tests {
             );
         }
         assert!(window_proc.contains("WM_CLOSE"));
-        assert!(window_proc.contains("window_lifecycle_commands"));
+        assert!(window_proc.contains("dispatch_windows_win32_status_item_callback"));
         assert!(menu.contains("dispatch_windows_win32_window_view_input"));
-        assert!(menu.contains("route.dispatch_app_command(command.clone())"));
+        assert!(menu.contains("dispatch_windows_win32_app_command"));
     }
 
     #[test]
     fn tray_bridge_targets_the_visible_zsui_window_and_has_a_testable_close_contract() {
-        let application = include_str!("../../../vendor/zsui/src/platform/windows/application.rs");
         let tray = include_str!("../../../vendor/zsui/src/platform/windows/services/tray.rs");
-        assert!(application.contains("WindowsWin32OwnedMainWindowHandles::main"));
-        assert!(tray.contains("WindowsWin32WindowLifecycleAction::HideMainWindow"));
-        assert!(tray.contains("WindowsWin32WindowLifecycleAction::ShowMainWindow"));
-        assert!(tray.contains("WindowsWin32WindowLifecycleAction::Quit"));
+        let window_proc = include_str!("../../../vendor/zsui/src/platform/windows/window_proc.rs");
+        assert!(tray.contains("dispatch_windows_win32_status_item_callback"));
+        assert!(tray.contains("dispatch_windows_win32_app_command"));
+        assert!(window_proc.contains("restore_windows_win32_status_items(hwnd)"));
+        assert!(window_proc.contains("dispatch_windows_win32_status_item_callback"));
     }
 
     #[test]

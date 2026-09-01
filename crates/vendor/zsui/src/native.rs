@@ -13748,10 +13748,11 @@ mod tests {
             );
 
         let mut runtime = builder.native_view_input_runtime();
-        assert!(runtime.current_interaction_plan().is_some_and(|plan| plan
-            .hit_targets
-            .iter()
-            .any(|target| { target.kind == crate::ViewHitTargetKind::SplitViewScrim })));
+        assert!(runtime.current_interaction_plan().is_some_and(|plan| {
+            plan.hit_targets
+                .iter()
+                .any(|target| target.kind == crate::ViewHitTargetKind::SplitViewScrim)
+        }));
         let tabbed = runtime.dispatch_key(NativeViewKey::Tab);
         assert!(tabbed.handled);
         assert_eq!(runtime.focused_widget(), Some(pane_action));
@@ -15912,6 +15913,7 @@ mod tests {
                 .item("Open", crate::Command::ShowMainWindow)
                 .separator()
                 .item("Quit", crate::Command::Quit),
+            menu_provider: None,
         });
 
         assert!(matches!(

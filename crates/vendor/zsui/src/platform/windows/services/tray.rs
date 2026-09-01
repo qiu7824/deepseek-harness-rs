@@ -1,7 +1,51 @@
+#[derive(Clone)]
+struct WindowsWin32StatusItemRouteRecord {
+    owner: isize,
+    callback_message: u32,
+    tray_id: u32,
+    tooltip: Option<String>,
+    icon: Option<isize>,
+    menu: MenuSpec,
+    menu_provider: Option<crate::tray::TrayMenuProvider>,
+}
+
+impl WindowsWin32StatusItemRouteRecord {
+    fn notify_data(&self) -> NOTIFYICONDATAW {
+        tray_notify_data(
+            self.owner as HWND,
+            self.tray_id,
+            self.tooltip.as_deref(),
+            self.icon.map(|icon| icon as HICON),
+            self.callback_message,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WindowsWin32StatusItemCallbackTarget {
+    tray_id: u32,
+    event_message: u32,
+    menu: MenuSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WindowsWin32StatusItemCallbackDispatch {
+    Ignored,
+    Menu(NativeStatusMenuCommandResult),
+    Failed(String),
+}
+
+static WINDOWS_WIN32_STATUS_ITEM_ROUTES: OnceLock<
+    Mutex<Vec<WindowsWin32StatusItemRouteRecord>>,
+> = OnceLock::new();
+static WINDOWS_WIN32_TASKBAR_CREATED_MESSAGE: OnceLock<u32> = OnceLock::new();
+
 pub struct WindowsWin32OwnedTrayIcon {
     data: NOTIFYICONDATAW,
     icon: Option<WindowsWin32OwnedIcon>,
+    tooltip: Option<String>,
     menu: MenuSpec,
+    menu_provider: Option<crate::tray::TrayMenuProvider>,
     menu_command_table: WindowsWin32StatusMenuCommandTable,
     active: bool,
 }
@@ -45,13 +89,17 @@ impl WindowsWin32OwnedTrayIcon {
             ));
         }
         let menu_command_table = WindowsWin32StatusMenuCommandTable::from_menu(&request.menu);
-        Ok(Self {
+        let item = Self {
             data,
             icon,
+            tooltip: request.tooltip,
             menu: request.menu,
+            menu_provider: request.menu_provider,
             menu_command_table,
             active: true,
-        })
+        };
+        set_windows_win32_status_item_route(item.route_record());
+        Ok(item)
     }
 
     pub const fn id(&self) -> u32 {
@@ -84,12 +132,16 @@ impl WindowsWin32OwnedTrayIcon {
         if let Some(tooltip) = tooltip {
             copy_wide_truncated(tooltip, &mut self.data.szTip);
         }
-        unsafe { Shell_NotifyIconW(NIM_MODIFY, &mut self.data) != 0 }
+        self.tooltip = tooltip.map(str::to_owned);
+        let updated = unsafe { Shell_NotifyIconW(NIM_MODIFY, &mut self.data) != 0 };
+        set_windows_win32_status_item_route(self.route_record());
+        updated
     }
 
     pub fn set_menu(&mut self, menu: MenuSpec) {
         self.menu_command_table = WindowsWin32StatusMenuCommandTable::from_menu(&menu);
         self.menu = menu;
+        set_windows_win32_status_item_route(self.route_record());
     }
 
     pub fn dispatch_native_menu_command(&self, native_id: u32) -> NativeStatusMenuCommandResult {
@@ -116,64 +168,25 @@ impl WindowsWin32OwnedTrayIcon {
         }
         deleted
     }
+
+    fn route_record(&self) -> WindowsWin32StatusItemRouteRecord {
+        WindowsWin32StatusItemRouteRecord {
+            owner: self.owner() as isize,
+            callback_message: self.callback_message(),
+            tray_id: self.id(),
+            tooltip: self.tooltip.clone(),
+            icon: self.icon.as_ref().map(|icon| icon.handle() as isize),
+            menu: self.menu.clone(),
+            menu_provider: self.menu_provider.clone(),
+        }
+    }
 }
 
 impl Drop for WindowsWin32OwnedTrayIcon {
     fn drop(&mut self) {
+        clear_windows_win32_status_item_route(self.owner(), self.callback_message(), self.id());
         let _ = self.delete_active();
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WindowsWin32WindowLifecycleAction {
-    ShowMainWindow,
-    HideMainWindow,
-    ToggleMainWindow,
-    Quit,
-}
-
-fn windows_win32_window_lifecycle_action(
-    command: &Command,
-) -> Option<WindowsWin32WindowLifecycleAction> {
-    match command {
-        Command::ShowMainWindow => Some(WindowsWin32WindowLifecycleAction::ShowMainWindow),
-        Command::HideMainWindow => Some(WindowsWin32WindowLifecycleAction::HideMainWindow),
-        Command::ToggleMainWindow => Some(WindowsWin32WindowLifecycleAction::ToggleMainWindow),
-        Command::Quit => Some(WindowsWin32WindowLifecycleAction::Quit),
-        _ => None,
-    }
-}
-
-fn execute_windows_win32_status_command(owner: HWND, command: &Command) -> bool {
-    let Some(action) = windows_win32_window_lifecycle_action(command) else {
-        return false;
-    };
-    if owner.is_null() {
-        return false;
-    }
-    unsafe {
-        match action {
-            WindowsWin32WindowLifecycleAction::ShowMainWindow => {
-                ShowWindow(owner, SW_SHOW);
-                SetForegroundWindow(owner);
-            }
-            WindowsWin32WindowLifecycleAction::HideMainWindow => {
-                ShowWindow(owner, SW_HIDE);
-            }
-            WindowsWin32WindowLifecycleAction::ToggleMainWindow => {
-                let show = IsWindowVisible(owner) == 0;
-                ShowWindow(owner, if show { SW_SHOW } else { SW_HIDE });
-                if show {
-                    SetForegroundWindow(owner);
-                }
-            }
-            WindowsWin32WindowLifecycleAction::Quit => {
-                approve_windows_win32_window_close(owner);
-                PostMessageW(owner, WM_CLOSE, 0, 0);
-            }
-        }
-    }
-    true
 }
 
 pub struct WindowsWin32StatusItemHost {
@@ -205,14 +218,6 @@ impl WindowsWin32StatusItemHost {
 
     pub const fn owner(&self) -> HWND {
         self.owner
-    }
-
-    pub fn owns_callback_message(&self, message: &MSG) -> bool {
-        message.hwnd == self.owner && message.message == self.callback_message
-    }
-
-    pub fn callback_event(&self, message: &MSG) -> u32 {
-        (message.lParam as u32) & 0xffff
     }
 
     pub fn operation_log(&self) -> &[NativeStatusItemHostOperation] {
@@ -362,6 +367,151 @@ impl NativeStatusMenuCommandHost for WindowsWin32StatusItemHost {
         };
         native_status_menu_command_from_menu(item.menu(), &request)
     }
+}
+
+fn windows_win32_status_item_routes(
+) -> &'static Mutex<Vec<WindowsWin32StatusItemRouteRecord>> {
+    WINDOWS_WIN32_STATUS_ITEM_ROUTES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn set_windows_win32_status_item_route(route: WindowsWin32StatusItemRouteRecord) {
+    let mut routes = windows_win32_status_item_routes()
+        .lock()
+        .expect("Win32 status item route registry should not be poisoned");
+    routes.retain(|candidate| {
+        candidate.owner != route.owner
+            || candidate.callback_message != route.callback_message
+            || candidate.tray_id != route.tray_id
+    });
+    routes.push(route);
+}
+
+fn clear_windows_win32_status_item_route(owner: HWND, callback_message: u32, tray_id: u32) {
+    let owner = owner as isize;
+    windows_win32_status_item_routes()
+        .lock()
+        .expect("Win32 status item route registry should not be poisoned")
+        .retain(|route| {
+            route.owner != owner
+                || route.callback_message != callback_message
+                || route.tray_id != tray_id
+        });
+}
+
+fn clear_windows_win32_status_item_routes_for_owner(owner: HWND) {
+    let owner = owner as isize;
+    windows_win32_status_item_routes()
+        .lock()
+        .expect("Win32 status item route registry should not be poisoned")
+        .retain(|route| route.owner != owner);
+}
+
+fn clear_windows_win32_status_item_routes() {
+    windows_win32_status_item_routes()
+        .lock()
+        .expect("Win32 status item route registry should not be poisoned")
+        .clear();
+}
+
+fn windows_win32_status_item_callback_target(
+    owner: HWND,
+    callback_message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> Option<WindowsWin32StatusItemCallbackTarget> {
+    if owner.is_null() {
+        return None;
+    }
+    let owner = owner as isize;
+    let tray_id = wparam as u32;
+    let event_message = lparam as u32;
+    windows_win32_status_item_routes()
+        .lock()
+        .expect("Win32 status item route registry should not be poisoned")
+        .iter()
+        .find(|route| {
+            route.owner == owner
+                && route.callback_message == callback_message
+                && route.tray_id == tray_id
+        })
+        .map(|route| WindowsWin32StatusItemCallbackTarget {
+            tray_id,
+            event_message,
+            menu: route
+                .menu_provider
+                .as_ref()
+                .map(|provider| provider())
+                .unwrap_or_else(|| route.menu.clone()),
+        })
+}
+
+fn dispatch_windows_win32_status_item_callback(
+    owner: HWND,
+    callback_message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> Option<WindowsWin32StatusItemCallbackDispatch> {
+    let target = windows_win32_status_item_callback_target(
+        owner,
+        callback_message,
+        wparam,
+        lparam,
+    )?;
+    if !matches!(target.event_message, WM_RBUTTONUP | WM_CONTEXTMENU) {
+        return Some(WindowsWin32StatusItemCallbackDispatch::Ignored);
+    }
+    let popup = match WindowsWin32OwnedPopupMenu::from_menu(&target.menu) {
+        Ok(popup) => popup,
+        Err(err) => {
+            return Some(WindowsWin32StatusItemCallbackDispatch::Failed(
+                err.to_string(),
+            ));
+        }
+    };
+    let mut point = POINT { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut point) } == 0 {
+        return Some(WindowsWin32StatusItemCallbackDispatch::Failed(
+            "GetCursorPos failed".to_string(),
+        ));
+    }
+    match popup.present_at(owner, point.x, point.y) {
+        Ok(result) => {
+            if let NativeStatusMenuCommandResult::Dispatched(command) = &result {
+                dispatch_windows_win32_app_command(owner, command.clone());
+            }
+            Some(WindowsWin32StatusItemCallbackDispatch::Menu(result))
+        }
+        Err(err) => Some(WindowsWin32StatusItemCallbackDispatch::Failed(
+            err.to_string(),
+        )),
+    }
+}
+
+fn windows_win32_taskbar_created_message() -> u32 {
+    *WINDOWS_WIN32_TASKBAR_CREATED_MESSAGE.get_or_init(|| {
+        let message_name = wide_null("TaskbarCreated");
+        unsafe { RegisterWindowMessageW(message_name.as_ptr()) }
+    })
+}
+
+fn restore_windows_win32_status_items(owner: HWND) -> usize {
+    if owner.is_null() {
+        return 0;
+    }
+    let routes = windows_win32_status_item_routes()
+        .lock()
+        .expect("Win32 status item route registry should not be poisoned")
+        .iter()
+        .filter(|route| route.owner == owner as isize)
+        .cloned()
+        .collect::<Vec<_>>();
+    routes
+        .into_iter()
+        .filter(|route| {
+            let mut data = route.notify_data();
+            unsafe { Shell_NotifyIconW(NIM_ADD, &mut data) != 0 }
+        })
+        .count()
 }
 
 fn tray_notify_data(

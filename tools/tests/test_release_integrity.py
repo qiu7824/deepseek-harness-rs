@@ -71,6 +71,19 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self.assertNotIn("else ROOT / \"web\" / \"dist\"", source)
         self.assertIn("missing staged web distribution", source)
 
+    def test_release_path_components_reject_traversal(self):
+        package = load_tool("package_release")
+        verifier = load_tool("verify_release_package")
+        for module in (package, verifier):
+            for field, value in (
+                ("arch", "../outside"),
+                ("arch", "x86_64/../../outside"),
+                ("version", "0.1.2/../../outside"),
+            ):
+                with self.assertRaisesRegex(ValueError, field):
+                    module.validated_release_component(field, value)
+        self.assertEqual(package.validated_release_component("arch", "x86_64"), "x86_64")
+
     def test_release_workflow_classifies_any_semver_suffix_as_prerelease(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn("contains(github.ref_name, '-')", workflow)

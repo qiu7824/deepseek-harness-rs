@@ -33,7 +33,7 @@
     {
       "id": "@deepseek-ai/dsh-client-connection",
       "url": "/plugins/connection.js",
-      "rev": "80637b2af856c104",
+      "rev": "931bfd3c33749ffd",
       "inject": [],
       "immediately": true
     },
@@ -155,7 +155,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-conversation",
       "url": "/plugins/ui-conversation.js",
-      "rev": "fb8b2fe2caa6d3f2",
+      "rev": "74521a98a88a0b36",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",

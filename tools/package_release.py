@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import shutil
 import stat
 import sys
@@ -14,6 +15,13 @@ from build_skin_payload import build_skin_payload
 from verify_release_version import verify as verify_release_version
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+SAFE_RELEASE_COMPONENT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
+
+
+def validated_release_component(field: str, value: str) -> str:
+    if SAFE_RELEASE_COMPONENT.fullmatch(value) is None or value in {".", ".."}:
+        raise ValueError(f"invalid {field}: {value!r}")
+    return value
 
 
 
@@ -33,11 +41,13 @@ def main() -> None:
     parser.add_argument("--variant", choices=["core", "skin", "free"], default="core")
     parser.add_argument("--version", required=True)
     args = parser.parse_args()
+    arch = validated_release_component("arch", args.arch)
+    version = validated_release_component("version", args.version)
 
     core_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh")
-    verify_release_version(args.version, core_source)
+    verify_release_version(version, core_source)
 
-    suffix = f"deepseek-harness-rs-v{args.version}-{args.platform}-{args.arch}-{args.variant}"
+    suffix = f"deepseek-harness-rs-v{version}-{args.platform}-{arch}-{args.variant}"
     stage = ROOT / "dist" / suffix
     if stage.exists():
         shutil.rmtree(stage)
@@ -135,9 +145,9 @@ def main() -> None:
 
     manifest = {
         "name": suffix,
-        "version": args.version,
+        "version": version,
         "platform": args.platform,
-        "arch": args.arch,
+        "arch": arch,
         "variant": args.variant,
         "entry": entry,
         "host": core_output,

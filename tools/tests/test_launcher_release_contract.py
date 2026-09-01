@@ -74,8 +74,20 @@ class LauncherReleaseContractTests(unittest.TestCase):
             / "windows"
             / "application.rs"
         ).read_text(encoding="utf-8")
-        self.assertIn("for lifecycle in &report.window_lifecycle_commands", application)
-        self.assertIn("execute_windows_win32_status_command(owner, lifecycle)", application)
+        tray = (
+            ROOT
+            / "crates"
+            / "vendor"
+            / "zsui"
+            / "src"
+            / "platform"
+            / "windows"
+            / "services"
+            / "tray.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn("clear_windows_win32_status_item_routes", application)
+        self.assertIn("dispatch_windows_win32_status_item_callback", tray)
+        self.assertIn("restore_windows_win32_status_items", tray)
 
     def test_retained_skin_catalog_matches_the_user_selection(self):
         expected = {
@@ -125,6 +137,8 @@ class LauncherReleaseContractTests(unittest.TestCase):
         for variant in ("core", "skin", "free"):
             self.assertIn(f"--variant {variant}", workflow)
             self.assertIn(f'Variant == "{variant}"', installer)
+            self.assertIn(f'linux-x86_64-${{variant}}', workflow)
+            self.assertIn(f'macos-${{{{ matrix.arch }}}}-${{variant}}', workflow)
         self.assertIn("mimo-v2.5-free", PACKAGE.read_text(encoding="utf-8"))
         self.assertIn("mimo-v2.5-free", VERIFIER.read_text(encoding="utf-8"))
         self.assertIn('stage / "deepseek-black.ico"', PACKAGE.read_text(encoding="utf-8"))

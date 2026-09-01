@@ -81,18 +81,30 @@ jobs:
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.2-alpha.2"
-          STAGE="dist/deepseek-harness-rs-v${VERSION}-linux-x86_64-core"; PKG="dist/deb"; mkdir -p "$PKG/DEBIAN" "$PKG/opt/deepseek-harness-rs" "$PKG/usr/bin"
-          cp -R "$STAGE"/. "$PKG/opt/deepseek-harness-rs/"
-          printf 'Package: deepseek-harness-rs\nVersion: %s\nSection: devel\nPriority: optional\nArchitecture: amd64\nMaintainer: DeepSeek Harness-rs\nDescription: Rust native DeepSeek Harness Web Agent\n' "$VERSION" > "$PKG/DEBIAN/control"
-          ln -s /opt/deepseek-harness-rs/deepseek-harness-rs "$PKG/usr/bin/deepseek-harness-rs"
-          dpkg-deb --build "$PKG" "dist/deepseek-harness-rs-v${VERSION}-linux-x86_64.deb"
+          for variant in core skin free; do
+            STAGE="dist/deepseek-harness-rs-v${VERSION}-linux-x86_64-${variant}"
+            PKG="dist/deb-${variant}"
+            rm -rf "$PKG"
+            mkdir -p "$PKG/DEBIAN" "$PKG/opt/deepseek-harness-rs/${variant}" "$PKG/usr/bin"
+            cp -R "$STAGE"/. "$PKG/opt/deepseek-harness-rs/${variant}/"
+            printf 'Package: deepseek-harness-rs-%s\nVersion: %s\nSection: devel\nPriority: optional\nArchitecture: amd64\nMaintainer: DeepSeek Harness-rs\nDescription: Rust native DeepSeek Harness Web Agent (%s variant)\n' "$variant" "$VERSION" "$variant" > "$PKG/DEBIAN/control"
+            ln -s "/opt/deepseek-harness-rs/${variant}/dsh-launcher" "$PKG/usr/bin/deepseek-harness-rs-${variant}"
+            dpkg-deb --build "$PKG" "dist/deepseek-harness-rs-v${VERSION}-linux-x86_64-${variant}.deb"
+          done
       - name: macOS PKG 安装包
         if: matrix.platform == 'macos'
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.2-alpha.2"
-          STAGE="dist/deepseek-harness-rs-v${VERSION}-macos-${{ matrix.arch }}-core"; ROOT="dist/pkgroot"; mkdir -p "$ROOT/usr/local/lib/deepseek-harness-rs" "$ROOT/usr/local/bin"; cp -R "$STAGE"/. "$ROOT/usr/local/lib/deepseek-harness-rs/"; ln -s ../lib/deepseek-harness-rs/deepseek-harness-rs "$ROOT/usr/local/bin/deepseek-harness-rs"
-          pkgbuild --root "$ROOT" --identifier io.github.qiu7824.deepseek-harness-rs --version "$VERSION" "dist/deepseek-harness-rs-v${VERSION}-macos-${{ matrix.arch }}.pkg"
+          for variant in core skin free; do
+            STAGE="dist/deepseek-harness-rs-v${VERSION}-macos-${{ matrix.arch }}-${variant}"
+            PKGROOT="dist/pkgroot-${variant}"
+            rm -rf "$PKGROOT"
+            mkdir -p "$PKGROOT/usr/local/lib/deepseek-harness-rs/${variant}" "$PKGROOT/usr/local/bin"
+            cp -R "$STAGE"/. "$PKGROOT/usr/local/lib/deepseek-harness-rs/${variant}/"
+            ln -s "../lib/deepseek-harness-rs/${variant}/dsh-launcher" "$PKGROOT/usr/local/bin/deepseek-harness-rs-${variant}"
+            pkgbuild --root "$PKGROOT" --identifier "io.github.qiu7824.deepseek-harness-rs.${variant}" --version "$VERSION" "dist/deepseek-harness-rs-v${VERSION}-macos-${{ matrix.arch }}-${variant}.pkg"
+          done
       - name: 生成校验和
         shell: bash
         run: |

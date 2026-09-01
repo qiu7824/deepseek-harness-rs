@@ -2372,6 +2372,7 @@ name = "dsh-launcher"
 version = "0.1.2-alpha.2"
 dependencies = [
  "dsh-home-paths",
+ "libc",
  "semver",
  "serde",
  "serde_json",

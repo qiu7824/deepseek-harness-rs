@@ -3705,6 +3705,82 @@ mod tests {
     }
 
     #[test]
+    fn status_item_callback_route_matches_owner_message_and_tray_id() {
+        clear_windows_win32_status_item_routes();
+        let owner = 0x7a11isize as HWND;
+        let menu = MenuSpec::new().item("Open", Command::ShowMainWindow);
+        set_windows_win32_status_item_route(WindowsWin32StatusItemRouteRecord {
+            owner: owner as isize,
+            callback_message: ZSUI_WIN32_TRAY_CALLBACK_MESSAGE,
+            tray_id: 41,
+            tooltip: Some("ZSUI".to_string()),
+            icon: Some(9),
+            menu: menu.clone(),
+        });
+
+        assert_eq!(
+            windows_win32_status_item_callback_target(
+                owner,
+                ZSUI_WIN32_TRAY_CALLBACK_MESSAGE,
+                41,
+                WM_RBUTTONUP as LPARAM,
+            ),
+            Some(WindowsWin32StatusItemCallbackTarget {
+                tray_id: 41,
+                event_message: WM_RBUTTONUP,
+                menu,
+            })
+        );
+        assert!(windows_win32_status_item_callback_target(
+            owner,
+            ZSUI_WIN32_TRAY_CALLBACK_MESSAGE,
+            42,
+            WM_RBUTTONUP as LPARAM,
+        )
+        .is_none());
+        assert_eq!(
+            dispatch_windows_win32_status_item_callback(
+                owner,
+                ZSUI_WIN32_TRAY_CALLBACK_MESSAGE,
+                41,
+                WM_LBUTTONUP as LPARAM,
+            ),
+            Some(WindowsWin32StatusItemCallbackDispatch::Ignored)
+        );
+
+        clear_windows_win32_status_item_routes_for_owner(owner);
+        assert!(windows_win32_status_item_callback_target(
+            owner,
+            ZSUI_WIN32_TRAY_CALLBACK_MESSAGE,
+            41,
+            WM_RBUTTONUP as LPARAM,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn status_item_route_retains_notify_data_for_explorer_restart() {
+        let route = WindowsWin32StatusItemRouteRecord {
+            owner: 0x7a12,
+            callback_message: ZSUI_WIN32_TRAY_CALLBACK_MESSAGE,
+            tray_id: 73,
+            tooltip: Some("Restored".to_string()),
+            icon: Some(27),
+            menu: MenuSpec::new().item("Quit", Command::Quit),
+        };
+        let data = route.notify_data();
+
+        assert_eq!(data.hWnd as isize, route.owner);
+        assert_eq!(data.uID, route.tray_id);
+        assert_eq!(data.uCallbackMessage, route.callback_message);
+        assert_eq!(data.hIcon as isize, 27);
+        assert_ne!(data.uFlags & NIF_MESSAGE, 0);
+        assert_ne!(data.uFlags & NIF_TIP, 0);
+        assert_ne!(data.uFlags & NIF_ICON, 0);
+        assert_eq!(data.szTip[0], 'R' as u16);
+    }
+
+    #[test]
     fn status_menu_command_table_maps_nested_menu_to_native_ids() {
         let menu = MenuSpec::new()
             .item("Open", Command::ShowMainWindow)
@@ -3783,104 +3859,6 @@ mod tests {
             NativeStatusMenuCommandResult::Dispatched(Command::ShowMainWindow)
         );
         assert!(popup.destroy());
-    }
-
-    #[test]
-    fn built_in_status_commands_map_to_native_main_window_lifecycle() {
-        assert_eq!(
-            windows_win32_window_lifecycle_action(&Command::ShowMainWindow),
-            Some(WindowsWin32WindowLifecycleAction::ShowMainWindow)
-        );
-        assert_eq!(
-            windows_win32_window_lifecycle_action(&Command::HideMainWindow),
-            Some(WindowsWin32WindowLifecycleAction::HideMainWindow)
-        );
-        assert_eq!(
-            windows_win32_window_lifecycle_action(&Command::ToggleMainWindow),
-            Some(WindowsWin32WindowLifecycleAction::ToggleMainWindow)
-        );
-        assert_eq!(
-            windows_win32_window_lifecycle_action(&Command::Quit),
-            Some(WindowsWin32WindowLifecycleAction::Quit)
-        );
-        assert_eq!(
-            windows_win32_window_lifecycle_action(&Command::custom("product.refresh")),
-            None
-        );
-    }
-
-    #[test]
-    fn window_close_hide_command_uses_the_same_native_lifecycle_as_the_tray() {
-        assert_eq!(
-            windows_win32_window_lifecycle_action(&Command::HideMainWindow),
-            Some(WindowsWin32WindowLifecycleAction::HideMainWindow)
-        );
-        assert_eq!(
-            windows_win32_window_lifecycle_action(&Command::ShowMainWindow),
-            Some(WindowsWin32WindowLifecycleAction::ShowMainWindow)
-        );
-        assert_eq!(
-            windows_win32_window_lifecycle_action(&Command::Quit),
-            Some(WindowsWin32WindowLifecycleAction::Quit)
-        );
-        assert_eq!(
-            windows_win32_window_lifecycle_action(&Command::custom("product.refresh")),
-            None
-        );
-
-        let runtime = crate::view::live_view_runtime(
-            (),
-            |_| crate::spacer(),
-            |_, _: (), _| {},
-            crate::Rect {
-                x: 0,
-                y: 0,
-                width: 200,
-                height: 120,
-            },
-            crate::Dpi::standard(),
-        );
-        let mut route = WindowsWin32ViewInputRoute::from_live_view(runtime)
-            .window_close_request_command(Some(Command::HideMainWindow));
-        let report = route.dispatch_window_close_requested();
-        assert!(report.handled);
-        assert!(!report.quit_requested);
-        assert_eq!(
-            report.window_lifecycle_commands,
-            vec![Command::HideMainWindow]
-        );
-    }
-
-    #[test]
-    fn window_lifecycle_report_preserves_show_and_quit_commands() {
-        let dispatch = |close_command: Command| {
-            let runtime = crate::view::live_view_runtime(
-                (),
-                |_| crate::spacer(),
-                |_, _: (), _| {},
-                crate::Rect {
-                    x: 0,
-                    y: 0,
-                    width: 200,
-                    height: 120,
-                },
-                crate::Dpi::standard(),
-            );
-            WindowsWin32ViewInputRoute::from_live_view(runtime)
-                .window_close_request_command(Some(close_command))
-                .dispatch_window_close_requested()
-        };
-
-        let show = dispatch(Command::ShowMainWindow);
-        assert_eq!(
-            show.window_lifecycle_commands,
-            vec![Command::ShowMainWindow]
-        );
-        assert!(!show.quit_requested);
-
-        let quit = dispatch(Command::Quit);
-        assert_eq!(quit.window_lifecycle_commands, vec![Command::Quit]);
-        assert!(quit.quit_requested);
     }
 
     #[test]
