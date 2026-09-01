@@ -1,0 +1,2761 @@
+use std::{
+    collections::HashMap,
+    ffi::c_void,
+    io::Cursor,
+    mem::size_of,
+    ptr::null,
+    sync::{Arc, Mutex, OnceLock},
+};
+
+use crate::{
+    native_icons::{WINDOWS_FLUENT_ICON_FONT_FAMILY, WINDOWS_MDL2_ICON_FONT_FAMILY},
+    Color, ColorRole, Dpi, HorizontalAlign, NativeDrawCommand, NativeDrawCommandOperation,
+    NativeDrawCommandSink, NativeDrawFill, NativeDrawIconCommand, NativeDrawImageCommand,
+    NativeDrawPlan, NativeDrawTextCommand, NativeIconColorMode, NativeImageInterpolation,
+    NativeStyleResolver, Rect, Renderer, SemanticTextStyle, Size, TextLayout, TextRun, TextStyle,
+    TextWeight, TextWrap, VerticalAlign, ZsIcon,
+};
+#[cfg(all(feature = "text-input-core", feature = "windows-win32"))]
+use windows_sys::Win32::Globalization::{
+    ScriptStringAnalyse, ScriptStringCPtoX, ScriptStringFree, ScriptString_pSize, SSA_BREAK,
+    SSA_FALLBACK, SSA_GLYPHS, SSA_LINK,
+};
+use windows_sys::Win32::{
+    Foundation::{POINT, RECT},
+    Graphics::Gdi::{
+        CreateCompatibleDC, CreateFontW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject,
+        DrawTextW, FillRect, FrameRect, GdiFlush, GetDeviceCaps, GetStockObject, GetTextFaceW,
+        GetTextMetricsW, IntersectClipRect, Polygon, RestoreDC, RoundRect, SaveDC, SelectObject,
+        SetBkMode, SetBrushOrgEx, SetStretchBltMode, SetTextColor, StretchDIBits, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH,
+        DIB_RGB_COLORS, FF_DONTCARE, HALFTONE, HDC, HGDIOBJ, LOGPIXELSY, NULL_PEN,
+        OUT_DEFAULT_PRECIS, PS_SOLID, SRCCOPY, TEXTMETRICW,
+    },
+    UI::WindowsAndMessaging::SystemParametersInfoW,
+};
+
+#[allow(non_camel_case_types)]
+type HPAINTBUFFER = *mut c_void;
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct BpPaintParams {
+    cbSize: u32,
+    dwFlags: u32,
+    prcExclude: *const RECT,
+    pBlendFunction: *const c_void,
+}
+
+const BPBF_TOPDOWNDIB: u32 = 2;
+static BUFFERED_PAINT_INIT: OnceLock<()> = OnceLock::new();
+static GDIP_TOKEN: OnceLock<Option<usize>> = OnceLock::new();
+static WINDOWS_SYSTEM_ICON_FONT: OnceLock<WindowsSystemIconFont> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowsUiFontFamilies {
+    small: &'static str,
+    text: &'static str,
+    display: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsSystemIconFont {
+    SegoeFluentIcons,
+    SegoeMdl2Assets,
+    Unavailable,
+}
+
+impl WindowsSystemIconFont {
+    pub const fn font_family(self) -> Option<&'static str> {
+        match self {
+            Self::SegoeFluentIcons => Some(WINDOWS_FLUENT_ICON_FONT_FAMILY),
+            Self::SegoeMdl2Assets => Some(WINDOWS_MDL2_ICON_FONT_FAMILY),
+            Self::Unavailable => None,
+        }
+    }
+
+    pub const fn glyph(self, icon: ZsIcon) -> Option<&'static str> {
+        match self {
+            Self::SegoeFluentIcons => Some(icon.windows_fluent_glyph()),
+            Self::SegoeMdl2Assets => Some(icon.windows_mdl2_glyph()),
+            Self::Unavailable => None,
+        }
+    }
+}
+
+pub const fn select_windows_system_icon_font(
+    fluent_available: bool,
+    mdl2_available: bool,
+) -> WindowsSystemIconFont {
+    if fluent_available {
+        WindowsSystemIconFont::SegoeFluentIcons
+    } else if mdl2_available {
+        WindowsSystemIconFont::SegoeMdl2Assets
+    } else {
+        WindowsSystemIconFont::Unavailable
+    }
+}
+
+#[link(name = "uxtheme")]
+unsafe extern "system" {
+    fn BufferedPaintInit() -> i32;
+    fn BeginBufferedPaint(
+        hdcTarget: HDC,
+        prcTarget: *const RECT,
+        dwFormat: u32,
+        pPaintParams: *const BpPaintParams,
+        phdc: *mut HDC,
+    ) -> HPAINTBUFFER;
+    fn EndBufferedPaint(hBufferedPaint: HPAINTBUFFER, fUpdateTarget: i32) -> i32;
+}
+
+const TRANSPARENT: i32 = 1;
+const DT_LEFT: u32 = 0x0000;
+const DT_CENTER: u32 = 0x0001;
+const DT_RIGHT: u32 = 0x0002;
+const DT_VCENTER: u32 = 0x0004;
+const DT_BOTTOM: u32 = 0x0008;
+const DT_WORDBREAK: u32 = 0x0010;
+const DT_SINGLELINE: u32 = 0x0020;
+const DT_CALCRECT: u32 = 0x0400;
+const DT_NOPREFIX: u32 = 0x0800;
+const DT_END_ELLIPSIS: u32 = 0x0000_8000;
+const CLEARTYPE_QUALITY: u32 = 5;
+const GDIP_SMOOTHING_MODE_ANTI_ALIAS: i32 = 4;
+const GDIP_UNIT_PIXEL: i32 = 2;
+const GDIP_FILL_MODE_ALTERNATE: i32 = 0;
+const SPI_GETNONCLIENTMETRICS: u32 = 0x0029;
+#[cfg(any(feature = "windows-rust-text", feature = "windows-directwrite"))]
+const WINDOWS_UI_SMALL_FONT_FAMILY: &str = "Segoe UI Variable Small";
+const WINDOWS_UI_FONT_FAMILY: &str = "Segoe UI Variable Text";
+#[cfg(any(feature = "windows-rust-text", feature = "windows-directwrite"))]
+const WINDOWS_UI_DISPLAY_FONT_FAMILY: &str = "Segoe UI Variable Display";
+const WINDOWS_LEGACY_UI_FONT_FAMILY: &str = "Segoe UI";
+static WINDOWS_SYSTEM_UI_FONT_FAMILY: OnceLock<String> = OnceLock::new();
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WindowsRawLogFontW {
+    height: i32,
+    width: i32,
+    escapement: i32,
+    orientation: i32,
+    weight: i32,
+    italic: u8,
+    underline: u8,
+    strike_out: u8,
+    char_set: u8,
+    output_precision: u8,
+    clip_precision: u8,
+    quality: u8,
+    pitch_and_family: u8,
+    face_name: [u16; 32],
+}
+
+#[repr(C)]
+struct WindowsRawNonClientMetricsW {
+    cb_size: u32,
+    border_width: i32,
+    scroll_width: i32,
+    scroll_height: i32,
+    caption_width: i32,
+    caption_height: i32,
+    caption_font: WindowsRawLogFontW,
+    small_caption_width: i32,
+    small_caption_height: i32,
+    small_caption_font: WindowsRawLogFontW,
+    menu_width: i32,
+    menu_height: i32,
+    menu_font: WindowsRawLogFontW,
+    status_font: WindowsRawLogFontW,
+    message_font: WindowsRawLogFontW,
+    padded_border_width: i32,
+}
+
+const fn zeroed_windows_log_font() -> WindowsRawLogFontW {
+    WindowsRawLogFontW {
+        height: 0,
+        width: 0,
+        escapement: 0,
+        orientation: 0,
+        weight: 0,
+        italic: 0,
+        underline: 0,
+        strike_out: 0,
+        char_set: 0,
+        output_precision: 0,
+        clip_precision: 0,
+        quality: 0,
+        pitch_and_family: 0,
+        face_name: [0; 32],
+    }
+}
+
+#[repr(C)]
+struct GdiplusStartupInput {
+    gdiplus_version: u32,
+    debug_event_callback: *const c_void,
+    suppress_background_thread: i32,
+    suppress_external_codecs: i32,
+}
+
+#[link(name = "gdiplus")]
+unsafe extern "system" {
+    fn GdiplusStartup(
+        token: *mut usize,
+        input: *const GdiplusStartupInput,
+        output: *mut c_void,
+    ) -> i32;
+    fn GdipCreateFromHDC(hdc: HDC, graphics: *mut *mut c_void) -> i32;
+    fn GdipDeleteGraphics(graphics: *mut c_void) -> i32;
+    fn GdipSetSmoothingMode(graphics: *mut c_void, smoothing_mode: i32) -> i32;
+    fn GdipCreateSolidFill(color: u32, brush: *mut *mut c_void) -> i32;
+    fn GdipDeleteBrush(brush: *mut c_void) -> i32;
+    fn GdipFillRectangleI(
+        graphics: *mut c_void,
+        brush: *mut c_void,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> i32;
+    fn GdipCreatePen1(color: u32, width: f32, unit: i32, pen: *mut *mut c_void) -> i32;
+    fn GdipDeletePen(pen: *mut c_void) -> i32;
+    fn GdipCreatePath(fill_mode: i32, path: *mut *mut c_void) -> i32;
+    fn GdipDeletePath(path: *mut c_void) -> i32;
+    fn GdipAddPathArcI(
+        path: *mut c_void,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        start_angle: f32,
+        sweep_angle: f32,
+    ) -> i32;
+    fn GdipClosePathFigure(path: *mut c_void) -> i32;
+    fn GdipFillPath(graphics: *mut c_void, brush: *mut c_void, path: *mut c_void) -> i32;
+    fn GdipDrawPath(graphics: *mut c_void, pen: *mut c_void, path: *mut c_void) -> i32;
+    fn GdipDrawArcI(
+        graphics: *mut c_void,
+        pen: *mut c_void,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        start_angle: f32,
+        sweep_angle: f32,
+    ) -> i32;
+    fn GdipCreateBitmapFromScan0(
+        width: i32,
+        height: i32,
+        stride: i32,
+        pixel_format: i32,
+        scan0: *mut u8,
+        bitmap: *mut *mut c_void,
+    ) -> i32;
+    fn GdipDisposeImage(image: *mut c_void) -> i32;
+    fn GdipSetInterpolationMode(graphics: *mut c_void, interpolation_mode: i32) -> i32;
+    fn GdipDrawImageRectRectI(
+        graphics: *mut c_void,
+        image: *mut c_void,
+        dst_x: i32,
+        dst_y: i32,
+        dst_width: i32,
+        dst_height: i32,
+        src_x: i32,
+        src_y: i32,
+        src_width: i32,
+        src_height: i32,
+        src_unit: i32,
+        image_attributes: *const c_void,
+        callback: *const c_void,
+        callback_data: *const c_void,
+    ) -> i32;
+}
+
+const GDIP_PIXEL_FORMAT_32BPP_PARGB: i32 = 0x000e_200b;
+const GDIP_INTERPOLATION_MODE_NEAREST_NEIGHBOR: i32 = 5;
+const GDIP_INTERPOLATION_MODE_HIGH_QUALITY_BICUBIC: i32 = 7;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowsNoFlickerPaintStrategy {
+    pub suppress_erase_background: bool,
+    pub preferred_target: &'static str,
+    pub fallback_target: &'static str,
+    pub present_operation: &'static str,
+}
+
+pub const fn windows_no_flicker_paint_strategy() -> WindowsNoFlickerPaintStrategy {
+    WindowsNoFlickerPaintStrategy {
+        suppress_erase_background: true,
+        preferred_target: "uxtheme_buffered_top_down_dib",
+        fallback_target: "direct_gdi_hdc",
+        present_operation: "EndBufferedPaint(update_target=true)",
+    }
+}
+
+pub struct WindowsBufferedPaint {
+    buffer: HPAINTBUFFER,
+    dc: HDC,
+    update_target: bool,
+}
+
+impl WindowsBufferedPaint {
+    pub unsafe fn begin(target: HDC, rect: &RECT) -> Option<Self> {
+        ensure_buffered_paint();
+        let mut paint_dc: HDC = std::ptr::null_mut();
+        let buffer = BeginBufferedPaint(target, rect, BPBF_TOPDOWNDIB, null(), &mut paint_dc);
+        if buffer.is_null() || paint_dc.is_null() {
+            None
+        } else {
+            Some(Self {
+                buffer,
+                dc: paint_dc,
+                update_target: true,
+            })
+        }
+    }
+
+    pub const fn hdc(&self) -> HDC {
+        self.dc
+    }
+
+    pub fn set_update_target(&mut self, update_target: bool) {
+        self.update_target = update_target;
+    }
+}
+
+impl Drop for WindowsBufferedPaint {
+    fn drop(&mut self) {
+        if !self.buffer.is_null() {
+            unsafe {
+                EndBufferedPaint(self.buffer, if self.update_target { 1 } else { 0 });
+            }
+        }
+    }
+}
+
+unsafe fn ensure_buffered_paint() {
+    BUFFERED_PAINT_INIT.get_or_init(|| {
+        let _ = BufferedPaintInit();
+    });
+}
+
+fn ensure_gdiplus_startup() -> Option<usize> {
+    *GDIP_TOKEN.get_or_init(|| unsafe {
+        let mut token = 0usize;
+        let input = GdiplusStartupInput {
+            gdiplus_version: 1,
+            debug_event_callback: null(),
+            suppress_background_thread: 0,
+            suppress_external_codecs: 0,
+        };
+        if GdiplusStartup(&mut token, &input, std::ptr::null_mut()) == 0 {
+            Some(token)
+        } else {
+            None
+        }
+    })
+}
+
+fn color_to_argb(color: Color) -> u32 {
+    ((color.a as u32) << 24) | ((color.r as u32) << 16) | ((color.g as u32) << 8) | color.b as u32
+}
+
+unsafe fn build_gdiplus_round_path(
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    radius: i32,
+) -> *mut c_void {
+    let mut path = std::ptr::null_mut();
+    if GdipCreatePath(GDIP_FILL_MODE_ALTERNATE, &mut path) != 0 || path.is_null() {
+        return std::ptr::null_mut();
+    }
+    let w = right - left;
+    let h = bottom - top;
+    let r = radius.min(w / 2).min(h / 2).max(1);
+    let d = r * 2;
+    let ok = GdipAddPathArcI(path, left, top, d, d, 180.0, 90.0) == 0
+        && GdipAddPathArcI(path, right - d, top, d, d, 270.0, 90.0) == 0
+        && GdipAddPathArcI(path, right - d, bottom - d, d, d, 0.0, 90.0) == 0
+        && GdipAddPathArcI(path, left, bottom - d, d, d, 90.0, 90.0) == 0
+        && GdipClosePathFigure(path) == 0;
+    if !ok {
+        let _ = GdipDeletePath(path);
+        return std::ptr::null_mut();
+    }
+    path
+}
+
+unsafe fn draw_round_rect_antialiased(
+    hdc: HDC,
+    rect: RECT,
+    fill: Color,
+    stroke: Option<Color>,
+    radius: i32,
+) -> bool {
+    if ensure_gdiplus_startup().is_none() {
+        return false;
+    }
+    if hdc.is_null() || rect.right <= rect.left || rect.bottom <= rect.top {
+        return true;
+    }
+    let mut graphics = std::ptr::null_mut();
+    GdiFlush();
+    if GdipCreateFromHDC(hdc, &mut graphics) != 0 || graphics.is_null() {
+        return false;
+    }
+    let _ = GdipSetSmoothingMode(graphics, GDIP_SMOOTHING_MODE_ANTI_ALIAS);
+    let path =
+        build_gdiplus_round_path(rect.left, rect.top, rect.right, rect.bottom, radius.max(1));
+    if path.is_null() {
+        let _ = GdipDeleteGraphics(graphics);
+        return false;
+    }
+
+    let mut ok = true;
+    let mut brush = std::ptr::null_mut();
+    if GdipCreateSolidFill(color_to_argb(fill), &mut brush) == 0 && !brush.is_null() {
+        ok &= GdipFillPath(graphics, brush, path) == 0;
+        let _ = GdipDeleteBrush(brush);
+    } else {
+        ok = false;
+    }
+    if let Some(stroke) = stroke.filter(|stroke| *stroke != fill) {
+        let mut pen = std::ptr::null_mut();
+        if GdipCreatePen1(color_to_argb(stroke), 1.0, GDIP_UNIT_PIXEL, &mut pen) == 0
+            && !pen.is_null()
+        {
+            ok &= GdipDrawPath(graphics, pen, path) == 0;
+            let _ = GdipDeletePen(pen);
+        }
+    }
+    let _ = GdipDeletePath(path);
+    let _ = GdipDeleteGraphics(graphics);
+    ok
+}
+
+unsafe fn draw_rect_alpha(hdc: HDC, rect: RECT, color: Color) -> bool {
+    if ensure_gdiplus_startup().is_none()
+        || hdc.is_null()
+        || rect.right <= rect.left
+        || rect.bottom <= rect.top
+    {
+        return false;
+    }
+    let mut graphics = std::ptr::null_mut();
+    GdiFlush();
+    if GdipCreateFromHDC(hdc, &mut graphics) != 0 || graphics.is_null() {
+        return false;
+    }
+    let mut brush = std::ptr::null_mut();
+    let created = GdipCreateSolidFill(color_to_argb(color), &mut brush) == 0 && !brush.is_null();
+    let drawn = created
+        && GdipFillRectangleI(
+            graphics,
+            brush,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+        ) == 0;
+    if !brush.is_null() {
+        let _ = GdipDeleteBrush(brush);
+    }
+    let _ = GdipDeleteGraphics(graphics);
+    drawn
+}
+
+unsafe fn draw_arc_antialiased(
+    hdc: HDC,
+    rect: RECT,
+    color: Color,
+    width: i32,
+    start_degrees: i16,
+    sweep_degrees: i16,
+) -> bool {
+    if ensure_gdiplus_startup().is_none()
+        || hdc.is_null()
+        || rect.right <= rect.left
+        || rect.bottom <= rect.top
+        || sweep_degrees == 0
+    {
+        return false;
+    }
+    let mut graphics = std::ptr::null_mut();
+    GdiFlush();
+    if GdipCreateFromHDC(hdc, &mut graphics) != 0 || graphics.is_null() {
+        return false;
+    }
+    let _ = GdipSetSmoothingMode(graphics, GDIP_SMOOTHING_MODE_ANTI_ALIAS);
+    let mut pen = std::ptr::null_mut();
+    let created = GdipCreatePen1(
+        color_to_argb(color),
+        width.max(1) as f32,
+        GDIP_UNIT_PIXEL,
+        &mut pen,
+    ) == 0
+        && !pen.is_null();
+    let drawn = created
+        && GdipDrawArcI(
+            graphics,
+            pen,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            f32::from(start_degrees),
+            f32::from(sweep_degrees),
+        ) == 0;
+    if !pen.is_null() {
+        let _ = GdipDeletePen(pen);
+    }
+    let _ = GdipDeleteGraphics(graphics);
+    drawn
+}
+
+#[derive(Debug)]
+struct WindowsGdiOwnedObject {
+    object: isize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct WindowsGdiFontKey {
+    family: String,
+    pixel_height: i32,
+    weight: i32,
+    quality: u32,
+}
+
+impl WindowsGdiFontKey {
+    fn from_style(style: &TextStyle, dpi_scale: f32) -> Self {
+        Self {
+            family: style.font_family.clone(),
+            pixel_height: font_pixel_height(style.size, dpi_scale),
+            weight: font_weight(style.weight),
+            quality: font_quality(style),
+        }
+    }
+}
+
+impl WindowsGdiOwnedObject {
+    fn from_raw(object: HGDIOBJ) -> Option<Self> {
+        if object.is_null() {
+            None
+        } else {
+            Some(Self {
+                object: object as isize,
+            })
+        }
+    }
+
+    fn solid_brush(color: Color) -> Option<Self> {
+        Self::from_raw(unsafe { CreateSolidBrush(to_colorref(color)) as HGDIOBJ })
+    }
+
+    fn pen(color: Color) -> Option<Self> {
+        Self::from_raw(unsafe { CreatePen(PS_SOLID, 1, to_colorref(color)) as HGDIOBJ })
+    }
+
+    fn font(style: &TextStyle, dpi_scale: f32) -> Option<Self> {
+        Self::font_from_key(&WindowsGdiFontKey::from_style(style, dpi_scale))
+    }
+
+    fn font_from_key(key: &WindowsGdiFontKey) -> Option<Self> {
+        let family = to_wide(&key.family);
+        Self::from_raw(unsafe {
+            CreateFontW(
+                -key.pixel_height,
+                0,
+                0,
+                0,
+                key.weight,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET as u32,
+                OUT_DEFAULT_PRECIS as u32,
+                CLIP_DEFAULT_PRECIS as u32,
+                key.quality,
+                (DEFAULT_PITCH | FF_DONTCARE) as u32,
+                family.as_ptr(),
+            ) as HGDIOBJ
+        })
+    }
+
+    fn object(&self) -> HGDIOBJ {
+        self.object as HGDIOBJ
+    }
+}
+
+impl Drop for WindowsGdiOwnedObject {
+    fn drop(&mut self) {
+        if self.object != 0 {
+            unsafe {
+                DeleteObject(self.object as HGDIOBJ);
+            }
+        }
+    }
+}
+
+const WINDOWS_GDI_FONT_CACHE_LIMIT: usize = 32;
+const WINDOWS_GDI_BRUSH_CACHE_LIMIT: usize = 64;
+const WINDOWS_GDI_PEN_CACHE_LIMIT: usize = 64;
+
+#[derive(Debug, Default)]
+struct WindowsGdiResourceCacheEntries {
+    brushes: HashMap<u32, WindowsGdiOwnedObject>,
+    pens: HashMap<u32, WindowsGdiOwnedObject>,
+    fonts: HashMap<WindowsGdiFontKey, WindowsGdiOwnedObject>,
+    #[cfg(feature = "windows-rust-text")]
+    rust_text: crate::windows_rust_text::WindowsRustTextState,
+    #[cfg(feature = "windows-directwrite")]
+    directwrite: crate::windows_directwrite::WindowsDirectWriteState,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WindowsGdiResourceCache {
+    entries: Arc<Mutex<WindowsGdiResourceCacheEntries>>,
+}
+
+impl WindowsGdiResourceCache {
+    fn cached_solid_brush(&self, color: Color) -> Option<HGDIOBJ> {
+        let key = to_colorref(color);
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("Windows GDI resource cache should not be poisoned");
+        if !entries.brushes.contains_key(&key) {
+            if entries.brushes.len() >= WINDOWS_GDI_BRUSH_CACHE_LIMIT {
+                entries.brushes.clear();
+            }
+            entries
+                .brushes
+                .insert(key, WindowsGdiOwnedObject::solid_brush(color)?);
+        }
+        entries.brushes.get(&key).map(WindowsGdiOwnedObject::object)
+    }
+
+    fn cached_pen(&self, color: Color) -> Option<HGDIOBJ> {
+        let key = to_colorref(color);
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("Windows GDI resource cache should not be poisoned");
+        if !entries.pens.contains_key(&key) {
+            if entries.pens.len() >= WINDOWS_GDI_PEN_CACHE_LIMIT {
+                entries.pens.clear();
+            }
+            entries.pens.insert(key, WindowsGdiOwnedObject::pen(color)?);
+        }
+        entries.pens.get(&key).map(WindowsGdiOwnedObject::object)
+    }
+
+    fn cached_font(&self, style: &TextStyle, dpi_scale: f32) -> Option<HGDIOBJ> {
+        let key = WindowsGdiFontKey::from_style(style, dpi_scale);
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("Windows GDI resource cache should not be poisoned");
+        if !entries.fonts.contains_key(&key) {
+            if entries.fonts.len() >= WINDOWS_GDI_FONT_CACHE_LIMIT {
+                entries.fonts.clear();
+            }
+            entries
+                .fonts
+                .insert(key.clone(), WindowsGdiOwnedObject::font_from_key(&key)?);
+        }
+        entries.fonts.get(&key).map(WindowsGdiOwnedObject::object)
+    }
+
+    #[cfg(feature = "windows-rust-text")]
+    fn draw_rust_text(&self, dc: HDC, run: &TextRun, style: &TextStyle, dpi_scale: f32) -> bool {
+        self.entries
+            .lock()
+            .expect("Windows GDI resource cache should not be poisoned")
+            .rust_text
+            .draw_text(dc, run, style, dpi_scale)
+    }
+
+    #[cfg(feature = "windows-rust-text")]
+    fn measure_rust_text(
+        &self,
+        text: &str,
+        style: &TextStyle,
+        max_width: i32,
+        dpi_scale: f32,
+    ) -> Option<Size> {
+        self.entries
+            .lock()
+            .expect("Windows GDI resource cache should not be poisoned")
+            .rust_text
+            .measure(text, style, max_width, dpi_scale)
+    }
+
+    #[cfg(feature = "windows-directwrite")]
+    fn draw_directwrite_text(
+        &self,
+        dc: HDC,
+        run: &TextRun,
+        style: &TextStyle,
+        dpi_scale: f32,
+    ) -> bool {
+        self.entries
+            .lock()
+            .expect("Windows GDI resource cache should not be poisoned")
+            .directwrite
+            .draw_text(dc, run, style, dpi_scale)
+    }
+
+    #[cfg(test)]
+    fn counts(&self) -> (usize, usize, usize) {
+        let entries = self
+            .entries
+            .lock()
+            .expect("Windows GDI resource cache should not be poisoned");
+        (
+            entries.fonts.len(),
+            entries.brushes.len(),
+            entries.pens.len(),
+        )
+    }
+}
+
+struct WindowsGdiSelectedObject {
+    dc: HDC,
+    old: HGDIOBJ,
+}
+
+impl WindowsGdiSelectedObject {
+    fn select(dc: HDC, object: HGDIOBJ) -> Option<Self> {
+        if dc.is_null() || object.is_null() {
+            return None;
+        }
+        let old = unsafe { SelectObject(dc, object) };
+        if old.is_null() {
+            None
+        } else {
+            Some(Self { dc, old })
+        }
+    }
+}
+
+impl Drop for WindowsGdiSelectedObject {
+    fn drop(&mut self) {
+        if !self.dc.is_null() && !self.old.is_null() {
+            unsafe {
+                SelectObject(self.dc, self.old);
+            }
+        }
+    }
+}
+
+pub struct WindowsGdiRenderer {
+    dc: HDC,
+    dpi_scale: f32,
+    clip_stack: Vec<i32>,
+    resources: WindowsGdiResourceCache,
+}
+
+impl WindowsGdiRenderer {
+    pub fn new(dc: HDC) -> Self {
+        Self::with_dpi_scale(dc, windows_gdi_dpi_scale(dc))
+    }
+
+    pub fn with_dpi(dc: HDC, dpi: Dpi) -> Self {
+        Self::with_dpi_scale(dc, dpi.scale_factor())
+    }
+
+    fn with_dpi_scale(dc: HDC, dpi_scale: f32) -> Self {
+        Self::with_dpi_scale_and_resources(dc, dpi_scale, WindowsGdiResourceCache::default())
+    }
+
+    pub(crate) fn with_dpi_and_resources(
+        dc: HDC,
+        dpi: Dpi,
+        resources: WindowsGdiResourceCache,
+    ) -> Self {
+        Self::with_dpi_scale_and_resources(dc, dpi.scale_factor(), resources)
+    }
+
+    fn with_dpi_scale_and_resources(
+        dc: HDC,
+        dpi_scale: f32,
+        resources: WindowsGdiResourceCache,
+    ) -> Self {
+        Self {
+            dc,
+            dpi_scale: dpi_scale.max(0.5),
+            clip_stack: Vec::new(),
+            resources,
+        }
+    }
+
+    pub fn hdc(&self) -> HDC {
+        self.dc
+    }
+
+    /// Creates a text-layout facade backed by this renderer's retained font
+    /// context, so measurement and painting share layout and glyph caches.
+    pub fn text_layout(&self) -> WindowsGdiTextLayout {
+        WindowsGdiTextLayout::with_dpi_scale_and_resources(
+            self.dc,
+            self.dpi_scale,
+            self.resources.clone(),
+        )
+    }
+
+    fn has_dc(&self) -> bool {
+        !self.dc.is_null()
+    }
+
+    fn cached_solid_brush(&mut self, color: Color) -> Option<HGDIOBJ> {
+        self.resources.cached_solid_brush(color)
+    }
+
+    fn cached_pen(&mut self, color: Color) -> Option<HGDIOBJ> {
+        self.resources.cached_pen(color)
+    }
+
+    fn cached_font(&mut self, style: &TextStyle) -> Option<HGDIOBJ> {
+        self.resources.cached_font(style, self.dpi_scale)
+    }
+}
+
+impl Drop for WindowsGdiRenderer {
+    fn drop(&mut self) {
+        while let Some(saved) = self.clip_stack.pop() {
+            unsafe {
+                RestoreDC(self.dc, saved);
+            }
+        }
+    }
+}
+
+impl Renderer for WindowsGdiRenderer {
+    fn fill_rect(&mut self, rect: Rect, color: Color) {
+        if !self.has_dc() {
+            return;
+        }
+        let rect = to_win_rect(rect);
+        if let Some(brush) = self.cached_solid_brush(color) {
+            unsafe {
+                FillRect(self.dc, &rect, brush as _);
+            }
+        }
+    }
+
+    fn stroke_rect(&mut self, rect: Rect, color: Color, width: i32) {
+        if !self.has_dc() {
+            return;
+        }
+        let mut rect = to_win_rect(rect);
+        if let Some(brush) = self.cached_solid_brush(color) {
+            for _ in 0..width.max(1) {
+                if rect.right <= rect.left || rect.bottom <= rect.top {
+                    break;
+                }
+                unsafe {
+                    FrameRect(self.dc, &rect, brush as _);
+                }
+                rect.left += 1;
+                rect.top += 1;
+                rect.right -= 1;
+                rect.bottom -= 1;
+            }
+        }
+    }
+
+    fn stroke_arc(
+        &mut self,
+        rect: Rect,
+        color: Color,
+        width: i32,
+        start_degrees: i16,
+        sweep_degrees: i16,
+    ) {
+        if !self.has_dc() {
+            return;
+        }
+        let _ = unsafe {
+            draw_arc_antialiased(
+                self.dc,
+                to_win_rect(rect),
+                color,
+                width,
+                start_degrees,
+                sweep_degrees,
+            )
+        };
+    }
+
+    fn draw_text(&mut self, run: &TextRun, style: &TextStyle) {
+        if !self.has_dc() || run.text.is_empty() {
+            return;
+        }
+        #[cfg(feature = "windows-rust-text")]
+        if self
+            .resources
+            .draw_rust_text(self.dc, run, style, self.dpi_scale)
+        {
+            return;
+        }
+        #[cfg(feature = "windows-directwrite")]
+        if self
+            .resources
+            .draw_directwrite_text(self.dc, run, style, self.dpi_scale)
+        {
+            return;
+        }
+        let font = self.cached_font(style);
+        let _selected_font = font.and_then(|font| WindowsGdiSelectedObject::select(self.dc, font));
+        let mut rect = to_win_rect(run.bounds);
+        let text = to_wide(&run.text);
+        unsafe {
+            SetBkMode(self.dc, TRANSPARENT);
+            SetTextColor(self.dc, to_colorref(style.color));
+            DrawTextW(
+                self.dc,
+                text.as_ptr(),
+                -1,
+                &mut rect,
+                text_flags(style, false),
+            );
+        }
+    }
+
+    fn push_clip(&mut self, rect: Rect) {
+        if !self.has_dc() {
+            return;
+        }
+        let saved = unsafe { SaveDC(self.dc) };
+        if saved != 0 {
+            let rect = to_win_rect(rect);
+            unsafe {
+                IntersectClipRect(self.dc, rect.left, rect.top, rect.right, rect.bottom);
+            }
+            self.clip_stack.push(saved);
+        }
+    }
+
+    fn pop_clip(&mut self) {
+        if !self.has_dc() {
+            return;
+        }
+        if let Some(saved) = self.clip_stack.pop() {
+            unsafe {
+                RestoreDC(self.dc, saved);
+            }
+        }
+    }
+}
+
+pub struct WindowsGdiTextLayout {
+    dc: HDC,
+    dpi_scale: f32,
+    #[cfg(feature = "windows-rust-text")]
+    resources: WindowsGdiResourceCache,
+}
+
+impl WindowsGdiTextLayout {
+    pub fn new(dc: HDC) -> Self {
+        Self::with_dpi_scale(dc, windows_gdi_dpi_scale(dc))
+    }
+
+    pub fn with_dpi(dc: HDC, dpi: Dpi) -> Self {
+        Self::with_dpi_scale(dc, dpi.scale_factor())
+    }
+
+    fn with_dpi_scale(dc: HDC, dpi_scale: f32) -> Self {
+        Self::with_dpi_scale_and_resources(dc, dpi_scale, WindowsGdiResourceCache::default())
+    }
+
+    fn with_dpi_scale_and_resources(
+        dc: HDC,
+        dpi_scale: f32,
+        resources: WindowsGdiResourceCache,
+    ) -> Self {
+        #[cfg(not(feature = "windows-rust-text"))]
+        let _ = &resources;
+        Self {
+            dc,
+            dpi_scale: dpi_scale.max(0.5),
+            #[cfg(feature = "windows-rust-text")]
+            resources,
+        }
+    }
+}
+
+impl TextLayout for WindowsGdiTextLayout {
+    fn measure(&self, text: &str, style: &TextStyle, max_width: i32) -> Size {
+        if text.is_empty() {
+            return Size {
+                width: 0,
+                height: 0,
+            };
+        }
+        #[cfg(feature = "windows-rust-text")]
+        if let Some(measured) =
+            self.resources
+                .measure_rust_text(text, style, max_width, self.dpi_scale)
+        {
+            return measured;
+        }
+        #[cfg(feature = "windows-directwrite")]
+        if let Some(measured) =
+            crate::windows_directwrite::measure_text(text, style, max_width, self.dpi_scale)
+        {
+            return measured;
+        }
+        if self.dc.is_null() {
+            return Size {
+                width: 0,
+                height: 0,
+            };
+        }
+        let mut measured = Size {
+            width: 0,
+            height: 0,
+        };
+        with_font(self.dc, style, self.dpi_scale, |dc| {
+            let mut rect = RECT {
+                left: 0,
+                top: 0,
+                right: if max_width > 0 { max_width } else { 32_767 },
+                bottom: 0,
+            };
+            let wide = to_wide(text);
+            unsafe {
+                DrawTextW(dc, wide.as_ptr(), -1, &mut rect, text_flags(style, true));
+            }
+            measured = Size {
+                width: (rect.right - rect.left).max(0),
+                height: (rect.bottom - rect.top).max(0),
+            };
+        });
+        measured
+    }
+
+    fn layout_runs(&self, text: &str, _style: &TextStyle, bounds: Rect) -> Vec<TextRun> {
+        if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![TextRun {
+                text: text.to_string(),
+                bounds,
+            }]
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn windows_gdi_text_shaping_backend(
+) -> crate::native_input_visuals::NativeTextShapingBackend {
+    #[cfg(all(feature = "text-input-core", feature = "windows-win32"))]
+    {
+        return crate::native_input_visuals::NativeTextShapingBackend::platform(
+            WindowsGdiTextShaper,
+        );
+    }
+    #[cfg(not(all(feature = "text-input-core", feature = "windows-win32")))]
+    {
+        crate::native_input_visuals::NativeTextShapingBackend::default()
+    }
+}
+
+#[cfg(all(feature = "text-input-core", feature = "windows-win32"))]
+struct WindowsGdiTextShaper;
+
+#[cfg(all(feature = "text-input-core", feature = "windows-win32"))]
+impl crate::native_input_visuals::NativeTextShaper for WindowsGdiTextShaper {
+    fn debug_name(&self) -> &'static str {
+        "WindowsGdi"
+    }
+
+    fn measure(
+        &self,
+        text: &str,
+        semantic: SemanticTextStyle,
+        max_width: i32,
+        dpi: Dpi,
+        typography_scale: f32,
+    ) -> Option<Size> {
+        let dc = WindowsGdiOwnedMemoryDc::new()?;
+        let mut style = WindowsGdiStyleResolver::default().resolve_text_style(semantic);
+        let typography_scale = typography_scale.max(0.5);
+        style.size *= typography_scale;
+        style.line_height *= typography_scale;
+        Some(WindowsGdiTextLayout::with_dpi(dc.0, dpi).measure(text, &style, max_width))
+    }
+
+    fn shape_line(&self, text: &str) -> Option<crate::native_input_visuals::NativeShapedTextLine> {
+        shape_windows_gdi_text_line(text)
+    }
+}
+
+#[cfg(all(feature = "text-input-core", feature = "windows-win32"))]
+pub(crate) fn shape_windows_gdi_text_line(
+    text: &str,
+) -> Option<crate::native_input_visuals::NativeShapedTextLine> {
+    use crate::native_input_visuals::{
+        NativeShapedTextCaret, NativeShapedTextCluster, NativeShapedTextLine,
+    };
+
+    if text.is_empty() {
+        return None;
+    }
+    let dc = WindowsGdiOwnedMemoryDc::new()?;
+    let style = WindowsGdiStyleResolver::default().resolve_text_style(SemanticTextStyle::body());
+    with_font(dc.0, &style, 1.0, |font_dc| {
+        let wide = text.encode_utf16().collect::<Vec<_>>();
+        let character_count = i32::try_from(wide.len()).ok()?;
+        let glyph_capacity = character_count
+            .saturating_add(character_count / 2)
+            .saturating_add(16);
+        let mut analysis = std::ptr::null_mut();
+        let result = unsafe {
+            ScriptStringAnalyse(
+                font_dc,
+                wide.as_ptr().cast(),
+                character_count,
+                glyph_capacity,
+                -1,
+                SSA_GLYPHS | SSA_FALLBACK | SSA_LINK | SSA_BREAK,
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut analysis,
+            )
+        };
+        if result < 0 || analysis.is_null() {
+            return None;
+        }
+        let analysis = WindowsUniscribeAnalysis(analysis);
+        let size = unsafe { ScriptString_pSize(analysis.0) };
+        if size.is_null() {
+            return None;
+        }
+        let boundaries = crate::native_text_edit::grapheme_boundaries(text);
+        let utf16_offsets = boundaries
+            .iter()
+            .map(|index| {
+                i32::try_from(
+                    text.chars()
+                        .take(*index)
+                        .map(char::len_utf16)
+                        .sum::<usize>(),
+                )
+                .ok()
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let mut clusters = Vec::with_capacity(boundaries.len().saturating_sub(1));
+        for (scalar, utf16) in boundaries.windows(2).zip(utf16_offsets.windows(2)) {
+            let mut start_x = 0;
+            let mut end_x = 0;
+            let start_result = unsafe { ScriptStringCPtoX(analysis.0, utf16[0], 0, &mut start_x) };
+            let end_result =
+                unsafe { ScriptStringCPtoX(analysis.0, utf16[1].saturating_sub(1), 1, &mut end_x) };
+            if start_result < 0 || end_result < 0 {
+                return None;
+            }
+            clusters.push(NativeShapedTextCluster {
+                start: scalar[0],
+                end: scalar[1],
+                start_x,
+                end_x,
+            });
+        }
+        let mut carets = Vec::with_capacity(boundaries.len());
+        for (position, (index, utf16)) in boundaries
+            .iter()
+            .copied()
+            .zip(utf16_offsets.iter().copied())
+            .enumerate()
+        {
+            let mut leading = 0;
+            let leading_result = if utf16 < character_count {
+                unsafe { ScriptStringCPtoX(analysis.0, utf16, 0, &mut leading) }
+            } else {
+                unsafe {
+                    ScriptStringCPtoX(
+                        analysis.0,
+                        character_count.saturating_sub(1),
+                        1,
+                        &mut leading,
+                    )
+                }
+            };
+            if leading_result < 0 {
+                return None;
+            }
+            let mut trailing = leading;
+            if position > 0 {
+                let previous_utf16 = utf16_offsets[position - 1];
+                let trailing_result = unsafe {
+                    ScriptStringCPtoX(
+                        analysis.0,
+                        utf16.saturating_sub(1).max(previous_utf16),
+                        1,
+                        &mut trailing,
+                    )
+                };
+                if trailing_result < 0 {
+                    return None;
+                }
+            }
+            carets.push(NativeShapedTextCaret {
+                index,
+                primary_x: leading,
+                secondary_x: if position == 0 { leading } else { trailing },
+            });
+        }
+        let width = unsafe { (*size).cx };
+        NativeShapedTextLine::new(width, clusters, carets)
+    })
+}
+
+#[cfg(all(feature = "text-input-core", feature = "windows-win32"))]
+struct WindowsGdiOwnedMemoryDc(HDC);
+
+#[cfg(all(feature = "text-input-core", feature = "windows-win32"))]
+impl WindowsGdiOwnedMemoryDc {
+    fn new() -> Option<Self> {
+        let dc = unsafe { CreateCompatibleDC(std::ptr::null_mut()) };
+        (!dc.is_null()).then_some(Self(dc))
+    }
+}
+
+#[cfg(all(feature = "text-input-core", feature = "windows-win32"))]
+impl Drop for WindowsGdiOwnedMemoryDc {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                DeleteDC(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "text-input-core", feature = "windows-win32"))]
+struct WindowsUniscribeAnalysis(*mut c_void);
+
+#[cfg(all(feature = "text-input-core", feature = "windows-win32"))]
+impl Drop for WindowsUniscribeAnalysis {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                ScriptStringFree(&mut self.0);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowsGdiPalette {
+    pub primary_text: Color,
+    pub secondary_text: Color,
+    pub disabled_text: Color,
+    pub accent: Color,
+    pub accent_text: Color,
+    pub surface: Color,
+    pub surface_raised: Color,
+    pub control: Color,
+    pub border: Color,
+    pub strong_stroke: Color,
+    pub success: Color,
+    pub warning: Color,
+    pub danger: Color,
+}
+
+impl WindowsGdiPalette {
+    pub const fn resolve(self, role: ColorRole) -> Color {
+        match role {
+            ColorRole::PrimaryText => self.primary_text,
+            ColorRole::SecondaryText => self.secondary_text,
+            ColorRole::DisabledText => self.disabled_text,
+            ColorRole::Accent => self.accent,
+            ColorRole::AccentText => self.accent_text,
+            ColorRole::Surface => self.surface,
+            ColorRole::SurfaceRaised => self.surface_raised,
+            ColorRole::Control => self.control,
+            ColorRole::Border => self.border,
+            ColorRole::StrongStroke => self.strong_stroke,
+            ColorRole::Success => self.success,
+            ColorRole::Warning => self.warning,
+            ColorRole::Danger => self.danger,
+        }
+    }
+
+    pub const fn resolve_fill(self, fill: NativeDrawFill) -> Color {
+        self.resolve_fill_with_contrast(fill, false)
+    }
+
+    pub const fn resolve_fill_with_contrast(
+        self,
+        fill: NativeDrawFill,
+        high_contrast: bool,
+    ) -> Color {
+        match fill {
+            NativeDrawFill::Color(color) => color,
+            NativeDrawFill::Role(role) => self.resolve(role),
+            NativeDrawFill::RoleWithAlpha { role, alpha } => {
+                let alpha = if high_contrast {
+                    high_contrast_alpha(alpha)
+                } else {
+                    alpha
+                };
+                blend_color(self.resolve(role), self.surface, alpha)
+            }
+        }
+    }
+
+    const fn resolve_source_fill_with_contrast(
+        self,
+        fill: NativeDrawFill,
+        high_contrast: bool,
+    ) -> Color {
+        match fill {
+            NativeDrawFill::Color(color) => color,
+            NativeDrawFill::Role(role) => self.resolve(role),
+            NativeDrawFill::RoleWithAlpha { role, alpha } => {
+                let alpha = if high_contrast {
+                    high_contrast_alpha(alpha)
+                } else {
+                    alpha
+                };
+                let color = self.resolve(role);
+                Color::rgba(
+                    color.r,
+                    color.g,
+                    color.b,
+                    ((color.a as u32 * alpha as u32 + 127) / 255) as u8,
+                )
+            }
+        }
+    }
+}
+
+const fn high_contrast_alpha(alpha: u8) -> u8 {
+    match alpha {
+        0 => 0,
+        1..=20 => 64,
+        21..=63 => 112,
+        alpha => alpha,
+    }
+}
+
+const fn blend_color(foreground: Color, background: Color, alpha: u8) -> Color {
+    const fn channel(foreground: u8, background: u8, alpha: u8) -> u8 {
+        let alpha = alpha as u32;
+        (((foreground as u32 * alpha) + (background as u32 * (255 - alpha)) + 127) / 255) as u8
+    }
+
+    Color {
+        r: channel(foreground.r, background.r, alpha),
+        g: channel(foreground.g, background.g, alpha),
+        b: channel(foreground.b, background.b, alpha),
+        a: 255,
+    }
+}
+
+impl Default for WindowsGdiPalette {
+    fn default() -> Self {
+        Self::from_theme(&crate::ZsuiTheme::light())
+    }
+}
+
+impl WindowsGdiPalette {
+    pub fn from_theme(theme: &crate::ZsuiTheme) -> Self {
+        Self {
+            primary_text: theme.colors.text_primary,
+            secondary_text: theme.colors.text_secondary,
+            disabled_text: blend_color(theme.colors.text_secondary, theme.colors.surface, 96),
+            accent: theme.colors.accent,
+            accent_text: theme.colors.accent_text,
+            surface: theme.colors.surface,
+            surface_raised: theme.colors.surface_raised,
+            control: theme.colors.control,
+            border: theme.colors.border,
+            strong_stroke: windows_strong_stroke_color(
+                theme.colors.text_primary,
+                theme.colors.surface,
+            ),
+            success: theme.colors.success,
+            warning: theme.colors.warning,
+            danger: theme.colors.danger,
+        }
+    }
+}
+
+const fn windows_strong_stroke_color(foreground: Color, background: Color) -> Color {
+    let luminance =
+        background.r as u32 * 299 + background.g as u32 * 587 + background.b as u32 * 114;
+    let alpha = if luminance < 128_000 { 139 } else { 114 };
+    blend_color(foreground, background, alpha)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowsGdiStyleResolver {
+    pub font_family: String,
+    pub small_font_family: String,
+    pub display_font_family: String,
+    pub icon_font_family: String,
+    pub palette: WindowsGdiPalette,
+}
+
+impl WindowsGdiStyleResolver {
+    pub fn new(font_family: impl Into<String>, palette: WindowsGdiPalette) -> Self {
+        let font_family = font_family.into();
+        Self {
+            small_font_family: font_family.clone(),
+            display_font_family: font_family.clone(),
+            font_family,
+            icon_font_family: WINDOWS_FLUENT_ICON_FONT_FAMILY.to_string(),
+            palette,
+        }
+    }
+
+    pub fn with_type_families(
+        mut self,
+        small_font_family: impl Into<String>,
+        display_font_family: impl Into<String>,
+    ) -> Self {
+        self.small_font_family = small_font_family.into();
+        self.display_font_family = display_font_family.into();
+        self
+    }
+
+    pub fn with_icon_font_family(mut self, font_family: impl Into<String>) -> Self {
+        self.icon_font_family = font_family.into();
+        self
+    }
+}
+
+impl Default for WindowsGdiStyleResolver {
+    fn default() -> Self {
+        let ui_fonts = detect_windows_ui_font_families(std::ptr::null_mut());
+        Self::new(ui_fonts.text, WindowsGdiPalette::default())
+            .with_type_families(ui_fonts.small, ui_fonts.display)
+    }
+}
+
+impl NativeStyleResolver for WindowsGdiStyleResolver {
+    fn resolve_text_style(&self, style: SemanticTextStyle) -> TextStyle {
+        let metrics = style
+            .role
+            .metrics_for(crate::ZsTypographyPlatformStyle::Windows);
+        let font_family = crate::render_protocol::semantic_font_family_for_role(
+            style.role,
+            &self.font_family,
+            &self.small_font_family,
+            &self.display_font_family,
+            "Consolas",
+            &self.icon_font_family,
+        );
+        crate::render_protocol::resolve_semantic_text_style(
+            metrics,
+            font_family,
+            self.palette.resolve(style.color),
+            style,
+        )
+    }
+}
+
+pub struct WindowsGdiDrawSink {
+    renderer: WindowsGdiRenderer,
+    palette: WindowsGdiPalette,
+    style_resolver: WindowsGdiStyleResolver,
+    system_icon_font: WindowsSystemIconFont,
+    operation_log: Vec<NativeDrawCommandOperation>,
+    high_contrast: bool,
+}
+
+impl WindowsGdiDrawSink {
+    pub fn new(dc: HDC) -> Self {
+        Self::with_palette(dc, WindowsGdiPalette::default())
+    }
+
+    pub fn with_palette(dc: HDC, palette: WindowsGdiPalette) -> Self {
+        Self::with_palette_and_contrast(dc, palette, false)
+    }
+
+    pub fn with_palette_and_dpi(dc: HDC, palette: WindowsGdiPalette, dpi: Dpi) -> Self {
+        Self::with_palette_contrast_and_dpi(dc, palette, false, dpi)
+    }
+
+    pub fn with_palette_and_contrast(
+        dc: HDC,
+        palette: WindowsGdiPalette,
+        high_contrast: bool,
+    ) -> Self {
+        Self::with_palette_contrast_and_dpi(
+            dc,
+            palette,
+            high_contrast,
+            Dpi::new(windows_gdi_dpi_scale(dc) * 96.0),
+        )
+    }
+
+    pub fn with_palette_contrast_and_dpi(
+        dc: HDC,
+        palette: WindowsGdiPalette,
+        high_contrast: bool,
+        dpi: Dpi,
+    ) -> Self {
+        Self::with_palette_contrast_dpi_and_resources(
+            dc,
+            palette,
+            high_contrast,
+            dpi,
+            WindowsGdiResourceCache::default(),
+        )
+    }
+
+    pub(crate) fn with_palette_contrast_dpi_and_resources(
+        dc: HDC,
+        palette: WindowsGdiPalette,
+        high_contrast: bool,
+        dpi: Dpi,
+        resources: WindowsGdiResourceCache,
+    ) -> Self {
+        let system_icon_font = detect_windows_system_icon_font(dc);
+        let ui_fonts = detect_windows_ui_font_families(dc);
+        let icon_font_family = system_icon_font
+            .font_family()
+            .unwrap_or(WINDOWS_MDL2_ICON_FONT_FAMILY);
+        Self {
+            renderer: WindowsGdiRenderer::with_dpi_and_resources(dc, dpi, resources),
+            palette,
+            style_resolver: WindowsGdiStyleResolver::new(ui_fonts.text, palette)
+                .with_type_families(ui_fonts.small, ui_fonts.display)
+                .with_icon_font_family(icon_font_family),
+            system_icon_font,
+            operation_log: Vec::new(),
+            high_contrast,
+        }
+    }
+
+    pub fn hdc(&self) -> HDC {
+        self.renderer.hdc()
+    }
+
+    pub fn operation_log(&self) -> &[NativeDrawCommandOperation] {
+        &self.operation_log
+    }
+
+    pub fn draw_native_plan(&mut self, plan: &NativeDrawPlan) {
+        self.draw_plan(plan);
+    }
+
+    fn draw_round_rect(
+        &mut self,
+        rect: Rect,
+        fill: NativeDrawFill,
+        stroke: Option<NativeDrawFill>,
+        radius: i32,
+    ) {
+        if self.renderer.hdc().is_null() {
+            return;
+        }
+        let rect = to_win_rect(rect);
+        let source_fill = self
+            .palette
+            .resolve_source_fill_with_contrast(fill, self.high_contrast);
+        let source_stroke = stroke.map(|stroke| {
+            self.palette
+                .resolve_source_fill_with_contrast(stroke, self.high_contrast)
+        });
+        if unsafe {
+            draw_round_rect_antialiased(
+                self.renderer.hdc(),
+                rect,
+                source_fill,
+                source_stroke,
+                radius,
+            )
+        } {
+            return;
+        }
+        let fill = self
+            .palette
+            .resolve_fill_with_contrast(fill, self.high_contrast);
+        let stroke_color = stroke.map(|stroke| {
+            self.palette
+                .resolve_fill_with_contrast(stroke, self.high_contrast)
+        });
+        let Some(fill_brush) = self.renderer.cached_solid_brush(fill) else {
+            return;
+        };
+        let pen = stroke_color
+            .and_then(|stroke| self.renderer.cached_pen(stroke))
+            .unwrap_or_else(|| unsafe { GetStockObject(NULL_PEN) });
+        let _selected_brush = WindowsGdiSelectedObject::select(self.renderer.hdc(), fill_brush);
+        let _selected_pen = WindowsGdiSelectedObject::select(self.renderer.hdc(), pen);
+        unsafe {
+            RoundRect(
+                self.renderer.hdc(),
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+                radius.max(1) * 2,
+                radius.max(1) * 2,
+            );
+        }
+    }
+
+    fn draw_text_command(&mut self, command: &NativeDrawTextCommand) {
+        let style = self.style_resolver.resolve_text_style(command.style);
+        let run = TextRun {
+            text: command.text.clone(),
+            bounds: command.bounds,
+        };
+        self.renderer.draw_text(&run, &style);
+    }
+
+    fn draw_icon_command(&mut self, command: &NativeDrawIconCommand) {
+        if self.renderer.hdc().is_null() {
+            return;
+        }
+        if command.color_mode == NativeIconColorMode::Original && self.draw_original_icon(command) {
+            return;
+        }
+        if self.draw_system_icon(command) {
+            return;
+        }
+        let _ = self.draw_original_icon(command);
+    }
+
+    fn draw_original_icon(&mut self, command: &NativeDrawIconCommand) -> bool {
+        let Some(bytes) = command.icon.png_24_bytes() else {
+            return false;
+        };
+        let Some((width, height, bgra)) = decode_png_to_bgra(bytes) else {
+            return false;
+        };
+        stretch_top_down_32bpp(self.renderer.hdc(), command.bounds, width, height, &bgra);
+        true
+    }
+
+    fn draw_system_icon(&mut self, command: &NativeDrawIconCommand) -> bool {
+        let Some(font_family) = self.system_icon_font.font_family() else {
+            return false;
+        };
+        let Some(glyph) = self.system_icon_font.glyph(command.icon) else {
+            return false;
+        };
+        let size = command.bounds.width.min(command.bounds.height).max(1) as f32;
+        let style = TextStyle {
+            font_family: font_family.to_string(),
+            size: size / self.renderer.dpi_scale.max(1.0),
+            line_height: size / self.renderer.dpi_scale.max(1.0),
+            semantic_role: Some(crate::TextRole::Icon),
+            weight: TextWeight::Regular,
+            color: self.palette.resolve(command.color),
+            horizontal_align: HorizontalAlign::Center,
+            vertical_align: VerticalAlign::Center,
+            wrap: TextWrap::NoWrap,
+            ellipsis: false,
+        };
+        self.renderer.draw_text(
+            &TextRun {
+                text: glyph.to_string(),
+                bounds: command.bounds,
+            },
+            &style,
+        );
+        true
+    }
+
+    fn draw_image_command(&mut self, command: &NativeDrawImageCommand) {
+        if self.renderer.hdc().is_null() || command.bounds.width <= 0 || command.bounds.height <= 0
+        {
+            return;
+        }
+        if unsafe { draw_image_frame_gdiplus(self.renderer.hdc(), command) } {
+            return;
+        }
+        stretch_top_down_32bpp_region(
+            self.renderer.hdc(),
+            command.bounds,
+            command.source,
+            i32::try_from(command.frame.width()).unwrap_or(0),
+            i32::try_from(command.frame.height()).unwrap_or(0),
+            command.frame.premultiplied_bgra8(),
+        );
+    }
+}
+
+fn detect_windows_system_icon_font(dc: HDC) -> WindowsSystemIconFont {
+    if dc.is_null() {
+        return WindowsSystemIconFont::Unavailable;
+    }
+    if let Some(font) = WINDOWS_SYSTEM_ICON_FONT.get() {
+        return *font;
+    }
+    let selected = select_windows_system_icon_font(
+        windows_gdi_font_family_available(dc, WINDOWS_FLUENT_ICON_FONT_FAMILY),
+        windows_gdi_font_family_available(dc, WINDOWS_MDL2_ICON_FONT_FAMILY),
+    );
+    let _ = WINDOWS_SYSTEM_ICON_FONT.set(selected);
+    selected
+}
+
+fn windows_system_ui_font_family() -> &'static str {
+    WINDOWS_SYSTEM_UI_FONT_FAMILY
+        .get_or_init(|| {
+            let mut metrics = WindowsRawNonClientMetricsW {
+                cb_size: size_of::<WindowsRawNonClientMetricsW>() as u32,
+                border_width: 0,
+                scroll_width: 0,
+                scroll_height: 0,
+                caption_width: 0,
+                caption_height: 0,
+                caption_font: zeroed_windows_log_font(),
+                small_caption_width: 0,
+                small_caption_height: 0,
+                small_caption_font: zeroed_windows_log_font(),
+                menu_width: 0,
+                menu_height: 0,
+                menu_font: zeroed_windows_log_font(),
+                status_font: zeroed_windows_log_font(),
+                message_font: zeroed_windows_log_font(),
+                padded_border_width: 0,
+            };
+            let loaded = unsafe {
+                SystemParametersInfoW(
+                    SPI_GETNONCLIENTMETRICS,
+                    metrics.cb_size,
+                    (&mut metrics as *mut WindowsRawNonClientMetricsW).cast(),
+                    0,
+                ) != 0
+            };
+            if loaded {
+                let end = metrics
+                    .message_font
+                    .face_name
+                    .iter()
+                    .position(|character| *character == 0)
+                    .unwrap_or(metrics.message_font.face_name.len());
+                let family = String::from_utf16_lossy(&metrics.message_font.face_name[..end])
+                    .trim()
+                    .to_string();
+                if !family.is_empty() {
+                    return family;
+                }
+            }
+            WINDOWS_UI_FONT_FAMILY.to_string()
+        })
+        .as_str()
+}
+
+fn detect_windows_ui_font_families(dc: HDC) -> WindowsUiFontFamilies {
+    let message = windows_system_ui_font_family();
+    #[cfg(any(feature = "windows-rust-text", feature = "windows-directwrite"))]
+    {
+        let resolve = |preferred| {
+            if dc.is_null() || windows_gdi_font_family_available(dc, preferred) {
+                preferred
+            } else if windows_gdi_font_family_available(dc, WINDOWS_LEGACY_UI_FONT_FAMILY) {
+                WINDOWS_LEGACY_UI_FONT_FAMILY
+            } else if windows_gdi_font_family_available(dc, message) {
+                message
+            } else {
+                WINDOWS_LEGACY_UI_FONT_FAMILY
+            }
+        };
+        return WindowsUiFontFamilies {
+            small: resolve(WINDOWS_UI_SMALL_FONT_FAMILY),
+            text: resolve(WINDOWS_UI_FONT_FAMILY),
+            display: resolve(WINDOWS_UI_DISPLAY_FONT_FAMILY),
+        };
+    }
+    #[cfg(not(any(feature = "windows-rust-text", feature = "windows-directwrite")))]
+    {
+        let text = if dc.is_null() || windows_gdi_font_family_available(dc, message) {
+            message
+        } else {
+            WINDOWS_LEGACY_UI_FONT_FAMILY
+        };
+        WindowsUiFontFamilies {
+            small: text,
+            text,
+            display: text,
+        }
+    }
+}
+
+pub(crate) fn windows_native_typography_profile() -> crate::NativeTypographyProfile {
+    let dc = unsafe { CreateCompatibleDC(std::ptr::null_mut()) };
+    if dc.is_null() {
+        return crate::NativeTypographyProfile::fallback(
+            crate::ZsTypographyPlatformStyle::Windows,
+            1.0,
+        );
+    }
+    let ui_fonts = detect_windows_ui_font_families(dc);
+    let icon_font = detect_windows_system_icon_font(dc)
+        .font_family()
+        .unwrap_or(WINDOWS_MDL2_ICON_FONT_FAMILY);
+    #[cfg(feature = "windows-rust-text")]
+    let rasterization = "zsui_rust_text_swash_win32_dib";
+    #[cfg(all(not(feature = "windows-rust-text"), feature = "windows-directwrite"))]
+    let rasterization = "directwrite_win32_dib";
+    #[cfg(not(any(feature = "windows-rust-text", feature = "windows-directwrite")))]
+    let rasterization = "gdi_cleartype";
+    let mut profile = crate::NativeTypographyProfile::new(
+        crate::ZsTypographyPlatformStyle::Windows,
+        "windows_fluent_font_stack",
+        ui_fonts.text,
+        "Consolas",
+        icon_font,
+        1.0,
+        rasterization,
+    )
+    .with_configured_ui_font(ui_fonts.text)
+    .with_role_families(ui_fonts.small, ui_fonts.display);
+    let style = TextStyle {
+        font_family: ui_fonts.text.to_string(),
+        size: profile.body_metrics.size,
+        line_height: profile.body_metrics.line_height,
+        semantic_role: Some(crate::TextRole::Body),
+        weight: TextWeight::Regular,
+        color: Color::rgb(0, 0, 0),
+        horizontal_align: HorizontalAlign::Start,
+        vertical_align: VerticalAlign::Start,
+        wrap: TextWrap::NoWrap,
+        ellipsis: false,
+    };
+    with_font(dc, &style, 1.0, |font_dc| {
+        let mut metrics = unsafe { std::mem::zeroed::<TEXTMETRICW>() };
+        if unsafe { GetTextMetricsW(font_dc, &mut metrics) } != 0 {
+            profile = profile.clone().with_body_vertical_metrics(
+                metrics.tmAscent as f32,
+                metrics.tmDescent as f32,
+                metrics.tmExternalLeading.max(0) as f32,
+            );
+        }
+    });
+    unsafe { DeleteDC(dc) };
+    profile
+}
+
+#[cfg(feature = "document-shell")]
+pub(crate) fn windows_ui_text_font_family(dc: HDC) -> &'static str {
+    detect_windows_ui_font_families(dc).text
+}
+
+fn windows_gdi_font_family_available(dc: HDC, family: &str) -> bool {
+    if dc.is_null() {
+        return false;
+    }
+    let style = TextStyle::line(family, 16.0, Color::rgb(0, 0, 0));
+    let Some(font) = WindowsGdiOwnedObject::font(&style, 1.0) else {
+        return false;
+    };
+    let Some(_selected) = WindowsGdiSelectedObject::select(dc, font.object()) else {
+        return false;
+    };
+    let mut selected_family = [0_u16; 64];
+    let length = unsafe {
+        GetTextFaceW(
+            dc,
+            selected_family.len() as i32,
+            selected_family.as_mut_ptr(),
+        )
+    };
+    if length <= 0 {
+        return false;
+    }
+    let end = selected_family
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(selected_family.len());
+    String::from_utf16_lossy(&selected_family[..end]).eq_ignore_ascii_case(family)
+}
+
+impl NativeDrawCommandSink for WindowsGdiDrawSink {
+    fn draw_command(&mut self, command: &NativeDrawCommand) {
+        self.operation_log.push(command.operation());
+        match command {
+            NativeDrawCommand::FillRect { rect, fill } => {
+                let source = self
+                    .palette
+                    .resolve_source_fill_with_contrast(*fill, self.high_contrast);
+                if source.a == 255
+                    || !unsafe { draw_rect_alpha(self.renderer.hdc(), to_win_rect(*rect), source) }
+                {
+                    self.renderer.fill_rect(
+                        *rect,
+                        self.palette
+                            .resolve_fill_with_contrast(*fill, self.high_contrast),
+                    );
+                }
+            }
+            NativeDrawCommand::StrokeRect {
+                rect,
+                stroke,
+                width,
+            } => self.renderer.stroke_rect(
+                *rect,
+                self.palette
+                    .resolve_fill_with_contrast(*stroke, self.high_contrast),
+                *width,
+            ),
+            NativeDrawCommand::StrokeArc {
+                rect,
+                stroke,
+                width,
+                start_degrees,
+                sweep_degrees,
+            } => self.renderer.stroke_arc(
+                *rect,
+                self.palette
+                    .resolve_fill_with_contrast(*stroke, self.high_contrast),
+                *width,
+                *start_degrees,
+                *sweep_degrees,
+            ),
+            NativeDrawCommand::FillTriangle { points, fill } => {
+                if self.renderer.hdc().is_null() {
+                    return;
+                }
+                let fill = self
+                    .palette
+                    .resolve_fill_with_contrast(*fill, self.high_contrast);
+                let Some(brush) = self.renderer.cached_solid_brush(fill) else {
+                    return;
+                };
+                let _selected_brush = WindowsGdiSelectedObject::select(self.renderer.hdc(), brush);
+                let _selected_pen = WindowsGdiSelectedObject::select(self.renderer.hdc(), unsafe {
+                    GetStockObject(NULL_PEN)
+                });
+                let points = points.map(|point| POINT {
+                    x: point.x,
+                    y: point.y,
+                });
+                unsafe {
+                    Polygon(self.renderer.hdc(), points.as_ptr(), points.len() as i32);
+                }
+            }
+            NativeDrawCommand::RoundRect {
+                rect,
+                fill,
+                stroke,
+                radius,
+            } => self.draw_round_rect(*rect, *fill, *stroke, *radius),
+            NativeDrawCommand::RoundFill { rect, fill, radius } => {
+                self.draw_round_rect(*rect, *fill, None, *radius);
+            }
+            NativeDrawCommand::Text(command) => self.draw_text_command(command),
+            #[cfg(feature = "password-box")]
+            NativeDrawCommand::SecureText(command) => {
+                let rendered = command.rendered_text();
+                self.draw_text_command(&NativeDrawTextCommand::new(
+                    rendered.as_str(),
+                    command.bounds,
+                    command.style,
+                ));
+            }
+            NativeDrawCommand::Icon(command) => self.draw_icon_command(command),
+            NativeDrawCommand::Image(command) => self.draw_image_command(command),
+            NativeDrawCommand::PushClip { rect } => self.renderer.push_clip(*rect),
+            NativeDrawCommand::PopClip => self.renderer.pop_clip(),
+        }
+    }
+}
+
+fn with_font<R>(dc: HDC, style: &TextStyle, dpi_scale: f32, f: impl FnOnce(HDC) -> R) -> R {
+    let font = WindowsGdiOwnedObject::font(style, dpi_scale);
+    let _selected_font = font
+        .as_ref()
+        .and_then(|font| WindowsGdiSelectedObject::select(dc, font.object()));
+    let result = f(dc);
+    result
+}
+
+fn windows_gdi_dpi_scale(dc: HDC) -> f32 {
+    if dc.is_null() {
+        return 1.0;
+    }
+    let dpi = unsafe { GetDeviceCaps(dc, LOGPIXELSY as i32) };
+    if dpi > 0 {
+        (dpi as f32 / 96.0).max(0.5)
+    } else {
+        1.0
+    }
+}
+
+fn font_pixel_height(size: f32, dpi_scale: f32) -> i32 {
+    (size.max(1.0) * dpi_scale.max(0.5)).round().max(1.0) as i32
+}
+
+fn font_weight(weight: TextWeight) -> i32 {
+    match weight {
+        TextWeight::Automatic => 400,
+        TextWeight::Regular => 400,
+        TextWeight::Medium => 500,
+        TextWeight::Semibold => 600,
+        TextWeight::Bold => 700,
+    }
+}
+
+fn font_quality(_style: &TextStyle) -> u32 {
+    // Match the system Win32 text path used by Windows settings surfaces.
+    // ClearType is also the only GDI quality mode that preserves the
+    // expected weight and spacing for CJK fallback glyphs at UI sizes.
+    CLEARTYPE_QUALITY
+}
+
+fn text_flags(style: &TextStyle, measure: bool) -> u32 {
+    let mut flags = DT_NOPREFIX;
+    flags |= match style.horizontal_align {
+        HorizontalAlign::Start => DT_LEFT,
+        HorizontalAlign::Center => DT_CENTER,
+        HorizontalAlign::End => DT_RIGHT,
+    };
+    flags |= match style.wrap {
+        TextWrap::NoWrap => DT_SINGLELINE,
+        TextWrap::Word => DT_WORDBREAK,
+    };
+    if style.wrap == TextWrap::NoWrap {
+        flags |= match style.vertical_align {
+            VerticalAlign::Start => 0,
+            VerticalAlign::Center => DT_VCENTER,
+            VerticalAlign::End => DT_BOTTOM,
+        };
+        if style.ellipsis {
+            flags |= DT_END_ELLIPSIS;
+        }
+    }
+    if measure {
+        flags |= DT_CALCRECT;
+    }
+    flags
+}
+
+fn to_win_rect(rect: Rect) -> RECT {
+    RECT {
+        left: rect.x,
+        top: rect.y,
+        right: rect.x + rect.width.max(0),
+        bottom: rect.y + rect.height.max(0),
+    }
+}
+
+pub fn rect_from_win(rect: RECT) -> Rect {
+    Rect {
+        x: rect.left,
+        y: rect.top,
+        width: (rect.right - rect.left).max(0),
+        height: (rect.bottom - rect.top).max(0),
+    }
+}
+
+fn to_colorref(color: Color) -> u32 {
+    (color.r as u32) | ((color.g as u32) << 8) | ((color.b as u32) << 16)
+}
+
+pub fn color_from_colorref(color: u32) -> Color {
+    Color {
+        r: (color & 0xff) as u8,
+        g: ((color >> 8) & 0xff) as u8,
+        b: ((color >> 16) & 0xff) as u8,
+        a: 255,
+    }
+}
+
+fn stretch_top_down_32bpp(dc: HDC, rect: Rect, src_width: i32, src_height: i32, bgra_bits: &[u8]) {
+    stretch_top_down_32bpp_region(
+        dc,
+        rect,
+        Rect {
+            x: 0,
+            y: 0,
+            width: src_width,
+            height: src_height,
+        },
+        src_width,
+        src_height,
+        bgra_bits,
+    );
+}
+
+fn stretch_top_down_32bpp_region(
+    dc: HDC,
+    rect: Rect,
+    source: Rect,
+    src_width: i32,
+    src_height: i32,
+    bgra_bits: &[u8],
+) {
+    if dc.is_null()
+        || rect.width <= 0
+        || rect.height <= 0
+        || source.width <= 0
+        || source.height <= 0
+        || src_width <= 0
+        || src_height <= 0
+        || bgra_bits.len()
+            != usize::try_from(src_width)
+                .ok()
+                .and_then(|width| {
+                    usize::try_from(src_height)
+                        .ok()
+                        .and_then(|height| width.checked_mul(height))
+                })
+                .and_then(|pixels| pixels.checked_mul(4))
+                .unwrap_or(0)
+    {
+        return;
+    }
+    let mut info: BITMAPINFO = unsafe { std::mem::zeroed() };
+    info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    info.bmiHeader.biWidth = src_width;
+    info.bmiHeader.biHeight = -src_height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    unsafe {
+        SetStretchBltMode(dc, HALFTONE);
+        SetBrushOrgEx(dc, 0, 0, std::ptr::null_mut::<POINT>());
+        StretchDIBits(
+            dc,
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            source.x.max(0).min(src_width.saturating_sub(1)),
+            source.y.max(0).min(src_height.saturating_sub(1)),
+            source
+                .width
+                .min(src_width.saturating_sub(source.x.max(0)))
+                .max(1),
+            source
+                .height
+                .min(src_height.saturating_sub(source.y.max(0)))
+                .max(1),
+            bgra_bits.as_ptr() as _,
+            &info,
+            DIB_RGB_COLORS,
+            SRCCOPY,
+        );
+    }
+}
+
+unsafe fn draw_image_frame_gdiplus(dc: HDC, command: &NativeDrawImageCommand) -> bool {
+    if ensure_gdiplus_startup().is_none() {
+        return false;
+    }
+    let Ok(width) = i32::try_from(command.frame.width()) else {
+        return false;
+    };
+    let Ok(height) = i32::try_from(command.frame.height()) else {
+        return false;
+    };
+    let Some(stride) = width.checked_mul(4) else {
+        return false;
+    };
+    let expected = usize::try_from(stride).ok().and_then(|stride| {
+        usize::try_from(height)
+            .ok()
+            .and_then(|height| stride.checked_mul(height))
+    });
+    if width <= 0
+        || height <= 0
+        || expected != Some(command.frame.premultiplied_bgra8().len())
+        || command.source.width <= 0
+        || command.source.height <= 0
+    {
+        return false;
+    }
+
+    let mut image = std::ptr::null_mut();
+    if GdipCreateBitmapFromScan0(
+        width,
+        height,
+        stride,
+        GDIP_PIXEL_FORMAT_32BPP_PARGB,
+        command.frame.premultiplied_bgra8().as_ptr() as *mut u8,
+        &mut image,
+    ) != 0
+        || image.is_null()
+    {
+        return false;
+    }
+    let mut graphics = std::ptr::null_mut();
+    GdiFlush();
+    let created_graphics = GdipCreateFromHDC(dc, &mut graphics) == 0 && !graphics.is_null();
+    let drawn = if created_graphics {
+        let interpolation = match command.interpolation {
+            NativeImageInterpolation::Nearest => GDIP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+            NativeImageInterpolation::Smooth => GDIP_INTERPOLATION_MODE_HIGH_QUALITY_BICUBIC,
+        };
+        let _ = GdipSetInterpolationMode(graphics, interpolation);
+        GdipDrawImageRectRectI(
+            graphics,
+            image,
+            command.bounds.x,
+            command.bounds.y,
+            command.bounds.width,
+            command.bounds.height,
+            command.source.x.max(0).min(width.saturating_sub(1)),
+            command.source.y.max(0).min(height.saturating_sub(1)),
+            command
+                .source
+                .width
+                .min(width.saturating_sub(command.source.x.max(0)))
+                .max(1),
+            command
+                .source
+                .height
+                .min(height.saturating_sub(command.source.y.max(0)))
+                .max(1),
+            GDIP_UNIT_PIXEL,
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+        ) == 0
+    } else {
+        false
+    };
+    if created_graphics {
+        let _ = GdipDeleteGraphics(graphics);
+    }
+    let _ = GdipDisposeImage(image);
+    drawn
+}
+
+fn decode_png_to_bgra(bytes: &'static [u8]) -> Option<(i32, i32, Vec<u8>)> {
+    let decoder = png::Decoder::new(Cursor::new(bytes));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    let frame = &buffer[..info.buffer_size()];
+    let mut bgra = Vec::with_capacity((info.width as usize) * (info.height as usize) * 4);
+    match info.color_type {
+        png::ColorType::Rgba => {
+            for chunk in frame.chunks_exact(4) {
+                bgra.extend_from_slice(&[chunk[2], chunk[1], chunk[0], chunk[3]]);
+            }
+        }
+        png::ColorType::Rgb => {
+            for chunk in frame.chunks_exact(3) {
+                bgra.extend_from_slice(&[chunk[2], chunk[1], chunk[0], 255]);
+            }
+        }
+        _ => return None,
+    }
+    Some((info.width as i32, info.height as i32, bgra))
+}
+
+fn to_wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ZsIcon;
+
+    fn style() -> TextStyle {
+        TextStyle::line(
+            "Segoe UI",
+            14.0,
+            Color {
+                r: 1,
+                g: 2,
+                b: 3,
+                a: 255,
+            },
+        )
+    }
+
+    #[test]
+    fn color_and_rect_conversion_match_gdi_contract() {
+        assert_eq!(
+            to_colorref(Color {
+                r: 0x11,
+                g: 0x22,
+                b: 0x33,
+                a: 0x44,
+            }),
+            0x0033_2211
+        );
+        let win = to_win_rect(Rect {
+            x: 10,
+            y: 20,
+            width: 30,
+            height: 40,
+        });
+        assert_eq!((win.left, win.top, win.right, win.bottom), (10, 20, 40, 60));
+        assert_eq!(
+            rect_from_win(win),
+            Rect {
+                x: 10,
+                y: 20,
+                width: 30,
+                height: 40,
+            }
+        );
+        assert_eq!(
+            color_from_colorref(0x0033_2211),
+            Color {
+                r: 0x11,
+                g: 0x22,
+                b: 0x33,
+                a: 255,
+            }
+        );
+    }
+
+    #[test]
+    fn gdi_owned_object_rejects_null_handles_for_raii_safety() {
+        assert!(WindowsGdiOwnedObject::from_raw(std::ptr::null_mut()).is_none());
+        assert!(
+            WindowsGdiSelectedObject::select(std::ptr::null_mut(), std::ptr::null_mut()).is_none()
+        );
+    }
+
+    #[test]
+    fn text_flags_follow_style_protocol() {
+        let mut value = style();
+        value.horizontal_align = HorizontalAlign::Center;
+        value.vertical_align = VerticalAlign::Center;
+        assert_eq!(
+            text_flags(&value, false),
+            DT_NOPREFIX | DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS
+        );
+
+        value.wrap = TextWrap::Word;
+        value.ellipsis = false;
+        assert_eq!(
+            text_flags(&value, true),
+            DT_NOPREFIX | DT_CENTER | DT_WORDBREAK | DT_CALCRECT
+        );
+    }
+
+    #[cfg(all(feature = "text-input-core", feature = "windows-win32"))]
+    #[test]
+    fn uniscribe_shaping_reports_proportional_and_bidirectional_geometry() {
+        let proportional = shape_windows_gdi_text_line("iiiiWW")
+            .expect("Uniscribe should shape Segoe UI text on Windows");
+        assert_eq!(proportional.clusters.len(), 6);
+        assert!(
+            proportional.clusters[0].end_x - proportional.clusters[0].start_x
+                < proportional.clusters[4].end_x - proportional.clusters[4].start_x
+        );
+
+        let mixed = shape_windows_gdi_text_line("abc אבג 123")
+            .expect("Uniscribe should shape mixed-direction text");
+        assert!(
+            mixed
+                .clusters
+                .iter()
+                .any(|cluster| cluster.start_x > cluster.end_x),
+            "RTL clusters should retain their visual direction"
+        );
+        assert!(
+            mixed
+                .carets
+                .iter()
+                .any(|caret| caret.primary_x != caret.secondary_x),
+            "a bidi boundary should expose primary and secondary caret positions"
+        );
+
+        let visual = shape_windows_gdi_text_line("abאב")
+            .expect("Uniscribe should expose visual caret order");
+        let mut visual_carets = visual
+            .carets
+            .iter()
+            .map(|caret| (caret.primary_x, caret.index))
+            .collect::<Vec<_>>();
+        visual_carets.sort_unstable();
+        assert_eq!(
+            visual_carets
+                .into_iter()
+                .map(|(_, index)| index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 4, 3, 2]
+        );
+    }
+
+    #[test]
+    fn icon_text_role_uses_fluent_icon_font() {
+        let style = WindowsGdiStyleResolver::default().resolve_text_style(SemanticTextStyle {
+            role: crate::TextRole::Icon,
+            color: ColorRole::PrimaryText,
+            weight: TextWeight::Regular,
+            horizontal_align: HorizontalAlign::Center,
+            vertical_align: VerticalAlign::Center,
+            wrap: TextWrap::NoWrap,
+            ellipsis: false,
+        });
+
+        assert_eq!(style.font_family, "Segoe Fluent Icons");
+        assert_eq!(style.size, 16.0);
+    }
+
+    #[test]
+    fn system_icon_font_prefers_fluent_then_mdl2() {
+        assert_eq!(
+            select_windows_system_icon_font(true, true),
+            WindowsSystemIconFont::SegoeFluentIcons
+        );
+        assert_eq!(
+            select_windows_system_icon_font(false, true),
+            WindowsSystemIconFont::SegoeMdl2Assets
+        );
+        assert_eq!(
+            select_windows_system_icon_font(false, false),
+            WindowsSystemIconFont::Unavailable
+        );
+        assert_eq!(
+            WindowsSystemIconFont::SegoeMdl2Assets.font_family(),
+            Some(WINDOWS_MDL2_ICON_FONT_FAMILY)
+        );
+        assert_eq!(
+            WindowsSystemIconFont::SegoeMdl2Assets.glyph(ZsIcon::Save),
+            Some(ZsIcon::Save.windows_mdl2_glyph())
+        );
+    }
+
+    #[test]
+    fn icon_text_role_accepts_detected_mdl2_font() {
+        let style = WindowsGdiStyleResolver::default()
+            .with_icon_font_family(WINDOWS_MDL2_ICON_FONT_FAMILY)
+            .resolve_text_style(SemanticTextStyle {
+                role: crate::TextRole::Icon,
+                color: ColorRole::PrimaryText,
+                weight: TextWeight::Regular,
+                horizontal_align: HorizontalAlign::Center,
+                vertical_align: VerticalAlign::Center,
+                wrap: TextWrap::NoWrap,
+                ellipsis: false,
+            });
+
+        assert_eq!(style.font_family, WINDOWS_MDL2_ICON_FONT_FAMILY);
+    }
+
+    #[test]
+    fn fluent_type_ramp_uses_windows_11_sizes() {
+        let resolver = WindowsGdiStyleResolver::default();
+        let mut semantic = SemanticTextStyle::body();
+
+        let body = resolver.resolve_text_style(semantic);
+        assert_eq!(body.size, 14.0);
+        semantic.role = crate::TextRole::Caption;
+        let caption = resolver.resolve_text_style(semantic);
+        assert_eq!((caption.size, caption.line_height), (12.0, 16.0));
+        assert_eq!(caption.font_family, resolver.small_font_family);
+        semantic.role = crate::TextRole::Subtitle;
+        let subtitle = resolver.resolve_text_style(semantic);
+        assert_eq!((subtitle.size, subtitle.line_height), (20.0, 28.0));
+        assert_eq!(subtitle.font_family, resolver.display_font_family);
+        semantic.role = crate::TextRole::Title;
+        assert_eq!(resolver.resolve_text_style(semantic).size, 28.0);
+        semantic = SemanticTextStyle::for_role(crate::TextRole::TitleLarge);
+        let title_large = resolver.resolve_text_style(semantic);
+        assert_eq!((title_large.size, title_large.line_height), (40.0, 52.0));
+        assert_eq!(title_large.weight, TextWeight::Semibold);
+        semantic = SemanticTextStyle::for_role(crate::TextRole::Display);
+        assert_eq!(
+            (
+                resolver.resolve_text_style(semantic).size,
+                resolver.resolve_text_style(semantic).line_height,
+            ),
+            (68.0, 92.0)
+        );
+    }
+
+    #[test]
+    fn fluent_optical_families_follow_semantic_text_roles() {
+        let resolver = WindowsGdiStyleResolver::default();
+        let fluent = detect_windows_ui_font_families(std::ptr::null_mut());
+
+        assert_eq!(resolver.font_family, fluent.text);
+        assert_eq!(resolver.small_font_family, fluent.small);
+        assert_eq!(resolver.display_font_family, fluent.display);
+        for role in [crate::TextRole::Body, crate::TextRole::Button] {
+            assert_eq!(
+                resolver
+                    .resolve_text_style(SemanticTextStyle::for_role(role))
+                    .font_family,
+                fluent.text
+            );
+        }
+        assert_eq!(
+            resolver
+                .resolve_text_style(SemanticTextStyle::for_role(crate::TextRole::Caption))
+                .font_family,
+            fluent.small
+        );
+        for role in [
+            crate::TextRole::Subtitle,
+            crate::TextRole::WindowTitle,
+            crate::TextRole::Title,
+            crate::TextRole::TitleLarge,
+            crate::TextRole::Display,
+        ] {
+            assert_eq!(
+                resolver
+                    .resolve_text_style(SemanticTextStyle::for_role(role))
+                    .font_family,
+                fluent.display
+            );
+        }
+    }
+
+    #[test]
+    fn public_windows_font_family_overrides_still_flow_through_shared_resolution() {
+        let mut resolver = WindowsGdiStyleResolver::new("Segoe UI", WindowsGdiPalette::default());
+        resolver.font_family = "Microsoft YaHei UI".to_string();
+        resolver.small_font_family = "Microsoft YaHei UI".to_string();
+        resolver.display_font_family = "Microsoft YaHei UI".to_string();
+
+        for role in [
+            crate::TextRole::Caption,
+            crate::TextRole::Body,
+            crate::TextRole::WindowTitle,
+        ] {
+            assert_eq!(
+                resolver
+                    .resolve_text_style(SemanticTextStyle::for_role(role))
+                    .font_family,
+                "Microsoft YaHei UI"
+            );
+        }
+    }
+
+    #[test]
+    fn gdi_font_height_scales_from_dips_at_per_monitor_dpi() {
+        assert_eq!(font_pixel_height(14.0, 1.0), 14);
+        assert_eq!(font_pixel_height(14.0, 1.25), 18);
+        assert_eq!(font_pixel_height(14.0, 1.5), 21);
+        assert_eq!(font_pixel_height(20.0, 2.0), 40);
+    }
+
+    #[test]
+    fn gdi_text_and_icon_fonts_use_system_cleartype() {
+        let mut value = style();
+        assert_eq!(font_quality(&value), CLEARTYPE_QUALITY);
+        value.font_family = WINDOWS_FLUENT_ICON_FONT_FAMILY.to_string();
+        assert_eq!(font_quality(&value), CLEARTYPE_QUALITY);
+        value.font_family = WINDOWS_MDL2_ICON_FONT_FAMILY.to_string();
+        assert_eq!(font_quality(&value), CLEARTYPE_QUALITY);
+    }
+
+    #[test]
+    fn gdi_frame_reuses_equivalent_fonts_and_brushes() {
+        let dc = unsafe { CreateCompatibleDC(std::ptr::null_mut()) };
+        assert!(!dc.is_null());
+        let resources = WindowsGdiResourceCache::default();
+        {
+            let mut renderer =
+                WindowsGdiRenderer::with_dpi_scale_and_resources(dc, 1.0, resources.clone());
+            let text_style = style();
+            let run = TextRun {
+                text: "Repeated".to_string(),
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 120,
+                    height: 24,
+                },
+            };
+            let color = Color::rgb(12, 34, 56);
+
+            renderer.draw_text(&run, &text_style);
+            renderer.draw_text(&run, &text_style);
+            renderer.fill_rect(run.bounds, color);
+            renderer.fill_rect(run.bounds, color);
+
+            #[cfg(not(any(feature = "windows-directwrite", feature = "windows-rust-text")))]
+            assert_eq!(resources.counts(), (1, 1, 0));
+            #[cfg(any(feature = "windows-directwrite", feature = "windows-rust-text"))]
+            assert_eq!(resources.counts(), (0, 1, 0));
+        }
+        {
+            let mut renderer =
+                WindowsGdiRenderer::with_dpi_scale_and_resources(dc, 1.0, resources.clone());
+            renderer.draw_text(
+                &TextRun {
+                    text: "Repeated".to_string(),
+                    bounds: Rect {
+                        x: 0,
+                        y: 0,
+                        width: 120,
+                        height: 24,
+                    },
+                },
+                &style(),
+            );
+            renderer.fill_rect(
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 120,
+                    height: 24,
+                },
+                Color::rgb(12, 34, 56),
+            );
+        }
+        #[cfg(not(any(feature = "windows-directwrite", feature = "windows-rust-text")))]
+        assert_eq!(resources.counts(), (1, 1, 0));
+        #[cfg(any(feature = "windows-directwrite", feature = "windows-rust-text"))]
+        assert_eq!(resources.counts(), (0, 1, 0));
+        unsafe {
+            DeleteDC(dc);
+        }
+    }
+
+    #[test]
+    fn gdi_palette_is_resolved_from_shared_theme_tokens() {
+        let theme = crate::ZsuiTheme::light();
+        let palette = WindowsGdiPalette::from_theme(&theme);
+
+        assert_eq!(palette.surface, theme.colors.surface);
+        assert_eq!(palette.surface_raised, theme.colors.surface_raised);
+        assert_eq!(palette.border, theme.colors.border);
+        assert_eq!(palette.accent_text, theme.colors.accent_text);
+    }
+
+    #[test]
+    fn role_alpha_keeps_a_gdiplus_source_and_precomposes_a_gdi_fallback() {
+        let palette = WindowsGdiPalette::default();
+
+        assert_eq!(
+            palette.resolve_fill(NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::Accent,
+                alpha: 0,
+            }),
+            palette.surface
+        );
+        assert_eq!(
+            palette.resolve_fill(NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::Accent,
+                alpha: 255,
+            }),
+            palette.accent
+        );
+        let subtle = palette.resolve_fill(NativeDrawFill::RoleWithAlpha {
+            role: ColorRole::Accent,
+            alpha: 32,
+        });
+        let source = palette.resolve_source_fill_with_contrast(
+            NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::Accent,
+                alpha: 32,
+            },
+            false,
+        );
+        assert!(subtle.r < palette.surface.r);
+        assert!(subtle.b > palette.surface.b - 12);
+        assert_eq!(subtle.a, 255);
+        assert_eq!(
+            source,
+            Color::rgba(palette.accent.r, palette.accent.g, palette.accent.b, 32)
+        );
+
+        let high_contrast_hover = palette.resolve_fill_with_contrast(
+            NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::PrimaryText,
+                alpha: 14,
+            },
+            true,
+        );
+        assert_eq!(high_contrast_hover, Color::rgb(189, 189, 189));
+    }
+
+    #[test]
+    fn no_flicker_strategy_uses_buffered_paint_foundation() {
+        let strategy = windows_no_flicker_paint_strategy();
+
+        assert!(strategy.suppress_erase_background);
+        assert_eq!(strategy.preferred_target, "uxtheme_buffered_top_down_dib");
+        assert_eq!(strategy.fallback_target, "direct_gdi_hdc");
+        assert_eq!(
+            strategy.present_operation,
+            "EndBufferedPaint(update_target=true)"
+        );
+    }
+
+    #[test]
+    fn windows_gdi_draw_sink_accepts_native_draw_plan_without_hdc() {
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 32,
+        };
+        let plan = NativeDrawPlan::new([
+            NativeDrawCommand::FillRect {
+                rect,
+                fill: NativeDrawFill::Role(ColorRole::Surface),
+            },
+            NativeDrawCommand::RoundRect {
+                rect,
+                fill: NativeDrawFill::Role(ColorRole::Control),
+                stroke: Some(NativeDrawFill::Role(ColorRole::Accent)),
+                radius: 6,
+            },
+            NativeDrawCommand::Text(crate::NativeDrawTextCommand::new(
+                "hello",
+                rect,
+                SemanticTextStyle::body(),
+            )),
+            NativeDrawCommand::Icon(crate::NativeDrawIconCommand::new(
+                ZsIcon::Search,
+                rect,
+                NativeIconColorMode::ThemeAware,
+            )),
+            NativeDrawCommand::Image(crate::NativeDrawImageCommand::new(
+                crate::ZsImageFrame::from_rgba8(
+                    crate::ZsImageFrameId::new(3),
+                    1,
+                    1,
+                    vec![255, 255, 255, 255],
+                )
+                .unwrap(),
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                rect,
+            )),
+            NativeDrawCommand::PushClip { rect },
+            NativeDrawCommand::PopClip,
+        ]);
+        let mut sink = WindowsGdiDrawSink::new(std::ptr::null_mut());
+
+        sink.draw_native_plan(&plan);
+
+        assert_eq!(
+            sink.operation_log(),
+            &[
+                NativeDrawCommandOperation::FillRect,
+                NativeDrawCommandOperation::RoundRect,
+                NativeDrawCommandOperation::DrawText,
+                NativeDrawCommandOperation::DrawIcon,
+                NativeDrawCommandOperation::DrawImage,
+                NativeDrawCommandOperation::PushClip,
+                NativeDrawCommandOperation::PopClip,
+            ]
+        );
+    }
+
+    #[test]
+    fn png_icons_decode_to_bgra_for_gdi_stretch() {
+        let (width, height, bgra) =
+            decode_png_to_bgra(ZsIcon::Search.png_24_bytes().expect("search icon")).unwrap();
+        assert_eq!((width, height), (24, 24));
+        assert_eq!(bgra.len(), 24 * 24 * 4);
+    }
+}

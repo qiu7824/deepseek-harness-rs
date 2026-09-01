@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cordis::{
     ArcValue, Context, Disposer, EventOptions, Listener, Service, arc, downcast, make_disposer,
 };
-use dsh_session::{Session, SessionEvent};
+use dsh_session::{Session, SessionEvent, SessionHeader};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -48,7 +48,7 @@ pub struct ProjectionDefinition {
     /// returns the JSON snapshot served to consumers.
     pub schema: ProjectionSchema,
     /// State for the empty log.
-    pub init: Arc<dyn Fn() -> ArcValue + Send + Sync>,
+    pub init: Arc<dyn Fn(&SessionHeader) -> ArcValue + Send + Sync>,
     /// Pure transition: previous state + one committed event → next state.
     /// Return the SAME `Arc` when the event is not the unit's.
     pub apply: ProjectionApply,
@@ -92,6 +92,9 @@ struct UnitCell {
     state: ArcValue,
     /// Seq of the last event passed through `apply` (regardless of change).
     observed_seq: i64,
+    /// Raw view identity last observed by the change feed. `None` means no
+    /// comparable baseline exists (first listener or an unobserved change).
+    observed_view: Option<ArcValue>,
 }
 
 /// One live registration: the unit plus its per-session cells.
@@ -216,6 +219,13 @@ impl SessionProjectionRegistry {
         Ok(dispose)
     }
 
+    /// The registered projection keys, sorted for deterministic diagnostics.
+    pub fn keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.registrations.lock().keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
     /// Subscribe to the change feed (an effect on the caller context's
     /// fiber; TS `onChanged`).
     pub fn on_changed(
@@ -326,6 +336,7 @@ impl SessionProjectionRegistry {
     /// `restore`); its synchronous throws become `Err`.
     pub fn restore(
         &self,
+        header: &SessionHeader,
         checkpoint: &ProjectionCheckpoint,
         events: &[SessionEvent],
         base_seq: i64,
@@ -352,7 +363,7 @@ impl SessionProjectionRegistry {
             let row = row.filter(|_row| usable);
             let mut state: ArcValue = match row {
                 Some(row) => arc(row.val.clone()),
-                None => (def.init)(),
+                None => (def.init)(header),
             };
             let from = row.map(|row| row.seq).unwrap_or(base_seq - 1);
             for event in events {
@@ -421,7 +432,10 @@ impl SessionProjectionRegistry {
                         // exact), then take the normal gate.
                         let events = session.events();
                         let prefix = &events[..event.seq as usize];
-                        cells.insert(session.identity(), build_cell(&registration.def, prefix));
+                        cells.insert(
+                            session.identity(),
+                            build_cell(&registration.def, session.header(), prefix),
+                        );
                         cells
                             .get_mut(&session.identity())
                             .expect("cell just inserted")
@@ -433,11 +447,27 @@ impl SessionProjectionRegistry {
                 cell.observed_seq = event.seq as i64;
                 (cell.state.clone(), changed)
             };
-            if changed && !listeners.is_empty() {
-                let value = (registration.def.schema)(&(registration.def.view)(&next))
-                    .expect("session projection view violated its schema");
-                for (_, listener) in &listeners {
-                    listener(session, &registration.def.key, &value, event.seq as i64);
+            if changed {
+                let mut cells = registration.cells.lock();
+                let cell = cells
+                    .get_mut(&session.identity())
+                    .expect("projection cell exists after drive");
+                if listeners.is_empty() {
+                    cell.observed_view = None;
+                    continue;
+                }
+                let raw = (registration.def.view)(&next);
+                let view_changed = cell
+                    .observed_view
+                    .as_ref()
+                    .is_none_or(|previous| !Arc::ptr_eq(previous, &raw));
+                cell.observed_view = Some(raw.clone());
+                if view_changed {
+                    let value = (registration.def.schema)(&raw)
+                        .expect("session projection view violated its schema");
+                    for (_, listener) in &listeners {
+                        listener(session, &registration.def.key, &value, event.seq as i64);
+                    }
                 }
             }
         }
@@ -445,14 +475,19 @@ impl SessionProjectionRegistry {
 }
 
 /// Fold one unit from init over `events` (TS `buildCell`).
-fn build_cell(def: &ProjectionDefinition, events: &[SessionEvent]) -> UnitCell {
-    let mut state = (def.init)();
+fn build_cell(
+    def: &ProjectionDefinition,
+    header: &SessionHeader,
+    events: &[SessionEvent],
+) -> UnitCell {
+    let mut state = (def.init)(header);
     for event in events {
         state = (def.apply)(&state, event);
     }
     UnitCell {
         state,
         observed_seq: events.last().map(|event| event.seq as i64).unwrap_or(-1),
+        observed_view: None,
     }
 }
 
@@ -464,15 +499,17 @@ fn cell_for(registration: &Registration, session: &Session) -> UnitCell {
         return UnitCell {
             state: cell.state.clone(),
             observed_seq: cell.observed_seq,
+            observed_view: cell.observed_view.clone(),
         };
     }
     let events = session.events();
-    let built = build_cell(&registration.def, &events);
+    let built = build_cell(&registration.def, session.header(), &events);
     registration.cells.lock().insert(
         identity,
         UnitCell {
             state: built.state.clone(),
             observed_seq: built.observed_seq,
+            observed_view: built.observed_view.clone(),
         },
     );
     built

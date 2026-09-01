@@ -67,7 +67,7 @@ fn client() -> Result<reqwest::Client, String> {
 
 pub(crate) async fn post(
     url: &str,
-    api_key: &str,
+    api_key: Option<&str>,
     body: Vec<u8>,
     attribution: &[(String, String)],
     cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
@@ -112,11 +112,13 @@ pub(crate) async fn post(
                 path
             })
             .header(hyper::header::HOST, authority)
-            .header(hyper::header::AUTHORIZATION, format!("Bearer {api_key}"))
             .header(hyper::header::ACCEPT, "text/event-stream")
             .header(hyper::header::ACCEPT_ENCODING, "identity")
             .header(hyper::header::CONTENT_TYPE, "application/json")
             .header(hyper::header::CONNECTION, "close");
+        if let Some(api_key) = api_key {
+            builder = builder.header(hyper::header::AUTHORIZATION, format!("Bearer {api_key}"));
+        }
         for (name, value) in attribution {
             builder = builder.header(name, value);
         }
@@ -148,10 +150,12 @@ pub(crate) async fn post(
     let client = client()?;
     let mut request = client
         .post(url)
-        .bearer_auth(api_key)
         .header(reqwest::header::ACCEPT, "text/event-stream")
         .header(reqwest::header::ACCEPT_ENCODING, "identity")
         .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
     for (name, value) in attribution {
         request = request.header(name, value);
     }
@@ -192,6 +196,46 @@ fn is_loopback_host(host: &str) -> bool {
         || host
             .parse::<std::net::IpAddr>()
             .is_ok_and(|address| address.is_loopback())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::post;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn captured_request(api_key: Option<&str>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind capture server");
+        let address = listener.local_addr().expect("capture address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut bytes = vec![0_u8; 8192];
+            let read = socket.read(&mut bytes).await.expect("read request");
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("write response");
+            String::from_utf8_lossy(&bytes[..read]).into_owned()
+        });
+        let url = format!("http://{address}/v1/chat/completions");
+        let _ = post(&url, api_key, b"{}".to_vec(), &[], None)
+            .await
+            .expect("request succeeds");
+        server.await.expect("capture task")
+    }
+
+    #[tokio::test]
+    async fn keyless_request_omits_authorization_header() {
+        let request = captured_request(None).await.to_ascii_lowercase();
+        assert!(!request.contains("authorization:"));
+    }
+
+    #[tokio::test]
+    async fn authenticated_request_keeps_bearer_header() {
+        let request = captured_request(Some("secret-test-key")).await;
+        assert!(request.contains("authorization: Bearer secret-test-key"));
+    }
 }
 
 #[allow(dead_code)]

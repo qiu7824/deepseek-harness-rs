@@ -1,0 +1,34 @@
+[package]
+name = "iced-notepad-baseline"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "iced-invoice-tool"
+path = "src/bin/invoice_tool.rs"
+
+[[bin]]
+name = "iced-ui-performance"
+path = "src/bin/ui_performance.rs"
+required-features = ["perf-matrix"]
+
+[features]
+perf-matrix = []
+perf-minimal = ["perf-matrix"]
+perf-full = ["perf-matrix"]
+perf-viewer = ["perf-matrix"]
+
+[dependencies]
+iced = { version = "=0.14.0", default-features = false, features = ["image", "thread-pool", "tiny-skia", "x11"] }
+rfd = "=0.17.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "=0.2.186"
+
+[profile.release]
+opt-level = "z"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

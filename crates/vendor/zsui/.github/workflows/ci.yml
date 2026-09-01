@@ -1,0 +1,103 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install Linux UI development files
+        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libdbus-1-dev
+      - run: cargo fmt --check
+      - run: cargo test --locked --no-default-features
+      - run: cargo test --locked
+
+  feature-matrix:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - shell: pwsh
+        run: ./scripts/ai-context.ps1 -Validate
+      - shell: pwsh
+        run: ./scripts/check-native-boundary.ps1 -Locked
+      - shell: pwsh
+        run: ./scripts/check-windows-gui-subsystem.ps1
+      - shell: pwsh
+        run: ./scripts/check-desktop-proof.ps1
+      - shell: pwsh
+        run: ./scripts/check-ime-screen-reader-matrix.ps1
+      - shell: pwsh
+        run: ./scripts/check-feature-matrix.ps1 -Locked
+
+  full-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked --features full
+      - run: cargo test --locked --examples --features full
+      - run: cargo check --locked --no-default-features --features windows-win32
+      - run: cargo check --locked --example desktop_native_showcase --no-default-features --features desktop-native,window,button,label,textbox,toggle,list,scroll,style
+      - shell: pwsh
+        run: ./scripts/check-windows-text-accessibility.ps1 -Locked
+      - shell: pwsh
+        run: ./scripts/check-windows-menu-flyout-accessibility.ps1 -Locked
+
+  desktop-target-checks:
+    strategy:
+      matrix:
+        include:
+          - os: macos-15
+            backend: macos-appkit
+          - os: ubuntu-latest
+            backend: linux-direct
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux UI development files
+        if: matrix.backend == 'linux-direct'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libdbus-1-dev
+      - name: Run full tests
+        id: full-tests
+        run: |
+          set -o pipefail
+          mkdir -p target
+          cargo test --locked --features full 2>&1 | tee target/full-test.log
+      - name: Summarize full test failure
+        if: failure() && steps.full-tests.outcome == 'failure'
+        run: |
+          summary="$(grep -E '^(test .* FAILED|failures:|assertion .* failed|left:|right:|thread .* panicked)' target/full-test.log | tail -30 | tr '\n' ' ' || true)"
+          compiler_errors="$(grep -E '^error(\[E[0-9]+\])?:|^error:' target/full-test.log | tail -20 | tr '\n' ' ' | cut -c 1-1200 || true)"
+          echo "::error file=src/lib.rs,line=1,title=Full test failure::${summary} ${compiler_errors}"
+          grep -E '^error(\[E[0-9]+\])?:|^error:' target/full-test.log | tail -8 | while IFS= read -r line; do
+            echo "::error file=src/lib.rs,line=1::${line}"
+          done
+      - name: Publish Linux test diagnostic token
+        if: always() && matrix.backend == 'linux-direct' && steps.full-tests.outcome == 'failure'
+        run: |
+          clean_log="$(sed -E 's/\x1B\[[0-9;]*[ -\/]*[@-~]//g' target/full-test.log)"
+          diagnostic="$(printf '%s\n' "$clean_log" | grep -A2 -B1 -E 'error(\[E[0-9]+\])?:|failed|panicked' | head -12 | tr '\n' ' ' | sed 's/[^A-Za-z0-9._-]/_/g' | cut -c 1-180)"
+          diagnostic="${diagnostic:-unknown}"
+          echo "CI_DIAGNOSTIC=$diagnostic" >> "$GITHUB_ENV"
+          printf '%s\n' "$diagnostic" > target/linux-ci-diagnostic.txt
+      - name: Upload Linux test diagnostic
+        if: always() && matrix.backend == 'linux-direct' && steps.full-tests.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsui-linux-ci-diagnostic-${{ env.CI_DIAGNOSTIC || 'unknown' }}
+          path: target/linux-ci-diagnostic.txt
+          if-no-files-found: error
+          retention-days: 7
+      - run: cargo check --locked --no-default-features --features ${{ matrix.backend }}
+      - run: cargo check --locked --example desktop_native_showcase --no-default-features --features desktop-native,window,button,label,textbox,toggle,list,scroll,style

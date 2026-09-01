@@ -185,8 +185,7 @@ fn subagent_parameters(prompt_description: &str) -> serde_json::Value {
             },
             "max_tokens": {
                 "type": "integer",
-                "minimum": 1,
-                "description": "Optional maximum output tokens for this child only."
+                "description": "Optional maximum output tokens for this child only. Values below 1 are rejected by the tool body."
             }
         },
         "required": ["description", "prompt"],
@@ -634,6 +633,10 @@ mod tests {
         assert_eq!(
             schema.pointer("/required"),
             Some(&serde_json::json!(["description", "prompt"]))
+        );
+        assert!(
+            schema.pointer("/properties/max_tokens/minimum").is_none(),
+            "tool schemas must stay inside the supported JSON-schema subset"
         );
     }
 

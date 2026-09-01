@@ -8,6 +8,8 @@ description = "Typert lookup provider registry: Rust port of the @deepseek-ai/ds
 [dependencies]
 cordis = { path = "../../vendor/cordis" }
 parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -40,14 +40,12 @@ log_bundle = root / "web" / "dist" / "plugins" / "session-log-download.js"
 assert 'aria-label": "下载会话日志"' in log_bundle.read_text(encoding="utf-8"), "session log is not icon-only"
 import hashlib, json
 manifest_value = json.loads((root / "web" / "dist" / "plugins" / "manifest.json").read_text(encoding="utf-8"))
-log_entry = next(entry for entry in manifest_value["entries"] if entry["url"] == "/plugins/session-log-download.js")
-assert log_entry["rev"] == hashlib.sha256(log_bundle.read_bytes()).hexdigest()[:16], "session log manifest rev is stale"
-for history_bundle_name in ("connection.js", "client-runtime.js", "ui-conversation.js"):
-    history_bundle = root / "web" / "dist" / "plugins" / history_bundle_name
-    history_entry = next(
-        entry for entry in manifest_value["entries"] if entry["url"] == f"/plugins/{history_bundle_name}"
-    )
-    assert history_entry["rev"] == hashlib.sha256(history_bundle.read_bytes()).hexdigest()[:16], f"{history_bundle_name} manifest rev is stale"
+for entry in manifest_value["entries"]:
+    declared = entry["url"]
+    bundle_path = root / "web" / "dist" / declared.lstrip("/")
+    assert bundle_path.is_file(), f"manifest bundle is missing: {declared}"
+    actual = hashlib.sha256(bundle_path.read_bytes()).hexdigest()[:16]
+    assert entry["rev"] == actual, f"{declared} manifest rev is stale"
 runtime_source = (root / "web" / "dist" / "plugins" / "client-runtime.js").read_text(encoding="utf-8")
 conversation_source = (root / "web" / "dist" / "plugins" / "ui-conversation.js").read_text(encoding="utf-8")
 connection_source = (root / "web" / "dist" / "plugins" / "connection.js").read_text(encoding="utf-8")

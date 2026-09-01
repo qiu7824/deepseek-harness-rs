@@ -1,0 +1,19 @@
+{
+  "name": "dsh-skin-center",
+  "version": "1.0.0",
+  "description": "Official-style skin settings page for the Rust-hosted DeepSeek Harness Web UI.",
+  "license": "MIT",
+  "exports": {
+    "./client": "./lib/client.js"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-theme",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-connection"
+      ]
+    }
+  }
+}

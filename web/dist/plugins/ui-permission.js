@@ -12,6 +12,16 @@ window.__ModuleLoader__.load({
 		//#region lib/types/client/presentation.js
 		/** Machine value of the preset that requires an explicit GUI risk gate. */
 		const FULL_ACCESS_PRESET = "danger-full-access";
+		const PRESET_LABEL_KEYS = new Map([
+			["read-only", "preset.readOnly"],
+			["workspace-write", "preset.workspaceWrite"],
+			[FULL_ACCESS_PRESET, "preset.fullAccess"]
+		]);
+		const DEFAULT_PRESET_LABELS = {
+			"preset.readOnly": "Read Only",
+			"preset.workspaceWrite": "Workspace Write",
+			"preset.fullAccess": "Full access"
+		};
 		/**
 		* Convert conventional kebab-case preset names into user-facing title case.
 		* @param name - host-supplied preset label or key.
@@ -25,10 +35,13 @@ window.__ModuleLoader__.load({
 		* Render a permission preset under its product label.
 		* @param value - preset machine value.
 		* @param name - host-supplied preset name.
-		* @returns the Full access product label or the conventional display name.
+		* @param t - optional locale dictionary lookup for built-in product labels.
+		* @returns the built-in product label or the conventional display name.
 		*/
-		function displayPermissionPreset(value, name) {
-			return value === "danger-full-access" ? "Full access" : displayPresetName(name);
+		function displayPermissionPreset(value, name, t) {
+			const key = PRESET_LABEL_KEYS.get(value);
+			if (key !== void 0 && (name === value || name === DEFAULT_PRESET_LABELS[key])) return t?.(key) ?? DEFAULT_PRESET_LABELS[key];
+			return displayPresetName(name);
 		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-permission-presets\src\client\PermissionRow.module.css.mjs
@@ -78,7 +91,8 @@ window.__ModuleLoader__.load({
 			if (state.status === "unavailable") return null;
 			const selected = state.options.find((option) => option.id === state.currentValue);
 			const busy = state.status === "loading" || state.status === "saving" || confirmingFullAccess;
-			const label = selected?.label ?? (busy ? t("loading") : t("unavailable"));
+			const optionLabel = (option) => displayPermissionPreset(option.id, option.label, t);
+			const label = selected !== void 0 ? optionLabel(selected) : busy ? t("loading") : t("unavailable");
 			const description = state.error ?? t("description");
 			return (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsxs)("div", {
 				className: PermissionRow_module_css_default.row,
@@ -99,7 +113,7 @@ window.__ModuleLoader__.load({
 					},
 					items: state.options.map((option) => ({
 						id: option.id,
-						label: option.label
+						label: optionLabel(option)
 					})),
 					selectedId: state.currentValue,
 					onSelect: (id) => {
@@ -156,11 +170,14 @@ window.__ModuleLoader__.load({
 			"description": "选择新会话的默认权限模式",
 			"loading": "加载中",
 			"unavailable": "不可用",
-			"confirm.title": "确认启用 Full access？",
-			"confirm.description": "启用 Full access 后，新会话将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任后续任务时使用。",
+			"preset.readOnly": "仅可查看",
+			"preset.workspaceWrite": "可写入工作区",
+			"preset.fullAccess": "完全权限",
+			"confirm.title": "确认启用完全权限？",
+			"confirm.description": "启用完全权限后，新会话将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任后续任务时使用。",
 			"confirm.acknowledge": "我已了解风险，并愿意继续",
 			"confirm.cancel": "取消",
-			"confirm.enable": "启用 Full access"
+			"confirm.enable": "启用完全权限"
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
@@ -168,6 +185,9 @@ window.__ModuleLoader__.load({
 			"description": "Choose the default permission mode for new sessions",
 			"loading": "Loading",
 			"unavailable": "Unavailable",
+			"preset.readOnly": "Read Only",
+			"preset.workspaceWrite": "Workspace Write",
+			"preset.fullAccess": "Full access",
 			"confirm.title": "Enable Full access?",
 			"confirm.description": "Full access lets new sessions reduce confirmation steps and perform more actions directly, including sensitive operations, file changes, or external commands. Only use it when you trust subsequent tasks.",
 			"confirm.acknowledge": "I understand the risks and want to continue",
@@ -176,14 +196,20 @@ window.__ModuleLoader__.load({
 		};
 		/** Simplified Chinese dictionary for the current-session popup gate. */
 		const accessZh = {
-			"confirm.title": "确认启用 Full access？",
-			"confirm.description": "启用 Full access 后，agent 将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。",
+			"preset.readOnly": "仅可查看",
+			"preset.workspaceWrite": "可写入工作区",
+			"preset.fullAccess": "完全权限",
+			"confirm.title": "确认启用完全权限？",
+			"confirm.description": "启用完全权限后，智能体将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。",
 			"confirm.acknowledge": "我已了解风险，并愿意继续",
 			"confirm.cancel": "取消",
-			"confirm.enable": "启用 Full access"
+			"confirm.enable": "启用完全权限"
 		};
 		/** English dictionary for the current-session popup gate. */
 		const accessEn = {
+			"preset.readOnly": "Read Only",
+			"preset.workspaceWrite": "Workspace Write",
+			"preset.fullAccess": "Full access",
 			"confirm.title": "Enable Full access?",
 			"confirm.description": "Full access reduces confirmation steps and lets the agent perform more actions directly, including sensitive operations, file changes, or external commands. Only use it when you trust the current task.",
 			"confirm.acknowledge": "I understand the risks and want to continue",
@@ -357,7 +383,7 @@ window.__ModuleLoader__.load({
 		function optionsOf(value, t) {
 			return value.options.filter((option) => option.value !== "custom").map((option) => ({
 				id: option.value,
-				label: displayPermissionPreset(option.value, option.name),
+				label: displayPermissionPreset(option.value, option.name, t),
 				...option.description !== void 0 ? { detail: option.description } : {},
 				...option.value === value.currentValue ? { active: true } : {},
 				...option.value === "danger-full-access" ? { confirmation: {
@@ -379,12 +405,18 @@ window.__ModuleLoader__.load({
 			const sessions = ctx.sessions;
 			ctx.effect(() => {
 				const disposers = [ctx.locale.register(ACCESS_NS, "zh", {
+					"preset.readOnly": accessZh["preset.readOnly"],
+					"preset.workspaceWrite": accessZh["preset.workspaceWrite"],
+					"preset.fullAccess": accessZh["preset.fullAccess"],
 					"confirm.title": accessZh["confirm.title"],
 					"confirm.description": accessZh["confirm.description"],
 					"confirm.acknowledge": accessZh["confirm.acknowledge"],
 					"confirm.cancel": accessZh["confirm.cancel"],
 					"confirm.enable": accessZh["confirm.enable"]
 				}), ctx.locale.register(ACCESS_NS, "en", {
+					"preset.readOnly": accessEn["preset.readOnly"],
+					"preset.workspaceWrite": accessEn["preset.workspaceWrite"],
+					"preset.fullAccess": accessEn["preset.fullAccess"],
 					"confirm.title": accessEn["confirm.title"],
 					"confirm.description": accessEn["confirm.description"],
 					"confirm.acknowledge": accessEn["confirm.acknowledge"],

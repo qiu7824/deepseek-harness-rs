@@ -1,0 +1,319 @@
+#[cfg(feature = "label")]
+pub fn text<Msg>(text: impl Into<String>) -> ViewNode<Msg> {
+    styled_text(text, crate::SemanticTextStyle::body())
+}
+
+/// Creates a label using a semantic type-ramp role instead of a raw font size.
+/// The line box follows the active desktop's native typography metric.
+#[cfg(feature = "label")]
+pub fn styled_text<Msg>(
+    text: impl Into<String>,
+    style: crate::SemanticTextStyle,
+) -> ViewNode<Msg> {
+    styled_text_for_platform(
+        crate::ZsTypographyPlatformStyle::current(),
+        text,
+        style,
+    )
+}
+
+/// Deterministic semantic-label variant for framework platform compositions.
+#[cfg(feature = "label")]
+pub(crate) fn styled_text_for_platform<Msg>(
+    platform: crate::ZsTypographyPlatformStyle,
+    text: impl Into<String>,
+    style: crate::SemanticTextStyle,
+) -> ViewNode<Msg> {
+    let line_height = style.role.metrics_for(platform).line_height;
+    let text = text.into();
+    let explicit_line_count = text.lines().count().max(1) as f32;
+    let node = ViewNode::new(ViewNodeKind::Text {
+        text,
+        style,
+    });
+    if style.wrap == crate::TextWrap::Word {
+        // A wrapping label must not be frozen to a one-line box. The native
+        // backend owns final shaping and wrapping; the shared tree only
+        // reserves the explicit lines and lets the label consume available
+        // vertical space.
+        node.native_typography_min_height(crate::Dp::new(line_height * explicit_line_count))
+            .flex(0.0)
+    } else {
+        node.native_typography_height(crate::Dp::new(line_height))
+    }
+}
+
+#[cfg(feature = "button")]
+pub(crate) type ZsToolbarMetrics =
+    crate::platform_component_profile::PlatformCommandBarProfile;
+
+#[cfg(feature = "button")]
+pub fn button<Msg>(label: impl Into<String>) -> ViewNode<Msg> {
+    let platform =
+        crate::platform_component_profile::PlatformComponentProfile::current().style;
+    let metrics = crate::ZsBaseControlMetrics::for_platform(platform);
+    let label = label.into();
+    let minimum_width = metrics.button_minimum_width_for_label(&label);
+    ViewNode::new(ViewNodeKind::Button {
+        label,
+        presentation: ZsButtonPresentation::Standard,
+        enabled: true,
+        on_click: None,
+    })
+    .min_width(minimum_width)
+    .native_typography_height(metrics.button_height)
+    .flex(0.0)
+}
+
+/// Creates an icon-and-label action for a platform toolbar or header bar.
+///
+/// The framework keeps this presentation flat at rest and maps the semantic
+/// icon through WinUI, SF Symbols or the GTK symbolic icon theme. Use it in a
+/// [`ZsCommandBarSpec`](crate::ZsCommandBarSpec) so the framework owns platform
+/// action density and grouping.
+#[cfg(feature = "button")]
+pub fn toolbar_button<Msg>(label: impl Into<String>, icon: crate::ZsIcon) -> ViewNode<Msg> {
+    toolbar_button_impl(
+        crate::platform_component_profile::PlatformComponentProfile::current().style,
+        label,
+        icon,
+    )
+}
+
+/// Creates the platform's emphasized/default action button.
+#[cfg(feature = "button")]
+pub fn primary_button<Msg>(label: impl Into<String>) -> ViewNode<Msg> {
+    let platform =
+        crate::platform_component_profile::PlatformComponentProfile::current().style;
+    let metrics = crate::ZsBaseControlMetrics::for_platform(platform);
+    let label = label.into();
+    let minimum_width = metrics.button_minimum_width_for_label(&label);
+    ViewNode::new(ViewNodeKind::Button {
+        label,
+        presentation: ZsButtonPresentation::Primary,
+        enabled: true,
+        on_click: None,
+    })
+    .min_width(minimum_width)
+    .native_typography_height(metrics.button_height)
+    .flex(0.0)
+}
+
+/// Creates a square button painted from a semantic icon while retaining an
+/// accessible text label in the View tree.
+#[cfg(feature = "button")]
+pub fn icon_button<Msg>(label: impl Into<String>, icon: crate::ZsIcon) -> ViewNode<Msg> {
+    let platform =
+        crate::platform_component_profile::PlatformComponentProfile::current().style;
+    let metrics = crate::ZsBaseControlMetrics::for_platform(platform);
+    ViewNode::new(ViewNodeKind::Button {
+        label: label.into(),
+        presentation: ZsButtonPresentation::Icon { icon },
+        enabled: true,
+        on_click: None,
+    })
+    .width(metrics.button_height)
+    .native_typography_height(metrics.button_height)
+    .flex(0.0)
+}
+
+/// Deterministic toolbar-button variant for target proof fixtures and tests.
+#[cfg(all(test, feature = "button"))]
+pub(crate) fn toolbar_button_for_style<Msg>(
+    platform: crate::ZsBaseControlPlatformStyle,
+    label: impl Into<String>,
+    icon: crate::ZsIcon,
+) -> ViewNode<Msg> {
+    toolbar_button_impl(platform, label, icon).with_platform_style_override(platform)
+}
+
+#[cfg(feature = "button")]
+fn toolbar_button_impl<Msg>(
+    platform: crate::ZsBaseControlPlatformStyle,
+    label: impl Into<String>,
+    icon: crate::ZsIcon,
+) -> ViewNode<Msg> {
+    let base = crate::ZsBaseControlMetrics::for_platform(platform);
+    let metrics = ZsToolbarMetrics::for_platform(platform);
+    let label = label.into();
+    let minimum_width = Dp::new(
+        base
+            .estimated_text_width_with_shaping_reserve(&label)
+            .0
+            + base.button_padding_left.0
+            + metrics.icon_size.0
+            + metrics.content_gap.0
+            + base.button_padding_right.0,
+    );
+    ViewNode::new(ViewNodeKind::Button {
+        label,
+        presentation: ZsButtonPresentation::Toolbar {
+            icon,
+            show_label: true,
+        },
+        enabled: true,
+        on_click: None,
+    })
+    .min_width(minimum_width)
+    .native_typography_height(metrics.button_height)
+    .flex(0.0)
+}
+
+#[cfg(feature = "accordion")]
+pub(crate) fn accordion_header_button<Msg>(
+    label: impl Into<String>,
+    expanded: bool,
+) -> ViewNode<Msg> {
+    accordion_header_button_impl(
+        crate::platform_component_profile::PlatformComponentProfile::current().style,
+        label,
+        expanded,
+    )
+}
+
+#[cfg(all(test, feature = "accordion"))]
+pub(crate) fn accordion_header_button_for_style<Msg>(
+    platform: crate::ZsBaseControlPlatformStyle,
+    label: impl Into<String>,
+    expanded: bool,
+) -> ViewNode<Msg> {
+    accordion_header_button_impl(platform, label, expanded)
+        .with_platform_style_override(platform)
+}
+
+#[cfg(feature = "accordion")]
+fn accordion_header_button_impl<Msg>(
+    platform: crate::ZsBaseControlPlatformStyle,
+    label: impl Into<String>,
+    expanded: bool,
+) -> ViewNode<Msg> {
+    let metrics =
+        crate::platform_component_profile::PlatformAccordionProfile::for_platform(platform);
+    ViewNode::new(ViewNodeKind::Button {
+        label: label.into(),
+        presentation: ZsButtonPresentation::ExpanderHeader { expanded },
+        enabled: true,
+        on_click: None,
+    })
+    .native_typography_height(metrics.header_height)
+    .flex(0.0)
+}
+
+/// Creates a self-drawn navigation row with a semantic icon and explicit
+/// selected state. It uses the same typed activation path as a Button while
+/// retaining NavigationView item geometry instead of Button chrome.
+#[cfg(feature = "button")]
+pub fn navigation_item<Msg>(
+    label: impl Into<String>,
+    icon: crate::ZsIcon,
+    selected: bool,
+) -> ViewNode<Msg> {
+    let platform =
+        crate::platform_component_profile::PlatformComponentProfile::current().style;
+    let metrics = crate::ZsNavigationItemMetrics::for_platform(platform);
+    ViewNode::new(ViewNodeKind::Button {
+        label: label.into(),
+        presentation: ZsButtonPresentation::NavigationItem { icon, selected },
+        enabled: true,
+        on_click: None,
+    })
+    .native_typography_height(metrics.item_height)
+    .flex(0.0)
+}
+
+#[cfg(feature = "toggle-button")]
+pub fn toggle_button<Msg>(label: impl Into<String>, checked: bool) -> ViewNode<Msg> {
+    let metrics = crate::ZsToggleButtonMetrics::for_platform(
+        crate::ZsToggleButtonPlatformStyle::current(),
+    );
+    let base = crate::ZsBaseControlMetrics::for_platform(
+        crate::ZsBaseControlPlatformStyle::current(),
+    );
+    let label = label.into();
+    let minimum_width = base.button_minimum_width_for_label(&label);
+    ViewNode::new(ViewNodeKind::ToggleButton {
+        label,
+        checked,
+        on_toggle: None,
+    })
+    .min_width(minimum_width)
+    .native_typography_height(metrics.minimum_height)
+    .flex(0.0)
+}
+
+#[cfg(feature = "checkbox")]
+pub fn checkbox<Msg>(label: impl Into<String>, checked: bool) -> ViewNode<Msg> {
+    let metrics = crate::ZsBaseControlMetrics::for_platform(
+        crate::ZsBaseControlPlatformStyle::current(),
+    );
+    let label = label.into();
+    let minimum_width = metrics.check_minimum_width_for_label(&label);
+    ViewNode::new(ViewNodeKind::Checkbox {
+        label,
+        checked,
+        on_toggle: None,
+    })
+    .min_width(minimum_width)
+    .native_typography_height(metrics.check_height)
+    .flex(0.0)
+}
+
+#[cfg(feature = "toggle")]
+pub fn toggle<Msg>(checked: bool) -> ViewNode<Msg> {
+    let metrics = crate::ZsBaseControlMetrics::for_platform(
+        crate::ZsBaseControlPlatformStyle::current(),
+    );
+    ViewNode::new(ViewNodeKind::Toggle {
+        checked,
+        on_toggle: None,
+    })
+    .width(metrics.toggle_width)
+    .height(metrics.toggle_height)
+    .flex(0.0)
+}
+
+#[cfg(feature = "radio")]
+pub fn radio_button<Msg>(label: impl Into<String>, selected: bool) -> ViewNode<Msg> {
+    let metrics = crate::ZsBaseControlMetrics::for_platform(
+        crate::ZsBaseControlPlatformStyle::current(),
+    );
+    let label = label.into();
+    let minimum_width = metrics.radio_minimum_width_for_label(&label);
+    ViewNode::new(ViewNodeKind::RadioButton {
+        label,
+        selected,
+        on_choose: None,
+    })
+    .min_width(minimum_width)
+    .native_typography_height(metrics.radio_height)
+    .flex(0.0)
+}
+
+#[cfg(feature = "progress")]
+pub fn progress_bar<Msg>(value: f32, range: impl Into<crate::ProgressRange>) -> ViewNode<Msg> {
+    progress_bar_from_spec(crate::ZsProgressBarSpec::determinate(value, range))
+}
+
+#[cfg(feature = "progress")]
+pub fn indeterminate_progress_bar<Msg>() -> ViewNode<Msg> {
+    progress_bar_from_spec(crate::ZsProgressBarSpec::indeterminate())
+}
+
+#[cfg(feature = "progress")]
+pub fn progress_bar_from_spec<Msg>(spec: crate::ZsProgressBarSpec) -> ViewNode<Msg> {
+    let metrics = crate::ZsBaseControlMetrics::for_platform(
+        crate::ZsBaseControlPlatformStyle::current(),
+    );
+    ViewNode::new(ViewNodeKind::ProgressBar { spec }).height(metrics.progress_slot_height)
+}
+
+#[cfg(feature = "progress-ring")]
+pub fn progress_ring<Msg>(spec: crate::ZsProgressRingSpec) -> ViewNode<Msg> {
+    let metrics = crate::zs_progress_ring_metrics(
+        crate::ZsProgressRingPlatformStyle::current(),
+        spec.size_value(),
+    );
+    ViewNode::new(ViewNodeKind::ProgressRing { spec })
+        .width(metrics.diameter)
+        .height(metrics.diameter)
+}

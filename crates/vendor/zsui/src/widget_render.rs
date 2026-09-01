@@ -1,0 +1,9424 @@
+#[cfg(feature = "tree")]
+use std::collections::BTreeSet;
+
+use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "color-picker")]
+use crate::Point;
+#[cfg(any(
+    feature = "breadcrumb",
+    feature = "color-picker",
+    feature = "command-palette",
+    feature = "date-picker",
+    feature = "dialog",
+    feature = "grid-view",
+    feature = "info-bar",
+    feature = "teaching-tip",
+    feature = "tabs",
+    feature = "time-picker",
+    feature = "toast",
+    feature = "toggle-button"
+))]
+use crate::TextRole;
+#[cfg(feature = "auto-suggest")]
+use crate::ZsAutoSuggestion;
+#[cfg(feature = "date-picker")]
+use crate::ZsDate;
+use crate::{Color, ColorRole, Dp, Dpi, NativeDrawCommand, NativeDrawFill, NativeDrawPlan, Rect};
+#[cfg(any(
+    feature = "breadcrumb",
+    feature = "color-picker",
+    feature = "command-palette",
+    feature = "dialog",
+    feature = "grid-view",
+    feature = "info-bar",
+    feature = "teaching-tip",
+    feature = "date-picker",
+    feature = "table",
+    feature = "tabs",
+    feature = "time-picker",
+    feature = "toast"
+))]
+use crate::{HorizontalAlign, TextWeight};
+#[cfg(all(
+    feature = "grid-view",
+    not(any(
+        feature = "auto-suggest",
+        feature = "breadcrumb",
+        feature = "command-palette",
+        feature = "combo",
+        feature = "date-picker",
+        feature = "info-bar",
+        feature = "teaching-tip",
+        feature = "table",
+        feature = "time-picker",
+        feature = "toast",
+        feature = "tree"
+    ))
+))]
+use crate::{NativeDrawIconCommand, NativeIconColorMode};
+#[cfg(any(
+    feature = "auto-suggest",
+    feature = "breadcrumb",
+    feature = "color-picker",
+    feature = "command-palette",
+    feature = "combo",
+    feature = "date-picker",
+    feature = "info-bar",
+    feature = "number-box",
+    feature = "teaching-tip",
+    feature = "table",
+    feature = "time-picker",
+    feature = "toast",
+    feature = "tree"
+))]
+use crate::{NativeDrawIconCommand, NativeIconColorMode, ZsIcon};
+
+pub(crate) fn zs_character_width_units(character: char) -> i32 {
+    let codepoint = character as u32;
+    if character == '\n' || character == '\r' || character.is_control() {
+        0
+    } else if matches!(
+        codepoint,
+        0x0300..=0x036f
+            | 0x1ab0..=0x1aff
+            | 0x1dc0..=0x1dff
+            | 0x20d0..=0x20ff
+            | 0xfe00..=0xfe0f
+            | 0xfe20..=0xfe2f
+            | 0xe0100..=0xe01ef
+            | 0x200b..=0x200f
+            | 0x202a..=0x202e
+            | 0x2060..=0x206f
+            | 0xfeff
+    ) {
+        0
+    } else if character.is_ascii() {
+        1
+    } else {
+        2
+    }
+}
+
+pub(crate) fn zs_estimated_text_width_units(text: &str) -> i32 {
+    text.lines()
+        .map(|line| {
+            line.chars().fold(0_i32, |width, character| {
+                width.saturating_add(zs_character_width_units(character))
+            })
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+#[allow(dead_code)]
+pub(crate) fn zs_estimated_text_flow_units(text: &str) -> i32 {
+    text.chars().fold(0_i32, |width, character| {
+        width.saturating_add(zs_character_width_units(character))
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn zs_estimated_text_width_px(text: &str, ascii_width: i32) -> i32 {
+    zs_estimated_text_width_units(text).saturating_mul(ascii_width.max(1))
+}
+#[cfg(any(
+    feature = "auto-suggest",
+    feature = "breadcrumb",
+    feature = "color-picker",
+    feature = "command-palette",
+    feature = "combo",
+    feature = "date-picker",
+    feature = "dialog",
+    feature = "grid-view",
+    feature = "info-bar",
+    feature = "teaching-tip",
+    feature = "number-box",
+    feature = "table",
+    feature = "tabs",
+    feature = "time-picker",
+    feature = "toast",
+    feature = "toggle-button",
+    feature = "tree"
+))]
+use crate::{NativeDrawTextCommand, SemanticTextStyle};
+#[cfg(feature = "time-picker")]
+use crate::{ZsClockFormat, ZsMinuteIncrement, ZsTime};
+#[cfg(feature = "color-picker")]
+use crate::{ZsColorChannel, ZsColorPickerState, ZsHsvColor};
+
+/// Desktop-native sizing used by the small built-in control surfaces.
+///
+/// Windows values mirror the WinUI theme-resource geometry used by ZSUI's
+/// self-drawn controls. AppKit and GTK values preserve their denser desktop
+/// control character instead of reusing the Windows profile.
+pub type ZsBaseControlPlatformStyle = crate::ZsPlatformStyle;
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsProgressBarSegmentMetrics {
+    pub width_fraction: f32,
+    pub start_offset_fraction: f32,
+    pub end_offset_fraction: f32,
+    pub delay_ms: u64,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsProgressBarIndeterminateMetrics {
+    pub cycle_ms: u64,
+    pub frame_interval_ms: u64,
+    pub primary: ZsProgressBarSegmentMetrics,
+    pub secondary: Option<ZsProgressBarSegmentMetrics>,
+    pub easing: Option<[f32; 4]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsBaseControlMetrics {
+    pub body_line_height: Dp,
+    pub average_character_width: Dp,
+    pub button_minimum_width: Dp,
+    pub button_height: Dp,
+    pub button_radius: Dp,
+    pub button_padding_left: Dp,
+    pub button_padding_top: Dp,
+    pub button_padding_right: Dp,
+    pub button_padding_bottom: Dp,
+    pub text_input_minimum_width: Dp,
+    pub text_input_height: Dp,
+    pub text_input_radius: Dp,
+    pub text_input_padding_left: Dp,
+    pub text_input_padding_top: Dp,
+    pub text_input_padding_right: Dp,
+    pub text_input_padding_bottom: Dp,
+    pub check_minimum_width: Dp,
+    pub check_height: Dp,
+    pub check_indicator_size: Dp,
+    pub toggle_width: Dp,
+    pub toggle_height: Dp,
+    pub toggle_track_width: Dp,
+    pub toggle_track_height: Dp,
+    pub toggle_knob_off_size: Dp,
+    pub toggle_knob_on_size: Dp,
+    pub slider_minimum_width: Dp,
+    pub slider_height: Dp,
+    pub slider_track_height: Dp,
+    pub slider_thumb_size: Dp,
+    pub radio_minimum_width: Dp,
+    pub radio_height: Dp,
+    pub radio_indicator_size: Dp,
+    pub radio_dot_size: Dp,
+    pub progress_slot_height: Dp,
+    pub progress_track_height: Dp,
+    pub progress_indicator_height: Dp,
+    pub progress_indeterminate: ZsProgressBarIndeterminateMetrics,
+    pub selection_minimum_width: Dp,
+    pub selection_height: Dp,
+    pub time_picker_minimum_width: Dp,
+}
+
+impl ZsBaseControlMetrics {
+    /// Resolves the native control metrics for the current target without
+    /// exposing a platform branch to application code.
+    pub const fn current() -> Self {
+        Self::for_platform(ZsBaseControlPlatformStyle::current())
+    }
+
+    pub const fn for_platform(platform: ZsBaseControlPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformBaseControlProfile::for_platform(platform)
+            .metrics
+    }
+
+    pub fn estimated_text_width(self, text: &str) -> Dp {
+        let units = zs_estimated_text_width_units(text) as f32;
+        Dp::new(units * self.average_character_width.0)
+    }
+
+    /// Reserves two average glyph cells beyond the shared width estimate so
+    /// native fallback shaping does not clip the final glyphs of mixed-script
+    /// labels before a platform renderer can measure them precisely.
+    pub fn estimated_text_width_with_shaping_reserve(self, text: &str) -> Dp {
+        Dp::new(self.estimated_text_width(text).0 + self.average_character_width.0 * 2.0)
+    }
+
+    pub fn button_minimum_width_for_label(self, label: &str) -> Dp {
+        Dp::new(self.button_minimum_width.0.max(
+            self.estimated_text_width_with_shaping_reserve(label).0
+                + self.button_padding_left.0
+                + self.button_padding_right.0
+                + 4.0,
+        ))
+    }
+
+    pub fn check_minimum_width_for_label(self, label: &str) -> Dp {
+        Dp::new(self.check_minimum_width.0.max(
+            self.check_indicator_size.0
+                + 8.0
+                + self.estimated_text_width_with_shaping_reserve(label).0,
+        ))
+    }
+
+    pub fn radio_minimum_width_for_label(self, label: &str) -> Dp {
+        Dp::new(self.radio_minimum_width.0.max(
+            self.radio_indicator_size.0
+                + 8.0
+                + self.estimated_text_width_with_shaping_reserve(label).0,
+        ))
+    }
+}
+
+#[cfg(feature = "button")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsNavigationItemMetrics {
+    pub open_pane_width: Dp,
+    pub item_height: Dp,
+    pub icon_size: Dp,
+    pub icon_box_width: Dp,
+    pub text_leading_margin: Dp,
+    pub trailing_padding: Dp,
+    pub indicator_width: Dp,
+    pub indicator_height: Dp,
+    pub indicator_radius: Dp,
+    pub radius: Dp,
+}
+
+#[cfg(feature = "button")]
+impl ZsNavigationItemMetrics {
+    pub const fn for_platform(platform: ZsBaseControlPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformButtonProfile::for_platform(platform)
+            .navigation_item
+            .metrics
+    }
+}
+
+#[cfg(feature = "button")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsNavigationItemRenderPlan {
+    pub bounds: Rect,
+    pub icon_bounds: Rect,
+    pub text_bounds: Rect,
+    pub selection_indicator: Option<Rect>,
+    pub selected: bool,
+    pub indicator_radius: i32,
+    pub radius: i32,
+    pub platform: ZsBaseControlPlatformStyle,
+}
+
+#[cfg(feature = "button")]
+pub fn zs_navigation_item_render_plan(
+    bounds: Rect,
+    selected: bool,
+    platform: ZsBaseControlPlatformStyle,
+    dpi: Dpi,
+) -> ZsNavigationItemRenderPlan {
+    let navigation_item =
+        crate::platform_component_profile::PlatformButtonProfile::for_platform(platform)
+            .navigation_item;
+    let metrics = navigation_item.metrics;
+    let icon_size = metrics
+        .icon_size
+        .to_px(dpi)
+        .round_i32()
+        .max(0)
+        .min(bounds.height.max(0));
+    let icon_box_width = metrics.icon_box_width.to_px(dpi).round_i32().max(icon_size);
+    let leading_margin = metrics.text_leading_margin.to_px(dpi).round_i32().max(0);
+    let trailing_padding = metrics.trailing_padding.to_px(dpi).round_i32().max(0);
+    let indicator_width = metrics.indicator_width.to_px(dpi).round_i32().max(0);
+    let indicator_height = metrics
+        .indicator_height
+        .to_px(dpi)
+        .round_i32()
+        .max(0)
+        .min(bounds.height.max(0));
+    let icon_bounds = Rect {
+        x: bounds
+            .x
+            .saturating_add(icon_box_width.saturating_sub(icon_size) / 2),
+        y: bounds
+            .y
+            .saturating_add(bounds.height.saturating_sub(icon_size) / 2),
+        width: icon_size,
+        height: icon_size,
+    };
+    let text_x = bounds
+        .x
+        .saturating_add(icon_box_width)
+        .saturating_add(leading_margin);
+    let text_right = bounds
+        .x
+        .saturating_add(bounds.width)
+        .saturating_sub(trailing_padding);
+    let selection_indicator = (navigation_item.draws_selection_indicator()
+        && selected
+        && indicator_width > 0
+        && indicator_height > 0)
+        .then_some(Rect {
+            x: bounds.x,
+            y: bounds
+                .y
+                .saturating_add(bounds.height.saturating_sub(indicator_height) / 2),
+            width: indicator_width.min(bounds.width.max(0)),
+            height: indicator_height,
+        });
+    ZsNavigationItemRenderPlan {
+        bounds,
+        icon_bounds,
+        text_bounds: Rect {
+            x: text_x,
+            y: bounds.y,
+            width: text_right.saturating_sub(text_x).max(0),
+            height: bounds.height,
+        },
+        selection_indicator,
+        selected,
+        indicator_radius: metrics.indicator_radius.to_px(dpi).round_i32().max(0),
+        radius: metrics.radius.to_px(dpi).round_i32().max(1),
+        platform,
+    }
+}
+
+#[cfg(feature = "button")]
+pub fn zs_navigation_item_native_draw_plan(
+    plan: &ZsNavigationItemRenderPlan,
+    label: &str,
+    icon: crate::ZsIcon,
+) -> NativeDrawPlan {
+    let navigation_item =
+        crate::platform_component_profile::PlatformButtonProfile::for_platform(plan.platform)
+            .navigation_item;
+    let mut commands = Vec::new();
+    if plan.selected {
+        let (role, alpha) = navigation_item.selected_fill();
+        let fill = match alpha {
+            Some(alpha) => NativeDrawFill::RoleWithAlpha { role, alpha },
+            None => NativeDrawFill::Role(role),
+        };
+        commands.push(NativeDrawCommand::RoundRect {
+            rect: plan.bounds,
+            fill,
+            stroke: None,
+            radius: plan.radius,
+        });
+    }
+    if let Some(indicator) = plan.selection_indicator {
+        commands.push(NativeDrawCommand::RoundFill {
+            rect: indicator,
+            fill: NativeDrawFill::Role(ColorRole::Accent),
+            radius: plan.indicator_radius,
+        });
+    }
+    commands.push(NativeDrawCommand::Icon(
+        crate::NativeDrawIconCommand::new(
+            icon,
+            plan.icon_bounds,
+            crate::NativeIconColorMode::ThemeAware,
+        )
+        .with_color(if plan.selected {
+            navigation_item.selected_content_color()
+        } else {
+            ColorRole::SecondaryText
+        }),
+    ));
+    let mut text_style = crate::SemanticTextStyle::body();
+    if plan.selected {
+        text_style.color = navigation_item.selected_content_color();
+    }
+    commands.push(NativeDrawCommand::Text(crate::NativeDrawTextCommand::new(
+        label,
+        plan.text_bounds,
+        text_style,
+    )));
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "info-bar")]
+pub type ZsInfoBarPlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(any(feature = "info-bar", feature = "teaching-tip", feature = "toast"))]
+fn feedback_action_fill(
+    treatment: crate::platform_component_profile::PlatformFeedbackActionTreatment,
+) -> NativeDrawFill {
+    #[cfg(feature = "teaching-tip")]
+    use crate::platform_component_profile::PlatformFeedbackActionTreatment::AccentFilled;
+    use crate::platform_component_profile::PlatformFeedbackActionTreatment::NeutralControl;
+    #[cfg(any(feature = "info-bar", feature = "toast"))]
+    use crate::platform_component_profile::PlatformFeedbackActionTreatment::TransparentAccent;
+
+    match treatment {
+        NeutralControl => NativeDrawFill::Role(ColorRole::Control),
+        #[cfg(any(feature = "info-bar", feature = "toast"))]
+        TransparentAccent => NativeDrawFill::RoleWithAlpha {
+            role: ColorRole::Accent,
+            alpha: 0,
+        },
+        #[cfg(feature = "teaching-tip")]
+        AccentFilled => NativeDrawFill::Role(ColorRole::Accent),
+    }
+}
+
+#[cfg(any(feature = "info-bar", feature = "teaching-tip", feature = "toast"))]
+const fn feedback_action_text_color(
+    treatment: crate::platform_component_profile::PlatformFeedbackActionTreatment,
+) -> ColorRole {
+    match treatment {
+        #[cfg(feature = "teaching-tip")]
+        crate::platform_component_profile::PlatformFeedbackActionTreatment::AccentFilled => {
+            ColorRole::AccentText
+        }
+        crate::platform_component_profile::PlatformFeedbackActionTreatment::NeutralControl => {
+            ColorRole::Accent
+        }
+        #[cfg(any(feature = "info-bar", feature = "toast"))]
+        crate::platform_component_profile::PlatformFeedbackActionTreatment::TransparentAccent => {
+            ColorRole::Accent
+        }
+    }
+}
+
+#[cfg(feature = "info-bar")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsInfoBarMetrics {
+    pub minimum_height: Dp,
+    pub horizontal_padding: Dp,
+    pub vertical_padding: Dp,
+    pub content_gap: Dp,
+    pub control_gap: Dp,
+    pub control_height: Dp,
+    pub icon_size: Dp,
+    pub accent_width: Dp,
+    pub surface_radius: Dp,
+    pub control_radius: Dp,
+    pub title_line_height: Dp,
+    pub message_line_height: Dp,
+    pub average_character_width: Dp,
+}
+
+#[cfg(feature = "info-bar")]
+impl ZsInfoBarMetrics {
+    pub const fn for_platform(platform: ZsInfoBarPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformInfoBarProfile::for_platform(platform).metrics
+    }
+
+    pub fn desired_height(self, spec: &crate::ZsInfoBarSpec) -> Dp {
+        let text_height = match (
+            spec.title_text().is_some(),
+            !spec.message().trim().is_empty(),
+        ) {
+            (true, true) => self.title_line_height.0 + self.message_line_height.0,
+            (true, false) => self.title_line_height.0,
+            (false, true) => self.message_line_height.0,
+            (false, false) => 0.0,
+        };
+        let desired = self
+            .minimum_height
+            .0
+            .max(text_height + self.vertical_padding.0 * 2.0)
+            .max(self.control_height.0 + self.vertical_padding.0 * 2.0);
+        Dp::new((desired / 4.0).ceil() * 4.0)
+    }
+}
+
+#[cfg(feature = "info-bar")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsInfoBarRenderPlan {
+    pub surface: Rect,
+    pub accent_bounds: Option<Rect>,
+    pub icon_bounds: Rect,
+    pub title_bounds: Option<Rect>,
+    pub message_bounds: Option<Rect>,
+    pub action_bounds: Option<Rect>,
+    pub close_bounds: Option<Rect>,
+    pub focused_control: Option<crate::ZsInfoBarControl>,
+    pub surface_radius: i32,
+    pub control_radius: i32,
+    pub platform: ZsInfoBarPlatformStyle,
+}
+
+#[cfg(feature = "info-bar")]
+pub fn zs_info_bar_render_plan(
+    bounds: Rect,
+    spec: &crate::ZsInfoBarSpec,
+    focused_control: Option<crate::ZsInfoBarControl>,
+    platform: ZsInfoBarPlatformStyle,
+    dpi: Dpi,
+) -> ZsInfoBarRenderPlan {
+    let metrics =
+        crate::platform_component_profile::PlatformInfoBarProfile::for_platform(platform).metrics;
+    let horizontal_padding = metrics.horizontal_padding.to_px(dpi).round_i32().max(0);
+    let vertical_padding = metrics.vertical_padding.to_px(dpi).round_i32().max(0);
+    let content_gap = metrics.content_gap.to_px(dpi).round_i32().max(0);
+    let control_gap = metrics.control_gap.to_px(dpi).round_i32().max(0);
+    let control_height = metrics.control_height.to_px(dpi).round_i32().max(1);
+    let icon_size = metrics.icon_size.to_px(dpi).round_i32().max(1);
+    let accent_width = metrics.accent_width.to_px(dpi).round_i32().max(0);
+    let title_line_height = metrics.title_line_height.to_px(dpi).round_i32().max(1);
+    let message_line_height = metrics.message_line_height.to_px(dpi).round_i32().max(1);
+    let character_width = metrics
+        .average_character_width
+        .to_px(dpi)
+        .round_i32()
+        .max(1);
+    let surface = Rect {
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width.max(0),
+        height: bounds.height.max(0),
+    };
+    let accent_bounds = (accent_width > 0).then_some(Rect {
+        x: surface.x,
+        y: surface.y,
+        width: accent_width.min(surface.width),
+        height: surface.height,
+    });
+    let surface_right = surface.x.saturating_add(surface.width);
+    let content_left = surface
+        .x
+        .saturating_add(horizontal_padding)
+        .saturating_add(accent_width)
+        .min(surface_right);
+    let icon_width = icon_size.min(surface_right.saturating_sub(content_left).max(0));
+    let icon_bounds = Rect {
+        x: content_left,
+        y: surface
+            .y
+            .saturating_add((surface.height.saturating_sub(icon_size)) / 2),
+        width: icon_width,
+        height: icon_size.min(surface.height),
+    };
+    let mut trailing_x = surface_right
+        .saturating_sub(horizontal_padding)
+        .max(surface.x);
+    let close_bounds = spec.is_closable().then(|| {
+        let width = control_height.min(trailing_x.saturating_sub(surface.x).max(0));
+        trailing_x = trailing_x.saturating_sub(width).max(surface.x);
+        Rect {
+            x: trailing_x,
+            y: surface
+                .y
+                .saturating_add((surface.height.saturating_sub(control_height)) / 2),
+            width,
+            height: control_height.min(surface.height),
+        }
+    });
+    if close_bounds.is_some() {
+        trailing_x = trailing_x.saturating_sub(control_gap).max(surface.x);
+    }
+    let action_bounds = spec.action_label().map(|label| {
+        let desired_width = zs_estimated_text_width_px(label, character_width)
+            .saturating_add(horizontal_padding)
+            .max(control_height);
+        let width = desired_width.min(trailing_x.saturating_sub(surface.x).max(0));
+        trailing_x = trailing_x.saturating_sub(width).max(surface.x);
+        Rect {
+            x: trailing_x,
+            y: surface
+                .y
+                .saturating_add((surface.height.saturating_sub(control_height)) / 2),
+            width,
+            height: control_height.min(surface.height),
+        }
+    });
+    if action_bounds.is_some() {
+        trailing_x = trailing_x.saturating_sub(content_gap).max(surface.x);
+    }
+    let text_left = icon_bounds
+        .x
+        .saturating_add(icon_bounds.width)
+        .saturating_add(content_gap);
+    let text_width = trailing_x.saturating_sub(text_left).max(0);
+    let has_title = spec.title_text().is_some();
+    let has_message = !spec.message().trim().is_empty();
+    let total_text_height = match (has_title, has_message) {
+        (true, true) => title_line_height.saturating_add(message_line_height),
+        (true, false) => title_line_height,
+        (false, true) => message_line_height,
+        (false, false) => 0,
+    }
+    .min(surface.height.saturating_sub(vertical_padding * 2).max(0));
+    let text_top = surface
+        .y
+        .saturating_add((surface.height.saturating_sub(total_text_height)) / 2);
+    let title_bounds = has_title.then_some(Rect {
+        x: text_left,
+        y: text_top,
+        width: text_width,
+        height: if has_message {
+            title_line_height.min(total_text_height)
+        } else {
+            total_text_height
+        },
+    });
+    let message_bounds = has_message.then_some(Rect {
+        x: text_left,
+        y: text_top.saturating_add(if has_title {
+            title_line_height.min(total_text_height)
+        } else {
+            0
+        }),
+        width: text_width,
+        height: if has_title {
+            total_text_height.saturating_sub(title_line_height.min(total_text_height))
+        } else {
+            total_text_height
+        },
+    });
+
+    ZsInfoBarRenderPlan {
+        surface,
+        accent_bounds,
+        icon_bounds,
+        title_bounds,
+        message_bounds,
+        action_bounds,
+        close_bounds,
+        focused_control: focused_control.filter(|control| spec.has_control(*control)),
+        surface_radius: metrics.surface_radius.to_px(dpi).round_i32().max(0),
+        control_radius: metrics.control_radius.to_px(dpi).round_i32().max(0),
+        platform,
+    }
+}
+
+#[cfg(feature = "info-bar")]
+pub fn zs_info_bar_native_draw_plan(
+    plan: &ZsInfoBarRenderPlan,
+    spec: &crate::ZsInfoBarSpec,
+) -> NativeDrawPlan {
+    let profile =
+        crate::platform_component_profile::PlatformInfoBarProfile::for_platform(plan.platform);
+    let severity_role = match spec.info_bar_severity() {
+        crate::ZsInfoBarSeverity::Informational => ColorRole::Accent,
+        crate::ZsInfoBarSeverity::Success => ColorRole::Success,
+        crate::ZsInfoBarSeverity::Warning => ColorRole::Warning,
+        crate::ZsInfoBarSeverity::Error => ColorRole::Danger,
+    };
+    let mut commands = vec![
+        NativeDrawCommand::RoundRect {
+            rect: plan.surface,
+            fill: NativeDrawFill::RoleWithAlpha {
+                role: severity_role,
+                alpha: profile.surface_alpha,
+            },
+            stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+            radius: plan.surface_radius,
+        },
+        NativeDrawCommand::Icon(
+            NativeDrawIconCommand::new(
+                spec.info_bar_severity().icon(),
+                plan.icon_bounds,
+                NativeIconColorMode::ThemeAware,
+            )
+            .with_color(severity_role),
+        ),
+    ];
+    if let Some(accent_bounds) = plan.accent_bounds {
+        commands.push(NativeDrawCommand::FillRect {
+            rect: accent_bounds,
+            fill: NativeDrawFill::Role(severity_role),
+        });
+    }
+    if let (Some(title), Some(bounds)) = (spec.title_text(), plan.title_bounds) {
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            title,
+            bounds,
+            SemanticTextStyle {
+                role: TextRole::Body,
+                color: ColorRole::PrimaryText,
+                weight: TextWeight::Semibold,
+                horizontal_align: HorizontalAlign::Start,
+                vertical_align: crate::VerticalAlign::Center,
+                wrap: crate::TextWrap::NoWrap,
+                ellipsis: true,
+            },
+        )));
+    }
+    if let Some(bounds) = plan.message_bounds {
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            spec.message(),
+            bounds,
+            SemanticTextStyle {
+                role: TextRole::Caption,
+                color: ColorRole::SecondaryText,
+                weight: TextWeight::Regular,
+                horizontal_align: HorizontalAlign::Start,
+                vertical_align: crate::VerticalAlign::Center,
+                wrap: crate::TextWrap::NoWrap,
+                ellipsis: true,
+            },
+        )));
+    }
+    if let (Some(label), Some(bounds)) = (spec.action_label(), plan.action_bounds) {
+        let focused = plan.focused_control == Some(crate::ZsInfoBarControl::Action);
+        let action_treatment = profile.action_treatment();
+        commands.push(NativeDrawCommand::RoundRect {
+            rect: bounds,
+            fill: feedback_action_fill(action_treatment),
+            stroke: focused.then_some(NativeDrawFill::Role(ColorRole::Accent)),
+            radius: plan.control_radius,
+        });
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            label,
+            bounds,
+            SemanticTextStyle {
+                role: TextRole::Button,
+                color: feedback_action_text_color(action_treatment),
+                weight: TextWeight::Semibold,
+                horizontal_align: HorizontalAlign::Center,
+                vertical_align: crate::VerticalAlign::Center,
+                wrap: crate::TextWrap::NoWrap,
+                ellipsis: true,
+            },
+        )));
+    }
+    if let Some(bounds) = plan.close_bounds {
+        let focused = plan.focused_control == Some(crate::ZsInfoBarControl::Close);
+        commands.push(NativeDrawCommand::RoundRect {
+            rect: bounds,
+            fill: NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::PrimaryText,
+                alpha: 0,
+            },
+            stroke: focused.then_some(NativeDrawFill::Role(ColorRole::Accent)),
+            radius: plan.control_radius,
+        });
+        let inset = (bounds.width.min(bounds.height) / 4).max(1);
+        commands.push(NativeDrawCommand::Icon(NativeDrawIconCommand::new(
+            ZsIcon::Close,
+            Rect {
+                x: bounds.x.saturating_add(inset),
+                y: bounds.y.saturating_add(inset),
+                width: bounds.width.saturating_sub(inset * 2),
+                height: bounds.height.saturating_sub(inset * 2),
+            },
+            NativeIconColorMode::ThemeAware,
+        )));
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "teaching-tip")]
+pub type ZsTeachingTipPlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "teaching-tip")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsTeachingTipMetrics {
+    pub minimum_width: Dp,
+    pub maximum_width: Dp,
+    pub viewport_margin: Dp,
+    pub horizontal_padding: Dp,
+    pub vertical_padding: Dp,
+    pub content_gap: Dp,
+    pub control_gap: Dp,
+    pub control_height: Dp,
+    pub title_line_height: Dp,
+    pub subtitle_height: Dp,
+    pub average_character_width: Dp,
+    pub surface_radius: Dp,
+    pub control_radius: Dp,
+    pub tail_size: Dp,
+    pub target_gap: Dp,
+}
+
+#[cfg(feature = "teaching-tip")]
+impl ZsTeachingTipMetrics {
+    pub const fn for_platform(platform: ZsTeachingTipPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformTeachingTipProfile::for_platform(platform)
+            .metrics
+    }
+}
+
+#[cfg(feature = "teaching-tip")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsTeachingTipRenderPlan {
+    pub viewport: Rect,
+    pub target: Rect,
+    pub surface: Rect,
+    pub tail: [crate::Point; 3],
+    pub title_bounds: Rect,
+    pub subtitle_bounds: Option<Rect>,
+    pub action_bounds: Option<Rect>,
+    pub close_bounds: Rect,
+    pub focused_control: crate::ZsTeachingTipControl,
+    pub placement: crate::ZsTeachingTipPlacement,
+    pub surface_radius: i32,
+    pub control_radius: i32,
+    pub platform: ZsTeachingTipPlatformStyle,
+}
+
+#[cfg(feature = "teaching-tip")]
+pub fn zs_teaching_tip_render_plan(
+    viewport: Rect,
+    target: Rect,
+    spec: &crate::ZsTeachingTipSpec,
+    focused_control: crate::ZsTeachingTipControl,
+    platform: ZsTeachingTipPlatformStyle,
+    dpi: Dpi,
+) -> ZsTeachingTipRenderPlan {
+    let metrics =
+        crate::platform_component_profile::PlatformTeachingTipProfile::for_platform(platform)
+            .metrics;
+    let margin = metrics.viewport_margin.to_px(dpi).round_i32().max(0);
+    let horizontal_padding = metrics.horizontal_padding.to_px(dpi).round_i32().max(0);
+    let vertical_padding = metrics.vertical_padding.to_px(dpi).round_i32().max(0);
+    let content_gap = metrics.content_gap.to_px(dpi).round_i32().max(0);
+    let control_gap = metrics.control_gap.to_px(dpi).round_i32().max(0);
+    let control_height = metrics.control_height.to_px(dpi).round_i32().max(1);
+    let title_height = metrics.title_line_height.to_px(dpi).round_i32().max(1);
+    let subtitle_height = metrics.subtitle_height.to_px(dpi).round_i32().max(1);
+    let character_width = metrics
+        .average_character_width
+        .to_px(dpi)
+        .round_i32()
+        .max(1);
+    let tail_size = metrics.tail_size.to_px(dpi).round_i32().max(1);
+    let target_gap = metrics.target_gap.to_px(dpi).round_i32().max(0);
+    let minimum_width = metrics.minimum_width.to_px(dpi).round_i32().max(1);
+    let maximum_width = metrics
+        .maximum_width
+        .to_px(dpi)
+        .round_i32()
+        .max(minimum_width);
+    let viewport_inner_width = viewport
+        .width
+        .saturating_sub(margin.saturating_mul(2))
+        .max(1);
+    let longest_text = zs_estimated_text_width_px(spec.title(), character_width)
+        .max(zs_estimated_text_width_px(spec.subtitle(), character_width));
+    let desired_width = longest_text
+        .saturating_add(horizontal_padding.saturating_mul(2))
+        .saturating_add(control_height);
+    let surface_width = desired_width
+        .max(minimum_width)
+        .min(maximum_width)
+        .min(viewport_inner_width)
+        .max(1);
+    let has_subtitle = !spec.subtitle().trim().is_empty();
+    let has_action = spec.action_label().is_some();
+    let surface_height = vertical_padding
+        .saturating_mul(2)
+        .saturating_add(title_height)
+        .saturating_add(if has_subtitle {
+            content_gap.saturating_add(subtitle_height)
+        } else {
+            0
+        })
+        .saturating_add(if has_action {
+            control_gap.saturating_add(control_height)
+        } else {
+            0
+        })
+        .max(control_height.saturating_add(vertical_padding.saturating_mul(2)));
+    let placement = teaching_tip_resolve_placement(
+        viewport,
+        target,
+        surface_width,
+        surface_height,
+        tail_size,
+        target_gap,
+        spec.placement(),
+    );
+    let viewport_right = viewport.x.saturating_add(viewport.width);
+    let viewport_bottom = viewport.y.saturating_add(viewport.height);
+    let minimum_x = viewport.x.saturating_add(margin);
+    let maximum_x = viewport_right
+        .saturating_sub(margin)
+        .saturating_sub(surface_width)
+        .max(minimum_x);
+    let minimum_y = viewport.y.saturating_add(margin);
+    let maximum_y = viewport_bottom
+        .saturating_sub(margin)
+        .saturating_sub(surface_height)
+        .max(minimum_y);
+    let target_center_x = target.x.saturating_add(target.width / 2);
+    let target_center_y = target.y.saturating_add(target.height / 2);
+    let (desired_x, desired_y) = match placement {
+        crate::ZsTeachingTipPlacement::Top => (
+            target_center_x.saturating_sub(surface_width / 2),
+            target
+                .y
+                .saturating_sub(target_gap)
+                .saturating_sub(tail_size)
+                .saturating_sub(surface_height),
+        ),
+        crate::ZsTeachingTipPlacement::Bottom => (
+            target_center_x.saturating_sub(surface_width / 2),
+            target
+                .y
+                .saturating_add(target.height)
+                .saturating_add(target_gap)
+                .saturating_add(tail_size),
+        ),
+        crate::ZsTeachingTipPlacement::Left => (
+            target
+                .x
+                .saturating_sub(target_gap)
+                .saturating_sub(tail_size)
+                .saturating_sub(surface_width),
+            target_center_y.saturating_sub(surface_height / 2),
+        ),
+        crate::ZsTeachingTipPlacement::Right => (
+            target
+                .x
+                .saturating_add(target.width)
+                .saturating_add(target_gap)
+                .saturating_add(tail_size),
+            target_center_y.saturating_sub(surface_height / 2),
+        ),
+        crate::ZsTeachingTipPlacement::Auto => unreachable!("placement is resolved"),
+    };
+    let surface = Rect {
+        x: desired_x.clamp(minimum_x, maximum_x),
+        y: desired_y.clamp(minimum_y, maximum_y),
+        width: surface_width,
+        height: surface_height,
+    };
+    let tail = teaching_tip_tail(surface, target, placement, tail_size, target_gap);
+    let close_bounds = Rect {
+        x: surface
+            .x
+            .saturating_add(surface.width)
+            .saturating_sub(horizontal_padding)
+            .saturating_sub(control_height),
+        y: surface.y.saturating_add(vertical_padding),
+        width: control_height,
+        height: control_height,
+    };
+    let title_bounds = Rect {
+        x: surface.x.saturating_add(horizontal_padding),
+        y: surface.y.saturating_add(vertical_padding),
+        width: close_bounds
+            .x
+            .saturating_sub(content_gap)
+            .saturating_sub(surface.x.saturating_add(horizontal_padding))
+            .max(1),
+        height: title_height,
+    };
+    let subtitle_bounds = has_subtitle.then_some(Rect {
+        x: surface.x.saturating_add(horizontal_padding),
+        y: title_bounds
+            .y
+            .saturating_add(title_bounds.height)
+            .saturating_add(content_gap),
+        width: surface
+            .width
+            .saturating_sub(horizontal_padding.saturating_mul(2))
+            .max(1),
+        height: subtitle_height,
+    });
+    let action_bounds = spec.action_label().map(|label| {
+        let desired = zs_estimated_text_width_px(label, character_width)
+            .saturating_add(horizontal_padding)
+            .max(control_height);
+        let width = desired.min(
+            surface
+                .width
+                .saturating_sub(horizontal_padding.saturating_mul(2))
+                .max(1),
+        );
+        Rect {
+            x: surface
+                .x
+                .saturating_add(surface.width)
+                .saturating_sub(horizontal_padding)
+                .saturating_sub(width),
+            y: surface
+                .y
+                .saturating_add(surface.height)
+                .saturating_sub(vertical_padding)
+                .saturating_sub(control_height),
+            width,
+            height: control_height,
+        }
+    });
+
+    ZsTeachingTipRenderPlan {
+        viewport,
+        target,
+        surface,
+        tail,
+        title_bounds,
+        subtitle_bounds,
+        action_bounds,
+        close_bounds,
+        focused_control: if spec.has_control(focused_control) {
+            focused_control
+        } else {
+            spec.initial_control()
+        },
+        placement,
+        surface_radius: metrics.surface_radius.to_px(dpi).round_i32().max(0),
+        control_radius: metrics.control_radius.to_px(dpi).round_i32().max(0),
+        platform,
+    }
+}
+
+#[cfg(feature = "teaching-tip")]
+fn teaching_tip_resolve_placement(
+    viewport: Rect,
+    target: Rect,
+    surface_width: i32,
+    surface_height: i32,
+    tail_size: i32,
+    target_gap: i32,
+    preferred: crate::ZsTeachingTipPlacement,
+) -> crate::ZsTeachingTipPlacement {
+    use crate::ZsTeachingTipPlacement::{Auto, Bottom, Left, Right, Top};
+    let required_vertical = surface_height
+        .saturating_add(tail_size)
+        .saturating_add(target_gap);
+    let required_horizontal = surface_width
+        .saturating_add(tail_size)
+        .saturating_add(target_gap);
+    let viewport_right = viewport.x.saturating_add(viewport.width);
+    let viewport_bottom = viewport.y.saturating_add(viewport.height);
+    let available = |placement| match placement {
+        Top => target.y.saturating_sub(viewport.y),
+        Bottom => viewport_bottom.saturating_sub(target.y.saturating_add(target.height)),
+        Left => target.x.saturating_sub(viewport.x),
+        Right => viewport_right.saturating_sub(target.x.saturating_add(target.width)),
+        Auto => 0,
+    };
+    let fits = |placement| match placement {
+        Top | Bottom => available(placement) >= required_vertical,
+        Left | Right => available(placement) >= required_horizontal,
+        Auto => false,
+    };
+    let order = match preferred {
+        Auto => [Top, Bottom, Right, Left],
+        Top => [Top, Bottom, Right, Left],
+        Bottom => [Bottom, Top, Right, Left],
+        Left => [Left, Right, Top, Bottom],
+        Right => [Right, Left, Top, Bottom],
+    };
+    order
+        .into_iter()
+        .find(|placement| fits(*placement))
+        .unwrap_or_else(|| {
+            order
+                .into_iter()
+                .max_by_key(|placement| available(*placement))
+                .unwrap_or(Top)
+        })
+}
+
+#[cfg(feature = "teaching-tip")]
+fn teaching_tip_tail(
+    surface: Rect,
+    target: Rect,
+    placement: crate::ZsTeachingTipPlacement,
+    size: i32,
+    gap: i32,
+) -> [crate::Point; 3] {
+    let half = (size / 2).max(1);
+    let surface_right = surface.x.saturating_add(surface.width);
+    let surface_bottom = surface.y.saturating_add(surface.height);
+    let target_center_x = target.x.saturating_add(target.width / 2);
+    let target_center_y = target.y.saturating_add(target.height / 2);
+    match placement {
+        crate::ZsTeachingTipPlacement::Top => {
+            let center = target_center_x.clamp(
+                surface.x.saturating_add(size),
+                surface_right.saturating_sub(size),
+            );
+            [
+                crate::Point {
+                    x: center.saturating_sub(half),
+                    y: surface_bottom,
+                },
+                crate::Point {
+                    x: center.saturating_add(half),
+                    y: surface_bottom,
+                },
+                crate::Point {
+                    x: target_center_x,
+                    y: target.y.saturating_sub(gap),
+                },
+            ]
+        }
+        crate::ZsTeachingTipPlacement::Bottom => {
+            let center = target_center_x.clamp(
+                surface.x.saturating_add(size),
+                surface_right.saturating_sub(size),
+            );
+            [
+                crate::Point {
+                    x: center.saturating_sub(half),
+                    y: surface.y,
+                },
+                crate::Point {
+                    x: center.saturating_add(half),
+                    y: surface.y,
+                },
+                crate::Point {
+                    x: target_center_x,
+                    y: target.y.saturating_add(target.height).saturating_add(gap),
+                },
+            ]
+        }
+        crate::ZsTeachingTipPlacement::Left => {
+            let center = target_center_y.clamp(
+                surface.y.saturating_add(size),
+                surface_bottom.saturating_sub(size),
+            );
+            [
+                crate::Point {
+                    x: surface_right,
+                    y: center.saturating_sub(half),
+                },
+                crate::Point {
+                    x: surface_right,
+                    y: center.saturating_add(half),
+                },
+                crate::Point {
+                    x: target.x.saturating_sub(gap),
+                    y: target_center_y,
+                },
+            ]
+        }
+        crate::ZsTeachingTipPlacement::Right => {
+            let center = target_center_y.clamp(
+                surface.y.saturating_add(size),
+                surface_bottom.saturating_sub(size),
+            );
+            [
+                crate::Point {
+                    x: surface.x,
+                    y: center.saturating_sub(half),
+                },
+                crate::Point {
+                    x: surface.x,
+                    y: center.saturating_add(half),
+                },
+                crate::Point {
+                    x: target.x.saturating_add(target.width).saturating_add(gap),
+                    y: target_center_y,
+                },
+            ]
+        }
+        crate::ZsTeachingTipPlacement::Auto => unreachable!("placement is resolved"),
+    }
+}
+
+#[cfg(feature = "teaching-tip")]
+pub fn zs_teaching_tip_native_draw_plan(
+    plan: &ZsTeachingTipRenderPlan,
+    spec: &crate::ZsTeachingTipSpec,
+) -> NativeDrawPlan {
+    let profile =
+        crate::platform_component_profile::PlatformTeachingTipProfile::for_platform(plan.platform);
+    let shadow_surface = Rect {
+        x: plan.surface.x.saturating_sub(4),
+        y: plan.surface.y.saturating_add(3),
+        width: plan.surface.width.saturating_add(8),
+        height: plan.surface.height.saturating_add(5),
+    };
+    let shadow_tail = plan.tail.map(|point| crate::Point {
+        x: point.x,
+        y: point.y.saturating_add(3),
+    });
+    let mut commands = vec![
+        NativeDrawCommand::RoundFill {
+            rect: shadow_surface,
+            fill: NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::PrimaryText,
+                alpha: profile.shadow_alpha,
+            },
+            radius: plan.surface_radius.saturating_add(4),
+        },
+        NativeDrawCommand::FillTriangle {
+            points: shadow_tail,
+            fill: NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::PrimaryText,
+                alpha: profile.shadow_alpha,
+            },
+        },
+        NativeDrawCommand::FillTriangle {
+            points: plan.tail,
+            fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+        },
+        NativeDrawCommand::RoundRect {
+            rect: plan.surface,
+            fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+            stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+            radius: plan.surface_radius,
+        },
+        NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            spec.title(),
+            plan.title_bounds,
+            SemanticTextStyle {
+                role: TextRole::Subtitle,
+                color: ColorRole::PrimaryText,
+                weight: TextWeight::Semibold,
+                horizontal_align: HorizontalAlign::Start,
+                vertical_align: crate::VerticalAlign::Center,
+                wrap: crate::TextWrap::NoWrap,
+                ellipsis: true,
+            },
+        )),
+    ];
+    if let Some(bounds) = plan.subtitle_bounds {
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            spec.subtitle(),
+            bounds,
+            SemanticTextStyle {
+                role: TextRole::Body,
+                color: ColorRole::SecondaryText,
+                weight: TextWeight::Regular,
+                horizontal_align: HorizontalAlign::Start,
+                vertical_align: crate::VerticalAlign::Start,
+                wrap: crate::TextWrap::Word,
+                ellipsis: true,
+            },
+        )));
+    }
+    if let (Some(label), Some(bounds)) = (spec.action_label(), plan.action_bounds) {
+        let focused = plan.focused_control == crate::ZsTeachingTipControl::Action;
+        let action_treatment = profile.action_treatment();
+        commands.push(NativeDrawCommand::RoundRect {
+            rect: bounds,
+            fill: feedback_action_fill(action_treatment),
+            stroke: focused.then_some(NativeDrawFill::Role(ColorRole::Accent)),
+            radius: plan.control_radius,
+        });
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            label,
+            bounds,
+            SemanticTextStyle {
+                role: TextRole::Button,
+                color: feedback_action_text_color(action_treatment),
+                weight: TextWeight::Semibold,
+                horizontal_align: HorizontalAlign::Center,
+                vertical_align: crate::VerticalAlign::Center,
+                wrap: crate::TextWrap::NoWrap,
+                ellipsis: true,
+            },
+        )));
+    }
+    commands.push(NativeDrawCommand::RoundRect {
+        rect: plan.close_bounds,
+        fill: NativeDrawFill::RoleWithAlpha {
+            role: ColorRole::PrimaryText,
+            alpha: 0,
+        },
+        stroke: (plan.focused_control == crate::ZsTeachingTipControl::Close)
+            .then_some(NativeDrawFill::Role(ColorRole::Accent)),
+        radius: plan.control_radius,
+    });
+    let inset = (plan.close_bounds.width.min(plan.close_bounds.height) / 4).max(1);
+    commands.push(NativeDrawCommand::Icon(NativeDrawIconCommand::new(
+        ZsIcon::Close,
+        Rect {
+            x: plan.close_bounds.x.saturating_add(inset),
+            y: plan.close_bounds.y.saturating_add(inset),
+            width: plan
+                .close_bounds
+                .width
+                .saturating_sub(inset.saturating_mul(2)),
+            height: plan
+                .close_bounds
+                .height
+                .saturating_sub(inset.saturating_mul(2)),
+        },
+        NativeIconColorMode::ThemeAware,
+    )));
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "toast")]
+pub type ZsToastPlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "toast")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsToastMetrics {
+    pub maximum_width: Dp,
+    pub viewport_margin: Dp,
+    pub bottom_margin: Dp,
+    pub horizontal_padding: Dp,
+    pub vertical_padding: Dp,
+    pub control_gap: Dp,
+    pub control_height: Dp,
+    pub surface_radius: Dp,
+    pub control_radius: Dp,
+    pub line_height: Dp,
+    pub average_character_width: Dp,
+}
+
+#[cfg(feature = "toast")]
+impl ZsToastMetrics {
+    pub const fn for_platform(platform: ZsToastPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformToastProfile::for_platform(platform).metrics
+    }
+}
+
+#[cfg(feature = "toast")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsToastRenderPlan {
+    pub surface: Rect,
+    pub message_bounds: Rect,
+    pub action_bounds: Option<Rect>,
+    pub close_bounds: Rect,
+    pub focused_control: crate::ZsToastControl,
+    pub surface_radius: i32,
+    pub control_radius: i32,
+    pub platform: ZsToastPlatformStyle,
+}
+
+#[cfg(feature = "toast")]
+pub fn zs_toast_render_plan(
+    viewport: Rect,
+    spec: &crate::ZsToastSpec,
+    focused_control: crate::ZsToastControl,
+    platform: ZsToastPlatformStyle,
+    dpi: Dpi,
+) -> ZsToastRenderPlan {
+    let metrics =
+        crate::platform_component_profile::PlatformToastProfile::for_platform(platform).metrics;
+    let viewport_margin = metrics.viewport_margin.to_px(dpi).round_i32().max(0);
+    let bottom_margin = metrics.bottom_margin.to_px(dpi).round_i32().max(0);
+    let horizontal_padding = metrics.horizontal_padding.to_px(dpi).round_i32().max(0);
+    let vertical_padding = metrics.vertical_padding.to_px(dpi).round_i32().max(0);
+    let control_gap = metrics.control_gap.to_px(dpi).round_i32().max(0);
+    let control_height = metrics.control_height.to_px(dpi).round_i32().max(1);
+    let line_height = metrics.line_height.to_px(dpi).round_i32().max(1);
+    let character_width = metrics
+        .average_character_width
+        .to_px(dpi)
+        .round_i32()
+        .max(1);
+    let maximum_width = metrics.maximum_width.to_px(dpi).round_i32().max(1);
+    let available_width = viewport
+        .width
+        .saturating_sub(viewport_margin.saturating_mul(2))
+        .max(1);
+    let close_width = control_height;
+    let action_width = spec.action_label().map(|label| {
+        zs_estimated_text_width_px(label, character_width)
+            .saturating_add(horizontal_padding)
+            .max(control_height)
+    });
+    let controls_width = close_width
+        .saturating_add(control_gap)
+        .saturating_add(action_width.map(|width| width + control_gap).unwrap_or(0));
+    let desired_message_width = zs_estimated_text_width_px(spec.message(), character_width)
+        .clamp(scale(96, dpi), scale(280, dpi));
+    let desired_width = horizontal_padding
+        .saturating_mul(2)
+        .saturating_add(desired_message_width)
+        .saturating_add(controls_width);
+    let surface_width = desired_width.min(maximum_width).min(available_width).max(1);
+    let surface_height = control_height
+        .max(line_height)
+        .saturating_add(vertical_padding.saturating_mul(2));
+    let surface = Rect {
+        x: viewport.x + (viewport.width - surface_width) / 2,
+        y: viewport
+            .y
+            .saturating_add(viewport.height)
+            .saturating_sub(bottom_margin)
+            .saturating_sub(surface_height),
+        width: surface_width,
+        height: surface_height,
+    };
+    let controls_y = surface.y + (surface.height - control_height) / 2;
+    let close_bounds = Rect {
+        x: surface
+            .x
+            .saturating_add(surface.width)
+            .saturating_sub(horizontal_padding)
+            .saturating_sub(close_width),
+        y: controls_y,
+        width: close_width,
+        height: control_height,
+    };
+    let action_bounds = action_width.map(|width| Rect {
+        x: close_bounds
+            .x
+            .saturating_sub(control_gap)
+            .saturating_sub(width),
+        y: controls_y,
+        width,
+        height: control_height,
+    });
+    let message_right = action_bounds
+        .map(|bounds| bounds.x)
+        .unwrap_or(close_bounds.x)
+        .saturating_sub(control_gap);
+    let message_x = surface.x.saturating_add(horizontal_padding);
+    let message_bounds = Rect {
+        x: message_x,
+        y: surface.y.saturating_add(vertical_padding),
+        width: message_right.saturating_sub(message_x).max(1),
+        height: surface
+            .height
+            .saturating_sub(vertical_padding.saturating_mul(2)),
+    };
+    ZsToastRenderPlan {
+        surface,
+        message_bounds,
+        action_bounds,
+        close_bounds,
+        focused_control,
+        surface_radius: metrics.surface_radius.to_px(dpi).round_i32().max(0),
+        control_radius: metrics.control_radius.to_px(dpi).round_i32().max(0),
+        platform,
+    }
+}
+
+#[cfg(feature = "toast")]
+pub fn zs_toast_native_draw_plan(
+    plan: &ZsToastRenderPlan,
+    spec: &crate::ZsToastSpec,
+) -> NativeDrawPlan {
+    let profile =
+        crate::platform_component_profile::PlatformToastProfile::for_platform(plan.platform);
+    let shadow = Rect {
+        x: plan.surface.x.saturating_sub(3),
+        y: plan.surface.y.saturating_add(2),
+        width: plan.surface.width.saturating_add(6),
+        height: plan.surface.height.saturating_add(4),
+    };
+    let mut commands = vec![
+        NativeDrawCommand::RoundFill {
+            rect: shadow,
+            fill: NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::PrimaryText,
+                alpha: profile.shadow_alpha,
+            },
+            radius: plan.surface_radius.saturating_add(3),
+        },
+        NativeDrawCommand::RoundRect {
+            rect: plan.surface,
+            fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+            stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+            radius: plan.surface_radius,
+        },
+        NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            spec.message(),
+            plan.message_bounds,
+            SemanticTextStyle {
+                role: TextRole::Body,
+                color: ColorRole::PrimaryText,
+                weight: if profile.emphasizes_message() {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                },
+                horizontal_align: HorizontalAlign::Start,
+                vertical_align: crate::VerticalAlign::Center,
+                wrap: crate::TextWrap::NoWrap,
+                ellipsis: true,
+            },
+        )),
+    ];
+    if let (Some(label), Some(bounds)) = (spec.action_label(), plan.action_bounds) {
+        let focused = plan.focused_control == crate::ZsToastControl::Action;
+        let action_treatment = profile.action_treatment();
+        commands.push(NativeDrawCommand::RoundRect {
+            rect: bounds,
+            fill: feedback_action_fill(action_treatment),
+            stroke: focused.then_some(NativeDrawFill::Role(ColorRole::Accent)),
+            radius: plan.control_radius,
+        });
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            label,
+            bounds,
+            SemanticTextStyle {
+                role: TextRole::Button,
+                color: feedback_action_text_color(action_treatment),
+                weight: TextWeight::Semibold,
+                horizontal_align: HorizontalAlign::Center,
+                vertical_align: crate::VerticalAlign::Center,
+                wrap: crate::TextWrap::NoWrap,
+                ellipsis: true,
+            },
+        )));
+    }
+    commands.push(NativeDrawCommand::RoundRect {
+        rect: plan.close_bounds,
+        fill: NativeDrawFill::RoleWithAlpha {
+            role: ColorRole::PrimaryText,
+            alpha: 0,
+        },
+        stroke: (plan.focused_control == crate::ZsToastControl::Close)
+            .then_some(NativeDrawFill::Role(ColorRole::Accent)),
+        radius: plan.control_radius,
+    });
+    let icon_inset = (plan.close_bounds.width.min(plan.close_bounds.height) / 4).max(1);
+    let icon_bounds = Rect {
+        x: plan.close_bounds.x.saturating_add(icon_inset),
+        y: plan.close_bounds.y.saturating_add(icon_inset),
+        width: plan.close_bounds.width.saturating_sub(icon_inset * 2),
+        height: plan.close_bounds.height.saturating_sub(icon_inset * 2),
+    };
+    commands.push(NativeDrawCommand::Icon(NativeDrawIconCommand::new(
+        ZsIcon::Close,
+        icon_bounds,
+        NativeIconColorMode::ThemeAware,
+    )));
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "breadcrumb")]
+pub type ZsBreadcrumbPlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "breadcrumb")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsBreadcrumbMetrics {
+    pub control_height: Dp,
+    pub horizontal_padding: Dp,
+    pub minimum_item_width: Dp,
+    pub separator_width: Dp,
+    pub icon_size: Dp,
+    pub radius: Dp,
+    pub character_width: Dp,
+    pub label_measurement_guard: Dp,
+    pub popup_row_height: Dp,
+    pub popup_padding: Dp,
+}
+
+#[cfg(feature = "breadcrumb")]
+impl ZsBreadcrumbMetrics {
+    pub const fn for_platform(platform: ZsBreadcrumbPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformBreadcrumbProfile::for_platform(platform).metrics
+    }
+}
+
+#[cfg(feature = "breadcrumb")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsBreadcrumbItemRenderPlan {
+    pub item_index: usize,
+    pub bounds: Rect,
+    pub text_bounds: Rect,
+    pub separator_bounds: Option<Rect>,
+    pub current: bool,
+}
+
+#[cfg(feature = "breadcrumb")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsBreadcrumbOverflowRowRenderPlan {
+    pub item_index: usize,
+    pub bounds: Rect,
+    pub text_bounds: Rect,
+}
+
+#[cfg(feature = "breadcrumb")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsBreadcrumbRenderPlan {
+    pub bounds: Rect,
+    pub items: Vec<ZsBreadcrumbItemRenderPlan>,
+    pub hidden_indices: Vec<usize>,
+    pub overflow_bounds: Option<Rect>,
+    pub overflow_separator_bounds: Option<Rect>,
+    pub popup: Option<Rect>,
+    pub popup_placement: Option<ZsPopupPlacement>,
+    pub popup_rows: Vec<ZsBreadcrumbOverflowRowRenderPlan>,
+    pub icon_size: i32,
+    pub radius: i32,
+    pub platform: ZsBreadcrumbPlatformStyle,
+}
+
+#[cfg(feature = "breadcrumb")]
+pub fn zs_breadcrumb_render_plan(
+    bounds: Rect,
+    items: &[crate::ZsBreadcrumbItem],
+    overflow_open: bool,
+    platform: ZsBreadcrumbPlatformStyle,
+    dpi: Dpi,
+    viewport: Option<Rect>,
+) -> ZsBreadcrumbRenderPlan {
+    let profile =
+        crate::platform_component_profile::PlatformBreadcrumbProfile::for_platform(platform);
+    let metrics = profile.metrics;
+    let padding = metrics.horizontal_padding.to_px(dpi).round_i32().max(1);
+    let minimum_width = metrics.minimum_item_width.to_px(dpi).round_i32().max(1);
+    let separator_width = metrics.separator_width.to_px(dpi).round_i32().max(1);
+    let character_width = metrics.character_width.to_px(dpi).round_i32().max(1);
+    let label_measurement_guard = metrics
+        .label_measurement_guard
+        .to_px(dpi)
+        .round_i32()
+        .max(0);
+    let icon_size = metrics.icon_size.to_px(dpi).round_i32().max(1);
+    let control_height = metrics
+        .control_height
+        .to_px(dpi)
+        .round_i32()
+        .min(bounds.height.max(1))
+        .max(1);
+    let y = bounds
+        .y
+        .saturating_add((bounds.height.saturating_sub(control_height)) / 2);
+    let desired_widths = items
+        .iter()
+        .map(|item| {
+            zs_estimated_text_width_px(item.label(), character_width)
+                .saturating_add(label_measurement_guard)
+                .saturating_add(padding.saturating_mul(2))
+                .max(minimum_width)
+        })
+        .collect::<Vec<_>>();
+    let full_width = desired_widths
+        .iter()
+        .copied()
+        .fold(0_i32, i32::saturating_add)
+        .saturating_add(separator_width.saturating_mul(items.len().saturating_sub(1) as i32));
+
+    let mut visible_indices = (0..items.len()).collect::<Vec<_>>();
+    let mut hidden_indices = Vec::new();
+    let overflow_width = control_height;
+    if full_width > bounds.width.max(1) && items.len() > 1 {
+        visible_indices.clear();
+        let keep_root = profile.preserves_root() && items.len() > 1;
+        let reserved_root = if keep_root {
+            desired_widths[0].saturating_add(separator_width)
+        } else {
+            0
+        };
+        let mut used = overflow_width
+            .saturating_add(separator_width)
+            .saturating_add(reserved_root);
+        for index in (if keep_root { 1 } else { 0 }..items.len()).rev() {
+            let width = desired_widths[index].saturating_add(if index + 1 < items.len() {
+                separator_width
+            } else {
+                0
+            });
+            if index == items.len() - 1 || used.saturating_add(width) <= bounds.width.max(1) {
+                visible_indices.push(index);
+                used = used.saturating_add(width);
+            } else {
+                hidden_indices.push(index);
+            }
+        }
+        visible_indices.reverse();
+        hidden_indices.reverse();
+        if keep_root {
+            visible_indices.insert(0, 0);
+        }
+        hidden_indices = (0..items.len())
+            .filter(|index| !visible_indices.contains(index))
+            .collect();
+    }
+
+    let has_overflow = !hidden_indices.is_empty();
+    let mut ordered = Vec::<Option<usize>>::new();
+    if has_overflow {
+        if profile.preserves_root() && visible_indices.first() == Some(&0) {
+            ordered.push(Some(0));
+            ordered.push(None);
+            ordered.extend(visible_indices.iter().copied().skip(1).map(Some));
+        } else {
+            ordered.push(None);
+            ordered.extend(visible_indices.iter().copied().map(Some));
+        }
+    } else {
+        ordered.extend(visible_indices.iter().copied().map(Some));
+    }
+
+    let mut x = bounds.x;
+    let mut item_plans = Vec::new();
+    let mut overflow_bounds = None;
+    let mut overflow_separator_bounds = None;
+    let right = bounds.x.saturating_add(bounds.width.max(1));
+    for (position, entry) in ordered.iter().copied().enumerate() {
+        let is_last = position + 1 == ordered.len();
+        let width = entry.map_or(overflow_width, |index| desired_widths[index]);
+        let remaining = right.saturating_sub(x).max(1);
+        let future_count = ordered.len().saturating_sub(position + 1) as i32;
+        let future_reserve = future_count.saturating_mul(2);
+        let segment_limit = remaining.saturating_sub(future_reserve).max(1);
+        let segment_width = width.min(segment_limit).max(1);
+        let segment = Rect {
+            x,
+            y,
+            width: segment_width,
+            height: control_height,
+        };
+        let separator_remaining = right.saturating_sub(x.saturating_add(segment_width));
+        let minimum_after_separator = future_count.saturating_mul(2).saturating_sub(1);
+        let separator = (!is_last && separator_remaining > 0).then_some(Rect {
+            x: x.saturating_add(segment_width),
+            y,
+            width: separator_width.min(
+                separator_remaining
+                    .saturating_sub(minimum_after_separator)
+                    .max(1),
+            ),
+            height: control_height,
+        });
+        let text_inset = padding.min(segment.width.saturating_sub(1) / 2);
+        if let Some(index) = entry {
+            item_plans.push(ZsBreadcrumbItemRenderPlan {
+                item_index: index,
+                bounds: segment,
+                text_bounds: Rect {
+                    x: segment.x.saturating_add(text_inset),
+                    y: segment.y,
+                    width: segment
+                        .width
+                        .saturating_sub(text_inset.saturating_mul(2))
+                        .max(1),
+                    height: segment.height,
+                },
+                separator_bounds: separator,
+                current: index + 1 == items.len(),
+            });
+        } else {
+            overflow_bounds = Some(segment);
+            overflow_separator_bounds = separator;
+        }
+        x = separator
+            .map(|separator| separator.x.saturating_add(separator.width))
+            .unwrap_or_else(|| x.saturating_add(segment_width));
+    }
+
+    let popup_padding = metrics.popup_padding.to_px(dpi).round_i32().max(0);
+    let popup_row_height = metrics.popup_row_height.to_px(dpi).round_i32().max(1);
+    let popup_width = hidden_indices
+        .iter()
+        .map(|index| desired_widths[*index])
+        .max()
+        .unwrap_or(minimum_width)
+        .max(minimum_width.saturating_mul(2));
+    let popup_height = popup_row_height
+        .saturating_mul(hidden_indices.len() as i32)
+        .saturating_add(popup_padding.saturating_mul(2));
+    let placed_popup = (overflow_open && has_overflow).then(|| {
+        place_popup(
+            overflow_bounds.unwrap_or(bounds),
+            popup_width,
+            popup_height,
+            Dp::new(4.0).to_px(dpi).round_i32().max(1),
+            viewport,
+        )
+    });
+    let popup_rows = placed_popup
+        .map(|placed| {
+            hidden_indices
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(row, item_index)| {
+                    let bounds = Rect {
+                        x: placed.bounds.x.saturating_add(popup_padding),
+                        y: placed
+                            .bounds
+                            .y
+                            .saturating_add(popup_padding)
+                            .saturating_add((row as i32).saturating_mul(popup_row_height)),
+                        width: placed
+                            .bounds
+                            .width
+                            .saturating_sub(popup_padding.saturating_mul(2))
+                            .max(1),
+                        height: popup_row_height,
+                    };
+                    ZsBreadcrumbOverflowRowRenderPlan {
+                        item_index,
+                        bounds,
+                        text_bounds: Rect {
+                            x: bounds.x.saturating_add(padding),
+                            y: bounds.y,
+                            width: bounds
+                                .width
+                                .saturating_sub(padding.saturating_mul(2))
+                                .max(1),
+                            height: bounds.height,
+                        },
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    ZsBreadcrumbRenderPlan {
+        bounds,
+        items: item_plans,
+        hidden_indices,
+        overflow_bounds,
+        overflow_separator_bounds,
+        popup: placed_popup.map(|placed| placed.bounds),
+        popup_placement: placed_popup.map(|placed| placed.placement),
+        popup_rows,
+        icon_size,
+        radius: metrics.radius.to_px(dpi).round_i32().max(1),
+        platform,
+    }
+}
+
+#[cfg(feature = "breadcrumb")]
+pub fn zs_breadcrumb_native_draw_plan(
+    plan: &ZsBreadcrumbRenderPlan,
+    items: &[crate::ZsBreadcrumbItem],
+    focused: Option<crate::ZsBreadcrumbFocusTarget>,
+) -> NativeDrawPlan {
+    let mut commands = vec![NativeDrawCommand::RoundRect {
+        rect: plan.bounds,
+        fill: NativeDrawFill::RoleWithAlpha {
+            role: ColorRole::Control,
+            alpha: 0,
+        },
+        stroke: None,
+        radius: plan.radius,
+    }];
+    let draw_separator = |commands: &mut Vec<NativeDrawCommand>, bounds: Rect| {
+        let size = bounds.width.min(bounds.height).min(plan.icon_size).max(1);
+        commands.push(NativeDrawCommand::Icon(NativeDrawIconCommand::new(
+            ZsIcon::ChevronRight,
+            Rect {
+                x: bounds
+                    .x
+                    .saturating_add((bounds.width.saturating_sub(size)) / 2),
+                y: bounds
+                    .y
+                    .saturating_add((bounds.height.saturating_sub(size)) / 2),
+                width: size,
+                height: size,
+            },
+            NativeIconColorMode::ThemeAware,
+        )));
+    };
+    for item in &plan.items {
+        let Some(spec) = items.get(item.item_index) else {
+            continue;
+        };
+        if focused == Some(crate::ZsBreadcrumbFocusTarget::Item(spec.id())) {
+            commands.push(NativeDrawCommand::RoundRect {
+                rect: item.bounds,
+                fill: NativeDrawFill::RoleWithAlpha {
+                    role: ColorRole::PrimaryText,
+                    alpha: 12,
+                },
+                stroke: Some(NativeDrawFill::Role(ColorRole::Accent)),
+                radius: plan.radius,
+            });
+        }
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            spec.label(),
+            item.text_bounds,
+            SemanticTextStyle {
+                role: TextRole::Body,
+                color: if item.current {
+                    ColorRole::PrimaryText
+                } else {
+                    ColorRole::SecondaryText
+                },
+                weight: if item.current {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                },
+                horizontal_align: HorizontalAlign::Start,
+                vertical_align: crate::VerticalAlign::Center,
+                wrap: crate::TextWrap::NoWrap,
+                ellipsis: true,
+            },
+        )));
+        if let Some(separator) = item.separator_bounds {
+            draw_separator(&mut commands, separator);
+        }
+    }
+    if let Some(bounds) = plan.overflow_bounds {
+        if focused == Some(crate::ZsBreadcrumbFocusTarget::Overflow) {
+            commands.push(NativeDrawCommand::RoundRect {
+                rect: bounds,
+                fill: NativeDrawFill::RoleWithAlpha {
+                    role: ColorRole::PrimaryText,
+                    alpha: 12,
+                },
+                stroke: Some(NativeDrawFill::Role(ColorRole::Accent)),
+                radius: plan.radius,
+            });
+        }
+        let size = bounds.width.min(bounds.height).min(plan.icon_size).max(1);
+        commands.push(NativeDrawCommand::Icon(NativeDrawIconCommand::new(
+            ZsIcon::More,
+            Rect {
+                x: bounds
+                    .x
+                    .saturating_add((bounds.width.saturating_sub(size)) / 2),
+                y: bounds
+                    .y
+                    .saturating_add((bounds.height.saturating_sub(size)) / 2),
+                width: size,
+                height: size,
+            },
+            NativeIconColorMode::ThemeAware,
+        )));
+        if let Some(separator) = plan.overflow_separator_bounds {
+            draw_separator(&mut commands, separator);
+        }
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "breadcrumb")]
+pub fn zs_breadcrumb_popup_native_draw_plan(
+    plan: &ZsBreadcrumbRenderPlan,
+    items: &[crate::ZsBreadcrumbItem],
+    focused: Option<crate::ZsBreadcrumbFocusTarget>,
+) -> NativeDrawPlan {
+    let mut commands = Vec::new();
+    if let Some(popup) = plan.popup {
+        commands.push(NativeDrawCommand::RoundRect {
+            rect: popup,
+            fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+            stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+            radius: plan.radius,
+        });
+        for row in &plan.popup_rows {
+            let Some(spec) = items.get(row.item_index) else {
+                continue;
+            };
+            if focused == Some(crate::ZsBreadcrumbFocusTarget::Item(spec.id())) {
+                commands.push(NativeDrawCommand::RoundRect {
+                    rect: row.bounds,
+                    fill: NativeDrawFill::RoleWithAlpha {
+                        role: ColorRole::Accent,
+                        alpha: 28,
+                    },
+                    stroke: Some(NativeDrawFill::Role(ColorRole::Accent)),
+                    radius: plan.radius,
+                });
+            }
+            commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+                spec.label(),
+                row.text_bounds,
+                SemanticTextStyle::body(),
+            )));
+        }
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(any(
+    feature = "auto-suggest",
+    feature = "breadcrumb",
+    feature = "color-picker",
+    feature = "combo",
+    feature = "date-picker",
+    feature = "time-picker"
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ZsPopupPlacement {
+    Below,
+    Above,
+}
+
+#[cfg(any(
+    feature = "auto-suggest",
+    feature = "breadcrumb",
+    feature = "color-picker",
+    feature = "combo",
+    feature = "date-picker",
+    feature = "time-picker"
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ZsPlacedPopup {
+    bounds: Rect,
+    placement: ZsPopupPlacement,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsToggleRenderPlan {
+    pub bounds: Rect,
+    pub track: Rect,
+    pub knob: Rect,
+    pub track_radius: i32,
+    pub knob_radius: i32,
+    pub hovered: bool,
+    pub checked: bool,
+}
+
+/// Stable geometry for the owner-drawn settings toggle.
+pub fn zs_toggle_render_plan(
+    bounds: Rect,
+    hovered: bool,
+    checked: bool,
+    dpi: Dpi,
+) -> ZsToggleRenderPlan {
+    zs_toggle_render_plan_for_platform(
+        bounds,
+        hovered,
+        checked,
+        ZsBaseControlPlatformStyle::current(),
+        dpi,
+    )
+}
+
+pub fn zs_toggle_render_plan_for_platform(
+    bounds: Rect,
+    hovered: bool,
+    checked: bool,
+    platform: ZsBaseControlPlatformStyle,
+    dpi: Dpi,
+) -> ZsToggleRenderPlan {
+    let metrics = ZsBaseControlMetrics::for_platform(platform);
+    let track_height = metrics
+        .toggle_track_height
+        .to_px(dpi)
+        .round_i32()
+        .min(bounds.height.max(1))
+        .max(1);
+    let track_width = metrics
+        .toggle_track_width
+        .to_px(dpi)
+        .round_i32()
+        .min(bounds.width.max(1))
+        .max(track_height);
+    let track_x = bounds.x + (bounds.width - track_width) / 2;
+    let track_y = bounds.y + (bounds.height - track_height) / 2;
+    let track = Rect {
+        x: track_x,
+        y: track_y,
+        width: track_width,
+        height: track_height,
+    };
+    let track_radius = (track_height / 2).max(1);
+    let preferred_knob = if checked {
+        metrics.toggle_knob_on_size
+    } else {
+        metrics.toggle_knob_off_size
+    };
+    let knob_size = preferred_knob
+        .to_px(dpi)
+        .round_i32()
+        .min(track_height)
+        .max(1);
+    let knob_y = track_y + (track_height - knob_size) / 2;
+    let knob_pad = ((track_height - knob_size) / 2).max(1);
+    let knob_x = if checked {
+        track_x + track_width - knob_size - knob_pad
+    } else {
+        track_x + knob_pad
+    };
+
+    ZsToggleRenderPlan {
+        bounds,
+        track,
+        knob: Rect {
+            x: knob_x,
+            y: knob_y,
+            width: knob_size,
+            height: knob_size,
+        },
+        track_radius,
+        knob_radius: (knob_size / 2).max(1),
+        hovered,
+        checked,
+    }
+}
+
+pub fn zs_toggle_native_draw_plan(plan: &ZsToggleRenderPlan) -> NativeDrawPlan {
+    let track_fill = if plan.checked {
+        NativeDrawFill::Role(ColorRole::Accent)
+    } else {
+        NativeDrawFill::Role(ColorRole::Control)
+    };
+    let off_role = if plan.hovered {
+        ColorRole::PrimaryText
+    } else {
+        ColorRole::SecondaryText
+    };
+    let track_stroke = if plan.checked {
+        NativeDrawFill::Role(ColorRole::Accent)
+    } else {
+        NativeDrawFill::Role(off_role)
+    };
+    let knob_fill = if plan.checked {
+        NativeDrawFill::Color(Color::rgb(255, 255, 255))
+    } else {
+        NativeDrawFill::Role(off_role)
+    };
+
+    NativeDrawPlan::new([
+        NativeDrawCommand::RoundRect {
+            rect: plan.track,
+            fill: track_fill,
+            stroke: Some(track_stroke),
+            radius: plan.track_radius,
+        },
+        NativeDrawCommand::RoundRect {
+            rect: plan.knob,
+            fill: knob_fill,
+            stroke: Some(knob_fill),
+            radius: plan.knob_radius,
+        },
+    ])
+}
+
+#[cfg(feature = "toggle-button")]
+pub type ZsToggleButtonPlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "toggle-button")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsToggleButtonMetrics {
+    pub minimum_height: Dp,
+    pub radius: Dp,
+    pub horizontal_padding: Dp,
+    pub selected_indicator_width: Dp,
+    pub selected_indicator_height: Dp,
+    pub checked_content_offset_y: Dp,
+}
+
+#[cfg(feature = "toggle-button")]
+impl ZsToggleButtonMetrics {
+    pub const fn for_platform(platform: ZsToggleButtonPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformToggleButtonProfile::for_platform(platform)
+            .metrics
+    }
+}
+
+#[cfg(feature = "toggle-button")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsToggleButtonRenderPlan {
+    pub bounds: Rect,
+    pub text_bounds: Rect,
+    pub selected_indicator: Rect,
+    pub radius: i32,
+    pub checked: bool,
+    pub platform: ZsToggleButtonPlatformStyle,
+}
+
+#[cfg(feature = "toggle-button")]
+pub fn zs_toggle_button_render_plan(
+    bounds: Rect,
+    checked: bool,
+    platform: ZsToggleButtonPlatformStyle,
+    dpi: Dpi,
+) -> ZsToggleButtonRenderPlan {
+    let metrics =
+        crate::platform_component_profile::PlatformToggleButtonProfile::for_platform(platform)
+            .metrics;
+    let padding = metrics.horizontal_padding.to_px(dpi).round_i32().max(0);
+    let offset_y = if checked {
+        metrics
+            .checked_content_offset_y
+            .to_px(dpi)
+            .round_i32()
+            .max(0)
+    } else {
+        0
+    };
+    let indicator_width = metrics
+        .selected_indicator_width
+        .to_px(dpi)
+        .round_i32()
+        .min(bounds.width)
+        .max(1);
+    let indicator_height = metrics
+        .selected_indicator_height
+        .to_px(dpi)
+        .round_i32()
+        .min(bounds.height)
+        .max(1);
+    let indicator_inset = Dp::new(3.0)
+        .to_px(dpi)
+        .round_i32()
+        .max(0)
+        .min(bounds.height.saturating_sub(indicator_height).max(0));
+    ZsToggleButtonRenderPlan {
+        bounds,
+        text_bounds: Rect {
+            x: bounds.x.saturating_add(padding),
+            y: bounds.y.saturating_add(offset_y),
+            width: bounds.width.saturating_sub(padding.saturating_mul(2)),
+            height: bounds.height.saturating_sub(offset_y),
+        },
+        selected_indicator: Rect {
+            x: bounds.x + (bounds.width - indicator_width) / 2,
+            y: bounds
+                .y
+                .saturating_add(bounds.height)
+                .saturating_sub(indicator_height)
+                .saturating_sub(indicator_inset),
+            width: indicator_width,
+            height: indicator_height,
+        },
+        radius: metrics.radius.to_px(dpi).round_i32().max(1),
+        checked,
+        platform,
+    }
+}
+
+#[cfg(feature = "toggle-button")]
+pub fn zs_toggle_button_native_draw_plan(
+    plan: &ZsToggleButtonRenderPlan,
+    label: &str,
+) -> NativeDrawPlan {
+    let mut text_style = SemanticTextStyle::body();
+    text_style.role = TextRole::Button;
+    text_style.color = if plan.checked {
+        ColorRole::AccentText
+    } else {
+        ColorRole::PrimaryText
+    };
+    let mut commands = vec![
+        NativeDrawCommand::RoundRect {
+            rect: plan.bounds,
+            fill: NativeDrawFill::Role(if plan.checked {
+                ColorRole::Accent
+            } else {
+                ColorRole::Control
+            }),
+            stroke: Some(NativeDrawFill::Role(if plan.checked {
+                ColorRole::Accent
+            } else {
+                ColorRole::Border
+            })),
+            radius: plan.radius,
+        },
+        NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            label,
+            plan.text_bounds,
+            text_style,
+        )),
+    ];
+    if plan.checked {
+        commands.push(NativeDrawCommand::RoundFill {
+            rect: plan.selected_indicator,
+            fill: NativeDrawFill::Role(ColorRole::AccentText),
+            radius: (plan.selected_indicator.height / 2).max(1),
+        });
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "slider")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsSliderRenderPlan {
+    pub bounds: Rect,
+    pub track: Rect,
+    pub filled_track: Rect,
+    pub thumb: Rect,
+    pub track_radius: i32,
+    pub thumb_radius: i32,
+}
+
+#[cfg(feature = "slider")]
+pub fn zs_slider_render_plan(bounds: Rect, fraction: f32, dpi: Dpi) -> ZsSliderRenderPlan {
+    zs_slider_render_plan_for_platform(bounds, fraction, ZsBaseControlPlatformStyle::current(), dpi)
+}
+
+#[cfg(feature = "slider")]
+pub fn zs_slider_render_plan_for_platform(
+    bounds: Rect,
+    fraction: f32,
+    platform: ZsBaseControlPlatformStyle,
+    dpi: Dpi,
+) -> ZsSliderRenderPlan {
+    let metrics = ZsBaseControlMetrics::for_platform(platform);
+    let thumb_size = metrics
+        .slider_thumb_size
+        .to_px(dpi)
+        .round_i32()
+        .min(bounds.height.max(1))
+        .max(1);
+    let thumb_radius = (thumb_size / 2).max(1);
+    let track_height = metrics
+        .slider_track_height
+        .to_px(dpi)
+        .round_i32()
+        .min(bounds.height.max(1))
+        .max(1);
+    let track_x = bounds.x.saturating_add(thumb_radius);
+    let track_width = bounds
+        .width
+        .saturating_sub(thumb_radius.saturating_mul(2))
+        .max(1);
+    let track_y = bounds
+        .y
+        .saturating_add((bounds.height.saturating_sub(track_height)) / 2);
+    let track = Rect {
+        x: track_x,
+        y: track_y,
+        width: track_width,
+        height: track_height,
+    };
+    let fraction = if fraction.is_finite() {
+        fraction.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let filled_width = ((track_width as f32) * fraction).round() as i32;
+    let thumb_center = track_x.saturating_add(filled_width);
+    let thumb = Rect {
+        x: thumb_center.saturating_sub(thumb_radius),
+        y: bounds
+            .y
+            .saturating_add((bounds.height.saturating_sub(thumb_size)) / 2),
+        width: thumb_size,
+        height: thumb_size,
+    };
+    ZsSliderRenderPlan {
+        bounds,
+        track,
+        filled_track: Rect {
+            x: track.x,
+            y: track.y,
+            width: filled_width.max(1),
+            height: track.height,
+        },
+        thumb,
+        track_radius: (track_height / 2).max(1),
+        thumb_radius,
+    }
+}
+
+#[cfg(feature = "slider")]
+pub fn zs_slider_native_draw_plan(plan: &ZsSliderRenderPlan) -> NativeDrawPlan {
+    NativeDrawPlan::new([
+        NativeDrawCommand::RoundFill {
+            rect: plan.track,
+            fill: NativeDrawFill::Role(ColorRole::Control),
+            radius: plan.track_radius,
+        },
+        NativeDrawCommand::RoundFill {
+            rect: plan.filled_track,
+            fill: NativeDrawFill::Role(ColorRole::Accent),
+            radius: plan.track_radius,
+        },
+        NativeDrawCommand::RoundRect {
+            rect: plan.thumb,
+            fill: NativeDrawFill::Role(ColorRole::Surface),
+            stroke: Some(NativeDrawFill::Role(ColorRole::Accent)),
+            radius: plan.thumb_radius,
+        },
+    ])
+}
+
+#[cfg(feature = "number-box")]
+pub type ZsNumberBoxPlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "number-box")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsNumberBoxMetrics {
+    pub button_width: Dp,
+    pub button_gap: Dp,
+    pub text_inset: Dp,
+    pub radius: Dp,
+    pub horizontal_buttons: bool,
+}
+
+#[cfg(feature = "number-box")]
+impl ZsNumberBoxMetrics {
+    pub const fn for_platform(platform: ZsNumberBoxPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformNumberBoxProfile::for_platform(platform).metrics
+    }
+}
+
+#[cfg(feature = "number-box")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsNumberBoxRenderPlan {
+    pub bounds: Rect,
+    pub text_bounds: Rect,
+    pub decrement_button: Rect,
+    pub increment_button: Rect,
+    pub button_icon_size: i32,
+    pub radius: i32,
+    pub platform: ZsNumberBoxPlatformStyle,
+}
+
+#[cfg(feature = "number-box")]
+pub fn zs_number_box_render_plan(
+    bounds: Rect,
+    platform: ZsNumberBoxPlatformStyle,
+    dpi: Dpi,
+) -> ZsNumberBoxRenderPlan {
+    let profile =
+        crate::platform_component_profile::PlatformNumberBoxProfile::for_platform(platform);
+    let metrics = profile.metrics;
+    let button_width = metrics
+        .button_width
+        .to_px(dpi)
+        .round_i32()
+        .min(bounds.width.max(1))
+        .max(1);
+    let gap = metrics.button_gap.to_px(dpi).round_i32().max(0);
+    let inset = metrics.text_inset.to_px(dpi).round_i32().max(0);
+    let trailing_width = if metrics.horizontal_buttons {
+        button_width.saturating_mul(2)
+    } else {
+        button_width
+    };
+    let buttons_x = bounds
+        .x
+        .saturating_add(bounds.width.saturating_sub(trailing_width));
+    let (decrement_button, increment_button) = if metrics.horizontal_buttons {
+        (
+            Rect {
+                x: buttons_x,
+                y: bounds.y,
+                width: button_width,
+                height: bounds.height,
+            },
+            Rect {
+                x: buttons_x.saturating_add(button_width),
+                y: bounds.y,
+                width: button_width,
+                height: bounds.height,
+            },
+        )
+    } else {
+        let upper_height = (bounds.height / 2).max(1);
+        (
+            Rect {
+                x: buttons_x,
+                y: bounds.y.saturating_add(upper_height),
+                width: button_width,
+                height: bounds.height.saturating_sub(upper_height).max(1),
+            },
+            Rect {
+                x: buttons_x,
+                y: bounds.y,
+                width: button_width,
+                height: upper_height,
+            },
+        )
+    };
+    ZsNumberBoxRenderPlan {
+        bounds,
+        text_bounds: Rect {
+            x: bounds.x.saturating_add(inset),
+            y: bounds.y,
+            width: bounds
+                .width
+                .saturating_sub(trailing_width)
+                .saturating_sub(gap)
+                .saturating_sub(inset.saturating_mul(2))
+                .max(0),
+            height: bounds.height,
+        },
+        decrement_button,
+        increment_button,
+        button_icon_size: profile.button_icon_size.to_px(dpi).round_i32().max(1),
+        radius: metrics.radius.to_px(dpi).round_i32().max(1),
+        platform,
+    }
+}
+
+#[cfg(feature = "number-box")]
+pub fn zs_number_box_native_draw_plan(
+    plan: &ZsNumberBoxRenderPlan,
+    text: &str,
+    valid: bool,
+    decrement_enabled: bool,
+    increment_enabled: bool,
+) -> NativeDrawPlan {
+    zs_number_box_native_draw_plan_with_placeholder(
+        plan,
+        text,
+        None,
+        valid,
+        decrement_enabled,
+        increment_enabled,
+    )
+}
+
+#[cfg(feature = "number-box")]
+pub fn zs_number_box_native_draw_plan_with_placeholder(
+    plan: &ZsNumberBoxRenderPlan,
+    text: &str,
+    placeholder: Option<&str>,
+    valid: bool,
+    decrement_enabled: bool,
+    increment_enabled: bool,
+) -> NativeDrawPlan {
+    let stroke = if valid {
+        ColorRole::Border
+    } else {
+        ColorRole::Danger
+    };
+    let mut decrement_style = SemanticTextStyle::body();
+    decrement_style.color = if decrement_enabled {
+        ColorRole::PrimaryText
+    } else {
+        ColorRole::DisabledText
+    };
+    let mut increment_style = SemanticTextStyle::body();
+    increment_style.color = if increment_enabled {
+        ColorRole::PrimaryText
+    } else {
+        ColorRole::DisabledText
+    };
+    let placeholder_visible = text.is_empty() && placeholder.is_some();
+    let display_text = if placeholder_visible {
+        placeholder.unwrap_or_default()
+    } else {
+        text
+    };
+    let mut text_style = SemanticTextStyle::body();
+    if placeholder_visible {
+        text_style.color = ColorRole::SecondaryText;
+    }
+    let mut commands = vec![
+        NativeDrawCommand::RoundRect {
+            rect: plan.bounds,
+            fill: NativeDrawFill::Role(ColorRole::Surface),
+            stroke: Some(NativeDrawFill::Role(stroke)),
+            radius: plan.radius,
+        },
+        NativeDrawCommand::FillRect {
+            rect: plan.decrement_button,
+            fill: NativeDrawFill::Role(ColorRole::Control),
+        },
+        NativeDrawCommand::FillRect {
+            rect: plan.increment_button,
+            fill: NativeDrawFill::Role(ColorRole::Control),
+        },
+        NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            display_text,
+            plan.text_bounds,
+            text_style,
+        )),
+    ];
+    let profile =
+        crate::platform_component_profile::PlatformNumberBoxProfile::for_platform(plan.platform);
+    match profile.stepper_presentation {
+        crate::platform_component_profile::PlatformNumberBoxStepperPresentation::ChevronIcons => {
+            let icon_size = plan.button_icon_size;
+            let centered_icon = |bounds: Rect| Rect {
+                x: bounds
+                    .x
+                    .saturating_add((bounds.width.saturating_sub(icon_size)) / 2),
+                y: bounds
+                    .y
+                    .saturating_add((bounds.height.saturating_sub(icon_size)) / 2),
+                width: icon_size.min(bounds.width.max(0)),
+                height: icon_size.min(bounds.height.max(0)),
+            };
+            commands.push(NativeDrawCommand::Icon(
+                NativeDrawIconCommand::new(
+                    ZsIcon::ChevronDown,
+                    centered_icon(plan.decrement_button),
+                    NativeIconColorMode::ThemeAware,
+                )
+                .with_color(decrement_style.color),
+            ));
+            commands.push(NativeDrawCommand::Icon(
+                NativeDrawIconCommand::new(
+                    ZsIcon::ChevronUp,
+                    centered_icon(plan.increment_button),
+                    NativeIconColorMode::ThemeAware,
+                )
+                .with_color(increment_style.color),
+            ));
+        }
+        crate::platform_component_profile::PlatformNumberBoxStepperPresentation::TextSigns => {
+            commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+                "−",
+                plan.decrement_button,
+                decrement_style,
+            )));
+            commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+                "+",
+                plan.increment_button,
+                increment_style,
+            )));
+        }
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "radio")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsRadioRenderPlan {
+    pub bounds: Rect,
+    pub indicator: Rect,
+    pub selected_dot: Option<Rect>,
+    pub indicator_radius: i32,
+    pub dot_radius: i32,
+    pub selected: bool,
+}
+
+#[cfg(feature = "radio")]
+pub fn zs_radio_render_plan(bounds: Rect, selected: bool, dpi: Dpi) -> ZsRadioRenderPlan {
+    zs_radio_render_plan_for_platform(bounds, selected, ZsBaseControlPlatformStyle::current(), dpi)
+}
+
+#[cfg(feature = "radio")]
+pub fn zs_radio_render_plan_for_platform(
+    bounds: Rect,
+    selected: bool,
+    platform: ZsBaseControlPlatformStyle,
+    dpi: Dpi,
+) -> ZsRadioRenderPlan {
+    let metrics = ZsBaseControlMetrics::for_platform(platform);
+    let indicator_size = metrics
+        .radio_indicator_size
+        .to_px(dpi)
+        .round_i32()
+        .min(bounds.height.max(1))
+        .max(1);
+    let indicator_radius = (indicator_size / 2).max(1);
+    let indicator = Rect {
+        x: bounds.x,
+        y: bounds
+            .y
+            .saturating_add((bounds.height.saturating_sub(indicator_size)) / 2),
+        width: indicator_size,
+        height: indicator_size,
+    };
+    let dot_size = metrics
+        .radio_dot_size
+        .to_px(dpi)
+        .round_i32()
+        .min(indicator_size)
+        .max(1);
+    let dot_inset = (indicator_size.saturating_sub(dot_size)) / 2;
+    ZsRadioRenderPlan {
+        bounds,
+        indicator,
+        selected_dot: selected.then_some(Rect {
+            x: indicator.x.saturating_add(dot_inset),
+            y: indicator.y.saturating_add(dot_inset),
+            width: dot_size,
+            height: dot_size,
+        }),
+        indicator_radius,
+        dot_radius: (dot_size / 2).max(1),
+        selected,
+    }
+}
+
+#[cfg(feature = "radio")]
+pub fn zs_radio_native_draw_plan(plan: &ZsRadioRenderPlan) -> NativeDrawPlan {
+    let mut commands = vec![NativeDrawCommand::RoundRect {
+        rect: plan.indicator,
+        fill: NativeDrawFill::Role(ColorRole::Surface),
+        stroke: Some(NativeDrawFill::Role(if plan.selected {
+            ColorRole::Accent
+        } else {
+            ColorRole::Border
+        })),
+        radius: plan.indicator_radius,
+    }];
+    if let Some(dot) = plan.selected_dot {
+        commands.push(NativeDrawCommand::RoundFill {
+            rect: dot,
+            fill: NativeDrawFill::Role(ColorRole::Accent),
+            radius: plan.dot_radius,
+        });
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "progress")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsProgressBarRenderPlan {
+    pub bounds: Rect,
+    pub track: Rect,
+    pub filled_track: Option<Rect>,
+    pub secondary_indicator: Option<Rect>,
+    pub track_visible: bool,
+    pub radius: i32,
+    pub track_radius: i32,
+    pub indicator_role: ColorRole,
+    pub frame_interval_ms: Option<u64>,
+}
+
+#[cfg(feature = "progress")]
+pub fn zs_progress_bar_render_plan(
+    bounds: Rect,
+    fraction: f32,
+    dpi: Dpi,
+) -> ZsProgressBarRenderPlan {
+    zs_progress_bar_render_plan_for_platform(
+        bounds,
+        fraction,
+        ZsBaseControlPlatformStyle::current(),
+        dpi,
+    )
+}
+
+#[cfg(feature = "progress")]
+pub fn zs_progress_bar_render_plan_for_platform(
+    bounds: Rect,
+    fraction: f32,
+    platform: ZsBaseControlPlatformStyle,
+    dpi: Dpi,
+) -> ZsProgressBarRenderPlan {
+    zs_progress_bar_render_plan_for_spec(
+        bounds,
+        crate::ZsProgressBarSpec::determinate(fraction, crate::ProgressRange::new(0.0, 1.0)),
+        platform,
+        dpi,
+        0,
+    )
+}
+
+#[cfg(feature = "progress")]
+pub fn zs_progress_bar_render_plan_for_spec(
+    bounds: Rect,
+    spec: crate::ZsProgressBarSpec,
+    platform: ZsBaseControlPlatformStyle,
+    dpi: Dpi,
+    elapsed_ms: u64,
+) -> ZsProgressBarRenderPlan {
+    let metrics = ZsBaseControlMetrics::for_platform(platform);
+    let track_height = metrics
+        .progress_track_height
+        .to_px(dpi)
+        .round_i32()
+        .min(bounds.height.max(1))
+        .max(1);
+    let indicator_height = metrics
+        .progress_indicator_height
+        .to_px(dpi)
+        .round_i32()
+        .min(bounds.height.max(1))
+        .max(1);
+    let track = Rect {
+        x: bounds.x,
+        y: bounds
+            .y
+            .saturating_add((bounds.height.saturating_sub(track_height)) / 2),
+        width: bounds.width.max(1),
+        height: track_height,
+    };
+    let indicator_track = Rect {
+        x: bounds.x,
+        y: bounds
+            .y
+            .saturating_add((bounds.height.saturating_sub(indicator_height)) / 2),
+        width: bounds.width.max(1),
+        height: indicator_height,
+    };
+    let indicator_role = match spec.status_value() {
+        crate::ZsProgressBarStatus::Normal => ColorRole::Accent,
+        crate::ZsProgressBarStatus::Paused => ColorRole::Warning,
+        crate::ZsProgressBarStatus::Error => ColorRole::Danger,
+    };
+    let (filled_track, secondary_indicator, track_visible, frame_interval_ms) = match spec.mode() {
+        crate::ZsProgressBarMode::Determinate { value, range } => {
+            let filled_width =
+                ((indicator_track.width as f32) * range.fraction(value)).round() as i32;
+            (
+                (filled_width > 0).then_some(Rect {
+                    width: filled_width.min(indicator_track.width),
+                    ..indicator_track
+                }),
+                None,
+                true,
+                None,
+            )
+        }
+        crate::ZsProgressBarMode::Indeterminate
+            if spec.status_value() != crate::ZsProgressBarStatus::Normal =>
+        {
+            (Some(indicator_track), None, false, None)
+        }
+        crate::ZsProgressBarMode::Indeterminate => {
+            let animation = metrics.progress_indeterminate;
+            let phase_ms = elapsed_ms % animation.cycle_ms.max(1);
+            let first = progress_bar_segment_for_metrics(
+                indicator_track,
+                phase_ms,
+                animation.primary,
+                animation.easing,
+            );
+            let second = animation.secondary.and_then(|segment| {
+                progress_bar_segment_for_metrics(
+                    indicator_track,
+                    phase_ms,
+                    segment,
+                    animation.easing,
+                )
+            });
+            (
+                first,
+                second,
+                false,
+                Some(animation.frame_interval_ms.max(1)),
+            )
+        }
+    };
+    ZsProgressBarRenderPlan {
+        bounds,
+        track,
+        filled_track,
+        secondary_indicator,
+        track_visible,
+        radius: (indicator_height + 1) / 2,
+        track_radius: (track_height + 1) / 2,
+        indicator_role,
+        frame_interval_ms,
+    }
+}
+
+#[cfg(feature = "progress")]
+fn progress_bar_lerp(start: f32, end: f32, amount: f32) -> f32 {
+    start + (end - start) * amount.clamp(0.0, 1.0)
+}
+
+#[cfg(feature = "progress")]
+fn progress_bar_segment_for_metrics(
+    track: Rect,
+    phase_ms: u64,
+    segment: ZsProgressBarSegmentMetrics,
+    easing: Option<[f32; 4]>,
+) -> Option<Rect> {
+    let progress = (phase_ms.saturating_sub(segment.delay_ms) as f32
+        / segment.duration_ms.max(1) as f32)
+        .clamp(0.0, 1.0);
+    let eased = easing.map_or(progress, |control_points| {
+        progress_bar_key_spline(progress, control_points)
+    });
+    let translation = progress_bar_lerp(
+        segment.start_offset_fraction,
+        segment.end_offset_fraction,
+        eased,
+    ) * track.width as f32;
+    progress_bar_clipped_segment(track, segment.width_fraction, translation)
+}
+
+#[cfg(feature = "progress")]
+fn progress_bar_key_spline(progress: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
+    let target = progress.clamp(0.0, 1.0);
+    let mut low = 0.0_f32;
+    let mut high = 1.0_f32;
+    for _ in 0..14 {
+        let parameter = (low + high) * 0.5;
+        let inverse = 1.0 - parameter;
+        let x = 3.0 * inverse * inverse * parameter * x1
+            + 3.0 * inverse * parameter * parameter * x2
+            + parameter * parameter * parameter;
+        if x < target {
+            low = parameter;
+        } else {
+            high = parameter;
+        }
+    }
+    let parameter = (low + high) * 0.5;
+    let inverse = 1.0 - parameter;
+    3.0 * inverse * inverse * parameter * y1
+        + 3.0 * inverse * parameter * parameter * y2
+        + parameter * parameter * parameter
+}
+
+#[cfg(feature = "progress")]
+fn progress_bar_clipped_segment(
+    track: Rect,
+    width_fraction: f32,
+    translation: f32,
+) -> Option<Rect> {
+    let segment_width = ((track.width as f32) * width_fraction).round() as i32;
+    let left = track.x.saturating_add(translation.round() as i32);
+    let right = left.saturating_add(segment_width);
+    let clipped_left = left.max(track.x);
+    let clipped_right = right.min(track.x.saturating_add(track.width));
+    (clipped_right > clipped_left).then_some(Rect {
+        x: clipped_left,
+        y: track.y,
+        width: clipped_right - clipped_left,
+        height: track.height,
+    })
+}
+
+#[cfg(feature = "progress")]
+pub fn zs_progress_bar_native_draw_plan(plan: &ZsProgressBarRenderPlan) -> NativeDrawPlan {
+    let mut commands = Vec::with_capacity(3);
+    if plan.track_visible {
+        commands.push(NativeDrawCommand::RoundFill {
+            rect: plan.track,
+            fill: NativeDrawFill::Role(ColorRole::StrongStroke),
+            radius: plan.track_radius,
+        });
+    }
+    if let Some(filled_track) = plan.filled_track {
+        commands.push(NativeDrawCommand::RoundFill {
+            rect: filled_track,
+            fill: NativeDrawFill::Role(plan.indicator_role),
+            radius: plan.radius,
+        });
+    }
+    if let Some(indicator) = plan.secondary_indicator {
+        commands.push(NativeDrawCommand::RoundFill {
+            rect: indicator,
+            fill: NativeDrawFill::Role(plan.indicator_role),
+            radius: plan.radius,
+        });
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "tabs")]
+pub type ZsTabPlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "tabs")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsTabViewMetrics {
+    pub strip_height: Dp,
+    pub header_top_padding: Dp,
+    pub item_height: Dp,
+    /// Platform content inset applied between the tab strip and selected page.
+    pub content_padding: Dp,
+    pub outer_inset: Dp,
+    pub item_gap: Dp,
+    pub horizontal_padding: Dp,
+    pub icon_size: Dp,
+    pub icon_gap: Dp,
+    pub minimum_item_width: Dp,
+    pub maximum_item_width: Dp,
+    pub radius: Dp,
+    pub selection_indicator_height: Dp,
+}
+
+#[cfg(feature = "tabs")]
+impl ZsTabViewMetrics {
+    pub const fn for_platform(platform: ZsTabPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformComponentProfile::for_style(platform)
+            .tabs
+            .metrics
+    }
+
+    pub const fn label_role(platform: ZsTabPlatformStyle) -> TextRole {
+        crate::platform_component_profile::PlatformComponentProfile::for_style(platform)
+            .tabs
+            .label_role
+    }
+}
+
+#[cfg(feature = "tabs")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsTabHeaderRenderPlan {
+    pub bounds: Rect,
+    pub icon_bounds: Option<Rect>,
+    pub text_bounds: Rect,
+    pub selected: bool,
+    pub selection_indicator: Option<Rect>,
+    pub separator: Option<Rect>,
+}
+
+#[cfg(feature = "tabs")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsTabViewRenderPlan {
+    pub bounds: Rect,
+    pub strip_bounds: Rect,
+    pub content_bounds: Rect,
+    pub headers: Vec<ZsTabHeaderRenderPlan>,
+    pub platform: ZsTabPlatformStyle,
+    pub radius: i32,
+}
+
+#[cfg(feature = "tabs")]
+pub fn zs_tab_view_render_plan(
+    bounds: Rect,
+    labels: &[String],
+    selected_index: Option<usize>,
+    platform: ZsTabPlatformStyle,
+    dpi: Dpi,
+) -> ZsTabViewRenderPlan {
+    let tabs = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| {
+            crate::ZsTabSpec::new(crate::ZsTabId::new(index as u64 + 1), label.clone())
+        })
+        .collect::<Vec<_>>();
+    zs_tab_view_render_plan_for_tabs(bounds, &tabs, selected_index, platform, dpi)
+}
+
+#[cfg(feature = "tabs")]
+pub fn zs_tab_view_render_plan_for_tabs(
+    bounds: Rect,
+    tabs: &[crate::ZsTabSpec],
+    selected_index: Option<usize>,
+    platform: ZsTabPlatformStyle,
+    dpi: Dpi,
+) -> ZsTabViewRenderPlan {
+    let profile =
+        crate::platform_component_profile::PlatformComponentProfile::for_style(platform).tabs;
+    let metrics = profile.metrics;
+    let strip_height = metrics
+        .strip_height
+        .to_px(dpi)
+        .round_i32()
+        .min(bounds.height.max(0))
+        .max(0);
+    let strip_bounds = Rect {
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width.max(0),
+        height: strip_height,
+    };
+    let content_area = Rect {
+        x: bounds.x,
+        y: bounds.y.saturating_add(strip_height),
+        width: bounds.width.max(0),
+        height: bounds.height.saturating_sub(strip_height).max(0),
+    };
+    let content_padding = metrics
+        .content_padding
+        .to_px(dpi)
+        .round_i32()
+        .max(0)
+        .min(content_area.width / 2)
+        .min(content_area.height / 2);
+    let content_bounds = Rect {
+        x: content_area.x.saturating_add(content_padding),
+        y: content_area.y.saturating_add(content_padding),
+        width: content_area
+            .width
+            .saturating_sub(content_padding.saturating_mul(2))
+            .max(0),
+        height: content_area
+            .height
+            .saturating_sub(content_padding.saturating_mul(2))
+            .max(0),
+    };
+    let inset = metrics
+        .outer_inset
+        .to_px(dpi)
+        .round_i32()
+        .max(0)
+        .min(strip_bounds.width / 2);
+    let interior_width = strip_bounds
+        .width
+        .saturating_sub(inset.saturating_mul(2))
+        .max(0);
+    let gap_count = tabs.len().saturating_sub(1) as i32;
+    let gap = metrics
+        .item_gap
+        .to_px(dpi)
+        .round_i32()
+        .max(0)
+        .min(if gap_count > 0 {
+            interior_width / gap_count
+        } else {
+            0
+        });
+    let horizontal_padding = metrics.horizontal_padding.to_px(dpi).round_i32().max(0);
+    let icon_size = metrics.icon_size.to_px(dpi).round_i32().max(0);
+    let icon_gap = metrics.icon_gap.to_px(dpi).round_i32().max(0);
+    let minimum_width = metrics.minimum_item_width.to_px(dpi).round_i32().max(1);
+    let maximum_width = metrics
+        .maximum_item_width
+        .to_px(dpi)
+        .round_i32()
+        .max(minimum_width);
+    let available_width = interior_width
+        .saturating_sub(gap.saturating_mul(tabs.len().saturating_sub(1) as i32))
+        .max(0);
+    let text_unit = Dp::new(7.5).to_px(dpi).round_i32().max(1);
+    let mut widths = tabs
+        .iter()
+        .map(|tab| {
+            zs_estimated_text_width_px(&tab.label, text_unit)
+                .saturating_add(if tab.icon.is_some() {
+                    icon_size.saturating_add(icon_gap)
+                } else {
+                    0
+                })
+                .saturating_add(horizontal_padding.saturating_mul(2))
+                .clamp(minimum_width, maximum_width)
+        })
+        .collect::<Vec<_>>();
+    if !widths.is_empty() {
+        if profile.equal_item_widths() {
+            let equal = widths.iter().copied().max().unwrap_or(minimum_width);
+            widths.fill(equal);
+        }
+    }
+    let assigned_width: i32 = widths.iter().copied().sum::<i32>()
+        + gap.saturating_mul(widths.len().saturating_sub(1) as i32);
+    let mut x = strip_bounds.x.saturating_add(inset);
+    if profile.center_items() && assigned_width <= available_width {
+        x = x.saturating_add(available_width.saturating_sub(assigned_width) / 2);
+    }
+    let indicator_height = metrics
+        .selection_indicator_height
+        .to_px(dpi)
+        .round_i32()
+        .max(0);
+    let header_top_padding = metrics
+        .header_top_padding
+        .to_px(dpi)
+        .round_i32()
+        .max(0)
+        .min(strip_bounds.height);
+    let item_height = metrics
+        .item_height
+        .to_px(dpi)
+        .round_i32()
+        .max(0)
+        .min(strip_bounds.height.saturating_sub(header_top_padding));
+    let separator_inset = Dp::new(8.0).to_px(dpi).round_i32().max(0);
+    let headers = widths
+        .into_iter()
+        .enumerate()
+        .map(|(index, width)| {
+            let header = Rect {
+                x,
+                y: strip_bounds.y.saturating_add(header_top_padding),
+                width,
+                height: item_height,
+            };
+            x = x.saturating_add(width).saturating_add(gap);
+            let selected = selected_index == Some(index);
+            let header_padding = horizontal_padding.min(header.width / 2);
+            let content_left = header.x.saturating_add(header_padding);
+            let icon_bounds = tabs.get(index).and_then(|tab| tab.icon).map(|_| {
+                let size = icon_size.min(header.height).max(0);
+                Rect {
+                    x: content_left,
+                    y: header
+                        .y
+                        .saturating_add(header.height.saturating_sub(size) / 2),
+                    width: size,
+                    height: size,
+                }
+            });
+            let text_x = icon_bounds.map_or(content_left, |icon| {
+                icon.x.saturating_add(icon.width).saturating_add(icon_gap)
+            });
+            let content_right = header
+                .x
+                .saturating_add(header.width)
+                .saturating_sub(header_padding);
+            let selection_indicator = (selected && indicator_height > 0 && header.width > 0)
+                .then_some(Rect {
+                    x: header.x.saturating_add(header_padding / 2),
+                    y: header
+                        .y
+                        .saturating_add(header.height.saturating_sub(indicator_height)),
+                    width: header.width.saturating_sub(header_padding).max(1),
+                    height: indicator_height,
+                });
+            let separator = (profile.draw_header_separators()
+                && index + 1 < tabs.len()
+                && !selected
+                && selected_index != Some(index + 1)
+                && header.height > separator_inset.saturating_mul(2))
+            .then_some(Rect {
+                x: header.x.saturating_add(header.width.saturating_sub(1)),
+                y: header.y.saturating_add(separator_inset),
+                width: 1,
+                height: header
+                    .height
+                    .saturating_sub(separator_inset.saturating_mul(2)),
+            });
+            ZsTabHeaderRenderPlan {
+                bounds: header,
+                icon_bounds,
+                text_bounds: Rect {
+                    x: text_x,
+                    y: header.y,
+                    width: content_right.saturating_sub(text_x).max(0),
+                    height: header.height,
+                },
+                selected,
+                selection_indicator,
+                separator,
+            }
+        })
+        .collect();
+    ZsTabViewRenderPlan {
+        bounds,
+        strip_bounds,
+        content_bounds,
+        headers,
+        platform,
+        radius: metrics.radius.to_px(dpi).round_i32().max(1),
+    }
+}
+
+#[cfg(feature = "tabs")]
+pub fn zs_tab_view_native_draw_plan(
+    plan: &ZsTabViewRenderPlan,
+    labels: &[String],
+) -> NativeDrawPlan {
+    let tabs = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| {
+            crate::ZsTabSpec::new(crate::ZsTabId::new(index as u64 + 1), label.clone())
+        })
+        .collect::<Vec<_>>();
+    zs_tab_view_native_draw_plan_for_tabs(plan, &tabs)
+}
+
+#[cfg(feature = "tabs")]
+pub fn zs_tab_view_native_draw_plan_for_tabs(
+    plan: &ZsTabViewRenderPlan,
+    tabs: &[crate::ZsTabSpec],
+) -> NativeDrawPlan {
+    let profile =
+        crate::platform_component_profile::PlatformComponentProfile::for_style(plan.platform).tabs;
+    let mut commands = vec![NativeDrawCommand::FillRect {
+        rect: plan.strip_bounds,
+        fill: NativeDrawFill::Role(ColorRole::Surface),
+    }];
+    if profile.draw_strip_border() && plan.strip_bounds.height > 0 {
+        commands.push(NativeDrawCommand::FillRect {
+            rect: Rect {
+                x: plan.strip_bounds.x,
+                y: plan
+                    .strip_bounds
+                    .y
+                    .saturating_add(plan.strip_bounds.height.saturating_sub(1)),
+                width: plan.strip_bounds.width,
+                height: 1,
+            },
+            fill: NativeDrawFill::Role(ColorRole::Border),
+        });
+    }
+    commands.push(NativeDrawCommand::PushClip {
+        rect: plan.strip_bounds,
+    });
+    if profile.draw_group_outline() && !plan.headers.is_empty() {
+        let first = plan
+            .headers
+            .first()
+            .expect("tab headers are non-empty")
+            .bounds;
+        let last = plan
+            .headers
+            .last()
+            .expect("tab headers are non-empty")
+            .bounds;
+        commands.push(NativeDrawCommand::RoundRect {
+            rect: Rect {
+                x: first.x,
+                y: first.y.saturating_add(2),
+                width: last.x.saturating_add(last.width).saturating_sub(first.x),
+                height: first.height.saturating_sub(4).max(1),
+            },
+            fill: NativeDrawFill::Role(ColorRole::Control),
+            stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+            radius: plan.radius,
+        });
+    }
+    for (header, tab) in plan.headers.iter().zip(tabs) {
+        let fill = if header.selected {
+            NativeDrawFill::Role(profile.selected_fill())
+        } else {
+            NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::Control,
+                alpha: 0,
+            }
+        };
+        let stroke = if header.selected {
+            profile.selected_stroke().map(NativeDrawFill::Role)
+        } else {
+            None
+        };
+        commands.push(NativeDrawCommand::RoundRect {
+            rect: header.bounds,
+            fill,
+            stroke,
+            radius: plan.radius,
+        });
+        if let Some(separator) = header.separator {
+            commands.push(NativeDrawCommand::FillRect {
+                rect: separator,
+                fill: NativeDrawFill::Role(ColorRole::Border),
+            });
+        }
+        if let Some(indicator) = header.selection_indicator {
+            commands.push(NativeDrawCommand::RoundFill {
+                rect: indicator,
+                fill: NativeDrawFill::Role(ColorRole::Accent),
+                radius: indicator.height.max(1) / 2,
+            });
+        }
+        if let (Some(icon), Some(icon_bounds)) = (tab.icon, header.icon_bounds) {
+            commands.push(NativeDrawCommand::Icon(
+                crate::NativeDrawIconCommand::new(
+                    icon,
+                    icon_bounds,
+                    crate::NativeIconColorMode::ThemeAware,
+                )
+                .with_color(if header.selected {
+                    ColorRole::PrimaryText
+                } else {
+                    ColorRole::SecondaryText
+                }),
+            ));
+        }
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            &tab.label,
+            header.text_bounds,
+            SemanticTextStyle {
+                role: profile.label_role,
+                color: if header.selected {
+                    ColorRole::PrimaryText
+                } else {
+                    ColorRole::SecondaryText
+                },
+                weight: TextWeight::Regular,
+                horizontal_align: if profile.leading_label(tab.icon.is_some()) {
+                    HorizontalAlign::Start
+                } else {
+                    HorizontalAlign::Center
+                },
+                ..SemanticTextStyle::body()
+            },
+        )));
+    }
+    commands.push(NativeDrawCommand::PopClip);
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "auto-suggest")]
+pub const ZS_AUTO_SUGGEST_MAX_VISIBLE_ITEMS: usize = 8;
+
+#[cfg(feature = "auto-suggest")]
+pub type ZsAutoSuggestPlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "auto-suggest")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsAutoSuggestMetrics {
+    pub control_height: Dp,
+    pub row_height: Dp,
+    pub text_padding: Dp,
+    pub icon_column_width: Dp,
+    pub icon_size: Dp,
+    pub popup_gap: Dp,
+    pub control_radius: Dp,
+    pub overlay_radius: Dp,
+    pub leading_search_icon: bool,
+}
+
+#[cfg(feature = "auto-suggest")]
+impl ZsAutoSuggestMetrics {
+    pub const fn for_platform(platform: ZsAutoSuggestPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformAutoSuggestProfile::for_platform(platform)
+            .metrics
+    }
+}
+
+#[cfg(feature = "auto-suggest")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsAutoSuggestRenderPlan {
+    pub bounds: Rect,
+    pub text_bounds: Rect,
+    pub search_button: Option<Rect>,
+    pub search_icon: Option<Rect>,
+    pub clear_button: Option<Rect>,
+    pub clear_icon: Option<Rect>,
+    pub popup: Option<Rect>,
+    pub popup_placement: Option<ZsPopupPlacement>,
+    pub first_visible_suggestion: usize,
+    pub suggestion_rows: Vec<Rect>,
+    pub control_radius: i32,
+    pub overlay_radius: i32,
+    pub platform: ZsAutoSuggestPlatformStyle,
+}
+
+#[cfg(feature = "auto-suggest")]
+#[allow(clippy::too_many_arguments)]
+pub fn zs_auto_suggest_render_plan(
+    bounds: Rect,
+    row_count: usize,
+    highlighted_index: Option<usize>,
+    expanded: bool,
+    query_empty: bool,
+    query_icon: bool,
+    platform: ZsAutoSuggestPlatformStyle,
+    dpi: Dpi,
+) -> ZsAutoSuggestRenderPlan {
+    zs_auto_suggest_render_plan_impl(
+        bounds,
+        row_count,
+        highlighted_index,
+        expanded,
+        query_empty,
+        query_icon,
+        platform,
+        dpi,
+        None,
+    )
+}
+
+#[cfg(feature = "auto-suggest")]
+#[allow(clippy::too_many_arguments)]
+pub fn zs_auto_suggest_render_plan_in_viewport(
+    bounds: Rect,
+    row_count: usize,
+    highlighted_index: Option<usize>,
+    expanded: bool,
+    query_empty: bool,
+    query_icon: bool,
+    platform: ZsAutoSuggestPlatformStyle,
+    dpi: Dpi,
+    viewport: Rect,
+) -> ZsAutoSuggestRenderPlan {
+    zs_auto_suggest_render_plan_impl(
+        bounds,
+        row_count,
+        highlighted_index,
+        expanded,
+        query_empty,
+        query_icon,
+        platform,
+        dpi,
+        Some(viewport),
+    )
+}
+
+#[cfg(feature = "auto-suggest")]
+#[allow(clippy::too_many_arguments)]
+fn zs_auto_suggest_render_plan_impl(
+    bounds: Rect,
+    row_count: usize,
+    highlighted_index: Option<usize>,
+    expanded: bool,
+    query_empty: bool,
+    query_icon: bool,
+    platform: ZsAutoSuggestPlatformStyle,
+    dpi: Dpi,
+    viewport: Option<Rect>,
+) -> ZsAutoSuggestRenderPlan {
+    let metrics =
+        crate::platform_component_profile::PlatformAutoSuggestProfile::for_platform(platform)
+            .metrics;
+    let padding = metrics.text_padding.to_px(dpi).round_i32().max(1);
+    let icon_column = metrics.icon_column_width.to_px(dpi).round_i32().max(1);
+    let icon_size = metrics
+        .icon_size
+        .to_px(dpi)
+        .round_i32()
+        .clamp(1, bounds.height.max(1));
+    let icon_rect = |x: i32| Rect {
+        x: x.saturating_add((icon_column.saturating_sub(icon_size)) / 2),
+        y: bounds
+            .y
+            .saturating_add((bounds.height.saturating_sub(icon_size)) / 2),
+        width: icon_size,
+        height: icon_size,
+    };
+    let button_rect = |x: i32| Rect {
+        x,
+        y: bounds.y,
+        width: icon_column.min(bounds.width.max(1)),
+        height: bounds.height,
+    };
+    let search_visible = query_icon && (metrics.leading_search_icon || query_empty);
+    let search_button = search_visible.then(|| {
+        let x = if metrics.leading_search_icon {
+            bounds.x
+        } else {
+            bounds
+                .x
+                .saturating_add(bounds.width)
+                .saturating_sub(icon_column)
+        };
+        button_rect(x)
+    });
+    let clear_button = (!query_empty).then(|| {
+        button_rect(
+            bounds
+                .x
+                .saturating_add(bounds.width)
+                .saturating_sub(icon_column),
+        )
+    });
+    let text_left = bounds.x.saturating_add(padding).saturating_add(
+        if search_visible && metrics.leading_search_icon {
+            icon_column
+        } else {
+            0
+        },
+    );
+    let trailing_column =
+        if clear_button.is_some() || (search_visible && !metrics.leading_search_icon) {
+            icon_column
+        } else {
+            0
+        };
+    let text_right = bounds
+        .x
+        .saturating_add(bounds.width)
+        .saturating_sub(padding)
+        .saturating_sub(trailing_column);
+    let text_bounds = Rect {
+        x: text_left,
+        y: bounds.y,
+        width: text_right.saturating_sub(text_left).max(0),
+        height: bounds.height,
+    };
+    let row_height = metrics.row_height.to_px(dpi).round_i32().max(1);
+    let gap = metrics.popup_gap.to_px(dpi).round_i32().max(0);
+    let visible_rows = auto_suggest_visible_row_count(bounds, row_count, row_height, gap, viewport);
+    let maximum_first = row_count.saturating_sub(visible_rows);
+    let first_visible_suggestion = highlighted_index
+        .filter(|index| *index < row_count)
+        .map(|index| {
+            index
+                .saturating_add(1)
+                .saturating_sub(visible_rows)
+                .min(maximum_first)
+        })
+        .unwrap_or_default();
+    let placed_popup = (expanded && row_count > 0).then(|| {
+        place_popup(
+            bounds,
+            bounds.width.max(1),
+            row_height.saturating_mul(i32::try_from(visible_rows).unwrap_or(i32::MAX)),
+            gap,
+            viewport,
+        )
+    });
+    let popup = placed_popup.map(|placed| placed.bounds);
+    let suggestion_rows = popup
+        .map(|popup| {
+            (0..visible_rows)
+                .map(|index| Rect {
+                    x: popup.x,
+                    y: popup.y.saturating_add(
+                        row_height.saturating_mul(i32::try_from(index).unwrap_or(i32::MAX)),
+                    ),
+                    width: popup.width,
+                    height: row_height,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    ZsAutoSuggestRenderPlan {
+        bounds,
+        text_bounds,
+        search_button,
+        search_icon: search_button.map(|button| icon_rect(button.x)),
+        clear_button,
+        clear_icon: clear_button.map(|button| icon_rect(button.x)),
+        popup,
+        popup_placement: placed_popup.map(|placed| placed.placement),
+        first_visible_suggestion,
+        suggestion_rows,
+        control_radius: metrics.control_radius.to_px(dpi).round_i32().max(1),
+        overlay_radius: metrics.overlay_radius.to_px(dpi).round_i32().max(1),
+        platform,
+    }
+}
+
+#[cfg(feature = "auto-suggest")]
+fn auto_suggest_visible_row_count(
+    anchor: Rect,
+    row_count: usize,
+    row_height: i32,
+    gap: i32,
+    viewport: Option<Rect>,
+) -> usize {
+    let capped_count = row_count.min(ZS_AUTO_SUGGEST_MAX_VISIBLE_ITEMS);
+    let Some(viewport) = viewport.filter(|viewport| viewport.width > 0 && viewport.height > 0)
+    else {
+        return capped_count;
+    };
+    let viewport_bottom = viewport.y.saturating_add(viewport.height);
+    let below_y = anchor.y.saturating_add(anchor.height).saturating_add(gap);
+    let above_bottom = anchor.y.saturating_sub(gap);
+    let available_below = viewport_bottom.saturating_sub(below_y).max(0);
+    let available_above = above_bottom.saturating_sub(viewport.y).max(0);
+    let available_rows = available_below.max(available_above) / row_height.max(1);
+    capped_count.min(available_rows.max(1) as usize)
+}
+
+#[cfg(feature = "auto-suggest")]
+pub fn zs_auto_suggest_header_native_draw_plan(
+    plan: &ZsAutoSuggestRenderPlan,
+    query: &str,
+    placeholder: Option<&str>,
+) -> NativeDrawPlan {
+    let mut commands = vec![NativeDrawCommand::RoundRect {
+        rect: plan.bounds,
+        fill: NativeDrawFill::Role(ColorRole::Surface),
+        stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+        radius: plan.control_radius,
+    }];
+    let mut text_style = SemanticTextStyle::body();
+    let label = if query.is_empty() {
+        text_style.color = ColorRole::SecondaryText;
+        placeholder.unwrap_or_default()
+    } else {
+        query
+    };
+    commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+        label,
+        plan.text_bounds,
+        text_style,
+    )));
+    if let Some(bounds) = plan.search_icon {
+        commands.push(NativeDrawCommand::Icon(
+            NativeDrawIconCommand::new(ZsIcon::Search, bounds, NativeIconColorMode::ThemeAware)
+                .with_color(ColorRole::SecondaryText),
+        ));
+    }
+    if let Some(bounds) = plan.clear_icon {
+        commands.push(NativeDrawCommand::Icon(
+            NativeDrawIconCommand::new(ZsIcon::Close, bounds, NativeIconColorMode::ThemeAware)
+                .with_color(ColorRole::SecondaryText),
+        ));
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "auto-suggest")]
+pub fn zs_auto_suggest_popup_native_draw_plan(
+    plan: &ZsAutoSuggestRenderPlan,
+    suggestions: &[ZsAutoSuggestion],
+    highlighted: Option<crate::ZsAutoSuggestionId>,
+    no_results_text: Option<&str>,
+    dpi: Dpi,
+) -> NativeDrawPlan {
+    let Some(popup) = plan.popup else {
+        return NativeDrawPlan::default();
+    };
+    let mut commands = vec![NativeDrawCommand::RoundRect {
+        rect: popup,
+        fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+        stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+        radius: plan.overlay_radius,
+    }];
+    let padding =
+        crate::platform_component_profile::PlatformAutoSuggestProfile::for_platform(plan.platform)
+            .metrics
+            .text_padding
+            .to_px(dpi)
+            .round_i32()
+            .max(1);
+    if suggestions.is_empty() {
+        if let (Some(label), Some(row)) = (no_results_text, plan.suggestion_rows.first()) {
+            let mut style = SemanticTextStyle::body();
+            style.color = ColorRole::SecondaryText;
+            commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+                label,
+                inset_row_text(*row, padding),
+                style,
+            )));
+        }
+        return NativeDrawPlan::new(commands);
+    }
+    for (suggestion, row) in suggestions
+        .iter()
+        .skip(plan.first_visible_suggestion)
+        .zip(&plan.suggestion_rows)
+    {
+        if highlighted == Some(suggestion.id()) {
+            commands.push(NativeDrawCommand::RoundFill {
+                rect: *row,
+                fill: NativeDrawFill::RoleWithAlpha {
+                    role: ColorRole::Accent,
+                    alpha: 36,
+                },
+                radius: plan.control_radius,
+            });
+        }
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            suggestion.text(),
+            inset_row_text(*row, padding),
+            SemanticTextStyle::body(),
+        )));
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(any(feature = "auto-suggest", feature = "table"))]
+fn inset_row_text(row: Rect, padding: i32) -> Rect {
+    Rect {
+        x: row.x.saturating_add(padding),
+        y: row.y,
+        width: row.width.saturating_sub(padding.saturating_mul(2)).max(0),
+        height: row.height,
+    }
+}
+
+#[cfg(feature = "grid-view")]
+pub type ZsGridViewPlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "grid-view")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsGridViewMetrics {
+    pub minimum_item_width: Dp,
+    pub item_height: Dp,
+    pub item_gap: Dp,
+    pub item_padding: Dp,
+    pub media_height: Dp,
+    pub icon_size: Dp,
+    pub item_radius: Dp,
+    pub media_radius: Dp,
+    pub text_gap: Dp,
+}
+
+#[cfg(feature = "grid-view")]
+impl ZsGridViewMetrics {
+    pub const fn for_platform(platform: ZsGridViewPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformGridViewProfile::for_platform(platform).metrics
+    }
+}
+
+#[cfg(feature = "grid-view")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsGridViewItemRenderPlan {
+    pub item_index: usize,
+    pub bounds: Rect,
+    pub media_bounds: Rect,
+    pub icon_bounds: Option<Rect>,
+    pub title_bounds: Rect,
+    pub subtitle_bounds: Option<Rect>,
+    pub selected: bool,
+}
+
+#[cfg(feature = "grid-view")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsGridViewRenderPlan {
+    pub bounds: Rect,
+    pub items: Vec<ZsGridViewItemRenderPlan>,
+    pub column_count: usize,
+    pub row_count: usize,
+    pub content_height: i32,
+    pub item_radius: i32,
+    pub media_radius: i32,
+    pub platform: ZsGridViewPlatformStyle,
+}
+
+#[cfg(feature = "grid-view")]
+pub fn zs_grid_view_render_plan(
+    bounds: Rect,
+    items: &[crate::ZsGridViewItem],
+    selected: Option<crate::ZsGridViewItemId>,
+    platform: ZsGridViewPlatformStyle,
+    dpi: Dpi,
+) -> ZsGridViewRenderPlan {
+    let metrics =
+        crate::platform_component_profile::PlatformGridViewProfile::for_platform(platform).metrics;
+    let minimum_item_width = metrics.minimum_item_width.to_px(dpi).round_i32().max(1);
+    let item_height = metrics.item_height.to_px(dpi).round_i32().max(1);
+    let gap = metrics.item_gap.to_px(dpi).round_i32().max(0);
+    let padding = metrics.item_padding.to_px(dpi).round_i32().max(0);
+    let media_height = metrics
+        .media_height
+        .to_px(dpi)
+        .round_i32()
+        .min(item_height)
+        .max(1);
+    let icon_size = metrics.icon_size.to_px(dpi).round_i32().max(1);
+    let text_gap = metrics.text_gap.to_px(dpi).round_i32().max(0);
+    let unique = crate::grid_view::unique_grid_view_items(items);
+    let available_width = bounds.width.max(1);
+    let calculated_columns = available_width
+        .saturating_add(gap)
+        .checked_div(minimum_item_width.saturating_add(gap).max(1))
+        .unwrap_or(1)
+        .max(1) as usize;
+    let column_count = calculated_columns.min(unique.len().max(1));
+    let gaps_width = gap.saturating_mul(column_count.saturating_sub(1) as i32);
+    let item_width = available_width
+        .saturating_sub(gaps_width)
+        .checked_div(column_count as i32)
+        .unwrap_or(available_width)
+        .max(1);
+    let row_count = unique.len().div_ceil(column_count);
+    let content_height = item_height
+        .saturating_mul(row_count as i32)
+        .saturating_add(gap.saturating_mul(row_count.saturating_sub(1) as i32));
+    let item_plans = unique
+        .iter()
+        .enumerate()
+        .map(|(unique_index, item)| {
+            let source_index = items
+                .iter()
+                .position(|candidate| candidate.id() == item.id())
+                .unwrap_or(unique_index);
+            let row = unique_index / column_count;
+            let column = unique_index % column_count;
+            let x = bounds
+                .x
+                .saturating_add((item_width.saturating_add(gap)).saturating_mul(column as i32));
+            let width = if column + 1 == column_count {
+                bounds
+                    .x
+                    .saturating_add(available_width)
+                    .saturating_sub(x)
+                    .max(1)
+            } else {
+                item_width
+            };
+            let y = bounds
+                .y
+                .saturating_add((item_height.saturating_add(gap)).saturating_mul(row as i32));
+            let tile = Rect {
+                x,
+                y,
+                width,
+                height: item_height,
+            };
+            let inner_x = tile.x.saturating_add(padding.min(tile.width / 2));
+            let inner_width = tile.width.saturating_sub(padding.saturating_mul(2)).max(1);
+            let media = Rect {
+                x: inner_x,
+                y: tile.y.saturating_add(padding),
+                width: inner_width,
+                height: media_height.saturating_sub(padding).max(1),
+            };
+            let centered_icon = item.item_icon().map(|_| {
+                let size = icon_size.min(media.width).min(media.height).max(1);
+                Rect {
+                    x: media
+                        .x
+                        .saturating_add((media.width.saturating_sub(size)) / 2),
+                    y: media
+                        .y
+                        .saturating_add((media.height.saturating_sub(size)) / 2),
+                    width: size,
+                    height: size,
+                }
+            });
+            let title_y = media
+                .y
+                .saturating_add(media.height)
+                .saturating_add(text_gap);
+            let text_bottom = tile.y.saturating_add(tile.height).saturating_sub(padding);
+            let has_subtitle = item.item_subtitle().is_some();
+            let text_height = text_bottom.saturating_sub(title_y).max(1);
+            let title_height = if has_subtitle {
+                text_height
+                    .saturating_sub(text_gap)
+                    .checked_div(2)
+                    .unwrap_or(1)
+            } else {
+                text_height
+            }
+            .max(1);
+            let title = Rect {
+                x: inner_x,
+                y: title_y,
+                width: inner_width,
+                height: title_height,
+            };
+            ZsGridViewItemRenderPlan {
+                item_index: source_index,
+                bounds: tile,
+                media_bounds: media,
+                icon_bounds: centered_icon,
+                title_bounds: title,
+                subtitle_bounds: has_subtitle.then_some(Rect {
+                    x: inner_x,
+                    y: title
+                        .y
+                        .saturating_add(title.height)
+                        .saturating_add(text_gap),
+                    width: inner_width,
+                    height: text_bottom
+                        .saturating_sub(title.y.saturating_add(title.height))
+                        .saturating_sub(text_gap)
+                        .max(1),
+                }),
+                selected: selected == Some(item.id()),
+            }
+        })
+        .collect();
+    ZsGridViewRenderPlan {
+        bounds,
+        items: item_plans,
+        column_count,
+        row_count,
+        content_height,
+        item_radius: metrics.item_radius.to_px(dpi).round_i32().max(1),
+        media_radius: metrics.media_radius.to_px(dpi).round_i32().max(1),
+        platform,
+    }
+}
+
+#[cfg(feature = "grid-view")]
+pub fn zs_grid_view_native_draw_plan(
+    plan: &ZsGridViewRenderPlan,
+    items: &[crate::ZsGridViewItem],
+) -> NativeDrawPlan {
+    let profile =
+        crate::platform_component_profile::PlatformGridViewProfile::for_platform(plan.platform);
+    let mut commands = vec![
+        NativeDrawCommand::RoundRect {
+            rect: plan.bounds,
+            fill: NativeDrawFill::Role(ColorRole::Surface),
+            stroke: None,
+            radius: plan.item_radius,
+        },
+        NativeDrawCommand::PushClip { rect: plan.bounds },
+    ];
+    for tile in &plan.items {
+        let Some(item) = items.get(tile.item_index) else {
+            continue;
+        };
+        let (fill, stroke) = if tile.selected {
+            let (role, alpha) = profile.selection.fill();
+            (
+                match alpha {
+                    Some(alpha) => NativeDrawFill::RoleWithAlpha { role, alpha },
+                    None => NativeDrawFill::Role(role),
+                },
+                None,
+            )
+        } else {
+            (
+                NativeDrawFill::Role(ColorRole::Control),
+                Some(NativeDrawFill::Role(ColorRole::Border)),
+            )
+        };
+        commands.push(NativeDrawCommand::RoundRect {
+            rect: tile.bounds,
+            fill,
+            stroke,
+            radius: plan.item_radius,
+        });
+        commands.push(NativeDrawCommand::RoundFill {
+            rect: tile.media_bounds,
+            fill: NativeDrawFill::RoleWithAlpha {
+                role: if tile.selected {
+                    profile.selection.foreground()
+                } else {
+                    ColorRole::PrimaryText
+                },
+                alpha: if tile.selected { 22 } else { 10 },
+            },
+            radius: plan.media_radius,
+        });
+        let foreground = if tile.selected {
+            profile.selection.foreground()
+        } else {
+            ColorRole::PrimaryText
+        };
+        if let (Some(icon), Some(bounds)) = (item.item_icon(), tile.icon_bounds) {
+            commands.push(NativeDrawCommand::Icon(
+                NativeDrawIconCommand::new(icon, bounds, NativeIconColorMode::ThemeAware)
+                    .with_color(foreground),
+            ));
+        }
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            item.title(),
+            tile.title_bounds,
+            SemanticTextStyle {
+                role: TextRole::Body,
+                color: foreground,
+                weight: TextWeight::Semibold,
+                horizontal_align: HorizontalAlign::Start,
+                vertical_align: crate::VerticalAlign::Center,
+                wrap: crate::TextWrap::NoWrap,
+                ellipsis: true,
+            },
+        )));
+        if let (Some(subtitle), Some(bounds)) = (item.item_subtitle(), tile.subtitle_bounds) {
+            commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+                subtitle,
+                bounds,
+                SemanticTextStyle {
+                    role: TextRole::Caption,
+                    color: if foreground == ColorRole::AccentText {
+                        foreground
+                    } else {
+                        ColorRole::SecondaryText
+                    },
+                    weight: TextWeight::Regular,
+                    horizontal_align: HorizontalAlign::Start,
+                    vertical_align: crate::VerticalAlign::Center,
+                    wrap: crate::TextWrap::NoWrap,
+                    ellipsis: true,
+                },
+            )));
+        }
+    }
+    commands.push(NativeDrawCommand::PopClip);
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "tree")]
+pub type ZsTreePlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "tree")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsTreeViewMetrics {
+    pub row_height: Dp,
+    pub depth_indent: Dp,
+    pub disclosure_column: Dp,
+    pub disclosure_size: Dp,
+    pub icon_size: Dp,
+    pub leading_padding: Dp,
+    pub content_gap: Dp,
+    pub row_radius: Dp,
+}
+
+#[cfg(feature = "tree")]
+impl ZsTreeViewMetrics {
+    pub const fn for_platform(platform: ZsTreePlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformTreeViewProfile::for_platform(platform).metrics
+    }
+}
+
+#[cfg(feature = "tree")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsTreeRowRenderPlan {
+    pub node: crate::ZsTreeNodeId,
+    pub parent: Option<crate::ZsTreeNodeId>,
+    pub depth: usize,
+    pub label: String,
+    pub icon: Option<ZsIcon>,
+    pub expandable: bool,
+    pub expanded: bool,
+    pub selected: bool,
+    pub bounds: Rect,
+    pub disclosure_bounds: Option<Rect>,
+    pub icon_bounds: Option<Rect>,
+    pub label_bounds: Rect,
+}
+
+#[cfg(feature = "tree")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsTreeViewRenderPlan {
+    pub bounds: Rect,
+    pub rows: Vec<ZsTreeRowRenderPlan>,
+    pub row_radius: i32,
+    pub platform: ZsTreePlatformStyle,
+}
+
+#[cfg(feature = "tree")]
+pub fn zs_tree_view_render_plan(
+    bounds: Rect,
+    roots: &[crate::ZsTreeNode],
+    expanded: &BTreeSet<crate::ZsTreeNodeId>,
+    selected: Option<crate::ZsTreeNodeId>,
+    platform: ZsTreePlatformStyle,
+    dpi: Dpi,
+) -> ZsTreeViewRenderPlan {
+    let metrics =
+        crate::platform_component_profile::PlatformTreeViewProfile::for_platform(platform).metrics;
+    let row_height = metrics.row_height.to_px(dpi).round_i32().max(1);
+    let depth_indent = metrics.depth_indent.to_px(dpi).round_i32().max(1);
+    let disclosure_column = metrics.disclosure_column.to_px(dpi).round_i32().max(1);
+    let disclosure_size = metrics.disclosure_size.to_px(dpi).round_i32().max(1);
+    let icon_size = metrics.icon_size.to_px(dpi).round_i32().max(1);
+    let leading_padding = metrics.leading_padding.to_px(dpi).round_i32().max(0);
+    let content_gap = metrics.content_gap.to_px(dpi).round_i32().max(0);
+    let rows = crate::tree::visible_tree_nodes(roots, expanded)
+        .into_iter()
+        .enumerate()
+        .map(|(index, visible)| {
+            let row_y = bounds.y.saturating_add(
+                row_height.saturating_mul(i32::try_from(index).unwrap_or(i32::MAX)),
+            );
+            let row = Rect {
+                x: bounds.x,
+                y: row_y,
+                width: bounds.width,
+                height: row_height,
+            };
+            let depth = i32::try_from(visible.depth).unwrap_or(i32::MAX);
+            let disclosure_x = row
+                .x
+                .saturating_add(leading_padding)
+                .saturating_add(depth_indent.saturating_mul(depth));
+            let disclosure_slot = Rect {
+                x: disclosure_x,
+                y: row.y,
+                width: disclosure_column,
+                height: row.height,
+            };
+            let center_in = |slot: Rect, size: i32| Rect {
+                x: slot.x.saturating_add((slot.width.saturating_sub(size)) / 2),
+                y: slot
+                    .y
+                    .saturating_add((slot.height.saturating_sub(size)) / 2),
+                width: size,
+                height: size,
+            };
+            let content_x = disclosure_slot
+                .x
+                .saturating_add(disclosure_slot.width)
+                .saturating_add(content_gap);
+            let icon_bounds = visible.node.node_icon().map(|_| {
+                center_in(
+                    Rect {
+                        x: content_x,
+                        y: row.y,
+                        width: icon_size,
+                        height: row.height,
+                    },
+                    icon_size,
+                )
+            });
+            let label_x = content_x.saturating_add(if icon_bounds.is_some() {
+                icon_size.saturating_add(content_gap)
+            } else {
+                0
+            });
+            ZsTreeRowRenderPlan {
+                node: visible.node.id(),
+                parent: visible.parent,
+                depth: visible.depth,
+                label: visible.node.label().to_string(),
+                icon: visible.node.node_icon(),
+                expandable: visible.node.is_expandable(),
+                expanded: visible.expanded,
+                selected: selected == Some(visible.node.id()),
+                bounds: row,
+                disclosure_bounds: visible
+                    .node
+                    .is_expandable()
+                    .then(|| center_in(disclosure_slot, disclosure_size)),
+                icon_bounds,
+                label_bounds: Rect {
+                    x: label_x,
+                    y: row.y,
+                    width: row
+                        .x
+                        .saturating_add(row.width)
+                        .saturating_sub(label_x)
+                        .saturating_sub(leading_padding)
+                        .max(0),
+                    height: row.height,
+                },
+            }
+        })
+        .collect();
+    ZsTreeViewRenderPlan {
+        bounds,
+        rows,
+        row_radius: metrics.row_radius.to_px(dpi).round_i32().max(1),
+        platform,
+    }
+}
+
+#[cfg(feature = "tree")]
+pub fn zs_tree_view_native_draw_plan(plan: &ZsTreeViewRenderPlan) -> NativeDrawPlan {
+    let profile =
+        crate::platform_component_profile::PlatformTreeViewProfile::for_platform(plan.platform);
+    let mut commands = vec![
+        NativeDrawCommand::RoundRect {
+            rect: plan.bounds,
+            fill: NativeDrawFill::Role(ColorRole::Surface),
+            stroke: None,
+            radius: plan.row_radius,
+        },
+        NativeDrawCommand::PushClip { rect: plan.bounds },
+    ];
+    for row in &plan.rows {
+        if row.selected {
+            let (role, alpha) = profile.selection.fill();
+            let fill = match alpha {
+                Some(alpha) => NativeDrawFill::RoleWithAlpha { role, alpha },
+                None => NativeDrawFill::Role(role),
+            };
+            commands.push(NativeDrawCommand::RoundFill {
+                rect: row.bounds,
+                fill,
+                radius: plan.row_radius,
+            });
+        }
+        let foreground = if row.selected {
+            profile.selection.foreground()
+        } else {
+            ColorRole::PrimaryText
+        };
+        if let Some(bounds) = row.disclosure_bounds {
+            commands.push(NativeDrawCommand::Icon(
+                NativeDrawIconCommand::new(
+                    if row.expanded {
+                        ZsIcon::ChevronDown
+                    } else {
+                        ZsIcon::ChevronRight
+                    },
+                    bounds,
+                    NativeIconColorMode::ThemeAware,
+                )
+                .with_color(foreground),
+            ));
+        }
+        if let (Some(icon), Some(bounds)) = (row.icon, row.icon_bounds) {
+            commands.push(NativeDrawCommand::Icon(
+                NativeDrawIconCommand::new(icon, bounds, NativeIconColorMode::ThemeAware)
+                    .with_color(foreground),
+            ));
+        }
+        let mut style = SemanticTextStyle::body();
+        style.color = foreground;
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            row.label.clone(),
+            row.label_bounds,
+            style,
+        )));
+    }
+    commands.push(NativeDrawCommand::PopClip);
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "table")]
+pub type ZsTablePlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "table")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsTableMetrics {
+    pub header_height: Dp,
+    pub row_height: Dp,
+    pub horizontal_padding: Dp,
+    pub sort_icon_size: Dp,
+    pub radius: Dp,
+    pub separator_width: Dp,
+}
+
+#[cfg(feature = "table")]
+impl ZsTableMetrics {
+    pub const fn for_platform(platform: ZsTablePlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformTableProfile::for_platform(platform).metrics
+    }
+}
+
+#[cfg(feature = "table")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsTableColumnRenderPlan {
+    pub column: crate::ZsTableColumnId,
+    pub header: String,
+    pub alignment: HorizontalAlign,
+    pub sortable: bool,
+    pub sort: Option<crate::ZsTableSortDirection>,
+    pub bounds: Rect,
+    pub label_bounds: Rect,
+    pub sort_icon_bounds: Option<Rect>,
+}
+
+#[cfg(feature = "table")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsTableCellRenderPlan {
+    pub column: crate::ZsTableColumnId,
+    pub value: String,
+    pub alignment: HorizontalAlign,
+    pub bounds: Rect,
+    pub text_bounds: Rect,
+}
+
+#[cfg(feature = "table")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsTableRowRenderPlan {
+    pub row: crate::ZsTableRowId,
+    pub selected: bool,
+    pub bounds: Rect,
+    pub cells: Vec<ZsTableCellRenderPlan>,
+}
+
+#[cfg(feature = "table")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsTableRenderPlan {
+    pub bounds: Rect,
+    pub header_bounds: Rect,
+    pub columns: Vec<ZsTableColumnRenderPlan>,
+    pub rows: Vec<ZsTableRowRenderPlan>,
+    pub radius: i32,
+    pub separator_width: i32,
+    pub platform: ZsTablePlatformStyle,
+}
+
+#[cfg(feature = "table")]
+fn table_column_widths(
+    columns: &[&crate::ZsTableColumn],
+    available_width: i32,
+    dpi: Dpi,
+) -> Vec<i32> {
+    let available_width = available_width.max(0);
+    let fixed_total = columns
+        .iter()
+        .map(|column| match column.width() {
+            crate::ZsTableColumnWidth::Fixed(width) => width.to_px(dpi).round_i32().max(0),
+            crate::ZsTableColumnWidth::Fill(_) => 0,
+        })
+        .fold(0_i32, i32::saturating_add);
+    let fill_total = columns
+        .iter()
+        .map(|column| match column.width() {
+            crate::ZsTableColumnWidth::Fixed(_) => 0_u32,
+            crate::ZsTableColumnWidth::Fill(weight) => u32::from(weight.max(1)),
+        })
+        .fold(0_u32, u32::saturating_add);
+    let fill_available = available_width.saturating_sub(fixed_total).max(0);
+    let mut desired = columns
+        .iter()
+        .map(|column| match column.width() {
+            crate::ZsTableColumnWidth::Fixed(width) => width.to_px(dpi).round_i32().max(0),
+            crate::ZsTableColumnWidth::Fill(weight) if fill_total > 0 => {
+                let portion = i64::from(fill_available).saturating_mul(i64::from(weight.max(1)))
+                    / i64::from(fill_total);
+                i32::try_from(portion).unwrap_or(i32::MAX)
+            }
+            crate::ZsTableColumnWidth::Fill(_) => 0,
+        })
+        .collect::<Vec<_>>();
+    let desired_total = desired.iter().copied().fold(0_i32, i32::saturating_add);
+    if desired_total < available_width {
+        if let Some(last) = desired.last_mut() {
+            *last = last.saturating_add(available_width - desired_total);
+        }
+    }
+    let mut remaining = available_width;
+    for width in &mut desired {
+        *width = (*width).min(remaining).max(0);
+        remaining = remaining.saturating_sub(*width);
+    }
+    desired
+}
+
+#[cfg(feature = "table")]
+pub fn zs_table_render_plan(
+    bounds: Rect,
+    columns: &[crate::ZsTableColumn],
+    rows: &[crate::ZsTableRow],
+    selected: Option<crate::ZsTableRowId>,
+    sort: Option<crate::ZsTableSort>,
+    platform: ZsTablePlatformStyle,
+    dpi: Dpi,
+) -> ZsTableRenderPlan {
+    let metrics =
+        crate::platform_component_profile::PlatformTableProfile::for_platform(platform).metrics;
+    let header_height = metrics.header_height.to_px(dpi).round_i32().max(1);
+    let row_height = metrics.row_height.to_px(dpi).round_i32().max(1);
+    let padding = metrics.horizontal_padding.to_px(dpi).round_i32().max(0);
+    let sort_icon_size = metrics.sort_icon_size.to_px(dpi).round_i32().max(1);
+    let unique_columns = crate::table::unique_table_columns(columns);
+    let widths = table_column_widths(&unique_columns, bounds.width, dpi);
+    let header_bounds = Rect {
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: header_height,
+    };
+    let mut x = bounds.x;
+    let columns = unique_columns
+        .iter()
+        .zip(widths.iter().copied())
+        .map(|(column, width)| {
+            let column_bounds = Rect {
+                x,
+                y: bounds.y,
+                width,
+                height: header_height,
+            };
+            x = x.saturating_add(width);
+            let active_sort = sort
+                .filter(|sort| sort.column == column.id())
+                .map(|sort| sort.direction);
+            let sort_icon_bounds = active_sort.map(|_| Rect {
+                x: column_bounds
+                    .x
+                    .saturating_add(column_bounds.width)
+                    .saturating_sub(padding)
+                    .saturating_sub(sort_icon_size),
+                y: column_bounds
+                    .y
+                    .saturating_add((column_bounds.height.saturating_sub(sort_icon_size)) / 2),
+                width: sort_icon_size,
+                height: sort_icon_size,
+            });
+            let trailing = padding.saturating_add(if sort_icon_bounds.is_some() {
+                sort_icon_size.saturating_add(padding / 2)
+            } else {
+                0
+            });
+            ZsTableColumnRenderPlan {
+                column: column.id(),
+                header: column.header().to_string(),
+                alignment: column.column_alignment(),
+                sortable: column.is_sortable(),
+                sort: active_sort,
+                bounds: column_bounds,
+                label_bounds: Rect {
+                    x: column_bounds.x.saturating_add(padding),
+                    y: column_bounds.y,
+                    width: column_bounds
+                        .width
+                        .saturating_sub(padding)
+                        .saturating_sub(trailing)
+                        .max(0),
+                    height: column_bounds.height,
+                },
+                sort_icon_bounds,
+            }
+        })
+        .collect::<Vec<_>>();
+    let rows = crate::table::unique_table_rows(rows)
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let row_bounds = Rect {
+                x: bounds.x,
+                y: bounds.y.saturating_add(header_height).saturating_add(
+                    row_height.saturating_mul(i32::try_from(index).unwrap_or(i32::MAX)),
+                ),
+                width: bounds.width,
+                height: row_height,
+            };
+            let cells = columns
+                .iter()
+                .enumerate()
+                .map(|(column_index, column)| {
+                    let cell_bounds = Rect {
+                        x: column.bounds.x,
+                        y: row_bounds.y,
+                        width: column.bounds.width,
+                        height: row_bounds.height,
+                    };
+                    ZsTableCellRenderPlan {
+                        column: column.column,
+                        value: row.cell(column_index).to_string(),
+                        alignment: column.alignment,
+                        bounds: cell_bounds,
+                        text_bounds: inset_row_text(cell_bounds, padding),
+                    }
+                })
+                .collect();
+            ZsTableRowRenderPlan {
+                row: row.id(),
+                selected: selected == Some(row.id()),
+                bounds: row_bounds,
+                cells,
+            }
+        })
+        .collect();
+    ZsTableRenderPlan {
+        bounds,
+        header_bounds,
+        columns,
+        rows,
+        radius: metrics.radius.to_px(dpi).round_i32().max(1),
+        separator_width: metrics.separator_width.to_px(dpi).round_i32().max(1),
+        platform,
+    }
+}
+
+#[cfg(feature = "table")]
+pub fn zs_table_native_draw_plan(plan: &ZsTableRenderPlan) -> NativeDrawPlan {
+    let profile =
+        crate::platform_component_profile::PlatformTableProfile::for_platform(plan.platform);
+    let mut commands = vec![
+        NativeDrawCommand::RoundRect {
+            rect: plan.bounds,
+            fill: NativeDrawFill::Role(ColorRole::Surface),
+            stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+            radius: plan.radius,
+        },
+        NativeDrawCommand::PushClip { rect: plan.bounds },
+        NativeDrawCommand::FillRect {
+            rect: plan.header_bounds,
+            fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+        },
+    ];
+    for column in &plan.columns {
+        let mut style = SemanticTextStyle::body();
+        style.weight = TextWeight::Semibold;
+        style.horizontal_align = column.alignment;
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            column.header.clone(),
+            column.label_bounds,
+            style,
+        )));
+        if let (Some(direction), Some(bounds)) = (column.sort, column.sort_icon_bounds) {
+            commands.push(NativeDrawCommand::Icon(
+                NativeDrawIconCommand::new(
+                    match direction {
+                        crate::ZsTableSortDirection::Ascending => ZsIcon::ChevronUp,
+                        crate::ZsTableSortDirection::Descending => ZsIcon::ChevronDown,
+                    },
+                    bounds,
+                    NativeIconColorMode::ThemeAware,
+                )
+                .with_color(ColorRole::PrimaryText),
+            ));
+        }
+        let separator_x = column
+            .bounds
+            .x
+            .saturating_add(column.bounds.width)
+            .saturating_sub(plan.separator_width);
+        commands.push(NativeDrawCommand::FillRect {
+            rect: Rect {
+                x: separator_x,
+                y: plan.bounds.y,
+                width: plan.separator_width,
+                height: plan.bounds.height,
+            },
+            fill: NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::Border,
+                alpha: 180,
+            },
+        });
+    }
+    commands.push(NativeDrawCommand::FillRect {
+        rect: Rect {
+            x: plan.header_bounds.x,
+            y: plan
+                .header_bounds
+                .y
+                .saturating_add(plan.header_bounds.height)
+                .saturating_sub(plan.separator_width),
+            width: plan.header_bounds.width,
+            height: plan.separator_width,
+        },
+        fill: NativeDrawFill::Role(ColorRole::Border),
+    });
+    for row in &plan.rows {
+        if row.selected {
+            let (role, alpha) = profile.selection.fill();
+            let fill = match alpha {
+                Some(alpha) => NativeDrawFill::RoleWithAlpha { role, alpha },
+                None => NativeDrawFill::Role(role),
+            };
+            commands.push(NativeDrawCommand::FillRect {
+                rect: row.bounds,
+                fill,
+            });
+        }
+        let foreground = if row.selected {
+            profile.selection.foreground()
+        } else {
+            ColorRole::PrimaryText
+        };
+        for cell in &row.cells {
+            let mut style = SemanticTextStyle::body();
+            style.color = foreground;
+            style.horizontal_align = cell.alignment;
+            commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+                cell.value.clone(),
+                cell.text_bounds,
+                style,
+            )));
+        }
+        commands.push(NativeDrawCommand::FillRect {
+            rect: Rect {
+                x: row.bounds.x,
+                y: row
+                    .bounds
+                    .y
+                    .saturating_add(row.bounds.height)
+                    .saturating_sub(plan.separator_width),
+                width: row.bounds.width,
+                height: plan.separator_width,
+            },
+            fill: NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::Border,
+                alpha: 128,
+            },
+        });
+    }
+    commands.push(NativeDrawCommand::PopClip);
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "combo")]
+/// Matches WinUI's default `ComboBoxPopupMaxNumberOfItems` resource.
+pub const ZS_COMBO_BOX_MAX_VISIBLE_OPTIONS: usize = 15;
+
+#[cfg(feature = "combo")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsComboBoxRenderPlan {
+    pub bounds: Rect,
+    pub text_bounds: Rect,
+    pub icon_bounds: Rect,
+    pub popup: Option<Rect>,
+    pub popup_placement: Option<ZsPopupPlacement>,
+    pub first_visible_option: usize,
+    pub option_rows: Vec<Rect>,
+    pub radius: i32,
+}
+
+#[cfg(feature = "combo")]
+pub fn zs_combo_box_render_plan(
+    bounds: Rect,
+    option_count: usize,
+    expanded: bool,
+    dpi: Dpi,
+) -> ZsComboBoxRenderPlan {
+    zs_combo_box_render_plan_impl(bounds, option_count, None, Some(0), expanded, dpi, None)
+}
+
+#[cfg(feature = "combo")]
+pub fn zs_combo_box_render_plan_in_viewport(
+    bounds: Rect,
+    option_count: usize,
+    expanded: bool,
+    dpi: Dpi,
+    viewport: Rect,
+) -> ZsComboBoxRenderPlan {
+    zs_combo_box_render_plan_impl(
+        bounds,
+        option_count,
+        None,
+        Some(0),
+        expanded,
+        dpi,
+        Some(viewport),
+    )
+}
+
+#[cfg(feature = "combo")]
+pub fn zs_combo_box_render_plan_with_scroll(
+    bounds: Rect,
+    option_count: usize,
+    selected_index: Option<usize>,
+    first_visible_option: Option<usize>,
+    expanded: bool,
+    dpi: Dpi,
+) -> ZsComboBoxRenderPlan {
+    zs_combo_box_render_plan_impl(
+        bounds,
+        option_count,
+        selected_index,
+        first_visible_option,
+        expanded,
+        dpi,
+        None,
+    )
+}
+
+#[cfg(feature = "combo")]
+pub fn zs_combo_box_render_plan_in_viewport_with_scroll(
+    bounds: Rect,
+    option_count: usize,
+    selected_index: Option<usize>,
+    first_visible_option: Option<usize>,
+    expanded: bool,
+    dpi: Dpi,
+    viewport: Rect,
+) -> ZsComboBoxRenderPlan {
+    zs_combo_box_render_plan_impl(
+        bounds,
+        option_count,
+        selected_index,
+        first_visible_option,
+        expanded,
+        dpi,
+        Some(viewport),
+    )
+}
+
+#[cfg(feature = "combo")]
+fn zs_combo_box_render_plan_impl(
+    bounds: Rect,
+    option_count: usize,
+    selected_index: Option<usize>,
+    first_visible_option: Option<usize>,
+    expanded: bool,
+    dpi: Dpi,
+    viewport: Option<Rect>,
+) -> ZsComboBoxRenderPlan {
+    let horizontal_padding = scale(12, dpi).min(bounds.width.max(1) / 3).max(1);
+    let icon_right_padding = scale(14, dpi).min(bounds.width.max(1) / 3).max(1);
+    let icon_size = scale(12, dpi).min(bounds.height.max(1)).max(1);
+    let icon_right = bounds
+        .x
+        .saturating_add(bounds.width)
+        .saturating_sub(icon_right_padding);
+    let icon_bounds = Rect {
+        x: icon_right.saturating_sub(icon_size),
+        y: bounds
+            .y
+            .saturating_add((bounds.height.saturating_sub(icon_size)) / 2),
+        width: icon_size,
+        height: icon_size,
+    };
+    let text_right = icon_bounds.x.saturating_sub(scale(8, dpi));
+    let text_x = bounds.x.saturating_add(horizontal_padding);
+    let text_bounds = Rect {
+        x: text_x,
+        y: bounds.y,
+        width: text_right.saturating_sub(text_x).max(0),
+        height: bounds.height,
+    };
+    let row_height = bounds.height.max(scale(32, dpi)).max(1);
+    let popup_gap = scale(4, dpi);
+    let visible_option_count =
+        combo_visible_option_count(bounds, option_count, row_height, popup_gap, viewport);
+    let maximum_first_visible = option_count.saturating_sub(visible_option_count);
+    let first_visible_option = first_visible_option.map_or_else(
+        || {
+            selected_index
+                .filter(|index| *index < option_count)
+                .map(|index| {
+                    index
+                        .saturating_add(1)
+                        .saturating_sub(visible_option_count)
+                        .min(maximum_first_visible)
+                })
+                .unwrap_or_default()
+        },
+        |index| index.min(maximum_first_visible),
+    );
+    let placed_popup = (expanded && option_count > 0).then(|| {
+        place_popup(
+            bounds,
+            bounds.width.max(1),
+            row_height.saturating_mul(visible_option_count.min(i32::MAX as usize) as i32),
+            popup_gap,
+            viewport,
+        )
+    });
+    let popup = placed_popup.map(|placed| placed.bounds);
+    let option_rows = popup
+        .map(|popup| {
+            (0..visible_option_count)
+                .map(|index| Rect {
+                    x: popup.x,
+                    y: popup.y.saturating_add(
+                        row_height.saturating_mul(i32::try_from(index).unwrap_or(i32::MAX)),
+                    ),
+                    width: popup.width,
+                    height: row_height,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    ZsComboBoxRenderPlan {
+        bounds,
+        text_bounds,
+        icon_bounds,
+        popup,
+        popup_placement: placed_popup.map(|placed| placed.placement),
+        first_visible_option,
+        option_rows,
+        radius: scale(6, dpi),
+    }
+}
+
+#[cfg(feature = "combo")]
+fn combo_visible_option_count(
+    anchor: Rect,
+    option_count: usize,
+    row_height: i32,
+    gap: i32,
+    viewport: Option<Rect>,
+) -> usize {
+    let capped_count = option_count.min(ZS_COMBO_BOX_MAX_VISIBLE_OPTIONS);
+    let Some(viewport) = viewport.filter(|viewport| viewport.width > 0 && viewport.height > 0)
+    else {
+        return capped_count;
+    };
+    let viewport_bottom = viewport.y.saturating_add(viewport.height);
+    let below_y = anchor.y.saturating_add(anchor.height).saturating_add(gap);
+    let above_bottom = anchor.y.saturating_sub(gap);
+    let available_below = viewport_bottom.saturating_sub(below_y).max(0);
+    let available_above = above_bottom.saturating_sub(viewport.y).max(0);
+    let available_rows = available_below.max(available_above) / row_height.max(1);
+    capped_count.min(available_rows.max(1) as usize)
+}
+
+#[cfg(feature = "combo")]
+pub fn zs_combo_box_header_native_draw_plan(
+    plan: &ZsComboBoxRenderPlan,
+    selected_text: Option<&str>,
+    placeholder: Option<&str>,
+) -> NativeDrawPlan {
+    let label = selected_text.or(placeholder).unwrap_or_default();
+    let mut text_style = SemanticTextStyle::body();
+    if selected_text.is_none() {
+        text_style.color = ColorRole::SecondaryText;
+    }
+    NativeDrawPlan::new([
+        NativeDrawCommand::RoundRect {
+            rect: plan.bounds,
+            fill: NativeDrawFill::Role(ColorRole::Surface),
+            stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+            radius: plan.radius,
+        },
+        NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            label,
+            plan.text_bounds,
+            text_style,
+        )),
+        NativeDrawCommand::Icon(
+            NativeDrawIconCommand::new(
+                ZsIcon::ChevronDown,
+                plan.icon_bounds,
+                NativeIconColorMode::ThemeAware,
+            )
+            .with_color(ColorRole::SecondaryText),
+        ),
+    ])
+}
+
+#[cfg(feature = "combo")]
+pub fn zs_combo_box_popup_native_draw_plan(
+    plan: &ZsComboBoxRenderPlan,
+    options: &[String],
+    selected: Option<usize>,
+    dpi: Dpi,
+) -> NativeDrawPlan {
+    let Some(popup) = plan.popup else {
+        return NativeDrawPlan::default();
+    };
+    let mut commands = vec![NativeDrawCommand::RoundRect {
+        rect: popup,
+        fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+        stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+        radius: plan.radius,
+    }];
+    let padding = scale(12, dpi);
+    for ((index, label), row) in options
+        .iter()
+        .enumerate()
+        .skip(plan.first_visible_option)
+        .zip(&plan.option_rows)
+    {
+        if selected == Some(index) {
+            commands.push(NativeDrawCommand::RoundFill {
+                rect: *row,
+                fill: NativeDrawFill::RoleWithAlpha {
+                    role: ColorRole::Accent,
+                    alpha: 36,
+                },
+                radius: plan.radius,
+            });
+        }
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            label,
+            Rect {
+                x: row.x.saturating_add(padding),
+                y: row.y,
+                width: row.width.saturating_sub(padding.saturating_mul(2)),
+                height: row.height,
+            },
+            SemanticTextStyle::body(),
+        )));
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "date-picker")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsDatePickerDayCell {
+    pub bounds: Rect,
+    pub date: ZsDate,
+    pub in_display_month: bool,
+    pub enabled: bool,
+    pub selected: bool,
+    pub today: bool,
+}
+
+#[cfg(feature = "date-picker")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsDatePickerRenderPlan {
+    pub bounds: Rect,
+    pub text_bounds: Rect,
+    pub icon_bounds: Rect,
+    pub popup: Option<Rect>,
+    pub popup_placement: Option<ZsPopupPlacement>,
+    pub month_label_bounds: Option<Rect>,
+    pub previous_button: Option<Rect>,
+    pub next_button: Option<Rect>,
+    pub weekday_cells: Vec<Rect>,
+    pub day_cells: Vec<ZsDatePickerDayCell>,
+    pub control_radius: i32,
+    pub overlay_radius: i32,
+}
+
+/// Computes the self-drawn CalendarDatePicker geometry.
+///
+/// The closed-field metrics follow the WinUI 3 default template: a 32-DIP
+/// control, 32-DIP glyph column, 12-DIP text inset and 4-DIP control radius.
+/// The popup uses the CalendarView header/weekday/day rhythm and the 8-DIP
+/// overlay radius from the same template.
+#[cfg(feature = "date-picker")]
+pub fn zs_date_picker_render_plan(
+    bounds: Rect,
+    value: ZsDate,
+    visible_month: ZsDate,
+    minimum: ZsDate,
+    maximum: ZsDate,
+    expanded: bool,
+    dpi: Dpi,
+) -> ZsDatePickerRenderPlan {
+    zs_date_picker_render_plan_impl(
+        bounds,
+        value,
+        visible_month,
+        minimum,
+        maximum,
+        None,
+        expanded,
+        dpi,
+        None,
+    )
+}
+
+#[cfg(feature = "date-picker")]
+#[allow(clippy::too_many_arguments)]
+pub fn zs_date_picker_render_plan_with_today(
+    bounds: Rect,
+    value: ZsDate,
+    visible_month: ZsDate,
+    minimum: ZsDate,
+    maximum: ZsDate,
+    today: Option<ZsDate>,
+    expanded: bool,
+    dpi: Dpi,
+) -> ZsDatePickerRenderPlan {
+    zs_date_picker_render_plan_impl(
+        bounds,
+        value,
+        visible_month,
+        minimum,
+        maximum,
+        today,
+        expanded,
+        dpi,
+        None,
+    )
+}
+
+#[cfg(feature = "date-picker")]
+#[allow(clippy::too_many_arguments)]
+pub fn zs_date_picker_render_plan_in_viewport(
+    bounds: Rect,
+    value: ZsDate,
+    visible_month: ZsDate,
+    minimum: ZsDate,
+    maximum: ZsDate,
+    expanded: bool,
+    dpi: Dpi,
+    viewport: Rect,
+) -> ZsDatePickerRenderPlan {
+    zs_date_picker_render_plan_impl(
+        bounds,
+        value,
+        visible_month,
+        minimum,
+        maximum,
+        None,
+        expanded,
+        dpi,
+        Some(viewport),
+    )
+}
+
+#[cfg(feature = "date-picker")]
+#[allow(clippy::too_many_arguments)]
+pub fn zs_date_picker_render_plan_in_viewport_with_today(
+    bounds: Rect,
+    value: ZsDate,
+    visible_month: ZsDate,
+    minimum: ZsDate,
+    maximum: ZsDate,
+    today: Option<ZsDate>,
+    expanded: bool,
+    dpi: Dpi,
+    viewport: Rect,
+) -> ZsDatePickerRenderPlan {
+    zs_date_picker_render_plan_impl(
+        bounds,
+        value,
+        visible_month,
+        minimum,
+        maximum,
+        today,
+        expanded,
+        dpi,
+        Some(viewport),
+    )
+}
+
+#[cfg(feature = "date-picker")]
+#[allow(clippy::too_many_arguments)]
+fn zs_date_picker_render_plan_impl(
+    bounds: Rect,
+    value: ZsDate,
+    visible_month: ZsDate,
+    minimum: ZsDate,
+    maximum: ZsDate,
+    today: Option<ZsDate>,
+    expanded: bool,
+    dpi: Dpi,
+    viewport: Option<Rect>,
+) -> ZsDatePickerRenderPlan {
+    let (minimum, maximum) = if minimum <= maximum {
+        (minimum, maximum)
+    } else {
+        (maximum, minimum)
+    };
+    let visible_month = visible_month.first_day_of_month();
+    let icon_column_width = scale(32, dpi).min(bounds.width.max(1));
+    let text_padding = scale(12, dpi).min(bounds.width.max(1) / 3).max(1);
+    let icon_size = scale(12, dpi).min(bounds.height.max(1)).max(1);
+    let icon_column_x = bounds
+        .x
+        .saturating_add(bounds.width)
+        .saturating_sub(icon_column_width);
+    let icon_bounds = Rect {
+        x: icon_column_x.saturating_add((icon_column_width.saturating_sub(icon_size)) / 2),
+        y: bounds
+            .y
+            .saturating_add((bounds.height.saturating_sub(icon_size)) / 2),
+        width: icon_size,
+        height: icon_size,
+    };
+    let text_x = bounds.x.saturating_add(text_padding);
+    let text_bounds = Rect {
+        x: text_x,
+        y: bounds.y,
+        width: icon_column_x.saturating_sub(text_x).max(0),
+        height: bounds.height,
+    };
+
+    // CalendarView's 7 columns are 40-DIP day items with 1-DIP margins;
+    // TemplateSettings.MinViewWidth plus the outer border resolves to 296 DIPs.
+    let popup_width = scale(296, dpi);
+    let popup_gap = scale(4, dpi);
+    let border_inset = scale(1, dpi);
+    let header_height = scale(40, dpi);
+    let weekday_height = scale(38, dpi);
+    let day_height = scale(42, dpi);
+    let popup_height = header_height
+        .saturating_add(weekday_height)
+        .saturating_add(day_height.saturating_mul(6))
+        .saturating_add(border_inset.saturating_mul(2));
+    let placed_popup =
+        expanded.then(|| place_popup(bounds, popup_width, popup_height, popup_gap, viewport));
+    let popup = placed_popup.map(|placed| placed.bounds);
+
+    let mut month_label_bounds = None;
+    let mut previous_button = None;
+    let mut next_button = None;
+    let mut weekday_cells = Vec::new();
+    let mut day_cells = Vec::new();
+    if let Some(popup) = popup {
+        let content = Rect {
+            x: popup.x.saturating_add(border_inset),
+            y: popup.y.saturating_add(border_inset),
+            width: popup.width.saturating_sub(border_inset.saturating_mul(2)),
+            height: popup.height.saturating_sub(border_inset.saturating_mul(2)),
+        };
+        let navigation_width = content.width / 7;
+        previous_button = Some(Rect {
+            x: content
+                .x
+                .saturating_add(content.width.saturating_sub(navigation_width * 2)),
+            y: content.y,
+            width: navigation_width,
+            height: header_height,
+        });
+        next_button = Some(Rect {
+            x: content
+                .x
+                .saturating_add(content.width.saturating_sub(navigation_width)),
+            y: content.y,
+            width: navigation_width,
+            height: header_height,
+        });
+        month_label_bounds = Some(Rect {
+            x: content.x.saturating_add(scale(12, dpi)),
+            y: content.y,
+            width: content
+                .width
+                .saturating_sub(navigation_width * 2)
+                .saturating_sub(scale(12, dpi)),
+            height: header_height,
+        });
+
+        let column_left = |column: i32| content.x + content.width * column / 7;
+        let column_right = |column: i32| content.x + content.width * (column + 1) / 7;
+        for column in 0..7 {
+            weekday_cells.push(Rect {
+                x: column_left(column),
+                y: content.y.saturating_add(header_height),
+                width: column_right(column).saturating_sub(column_left(column)),
+                height: weekday_height,
+            });
+        }
+
+        let first = visible_month.add_days(-i32::from(visible_month.weekday_from_sunday()));
+        for index in 0..42_i32 {
+            let column = index % 7;
+            let row = index / 7;
+            let date = first.add_days(index);
+            day_cells.push(ZsDatePickerDayCell {
+                bounds: Rect {
+                    x: column_left(column),
+                    y: content
+                        .y
+                        .saturating_add(header_height)
+                        .saturating_add(weekday_height)
+                        .saturating_add(day_height.saturating_mul(row)),
+                    width: column_right(column).saturating_sub(column_left(column)),
+                    height: day_height,
+                },
+                date,
+                in_display_month: date.year() == visible_month.year()
+                    && date.month() == visible_month.month(),
+                enabled: date >= minimum && date <= maximum,
+                selected: date == value,
+                today: today == Some(date),
+            });
+        }
+    }
+
+    ZsDatePickerRenderPlan {
+        bounds,
+        text_bounds,
+        icon_bounds,
+        popup,
+        popup_placement: placed_popup.map(|placed| placed.placement),
+        month_label_bounds,
+        previous_button,
+        next_button,
+        weekday_cells,
+        day_cells,
+        control_radius: scale(4, dpi),
+        overlay_radius: scale(8, dpi),
+    }
+}
+
+#[cfg(feature = "date-picker")]
+pub fn zs_date_picker_header_native_draw_plan(
+    plan: &ZsDatePickerRenderPlan,
+    value: ZsDate,
+) -> NativeDrawPlan {
+    NativeDrawPlan::new([
+        NativeDrawCommand::RoundRect {
+            rect: plan.bounds,
+            fill: NativeDrawFill::Role(ColorRole::Control),
+            stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+            radius: plan.control_radius,
+        },
+        NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            value.iso_string(),
+            plan.text_bounds,
+            SemanticTextStyle::body(),
+        )),
+        NativeDrawCommand::Icon(
+            NativeDrawIconCommand::new(
+                ZsIcon::Calendar,
+                plan.icon_bounds,
+                NativeIconColorMode::ThemeAware,
+            )
+            .with_color(ColorRole::PrimaryText),
+        ),
+    ])
+}
+
+#[cfg(feature = "date-picker")]
+pub fn zs_date_picker_popup_native_draw_plan(
+    plan: &ZsDatePickerRenderPlan,
+    visible_month: ZsDate,
+    dpi: Dpi,
+) -> NativeDrawPlan {
+    let Some(popup) = plan.popup else {
+        return NativeDrawPlan::default();
+    };
+    let mut commands = vec![NativeDrawCommand::RoundRect {
+        rect: popup,
+        fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+        stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+        radius: plan.overlay_radius,
+    }];
+    if let Some(bounds) = plan.month_label_bounds {
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            format!("{:04} / {:02}", visible_month.year(), visible_month.month()),
+            bounds,
+            SemanticTextStyle {
+                weight: TextWeight::Semibold,
+                ..SemanticTextStyle::body()
+            },
+        )));
+    }
+    let navigation_icon_size = scale(12, dpi);
+    for (bounds, icon) in [
+        (plan.previous_button, ZsIcon::ChevronLeft),
+        (plan.next_button, ZsIcon::ChevronRight),
+    ] {
+        if let Some(bounds) = bounds {
+            let icon_bounds = Rect {
+                x: bounds.x + (bounds.width - navigation_icon_size) / 2,
+                y: bounds.y + (bounds.height - navigation_icon_size) / 2,
+                width: navigation_icon_size,
+                height: navigation_icon_size,
+            };
+            commands.push(NativeDrawCommand::Icon(
+                NativeDrawIconCommand::new(icon, icon_bounds, NativeIconColorMode::ThemeAware)
+                    .with_color(ColorRole::PrimaryText),
+            ));
+        }
+    }
+
+    let weekday_style = SemanticTextStyle {
+        role: TextRole::Caption,
+        weight: TextWeight::Semibold,
+        horizontal_align: HorizontalAlign::Center,
+        ..SemanticTextStyle::body()
+    };
+    for (label, bounds) in ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
+        .into_iter()
+        .zip(&plan.weekday_cells)
+    {
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            label,
+            *bounds,
+            weekday_style,
+        )));
+    }
+    for cell in &plan.day_cells {
+        let highlighted = cell.selected || (cell.today && cell.enabled);
+        if highlighted {
+            let diameter = scale(32, dpi)
+                .min(cell.bounds.width)
+                .min(cell.bounds.height);
+            commands.push(NativeDrawCommand::RoundRect {
+                rect: Rect {
+                    x: cell.bounds.x + (cell.bounds.width - diameter) / 2,
+                    y: cell.bounds.y + (cell.bounds.height - diameter) / 2,
+                    width: diameter,
+                    height: diameter,
+                },
+                fill: NativeDrawFill::Role(ColorRole::Accent),
+                stroke: (cell.selected && cell.today)
+                    .then_some(NativeDrawFill::Role(ColorRole::AccentText)),
+                radius: diameter / 2,
+            });
+        }
+        let color = if !cell.enabled {
+            ColorRole::DisabledText
+        } else if highlighted {
+            ColorRole::AccentText
+        } else if cell.in_display_month {
+            ColorRole::PrimaryText
+        } else {
+            ColorRole::SecondaryText
+        };
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            cell.date.day().to_string(),
+            cell.bounds,
+            SemanticTextStyle {
+                color,
+                horizontal_align: HorizontalAlign::Center,
+                ..SemanticTextStyle::body()
+            },
+        )));
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "time-picker")]
+pub type ZsTimePickerPlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "time-picker")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsTimePickerMetrics {
+    pub popup_width: Dp,
+    pub row_height: Dp,
+    pub visible_rows: usize,
+    pub text_padding: Dp,
+    pub icon_column_width: Dp,
+    pub popup_gap: Dp,
+    pub control_radius: Dp,
+    pub overlay_radius: Dp,
+}
+
+#[cfg(feature = "time-picker")]
+impl ZsTimePickerMetrics {
+    pub const fn for_platform(platform: ZsTimePickerPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformTimePickerProfile::for_platform(platform).metrics
+    }
+}
+
+#[cfg(feature = "time-picker")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ZsTimePickerSegment {
+    Hour,
+    Minute,
+    Period,
+}
+
+#[cfg(feature = "time-picker")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsTimePickerChoice {
+    pub bounds: Rect,
+    pub value: ZsTime,
+    pub segment: ZsTimePickerSegment,
+    pub label: String,
+    pub selected: bool,
+}
+
+#[cfg(feature = "time-picker")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsTimePickerRenderPlan {
+    pub bounds: Rect,
+    pub text_bounds: Rect,
+    pub icon_bounds: Rect,
+    pub popup: Option<Rect>,
+    pub popup_placement: Option<ZsPopupPlacement>,
+    pub column_bounds: Vec<Rect>,
+    pub choices: Vec<ZsTimePickerChoice>,
+    pub platform: ZsTimePickerPlatformStyle,
+    pub clock: ZsClockFormat,
+    pub control_radius: i32,
+    pub overlay_radius: i32,
+}
+
+#[cfg(feature = "time-picker")]
+pub fn zs_time_picker_render_plan(
+    bounds: Rect,
+    value: ZsTime,
+    increment: ZsMinuteIncrement,
+    clock: ZsClockFormat,
+    expanded: bool,
+    platform: ZsTimePickerPlatformStyle,
+    dpi: Dpi,
+) -> ZsTimePickerRenderPlan {
+    zs_time_picker_render_plan_impl(
+        bounds, value, increment, clock, expanded, platform, dpi, None,
+    )
+}
+
+#[cfg(feature = "time-picker")]
+#[allow(clippy::too_many_arguments)]
+pub fn zs_time_picker_render_plan_in_viewport(
+    bounds: Rect,
+    value: ZsTime,
+    increment: ZsMinuteIncrement,
+    clock: ZsClockFormat,
+    expanded: bool,
+    platform: ZsTimePickerPlatformStyle,
+    dpi: Dpi,
+    viewport: Rect,
+) -> ZsTimePickerRenderPlan {
+    zs_time_picker_render_plan_impl(
+        bounds,
+        value,
+        increment,
+        clock,
+        expanded,
+        platform,
+        dpi,
+        Some(viewport),
+    )
+}
+
+#[cfg(feature = "time-picker")]
+#[allow(clippy::too_many_arguments)]
+fn zs_time_picker_render_plan_impl(
+    bounds: Rect,
+    value: ZsTime,
+    increment: ZsMinuteIncrement,
+    clock: ZsClockFormat,
+    expanded: bool,
+    platform: ZsTimePickerPlatformStyle,
+    dpi: Dpi,
+    viewport: Option<Rect>,
+) -> ZsTimePickerRenderPlan {
+    let value = value.snap(increment);
+    let metrics =
+        crate::platform_component_profile::PlatformTimePickerProfile::for_platform(platform)
+            .metrics;
+    let icon_column_width = metrics
+        .icon_column_width
+        .to_px(dpi)
+        .round_i32()
+        .max(1)
+        .min(bounds.width.max(1));
+    let text_padding = metrics
+        .text_padding
+        .to_px(dpi)
+        .round_i32()
+        .max(1)
+        .min(bounds.width.max(1) / 3);
+    let icon_size = scale(12, dpi).min(bounds.height.max(1)).max(1);
+    let icon_column_x = bounds
+        .x
+        .saturating_add(bounds.width)
+        .saturating_sub(icon_column_width);
+    let icon_bounds = Rect {
+        x: icon_column_x.saturating_add((icon_column_width.saturating_sub(icon_size)) / 2),
+        y: bounds
+            .y
+            .saturating_add((bounds.height.saturating_sub(icon_size)) / 2),
+        width: icon_size,
+        height: icon_size,
+    };
+    let text_x = bounds.x.saturating_add(text_padding);
+    let text_bounds = Rect {
+        x: text_x,
+        y: bounds.y,
+        width: icon_column_x.saturating_sub(text_x).max(0),
+        height: bounds.height,
+    };
+
+    let row_height = metrics.row_height.to_px(dpi).round_i32().max(1);
+    let border_inset = scale(1, dpi);
+    let popup_height = row_height
+        .saturating_mul(metrics.visible_rows.max(1) as i32)
+        .saturating_add(border_inset.saturating_mul(2));
+    let placed_popup = expanded.then(|| {
+        place_popup(
+            bounds,
+            metrics.popup_width.to_px(dpi).round_i32().max(1),
+            popup_height,
+            metrics.popup_gap.to_px(dpi).round_i32().max(0),
+            viewport,
+        )
+    });
+    let popup = placed_popup.map(|placed| placed.bounds);
+    let mut column_bounds = Vec::new();
+    let mut choices = Vec::new();
+    if let Some(popup) = popup {
+        let content = Rect {
+            x: popup.x.saturating_add(border_inset),
+            y: popup.y.saturating_add(border_inset),
+            width: popup.width.saturating_sub(border_inset.saturating_mul(2)),
+            height: popup.height.saturating_sub(border_inset.saturating_mul(2)),
+        };
+        let column_count = if clock == ZsClockFormat::TwelveHour {
+            3
+        } else {
+            2
+        };
+        let column_left = |column: i32| content.x + content.width * column / column_count;
+        let column_right = |column: i32| content.x + content.width * (column + 1) / column_count;
+        for column in 0..column_count {
+            column_bounds.push(Rect {
+                x: column_left(column),
+                y: content.y,
+                width: column_right(column).saturating_sub(column_left(column)),
+                height: content.height,
+            });
+        }
+
+        let middle = metrics.visible_rows as i32 / 2;
+        for row in 0..metrics.visible_rows as i32 {
+            let offset = row - middle;
+            let hour = match clock {
+                ZsClockFormat::TwentyFourHour => {
+                    (i32::from(value.hour()) + offset).rem_euclid(24) as u8
+                }
+                ZsClockFormat::TwelveHour => {
+                    let display_hour = match value.hour() % 12 {
+                        0 => 12,
+                        hour => hour,
+                    };
+                    let candidate = (i32::from(display_hour) - 1 + offset).rem_euclid(12) as u8 + 1;
+                    candidate % 12 + if value.hour() >= 12 { 12 } else { 0 }
+                }
+            };
+            let next = value.with_hour(hour).expect("rendered hour is valid");
+            choices.push(ZsTimePickerChoice {
+                bounds: Rect {
+                    x: column_bounds[0].x,
+                    y: content.y.saturating_add(row_height.saturating_mul(row)),
+                    width: column_bounds[0].width,
+                    height: row_height,
+                },
+                value: next,
+                segment: ZsTimePickerSegment::Hour,
+                label: match clock {
+                    ZsClockFormat::TwentyFourHour => format!("{hour:02}"),
+                    ZsClockFormat::TwelveHour => match hour % 12 {
+                        0 => "12".to_string(),
+                        hour => hour.to_string(),
+                    },
+                },
+                selected: hour == value.hour(),
+            });
+
+            let minute = (i32::from(value.minute())
+                + offset.saturating_mul(i32::from(increment.get())))
+            .rem_euclid(60) as u8;
+            let next = value.with_minute(minute).expect("rendered minute is valid");
+            choices.push(ZsTimePickerChoice {
+                bounds: Rect {
+                    x: column_bounds[1].x,
+                    y: content.y.saturating_add(row_height.saturating_mul(row)),
+                    width: column_bounds[1].width,
+                    height: row_height,
+                },
+                value: next,
+                segment: ZsTimePickerSegment::Minute,
+                label: format!("{minute:02}"),
+                selected: minute == value.minute(),
+            });
+        }
+
+        if clock == ZsClockFormat::TwelveHour {
+            let period_column = column_bounds[2];
+            let period_height = row_height.min(period_column.height / 2).max(1);
+            let start_y = period_column
+                .y
+                .saturating_add((period_column.height.saturating_sub(period_height * 2)) / 2);
+            for (index, afternoon) in [false, true].into_iter().enumerate() {
+                let hour = value.hour() % 12 + if afternoon { 12 } else { 0 };
+                choices.push(ZsTimePickerChoice {
+                    bounds: Rect {
+                        x: period_column.x,
+                        y: start_y.saturating_add(period_height.saturating_mul(index as i32)),
+                        width: period_column.width,
+                        height: period_height,
+                    },
+                    value: value
+                        .with_hour(hour)
+                        .expect("rendered period hour is valid"),
+                    segment: ZsTimePickerSegment::Period,
+                    label: if afternoon { "PM" } else { "AM" }.to_string(),
+                    selected: afternoon == (value.hour() >= 12),
+                });
+            }
+        }
+    }
+
+    ZsTimePickerRenderPlan {
+        bounds,
+        text_bounds,
+        icon_bounds,
+        popup,
+        popup_placement: placed_popup.map(|placed| placed.placement),
+        column_bounds,
+        choices,
+        platform,
+        clock,
+        control_radius: metrics.control_radius.to_px(dpi).round_i32().max(1),
+        overlay_radius: metrics.overlay_radius.to_px(dpi).round_i32().max(1),
+    }
+}
+
+#[cfg(feature = "time-picker")]
+pub fn zs_time_picker_header_native_draw_plan(
+    plan: &ZsTimePickerRenderPlan,
+    value: ZsTime,
+) -> NativeDrawPlan {
+    let profile =
+        crate::platform_component_profile::PlatformTimePickerProfile::for_platform(plan.platform);
+    let fill = NativeDrawFill::Role(profile.header_fill);
+    NativeDrawPlan::new([
+        NativeDrawCommand::RoundRect {
+            rect: plan.bounds,
+            fill,
+            stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+            radius: plan.control_radius,
+        },
+        NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            value.format(plan.clock),
+            plan.text_bounds,
+            SemanticTextStyle::body(),
+        )),
+        NativeDrawCommand::Icon(
+            NativeDrawIconCommand::new(
+                ZsIcon::ChevronDown,
+                plan.icon_bounds,
+                NativeIconColorMode::ThemeAware,
+            )
+            .with_color(ColorRole::PrimaryText),
+        ),
+    ])
+}
+
+#[cfg(feature = "time-picker")]
+pub fn zs_time_picker_popup_native_draw_plan(plan: &ZsTimePickerRenderPlan) -> NativeDrawPlan {
+    let Some(popup) = plan.popup else {
+        return NativeDrawPlan::default();
+    };
+    let profile =
+        crate::platform_component_profile::PlatformTimePickerProfile::for_platform(plan.platform);
+    let mut commands = vec![NativeDrawCommand::RoundRect {
+        rect: popup,
+        fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+        stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+        radius: plan.overlay_radius,
+    }];
+    for column in plan.column_bounds.iter().skip(1) {
+        commands.push(NativeDrawCommand::FillRect {
+            rect: Rect {
+                x: column.x,
+                y: column.y.saturating_add(4),
+                width: 1,
+                height: column.height.saturating_sub(8).max(1),
+            },
+            fill: NativeDrawFill::Role(ColorRole::Border),
+        });
+    }
+    for choice in &plan.choices {
+        if choice.selected {
+            let (role, alpha) = profile.selection.fill();
+            let fill = match alpha {
+                Some(alpha) => NativeDrawFill::RoleWithAlpha { role, alpha },
+                None => NativeDrawFill::Role(role),
+            };
+            commands.push(NativeDrawCommand::RoundFill {
+                rect: Rect {
+                    x: choice.bounds.x.saturating_add(4),
+                    y: choice.bounds.y.saturating_add(3),
+                    width: choice.bounds.width.saturating_sub(8).max(1),
+                    height: choice.bounds.height.saturating_sub(6).max(1),
+                },
+                fill,
+                radius: plan.control_radius,
+            });
+        }
+        let color = if choice.selected {
+            profile.selection.foreground()
+        } else {
+            ColorRole::SecondaryText
+        };
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            &choice.label,
+            choice.bounds,
+            SemanticTextStyle {
+                role: TextRole::Body,
+                color,
+                weight: if choice.selected {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                },
+                horizontal_align: HorizontalAlign::Center,
+                ..SemanticTextStyle::body()
+            },
+        )));
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "color-picker")]
+pub type ZsColorPickerPlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "color-picker")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsColorPickerMetrics {
+    pub popup_width: Dp,
+    pub popup_padding: Dp,
+    pub preview_size: Dp,
+    pub preview_gap: Dp,
+    pub spectrum_height: Dp,
+    pub spectrum_gap: Dp,
+    pub hue_track_height: Dp,
+    pub row_height: Dp,
+    pub row_gap: Dp,
+    pub label_width: Dp,
+    pub value_width: Dp,
+    pub track_height: Dp,
+    pub thumb_width: Dp,
+    pub popup_gap: Dp,
+    pub control_radius: Dp,
+    pub overlay_radius: Dp,
+}
+
+#[cfg(feature = "color-picker")]
+impl ZsColorPickerMetrics {
+    pub const fn for_platform(platform: ZsColorPickerPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformColorPickerProfile::for_platform(platform)
+            .metrics
+    }
+}
+
+#[cfg(feature = "color-picker")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsColorPickerChannelRenderPlan {
+    pub channel: ZsColorChannel,
+    pub bounds: Rect,
+    pub label_bounds: Rect,
+    pub track: Rect,
+    pub thumb: Rect,
+    pub value_bounds: Rect,
+    pub active: bool,
+}
+
+#[cfg(feature = "color-picker")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsColorPickerRenderPlan {
+    pub bounds: Rect,
+    pub swatch_bounds: Rect,
+    pub text_bounds: Rect,
+    pub icon_bounds: Rect,
+    pub popup: Option<Rect>,
+    pub popup_placement: Option<ZsPopupPlacement>,
+    pub spectrum_bounds: Option<Rect>,
+    pub spectrum_thumb: Option<Rect>,
+    pub hue_track: Option<Rect>,
+    pub hue_thumb: Option<Rect>,
+    pub preview_bounds: Option<Rect>,
+    pub hex_bounds: Option<Rect>,
+    pub channels: Vec<ZsColorPickerChannelRenderPlan>,
+    pub platform: ZsColorPickerPlatformStyle,
+    pub control_radius: i32,
+    pub overlay_radius: i32,
+}
+
+/// Computes shared paint and hit geometry for the self-drawn color well and editor.
+///
+/// The closed control follows the platform color-well/button idiom. The expanded
+/// editor keeps one application-owned RGBA value and exposes precise channel
+/// sliders without creating or driving a native child control.
+#[cfg(feature = "color-picker")]
+pub fn zs_color_picker_render_plan(
+    bounds: Rect,
+    state: ZsColorPickerState,
+    platform: ZsColorPickerPlatformStyle,
+    dpi: Dpi,
+) -> ZsColorPickerRenderPlan {
+    zs_color_picker_render_plan_impl(bounds, state, platform, dpi, None)
+}
+
+#[cfg(feature = "color-picker")]
+pub fn zs_color_picker_render_plan_in_viewport(
+    bounds: Rect,
+    state: ZsColorPickerState,
+    platform: ZsColorPickerPlatformStyle,
+    dpi: Dpi,
+    viewport: Rect,
+) -> ZsColorPickerRenderPlan {
+    zs_color_picker_render_plan_impl(bounds, state, platform, dpi, Some(viewport))
+}
+
+#[cfg(feature = "color-picker")]
+fn zs_color_picker_render_plan_impl(
+    bounds: Rect,
+    state: ZsColorPickerState,
+    platform: ZsColorPickerPlatformStyle,
+    dpi: Dpi,
+    viewport: Option<Rect>,
+) -> ZsColorPickerRenderPlan {
+    let state = state.normalized();
+    let profile =
+        crate::platform_component_profile::PlatformColorPickerProfile::for_platform(platform);
+    let metrics = profile.metrics;
+    let inset = metrics.popup_padding.to_px(dpi).round_i32().max(1);
+    let swatch_size = profile
+        .swatch_size
+        .to_px(dpi)
+        .round_i32()
+        .min(bounds.height.saturating_sub(scale(8, dpi)).max(1));
+    let header_padding = scale(8, dpi);
+    let icon_column = scale(28, dpi).min(bounds.width.max(1));
+    let swatch_bounds = Rect {
+        x: bounds.x.saturating_add(header_padding),
+        y: bounds
+            .y
+            .saturating_add((bounds.height.saturating_sub(swatch_size)) / 2),
+        width: swatch_size,
+        height: swatch_size,
+    };
+    let icon_size = scale(12, dpi).min(bounds.height.max(1));
+    let icon_bounds = Rect {
+        x: bounds
+            .x
+            .saturating_add(bounds.width)
+            .saturating_sub(icon_column)
+            .saturating_add((icon_column.saturating_sub(icon_size)) / 2),
+        y: bounds
+            .y
+            .saturating_add((bounds.height.saturating_sub(icon_size)) / 2),
+        width: icon_size,
+        height: icon_size,
+    };
+    let text_x = swatch_bounds
+        .x
+        .saturating_add(swatch_bounds.width)
+        .saturating_add(scale(8, dpi));
+    let text_bounds = Rect {
+        x: text_x,
+        y: bounds.y,
+        width: icon_bounds.x.saturating_sub(text_x).max(0),
+        height: bounds.height,
+    };
+
+    let row_height = metrics.row_height.to_px(dpi).round_i32().max(1);
+    let row_gap = metrics.row_gap.to_px(dpi).round_i32().max(0);
+    let preview_size = metrics.preview_size.to_px(dpi).round_i32().max(1);
+    let preview_gap = metrics.preview_gap.to_px(dpi).round_i32().max(0);
+    let spectrum_height = metrics.spectrum_height.to_px(dpi).round_i32().max(0);
+    let spectrum_gap = metrics.spectrum_gap.to_px(dpi).round_i32().max(0);
+    let hue_track_height = metrics.hue_track_height.to_px(dpi).round_i32().max(0);
+    let spectrum_section_height = if spectrum_height > 0 && hue_track_height > 0 {
+        spectrum_height
+            .saturating_add(spectrum_gap)
+            .saturating_add(hue_track_height)
+            .saturating_add(spectrum_gap)
+    } else {
+        0
+    };
+    let channel_count = state.channels().len() as i32;
+    let popup_height = inset
+        .saturating_mul(2)
+        .saturating_add(spectrum_section_height)
+        .saturating_add(preview_size)
+        .saturating_add(preview_gap)
+        .saturating_add(row_height.saturating_mul(channel_count))
+        .saturating_add(row_gap.saturating_mul(channel_count.saturating_sub(1)));
+    let placed_popup = state.expanded.then(|| {
+        place_popup(
+            bounds,
+            metrics.popup_width.to_px(dpi).round_i32().max(1),
+            popup_height,
+            metrics.popup_gap.to_px(dpi).round_i32().max(0),
+            viewport,
+        )
+    });
+    let popup = placed_popup.map(|placed| placed.bounds);
+    let mut spectrum_bounds = None;
+    let mut spectrum_thumb = None;
+    let mut hue_track = None;
+    let mut hue_thumb = None;
+    let mut preview_bounds = None;
+    let mut hex_bounds = None;
+    let mut channels = Vec::new();
+
+    if let Some(popup) = popup {
+        let content = Rect {
+            x: popup.x.saturating_add(inset),
+            y: popup.y.saturating_add(inset),
+            width: popup.width.saturating_sub(inset.saturating_mul(2)).max(1),
+            height: popup.height.saturating_sub(inset.saturating_mul(2)).max(1),
+        };
+        let hsv = ZsHsvColor::from_color(state.color);
+        let mut content_y = content.y;
+        if spectrum_section_height > 0 {
+            let spectrum = Rect {
+                x: content.x,
+                y: content_y,
+                width: content.width,
+                height: spectrum_height,
+            };
+            let spectrum_thumb_size = scale(14, dpi);
+            spectrum_bounds = Some(spectrum);
+            spectrum_thumb = Some(Rect {
+                x: spectrum
+                    .x
+                    .saturating_add(
+                        ((spectrum.width.saturating_sub(1) as f32) * hsv.saturation).round() as i32,
+                    )
+                    .saturating_sub(spectrum_thumb_size / 2),
+                y: spectrum
+                    .y
+                    .saturating_add(
+                        ((spectrum.height.saturating_sub(1) as f32) * (1.0 - hsv.value)).round()
+                            as i32,
+                    )
+                    .saturating_sub(spectrum_thumb_size / 2),
+                width: spectrum_thumb_size,
+                height: spectrum_thumb_size,
+            });
+            content_y = content_y
+                .saturating_add(spectrum.height)
+                .saturating_add(spectrum_gap);
+            let hue = Rect {
+                x: content.x,
+                y: content_y,
+                width: content.width,
+                height: hue_track_height,
+            };
+            let hue_thumb_width = scale(8, dpi);
+            hue_track = Some(hue);
+            hue_thumb = Some(Rect {
+                x: hue
+                    .x
+                    .saturating_add(
+                        ((hue.width.saturating_sub(1) as f32) * (hsv.hue / 360.0)).round() as i32,
+                    )
+                    .saturating_sub(hue_thumb_width / 2),
+                y: hue.y.saturating_sub(scale(3, dpi)),
+                width: hue_thumb_width,
+                height: hue.height.saturating_add(scale(6, dpi)),
+            });
+            content_y = content_y
+                .saturating_add(hue.height)
+                .saturating_add(spectrum_gap);
+        }
+        let preview = Rect {
+            x: content.x,
+            y: content_y,
+            width: preview_size.min(content.width),
+            height: preview_size.min(content.height),
+        };
+        preview_bounds = Some(preview);
+        hex_bounds = Some(Rect {
+            x: preview
+                .x
+                .saturating_add(preview.width)
+                .saturating_add(preview_gap),
+            y: preview.y,
+            width: content
+                .x
+                .saturating_add(content.width)
+                .saturating_sub(preview.x.saturating_add(preview.width))
+                .saturating_sub(preview_gap)
+                .max(0),
+            height: preview.height,
+        });
+
+        let label_width = metrics.label_width.to_px(dpi).round_i32().max(1);
+        let value_width = metrics.value_width.to_px(dpi).round_i32().max(1);
+        let track_height = metrics.track_height.to_px(dpi).round_i32().max(1);
+        let thumb_width = metrics.thumb_width.to_px(dpi).round_i32().max(1);
+        let rows_y = preview
+            .y
+            .saturating_add(preview.height)
+            .saturating_add(preview_gap);
+        for (index, channel) in state.channels().iter().copied().enumerate() {
+            let row = Rect {
+                x: content.x,
+                y: rows_y.saturating_add(
+                    (row_height.saturating_add(row_gap)).saturating_mul(index as i32),
+                ),
+                width: content.width,
+                height: row_height,
+            };
+            let label_bounds = Rect {
+                x: row.x,
+                y: row.y,
+                width: label_width.min(row.width),
+                height: row.height,
+            };
+            let value_bounds = Rect {
+                x: row.x.saturating_add(row.width).saturating_sub(value_width),
+                y: row.y,
+                width: value_width.min(row.width),
+                height: row.height,
+            };
+            let track_x = label_bounds.x.saturating_add(label_bounds.width);
+            let track_right = value_bounds.x.saturating_sub(scale(8, dpi));
+            let track = Rect {
+                x: track_x,
+                y: row
+                    .y
+                    .saturating_add((row.height.saturating_sub(track_height)) / 2),
+                width: track_right.saturating_sub(track_x).max(1),
+                height: track_height,
+            };
+            let fraction = f32::from(state.channel_value(channel)) / 255.0;
+            let thumb_x = track
+                .x
+                .saturating_add(((track.width.saturating_sub(1) as f32) * fraction).round() as i32)
+                .saturating_sub(thumb_width / 2);
+            let thumb = Rect {
+                x: thumb_x,
+                y: row.y.saturating_add(scale(6, dpi)),
+                width: thumb_width,
+                height: row.height.saturating_sub(scale(12, dpi)).max(1),
+            };
+            channels.push(ZsColorPickerChannelRenderPlan {
+                channel,
+                bounds: row,
+                label_bounds,
+                track,
+                thumb,
+                value_bounds,
+                active: channel == state.active_channel,
+            });
+        }
+    }
+
+    ZsColorPickerRenderPlan {
+        bounds,
+        swatch_bounds,
+        text_bounds,
+        icon_bounds,
+        popup,
+        popup_placement: placed_popup.map(|placed| placed.placement),
+        spectrum_bounds,
+        spectrum_thumb,
+        hue_track,
+        hue_thumb,
+        preview_bounds,
+        hex_bounds,
+        channels,
+        platform,
+        control_radius: metrics.control_radius.to_px(dpi).round_i32().max(1),
+        overlay_radius: metrics.overlay_radius.to_px(dpi).round_i32().max(1),
+    }
+}
+
+#[cfg(feature = "color-picker")]
+impl ZsColorPickerRenderPlan {
+    pub fn spectrum_color_at(&self, state: ZsColorPickerState, point: Point) -> Option<Color> {
+        let bounds = self.spectrum_bounds?;
+        let saturation =
+            point.x.saturating_sub(bounds.x) as f32 / bounds.width.saturating_sub(1).max(1) as f32;
+        let value = 1.0
+            - point.y.saturating_sub(bounds.y) as f32
+                / bounds.height.saturating_sub(1).max(1) as f32;
+        Some(
+            ZsHsvColor::from_color(state.color)
+                .with_saturation_value(saturation, value)
+                .to_color(state.color.a),
+        )
+    }
+
+    pub fn hue_color_at(&self, state: ZsColorPickerState, point: Point) -> Option<Color> {
+        let bounds = self.hue_track?;
+        let fraction =
+            point.x.saturating_sub(bounds.x) as f32 / bounds.width.saturating_sub(1).max(1) as f32;
+        Some(
+            ZsHsvColor::from_color(state.color)
+                .with_hue(fraction.clamp(0.0, 1.0) * 359.999)
+                .to_color(state.color.a),
+        )
+    }
+}
+
+#[cfg(feature = "color-picker")]
+pub fn zs_color_picker_header_native_draw_plan(
+    plan: &ZsColorPickerRenderPlan,
+    state: ZsColorPickerState,
+) -> NativeDrawPlan {
+    let state = state.normalized();
+    let profile =
+        crate::platform_component_profile::PlatformColorPickerProfile::for_platform(plan.platform);
+    let fill = NativeDrawFill::Role(profile.header_fill);
+    let swatch_color = Color::rgb(state.color.r, state.color.g, state.color.b);
+    NativeDrawPlan::new([
+        NativeDrawCommand::RoundRect {
+            rect: plan.bounds,
+            fill,
+            stroke: Some(NativeDrawFill::Role(if state.expanded {
+                ColorRole::Accent
+            } else {
+                ColorRole::Border
+            })),
+            radius: plan.control_radius,
+        },
+        NativeDrawCommand::RoundRect {
+            rect: plan.swatch_bounds,
+            fill: NativeDrawFill::Color(swatch_color),
+            stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+            radius: (plan.control_radius / 2).max(1),
+        },
+        NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            state.hex_label(),
+            plan.text_bounds,
+            SemanticTextStyle::body(),
+        )),
+        NativeDrawCommand::Icon(
+            NativeDrawIconCommand::new(
+                if state.expanded {
+                    ZsIcon::ChevronUp
+                } else {
+                    ZsIcon::ChevronDown
+                },
+                plan.icon_bounds,
+                NativeIconColorMode::ThemeAware,
+            )
+            .with_color(ColorRole::PrimaryText),
+        ),
+    ])
+}
+
+#[cfg(feature = "color-picker")]
+fn color_over_background(color: Color, background: Color) -> Color {
+    let alpha = u32::from(color.a);
+    let inverse = 255_u32.saturating_sub(alpha);
+    let blend = |foreground: u8, behind: u8| {
+        ((u32::from(foreground) * alpha + u32::from(behind) * inverse + 127) / 255) as u8
+    };
+    Color::rgb(
+        blend(color.r, background.r),
+        blend(color.g, background.g),
+        blend(color.b, background.b),
+    )
+}
+
+#[cfg(feature = "color-picker")]
+fn color_picker_channel_color(
+    state: ZsColorPickerState,
+    channel: ZsColorChannel,
+    value: u8,
+    light_background: bool,
+) -> Color {
+    let candidate = channel.with_value(state.color, value);
+    if channel == ZsColorChannel::Alpha {
+        color_over_background(
+            candidate,
+            if light_background {
+                Color::rgb(238, 238, 238)
+            } else {
+                Color::rgb(184, 184, 184)
+            },
+        )
+    } else {
+        Color::rgb(candidate.r, candidate.g, candidate.b)
+    }
+}
+
+#[cfg(feature = "color-picker")]
+pub fn zs_color_picker_popup_native_draw_plan(
+    plan: &ZsColorPickerRenderPlan,
+    state: ZsColorPickerState,
+) -> NativeDrawPlan {
+    let state = state.normalized();
+    let Some(popup) = plan.popup else {
+        return NativeDrawPlan::default();
+    };
+    let profile =
+        crate::platform_component_profile::PlatformColorPickerProfile::for_platform(plan.platform);
+    let mut commands = vec![NativeDrawCommand::RoundRect {
+        rect: popup,
+        fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+        stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+        radius: plan.overlay_radius,
+    }];
+
+    if let Some(spectrum) = plan.spectrum_bounds {
+        let hsv = ZsHsvColor::from_color(state.color);
+        let columns = 64_i32.min(spectrum.width.max(1));
+        let rows = 64_i32.min(spectrum.height.max(1));
+        for row in 0..rows {
+            for column in 0..columns {
+                let x0 = spectrum.x + spectrum.width * column / columns;
+                let x1 = spectrum.x + spectrum.width * (column + 1) / columns;
+                let y0 = spectrum.y + spectrum.height * row / rows;
+                let y1 = spectrum.y + spectrum.height * (row + 1) / rows;
+                let saturation = column as f32 / columns.saturating_sub(1).max(1) as f32;
+                let value = 1.0 - row as f32 / rows.saturating_sub(1).max(1) as f32;
+                commands.push(NativeDrawCommand::FillRect {
+                    rect: Rect {
+                        x: x0,
+                        y: y0,
+                        width: x1.saturating_sub(x0).max(1),
+                        height: y1.saturating_sub(y0).max(1),
+                    },
+                    fill: NativeDrawFill::Color(
+                        ZsHsvColor::new(hsv.hue, saturation, value).to_color(255),
+                    ),
+                });
+            }
+        }
+        commands.push(NativeDrawCommand::StrokeRect {
+            rect: spectrum,
+            stroke: NativeDrawFill::Role(ColorRole::Border),
+            width: 1,
+        });
+        if let Some(thumb) = plan.spectrum_thumb {
+            commands.push(NativeDrawCommand::RoundRect {
+                rect: thumb,
+                fill: NativeDrawFill::Color(Color::rgb(
+                    state.color.r,
+                    state.color.g,
+                    state.color.b,
+                )),
+                stroke: Some(NativeDrawFill::Role(ColorRole::Surface)),
+                radius: (thumb.width / 2).max(1),
+            });
+        }
+    }
+    if let Some(hue) = plan.hue_track {
+        let segments = 48_i32.min(hue.width.max(1));
+        for segment in 0..segments {
+            let x0 = hue.x + hue.width * segment / segments;
+            let x1 = hue.x + hue.width * (segment + 1) / segments;
+            let hue_degrees = segment as f32 / segments.saturating_sub(1).max(1) as f32 * 359.999;
+            commands.push(NativeDrawCommand::FillRect {
+                rect: Rect {
+                    x: x0,
+                    y: hue.y,
+                    width: x1.saturating_sub(x0).max(1),
+                    height: hue.height,
+                },
+                fill: NativeDrawFill::Color(ZsHsvColor::new(hue_degrees, 1.0, 1.0).to_color(255)),
+            });
+        }
+        if let Some(thumb) = plan.hue_thumb {
+            commands.push(NativeDrawCommand::RoundRect {
+                rect: thumb,
+                fill: NativeDrawFill::Role(ColorRole::Surface),
+                stroke: Some(NativeDrawFill::Role(ColorRole::PrimaryText)),
+                radius: (thumb.width / 2).max(1),
+            });
+        }
+    }
+
+    if let Some(preview) = plan.preview_bounds {
+        let cells = 6_i32;
+        for row in 0..cells {
+            for column in 0..cells {
+                let x0 = preview.x + preview.width * column / cells;
+                let x1 = preview.x + preview.width * (column + 1) / cells;
+                let y0 = preview.y + preview.height * row / cells;
+                let y1 = preview.y + preview.height * (row + 1) / cells;
+                let background = if (row + column) % 2 == 0 {
+                    Color::rgb(238, 238, 238)
+                } else {
+                    Color::rgb(184, 184, 184)
+                };
+                commands.push(NativeDrawCommand::FillRect {
+                    rect: Rect {
+                        x: x0,
+                        y: y0,
+                        width: x1.saturating_sub(x0).max(1),
+                        height: y1.saturating_sub(y0).max(1),
+                    },
+                    fill: NativeDrawFill::Color(color_over_background(state.color, background)),
+                });
+            }
+        }
+        commands.push(NativeDrawCommand::StrokeRect {
+            rect: preview,
+            stroke: NativeDrawFill::Role(ColorRole::Border),
+            width: 1,
+        });
+    }
+    if let Some(hex_bounds) = plan.hex_bounds {
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            state.hex_label(),
+            hex_bounds,
+            SemanticTextStyle {
+                role: TextRole::BodyLarge,
+                weight: TextWeight::Semibold,
+                ..SemanticTextStyle::body()
+            },
+        )));
+    }
+
+    for row in &plan.channels {
+        if row.active {
+            commands.push(NativeDrawCommand::RoundFill {
+                rect: row.bounds,
+                fill: NativeDrawFill::RoleWithAlpha {
+                    role: ColorRole::Accent,
+                    alpha: profile.active_channel_alpha,
+                },
+                radius: plan.control_radius,
+            });
+        }
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            row.channel.label(),
+            row.label_bounds,
+            SemanticTextStyle {
+                color: if row.active {
+                    ColorRole::Accent
+                } else {
+                    ColorRole::SecondaryText
+                },
+                weight: if row.active {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                },
+                horizontal_align: HorizontalAlign::Center,
+                ..SemanticTextStyle::body()
+            },
+        )));
+
+        let segments = 32_i32.min(row.track.width.max(1));
+        for segment in 0..segments {
+            let x0 = row.track.x + row.track.width * segment / segments;
+            let x1 = row.track.x + row.track.width * (segment + 1) / segments;
+            let value = ((segment * 255) / (segments.saturating_sub(1).max(1))) as u8;
+            commands.push(NativeDrawCommand::FillRect {
+                rect: Rect {
+                    x: x0,
+                    y: row.track.y,
+                    width: x1.saturating_sub(x0).max(1),
+                    height: row.track.height,
+                },
+                fill: NativeDrawFill::Color(color_picker_channel_color(
+                    state,
+                    row.channel,
+                    value,
+                    segment % 2 == 0,
+                )),
+            });
+        }
+        commands.push(NativeDrawCommand::RoundRect {
+            rect: row.thumb,
+            fill: NativeDrawFill::Role(ColorRole::Surface),
+            stroke: Some(NativeDrawFill::Role(if row.active {
+                ColorRole::Accent
+            } else {
+                ColorRole::Border
+            })),
+            radius: (row.thumb.width / 2).max(1),
+        });
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            state.channel_value(row.channel).to_string(),
+            row.value_bounds,
+            SemanticTextStyle {
+                horizontal_align: HorizontalAlign::End,
+                ..SemanticTextStyle::body()
+            },
+        )));
+    }
+
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "command-palette")]
+pub const ZS_COMMAND_PALETTE_MAX_VISIBLE_ITEMS: usize = 8;
+
+#[cfg(feature = "command-palette")]
+pub type ZsCommandPalettePlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "command-palette")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsCommandPaletteMetrics {
+    pub preferred_width: Dp,
+    pub viewport_margin: Dp,
+    pub top_offset: Dp,
+    pub search_height: Dp,
+    pub row_height: Dp,
+    pub horizontal_padding: Dp,
+    pub icon_size: Dp,
+    pub icon_column_width: Dp,
+    pub shortcut_width: Dp,
+    pub surface_radius: Dp,
+    pub search_radius: Dp,
+    pub row_radius: Dp,
+}
+
+#[cfg(feature = "command-palette")]
+impl ZsCommandPaletteMetrics {
+    pub const fn for_platform(platform: ZsCommandPalettePlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformCommandPaletteProfile::for_platform(platform)
+            .metrics
+    }
+}
+
+#[cfg(feature = "command-palette")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsCommandPaletteRowRenderPlan {
+    pub item: crate::ZsCommandPaletteItemId,
+    pub bounds: Rect,
+    pub icon_bounds: Rect,
+    pub title_bounds: Rect,
+    pub subtitle_bounds: Option<Rect>,
+    pub shortcut_bounds: Rect,
+    pub highlighted: bool,
+    pub enabled: bool,
+}
+
+#[cfg(feature = "command-palette")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsCommandPaletteRenderPlan {
+    pub viewport: Rect,
+    pub surface: Rect,
+    pub search_bounds: Rect,
+    pub search_icon_bounds: Rect,
+    pub query_bounds: Rect,
+    pub clear_bounds: Option<Rect>,
+    pub rows: Vec<ZsCommandPaletteRowRenderPlan>,
+    pub empty_bounds: Option<Rect>,
+    pub first_visible_item: usize,
+    pub surface_radius: i32,
+    pub search_radius: i32,
+    pub row_radius: i32,
+    pub platform: ZsCommandPalettePlatformStyle,
+}
+
+#[cfg(feature = "command-palette")]
+pub fn zs_command_palette_render_plan(
+    viewport: Rect,
+    query: &str,
+    items: &[crate::ZsCommandPaletteItem],
+    highlighted: Option<crate::ZsCommandPaletteItemId>,
+    platform: ZsCommandPalettePlatformStyle,
+    dpi: Dpi,
+) -> ZsCommandPaletteRenderPlan {
+    let metrics =
+        crate::platform_component_profile::PlatformCommandPaletteProfile::for_platform(platform)
+            .metrics;
+    let margin = metrics.viewport_margin.to_px(dpi).round_i32().max(0);
+    let top_offset = metrics.top_offset.to_px(dpi).round_i32().max(margin);
+    let width = metrics.preferred_width.to_px(dpi).round_i32().max(1).min(
+        viewport
+            .width
+            .saturating_sub(margin.saturating_mul(2))
+            .max(1),
+    );
+    let search_height = metrics.search_height.to_px(dpi).round_i32().max(1);
+    let row_height = metrics.row_height.to_px(dpi).round_i32().max(1);
+    let padding = metrics.horizontal_padding.to_px(dpi).round_i32().max(1);
+    let icon_size = metrics.icon_size.to_px(dpi).round_i32().max(1);
+    let icon_column = metrics
+        .icon_column_width
+        .to_px(dpi)
+        .round_i32()
+        .max(icon_size);
+    let shortcut_width = metrics.shortcut_width.to_px(dpi).round_i32().max(0);
+    let filtered = crate::command_palette::filtered_command_palette_items(items, query);
+    let maximum_rows_by_viewport = viewport
+        .height
+        .saturating_sub(top_offset)
+        .saturating_sub(margin)
+        .saturating_sub(search_height)
+        .checked_div(row_height)
+        .unwrap_or_default()
+        .max(1) as usize;
+    let visible_count = filtered
+        .len()
+        .max(1)
+        .min(ZS_COMMAND_PALETTE_MAX_VISIBLE_ITEMS)
+        .min(maximum_rows_by_viewport);
+    let highlighted_index = highlighted.and_then(|highlighted| {
+        filtered
+            .iter()
+            .position(|candidate| candidate.id() == highlighted)
+    });
+    let maximum_first = filtered.len().saturating_sub(visible_count);
+    let first_visible_item = highlighted_index
+        .map(|index| {
+            index
+                .saturating_add(1)
+                .saturating_sub(visible_count)
+                .min(maximum_first)
+        })
+        .unwrap_or_default();
+    let surface_height = search_height.saturating_add(
+        row_height.saturating_mul(i32::try_from(visible_count).unwrap_or(i32::MAX)),
+    );
+    let surface = Rect {
+        x: viewport
+            .x
+            .saturating_add((viewport.width.saturating_sub(width)) / 2),
+        y: viewport.y.saturating_add(top_offset).min(
+            viewport
+                .y
+                .saturating_add(viewport.height)
+                .saturating_sub(surface_height)
+                .max(viewport.y),
+        ),
+        width,
+        height: surface_height.min(viewport.height.max(1)),
+    };
+    let search_bounds = Rect {
+        x: surface.x.saturating_add(padding),
+        y: surface.y.saturating_add(padding / 2),
+        width: surface
+            .width
+            .saturating_sub(padding.saturating_mul(2))
+            .max(1),
+        height: search_height.saturating_sub(padding).max(1),
+    };
+    let search_icon_bounds = Rect {
+        x: search_bounds
+            .x
+            .saturating_add((icon_column.saturating_sub(icon_size)) / 2),
+        y: search_bounds
+            .y
+            .saturating_add((search_bounds.height.saturating_sub(icon_size)) / 2),
+        width: icon_size,
+        height: icon_size,
+    };
+    let clear_bounds = (!query.is_empty()).then_some(Rect {
+        x: search_bounds
+            .x
+            .saturating_add(search_bounds.width)
+            .saturating_sub(icon_column),
+        y: search_bounds.y,
+        width: icon_column,
+        height: search_bounds.height,
+    });
+    let query_right = clear_bounds
+        .map(|clear| clear.x)
+        .unwrap_or_else(|| search_bounds.x.saturating_add(search_bounds.width));
+    let query_bounds = Rect {
+        x: search_bounds.x.saturating_add(icon_column),
+        y: search_bounds.y,
+        width: query_right
+            .saturating_sub(search_bounds.x.saturating_add(icon_column))
+            .max(0),
+        height: search_bounds.height,
+    };
+    let rows_y = surface.y.saturating_add(search_height);
+    let rows = filtered
+        .iter()
+        .skip(first_visible_item)
+        .take(visible_count)
+        .enumerate()
+        .map(|(visible_index, item)| {
+            let bounds = Rect {
+                x: surface.x.saturating_add(padding / 2),
+                y: rows_y.saturating_add(
+                    row_height.saturating_mul(i32::try_from(visible_index).unwrap_or(i32::MAX)),
+                ),
+                width: surface.width.saturating_sub(padding).max(1),
+                height: row_height,
+            };
+            let icon_bounds = Rect {
+                x: bounds
+                    .x
+                    .saturating_add((icon_column.saturating_sub(icon_size)) / 2),
+                y: bounds
+                    .y
+                    .saturating_add((bounds.height.saturating_sub(icon_size)) / 2),
+                width: icon_size,
+                height: icon_size,
+            };
+            let text_x = bounds.x.saturating_add(icon_column);
+            let text_right = bounds
+                .x
+                .saturating_add(bounds.width)
+                .saturating_sub(shortcut_width)
+                .saturating_sub(padding);
+            let has_subtitle = item.item_subtitle().is_some();
+            let title_bounds = Rect {
+                x: text_x,
+                y: if has_subtitle {
+                    bounds.y.saturating_add(scale(4, dpi))
+                } else {
+                    bounds.y
+                },
+                width: text_right.saturating_sub(text_x).max(0),
+                height: if has_subtitle {
+                    bounds.height / 2
+                } else {
+                    bounds.height
+                },
+            };
+            let subtitle_bounds = has_subtitle.then_some(Rect {
+                x: text_x,
+                y: bounds.y.saturating_add(bounds.height / 2),
+                width: text_right.saturating_sub(text_x).max(0),
+                height: (bounds.height / 2).saturating_sub(scale(3, dpi)),
+            });
+            let shortcut_bounds = Rect {
+                x: text_right,
+                y: bounds.y,
+                width: shortcut_width,
+                height: bounds.height,
+            };
+            ZsCommandPaletteRowRenderPlan {
+                item: item.id(),
+                bounds,
+                icon_bounds,
+                title_bounds,
+                subtitle_bounds,
+                shortcut_bounds,
+                highlighted: highlighted == Some(item.id()),
+                enabled: item.is_enabled(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let empty_bounds = filtered.is_empty().then_some(Rect {
+        x: surface
+            .x
+            .saturating_add(padding)
+            .saturating_add(icon_column),
+        y: rows_y,
+        width: surface
+            .width
+            .saturating_sub(padding.saturating_mul(2))
+            .saturating_sub(icon_column)
+            .max(0),
+        height: row_height,
+    });
+
+    ZsCommandPaletteRenderPlan {
+        viewport,
+        surface,
+        search_bounds,
+        search_icon_bounds,
+        query_bounds,
+        clear_bounds,
+        rows,
+        empty_bounds,
+        first_visible_item,
+        surface_radius: metrics.surface_radius.to_px(dpi).round_i32().max(0),
+        search_radius: metrics.search_radius.to_px(dpi).round_i32().max(0),
+        row_radius: metrics.row_radius.to_px(dpi).round_i32().max(0),
+        platform,
+    }
+}
+
+#[cfg(feature = "command-palette")]
+pub fn zs_command_palette_native_draw_plan(
+    plan: &ZsCommandPaletteRenderPlan,
+    query: &str,
+    placeholder: &str,
+    no_results_text: &str,
+    items: &[crate::ZsCommandPaletteItem],
+) -> NativeDrawPlan {
+    let scrim_alpha =
+        crate::platform_component_profile::PlatformCommandPaletteProfile::for_platform(
+            plan.platform,
+        )
+        .scrim_alpha;
+    let shadow = Rect {
+        x: plan.surface.x.saturating_sub(5),
+        y: plan.surface.y.saturating_add(3),
+        width: plan.surface.width.saturating_add(10),
+        height: plan.surface.height.saturating_add(8),
+    };
+    let mut commands = vec![
+        NativeDrawCommand::FillRect {
+            rect: plan.viewport,
+            fill: NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::PrimaryText,
+                alpha: scrim_alpha,
+            },
+        },
+        NativeDrawCommand::RoundFill {
+            rect: shadow,
+            fill: NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::PrimaryText,
+                alpha: 30,
+            },
+            radius: plan.surface_radius.saturating_add(5),
+        },
+        NativeDrawCommand::RoundRect {
+            rect: plan.surface,
+            fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+            stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+            radius: plan.surface_radius,
+        },
+        NativeDrawCommand::RoundRect {
+            rect: plan.search_bounds,
+            fill: NativeDrawFill::Role(ColorRole::Control),
+            stroke: Some(NativeDrawFill::Role(ColorRole::Accent)),
+            radius: plan.search_radius,
+        },
+        NativeDrawCommand::Icon(
+            NativeDrawIconCommand::new(
+                ZsIcon::Search,
+                plan.search_icon_bounds,
+                NativeIconColorMode::ThemeAware,
+            )
+            .with_color(ColorRole::SecondaryText),
+        ),
+    ];
+    let query_text = if query.is_empty() { placeholder } else { query };
+    let mut query_style = SemanticTextStyle::body();
+    query_style.color = if query.is_empty() {
+        ColorRole::SecondaryText
+    } else {
+        ColorRole::PrimaryText
+    };
+    commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+        query_text,
+        plan.query_bounds,
+        query_style,
+    )));
+    if let Some(clear) = plan.clear_bounds {
+        let size = clear.width.min(clear.height).min(16).max(1);
+        let icon = Rect {
+            x: clear
+                .x
+                .saturating_add((clear.width.saturating_sub(size)) / 2),
+            y: clear
+                .y
+                .saturating_add((clear.height.saturating_sub(size)) / 2),
+            width: size,
+            height: size,
+        };
+        commands.push(NativeDrawCommand::Icon(
+            NativeDrawIconCommand::new(ZsIcon::Close, icon, NativeIconColorMode::ThemeAware)
+                .with_color(ColorRole::SecondaryText),
+        ));
+    }
+    for row in &plan.rows {
+        let Some(item) = items.iter().find(|candidate| candidate.id() == row.item) else {
+            continue;
+        };
+        if row.highlighted {
+            commands.push(NativeDrawCommand::RoundFill {
+                rect: row.bounds,
+                fill: NativeDrawFill::RoleWithAlpha {
+                    role: ColorRole::Accent,
+                    alpha: 38,
+                },
+                radius: plan.row_radius,
+            });
+        }
+        if let Some(icon) = item.item_icon() {
+            commands.push(NativeDrawCommand::Icon(
+                NativeDrawIconCommand::new(icon, row.icon_bounds, NativeIconColorMode::ThemeAware)
+                    .with_color(if row.enabled {
+                        ColorRole::PrimaryText
+                    } else {
+                        ColorRole::DisabledText
+                    }),
+            ));
+        }
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            item.title(),
+            row.title_bounds,
+            SemanticTextStyle {
+                color: if row.enabled {
+                    ColorRole::PrimaryText
+                } else {
+                    ColorRole::DisabledText
+                },
+                weight: if row.highlighted {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                },
+                ..SemanticTextStyle::body()
+            },
+        )));
+        if let (Some(subtitle), Some(bounds)) = (item.item_subtitle(), row.subtitle_bounds) {
+            commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+                subtitle,
+                bounds,
+                SemanticTextStyle {
+                    role: TextRole::Caption,
+                    color: if row.enabled {
+                        ColorRole::SecondaryText
+                    } else {
+                        ColorRole::DisabledText
+                    },
+                    ..SemanticTextStyle::body()
+                },
+            )));
+        }
+        if let Some(shortcut) = item.shortcut_label() {
+            commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+                shortcut,
+                row.shortcut_bounds,
+                SemanticTextStyle {
+                    role: TextRole::Caption,
+                    color: if row.enabled {
+                        ColorRole::SecondaryText
+                    } else {
+                        ColorRole::DisabledText
+                    },
+                    horizontal_align: HorizontalAlign::End,
+                    ..SemanticTextStyle::body()
+                },
+            )));
+        }
+    }
+    if let Some(bounds) = plan.empty_bounds {
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            no_results_text,
+            bounds,
+            SemanticTextStyle {
+                color: ColorRole::SecondaryText,
+                ..SemanticTextStyle::body()
+            },
+        )));
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(feature = "dialog")]
+pub type ZsContentDialogPlatformStyle = crate::ZsPlatformStyle;
+
+#[cfg(feature = "dialog")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsContentDialogMetrics {
+    pub minimum_width: Dp,
+    pub maximum_width: Dp,
+    /// Optional platform resource floor for the complete modal surface.
+    pub minimum_height: Option<Dp>,
+    /// Optional platform resource ceiling for the complete modal surface.
+    pub maximum_height: Option<Dp>,
+    pub viewport_margin: Dp,
+    pub content_padding: Dp,
+    pub title_gap: Dp,
+    pub action_gap: Dp,
+    pub button_gap: Dp,
+    pub button_height: Dp,
+    pub minimum_button_width: Dp,
+    /// Separator between content and the persistent command area.
+    pub separator_thickness: Dp,
+    pub surface_radius: Dp,
+    pub button_radius: Dp,
+}
+
+#[cfg(feature = "dialog")]
+impl ZsContentDialogMetrics {
+    pub const fn for_platform(platform: ZsContentDialogPlatformStyle) -> Self {
+        crate::platform_component_profile::PlatformDialogProfile::for_platform(platform).metrics
+    }
+}
+
+#[cfg(feature = "dialog")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsContentDialogButtonRenderPlan {
+    pub button: crate::ZsContentDialogButton,
+    pub label: String,
+    pub bounds: Rect,
+    pub focused: bool,
+    pub default: bool,
+    pub destructive: bool,
+}
+
+#[cfg(feature = "dialog")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsContentDialogRenderPlan {
+    pub viewport: Rect,
+    pub surface: Rect,
+    pub content_surface_bounds: Rect,
+    pub command_space_bounds: Rect,
+    pub title_bounds: Option<Rect>,
+    pub content_bounds: Rect,
+    pub buttons: Vec<ZsContentDialogButtonRenderPlan>,
+    pub separator_thickness: i32,
+    pub surface_radius: i32,
+    pub button_radius: i32,
+    pub platform: ZsContentDialogPlatformStyle,
+}
+
+#[cfg(feature = "dialog")]
+pub fn zs_content_dialog_render_plan(
+    viewport: Rect,
+    spec: &crate::ZsContentDialogSpec,
+    focused_button: crate::ZsContentDialogButton,
+    platform: ZsContentDialogPlatformStyle,
+    dpi: Dpi,
+) -> ZsContentDialogRenderPlan {
+    let dialog = crate::platform_component_profile::PlatformDialogProfile::for_platform(platform);
+    let metrics = dialog.metrics;
+    let margin = metrics.viewport_margin.to_px(dpi).round_i32().max(0);
+    let available_width = viewport
+        .width
+        .saturating_sub(margin.saturating_mul(2))
+        .max(1);
+    let minimum_width = metrics.minimum_width.to_px(dpi).round_i32().max(1);
+    let maximum_width = metrics.maximum_width.to_px(dpi).round_i32().max(1);
+    let surface_width = maximum_width
+        .min(available_width)
+        .max(minimum_width.min(available_width));
+    let padding = metrics.content_padding.to_px(dpi).round_i32().max(0);
+    let title_gap = metrics.title_gap.to_px(dpi).round_i32().max(0);
+    let action_gap = metrics.action_gap.to_px(dpi).round_i32().max(0);
+    let button_gap = metrics.button_gap.to_px(dpi).round_i32().max(0);
+    let button_height = metrics.button_height.to_px(dpi).round_i32().max(1);
+    let inner_width = surface_width
+        .saturating_sub(padding.saturating_mul(2))
+        .max(1);
+    let title_line_height = Dp::new(
+        TextRole::Subtitle
+            .metrics_for(platform.typography())
+            .line_height,
+    )
+    .to_px(dpi)
+    .round_i32()
+    .max(1);
+    let body_line_height = Dp::new(
+        TextRole::Body
+            .metrics_for(platform.typography())
+            .line_height,
+    )
+    .to_px(dpi)
+    .round_i32()
+    .max(1);
+    let title_height = spec
+        .dialog_title()
+        .map(|title| {
+            let units = zs_estimated_text_flow_units(title).max(1) as usize;
+            let lines = units.div_ceil(40).clamp(1, 2) as i32;
+            lines.saturating_mul(title_line_height)
+        })
+        .unwrap_or(0);
+    let content_units = zs_estimated_text_flow_units(spec.content()).max(1) as usize;
+    let content_lines = content_units.div_ceil(56).clamp(1, 5) as i32;
+    let content_height = content_lines.saturating_mul(body_line_height);
+    let desired_height = padding
+        // Content top/bottom padding plus command-space bottom padding.
+        .saturating_mul(3)
+        .saturating_add(title_height)
+        .saturating_add((title_height > 0).then_some(title_gap).unwrap_or(0))
+        .saturating_add(content_height)
+        // The command space owns a separate top inset.
+        .saturating_add(action_gap)
+        .saturating_add(button_height);
+    let available_height = viewport
+        .height
+        .saturating_sub(margin.saturating_mul(2))
+        .max(1);
+    let minimum_height = metrics
+        .minimum_height
+        .map(|height| height.to_px(dpi).round_i32().max(1))
+        .unwrap_or(1);
+    let maximum_height = metrics
+        .maximum_height
+        .map(|height| height.to_px(dpi).round_i32().max(1))
+        .unwrap_or(available_height)
+        .max(minimum_height);
+    let surface_height = desired_height
+        .max(minimum_height)
+        .min(maximum_height)
+        .min(available_height)
+        .max(1);
+    let surface = Rect {
+        x: viewport.x + (viewport.width - surface_width) / 2,
+        y: viewport.y + (viewport.height - surface_height) / 2,
+        width: surface_width,
+        height: surface_height,
+    };
+    let content_left = surface.x.saturating_add(padding);
+    let title_bounds = (title_height > 0).then_some(Rect {
+        x: content_left,
+        y: surface.y.saturating_add(padding),
+        width: inner_width,
+        height: title_height,
+    });
+    let content_y = title_bounds
+        .map(|bounds| {
+            bounds
+                .y
+                .saturating_add(bounds.height)
+                .saturating_add(title_gap)
+        })
+        .unwrap_or_else(|| surface.y.saturating_add(padding));
+    let buttons_y = surface
+        .y
+        .saturating_add(surface.height)
+        .saturating_sub(padding)
+        .saturating_sub(button_height)
+        .max(surface.y);
+    let command_space_top = buttons_y.saturating_sub(action_gap).max(surface.y);
+    let content_surface_bounds = Rect {
+        x: surface.x,
+        y: surface.y,
+        width: surface.width,
+        height: command_space_top.saturating_sub(surface.y),
+    };
+    let command_space_bounds = Rect {
+        x: surface.x,
+        y: command_space_top,
+        width: surface.width,
+        height: surface
+            .y
+            .saturating_add(surface.height)
+            .saturating_sub(command_space_top),
+    };
+    let content_bounds = Rect {
+        x: content_left,
+        y: content_y,
+        width: inner_width,
+        height: command_space_top
+            .saturating_sub(padding)
+            .saturating_sub(content_y)
+            .max(0),
+    };
+
+    let visual_buttons = dialog.visual_buttons(spec);
+    let action_column_count = if dialog.equal_action_widths() {
+        visual_buttons.len().clamp(2, 3)
+    } else {
+        visual_buttons.len().max(1)
+    };
+    let total_gap = button_gap.saturating_mul(action_column_count.saturating_sub(1) as i32);
+    let minimum_button_width = metrics.minimum_button_width.to_px(dpi).round_i32().max(1);
+    let available_button_width = inner_width.saturating_sub(total_gap).max(1);
+    let equal_width = available_button_width
+        .checked_div(visual_buttons.len().max(1) as i32)
+        .unwrap_or(available_button_width)
+        .max(1);
+    let mut button_layout = visual_buttons
+        .into_iter()
+        .filter_map(|button| {
+            let label = spec.button_label(button)?.to_owned();
+            let width = if dialog.equal_action_widths() {
+                equal_width
+            } else {
+                let glyph_width = dialog.estimated_glyph_width.to_px(dpi).round_i32().max(1);
+                let label_padding = dialog.estimated_label_padding.to_px(dpi).round_i32().max(1);
+                let label_width =
+                    zs_estimated_text_width_px(&label, glyph_width).saturating_add(label_padding);
+                label_width.max(minimum_button_width)
+            };
+            Some((button, label, width))
+        })
+        .collect::<Vec<_>>();
+    let natural_width = button_layout
+        .iter()
+        .fold(0i32, |total, (_, _, width)| total.saturating_add(*width));
+    if natural_width > available_button_width {
+        for (_, _, width) in &mut button_layout {
+            *width = equal_width;
+        }
+    }
+    let visible_gap = button_gap.saturating_mul(button_layout.len().saturating_sub(1) as i32);
+    let buttons_width = button_layout
+        .iter()
+        .fold(visible_gap, |total, (_, _, width)| {
+            total.saturating_add(*width)
+        });
+    let mut button_x = if dialog.equal_action_widths() && button_layout.len() == 1 {
+        // WinUI keeps two star-sized action columns even when only one slot is
+        // visible and places that action in the right column.
+        content_left
+            .saturating_add(equal_width)
+            .saturating_add(button_gap)
+    } else if dialog.trailing_actions() {
+        surface
+            .x
+            .saturating_add(surface.width)
+            .saturating_sub(padding)
+            .saturating_sub(buttons_width)
+    } else {
+        content_left
+    };
+    let buttons = button_layout
+        .into_iter()
+        .map(|(button, label, button_width)| {
+            let bounds = Rect {
+                x: button_x,
+                y: buttons_y,
+                width: button_width,
+                height: button_height,
+            };
+            button_x = button_x
+                .saturating_add(button_width)
+                .saturating_add(button_gap);
+            ZsContentDialogButtonRenderPlan {
+                button,
+                label,
+                bounds,
+                focused: focused_button == button,
+                default: spec.default_response() == Some(button),
+                destructive: spec.destructive_response() == Some(button),
+            }
+        })
+        .collect();
+
+    ZsContentDialogRenderPlan {
+        viewport,
+        surface,
+        content_surface_bounds,
+        command_space_bounds,
+        title_bounds,
+        content_bounds,
+        buttons,
+        separator_thickness: metrics.separator_thickness.to_px(dpi).round_i32().max(0),
+        surface_radius: metrics.surface_radius.to_px(dpi).round_i32().max(0),
+        button_radius: metrics.button_radius.to_px(dpi).round_i32().max(0),
+        platform,
+    }
+}
+
+#[cfg(feature = "dialog")]
+pub fn zs_content_dialog_native_draw_plan(
+    plan: &ZsContentDialogRenderPlan,
+    spec: &crate::ZsContentDialogSpec,
+) -> NativeDrawPlan {
+    let dialog =
+        crate::platform_component_profile::PlatformDialogProfile::for_platform(plan.platform);
+    let scrim_alpha = dialog.scrim_alpha;
+    let shadow = Rect {
+        x: plan.surface.x.saturating_sub(4),
+        y: plan.surface.y.saturating_add(2),
+        width: plan.surface.width.saturating_add(8),
+        height: plan.surface.height.saturating_add(6),
+    };
+    let mut commands = vec![
+        NativeDrawCommand::FillRect {
+            rect: plan.viewport,
+            fill: NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::PrimaryText,
+                alpha: scrim_alpha,
+            },
+        },
+        NativeDrawCommand::RoundFill {
+            rect: shadow,
+            fill: NativeDrawFill::RoleWithAlpha {
+                role: ColorRole::PrimaryText,
+                alpha: 28,
+            },
+            radius: plan.surface_radius.saturating_add(4),
+        },
+        NativeDrawCommand::RoundRect {
+            rect: plan.surface,
+            fill: NativeDrawFill::Role(if dialog.equal_action_widths() {
+                ColorRole::Surface
+            } else {
+                ColorRole::SurfaceRaised
+            }),
+            stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+            radius: plan.surface_radius,
+        },
+    ];
+    if dialog.equal_action_widths() && plan.content_surface_bounds.height > 0 {
+        let inset = 1;
+        let overlay = Rect {
+            x: plan.content_surface_bounds.x.saturating_add(inset),
+            y: plan.content_surface_bounds.y.saturating_add(inset),
+            width: plan
+                .content_surface_bounds
+                .width
+                .saturating_sub(inset.saturating_mul(2)),
+            height: plan.content_surface_bounds.height.saturating_sub(inset),
+        };
+        let overlay_radius = plan.surface_radius.saturating_sub(inset);
+        commands.push(NativeDrawCommand::RoundFill {
+            rect: overlay,
+            fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+            radius: overlay_radius,
+        });
+        if overlay.height > overlay_radius {
+            commands.push(NativeDrawCommand::FillRect {
+                rect: Rect {
+                    x: overlay.x,
+                    y: overlay
+                        .y
+                        .saturating_add(overlay.height)
+                        .saturating_sub(overlay_radius),
+                    width: overlay.width,
+                    height: overlay_radius,
+                },
+                fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+            });
+        }
+        if plan.separator_thickness > 0 {
+            commands.push(NativeDrawCommand::FillRect {
+                rect: Rect {
+                    x: plan.surface.x.saturating_add(inset),
+                    y: plan.command_space_bounds.y,
+                    width: plan.surface.width.saturating_sub(inset.saturating_mul(2)),
+                    height: plan.separator_thickness,
+                },
+                fill: NativeDrawFill::RoleWithAlpha {
+                    role: ColorRole::Border,
+                    alpha: 96,
+                },
+            });
+        }
+    }
+    if let (Some(title), Some(bounds)) = (spec.dialog_title(), plan.title_bounds) {
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            title,
+            bounds,
+            SemanticTextStyle {
+                role: TextRole::Subtitle,
+                color: ColorRole::PrimaryText,
+                weight: TextWeight::Semibold,
+                horizontal_align: HorizontalAlign::Start,
+                vertical_align: crate::VerticalAlign::Start,
+                wrap: crate::TextWrap::Word,
+                ellipsis: true,
+            },
+        )));
+    }
+    commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+        spec.content(),
+        plan.content_bounds,
+        SemanticTextStyle {
+            color: ColorRole::PrimaryText,
+            vertical_align: crate::VerticalAlign::Start,
+            wrap: crate::TextWrap::Word,
+            ellipsis: true,
+            ..SemanticTextStyle::body()
+        },
+    )));
+    for button in &plan.buttons {
+        let native_destructive_treatment = button.destructive && !dialog.equal_action_widths();
+        let (fill, stroke, text_color) = if native_destructive_treatment {
+            (
+                NativeDrawFill::Role(ColorRole::Control),
+                NativeDrawFill::Role(ColorRole::Danger),
+                ColorRole::Danger,
+            )
+        } else if button.default {
+            (
+                NativeDrawFill::Role(ColorRole::Accent),
+                NativeDrawFill::Role(ColorRole::Accent),
+                ColorRole::AccentText,
+            )
+        } else {
+            (
+                NativeDrawFill::Role(ColorRole::Control),
+                NativeDrawFill::Role(if button.focused {
+                    ColorRole::Accent
+                } else {
+                    ColorRole::Border
+                }),
+                ColorRole::PrimaryText,
+            )
+        };
+        commands.push(NativeDrawCommand::RoundRect {
+            rect: button.bounds,
+            fill,
+            stroke: Some(stroke),
+            radius: plan.button_radius,
+        });
+        commands.push(NativeDrawCommand::Text(NativeDrawTextCommand::new(
+            &button.label,
+            button.bounds,
+            SemanticTextStyle {
+                role: TextRole::Button,
+                color: text_color,
+                weight: if button.default {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                },
+                horizontal_align: HorizontalAlign::Center,
+                vertical_align: crate::VerticalAlign::Center,
+                wrap: crate::TextWrap::NoWrap,
+                ellipsis: true,
+            },
+        )));
+    }
+    NativeDrawPlan::new(commands)
+}
+
+#[cfg(any(
+    feature = "auto-suggest",
+    feature = "breadcrumb",
+    feature = "color-picker",
+    feature = "combo",
+    feature = "date-picker",
+    feature = "time-picker"
+))]
+fn place_popup(
+    anchor: Rect,
+    requested_width: i32,
+    requested_height: i32,
+    gap: i32,
+    viewport: Option<Rect>,
+) -> ZsPlacedPopup {
+    let requested_width = requested_width.max(1);
+    let requested_height = requested_height.max(1);
+    let below_y = anchor.y.saturating_add(anchor.height).saturating_add(gap);
+    let Some(viewport) = viewport.filter(|viewport| viewport.width > 0 && viewport.height > 0)
+    else {
+        return ZsPlacedPopup {
+            bounds: Rect {
+                x: anchor.x,
+                y: below_y,
+                width: requested_width,
+                height: requested_height,
+            },
+            placement: ZsPopupPlacement::Below,
+        };
+    };
+
+    let viewport_right = viewport.x.saturating_add(viewport.width);
+    let viewport_bottom = viewport.y.saturating_add(viewport.height);
+    let width = requested_width.min(viewport.width).max(1);
+    let minimum_x = viewport.x;
+    let maximum_x = viewport_right.saturating_sub(width).max(minimum_x);
+    let x = anchor.x.clamp(minimum_x, maximum_x);
+    let above_bottom = anchor.y.saturating_sub(gap);
+    let above_y = above_bottom.saturating_sub(requested_height);
+    let available_below = viewport_bottom.saturating_sub(below_y).max(0);
+    let available_above = above_bottom.saturating_sub(viewport.y).max(0);
+    let fits_below = requested_height <= available_below;
+    let fits_above = requested_height <= available_above;
+    let placement = if fits_below || (!fits_above && available_below >= available_above) {
+        ZsPopupPlacement::Below
+    } else {
+        ZsPopupPlacement::Above
+    };
+    let mut y = match placement {
+        ZsPopupPlacement::Below => below_y,
+        ZsPopupPlacement::Above => above_y,
+    };
+    if requested_height <= viewport.height {
+        y = y.clamp(viewport.y, viewport_bottom.saturating_sub(requested_height));
+    } else {
+        y = viewport.y;
+    }
+    ZsPlacedPopup {
+        bounds: Rect {
+            x,
+            y,
+            width,
+            height: requested_height,
+        },
+        placement,
+    }
+}
+
+#[allow(dead_code)]
+fn scale(value: i32, dpi: Dpi) -> i32 {
+    Dp::new(value as f32).to_px(dpi).round_i32().max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(feature = "button")]
+    use crate::ZsIcon;
+
+    #[test]
+    fn unicode_text_width_units_keep_cjk_full_width_and_combining_marks_zero_width() {
+        assert_eq!(zs_estimated_text_width_units("AB"), 2);
+        assert_eq!(zs_estimated_text_width_units("中文"), 4);
+        assert_eq!(zs_estimated_text_width_units("e\u{301}"), 1);
+        assert_eq!(zs_estimated_text_width_units("A\n中文"), 4);
+    }
+
+    #[test]
+    fn base_control_metrics_keep_windows_exact_and_platform_profiles_distinct() {
+        let windows = ZsBaseControlMetrics::for_platform(ZsBaseControlPlatformStyle::Windows);
+        let macos = ZsBaseControlMetrics::for_platform(ZsBaseControlPlatformStyle::Macos);
+        let gtk = ZsBaseControlMetrics::for_platform(ZsBaseControlPlatformStyle::Gtk);
+
+        assert_eq!(windows.button_minimum_width, Dp::new(120.0));
+        assert_eq!(windows.button_height, Dp::new(32.0));
+        assert_eq!(windows.button_radius, Dp::new(4.0));
+        assert_eq!(windows.text_input_height, Dp::new(32.0));
+        assert_eq!(windows.check_indicator_size, Dp::new(20.0));
+        assert_eq!(windows.toggle_track_width, Dp::new(40.0));
+        assert_eq!(windows.slider_thumb_size, Dp::new(18.0));
+        assert_eq!(windows.selection_height, Dp::new(32.0));
+        assert_eq!(windows.time_picker_minimum_width, Dp::new(242.0));
+        assert!(
+            windows
+                .button_minimum_width_for_label("Open command palette")
+                .0
+                > windows.button_minimum_width.0
+        );
+        assert!(
+            windows.check_minimum_width_for_label("Automatic updates").0
+                > windows.check_minimum_width.0
+        );
+        assert_eq!(
+            gtk.estimated_text_width_with_shaping_reserve("UTF-8"),
+            Dp::new(gtk.estimated_text_width("UTF-8").0 + gtk.average_character_width.0 * 2.0)
+        );
+        assert!(macos.button_height.0 < windows.button_height.0);
+        assert!(gtk.button_height.0 > windows.button_height.0);
+        assert_ne!(macos.text_input_radius, gtk.text_input_radius);
+    }
+
+    #[cfg(feature = "button")]
+    #[test]
+    fn windows_navigation_item_uses_winui_row_and_indicator_geometry() {
+        let bounds = Rect {
+            x: 10,
+            y: 20,
+            width: 184,
+            height: 36,
+        };
+        assert_eq!(
+            ZsNavigationItemMetrics::for_platform(ZsBaseControlPlatformStyle::Windows)
+                .open_pane_width,
+            Dp::new(320.0)
+        );
+        let plan = zs_navigation_item_render_plan(
+            bounds,
+            true,
+            ZsBaseControlPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+
+        assert_eq!(
+            plan.icon_bounds,
+            Rect {
+                x: 22,
+                y: 30,
+                width: 16,
+                height: 16
+            }
+        );
+        assert_eq!(
+            plan.text_bounds,
+            Rect {
+                x: 54,
+                y: 20,
+                width: 132,
+                height: 36
+            }
+        );
+        assert_eq!(
+            plan.selection_indicator,
+            Some(Rect {
+                x: 10,
+                y: 30,
+                width: 3,
+                height: 16
+            })
+        );
+        assert_eq!(plan.indicator_radius, 2);
+
+        let draw = zs_navigation_item_native_draw_plan(&plan, "Navigation", crate::ZsIcon::Sidebar);
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::RoundFill { rect, radius: 2, .. }
+                if Some(*rect) == plan.selection_indicator
+        )));
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Icon(icon) if icon.icon == crate::ZsIcon::Sidebar
+        )));
+
+        let normal = zs_navigation_item_render_plan(
+            bounds,
+            false,
+            ZsBaseControlPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let normal_draw =
+            zs_navigation_item_native_draw_plan(&normal, "Navigation", crate::ZsIcon::Sidebar);
+        assert!(!normal_draw
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeDrawCommand::RoundRect { .. })));
+    }
+
+    #[cfg(feature = "button")]
+    #[test]
+    fn navigation_item_selection_uses_platform_native_patterns() {
+        let bounds = Rect {
+            x: 10,
+            y: 20,
+            width: 220,
+            height: 36,
+        };
+        for platform in [
+            ZsBaseControlPlatformStyle::Macos,
+            ZsBaseControlPlatformStyle::Gtk,
+        ] {
+            let plan = zs_navigation_item_render_plan(bounds, true, platform, Dpi::standard());
+            assert!(plan.selection_indicator.is_none());
+            let draw = zs_navigation_item_native_draw_plan(&plan, "Library", ZsIcon::Sidebar);
+            let expected_fill = if platform == ZsBaseControlPlatformStyle::Gtk {
+                NativeDrawFill::RoleWithAlpha {
+                    role: ColorRole::PrimaryText,
+                    alpha: 26,
+                }
+            } else {
+                NativeDrawFill::RoleWithAlpha {
+                    role: ColorRole::Accent,
+                    alpha: 30,
+                }
+            };
+            assert!(draw.commands.iter().any(|command| matches!(
+                command,
+                NativeDrawCommand::RoundRect { fill, .. } if *fill == expected_fill
+            )));
+        }
+    }
+
+    #[cfg(feature = "tree")]
+    #[test]
+    fn tree_render_plan_preserves_platform_rows_depth_and_disclosure_geometry() {
+        let roots = [crate::ZsTreeNode::new(1, "Workspace")
+            .icon(ZsIcon::Folder)
+            .children([
+                crate::ZsTreeNode::new(2, "src")
+                    .icon(ZsIcon::Folder)
+                    .children([crate::ZsTreeNode::new(3, "lib.rs").icon(ZsIcon::File)]),
+                crate::ZsTreeNode::new(4, "Cargo.toml").icon(ZsIcon::File),
+            ])];
+        let expanded = BTreeSet::from([crate::ZsTreeNodeId::new(1)]);
+        let bounds = Rect {
+            x: 10,
+            y: 20,
+            width: 280,
+            height: 160,
+        };
+        let windows = zs_tree_view_render_plan(
+            bounds,
+            &roots,
+            &expanded,
+            Some(crate::ZsTreeNodeId::new(2)),
+            ZsTreePlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let macos = ZsTreeViewMetrics::for_platform(ZsTreePlatformStyle::Macos);
+        let gtk = ZsTreeViewMetrics::for_platform(ZsTreePlatformStyle::Gtk);
+
+        assert_eq!(windows.rows.len(), 3);
+        assert_eq!(windows.rows[0].depth, 0);
+        assert_eq!(windows.rows[1].depth, 1);
+        assert!(windows.rows[0].expanded);
+        assert!(windows.rows[1].selected);
+        assert!(windows.rows[0].disclosure_bounds.is_some());
+        assert_eq!(windows.rows[0].disclosure_bounds.unwrap().width, 8);
+        assert!(windows.rows[2].disclosure_bounds.is_none());
+        assert!(windows.rows[1].label_bounds.x > windows.rows[0].label_bounds.x);
+        assert!(macos.row_height.0 < gtk.row_height.0);
+        assert!(macos.depth_indent.0 < gtk.depth_indent.0);
+
+        let draw = zs_tree_view_native_draw_plan(&windows);
+        assert_eq!(draw.text_count(), 3);
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Icon(icon) if icon.icon == ZsIcon::ChevronDown
+        )));
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::RoundFill {
+                fill: NativeDrawFill::RoleWithAlpha {
+                    role: ColorRole::Accent,
+                    alpha: 36,
+                },
+                ..
+            }
+        )));
+    }
+
+    #[cfg(feature = "grid-view")]
+    #[test]
+    fn grid_view_render_plan_is_responsive_clipped_and_platform_specific() {
+        let items = [
+            crate::ZsGridViewItem::new(1, "Desktop")
+                .subtitle("Folder")
+                .icon(crate::ZsIcon::Folder),
+            crate::ZsGridViewItem::new(2, "Photos")
+                .subtitle("Collection")
+                .icon(crate::ZsIcon::Image),
+            crate::ZsGridViewItem::new(3, "README").icon(crate::ZsIcon::Text),
+            crate::ZsGridViewItem::new(4, "Cargo.toml").icon(crate::ZsIcon::File),
+            crate::ZsGridViewItem::new(2, "Duplicate strong ID"),
+        ];
+        let bounds = Rect {
+            x: 10,
+            y: 20,
+            width: 420,
+            height: 220,
+        };
+        let windows = zs_grid_view_render_plan(
+            bounds,
+            &items,
+            Some(crate::ZsGridViewItemId::new(2)),
+            ZsGridViewPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let macos = zs_grid_view_render_plan(
+            bounds,
+            &items,
+            Some(crate::ZsGridViewItemId::new(2)),
+            ZsGridViewPlatformStyle::Macos,
+            Dpi::standard(),
+        );
+        let gtk = zs_grid_view_render_plan(
+            bounds,
+            &items,
+            Some(crate::ZsGridViewItemId::new(2)),
+            ZsGridViewPlatformStyle::Gtk,
+            Dpi::standard(),
+        );
+
+        assert_eq!(windows.items.len(), 4);
+        assert_eq!(windows.column_count, 3);
+        assert_eq!(windows.row_count, 2);
+        assert_eq!(macos.column_count, 3);
+        assert_eq!(gtk.column_count, 2);
+        assert!(windows.items[1].selected);
+        assert_eq!(windows.items[3].bounds.y, windows.items[0].bounds.y + 120);
+        assert!(windows.items[0].icon_bounds.is_some());
+        assert!(windows.items[0].subtitle_bounds.is_some());
+        assert!(macos.item_radius > windows.item_radius);
+
+        let draw = zs_grid_view_native_draw_plan(&windows, &items);
+        assert!(matches!(
+            draw.commands.first(),
+            Some(NativeDrawCommand::RoundRect { .. })
+        ));
+        assert!(draw.commands.iter().any(
+            |command| matches!(command, NativeDrawCommand::PushClip { rect } if *rect == bounds)
+        ));
+        assert!(draw
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeDrawCommand::Icon(icon) if icon.icon == crate::ZsIcon::Image)));
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::RoundRect {
+                rect,
+                stroke: None,
+                ..
+            } if *rect == windows.items[1].bounds
+        )));
+        assert!(matches!(
+            draw.commands.last(),
+            Some(NativeDrawCommand::PopClip)
+        ));
+    }
+
+    #[cfg(feature = "table")]
+    #[test]
+    fn table_render_plan_preserves_typed_columns_platform_metrics_and_sort_visual() {
+        let columns = [
+            crate::ZsTableColumn::new(1, "Name")
+                .fixed_width(Dp::new(160.0))
+                .sortable(true),
+            crate::ZsTableColumn::new(2, "Size")
+                .fill_width(1)
+                .alignment(HorizontalAlign::End)
+                .sortable(true),
+        ];
+        let rows = [
+            crate::ZsTableRow::new(10, ["Cargo.toml", "4 KB"]),
+            crate::ZsTableRow::new(11, ["src", "—"]),
+        ];
+        let bounds = Rect {
+            x: 10,
+            y: 20,
+            width: 300,
+            height: 160,
+        };
+        let windows = zs_table_render_plan(
+            bounds,
+            &columns,
+            &rows,
+            Some(crate::ZsTableRowId::new(11)),
+            Some(crate::ZsTableSort::new(
+                crate::ZsTableColumnId::new(2),
+                crate::ZsTableSortDirection::Ascending,
+            )),
+            ZsTablePlatformStyle::Windows,
+            Dpi::standard(),
+        );
+
+        assert_eq!(windows.columns.len(), 2);
+        assert_eq!(windows.columns[0].bounds.width, 160);
+        assert_eq!(windows.columns[1].bounds.width, 140);
+        assert_eq!(windows.rows.len(), 2);
+        assert!(windows.rows[1].selected);
+        assert_eq!(windows.rows[0].cells[1].alignment, HorizontalAlign::End);
+        assert!(
+            ZsTableMetrics::for_platform(ZsTablePlatformStyle::Macos)
+                .row_height
+                .0
+                < ZsTableMetrics::for_platform(ZsTablePlatformStyle::Gtk)
+                    .row_height
+                    .0
+        );
+
+        let draw = zs_table_native_draw_plan(&windows);
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Icon(icon) if icon.icon == ZsIcon::ChevronUp
+        )));
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::FillRect {
+                fill: NativeDrawFill::RoleWithAlpha {
+                    role: ColorRole::Accent,
+                    alpha: 36,
+                },
+                ..
+            }
+        )));
+    }
+
+    #[cfg(feature = "dialog")]
+    #[test]
+    fn content_dialog_render_plan_uses_platform_order_metrics_and_semantic_actions() {
+        use crate::ZsContentDialogButton::{Close, Primary, Secondary};
+
+        let spec = crate::ZsContentDialogSpec::new(
+            "This file already exists. Choose how ZSUI should continue.",
+            "Cancel",
+        )
+        .title("Replace existing file?")
+        .primary_button("Replace")
+        .secondary_button("Keep Both")
+        .default_button(Primary)
+        .destructive_button(Secondary);
+        let viewport = Rect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        };
+        let windows = zs_content_dialog_render_plan(
+            viewport,
+            &spec,
+            Primary,
+            ZsContentDialogPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let macos = zs_content_dialog_render_plan(
+            viewport,
+            &spec,
+            Secondary,
+            ZsContentDialogPlatformStyle::Macos,
+            Dpi::standard(),
+        );
+        let gtk = zs_content_dialog_render_plan(
+            viewport,
+            &spec,
+            Close,
+            ZsContentDialogPlatformStyle::Gtk,
+            Dpi::standard(),
+        );
+
+        assert_eq!(
+            windows
+                .buttons
+                .iter()
+                .map(|button| button.button)
+                .collect::<Vec<_>>(),
+            vec![Primary, Secondary, Close]
+        );
+        assert_eq!(
+            macos
+                .buttons
+                .iter()
+                .map(|button| button.button)
+                .collect::<Vec<_>>(),
+            vec![Close, Secondary, Primary]
+        );
+        assert_eq!(
+            gtk.buttons
+                .iter()
+                .map(|button| button.button)
+                .collect::<Vec<_>>(),
+            vec![Close, Secondary, Primary]
+        );
+        assert!(windows.buttons[0].default);
+        assert!(windows.buttons[1].destructive);
+        assert!(windows.buttons[0].focused);
+        assert!(macos.buttons[0].bounds.x > macos.surface.x);
+        let windows_metrics =
+            ZsContentDialogMetrics::for_platform(ZsContentDialogPlatformStyle::Windows);
+        assert_eq!(windows_metrics.minimum_width, Dp::new(320.0));
+        assert_eq!(windows_metrics.maximum_width, Dp::new(548.0));
+        assert_eq!(windows_metrics.minimum_height, Some(Dp::new(184.0)));
+        assert_eq!(windows_metrics.maximum_height, Some(Dp::new(756.0)));
+        assert_eq!(windows_metrics.content_padding, Dp::new(24.0));
+        assert_eq!(windows_metrics.title_gap, Dp::new(12.0));
+        assert_eq!(windows_metrics.button_gap, Dp::new(8.0));
+        assert_eq!(windows_metrics.button_height, Dp::new(32.0));
+        assert_eq!(windows_metrics.separator_thickness, Dp::new(1.0));
+        assert!(windows.surface.height >= 184);
+        assert_eq!(windows.command_space_bounds.height, 80);
+        assert_eq!(windows.separator_thickness, 1);
+        assert_eq!(
+            windows.content_bounds.y + windows.content_bounds.height + 24,
+            windows.command_space_bounds.y
+        );
+
+        let draw = zs_content_dialog_native_draw_plan(&windows, &spec);
+        assert!(matches!(
+            draw.commands.first(),
+            Some(NativeDrawCommand::FillRect {
+                rect,
+                fill: NativeDrawFill::RoleWithAlpha {
+                    role: ColorRole::PrimaryText,
+                    alpha: 77,
+                },
+            }) if *rect == viewport
+        ));
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::RoundRect {
+                rect,
+                fill: NativeDrawFill::Role(ColorRole::Surface),
+                ..
+            } if *rect == windows.surface
+        )));
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::RoundFill {
+                fill: NativeDrawFill::Role(ColorRole::SurfaceRaised),
+                ..
+            }
+        )));
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::FillRect {
+                rect,
+                fill: NativeDrawFill::RoleWithAlpha {
+                    role: ColorRole::Border,
+                    alpha: 96,
+                },
+            } if rect.y == windows.command_space_bounds.y && rect.height == 1
+        )));
+        assert!(!draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::RoundRect {
+                stroke: Some(NativeDrawFill::Role(ColorRole::Danger)),
+                ..
+            }
+        )));
+        let macos_draw = zs_content_dialog_native_draw_plan(&macos, &spec);
+        assert!(macos_draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::RoundRect {
+                stroke: Some(NativeDrawFill::Role(ColorRole::Danger)),
+                ..
+            }
+        )));
+
+        let ascii_title =
+            crate::ZsContentDialogSpec::new("Body", "Close").title("aaaaaaaaaaaaaaaaaaaaaa");
+        let cjk_title = crate::ZsContentDialogSpec::new("正文", "关闭")
+            .title("中文中文中文中文中文中文中文中文中文中文中文");
+        let ascii_plan = zs_content_dialog_render_plan(
+            viewport,
+            &ascii_title,
+            Close,
+            ZsContentDialogPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let cjk_plan = zs_content_dialog_render_plan(
+            viewport,
+            &cjk_title,
+            Close,
+            ZsContentDialogPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        assert!(cjk_plan.title_bounds.unwrap().height > ascii_plan.title_bounds.unwrap().height);
+
+        let close_only = crate::ZsContentDialogSpec::new("Body", "Close");
+        let close_only_plan = zs_content_dialog_render_plan(
+            viewport,
+            &close_only,
+            Close,
+            ZsContentDialogPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        assert_eq!(close_only_plan.buttons.len(), 1);
+        assert!(
+            close_only_plan.buttons[0].bounds.x
+                > close_only_plan.surface.x + close_only_plan.surface.width / 2
+        );
+    }
+
+    #[cfg(feature = "info-bar")]
+    #[test]
+    fn info_bar_render_plan_preserves_inline_platform_geometry_and_semantic_icon() {
+        let spec = crate::ZsInfoBarSpec::new("Reconnect to continue working.")
+            .title("No Internet")
+            .severity(crate::ZsInfoBarSeverity::Error)
+            .action("Network Settings");
+        let bounds = Rect {
+            x: 20,
+            y: 30,
+            width: 720,
+            height: 64,
+        };
+        let windows = zs_info_bar_render_plan(
+            bounds,
+            &spec,
+            Some(crate::ZsInfoBarControl::Action),
+            ZsInfoBarPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let macos = zs_info_bar_render_plan(
+            bounds,
+            &spec,
+            Some(crate::ZsInfoBarControl::Close),
+            ZsInfoBarPlatformStyle::Macos,
+            Dpi::standard(),
+        );
+        let gtk = zs_info_bar_render_plan(
+            bounds,
+            &spec,
+            Some(crate::ZsInfoBarControl::Action),
+            ZsInfoBarPlatformStyle::Gtk,
+            Dpi::standard(),
+        );
+
+        assert_eq!(windows.surface, bounds);
+        assert!(windows.accent_bounds.is_some());
+        assert!(macos.accent_bounds.is_none());
+        assert_eq!(gtk.surface_radius, 0);
+        assert!(windows.action_bounds.is_some());
+        assert!(windows.close_bounds.unwrap().x > windows.action_bounds.unwrap().x);
+        assert!(windows.title_bounds.is_some());
+        assert!(windows.message_bounds.is_some());
+        assert_eq!(
+            ZsInfoBarMetrics::for_platform(ZsInfoBarPlatformStyle::Windows).minimum_height,
+            Dp::new(48.0)
+        );
+        assert_eq!(
+            ZsInfoBarMetrics::for_platform(ZsInfoBarPlatformStyle::Windows).desired_height(&spec),
+            Dp::new(60.0)
+        );
+
+        let draw = zs_info_bar_native_draw_plan(&windows, &spec);
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Icon(icon)
+                if icon.icon == ZsIcon::Error && icon.color == ColorRole::Danger
+        )));
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Text(text) if text.text == "No Internet"
+        )));
+
+        let narrow_bounds = Rect {
+            x: 12,
+            y: 8,
+            width: 24,
+            height: 32,
+        };
+        let narrow = zs_info_bar_render_plan(
+            narrow_bounds,
+            &spec,
+            None,
+            ZsInfoBarPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        for rect in [
+            Some(narrow.icon_bounds),
+            narrow.action_bounds,
+            narrow.close_bounds,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!(rect.x >= narrow_bounds.x);
+            assert!(
+                rect.x.saturating_add(rect.width)
+                    <= narrow_bounds.x.saturating_add(narrow_bounds.width)
+            );
+        }
+
+        let ascii_action = crate::ZsInfoBarSpec::new("Ready").action("OK");
+        let cjk_action = crate::ZsInfoBarSpec::new("就绪").action("确定");
+        let ascii_plan = zs_info_bar_render_plan(
+            bounds,
+            &ascii_action,
+            None,
+            ZsInfoBarPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let cjk_plan = zs_info_bar_render_plan(
+            bounds,
+            &cjk_action,
+            None,
+            ZsInfoBarPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        assert!(cjk_plan.action_bounds.unwrap().width > ascii_plan.action_bounds.unwrap().width);
+    }
+
+    #[cfg(feature = "teaching-tip")]
+    #[test]
+    fn teaching_tip_plan_points_to_target_and_flips_inside_viewport() {
+        let spec = crate::ZsTeachingTipSpec::new(
+            "Save automatically",
+            "Your changes are saved as you work.",
+        )
+        .action("Review settings")
+        .preferred_placement(crate::ZsTeachingTipPlacement::Bottom);
+        let viewport = Rect {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 420,
+        };
+        let target = Rect {
+            x: 280,
+            y: 368,
+            width: 80,
+            height: 32,
+        };
+        let windows = zs_teaching_tip_render_plan(
+            viewport,
+            target,
+            &spec,
+            crate::ZsTeachingTipControl::Action,
+            ZsTeachingTipPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let macos = zs_teaching_tip_render_plan(
+            viewport,
+            target,
+            &spec,
+            crate::ZsTeachingTipControl::Close,
+            ZsTeachingTipPlatformStyle::Macos,
+            Dpi::standard(),
+        );
+        let gtk = zs_teaching_tip_render_plan(
+            viewport,
+            target,
+            &spec,
+            crate::ZsTeachingTipControl::Action,
+            ZsTeachingTipPlatformStyle::Gtk,
+            Dpi::standard(),
+        );
+
+        assert_eq!(windows.placement, crate::ZsTeachingTipPlacement::Top);
+        assert!(windows.surface.y + windows.surface.height < target.y);
+        assert!(windows.action_bounds.is_some());
+        assert!(windows.tail.iter().any(|point| point.y > windows.surface.y));
+        assert!(macos.surface_radius > windows.surface_radius);
+        assert!(gtk.control_radius > windows.control_radius);
+        for plan in [windows, macos, gtk] {
+            assert!(plan.surface.x >= viewport.x);
+            assert!(plan.surface.y >= viewport.y);
+            assert!(plan.surface.x + plan.surface.width <= viewport.x + viewport.width);
+            assert!(plan.surface.y + plan.surface.height <= viewport.y + viewport.height);
+            let draw = zs_teaching_tip_native_draw_plan(&plan, &spec);
+            assert!(draw
+                .commands
+                .iter()
+                .any(|command| matches!(command, NativeDrawCommand::FillTriangle { .. })));
+        }
+    }
+
+    #[cfg(feature = "breadcrumb")]
+    #[test]
+    fn breadcrumb_plan_collapses_by_platform_and_keeps_popup_inside_viewport() {
+        let items = [
+            crate::ZsBreadcrumbItem::new(crate::ZsBreadcrumbId::new(1), "Home"),
+            crate::ZsBreadcrumbItem::new(crate::ZsBreadcrumbId::new(2), "Projects"),
+            crate::ZsBreadcrumbItem::new(crate::ZsBreadcrumbId::new(3), "ZSUI Framework"),
+            crate::ZsBreadcrumbItem::new(crate::ZsBreadcrumbId::new(4), "Documentation"),
+            crate::ZsBreadcrumbItem::new(crate::ZsBreadcrumbId::new(5), "BreadcrumbBar"),
+        ];
+        let bounds = Rect {
+            x: 24,
+            y: 40,
+            width: 240,
+            height: 34,
+        };
+        let viewport = Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 220,
+        };
+        let windows = zs_breadcrumb_render_plan(
+            bounds,
+            &items,
+            true,
+            ZsBreadcrumbPlatformStyle::Windows,
+            Dpi::standard(),
+            Some(viewport),
+        );
+        let wide = zs_breadcrumb_render_plan(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 32,
+            },
+            &items[..2],
+            false,
+            ZsBreadcrumbPlatformStyle::Windows,
+            Dpi::standard(),
+            None,
+        );
+        assert!(wide.hidden_indices.is_empty());
+        assert!(wide.items[0].text_bounds.width >= 38);
+        assert!(wide.items[1].text_bounds.width >= 66);
+        let cjk_items = [
+            crate::ZsBreadcrumbItem::new(crate::ZsBreadcrumbId::new(11), "首页"),
+            crate::ZsBreadcrumbItem::new(crate::ZsBreadcrumbId::new(12), "组件"),
+            crate::ZsBreadcrumbItem::new(crate::ZsBreadcrumbId::new(13), "当前页面"),
+        ];
+        let cjk = zs_breadcrumb_render_plan(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 32,
+            },
+            &cjk_items,
+            false,
+            ZsBreadcrumbPlatformStyle::Windows,
+            Dpi::standard(),
+            None,
+        );
+        assert!(cjk.hidden_indices.is_empty());
+        assert!(cjk.items[0].text_bounds.width >= 28);
+        assert!(cjk.items[2].text_bounds.width >= 56);
+        let macos = zs_breadcrumb_render_plan(
+            bounds,
+            &items,
+            true,
+            ZsBreadcrumbPlatformStyle::Macos,
+            Dpi::standard(),
+            Some(viewport),
+        );
+        let gtk = zs_breadcrumb_render_plan(
+            bounds,
+            &items,
+            true,
+            ZsBreadcrumbPlatformStyle::Gtk,
+            Dpi::standard(),
+            Some(viewport),
+        );
+
+        assert!(!windows.hidden_indices.is_empty());
+        assert_eq!(windows.popup_rows.len(), windows.hidden_indices.len());
+        assert_eq!(windows.items.last().map(|item| item.item_index), Some(4));
+        assert_eq!(macos.items.first().map(|item| item.item_index), Some(0));
+        assert!(gtk.overflow_bounds.is_some());
+        for plan in [&windows, &macos, &gtk] {
+            let popup = plan.popup.expect("open overflow should have a popup");
+            assert!(popup.x >= viewport.x);
+            assert!(popup.y >= viewport.y);
+            assert!(popup.x + popup.width <= viewport.x + viewport.width);
+            assert!(popup.y + popup.height <= viewport.y + viewport.height);
+        }
+
+        let draw = zs_breadcrumb_native_draw_plan(
+            &windows,
+            &items,
+            Some(crate::ZsBreadcrumbFocusTarget::Overflow),
+        );
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Icon(icon) if icon.icon == ZsIcon::More
+        )));
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Icon(icon) if icon.icon == ZsIcon::ChevronRight
+        )));
+        let popup_draw = zs_breadcrumb_popup_native_draw_plan(
+            &windows,
+            &items,
+            Some(crate::ZsBreadcrumbFocusTarget::Item(
+                items[windows.hidden_indices[0]].id(),
+            )),
+        );
+        assert_eq!(popup_draw.text_count(), windows.hidden_indices.len());
+
+        let narrow_bounds = Rect {
+            x: 7,
+            y: 9,
+            width: 3,
+            height: 12,
+        };
+        let narrow = zs_breadcrumb_render_plan(
+            narrow_bounds,
+            &items,
+            false,
+            ZsBreadcrumbPlatformStyle::Windows,
+            Dpi::standard(),
+            Some(viewport),
+        );
+        for rect in narrow
+            .items
+            .iter()
+            .flat_map(|item| [Some(item.bounds), item.separator_bounds])
+            .chain([narrow.overflow_bounds, narrow.overflow_separator_bounds])
+            .flatten()
+        {
+            assert!(rect.x >= narrow_bounds.x);
+            assert!(rect.x + rect.width <= narrow_bounds.x + narrow_bounds.width);
+        }
+    }
+
+    #[cfg(feature = "toast")]
+    #[test]
+    fn toast_render_plan_is_bottom_centered_and_preserves_platform_metrics() {
+        let spec = crate::ZsToastSpec::new(1, "File deleted").action("Undo");
+        let viewport = Rect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        };
+        let windows = zs_toast_render_plan(
+            viewport,
+            &spec,
+            crate::ZsToastControl::Action,
+            ZsToastPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let macos = zs_toast_render_plan(
+            viewport,
+            &spec,
+            crate::ZsToastControl::Close,
+            ZsToastPlatformStyle::Macos,
+            Dpi::standard(),
+        );
+        let gtk = zs_toast_render_plan(
+            viewport,
+            &spec,
+            crate::ZsToastControl::Action,
+            ZsToastPlatformStyle::Gtk,
+            Dpi::standard(),
+        );
+
+        assert_eq!(
+            windows.surface.x + windows.surface.width / 2,
+            viewport.x + viewport.width / 2
+        );
+        assert!(windows.surface.y > viewport.height / 2);
+        assert!(windows.action_bounds.is_some());
+        assert!(windows.close_bounds.x > windows.action_bounds.unwrap().x);
+        assert!(
+            ZsToastMetrics::for_platform(ZsToastPlatformStyle::Windows)
+                .control_height
+                .0
+                > ZsToastMetrics::for_platform(ZsToastPlatformStyle::Macos)
+                    .control_height
+                    .0
+        );
+        assert!(macos.surface.height < windows.surface.height);
+        assert!(gtk.surface_radius > windows.surface_radius);
+
+        let draw = zs_toast_native_draw_plan(&windows, &spec);
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Text(text) if text.text == "File deleted"
+        )));
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Icon(icon) if icon.icon == ZsIcon::Close
+        )));
+    }
+
+    #[cfg(feature = "number-box")]
+    #[test]
+    fn number_box_render_plan_preserves_each_platform_stepper_shape() {
+        let bounds = Rect {
+            x: 10,
+            y: 20,
+            width: 180,
+            height: 36,
+        };
+        let windows =
+            zs_number_box_render_plan(bounds, ZsNumberBoxPlatformStyle::Windows, Dpi::standard());
+        let macos =
+            zs_number_box_render_plan(bounds, ZsNumberBoxPlatformStyle::Macos, Dpi::standard());
+        let gtk = zs_number_box_render_plan(bounds, ZsNumberBoxPlatformStyle::Gtk, Dpi::standard());
+
+        assert_eq!(windows.increment_button.y, windows.decrement_button.y);
+        assert!(windows.increment_button.x > windows.decrement_button.x);
+        assert_eq!(macos.increment_button.width, 18);
+        assert_eq!(macos.increment_button.x, macos.decrement_button.x);
+        assert!(macos.increment_button.y < macos.decrement_button.y);
+        assert_eq!(gtk.increment_button.y, gtk.decrement_button.y);
+        assert!(gtk.increment_button.x > gtk.decrement_button.x);
+        assert_eq!(windows.radius, 4);
+        assert_eq!(gtk.radius, 5);
+        assert_eq!(
+            zs_number_box_native_draw_plan(&windows, "12.5", true, true, true).command_count(),
+            6
+        );
+        let windows_draw = zs_number_box_native_draw_plan(&windows, "12.5", true, true, true);
+        assert!(matches!(
+            &windows_draw.commands[4],
+            NativeDrawCommand::Icon(icon)
+                if icon.icon == ZsIcon::ChevronDown && icon.bounds.width == 12
+        ));
+        assert!(matches!(
+            &windows_draw.commands[5],
+            NativeDrawCommand::Icon(icon)
+                if icon.icon == ZsIcon::ChevronUp && icon.bounds.width == 12
+        ));
+        assert!(matches!(
+            zs_number_box_native_draw_plan(&windows, "-", false, false, true).commands[0],
+            NativeDrawCommand::RoundRect {
+                stroke: Some(NativeDrawFill::Role(ColorRole::Danger)),
+                ..
+            }
+        ));
+    }
+
+    #[cfg(feature = "number-box")]
+    #[test]
+    fn empty_number_box_uses_secondary_placeholder_text() {
+        let plan = zs_number_box_render_plan(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 220,
+                height: 32,
+            },
+            ZsNumberBoxPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let draw = zs_number_box_native_draw_plan_with_placeholder(
+            &plan,
+            "",
+            Some("Optional amount"),
+            true,
+            false,
+            true,
+        );
+
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Text(text)
+                if text.text == "Optional amount"
+                    && text.style.color == ColorRole::SecondaryText
+        )));
+    }
+
+    #[cfg(feature = "tabs")]
+    #[test]
+    fn tab_metrics_preserve_each_desktop_platform_character() {
+        let windows = ZsTabViewMetrics::for_platform(ZsTabPlatformStyle::Windows);
+        let macos = ZsTabViewMetrics::for_platform(ZsTabPlatformStyle::Macos);
+        let gtk = ZsTabViewMetrics::for_platform(ZsTabPlatformStyle::Gtk);
+
+        assert!(windows.strip_height.0 > macos.strip_height.0);
+        assert_eq!(windows.header_top_padding, Dp::new(8.0));
+        assert_eq!(windows.item_height, Dp::new(32.0));
+        assert_eq!(windows.content_padding, Dp::new(12.0));
+        assert_eq!(windows.horizontal_padding, Dp::new(8.0));
+        assert_eq!(windows.icon_size, Dp::new(16.0));
+        assert_eq!(windows.icon_gap, Dp::new(10.0));
+        assert_eq!(windows.minimum_item_width, Dp::new(100.0));
+        assert_eq!(windows.maximum_item_width, Dp::new(240.0));
+        assert_eq!(
+            ZsTabViewMetrics::label_role(ZsTabPlatformStyle::Windows),
+            TextRole::Body
+        );
+        assert_eq!(
+            ZsTabViewMetrics::label_role(ZsTabPlatformStyle::Macos),
+            TextRole::Button
+        );
+        assert!(macos.outer_inset.0 > windows.outer_inset.0);
+        assert_eq!(gtk.selection_indicator_height, Dp::new(0.0));
+        assert_eq!(gtk.header_top_padding, Dp::new(4.0));
+        assert_eq!(gtk.item_height, Dp::new(34.0));
+        assert_eq!(gtk.outer_inset, Dp::new(6.0));
+    }
+
+    #[cfg(feature = "tabs")]
+    #[test]
+    fn tab_render_plan_keeps_headers_and_selected_content_inside_bounds() {
+        let bounds = Rect {
+            x: 10,
+            y: 20,
+            width: 420,
+            height: 280,
+        };
+        let labels = vec!["General".into(), "Advanced".into(), "About".into()];
+        let windows = zs_tab_view_render_plan(
+            bounds,
+            &labels,
+            Some(1),
+            ZsTabPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let macos = zs_tab_view_render_plan(
+            bounds,
+            &labels,
+            Some(1),
+            ZsTabPlatformStyle::Macos,
+            Dpi::standard(),
+        );
+        let gtk = zs_tab_view_render_plan(
+            bounds,
+            &labels,
+            Some(1),
+            ZsTabPlatformStyle::Gtk,
+            Dpi::standard(),
+        );
+
+        assert_eq!(windows.headers.len(), 3);
+        assert!(windows.headers[1].selected);
+        assert!(windows.headers[1].selection_indicator.is_some());
+        assert_eq!(
+            windows.content_bounds,
+            Rect {
+                x: bounds.x + 12,
+                y: bounds.y + 52,
+                width: bounds.width - 24,
+                height: bounds.height - 64,
+            }
+        );
+        assert!(windows
+            .headers
+            .iter()
+            .all(|header| header.bounds.y == bounds.y + 8 && header.bounds.height == 32));
+        assert!(windows.headers.iter().all(|header| {
+            header.bounds.x >= bounds.x
+                && header.bounds.x + header.bounds.width <= bounds.x + bounds.width
+        }));
+        assert!(macos
+            .headers
+            .iter()
+            .all(|header| { header.bounds.width == macos.headers[0].bounds.width }));
+        assert!(macos.headers[0].bounds.x > bounds.x);
+        assert!(gtk
+            .headers
+            .iter()
+            .all(|header| header.bounds.y == bounds.y + 4 && header.bounds.height == 34));
+        assert!(gtk.headers[1].selection_indicator.is_none());
+
+        let narrow = zs_tab_view_render_plan(
+            Rect {
+                x: 10,
+                y: 20,
+                width: 2,
+                height: 20,
+            },
+            &labels,
+            Some(1),
+            ZsTabPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        assert!(narrow
+            .headers
+            .iter()
+            .all(|header| header.bounds.width >= 100 && header.text_bounds.width > 0));
+        assert!(narrow.headers[0].bounds.x + narrow.headers[0].bounds.width > 12);
+
+        let draw = zs_tab_view_native_draw_plan(&windows, &labels);
+        assert_eq!(draw.text_count(), 3);
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::PushClip { rect } if *rect == windows.strip_bounds
+        )));
+        assert!(matches!(
+            draw.commands.last(),
+            Some(NativeDrawCommand::PopClip)
+        ));
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::RoundFill {
+                fill: NativeDrawFill::Role(ColorRole::Accent),
+                ..
+            }
+        )));
+        assert!(!draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::StrokeRect { rect, .. } if *rect == windows.content_bounds
+        )));
+        let gtk_draw = zs_tab_view_native_draw_plan(&gtk, &labels);
+        assert!(gtk_draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::RoundRect {
+                rect,
+                fill: NativeDrawFill::Role(ColorRole::Control),
+                stroke: None,
+                ..
+            } if *rect == gtk.headers[1].bounds
+        )));
+        assert!(!gtk_draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::RoundFill {
+                fill: NativeDrawFill::Role(ColorRole::Accent),
+                ..
+            }
+        )));
+
+        let tabs = vec![
+            crate::ZsTabSpec::new(crate::ZsTabId::new(1), "General").icon(crate::ZsIcon::Settings),
+            crate::ZsTabSpec::new(crate::ZsTabId::new(2), "About").icon(crate::ZsIcon::Info),
+        ];
+        let icon_plan = zs_tab_view_render_plan_for_tabs(
+            bounds,
+            &tabs,
+            Some(0),
+            ZsTabPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        assert_eq!(icon_plan.headers[0].icon_bounds.unwrap().width, 16);
+        assert_eq!(
+            icon_plan.headers[0].text_bounds.x,
+            icon_plan.headers[0].icon_bounds.unwrap().x + 16 + 10
+        );
+        let icon_draw = zs_tab_view_native_draw_plan_for_tabs(&icon_plan, &tabs);
+        assert!(icon_draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Icon(icon) if icon.icon == crate::ZsIcon::Settings
+        )));
+        assert!(icon_draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Text(text)
+                if text.text == "General"
+                    && text.style.role == TextRole::Body
+                    && text.style.horizontal_align == HorizontalAlign::Start
+                    && text.style.weight == TextWeight::Regular
+        )));
+
+        let ascii = zs_tab_view_render_plan(
+            bounds,
+            &["AAAA".into()],
+            Some(0),
+            ZsTabPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let cjk = zs_tab_view_render_plan(
+            bounds,
+            &["常规设置选项".into()],
+            Some(0),
+            ZsTabPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        assert!(cjk.headers[0].bounds.width > ascii.headers[0].bounds.width);
+    }
+
+    #[test]
+    fn toggle_geometry_matches_each_platform_profile_at_standard_dpi() {
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            width: 56,
+            height: 36,
+        };
+        for platform in [
+            ZsBaseControlPlatformStyle::Windows,
+            ZsBaseControlPlatformStyle::Macos,
+            ZsBaseControlPlatformStyle::Gtk,
+        ] {
+            let metrics = ZsBaseControlMetrics::for_platform(platform);
+            let off =
+                zs_toggle_render_plan_for_platform(bounds, false, false, platform, Dpi::standard());
+            let on =
+                zs_toggle_render_plan_for_platform(bounds, false, true, platform, Dpi::standard());
+
+            assert_eq!(
+                off.track.width,
+                metrics
+                    .toggle_track_width
+                    .to_px(Dpi::standard())
+                    .round_i32()
+            );
+            assert_eq!(
+                off.track.height,
+                metrics
+                    .toggle_track_height
+                    .to_px(Dpi::standard())
+                    .round_i32()
+            );
+            assert!(off.knob.x < on.knob.x);
+            assert_eq!(zs_toggle_native_draw_plan(&on).command_count(), 2);
+        }
+    }
+
+    #[cfg(feature = "toggle-button")]
+    #[test]
+    fn toggle_button_render_plan_preserves_platform_metrics_and_checked_cue() {
+        let bounds = Rect {
+            x: 10,
+            y: 20,
+            width: 144,
+            height: 36,
+        };
+        let windows = zs_toggle_button_render_plan(
+            bounds,
+            false,
+            ZsToggleButtonPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let macos = zs_toggle_button_render_plan(
+            bounds,
+            true,
+            ZsToggleButtonPlatformStyle::Macos,
+            Dpi::standard(),
+        );
+        let gtk = zs_toggle_button_render_plan(
+            bounds,
+            true,
+            ZsToggleButtonPlatformStyle::Gtk,
+            Dpi::standard(),
+        );
+
+        assert_eq!(windows.radius, 4);
+        assert_eq!(macos.radius, 6);
+        assert_eq!(gtk.radius, 5);
+        assert_eq!(windows.text_bounds.y, bounds.y);
+        assert_eq!(macos.text_bounds.y, bounds.y + 1);
+        assert_eq!(gtk.selected_indicator.height, 3);
+        assert_eq!(
+            zs_toggle_button_native_draw_plan(&windows, "Pin").command_count(),
+            2
+        );
+        let checked = zs_toggle_button_native_draw_plan(&macos, "Pin");
+        assert_eq!(checked.command_count(), 3);
+        assert!(matches!(
+            checked.commands.as_slice(),
+            [
+                NativeDrawCommand::RoundRect {
+                    fill: NativeDrawFill::Role(ColorRole::Accent),
+                    ..
+                },
+                NativeDrawCommand::Text(_),
+                NativeDrawCommand::RoundFill { .. }
+            ]
+        ));
+    }
+
+    #[cfg(feature = "slider")]
+    #[test]
+    fn slider_geometry_maps_each_platform_fraction_to_semantic_track_and_thumb() {
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 36,
+        };
+        for platform in [
+            ZsBaseControlPlatformStyle::Windows,
+            ZsBaseControlPlatformStyle::Macos,
+            ZsBaseControlPlatformStyle::Gtk,
+        ] {
+            let metrics = ZsBaseControlMetrics::for_platform(platform);
+            let plan = zs_slider_render_plan_for_platform(bounds, 0.25, platform, Dpi::standard());
+            let thumb_size = metrics.slider_thumb_size.to_px(Dpi::standard()).round_i32();
+            let thumb_radius = thumb_size / 2;
+            let expected_track_width = bounds.width - thumb_radius * 2;
+
+            assert_eq!(plan.track.x, bounds.x + thumb_radius);
+            assert_eq!(plan.track.width, expected_track_width);
+            assert_eq!(
+                plan.filled_track.width,
+                ((expected_track_width as f32) * 0.25).round() as i32
+            );
+            assert_eq!(plan.thumb.width, thumb_size);
+            assert!(matches!(
+                zs_slider_native_draw_plan(&plan).commands.as_slice(),
+                [
+                    NativeDrawCommand::RoundFill {
+                        fill: NativeDrawFill::Role(ColorRole::Control),
+                        ..
+                    },
+                    NativeDrawCommand::RoundFill {
+                        fill: NativeDrawFill::Role(ColorRole::Accent),
+                        ..
+                    },
+                    NativeDrawCommand::RoundRect {
+                        fill: NativeDrawFill::Role(ColorRole::Surface),
+                        stroke: Some(NativeDrawFill::Role(ColorRole::Accent)),
+                        ..
+                    }
+                ]
+            ));
+        }
+    }
+
+    #[cfg(feature = "radio")]
+    #[test]
+    fn radio_geometry_uses_each_platform_circle_and_selected_dot() {
+        let bounds = Rect {
+            x: 4,
+            y: 8,
+            width: 180,
+            height: 36,
+        };
+        for platform in [
+            ZsBaseControlPlatformStyle::Windows,
+            ZsBaseControlPlatformStyle::Macos,
+            ZsBaseControlPlatformStyle::Gtk,
+        ] {
+            let metrics = ZsBaseControlMetrics::for_platform(platform);
+            let plan = zs_radio_render_plan_for_platform(bounds, true, platform, Dpi::standard());
+
+            assert_eq!(
+                plan.indicator.width,
+                metrics
+                    .radio_indicator_size
+                    .to_px(Dpi::standard())
+                    .round_i32()
+            );
+            assert_eq!(plan.indicator.height, plan.indicator.width);
+            assert_eq!(
+                plan.selected_dot.expect("selected radio dot").width,
+                metrics.radio_dot_size.to_px(Dpi::standard()).round_i32()
+            );
+            assert_eq!(zs_radio_native_draw_plan(&plan).command_count(), 2);
+            assert_eq!(
+                zs_radio_native_draw_plan(&zs_radio_render_plan_for_platform(
+                    bounds,
+                    false,
+                    platform,
+                    Dpi::standard(),
+                ))
+                .command_count(),
+                1
+            );
+        }
+    }
+
+    #[cfg(feature = "progress")]
+    #[test]
+    fn progress_geometry_clamps_fill_and_omits_zero_accent() {
+        let bounds = Rect {
+            x: 4,
+            y: 8,
+            width: 200,
+            height: 32,
+        };
+        let plan = zs_progress_bar_render_plan(bounds, 0.625, Dpi::standard());
+        let metrics = ZsBaseControlMetrics::for_platform(ZsBaseControlPlatformStyle::current());
+        let expected_track_height = metrics
+            .progress_track_height
+            .to_px(Dpi::standard())
+            .round_i32()
+            .min(bounds.height)
+            .max(1);
+
+        assert_eq!(plan.track.width, 200);
+        assert_eq!(plan.track.height, expected_track_height);
+        assert_eq!(plan.filled_track.expect("determinate fill").width, 125);
+        if ZsBaseControlPlatformStyle::current() == ZsBaseControlPlatformStyle::Windows {
+            assert_eq!(plan.track.height, 1);
+            assert_eq!(plan.filled_track.expect("determinate fill").height, 3);
+            assert_eq!(plan.track_radius, 1);
+            assert_eq!(plan.radius, 2);
+        }
+        assert!(matches!(
+            zs_progress_bar_native_draw_plan(&plan).commands.as_slice(),
+            [
+                NativeDrawCommand::RoundFill {
+                    fill: NativeDrawFill::Role(ColorRole::StrongStroke),
+                    ..
+                },
+                NativeDrawCommand::RoundFill {
+                    fill: NativeDrawFill::Role(ColorRole::Accent),
+                    ..
+                }
+            ]
+        ));
+        assert_eq!(zs_progress_bar_native_draw_plan(&plan).command_count(), 2);
+        assert_eq!(
+            zs_progress_bar_native_draw_plan(&zs_progress_bar_render_plan(
+                bounds,
+                0.0,
+                Dpi::standard()
+            ))
+            .command_count(),
+            1
+        );
+
+        let paused = zs_progress_bar_render_plan_for_spec(
+            bounds,
+            crate::ZsProgressBarSpec::determinate(40.0, crate::ProgressRange::new(0.0, 100.0))
+                .status(crate::ZsProgressBarStatus::Paused),
+            ZsBaseControlPlatformStyle::Windows,
+            Dpi::standard(),
+            0,
+        );
+        assert_eq!(paused.indicator_role, ColorRole::Warning);
+        let error = zs_progress_bar_render_plan_for_spec(
+            bounds,
+            crate::ZsProgressBarSpec::indeterminate().status(crate::ZsProgressBarStatus::Error),
+            ZsBaseControlPlatformStyle::Windows,
+            Dpi::standard(),
+            1_000,
+        );
+        assert!(!error.track_visible);
+        assert_eq!(
+            error.filled_track,
+            Some(Rect {
+                x: bounds.x,
+                y: bounds.y + (bounds.height - 3) / 2,
+                width: bounds.width,
+                height: 3,
+            })
+        );
+        assert_eq!(error.indicator_role, ColorRole::Danger);
+        assert_eq!(error.frame_interval_ms, None);
+
+        let indeterminate = (750..=1_500)
+            .step_by(50)
+            .map(|elapsed_ms| {
+                zs_progress_bar_render_plan_for_spec(
+                    bounds,
+                    crate::ZsProgressBarSpec::indeterminate(),
+                    ZsBaseControlPlatformStyle::Windows,
+                    Dpi::standard(),
+                    elapsed_ms,
+                )
+            })
+            .find(|plan| plan.filled_track.is_some() && plan.secondary_indicator.is_some())
+            .expect("the two WinUI indeterminate segments should overlap during each cycle");
+        assert!(!indeterminate.track_visible);
+        assert_eq!(indeterminate.frame_interval_ms, Some(16));
+        assert!(indeterminate.filled_track.is_some());
+        assert!(indeterminate.secondary_indicator.is_some());
+    }
+
+    #[cfg(feature = "auto-suggest")]
+    #[test]
+    fn auto_suggest_preserves_platform_search_field_metrics_and_semantic_icons() {
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            width: 300,
+            height: 32,
+        };
+        let windows = zs_auto_suggest_render_plan(
+            bounds,
+            3,
+            None,
+            true,
+            true,
+            true,
+            ZsAutoSuggestPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+        let macos = zs_auto_suggest_render_plan(
+            bounds,
+            3,
+            None,
+            false,
+            false,
+            true,
+            ZsAutoSuggestPlatformStyle::Macos,
+            Dpi::standard(),
+        );
+        let gtk = zs_auto_suggest_render_plan(
+            Rect {
+                height: 34,
+                ..bounds
+            },
+            3,
+            None,
+            false,
+            true,
+            true,
+            ZsAutoSuggestPlatformStyle::Gtk,
+            Dpi::standard(),
+        );
+
+        assert_eq!(windows.control_radius, 4);
+        assert_eq!(
+            windows.search_button.expect("Windows query button").width,
+            32
+        );
+        assert_eq!(windows.search_icon.expect("Windows query icon").width, 16);
+        assert_eq!(windows.popup_placement, Some(ZsPopupPlacement::Below));
+        assert_eq!(windows.suggestion_rows.len(), 3);
+        assert_eq!(macos.search_button.expect("macOS search icon").x, 0);
+        assert_eq!(macos.clear_button.expect("macOS cancel button").x, 276);
+        assert_eq!(macos.control_radius, 6);
+        assert_eq!(gtk.control_radius, 8);
+        assert!(matches!(
+            zs_auto_suggest_header_native_draw_plan(&windows, "", Some("Search"))
+                .commands
+                .as_slice(),
+            [
+                NativeDrawCommand::RoundRect { .. },
+                NativeDrawCommand::Text(_),
+                NativeDrawCommand::Icon(NativeDrawIconCommand {
+                    icon: ZsIcon::Search,
+                    ..
+                })
+            ]
+        ));
+    }
+
+    #[cfg(feature = "auto-suggest")]
+    #[test]
+    fn auto_suggest_popup_keeps_strong_id_highlight_visible_and_flips_in_viewport() {
+        let suggestions = (0..20)
+            .map(|index| ZsAutoSuggestion::new(index as u64, format!("Result {index}")))
+            .collect::<Vec<_>>();
+        let plan = zs_auto_suggest_render_plan_in_viewport(
+            Rect {
+                x: 250,
+                y: 250,
+                width: 180,
+                height: 32,
+            },
+            suggestions.len(),
+            Some(18),
+            true,
+            false,
+            true,
+            ZsAutoSuggestPlatformStyle::Windows,
+            Dpi::standard(),
+            Rect {
+                x: 0,
+                y: 0,
+                width: 360,
+                height: 320,
+            },
+        );
+
+        assert_eq!(plan.popup_placement, Some(ZsPopupPlacement::Above));
+        assert!(plan.first_visible_suggestion > 0);
+        assert!(18 >= plan.first_visible_suggestion);
+        assert!(18 < plan.first_visible_suggestion + plan.suggestion_rows.len());
+        assert_eq!(plan.popup.expect("popup").x, 180);
+        assert_eq!(
+            zs_auto_suggest_popup_native_draw_plan(
+                &plan,
+                &suggestions,
+                Some(18_u64.into()),
+                None,
+                Dpi::standard(),
+            )
+            .command_count(),
+            plan.suggestion_rows.len() + 2
+        );
+    }
+
+    #[cfg(feature = "combo")]
+    #[test]
+    fn combo_geometry_separates_header_popup_rows_and_semantic_icon() {
+        let bounds = Rect {
+            x: 12,
+            y: 20,
+            width: 220,
+            height: 36,
+        };
+        let plan = zs_combo_box_render_plan(bounds, 3, true, Dpi::standard());
+        let popup = plan
+            .popup
+            .expect("expanded combo should have popup geometry");
+
+        assert_eq!(popup.y, 60);
+        assert_eq!(popup.height, 108);
+        assert_eq!(plan.popup_placement, Some(ZsPopupPlacement::Below));
+        assert_eq!(plan.option_rows.len(), 3);
+        assert_eq!(plan.option_rows[1].y, 96);
+        assert_eq!(plan.icon_bounds.width, 12);
+        assert_eq!(
+            bounds.x + bounds.width - plan.icon_bounds.x - plan.icon_bounds.width,
+            14
+        );
+        assert!(matches!(
+            zs_combo_box_header_native_draw_plan(&plan, Some("Balanced"), None)
+                .commands
+                .as_slice(),
+            [
+                NativeDrawCommand::RoundRect { .. },
+                NativeDrawCommand::Text(_),
+                NativeDrawCommand::Icon(NativeDrawIconCommand {
+                    icon: ZsIcon::ChevronDown,
+                    ..
+                })
+            ]
+        ));
+        assert_eq!(
+            zs_combo_box_popup_native_draw_plan(
+                &plan,
+                &["Balanced".into(), "Fast".into(), "Quiet".into()],
+                Some(1),
+                Dpi::standard(),
+            )
+            .command_count(),
+            5
+        );
+        assert!(zs_combo_box_render_plan(bounds, 3, false, Dpi::standard())
+            .popup
+            .is_none());
+    }
+
+    #[cfg(feature = "combo")]
+    #[test]
+    fn combo_popup_flips_above_and_clamps_to_viewport_right_edge() {
+        let plan = zs_combo_box_render_plan_in_viewport(
+            Rect {
+                x: 250,
+                y: 180,
+                width: 100,
+                height: 32,
+            },
+            3,
+            true,
+            Dpi::standard(),
+            Rect {
+                x: 0,
+                y: 0,
+                width: 300,
+                height: 240,
+            },
+        );
+
+        assert_eq!(plan.popup_placement, Some(ZsPopupPlacement::Above));
+        assert_eq!(
+            plan.popup,
+            Some(Rect {
+                x: 200,
+                y: 80,
+                width: 100,
+                height: 96,
+            })
+        );
+        assert_eq!(plan.option_rows[2].y, 144);
+    }
+
+    #[cfg(feature = "combo")]
+    #[test]
+    fn combo_popup_caps_rows_to_winui_limit_and_keeps_selection_visible() {
+        let viewport = Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 300,
+        };
+        let plan = zs_combo_box_render_plan_in_viewport_with_scroll(
+            Rect {
+                x: 20,
+                y: 100,
+                width: 200,
+                height: 32,
+            },
+            100,
+            Some(90),
+            None,
+            true,
+            Dpi::standard(),
+            viewport,
+        );
+        let popup = plan.popup.expect("long combo should expose a popup");
+
+        assert_eq!(plan.option_rows.len(), 5);
+        assert_eq!(plan.first_visible_option, 86);
+        assert!(plan.first_visible_option <= 90);
+        assert!(90 < plan.first_visible_option + plan.option_rows.len());
+        assert!(popup.y >= viewport.y);
+        assert!(popup.y + popup.height <= viewport.y + viewport.height);
+
+        let options = (0..100)
+            .map(|index| format!("Option {index}"))
+            .collect::<Vec<_>>();
+        let draw = zs_combo_box_popup_native_draw_plan(&plan, &options, Some(90), Dpi::standard());
+        assert!(draw.commands.iter().any(
+            |command| matches!(command, NativeDrawCommand::Text(text) if text.text == "Option 86")
+        ));
+
+        let unconstrained = zs_combo_box_render_plan(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 32,
+            },
+            100,
+            true,
+            Dpi::standard(),
+        );
+        assert_eq!(
+            unconstrained.option_rows.len(),
+            ZS_COMBO_BOX_MAX_VISIBLE_OPTIONS
+        );
+    }
+
+    #[cfg(feature = "date-picker")]
+    #[test]
+    fn date_picker_geometry_uses_winui_metrics_and_typed_calendar_cells() {
+        let value = ZsDate::new(2026, 7, 13).unwrap();
+        let plan = zs_date_picker_render_plan_with_today(
+            Rect {
+                x: 24,
+                y: 64,
+                width: 472,
+                height: 32,
+            },
+            value,
+            value.first_day_of_month(),
+            ZsDate::new(2026, 6, 15).unwrap(),
+            ZsDate::new(2026, 8, 20).unwrap(),
+            Some(ZsDate::new(2026, 7, 14).unwrap()),
+            true,
+            Dpi::standard(),
+        );
+
+        assert_eq!(plan.control_radius, 4);
+        assert_eq!(plan.overlay_radius, 8);
+        assert_eq!(plan.icon_bounds.width, 12);
+        assert_eq!(plan.popup_placement, Some(ZsPopupPlacement::Below));
+        assert_eq!(plan.popup.unwrap().y, 100);
+        assert_eq!(plan.popup.unwrap().width, 296);
+        assert_eq!(plan.popup.unwrap().height, 332);
+        assert_eq!(plan.weekday_cells.len(), 7);
+        assert_eq!(plan.day_cells.len(), 42);
+        assert_eq!(plan.day_cells[0].date, ZsDate::new(2026, 6, 28).unwrap());
+        assert_eq!(
+            plan.day_cells.iter().filter(|cell| cell.selected).count(),
+            1
+        );
+        assert_eq!(plan.day_cells.iter().filter(|cell| cell.today).count(), 1);
+        assert!(plan
+            .day_cells
+            .iter()
+            .any(|cell| cell.today && !cell.selected && cell.enabled));
+        assert!(matches!(
+            zs_date_picker_header_native_draw_plan(&plan, value)
+                .commands
+                .as_slice(),
+            [
+                NativeDrawCommand::RoundRect { .. },
+                NativeDrawCommand::Text(_),
+                NativeDrawCommand::Icon(NativeDrawIconCommand {
+                    icon: ZsIcon::Calendar,
+                    ..
+                })
+            ]
+        ));
+        assert_eq!(
+            zs_date_picker_popup_native_draw_plan(
+                &plan,
+                value.first_day_of_month(),
+                Dpi::standard()
+            )
+            .command_count(),
+            55
+        );
+    }
+
+    #[cfg(feature = "date-picker")]
+    #[test]
+    fn date_picker_popup_flips_above_and_clamps_to_viewport_at_scaled_dpi() {
+        let value = ZsDate::new(2026, 7, 13).unwrap();
+        let plan = zs_date_picker_render_plan_in_viewport(
+            Rect {
+                x: 520,
+                y: 720,
+                width: 200,
+                height: 64,
+            },
+            value,
+            value.first_day_of_month(),
+            ZsDate::new(1900, 1, 1).unwrap(),
+            ZsDate::new(2100, 12, 31).unwrap(),
+            true,
+            Dpi::new(192.0),
+            Rect {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 960,
+            },
+        );
+
+        assert_eq!(plan.popup_placement, Some(ZsPopupPlacement::Above));
+        assert_eq!(
+            plan.popup,
+            Some(Rect {
+                x: 208,
+                y: 48,
+                width: 592,
+                height: 664,
+            })
+        );
+        assert_eq!(plan.day_cells.len(), 42);
+        assert!(plan
+            .day_cells
+            .iter()
+            .all(|cell| cell.bounds.x >= 208 && cell.bounds.x < 800));
+    }
+
+    #[cfg(feature = "time-picker")]
+    #[test]
+    fn time_picker_uses_platform_metrics_and_typed_segment_choices() {
+        let value = ZsTime::new(18, 15).unwrap();
+        let bounds = Rect {
+            x: 24,
+            y: 64,
+            width: 240,
+            height: 32,
+        };
+        let windows = zs_time_picker_render_plan(
+            bounds,
+            value,
+            ZsMinuteIncrement::FIFTEEN,
+            ZsClockFormat::TwelveHour,
+            true,
+            ZsTimePickerPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+
+        assert_eq!(windows.popup_placement, Some(ZsPopupPlacement::Below));
+        assert_eq!(windows.popup.unwrap().width, 280);
+        assert_eq!(windows.column_bounds.len(), 3);
+        assert_eq!(windows.choices.len(), 12);
+        assert_eq!(
+            windows
+                .choices
+                .iter()
+                .filter(|choice| choice.selected)
+                .count(),
+            3
+        );
+        assert!(windows.choices.iter().any(|choice| {
+            choice.segment == ZsTimePickerSegment::Minute
+                && choice.label == "30"
+                && choice.value == ZsTime::new(18, 30).unwrap()
+        }));
+        assert!(matches!(
+            zs_time_picker_header_native_draw_plan(&windows, value)
+                .commands
+                .as_slice(),
+            [
+                NativeDrawCommand::RoundRect { .. },
+                NativeDrawCommand::Text(_),
+                NativeDrawCommand::Icon(NativeDrawIconCommand {
+                    icon: ZsIcon::ChevronDown,
+                    ..
+                })
+            ]
+        ));
+
+        let macos = zs_time_picker_render_plan(
+            bounds,
+            value,
+            ZsMinuteIncrement::FIFTEEN,
+            ZsClockFormat::TwentyFourHour,
+            true,
+            ZsTimePickerPlatformStyle::Macos,
+            Dpi::standard(),
+        );
+        let gtk = zs_time_picker_render_plan(
+            bounds,
+            value,
+            ZsMinuteIncrement::FIFTEEN,
+            ZsClockFormat::TwentyFourHour,
+            true,
+            ZsTimePickerPlatformStyle::Gtk,
+            Dpi::standard(),
+        );
+        assert_eq!(macos.column_bounds.len(), 2);
+        assert_eq!(macos.choices.len(), 6);
+        assert_eq!(macos.control_radius, 6);
+        assert_eq!(gtk.popup.unwrap().width, 240);
+        assert_eq!(gtk.overlay_radius, 12);
+    }
+
+    #[cfg(feature = "time-picker")]
+    #[test]
+    fn time_picker_popup_flips_and_clamps_with_shared_viewport_placement() {
+        let plan = zs_time_picker_render_plan_in_viewport(
+            Rect {
+                x: 250,
+                y: 220,
+                width: 120,
+                height: 32,
+            },
+            ZsTime::new(9, 30).unwrap(),
+            ZsMinuteIncrement::THIRTY,
+            ZsClockFormat::TwentyFourHour,
+            true,
+            ZsTimePickerPlatformStyle::Gtk,
+            Dpi::standard(),
+            Rect {
+                x: 0,
+                y: 0,
+                width: 300,
+                height: 280,
+            },
+        );
+
+        assert_eq!(plan.popup_placement, Some(ZsPopupPlacement::Above));
+        assert_eq!(plan.popup.unwrap().x, 60);
+        assert!(plan
+            .choices
+            .iter()
+            .all(|choice| choice.bounds.x >= 60 && choice.bounds.x < 300));
+    }
+
+    #[cfg(feature = "color-picker")]
+    #[test]
+    fn color_picker_uses_platform_color_well_metrics_and_shared_channel_geometry() {
+        let state = ZsColorPickerState::new(Color::rgba(12, 96, 220, 144))
+            .with_expanded(true)
+            .with_active_channel(ZsColorChannel::Blue);
+        let bounds = Rect {
+            x: 24,
+            y: 20,
+            width: 220,
+            height: 32,
+        };
+        let windows = zs_color_picker_render_plan(
+            bounds,
+            state,
+            ZsColorPickerPlatformStyle::Windows,
+            Dpi::standard(),
+        );
+
+        assert_eq!(windows.popup_placement, Some(ZsPopupPlacement::Below));
+        assert_eq!(windows.popup.unwrap().width, 320);
+        assert!(windows.spectrum_bounds.is_some());
+        assert!(windows.hue_track.is_some());
+        assert_eq!(windows.channels.len(), 4);
+        assert_eq!(windows.channels[2].channel, ZsColorChannel::Blue);
+        assert!(windows.channels[2].active);
+        assert!(windows.channels.iter().all(|row| row.track.width > 0));
+        assert!(matches!(
+            zs_color_picker_header_native_draw_plan(&windows, state)
+                .commands
+                .as_slice(),
+            [
+                NativeDrawCommand::RoundRect { .. },
+                NativeDrawCommand::RoundRect { .. },
+                NativeDrawCommand::Text(_),
+                NativeDrawCommand::Icon(NativeDrawIconCommand {
+                    icon: ZsIcon::ChevronUp,
+                    ..
+                })
+            ]
+        ));
+        let popup = zs_color_picker_popup_native_draw_plan(&windows, state);
+        assert!(
+            popup
+                .commands
+                .iter()
+                .filter(|command| matches!(
+                    command,
+                    NativeDrawCommand::FillRect {
+                        fill: NativeDrawFill::Color(_),
+                        ..
+                    }
+                ))
+                .count()
+                >= 64 * 64
+        );
+        assert!(popup.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Text(text) if text.text == "#0C60DC90"
+        )));
+
+        let macos = ZsColorPickerMetrics::for_platform(ZsColorPickerPlatformStyle::Macos);
+        let gtk = ZsColorPickerMetrics::for_platform(ZsColorPickerPlatformStyle::Gtk);
+        assert!(macos.row_height.0 < gtk.row_height.0);
+        assert!(macos.popup_width.0 < gtk.popup_width.0);
+        assert_eq!(macos.spectrum_height, Dp::new(0.0));
+        let spectrum = windows.spectrum_bounds.unwrap();
+        assert!(spectrum.width >= 256);
+        assert!(spectrum.height >= 256);
+        let saturated = windows
+            .spectrum_color_at(
+                state,
+                Point {
+                    x: spectrum.x + spectrum.width - 1,
+                    y: spectrum.y,
+                },
+            )
+            .unwrap();
+        assert_eq!(saturated.a, state.color.a);
+        assert_eq!(ZsHsvColor::from_color(saturated).saturation, 1.0);
+    }
+
+    #[cfg(feature = "color-picker")]
+    #[test]
+    fn color_picker_popup_flips_clamps_and_omits_alpha_when_disabled() {
+        let state = ZsColorPickerState::new(Color::rgba(32, 64, 96, 40))
+            .without_alpha()
+            .with_expanded(true);
+        let plan = zs_color_picker_render_plan_in_viewport(
+            Rect {
+                x: 250,
+                y: 250,
+                width: 120,
+                height: 32,
+            },
+            state,
+            ZsColorPickerPlatformStyle::Gtk,
+            Dpi::standard(),
+            Rect {
+                x: 0,
+                y: 0,
+                width: 300,
+                height: 300,
+            },
+        );
+
+        assert_eq!(plan.popup_placement, Some(ZsPopupPlacement::Above));
+        assert_eq!(plan.popup.unwrap().x, 12);
+        assert_eq!(plan.channels.len(), 3);
+        assert!(plan
+            .channels
+            .iter()
+            .all(|row| row.channel != ZsColorChannel::Alpha));
+    }
+
+    #[cfg(feature = "command-palette")]
+    #[test]
+    fn command_palette_uses_distinct_platform_metrics_and_bounded_rows() {
+        let items = (0_u64..10)
+            .map(|index| {
+                crate::ZsCommandPaletteItem::new(index, format!("Command {index}"))
+                    .subtitle(format!("Description {index}"))
+                    .shortcut(format!("Ctrl+{index}"))
+                    .icon(ZsIcon::Search)
+                    .enabled(index != 2)
+            })
+            .collect::<Vec<_>>();
+        let viewport = Rect {
+            x: 0,
+            y: 0,
+            width: 900,
+            height: 620,
+        };
+        let highlighted = crate::ZsCommandPaletteItemId::new(9);
+        let windows = zs_command_palette_render_plan(
+            viewport,
+            "",
+            &items,
+            Some(highlighted),
+            ZsCommandPalettePlatformStyle::Windows,
+            Dpi::standard(),
+        );
+
+        assert_eq!(windows.surface.width, 640);
+        assert_eq!(windows.rows.len(), ZS_COMMAND_PALETTE_MAX_VISIBLE_ITEMS);
+        assert!(windows.first_visible_item > 0);
+        assert!(windows
+            .rows
+            .iter()
+            .any(|row| row.item == highlighted && row.highlighted));
+        assert!(windows.rows.iter().any(|row| !row.enabled));
+        let draw = zs_command_palette_native_draw_plan(
+            &windows,
+            "",
+            "Type a command",
+            "No results",
+            &items,
+        );
+        assert!(draw.commands.iter().any(|command| matches!(
+            command,
+            NativeDrawCommand::Icon(icon) if icon.icon == ZsIcon::Search
+        )));
+
+        let macos = ZsCommandPaletteMetrics::for_platform(ZsCommandPalettePlatformStyle::Macos);
+        let gtk = ZsCommandPaletteMetrics::for_platform(ZsCommandPalettePlatformStyle::Gtk);
+        let windows_metrics =
+            ZsCommandPaletteMetrics::for_platform(ZsCommandPalettePlatformStyle::Windows);
+        assert!(windows_metrics.preferred_width.0 > macos.preferred_width.0);
+        assert!(windows_metrics.row_height.0 > gtk.row_height.0);
+        assert!(macos.surface_radius.0 > windows_metrics.surface_radius.0);
+        assert_ne!(macos.search_radius, gtk.search_radius);
+    }
+}

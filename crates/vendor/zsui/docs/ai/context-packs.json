@@ -1,0 +1,482 @@
+{
+  "schema_version": 1,
+  "bootstrap": "docs/ai-agent.md",
+  "policy": {
+    "read_required_first": true,
+    "read_optional_only_when_blocked": true,
+    "exclude_by_default": [
+      "target/",
+      "comparisons/*/target/",
+      ".git/"
+    ]
+  },
+  "packs": [
+    {
+      "id": "quickstart",
+      "purpose": "Stable public API and one-line native windows",
+      "required": [
+        "Cargo.toml",
+        "src/stable.rs",
+        "examples/stable_api.rs"
+      ],
+      "optional": [
+        "README.md",
+        "src/lib.rs",
+        "src/native.rs"
+      ],
+      "verify": [
+        "cargo test --no-default-features --quiet",
+        "cargo check --example stable_api --no-default-features --features window,button,label"
+      ]
+    },
+    {
+      "id": "app-authoring",
+      "purpose": "Product UI authoring with explicit intent and minimum component composition",
+      "required": [
+        "docs/ai/app-authoring.md",
+        "src/stable.rs",
+        "examples/compact_service_panel.rs"
+      ],
+      "optional": [
+        "README.md",
+        "src/view/mod.rs",
+        "src/platform/experience.rs"
+      ],
+      "verify": [
+        "cargo check --example compact_service_panel --no-default-features --features window,button,label,toggle",
+        "cargo test --no-default-features --quiet"
+      ]
+    },
+    {
+      "id": "features",
+      "purpose": "Cargo features, optional dependencies and compile-time trimming",
+      "required": [
+        "Cargo.toml",
+        "src/feature_manifest.rs",
+        "scripts/check-native-boundary.ps1",
+        "scripts/check-feature-matrix.ps1"
+      ],
+      "optional": [
+        ".github/workflows/ci.yml",
+        "docs/architecture.md",
+        "docs/framework-goals.md"
+      ],
+      "verify": [
+        ".\\scripts\\check-native-boundary.ps1 -Locked",
+        ".\\scripts\\check-feature-matrix.ps1 -Locked",
+        "cargo test --features full --quiet"
+      ]
+    },
+    {
+      "id": "ui-document",
+      "purpose": "Versioned UI documents, typed bindings, deterministic handoff and release embedding/runtime",
+      "required": [
+        "Cargo.toml",
+        "src/ui_document.rs",
+        "src/ui_document_runtime.rs",
+        "src/bin/zsui-uic.rs",
+        "docs/ui-document.md"
+      ],
+      "optional": [
+        "examples/ui-documents",
+        "src/component_catalog.rs",
+        "src/feature_manifest.rs",
+        "src/view",
+        "src/native.rs"
+      ],
+      "verify": [
+        "cargo test --no-default-features --features ui-document-runtime,button,label --quiet",
+        "cargo run --bin zsui-uic --no-default-features --features ui-document,button,label -- check examples/ui-documents/basic.json --bindings examples/ui-documents/basic.bindings.json",
+        "cargo run --bin zsui-uic --no-default-features --features ui-document,button,label -- embed examples/ui-documents/basic.json --bindings examples/ui-documents/basic.bindings.json --output target/ui-document/basic.zsui --force"
+      ]
+    },
+    {
+      "id": "ui-viewer",
+      "purpose": "Prebuilt target-native UI document Viewer, stable IDs and source reload",
+      "required": [
+        "Cargo.toml",
+        "src/ui_document.rs",
+        "src/ui_viewer.rs",
+        "src/bin/zsui-viewer.rs",
+        "docs/ui-document.md"
+      ],
+      "optional": [
+        "examples/ui-documents",
+        "src/view",
+        "src/native.rs",
+        "src/feature_manifest.rs"
+      ],
+      "verify": [
+        "cargo test --no-default-features --features ui-viewer --quiet",
+        "cargo check --bin zsui-viewer --no-default-features --features ui-viewer"
+      ]
+    },
+    {
+      "id": "view-widgets",
+      "purpose": "Typed View, State/Msg/update and basic widget behavior",
+      "required": [
+        "src/view/mod.rs",
+        "src/view/node.rs",
+        "src/platform/experience.rs",
+        "src/platform/component_profile",
+        "src/widget_render.rs"
+      ],
+      "optional": [
+        "src/view",
+        "src/components.rs",
+        "src/native.rs",
+        "src/platform/style.rs",
+        "src/component_catalog.rs",
+        "examples/rust_first_view.rs",
+        "examples/list_selection.rs",
+        "examples/scroll_view.rs"
+      ],
+      "verify": [
+        "cargo test --features full --quiet",
+        "cargo run --example rust_first_view --features full -- --smoke"
+      ]
+    },
+    {
+      "id": "navigation-shell",
+      "purpose": "Navigation, grouped cards, settings rows and scrolling",
+      "required": [
+        "src/shell_layout.rs",
+        "src/view/widgets/data.rs",
+        "src/platform/component_profile",
+        "examples/navigation_shell_layout.rs"
+      ],
+      "optional": [
+        "src/style.rs",
+        "src/icon.rs",
+        "src/platform/windows/mod.rs"
+      ],
+      "verify": [
+        "cargo test --features full --quiet",
+        "cargo run --example navigation_shell_layout --features full -- --smoke"
+      ]
+    },
+    {
+      "id": "long-list",
+      "purpose": "Virtual rows, background pagination, sync reconciliation, prefetch and bounded page caching",
+      "required": [
+        "src/paged_list.rs",
+        "src/view/layout.rs",
+        "src/view/widgets/data.rs",
+        "examples/paged_virtual_list.rs",
+        "docs/paged-virtual-list.md"
+      ],
+      "optional": [
+        "src/native.rs",
+        "Cargo.toml"
+      ],
+      "verify": [
+        "cargo test --no-default-features --features paged-list,label --quiet",
+        "cargo check --example paged_virtual_list --no-default-features --features window,button,label,paged-list",
+        "cargo run --example paged_virtual_list --no-default-features --features window,button,label,paged-list -- --smoke"
+      ]
+    },
+    {
+      "id": "image-preview",
+      "purpose": "Retained raster frames, coalesced background PNG decode and buffered Win32 presentation",
+      "required": [
+        "src/image_preview.rs",
+        "src/render_protocol.rs",
+        "src/windows_gdi_renderer.rs",
+        "examples/image_preview.rs",
+        "docs/image-preview.md"
+      ],
+      "optional": [
+        "src/view/node.rs",
+        "src/view/paint.rs",
+        "src/native.rs",
+        "src/platform/windows/window.rs",
+        "Cargo.toml"
+      ],
+      "verify": [
+        "cargo test --lib --no-default-features --features image-preview --quiet",
+        "cargo check --example image_preview --no-default-features --features window,button,label,image-preview",
+        "cargo run --example image_preview --no-default-features --features window,button,label,image-preview -- --smoke"
+      ]
+    },
+    {
+      "id": "workbench",
+      "purpose": "Conversation/task workbench, composer and inspector shell",
+      "required": [
+        "src/workbench.rs",
+        "examples/workbench_shell.rs"
+      ],
+      "optional": [
+        "src/style.rs",
+        "src/icon.rs",
+        "src/component_catalog.rs",
+        "src/platform/windows/mod.rs"
+      ],
+      "verify": [
+        "cargo test --features full --quiet",
+        "cargo run --example workbench_shell --features full -- --smoke"
+      ]
+    },
+    {
+      "id": "document-shell",
+      "purpose": "Shared document lifecycle, self-drawn editor acceptance and notepad measurement",
+      "required": [
+        "src/document_shell.rs",
+        "examples/zsui_notepad.rs",
+        "docs/notepad-demo.md"
+      ],
+      "optional": [
+        "src/platform/windows/text/edit_host.rs",
+        "src/windows_gdi_renderer.rs",
+        "src/icon.rs",
+        "scripts/measure-notepad-comparison.ps1",
+        "comparisons/egui_notepad",
+        "comparisons/iced_notepad",
+        "comparisons/slint_notepad",
+        "comparisons/tauri_notepad"
+      ],
+      "verify": [
+        "cargo test --example zsui_notepad --no-default-features --features notepad-demo --quiet",
+        "cargo run --example zsui_notepad --no-default-features --features notepad-demo -- --smoke"
+      ]
+    },
+    {
+      "id": "performance",
+      "purpose": "Equal-complexity Minimal, Common, Full Native App and Viewer release measurements",
+      "required": [
+        "scripts/measure-ui-performance-matrix.ps1",
+        "comparisons/scripts/measure_unix_performance_matrix.py",
+        "comparisons/performance-matrix-applications.json",
+        "docs/ui-performance-matrix.md",
+        "Cargo.toml"
+      ],
+      "optional": [
+        "comparisons/scripts/build_unix_performance_matrix.sh",
+        ".github/workflows/ui-performance-matrix.yml",
+        "examples/ui_performance_minimal.rs",
+        "examples/ui-documents/performance-viewer.json",
+        "examples/invoice_workbench.rs",
+        "examples/component_gallery.rs",
+        "src/bin/zsui-viewer.rs",
+        "comparisons/egui_notepad",
+        "comparisons/iced_notepad",
+        "comparisons/slint_notepad",
+        "comparisons/tauri_notepad"
+      ],
+      "verify": [
+        "[void][scriptblock]::Create((Get-Content -Raw scripts/measure-ui-performance-matrix.ps1))",
+        "python -c \"import ast,pathlib; ast.parse(pathlib.Path('comparisons/scripts/measure_unix_performance_matrix.py').read_text(encoding='utf-8'))\"",
+        "cargo check --example ui_performance_minimal --no-default-features --features window,button,label",
+        "cargo check --example invoice_workbench --no-default-features --features window,workbench,list,dialog",
+        "cargo check --example component_gallery --no-default-features --features component-gallery-demo",
+        "cargo check --bin zsui-viewer --no-default-features --features ui-viewer"
+      ]
+    },
+    {
+      "id": "calculator",
+      "purpose": "Decimal engine, calculator shell and local comparison",
+      "required": [
+        "src/calculator.rs",
+        "examples/zsui_calculator.rs",
+        "src/view/widgets/calculator.rs",
+        "docs/calculator-demo.md"
+      ],
+      "optional": [
+        "src/windows_gdi_renderer.rs",
+        "src/icon.rs",
+        "scripts/measure-calculator-comparison.ps1"
+      ],
+      "verify": [
+        "cargo test --lib --no-default-features --features calculator calculator --quiet",
+        "cargo run --example zsui_calculator --no-default-features --features calculator-demo -- --smoke"
+      ]
+    },
+    {
+      "id": "windows-renderer",
+      "purpose": "Win32 host, GDI+ renderer, no-flicker paint, DPI and input",
+      "required": [
+        "src/windows_gdi_renderer.rs",
+        "src/platform/windows/mod.rs",
+        "src/platform/windows/window.rs",
+        "src/render_protocol.rs",
+        "src/native.rs"
+      ],
+      "optional": [
+        "src/platform/windows/text/directwrite.rs",
+        "src/platform/windows/text/rust_renderer.rs",
+        "src/rust_text_renderer.rs",
+        "examples/text_geometry_proof.rs",
+        "docs/text-rendering.md",
+        "src/platform/windows/application.rs",
+        "src/platform/windows/dpi.rs",
+        "src/platform/windows/input",
+        "src/platform/windows/services",
+        "src/platform/windows/text"
+      ],
+      "verify": [
+        "cargo test --features full --quiet",
+        "cargo test --no-default-features --features windows-rust-text --quiet",
+        "cargo test --no-default-features --features rust-text-proof --quiet",
+        "cargo check --example text_geometry_proof --no-default-features --features windows-text-proof",
+        "cargo run --example native_smoke_run --features full -- windows",
+        "cargo run --example native_smoke_review --features full -- windows",
+        ".\\scripts\\check-windows-text-accessibility.ps1 -Locked"
+      ]
+    },
+    {
+      "id": "icons",
+      "purpose": "Semantic icons, native platform sources and licensed fallback assets",
+      "required": [
+        "src/icon.rs",
+        "src/native_icons.rs",
+        "docs/native-icons.md"
+      ],
+      "optional": [
+        "src/windows_gdi_renderer.rs",
+        "src/desktop_services.rs",
+        "Cargo.toml",
+        "THIRD_PARTY_NOTICES.md"
+      ],
+      "verify": [
+        "cargo test --no-default-features --features fluent-icons --quiet",
+        "cargo test --features full --quiet"
+      ]
+    },
+    {
+      "id": "desktop-hosts",
+      "purpose": "Windows, macOS and Linux host/capability boundaries and native proof",
+      "required": [
+        "src/native_hosts.rs",
+        "src/native_host_launch.rs",
+        "src/platform/experience.rs",
+        "src/platform/backend_profile.rs",
+        "src/platform/desktop_runtime/mod.rs"
+      ],
+      "optional": [
+        "src/platform/identity.rs",
+        "src/native_adapter_manifest.rs",
+        "src/platform/windows/mod.rs",
+        "src/platform/desktop_runtime/windows.rs",
+        "src/platform/desktop_runtime/windows_smoke.rs",
+        "src/platform/desktop_runtime/macos.rs",
+        "src/platform/desktop_runtime/linux_direct.rs",
+        "src/platform/desktop_runtime/linux_gtk.rs",
+        "src/platform/desktop_runtime/winit.rs",
+        "src/platform/desktop_runtime/winit_smoke.rs",
+        "src/platform/desktop_runtime/unsupported.rs",
+        "src/desktop_services.rs",
+        "docs/porting.md",
+        "src/native_clipboard.rs",
+        "src/native_menu.rs",
+        "src/macos_appkit_menu.rs",
+        "src/macos_appkit_renderer.rs",
+        "src/macos_appkit_services.rs",
+        "src/linux_direct.rs",
+        "src/linux_direct_lite.rs",
+        "src/linux_direct_accessibility.rs",
+        "src/linux_direct_menu.rs",
+        "src/linux_gtk_menu.rs",
+        "src/linux_gtk_renderer.rs",
+        "src/linux_gtk_services.rs",
+        "src/native_draw_support.rs",
+        "src/native_file_dialog.rs",
+        "src/platform/menu_accelerator.rs",
+        "src/render_protocol.rs",
+        "Cargo.toml",
+      "docs/native-host-smoke.md",
+      "docs/v0.3-native-proof-ci.md",
+      "docs/v0.2-desktop-native.md",
+      ".github/workflows/native-proof.yml",
+      "examples/native_dialog_smoke.rs",
+      "examples/desktop_native_showcase.rs"
+      ],
+      "verify": [
+        "cargo test --features full --quiet",
+        "cargo check --features full"
+      ]
+    },
+    {
+      "id": "mobile-hosts",
+      "purpose": "Android Activity host contracts and proof",
+      "required": [
+        "src/mobile_host.rs",
+        "src/android_activity_host.rs",
+        "examples/mobile_scaffold_manifest.rs"
+      ],
+      "optional": [
+        "docs/native-host-smoke.md",
+        "src/agent_context.rs"
+      ],
+      "verify": [
+        "cargo test --features full --quiet",
+        "cargo run --example mobile_scaffold_manifest --features full -- all --review-contract"
+      ]
+    },
+    {
+      "id": "product-adapter",
+      "purpose": "Product boundary, runtime harness and command executors",
+      "required": [
+        "src/product_adapter.rs",
+        "src/app_command.rs",
+        "src/command_protocol.rs",
+        "examples/product_adapter.rs"
+      ],
+      "optional": [
+        "examples/product_adapter_smoke.rs",
+        "examples/product_adapter_view.rs",
+        "examples/product_adapter_native_driver.rs"
+      ],
+      "verify": [
+        "cargo test --features full --quiet",
+        "cargo run --example product_adapter_smoke --features full"
+      ]
+    },
+    {
+      "id": "completion-audit",
+      "purpose": "Full framework readiness, component counts and platform evidence",
+      "required": [
+        "docs/ai/reference.md",
+        "src/agent_context.rs",
+        "src/component_catalog.rs",
+        "src/feature_manifest.rs"
+      ],
+      "optional": [
+        "docs/architecture.md",
+        "docs/framework-goals.md",
+        "docs/native-host-smoke.md",
+        "src/native_adapter_manifest.rs"
+      ],
+      "verify": [
+        "cargo test --features full --quiet",
+        ".\\scripts\\check-feature-matrix.ps1 -Locked"
+      ]
+    },
+    {
+      "id": "release",
+      "purpose": "Repository-wide formatting, tests, docs and release checks",
+      "required": [
+        "Cargo.toml",
+        ".github/workflows/ci.yml",
+        "scripts/check-native-boundary.ps1",
+        "scripts/check-feature-matrix.ps1",
+        "README.md"
+      ],
+      "optional": [
+        "AGENTS.md",
+        "README.en.md",
+        "docs/ai-agent.md",
+        "docs/ai/context-packs.json",
+        "docs/gallery.md",
+        "docs/images",
+        "docs/native-host-smoke.md"
+      ],
+      "verify": [
+        "cargo fmt --all -- --check",
+        "cargo test --no-default-features --quiet",
+        "cargo test --features full --quiet",
+        ".\\scripts\\check-native-boundary.ps1 -Locked",
+        ".\\scripts\\check-feature-matrix.ps1 -Locked",
+        "git diff --check"
+      ]
+    }
+  ]
+}

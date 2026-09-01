@@ -1,0 +1,2033 @@
+//! Prebuilt native development viewer for validated [`UiDocument`] files.
+
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fmt, fs,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard},
+};
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::ui_document::{
+    ui_document_sensitive_bindings, validate_ui_document_binding_values, UiBindingSchema,
+    UiDiagnostic, UiDocument, UiFeatureSet, UiLayout, UiNode, UiSecretValues, UiValueType,
+};
+pub use crate::ui_document_runtime::UiDocumentAction as UiViewerAction;
+use crate::ui_document_runtime::{ui_document_view_with_secrets, UiDocumentSecretAction};
+use crate::{column, text, AppCx, Dp, ViewNode};
+
+pub const ZSUI_UI_VIEWER_DEFAULT_POLL_INTERVAL_MS: u64 = 250;
+pub const ZSUI_UI_VIEWER_PROOF_SCHEMA: &str = "zsui.ui-viewer-proof/v1";
+pub const ZSUI_UI_VIEWER_PROOF_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum UiViewerMessage {
+    Action(UiViewerAction),
+    Secret(UiDocumentSecretAction),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiViewerState {
+    #[serde(default)]
+    pub properties: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub actions: Vec<UiViewerAction>,
+    #[serde(default)]
+    pub secure_action_count: u64,
+    #[serde(skip, default)]
+    pub secure_properties: UiSecretValues,
+}
+
+impl UiViewerState {
+    pub fn with_properties(properties: BTreeMap<String, Value>) -> Self {
+        Self {
+            properties,
+            actions: Vec::new(),
+            secure_action_count: 0,
+            secure_properties: UiSecretValues::new(),
+        }
+    }
+}
+
+pub fn ui_viewer_update(state: &mut UiViewerState, message: UiViewerMessage, _cx: &mut AppCx) {
+    match message {
+        UiViewerMessage::Action(action) => {
+            const MAX_ACTION_HISTORY: usize = 64;
+            if let Some(binding) = &action.property_binding {
+                state
+                    .properties
+                    .insert(binding.clone(), action.payload.clone());
+            }
+            if state.actions.len() == MAX_ACTION_HISTORY {
+                state.actions.remove(0);
+            }
+            state.actions.push(action);
+        }
+        UiViewerMessage::Secret(action) => {
+            const MAX_ACTION_HISTORY: usize = 64;
+            state
+                .secure_properties
+                .insert(action.property_binding.clone(), action.value);
+            state.secure_action_count = state.secure_action_count.saturating_add(1);
+            if state.actions.len() == MAX_ACTION_HISTORY {
+                state.actions.remove(0);
+            }
+            state.actions.push(UiViewerAction {
+                node_id: action.node_id,
+                binding: action.binding,
+                property_binding: Some(action.property_binding),
+                payload: Value::String("<redacted>".to_owned()),
+            });
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiViewerSourceSnapshot {
+    pub revision: u64,
+    pub document_schema_version: u32,
+    pub document_path: PathBuf,
+    pub binding_path: Option<PathBuf>,
+    pub node_count: usize,
+    pub nodes: Vec<UiViewerNodeSnapshot>,
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reload: Option<UiViewerReloadReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiViewerNodeSnapshot {
+    pub path: String,
+    pub id: String,
+    pub widget_id: u64,
+    pub component: String,
+    pub layout: UiLayout,
+    pub child_count: usize,
+}
+
+/// Deterministic compatibility result for one accepted source reload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiViewerReloadReport {
+    pub from_revision: u64,
+    pub to_revision: u64,
+    pub preserved_node_ids: Vec<String>,
+    pub added_node_ids: Vec<String>,
+    pub state_resets: Vec<UiViewerStateReset>,
+    /// Stable property bindings whose ordinary or secure state remains
+    /// type- and storage-compatible with the accepted source revision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preserved_property_bindings: Vec<String>,
+    /// Property bindings introduced by the accepted source revision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added_property_bindings: Vec<String>,
+    /// Explicit diagnostics for binding state that cannot be reused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binding_state_resets: Vec<UiViewerBindingStateReset>,
+}
+
+impl UiViewerReloadReport {
+    pub fn preserves_all_existing_state(&self) -> bool {
+        self.state_resets.is_empty() && self.binding_state_resets.is_empty()
+    }
+}
+
+/// One stable author identity whose previous transient state cannot be reused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiViewerStateReset {
+    pub node_id: String,
+    pub previous_component: String,
+    pub current_component: Option<String>,
+    pub reason: UiViewerStateResetReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiViewerStateResetReason {
+    NodeRemoved,
+    ComponentChanged,
+    ComponentConfigurationChanged,
+}
+
+/// One typed property binding whose previous Viewer value is incompatible
+/// with the accepted source revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiViewerBindingStateReset {
+    pub binding: String,
+    pub previous_type: UiValueType,
+    pub current_type: Option<UiValueType>,
+    pub reason: UiViewerBindingStateResetReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiViewerBindingStateResetReason {
+    BindingRemoved,
+    ValueTypeChanged,
+    StorageClassChanged,
+}
+
+#[derive(Clone)]
+pub struct UiViewerSource {
+    inner: Arc<Mutex<UiViewerSourceState>>,
+    poll_interval_ms: u64,
+}
+
+impl fmt::Debug for UiViewerSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UiViewerSource")
+            .field("snapshot", &self.snapshot())
+            .field("poll_interval_ms", &self.poll_interval_ms)
+            .finish()
+    }
+}
+
+struct UiViewerSourceState {
+    document_path: PathBuf,
+    binding_path: Option<PathBuf>,
+    last_seen_hash: u64,
+    document: Arc<UiDocument>,
+    bindings: UiBindingSchema,
+    revision: u64,
+    last_error: Option<String>,
+    error_source_hash: Option<u64>,
+    last_reload: Option<UiViewerReloadReport>,
+}
+
+impl UiViewerSource {
+    pub fn open(
+        document_path: impl Into<PathBuf>,
+        binding_path: Option<impl Into<PathBuf>>,
+    ) -> Result<Self, UiViewerError> {
+        let document_path = document_path.into();
+        let binding_path = binding_path.map(Into::into);
+        let sources = read_sources(&document_path, binding_path.as_deref())?;
+        let (document, bindings) = parse_and_validate_sources(
+            &document_path,
+            binding_path.as_deref(),
+            &sources.document,
+            &sources.bindings,
+        )?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(UiViewerSourceState {
+                document_path,
+                binding_path,
+                last_seen_hash: sources.hash,
+                document: Arc::new(document),
+                bindings,
+                revision: 1,
+                last_error: None,
+                error_source_hash: None,
+                last_reload: None,
+            })),
+            poll_interval_ms: ZSUI_UI_VIEWER_DEFAULT_POLL_INTERVAL_MS,
+        })
+    }
+
+    pub fn poll_interval_ms(mut self, interval_ms: u64) -> Self {
+        self.poll_interval_ms = interval_ms.max(16);
+        self
+    }
+
+    /// Reloads changed source files. Invalid edits leave the last valid
+    /// document active and expose a diagnostic through [`Self::snapshot`].
+    pub fn refresh(&self) -> bool {
+        let (document_path, binding_path, last_seen_hash) = {
+            let state = self.lock();
+            (
+                state.document_path.clone(),
+                state.binding_path.clone(),
+                state.last_seen_hash,
+            )
+        };
+        let sources = match read_sources(&document_path, binding_path.as_deref()) {
+            Ok(sources) => sources,
+            Err(error) => {
+                self.record_error(error.to_string(), None);
+                return false;
+            }
+        };
+        if sources.hash == last_seen_hash {
+            let mut state = self.lock();
+            if state.last_error.is_some() && state.error_source_hash.is_none() {
+                state.last_error = None;
+            }
+            return false;
+        }
+
+        match parse_and_validate_sources(
+            &document_path,
+            binding_path.as_deref(),
+            &sources.document,
+            &sources.bindings,
+        ) {
+            Ok((document, bindings)) => {
+                let mut state = self.lock();
+                let next_revision = state.revision.saturating_add(1);
+                let reload = reload_compatibility_report(
+                    &state.document,
+                    &state.bindings,
+                    &document,
+                    &bindings,
+                    state.revision,
+                    next_revision,
+                );
+                state.last_seen_hash = sources.hash;
+                state.document = Arc::new(document);
+                state.bindings = bindings;
+                state.revision = next_revision;
+                state.last_error = None;
+                state.error_source_hash = None;
+                state.last_reload = Some(reload);
+                true
+            }
+            Err(error) => {
+                self.record_error(error.to_string(), Some(sources.hash));
+                false
+            }
+        }
+    }
+
+    pub fn snapshot(&self) -> UiViewerSourceSnapshot {
+        let state = self.lock();
+        let mut nodes = Vec::new();
+        collect_viewer_nodes(&state.document.root, "$.root", &mut nodes);
+        UiViewerSourceSnapshot {
+            revision: state.revision,
+            document_schema_version: state.document.schema_version,
+            document_path: state.document_path.clone(),
+            binding_path: state.binding_path.clone(),
+            node_count: nodes.len(),
+            nodes,
+            last_error: state.last_error.clone(),
+            last_reload: state.last_reload.clone(),
+        }
+    }
+
+    pub fn view(&self, viewer_state: &UiViewerState) -> ViewNode<UiViewerMessage> {
+        self.refresh();
+        let (document, bindings, last_error, node_reset_count, binding_reset_count) = {
+            let state = self.lock();
+            (
+                Arc::clone(&state.document),
+                state.bindings.clone(),
+                state.last_error.clone(),
+                state
+                    .last_reload
+                    .as_ref()
+                    .map(|reload| reload.state_resets.len())
+                    .unwrap_or(0),
+                state
+                    .last_reload
+                    .as_ref()
+                    .map(|reload| reload.binding_state_resets.len())
+                    .unwrap_or(0),
+            )
+        };
+        let (properties, secrets) = compatible_viewer_values(&document, &bindings, viewer_state);
+        let content = ui_document_view_with_secrets(
+            &document,
+            &bindings,
+            &properties,
+            &secrets,
+            UiViewerMessage::Action,
+            UiViewerMessage::Secret,
+        )
+        .unwrap_or_else(|error| text(format!("UI document runtime error: {error}")));
+        let mut root = if let Some(error) = last_error {
+            column([text(format!("UI document reload error: {error}")), content]).gap(Dp::new(8.0))
+        } else if node_reset_count > 0 || binding_reset_count > 0 {
+            column([
+                text(format!(
+                    "UI 重载已重置不兼容状态 / UI reload reset incompatible state: \
+                     {node_reset_count} node(s), {binding_reset_count} binding(s)"
+                )),
+                content,
+            ])
+            .gap(Dp::new(8.0))
+        } else {
+            content
+        };
+        root = root.with_document_poll_interval_ms(self.poll_interval_ms);
+        root
+    }
+
+    /// Rejects undeclared, mistyped and sensitive values before a Viewer
+    /// window is created. Passwords cannot be supplied by `--values` JSON.
+    pub fn validate_properties(
+        &self,
+        properties: &BTreeMap<String, Value>,
+    ) -> Result<(), UiViewerError> {
+        let state = self.lock();
+        let report =
+            validate_ui_document_binding_values(&state.document, &state.bindings, properties);
+        if report.is_valid() {
+            Ok(())
+        } else {
+            Err(UiViewerError::Validation {
+                path: state.document_path.clone(),
+                diagnostics: report.diagnostics,
+            })
+        }
+    }
+
+    fn record_error(&self, error: String, seen_hash: Option<u64>) {
+        let mut state = self.lock();
+        if let Some(hash) = seen_hash {
+            state.last_seen_hash = hash;
+        }
+        state.last_error = Some(error);
+        state.error_source_hash = seen_hash;
+    }
+
+    fn lock(&self) -> MutexGuard<'_, UiViewerSourceState> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+fn collect_viewer_nodes(node: &UiNode, path: &str, output: &mut Vec<UiViewerNodeSnapshot>) {
+    output.push(UiViewerNodeSnapshot {
+        path: path.to_owned(),
+        id: node.id.as_str().to_owned(),
+        widget_id: node.id.widget_id().0,
+        component: node.component.clone(),
+        layout: node.layout,
+        child_count: node.children.len(),
+    });
+    for (index, child) in node.children.iter().enumerate() {
+        collect_viewer_nodes(child, &format!("{path}.children[{index}]"), output);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiViewerError {
+    Read {
+        path: PathBuf,
+        message: String,
+    },
+    Parse {
+        path: PathBuf,
+        message: String,
+    },
+    Validation {
+        path: PathBuf,
+        diagnostics: Vec<UiDiagnostic>,
+    },
+}
+
+impl fmt::Display for UiViewerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read { path, message } => {
+                write!(formatter, "cannot read {}: {message}", path.display())
+            }
+            Self::Parse { path, message } => {
+                write!(formatter, "cannot parse {}: {message}", path.display())
+            }
+            Self::Validation { path, diagnostics } => write!(
+                formatter,
+                "{} failed UI document validation with {} diagnostic(s)",
+                path.display(),
+                diagnostics.len()
+            ),
+        }
+    }
+}
+
+impl Error for UiViewerError {}
+
+struct SourceText {
+    document: String,
+    bindings: String,
+    hash: u64,
+}
+
+fn read_sources(
+    document_path: &Path,
+    binding_path: Option<&Path>,
+) -> Result<SourceText, UiViewerError> {
+    let document = fs::read_to_string(document_path).map_err(|error| UiViewerError::Read {
+        path: document_path.to_owned(),
+        message: error.to_string(),
+    })?;
+    let bindings = match binding_path {
+        Some(path) => fs::read_to_string(path).map_err(|error| UiViewerError::Read {
+            path: path.to_owned(),
+            message: error.to_string(),
+        })?,
+        None => "{}".to_owned(),
+    };
+    let mut hash = fnv1a(document.as_bytes());
+    hash ^= fnv1a(bindings.as_bytes()).rotate_left(17);
+    Ok(SourceText {
+        document,
+        bindings,
+        hash,
+    })
+}
+
+fn parse_and_validate_sources(
+    document_path: &Path,
+    binding_path: Option<&Path>,
+    document_source: &str,
+    binding_source: &str,
+) -> Result<(UiDocument, UiBindingSchema), UiViewerError> {
+    let document =
+        UiDocument::from_json(document_source).map_err(|error| UiViewerError::Parse {
+            path: document_path.to_owned(),
+            message: error.to_string(),
+        })?;
+    let bindings = serde_json::from_str::<UiBindingSchema>(binding_source).map_err(|error| {
+        UiViewerError::Parse {
+            path: binding_path
+                .map(Path::to_owned)
+                .unwrap_or_else(|| PathBuf::from("<empty binding schema>")),
+            message: error.to_string(),
+        }
+    })?;
+    let report = document.validate(&UiFeatureSet::compiled(), &bindings);
+    if report.is_valid() {
+        Ok((document, bindings))
+    } else {
+        Err(UiViewerError::Validation {
+            path: document_path.to_owned(),
+            diagnostics: report.diagnostics,
+        })
+    }
+}
+
+fn reload_compatibility_report(
+    previous: &UiDocument,
+    previous_bindings: &UiBindingSchema,
+    current: &UiDocument,
+    current_bindings: &UiBindingSchema,
+    from_revision: u64,
+    to_revision: u64,
+) -> UiViewerReloadReport {
+    let mut previous_nodes = BTreeMap::new();
+    let mut current_nodes = BTreeMap::new();
+    collect_node_components(&previous.root, &mut previous_nodes);
+    collect_node_components(&current.root, &mut current_nodes);
+
+    let mut preserved_node_ids = Vec::new();
+    let mut state_resets = Vec::new();
+    for (node_id, previous_node) in &previous_nodes {
+        match current_nodes.get(node_id) {
+            Some(current_node) if current_node.state_class == previous_node.state_class => {
+                preserved_node_ids.push(node_id.clone());
+            }
+            Some(current_node) => state_resets.push(UiViewerStateReset {
+                node_id: node_id.clone(),
+                previous_component: previous_node.component.clone(),
+                current_component: Some(current_node.component.clone()),
+                reason: if current_node.component == previous_node.component {
+                    UiViewerStateResetReason::ComponentConfigurationChanged
+                } else {
+                    UiViewerStateResetReason::ComponentChanged
+                },
+            }),
+            None => state_resets.push(UiViewerStateReset {
+                node_id: node_id.clone(),
+                previous_component: previous_node.component.clone(),
+                current_component: None,
+                reason: UiViewerStateResetReason::NodeRemoved,
+            }),
+        }
+    }
+    let added_node_ids = current_nodes
+        .keys()
+        .filter(|node_id| !previous_nodes.contains_key(*node_id))
+        .cloned()
+        .collect();
+
+    let previous_sensitive = ui_document_sensitive_bindings(previous);
+    let current_sensitive = ui_document_sensitive_bindings(current);
+    let mut preserved_property_bindings = Vec::new();
+    let mut binding_state_resets = Vec::new();
+    for (binding, previous_type) in &previous_bindings.properties {
+        match current_bindings.properties.get(binding) {
+            Some(current_type)
+                if current_type == previous_type
+                    && previous_sensitive.contains(binding)
+                        == current_sensitive.contains(binding) =>
+            {
+                preserved_property_bindings.push(binding.clone());
+            }
+            Some(current_type) => binding_state_resets.push(UiViewerBindingStateReset {
+                binding: binding.clone(),
+                previous_type: *previous_type,
+                current_type: Some(*current_type),
+                reason: if current_type != previous_type {
+                    UiViewerBindingStateResetReason::ValueTypeChanged
+                } else {
+                    UiViewerBindingStateResetReason::StorageClassChanged
+                },
+            }),
+            None => binding_state_resets.push(UiViewerBindingStateReset {
+                binding: binding.clone(),
+                previous_type: *previous_type,
+                current_type: None,
+                reason: UiViewerBindingStateResetReason::BindingRemoved,
+            }),
+        }
+    }
+    let added_property_bindings = current_bindings
+        .properties
+        .keys()
+        .filter(|binding| !previous_bindings.properties.contains_key(*binding))
+        .cloned()
+        .collect();
+
+    UiViewerReloadReport {
+        from_revision,
+        to_revision,
+        preserved_node_ids,
+        added_node_ids,
+        state_resets,
+        preserved_property_bindings,
+        added_property_bindings,
+        binding_state_resets,
+    }
+}
+
+fn compatible_viewer_values(
+    document: &UiDocument,
+    bindings: &UiBindingSchema,
+    state: &UiViewerState,
+) -> (BTreeMap<String, Value>, UiSecretValues) {
+    let sensitive = ui_document_sensitive_bindings(document);
+    let properties = bindings
+        .properties
+        .iter()
+        .filter(|(binding, _)| !sensitive.contains(*binding))
+        .filter_map(|(binding, value_type)| {
+            state
+                .properties
+                .get(binding)
+                .filter(|value| value_type.matches(value))
+                .cloned()
+                .map(|value| (binding.clone(), value))
+        })
+        .collect();
+    let mut secrets = UiSecretValues::new();
+    for binding in sensitive {
+        if let Some(value) = state.secure_properties.get(&binding) {
+            secrets.insert(binding, value.clone());
+        }
+    }
+    (properties, secrets)
+}
+
+#[derive(Clone)]
+struct UiViewerNodeCompatibility {
+    component: String,
+    state_class: String,
+}
+
+fn collect_node_components(
+    node: &UiNode,
+    output: &mut BTreeMap<String, UiViewerNodeCompatibility>,
+) {
+    output.insert(
+        node.id.as_str().to_owned(),
+        UiViewerNodeCompatibility {
+            component: node.component.clone(),
+            state_class: node_state_class(node),
+        },
+    );
+    for child in &node.children {
+        collect_node_components(child, output);
+    }
+}
+
+fn node_state_class(node: &UiNode) -> String {
+    if node.component != "textbox" {
+        return node.component.clone();
+    }
+    if let Some(binding) = node.property_bindings.get("multiline") {
+        return format!("textbox:multiline-binding:{binding}");
+    }
+    if node
+        .properties
+        .get("multiline")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        "textbox:multiline".to_owned()
+    } else {
+        "textbox:singleline".to_owned()
+    }
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn fixture_directory(test_name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should follow epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "zsui-ui-viewer-{}-{test_name}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    fn write_fixtures(directory: &Path) -> (PathBuf, PathBuf) {
+        fs::create_dir_all(directory).expect("fixture directory should be created");
+        let document = directory.join("basic.json");
+        let bindings = directory.join("basic.bindings.json");
+        fs::write(
+            &document,
+            include_str!("../examples/ui-documents/basic.json"),
+        )
+        .expect("document fixture should be written");
+        fs::write(
+            &bindings,
+            include_str!("../examples/ui-documents/basic.bindings.json"),
+        )
+        .expect("binding fixture should be written");
+        (document, bindings)
+    }
+
+    #[test]
+    fn viewer_preserves_password_state_without_serializing_or_logging_it() {
+        let directory = fixture_directory("secure-password");
+        fs::create_dir_all(&directory).unwrap();
+        let document_path = directory.join("password.json");
+        let binding_path = directory.join("password.bindings.json");
+        fs::write(
+            &document_path,
+            r#"{
+              "schema_version": 1,
+              "root": {
+                "id": "account-password",
+                "component": "password_box",
+                "properties": { "reveal_mode": "peek" },
+                "property_bindings": { "value": "account_password" },
+                "action_bindings": { "change": "account_password_changed" }
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            &binding_path,
+            r#"{
+              "properties": { "account_password": "string" },
+              "actions": { "account_password_changed": "string" }
+            }"#,
+        )
+        .unwrap();
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        let secret = "viewer-secret-must-not-leak";
+        assert!(source
+            .validate_properties(&BTreeMap::from([(
+                "account_password".to_owned(),
+                Value::String(secret.to_owned()),
+            )]))
+            .is_err());
+
+        let mut state = UiViewerState::default();
+        ui_viewer_update(
+            &mut state,
+            UiViewerMessage::Secret(UiDocumentSecretAction {
+                node_id: "account-password".to_owned(),
+                binding: "account_password_changed".to_owned(),
+                property_binding: "account_password".to_owned(),
+                value: crate::ZsPassword::from(secret),
+            }),
+            &mut AppCx::new(),
+        );
+        assert_eq!(state.secure_action_count, 1);
+        assert_eq!(
+            state
+                .secure_properties
+                .get("account_password")
+                .map(crate::ZsPassword::as_str),
+            Some(secret)
+        );
+        assert_eq!(state.actions.len(), 1);
+        assert_eq!(
+            state.actions[0].payload,
+            Value::String("<redacted>".to_owned())
+        );
+        let serialized = serde_json::to_string(&state).unwrap();
+        assert!(!serialized.contains(secret));
+        assert!(serialized.contains("<redacted>"));
+
+        let view = source.view(&state);
+        let widget = crate::ui_document::UiNodeId::new("account-password")
+            .unwrap()
+            .widget_id();
+        assert_eq!(
+            view.widget_password_value(widget)
+                .map(crate::ZsPassword::as_str),
+            Some(secret)
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn viewer_reloads_valid_changes_without_replacing_the_source() {
+        let directory = fixture_directory("reload");
+        let (document_path, binding_path) = write_fixtures(&directory);
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        assert_eq!(source.snapshot().revision, 1);
+
+        let updated =
+            include_str!("../examples/ui-documents/basic.json").replace("\"Save\"", "\"Save now\"");
+        fs::write(&document_path, updated).unwrap();
+
+        assert!(source.refresh());
+        let snapshot = source.snapshot();
+        assert_eq!(snapshot.revision, 2);
+        assert!(snapshot.last_error.is_none());
+        let reload = snapshot.last_reload.unwrap();
+        assert!(reload.preserves_all_existing_state());
+        assert_eq!(reload.preserved_node_ids, ["root", "save-button", "title"]);
+        assert_eq!(reload.preserved_property_bindings, ["window_title"]);
+        assert!(reload.binding_state_resets.is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn viewer_filters_removed_binding_state_and_reports_the_reset() {
+        let directory = fixture_directory("binding-removal");
+        let (document_path, binding_path) = write_fixtures(&directory);
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        let state = UiViewerState::with_properties(BTreeMap::from([(
+            "window_title".to_owned(),
+            Value::String("Retired title".to_owned()),
+        )]));
+        fs::write(
+            &document_path,
+            r#"{
+              "schema_version": 1,
+              "root": {
+                "id": "root",
+                "component": "stack",
+                "children": [
+                  {
+                    "id": "title",
+                    "component": "text",
+                    "properties": { "text": "Literal title" }
+                  },
+                  {
+                    "id": "save-button",
+                    "component": "button",
+                    "properties": { "label": "Save" },
+                    "action_bindings": { "click": "save" }
+                  }
+                ]
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(&binding_path, r#"{"actions":{"save":"null"}}"#).unwrap();
+
+        assert!(source.refresh());
+        let snapshot = source.snapshot();
+        let reload = snapshot.last_reload.unwrap();
+        assert_eq!(reload.state_resets.len(), 0);
+        assert_eq!(reload.binding_state_resets.len(), 1);
+        assert_eq!(reload.binding_state_resets[0].binding, "window_title");
+        assert_eq!(
+            reload.binding_state_resets[0].reason,
+            UiViewerBindingStateResetReason::BindingRemoved
+        );
+        assert!(!reload.preserves_all_existing_state());
+
+        let (properties, secrets, compiled) = {
+            let source_state = source.lock();
+            let (properties, secrets) =
+                compatible_viewer_values(&source_state.document, &source_state.bindings, &state);
+            let compiled = ui_document_view_with_secrets(
+                &source_state.document,
+                &source_state.bindings,
+                &properties,
+                &secrets,
+                UiViewerMessage::Action,
+                UiViewerMessage::Secret,
+            )
+            .unwrap();
+            (properties, secrets, compiled)
+        };
+        assert!(properties.is_empty());
+        assert!(secrets.is_empty());
+        assert_eq!(
+            compiled.id,
+            Some(
+                crate::ui_document::UiNodeId::new("root")
+                    .unwrap()
+                    .widget_id()
+            )
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn reload_report_distinguishes_binding_type_and_storage_changes() {
+        let document = |component: &str, property: &str| {
+            UiDocument::from_json(&format!(
+                r#"{{
+                  "schema_version": 1,
+                  "root": {{
+                    "id": "control",
+                    "component": "{component}",
+                    "property_bindings": {{ "{property}": "value" }}
+                  }}
+                }}"#
+            ))
+            .unwrap()
+        };
+        let ordinary = document("text", "text");
+        let boolean = document("checkbox", "checked");
+        let secure = document("password_box", "value");
+        let string_bindings = UiBindingSchema {
+            properties: BTreeMap::from([("value".to_owned(), UiValueType::String)]),
+            actions: BTreeMap::new(),
+        };
+        let boolean_bindings = UiBindingSchema {
+            properties: BTreeMap::from([("value".to_owned(), UiValueType::Boolean)]),
+            actions: BTreeMap::new(),
+        };
+
+        let retyped = reload_compatibility_report(
+            &ordinary,
+            &string_bindings,
+            &boolean,
+            &boolean_bindings,
+            1,
+            2,
+        );
+        assert_eq!(
+            retyped.binding_state_resets[0].reason,
+            UiViewerBindingStateResetReason::ValueTypeChanged
+        );
+        assert_eq!(
+            retyped.binding_state_resets[0].current_type,
+            Some(UiValueType::Boolean)
+        );
+
+        let secured = reload_compatibility_report(
+            &ordinary,
+            &string_bindings,
+            &secure,
+            &string_bindings,
+            2,
+            3,
+        );
+        assert_eq!(
+            secured.binding_state_resets[0].reason,
+            UiViewerBindingStateResetReason::StorageClassChanged
+        );
+    }
+
+    #[test]
+    fn viewer_reports_removed_and_component_changed_state() {
+        let directory = fixture_directory("compatibility");
+        let (document_path, binding_path) = write_fixtures(&directory);
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        let updated = r#"{
+          "schema_version": 1,
+          "root": {
+            "id": "root",
+            "component": "stack",
+            "children": [
+              {
+                "id": "title",
+                "component": "button",
+                "properties": { "label": "Title" }
+              }
+            ]
+          }
+        }"#;
+        fs::write(&document_path, updated).unwrap();
+
+        assert!(source.refresh());
+        let reload = source.snapshot().last_reload.unwrap();
+        assert_eq!(reload.from_revision, 1);
+        assert_eq!(reload.to_revision, 2);
+        assert_eq!(reload.preserved_node_ids, ["root"]);
+        assert_eq!(reload.state_resets.len(), 2);
+        assert!(reload.state_resets.iter().any(|reset| {
+            reset.node_id == "title"
+                && reset.reason == UiViewerStateResetReason::ComponentChanged
+                && reset.current_component.as_deref() == Some("button")
+        }));
+        assert!(reload.state_resets.iter().any(|reset| {
+            reset.node_id == "save-button"
+                && reset.reason == UiViewerStateResetReason::NodeRemoved
+                && reset.current_component.is_none()
+        }));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn viewer_reports_textbox_control_class_changes() {
+        let directory = fixture_directory("textbox-class");
+        fs::create_dir_all(&directory).unwrap();
+        let document_path = directory.join("textbox.json");
+        let binding_path = directory.join("textbox.bindings.json");
+        let document = |multiline| {
+            format!(
+                r#"{{
+                  "schema_version": 1,
+                  "root": {{
+                    "id": "editor",
+                    "component": "textbox",
+                    "properties": {{ "value": "Text", "multiline": {multiline} }}
+                  }}
+                }}"#
+            )
+        };
+        fs::write(&document_path, document(true)).unwrap();
+        fs::write(&binding_path, "{}").unwrap();
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+
+        fs::write(&document_path, document(false)).unwrap();
+        assert!(source.refresh());
+
+        let reload = source.snapshot().last_reload.unwrap();
+        assert_eq!(reload.state_resets.len(), 1);
+        assert_eq!(
+            reload.state_resets[0].reason,
+            UiViewerStateResetReason::ComponentConfigurationChanged
+        );
+        assert_eq!(reload.state_resets[0].previous_component, "textbox");
+        assert_eq!(
+            reload.state_resets[0].current_component.as_deref(),
+            Some("textbox")
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn native_reload_preserves_compatible_text_state_and_resets_changed_controls() {
+        let directory = fixture_directory("native-state");
+        fs::create_dir_all(&directory).unwrap();
+        let document_path = directory.join("state.json");
+        let binding_path = directory.join("state.bindings.json");
+        let document = |padding: u32, component: &str| {
+            let properties = if component == "textbox" {
+                r#""value": "row0\nrow1\nrow2\nrow3\nrow4\nrow5", "multiline": true"#
+            } else {
+                r#""label": "Replaced""#
+            };
+            format!(
+                r#"{{
+                  "schema_version": 1,
+                  "root": {{
+                    "id": "root",
+                    "component": "stack",
+                    "layout": {{ "padding": {padding} }},
+                    "children": [
+                      {{
+                        "id": "editor",
+                        "component": "{component}",
+                        "layout": {{ "height": 52.0 }},
+                        "properties": {{ {properties} }}
+                      }}
+                    ]
+                  }}
+                }}"#
+            )
+        };
+        fs::write(&document_path, document(16, "textbox")).unwrap();
+        fs::write(&binding_path, "{}").unwrap();
+
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        let live_source = source.clone();
+        let surface = crate::Rect {
+            x: 0,
+            y: 0,
+            width: 400,
+            height: 220,
+        };
+        let live_view = crate::view::live_view_runtime(
+            UiViewerState::default(),
+            move |state| live_source.view(state),
+            ui_viewer_update,
+            surface,
+            crate::Dpi::standard(),
+        );
+        let editor = crate::ui_document::UiNodeId::new("editor")
+            .unwrap()
+            .widget_id();
+        let target = live_view
+            .interaction_plan()
+            .focus_target_for_widget(editor)
+            .expect("editor should expose a native focus target");
+        let mut runtime = crate::native::NativeViewInputRuntime::new(
+            surface,
+            Some(live_view.interaction_plan()),
+            None,
+            Some(live_view),
+            crate::native::NativeWindowResourcePolicy::default(),
+            None,
+            None,
+            None,
+        );
+        runtime.dispatch_pointer_click(crate::Point {
+            x: target.bounds.x + target.bounds.width / 2,
+            y: target.bounds.y + target.bounds.height / 2,
+        });
+        runtime.dispatch_key(crate::NativeViewKey::Home);
+        let line_start = runtime
+            .text_edit_selection()
+            .expect("Home should retain a text selection")
+            .caret;
+        runtime.dispatch_key_with_shift(crate::NativeViewKey::Right, true);
+        runtime.dispatch_key_with_shift(crate::NativeViewKey::Right, true);
+        let expected_selection = (line_start, line_start.saturating_add(2));
+        assert_eq!(
+            runtime.text_edit_selection().unwrap().ordered(),
+            expected_selection
+        );
+        runtime.dispatch_pointer_scroll(
+            crate::Point {
+                x: target.bounds.x + target.bounds.width / 2,
+                y: target.bounds.y + target.bounds.height / 2,
+            },
+            Dp::new(48.0),
+        );
+        let viewport = runtime.text_edit_viewport().unwrap();
+        assert!(viewport.0 > 0);
+
+        fs::write(&document_path, document(24, "textbox")).unwrap();
+        let compatible = runtime.refresh_transient_view();
+        assert_eq!(compatible.focused_widget, Some(editor.0));
+        assert_eq!(compatible.text_selection, Some(expected_selection));
+        assert_eq!(runtime.text_edit_viewport(), Some(viewport));
+        assert!(source
+            .snapshot()
+            .last_reload
+            .unwrap()
+            .preserves_all_existing_state());
+
+        fs::write(&document_path, document(24, "button")).unwrap();
+        let incompatible = runtime.refresh_transient_view();
+        assert!(incompatible.focus_visual_changed);
+        assert_eq!(incompatible.focused_widget, None);
+        assert_eq!(runtime.text_edit_selection(), None);
+        let reload = source.snapshot().last_reload.unwrap();
+        assert!(reload.state_resets.iter().any(|reset| {
+            reset.node_id == "editor" && reset.reason == UiViewerStateResetReason::ComponentChanged
+        }));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn viewer_routes_value_actions_through_owned_typed_callbacks() {
+        let directory = fixture_directory("value-actions");
+        fs::create_dir_all(&directory).unwrap();
+        let document_path = directory.join("actions.json");
+        let binding_path = directory.join("actions.bindings.json");
+        fs::write(
+            &document_path,
+            r#"{
+              "schema_version": 1,
+              "root": {
+                "id": "root",
+                "component": "stack",
+                "children": [
+                  {
+                    "id": "name",
+                    "component": "textbox",
+                    "property_bindings": { "value": "name" },
+                    "action_bindings": { "change": "name_changed" }
+                  },
+                  {
+                    "id": "dark",
+                    "component": "toggle",
+                    "property_bindings": { "checked": "dark" },
+                    "action_bindings": { "toggle": "dark_changed" }
+                  },
+                  {
+                    "id": "volume",
+                    "component": "slider",
+                    "property_bindings": { "value": "volume" },
+                    "action_bindings": { "slide": "volume_changed" }
+                  },
+                  {
+                    "id": "retry-count",
+                    "component": "number_box",
+                    "properties": {
+                      "minimum": 0.0,
+                      "maximum": 10.0,
+                      "step": 0.5,
+                      "large_step": 5.0,
+                      "fraction_digits": 1.0
+                    },
+                    "property_bindings": { "value": "retry_count" },
+                    "action_bindings": { "change": "retry_count_changed" }
+                  },
+                  {
+                    "id": "profile-mode",
+                    "component": "combo_box",
+                    "properties": {
+                      "options": ["Balanced", "Fast", "Quiet"],
+                      "placeholder": "Choose a mode"
+                    },
+                    "property_bindings": {
+                      "selected_index": "profile_mode",
+                      "expanded": "profile_mode_expanded"
+                    },
+                    "action_bindings": {
+                      "select": "profile_mode_selected",
+                      "expanded_change": "profile_mode_expanded_changed"
+                    }
+                  },
+                  {
+                    "id": "settings-tabs",
+                    "component": "tabs",
+                    "properties": {
+                      "labels": {
+                        "general": "General",
+                        "advanced": "Advanced"
+                      },
+                      "icons": { "general": "Settings" }
+                    },
+                    "property_bindings": { "selected": "active_tab" },
+                    "action_bindings": { "select": "active_tab_selected" },
+                    "children": [
+                      { "id": "general", "component": "stack" },
+                      { "id": "advanced", "component": "stack" }
+                    ]
+                  }
+                ]
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            &binding_path,
+            r#"{
+              "properties": {
+                "name": "string",
+                "dark": "boolean",
+                "volume": "number",
+                "retry_count": "nullable_number",
+                "profile_mode": "nullable_integer",
+                "profile_mode_expanded": "boolean",
+                "active_tab": "string"
+              },
+              "actions": {
+                "name_changed": "string",
+                "dark_changed": "boolean",
+                "volume_changed": "number",
+                "retry_count_changed": "nullable_number",
+                "profile_mode_selected": "integer",
+                "profile_mode_expanded_changed": "boolean",
+                "active_tab_selected": "string"
+              }
+            }"#,
+        )
+        .unwrap();
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        let live_source = source.clone();
+        let actions = Arc::new(Mutex::new(Vec::new()));
+        let captured_actions = Arc::clone(&actions);
+        let surface = crate::Rect {
+            x: 0,
+            y: 0,
+            width: 400,
+            height: 240,
+        };
+        let live_view = crate::view::live_view_runtime(
+            UiViewerState::with_properties(BTreeMap::from([
+                ("name".to_owned(), Value::String("A".to_owned())),
+                ("dark".to_owned(), Value::Bool(false)),
+                ("volume".to_owned(), Value::from(10.0)),
+                ("retry_count".to_owned(), Value::from(2.5)),
+                ("profile_mode".to_owned(), Value::from(0_u64)),
+                ("profile_mode_expanded".to_owned(), Value::Bool(false)),
+                ("active_tab".to_owned(), Value::String("general".to_owned())),
+            ])),
+            move |state| live_source.view(state),
+            move |state, message, cx| {
+                if let UiViewerMessage::Action(action) = &message {
+                    captured_actions.lock().unwrap().push(action.clone());
+                }
+                ui_viewer_update(state, message, cx);
+            },
+            surface,
+            crate::Dpi::standard(),
+        );
+        let name = crate::ui_document::UiNodeId::new("name")
+            .unwrap()
+            .widget_id();
+        let dark = crate::ui_document::UiNodeId::new("dark")
+            .unwrap()
+            .widget_id();
+        let volume = crate::ui_document::UiNodeId::new("volume")
+            .unwrap()
+            .widget_id();
+        let retry_count = crate::ui_document::UiNodeId::new("retry-count")
+            .unwrap()
+            .widget_id();
+        let profile_mode = crate::ui_document::UiNodeId::new("profile-mode")
+            .unwrap()
+            .widget_id();
+        let settings_tabs = crate::ui_document::UiNodeId::new("settings-tabs")
+            .unwrap()
+            .widget_id();
+        let advanced_tab = crate::ZsTabId::new(
+            crate::ui_document::UiNodeId::new("advanced")
+                .unwrap()
+                .widget_id()
+                .0
+                & ((1_u64 << 62) - 1),
+        );
+
+        let text_update = live_view.dispatch_event(&crate::ViewEvent::TextChanged {
+            widget: name,
+            value: "AB".to_owned(),
+        });
+        let toggle_update = live_view.dispatch_event(&crate::ViewEvent::Toggled {
+            widget: dark,
+            checked: true,
+        });
+        let slider_update = live_view.dispatch_event(&crate::ViewEvent::SliderChanged {
+            widget: volume,
+            value: 73.0,
+        });
+        let number_update = live_view.dispatch_event(&crate::ViewEvent::NumberBoxStep {
+            widget: retry_count,
+            steps: 1,
+            large: false,
+        });
+
+        assert_eq!(text_update.message_count, 1);
+        assert_eq!(toggle_update.message_count, 1);
+        assert_eq!(slider_update.message_count, 1);
+        assert_eq!(number_update.message_count, 1);
+        assert_eq!(live_view.widget_text_value(name).as_deref(), Some("AB"));
+        assert_eq!(live_view.widget_checked_value(dark), Some(true));
+        assert_eq!(live_view.widget_slider_state(volume).unwrap().0, 73.0);
+        let draft_update = live_view.dispatch_event(&crate::ViewEvent::TextChanged {
+            widget: retry_count,
+            value: String::new(),
+        });
+        let clear_update = live_view.dispatch_event(&crate::ViewEvent::NumberBoxCommit {
+            widget: retry_count,
+        });
+        assert_eq!(draft_update.message_count, 0);
+        assert_eq!(clear_update.message_count, 1);
+        let expand_update = live_view.dispatch_event(&crate::ViewEvent::ComboBoxExpandedChanged {
+            widget: profile_mode,
+            expanded: true,
+        });
+        assert_eq!(expand_update.message_count, 1);
+        assert_eq!(
+            live_view.widget_combo_state(profile_mode),
+            Some((Some(0), 3, true))
+        );
+        let select_update = live_view.dispatch_event(&crate::ViewEvent::ComboBoxSelected {
+            widget: profile_mode,
+            index: 2,
+        });
+        assert_eq!(select_update.message_count, 2);
+        assert_eq!(
+            live_view.widget_combo_state(profile_mode),
+            Some((Some(2), 3, false))
+        );
+        let tab_update = live_view.dispatch_event(&crate::ViewEvent::TabSelected {
+            widget: settings_tabs,
+            tab: advanced_tab,
+        });
+        assert_eq!(tab_update.message_count, 1);
+        assert_eq!(
+            live_view.widget_tab_view_state(settings_tabs),
+            Some(crate::ZsTabViewState {
+                selected: Some(advanced_tab),
+                tab_count: 2,
+            })
+        );
+        let actions = actions.lock().unwrap();
+        assert_eq!(actions.len(), 9);
+        assert_eq!(actions[0].binding, "name_changed");
+        assert_eq!(actions[0].property_binding.as_deref(), Some("name"));
+        assert_eq!(actions[0].payload, Value::String("AB".to_owned()));
+        assert_eq!(actions[1].binding, "dark_changed");
+        assert_eq!(actions[1].payload, Value::Bool(true));
+        assert_eq!(actions[2].binding, "volume_changed");
+        assert_eq!(actions[2].payload, Value::from(73.0));
+        assert_eq!(actions[3].binding, "retry_count_changed");
+        assert_eq!(actions[3].property_binding.as_deref(), Some("retry_count"));
+        assert_eq!(actions[3].payload, Value::from(3.0));
+        assert_eq!(actions[4].binding, "retry_count_changed");
+        assert_eq!(actions[4].payload, Value::Null);
+        assert_eq!(actions[5].binding, "profile_mode_expanded_changed");
+        assert_eq!(actions[5].payload, Value::Bool(true));
+        assert_eq!(actions[6].binding, "profile_mode_selected");
+        assert_eq!(actions[6].property_binding.as_deref(), Some("profile_mode"));
+        assert_eq!(actions[6].payload, Value::from(2_u64));
+        assert_eq!(actions[7].binding, "profile_mode_expanded_changed");
+        assert_eq!(actions[7].payload, Value::Bool(false));
+        assert_eq!(actions[8].binding, "active_tab_selected");
+        assert_eq!(actions[8].property_binding.as_deref(), Some("active_tab"));
+        assert_eq!(actions[8].payload, Value::String("advanced".to_owned()));
+        drop(actions);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn viewer_preserves_controlled_auto_suggest_state_across_rebuilds() {
+        let directory = fixture_directory("auto-suggest-actions");
+        fs::create_dir_all(&directory).unwrap();
+        let document_path = directory.join("auto-suggest.json");
+        let binding_path = directory.join("auto-suggest.bindings.json");
+        fs::write(
+            &document_path,
+            include_str!("../examples/ui-documents/auto-suggest.json"),
+        )
+        .unwrap();
+        fs::write(
+            &binding_path,
+            include_str!("../examples/ui-documents/auto-suggest.bindings.json"),
+        )
+        .unwrap();
+        let properties = serde_json::from_str::<BTreeMap<String, Value>>(include_str!(
+            "../examples/ui-documents/auto-suggest.values.json"
+        ))
+        .unwrap();
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        source.validate_properties(&properties).unwrap();
+        let live_source = source.clone();
+        let captured_state = Arc::new(Mutex::new(UiViewerState::default()));
+        let update_state = Arc::clone(&captured_state);
+        let live_view = crate::view::live_view_runtime(
+            UiViewerState::with_properties(properties),
+            move |state| live_source.view(state),
+            move |state, message, cx| {
+                ui_viewer_update(state, message, cx);
+                *update_state.lock().unwrap() = state.clone();
+            },
+            crate::Rect {
+                x: 0,
+                y: 0,
+                width: 720,
+                height: 420,
+            },
+            crate::Dpi::standard(),
+        );
+        let widget = crate::ui_document::UiNodeId::new("country-search")
+            .unwrap()
+            .widget_id();
+        let china = crate::ui_document::ui_auto_suggestion_runtime_id(
+            &crate::ui_document::UiNodeId::new("country-search").unwrap(),
+            &crate::ui_document::UiAutoSuggestionId::new("china").unwrap(),
+        );
+        assert_eq!(
+            live_view.widget_auto_suggest_state(widget),
+            Some(crate::ZsAutoSuggestState {
+                query: "Ch".to_owned(),
+                suggestion_ids: vec![
+                    china,
+                    crate::ui_document::ui_auto_suggestion_runtime_id(
+                        &crate::ui_document::UiNodeId::new("country-search").unwrap(),
+                        &crate::ui_document::UiAutoSuggestionId::new("chile").unwrap(),
+                    ),
+                    crate::ui_document::ui_auto_suggestion_runtime_id(
+                        &crate::ui_document::UiNodeId::new("country-search").unwrap(),
+                        &crate::ui_document::UiAutoSuggestionId::new("chicago").unwrap(),
+                    ),
+                ],
+                highlighted: None,
+                expanded: true,
+            })
+        );
+
+        let highlighted = live_view.dispatch_event(&crate::ViewEvent::AutoSuggestHighlighted {
+            widget,
+            suggestion: china,
+        });
+        assert_eq!(highlighted.message_count, 2);
+        assert_eq!(
+            live_view.widget_auto_suggest_state(widget),
+            Some(crate::ZsAutoSuggestState {
+                query: "中国 / China".to_owned(),
+                suggestion_ids: live_view
+                    .widget_auto_suggest_state(widget)
+                    .unwrap()
+                    .suggestion_ids,
+                highlighted: Some(china),
+                expanded: true,
+            })
+        );
+
+        let submitted = live_view.dispatch_event(&crate::ViewEvent::AutoSuggestSubmitted {
+            widget,
+            suggestion: Some(china),
+        });
+        assert_eq!(submitted.message_count, 2);
+        let final_state = captured_state.lock().unwrap();
+        assert_eq!(
+            final_state.properties.get("country_query"),
+            Some(&Value::String("中国 / China".to_owned()))
+        );
+        assert_eq!(
+            final_state.properties.get("country_highlighted"),
+            Some(&Value::String("china".to_owned()))
+        );
+        assert_eq!(
+            final_state.properties.get("country_expanded"),
+            Some(&Value::Bool(false))
+        );
+        assert_eq!(final_state.actions.len(), 4);
+        assert_eq!(final_state.actions[0].binding, "country_query_changed");
+        assert_eq!(final_state.actions[1].binding, "country_chosen");
+        assert_eq!(final_state.actions[2].binding, "country_submitted");
+        assert_eq!(
+            final_state.actions[2].payload,
+            serde_json::json!({ "query": "中国 / China", "chosen": "china" })
+        );
+        assert_eq!(final_state.actions[3].binding, "country_expanded_changed");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn viewer_preserves_controlled_command_palette_state_across_rebuilds() {
+        let directory = fixture_directory("command-palette-actions");
+        fs::create_dir_all(&directory).unwrap();
+        let document_path = directory.join("command-palette.json");
+        let binding_path = directory.join("command-palette.bindings.json");
+        fs::write(
+            &document_path,
+            include_str!("../examples/ui-documents/command-palette.json"),
+        )
+        .unwrap();
+        fs::write(
+            &binding_path,
+            include_str!("../examples/ui-documents/command-palette.bindings.json"),
+        )
+        .unwrap();
+        let properties = serde_json::from_str::<BTreeMap<String, Value>>(include_str!(
+            "../examples/ui-documents/command-palette.values.json"
+        ))
+        .unwrap();
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        source.validate_properties(&properties).unwrap();
+        let live_source = source.clone();
+        let captured_state = Arc::new(Mutex::new(UiViewerState::default()));
+        let update_state = Arc::clone(&captured_state);
+        let live_view = crate::view::live_view_runtime(
+            UiViewerState::with_properties(properties),
+            move |state| live_source.view(state),
+            move |state, message, cx| {
+                ui_viewer_update(state, message, cx);
+                *update_state.lock().unwrap() = state.clone();
+            },
+            crate::Rect {
+                x: 0,
+                y: 0,
+                width: 900,
+                height: 620,
+            },
+            crate::Dpi::standard(),
+        );
+        let node_id = crate::ui_document::UiNodeId::new("app-commands").unwrap();
+        let widget = node_id.widget_id();
+        let file = crate::ui_document::ui_command_palette_runtime_id(
+            &node_id,
+            &crate::ui_document::UiCommandPaletteItemId::new("open-file").unwrap(),
+        );
+        let settings = crate::ui_document::ui_command_palette_runtime_id(
+            &node_id,
+            &crate::ui_document::UiCommandPaletteItemId::new("open-settings").unwrap(),
+        );
+        let state = live_view
+            .widget_command_palette_state(widget)
+            .expect("command palette state");
+        assert_eq!(state.visible_items.len(), 4);
+        assert_eq!(state.enabled_items.len(), 3);
+        assert_eq!(state.highlighted, Some(file));
+        assert!(state.open);
+
+        let filtered = live_view.dispatch_event(&crate::ViewEvent::TextChanged {
+            widget,
+            value: "settings".to_owned(),
+        });
+        assert_eq!(filtered.message_count, 2);
+        let filtered_state = live_view
+            .widget_command_palette_state(widget)
+            .expect("filtered command palette state");
+        assert_eq!(filtered_state.query, "settings");
+        assert_eq!(filtered_state.visible_items, vec![settings]);
+        assert_eq!(filtered_state.highlighted, Some(settings));
+
+        let invoked = live_view.dispatch_event(&crate::ViewEvent::CommandPaletteInvoked {
+            widget,
+            item: settings,
+        });
+        assert_eq!(invoked.message_count, 2);
+        let final_state = captured_state.lock().unwrap();
+        assert_eq!(
+            final_state.properties.get("command_highlighted"),
+            Some(&Value::String("open-settings".to_owned()))
+        );
+        assert_eq!(
+            final_state.properties.get("command_open"),
+            Some(&Value::Bool(false))
+        );
+        assert_eq!(
+            final_state.properties.get("command_query"),
+            Some(&Value::String("settings".to_owned()))
+        );
+        assert_eq!(final_state.actions.len(), 4);
+        assert_eq!(final_state.actions[0].binding, "command_highlight_changed");
+        assert_eq!(
+            final_state.actions[0].payload,
+            Value::String("open-settings".to_owned())
+        );
+        assert_eq!(final_state.actions[1].binding, "command_query_changed");
+        assert_eq!(
+            final_state.actions[1].payload,
+            Value::String("settings".to_owned())
+        );
+        assert_eq!(final_state.actions[2].binding, "command_invoked");
+        assert_eq!(
+            final_state.actions[2].payload,
+            Value::String("open-settings".to_owned())
+        );
+        assert_eq!(final_state.actions[3].binding, "command_open_changed");
+        assert_eq!(final_state.actions[3].payload, Value::Bool(false));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn viewer_preserves_controlled_tree_state_across_rebuilds() {
+        let directory = fixture_directory("tree-actions");
+        fs::create_dir_all(&directory).unwrap();
+        let document_path = directory.join("tree.json");
+        let binding_path = directory.join("tree.bindings.json");
+        fs::write(
+            &document_path,
+            include_str!("../examples/ui-documents/tree.json"),
+        )
+        .unwrap();
+        fs::write(
+            &binding_path,
+            include_str!("../examples/ui-documents/tree.bindings.json"),
+        )
+        .unwrap();
+        let properties = serde_json::from_str::<BTreeMap<String, Value>>(include_str!(
+            "../examples/ui-documents/tree.values.json"
+        ))
+        .unwrap();
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        source.validate_properties(&properties).unwrap();
+        let live_source = source.clone();
+        let captured_state = Arc::new(Mutex::new(UiViewerState::default()));
+        let update_state = Arc::clone(&captured_state);
+        let live_view = crate::view::live_view_runtime(
+            UiViewerState::with_properties(properties),
+            move |state| live_source.view(state),
+            move |state, message, cx| {
+                ui_viewer_update(state, message, cx);
+                *update_state.lock().unwrap() = state.clone();
+            },
+            crate::Rect {
+                x: 0,
+                y: 0,
+                width: 900,
+                height: 620,
+            },
+            crate::Dpi::standard(),
+        );
+        let node_id = crate::ui_document::UiNodeId::new("project-tree").unwrap();
+        let widget = node_id.widget_id();
+        let source_node = crate::ui_document::ui_tree_runtime_id(
+            &node_id,
+            &crate::ui_document::UiTreeNodeId::new("source").unwrap(),
+        );
+        let lib = crate::ui_document::ui_tree_runtime_id(
+            &node_id,
+            &crate::ui_document::UiTreeNodeId::new("lib-rs").unwrap(),
+        );
+        let cargo = crate::ui_document::ui_tree_runtime_id(
+            &node_id,
+            &crate::ui_document::UiTreeNodeId::new("cargo-toml").unwrap(),
+        );
+        let state = live_view
+            .widget_tree_view_state(widget)
+            .expect("tree state");
+        assert_eq!(state.rows.len(), 7);
+        assert_eq!(state.selected, Some(lib));
+        assert!(state.row(source_node).is_some_and(|row| row.expanded));
+
+        let collapsed = live_view.dispatch_event(&crate::ViewEvent::TreeNodeExpandedChanged {
+            widget,
+            node: source_node,
+            expanded: false,
+        });
+        assert_eq!(collapsed.message_count, 1);
+        let collapsed_state = live_view
+            .widget_tree_view_state(widget)
+            .expect("collapsed tree state");
+        assert_eq!(collapsed_state.rows.len(), 5);
+        assert_eq!(collapsed_state.selected, Some(lib));
+        assert!(collapsed_state.row(lib).is_none());
+
+        let selected = live_view.dispatch_event(&crate::ViewEvent::TreeNodeSelected {
+            widget,
+            node: cargo,
+        });
+        assert_eq!(selected.message_count, 1);
+        assert_eq!(
+            live_view
+                .widget_tree_view_state(widget)
+                .and_then(|state| state.selected),
+            Some(cargo)
+        );
+        let invoked = live_view.dispatch_event(&crate::ViewEvent::TreeNodeInvoked {
+            widget,
+            node: cargo,
+        });
+        assert_eq!(invoked.message_count, 1);
+        let draw_plan = live_view.draw_plan();
+        let title = draw_plan
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                crate::NativeDrawCommand::Text(text) if text.text.contains("项目树") => {
+                    Some(text)
+                }
+                _ => None,
+            })
+            .expect("tree page title must remain in the rebuilt draw plan");
+        assert!(
+            title.bounds.y < 100,
+            "unexpected title bounds: {:?}",
+            title.bounds
+        );
+
+        let final_state = captured_state.lock().unwrap();
+        assert_eq!(
+            final_state.properties.get("project_expanded"),
+            Some(&serde_json::json!(["workspace"]))
+        );
+        assert_eq!(
+            final_state.properties.get("project_selected"),
+            Some(&Value::String("cargo-toml".to_owned()))
+        );
+        assert_eq!(final_state.actions.len(), 3);
+        assert_eq!(final_state.actions[0].binding, "project_expanded_changed");
+        assert_eq!(
+            final_state.actions[0].payload,
+            serde_json::json!(["workspace"])
+        );
+        assert_eq!(final_state.actions[1].binding, "project_selected_changed");
+        assert_eq!(
+            final_state.actions[1].payload,
+            Value::String("cargo-toml".to_owned())
+        );
+        assert_eq!(final_state.actions[2].binding, "project_invoked");
+        assert_eq!(
+            final_state.actions[2].payload,
+            Value::String("cargo-toml".to_owned())
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn viewer_preserves_controlled_grid_view_selection_across_rebuilds() {
+        let directory = fixture_directory("grid-view-actions");
+        fs::create_dir_all(&directory).unwrap();
+        let document_path = directory.join("grid-view.json");
+        let binding_path = directory.join("grid-view.bindings.json");
+        fs::write(
+            &document_path,
+            include_str!("../examples/ui-documents/grid-view.json"),
+        )
+        .unwrap();
+        fs::write(
+            &binding_path,
+            include_str!("../examples/ui-documents/grid-view.bindings.json"),
+        )
+        .unwrap();
+        let properties = serde_json::from_str::<BTreeMap<String, Value>>(include_str!(
+            "../examples/ui-documents/grid-view.values.json"
+        ))
+        .unwrap();
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        source.validate_properties(&properties).unwrap();
+        let live_source = source.clone();
+        let captured_state = Arc::new(Mutex::new(UiViewerState::default()));
+        let update_state = Arc::clone(&captured_state);
+        let live_view = crate::view::live_view_runtime(
+            UiViewerState::with_properties(properties),
+            move |state| live_source.view(state),
+            move |state, message, cx| {
+                ui_viewer_update(state, message, cx);
+                *update_state.lock().unwrap() = state.clone();
+            },
+            crate::Rect {
+                x: 0,
+                y: 0,
+                width: 900,
+                height: 620,
+            },
+            crate::Dpi::standard(),
+        );
+        let node_id = crate::ui_document::UiNodeId::new("library-grid").unwrap();
+        let widget = node_id.widget_id();
+        let documents = crate::ui_document::ui_grid_view_runtime_id(
+            &node_id,
+            &crate::ui_document::UiGridViewItemId::new("documents").unwrap(),
+        );
+        let photos = crate::ui_document::ui_grid_view_runtime_id(
+            &node_id,
+            &crate::ui_document::UiGridViewItemId::new("photos").unwrap(),
+        );
+        let state = live_view
+            .widget_grid_view_state(widget)
+            .expect("grid-view state");
+        assert_eq!(state.items.len(), 6);
+        assert_eq!(state.selected, Some(documents));
+
+        let selected = live_view.dispatch_event(&crate::ViewEvent::GridViewItemSelected {
+            widget,
+            item: photos,
+        });
+        assert_eq!(selected.message_count, 1);
+        assert_eq!(
+            live_view
+                .widget_grid_view_state(widget)
+                .and_then(|state| state.selected),
+            Some(photos)
+        );
+        let invoked = live_view.dispatch_event(&crate::ViewEvent::GridViewItemInvoked {
+            widget,
+            item: photos,
+        });
+        assert_eq!(invoked.message_count, 1);
+        let draw_plan = live_view.draw_plan();
+        assert!(draw_plan.commands.iter().any(|command| {
+            matches!(
+                command,
+                crate::NativeDrawCommand::Text(text) if text.text.contains("资源库")
+            )
+        }));
+
+        let final_state = captured_state.lock().unwrap();
+        assert_eq!(
+            final_state.properties.get("library_selected"),
+            Some(&Value::String("photos".to_owned()))
+        );
+        assert_eq!(final_state.actions.len(), 2);
+        assert_eq!(final_state.actions[0].binding, "library_selected_changed");
+        assert_eq!(
+            final_state.actions[0].payload,
+            Value::String("photos".to_owned())
+        );
+        assert_eq!(final_state.actions[1].binding, "library_invoked");
+        assert_eq!(
+            final_state.actions[1].payload,
+            Value::String("photos".to_owned())
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn viewer_preserves_controlled_scroll_offset_across_view_rebuilds() {
+        let directory = fixture_directory("controlled-scroll");
+        fs::create_dir_all(&directory).unwrap();
+        let document_path = directory.join("scroll.json");
+        let binding_path = directory.join("scroll.bindings.json");
+        fs::write(
+            &document_path,
+            r#"{
+              "schema_version": 1,
+              "root": {
+                "id": "results-scroll",
+                "component": "scroll",
+                "properties": { "content_height": 360.0 },
+                "property_bindings": { "offset_y": "scroll_offset" },
+                "action_bindings": { "scroll": "scroll_changed" },
+                "children": [
+                  {
+                    "id": "results",
+                    "component": "stack",
+                    "layout": { "height": 360.0 },
+                    "children": [
+                      {
+                        "id": "result-title",
+                        "component": "text",
+                        "properties": { "text": "Scrollable results" }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            &binding_path,
+            r#"{
+              "properties": { "scroll_offset": "number" },
+              "actions": { "scroll_changed": "number" }
+            }"#,
+        )
+        .unwrap();
+
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        let live_source = source.clone();
+        let actions = Arc::new(Mutex::new(Vec::new()));
+        let captured_actions = Arc::clone(&actions);
+        let live_view = crate::view::live_view_runtime(
+            UiViewerState::with_properties(BTreeMap::from([(
+                "scroll_offset".to_owned(),
+                Value::from(20.0),
+            )])),
+            move |state| live_source.view(state),
+            move |state, message, cx| {
+                if let UiViewerMessage::Action(action) = &message {
+                    captured_actions.lock().unwrap().push(action.clone());
+                }
+                ui_viewer_update(state, message, cx);
+            },
+            crate::Rect {
+                x: 0,
+                y: 0,
+                width: 400,
+                height: 120,
+            },
+            crate::Dpi::standard(),
+        );
+        let scroll = crate::ui_document::UiNodeId::new("results-scroll")
+            .unwrap()
+            .widget_id();
+
+        let first = live_view.dispatch_event(&crate::ViewEvent::ScrollBy {
+            widget: scroll,
+            delta_y: Dp::new(30.0),
+        });
+        let second = live_view.dispatch_event(&crate::ViewEvent::ScrollBy {
+            widget: scroll,
+            delta_y: Dp::new(10.0),
+        });
+
+        assert_eq!(first.message_count, 1);
+        assert_eq!(second.message_count, 1);
+        let actions = actions.lock().unwrap();
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].binding, "scroll_changed");
+        assert_eq!(
+            actions[0].property_binding.as_deref(),
+            Some("scroll_offset")
+        );
+        assert_eq!(actions[0].payload, Value::from(50.0));
+        assert_eq!(actions[1].payload, Value::from(60.0));
+        drop(actions);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn viewer_keeps_last_valid_document_after_invalid_edit() {
+        let directory = fixture_directory("invalid");
+        let (document_path, binding_path) = write_fixtures(&directory);
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        fs::write(&document_path, "{ invalid json").unwrap();
+
+        assert!(!source.refresh());
+        let snapshot = source.snapshot();
+        assert_eq!(snapshot.revision, 1);
+        assert!(snapshot.last_error.is_some());
+        assert_eq!(snapshot.node_count, 3);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn viewer_recovers_from_a_transient_read_error_without_a_source_edit() {
+        let directory = fixture_directory("read-recovery");
+        let (document_path, binding_path) = write_fixtures(&directory);
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        let hidden_document_path = directory.join("hidden.json");
+        fs::rename(&document_path, &hidden_document_path).unwrap();
+
+        assert!(!source.refresh());
+        assert!(source.snapshot().last_error.is_some());
+        fs::rename(&hidden_document_path, &document_path).unwrap();
+
+        assert!(!source.refresh());
+        assert!(source.snapshot().last_error.is_none());
+        assert_eq!(source.snapshot().revision, 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn viewer_view_uses_stable_document_ids_and_requests_polling() {
+        let directory = fixture_directory("view");
+        let (document_path, binding_path) = write_fixtures(&directory);
+        let source = UiViewerSource::open(&document_path, Some(&binding_path)).unwrap();
+        let state = UiViewerState::with_properties(BTreeMap::from([(
+            "window_title".to_owned(),
+            Value::String("Native Viewer".to_owned()),
+        )]));
+
+        let view = source.view(&state);
+
+        assert_eq!(
+            view.id,
+            Some(
+                crate::ui_document::UiNodeId::new("root")
+                    .unwrap()
+                    .widget_id()
+            )
+        );
+        assert_eq!(
+            view.background_poll_interval_ms(),
+            Some(ZSUI_UI_VIEWER_DEFAULT_POLL_INTERVAL_MS)
+        );
+        let snapshot = source.snapshot();
+        assert_eq!(snapshot.document_schema_version, 1);
+        assert_eq!(snapshot.node_count, 3);
+        assert_eq!(
+            snapshot
+                .nodes
+                .iter()
+                .map(|node| (
+                    node.path.as_str(),
+                    node.id.as_str(),
+                    node.component.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("$.root", "root", "stack"),
+                ("$.root.children[0]", "title", "text"),
+                ("$.root.children[1]", "save-button", "button"),
+            ]
+        );
+        assert_eq!(snapshot.nodes[0].widget_id, view.id.unwrap().0);
+        assert_eq!(
+            serde_json::to_vec(&snapshot).unwrap(),
+            serde_json::to_vec(&source.snapshot()).unwrap()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+}

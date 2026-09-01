@@ -1,0 +1,765 @@
+# ZSUI Architecture
+
+ZSUI is a reusable Rust UI foundation for native desktop tools.
+
+The framework layers are:
+
+- Core contracts: stable ids, commands, events, errors and host traits.
+- Declaration models: windows, menus, tray/status items, hotkeys, clipboard,
+  settings specs and product-neutral navigation/card shell layouts.
+- Shared protocols: geometry, layout, command queues, lifecycle/events, components, renderer/text layout traits and self-draw command plans.
+- Capability model: honest support, partial support and degradation reporting per host.
+- Native host boundary: platform code creates windows, controls, menus, dialogs and clipboard bridges.
+- Product adapter boundary: each application owns domain data, persistence, side effects and AI/tool integrations.
+
+Reusable framework code must not depend on a product database, product settings
+schema, sync transport, AI provider, platform handle or native message loop.
+Native hosts may depend on platform APIs. Product crates may depend on ZSUI.
+ZSUI itself should remain the shared contract between them.
+
+The reusable product boundary lives in `src/product_adapter.rs`.
+Applications implement `ProductAdapterHost` to project product state into ZSUI
+UI declarations, execute UI commands, expose settings, bridge async events and
+publish AI capability descriptors. `ZsuiReusableRuntimeHarness` wires that
+adapter to a `NativeRuntimeDriver` without moving product behavior into a
+platform host. `ProductAdapterRuntimeSmokeRequest` exercises that reusable
+handoff path and produces a JSON-serializable smoke report before a product is
+bound to a real native driver.
+
+## Public Entry Point
+
+Application authors start with:
+
+```rust
+use zsui::{app, Command, TraySpec, Window};
+```
+
+The public API is plain Rust data with `serde` support where practical, so
+tools can inspect or generate UI declarations without loading a native backend.
+`AppBuilder::declaration_report()` and
+`AppBuilder::declaration_report_for(capabilities)` return a structured
+`ZsuiAppDeclarationReport` that validates app/window/content/menu/tray/hotkey
+and settings shapes, and records host capability degradation before any native
+event loop is started.
+
+For a minimal real native window, use:
+
+```rust,no_run
+zsui::native_window("Example").size(900, 620).run()?;
+# Ok::<(), zsui::ZsuiError>(())
+```
+
+That convenience builder uses `NativeWindowHost` for the desktop event loop and
+keeps full product behavior outside the framework. Android is represented in
+the platform/capability model as a scaffold; it needs a dedicated Activity
+runtime host before `native_window(...).run()` can create a mobile surface. Its
+current scaffold manifest and bridge contract live in `src/mobile_host.rs` and
+`src/android_activity_host.rs`, and can be printed with
+`examples/mobile_scaffold_manifest.rs` or
+`examples/mobile_scaffold_manifest.rs --bridge <platform>`. The bridge
+contracts name the FFI symbols, lifecycle/surface/input callbacks, safety
+rules and device-smoke artifact files that the real Android host must satisfy.
+`mobile_runtime_bridge_parity_report(platform)` and
+`examples/mobile_scaffold_manifest.rs --parity <platform>` compare the
+scaffold and contract metadata, confirm required callback route coverage and
+list pending FFI callback symbols without claiming runtime readiness.
+`mobile_runtime_bridge_dispatch_report(platform)` and
+`examples/mobile_scaffold_manifest.rs --dispatch <platform>` map those callback
+symbols to lifecycle, surface, typed input and `NativeRuntimeDriver`
+operations before real Activity FFI glue exists.
+`mobile_runtime_bridge_contract_smoke_report(platform)` and
+`examples/mobile_scaffold_manifest.rs --dispatch-smoke <platform>` locally
+replay that dispatch sequence as contract smoke while still reporting that FFI
+and device proof are pending.
+`write_mobile_runtime_bridge_contract_artifacts(platform)` and
+`examples/mobile_scaffold_manifest.rs --write-contract <platform>` write the
+local contract JSON artifacts, including `device-smoke-plan.json` and
+`agent-context.json`, without fabricating launch logs, screenshots, lifecycle
+traces, surface traces or input traces.
+`review_mobile_runtime_bridge_contract_artifacts(platform)` and
+`examples/mobile_scaffold_manifest.rs --review-contract <platform>` validate
+those local contract artifacts and expected JSON schemas without treating them
+as device proof. The `*_for_all` helpers and CLI `all` target write/review
+artifacts for the configured mobile target.
+`mobile_runtime_device_smoke_plan(platform)` and
+`review_mobile_runtime_device_smoke_artifacts(platform)` provide the current
+read-only verification contract for those required device artifacts, including
+device-sourced JSON schema checks for lifecycle, surface and input traces.
+`mobile_runtime_device_smoke_trace_templates(platform)` and
+`examples/mobile_scaffold_manifest.rs --trace-template <platform>` expose the
+same trace shapes for the future Activity bridge implementation.
+The same desktop builder can now accept a typed view with
+`native_window("Example").view(view).run()?`. That first lays out and paints
+`ViewNode<Msg>` into `NativeDrawPlan`; on the direct Windows host the plan is
+attached to the created `HWND` and rendered through the buffered no-flicker
+GDI path. `ui_command_view(...)` keeps a command-backed view tree for native
+input. On Windows, `WM_LBUTTONUP` is routed through `ViewInteractionPlan`,
+  dispatched into `ViewEventCx<UiCommand>`, handed to an optional
+  `SharedUiCommandExecutor` outside the Win32 route registry lock and recorded
+  with success/failure/event evidence in native smoke. Focused `WM_CHAR` input is also routed into textbox
+`TextChanged` events when the textbox feature is enabled, and checkbox clicks
+route to typed `Toggled` events when the checkbox feature is enabled. The Win32
+host also routes `WM_KEYDOWN` Enter/Space activation for focused button,
+checkbox and toggle targets, and Tab traverses ordered focus targets from
+`ViewInteractionPlan`. Feature-gated list row selection uses child IDs and can
+flow through the same command-backed view tree; Win32 Up/Down keys can move
+focused selection between list rows. Feature-gated scroll containers can
+consume typed `ScrollBy` events, and Win32 `WM_MOUSEWHEEL` can route to the
+nearest scroll container; `native_smoke_run --scroll-view` exercises that
+command-backed route. Scroll and adaptive-overflow surfaces also expose
+platform-thin visuals with wider semantic track/thumb hit regions; track
+clicks and offset-preserving thumb drags route through typed `ScrollToRatio`
+events. Touch/inertial scroll,
+IME/composition input and non-Windows input routing are still separate runtime
+gates.
+The standalone `toggle(...)` View widget and Shell toggle accessories both use
+`ZsToggleRenderPlan` from `src/widget_render.rs`. Its track/knob sizing and DPI
+math are shared by both surfaces, so the framework does not maintain competing
+implementations.
+`NativeWindowBuilder::stateful_view(state, view, update)` now provides the
+normal application loop: Win32 input emits typed messages, `update` mutates the
+application-owned state through `AppCx`, the framework rebuilds and lays out the
+View, replaces the native draw plan and invalidates the HWND. Resize and DPI
+surface changes relayout the existing tree without invoking the application
+view function again. All three desktop hosts create the native window hidden,
+attach the initial draw plan, typed input route, appearance and menu, and only
+then make a requested-visible window visible. `AppCx::quit()` closes the native
+window. `AppCx::command(...)` values are handed to the explicitly composed
+`SharedAppCommandExecutor`, with success, failure and emitted-event evidence in
+native smoke reports. `NativeWindowRuntimeDriver` implements this executor
+contract. Product-owned `UiCommand` values use the parallel
+`SharedUiCommandExecutor`; `ProductAdapterUiCommandExecutor` delegates directly
+to `ProductAdapterHost` rather than hiding product behavior inside View state.
+
+Row and column layout distinguish fixed sizes, minimum sizes and flexible
+growth. `ViewNode::min_width(...)` and `min_height(...)` reserve typed `Dp`
+space without forcing the node to consume the remaining axis. On Windows the
+basic Button defaults follow the official
+[WinUI Button resources](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/Button_themeresources.xaml)
+and [button guidance](https://learn.microsoft.com/windows/apps/develop/ui/controls/buttons):
+32 epx control height, 120 epx short-label minimum, `11,5,11,6` content padding
+and 4 epx `ControlCornerRadius`; explicit layout and style methods remain
+authoritative.
+
+The optional `dialog` feature adds `content_dialog(id, open, spec, page)` as a
+compositional modal layer, not a native child-control driver. Applications own
+the open flag and receive a typed `ZsContentDialogResult`; the framework owns
+the scrim, platform-specific action order and metrics, one trapped focus scope,
+pointer feedback, Escape/Tab/arrow/Enter/Space routing and overlay paint order.
+The same draw and interaction plans feed buffered Win32, AppKit and Linux hosts,
+so no HWND, Objective-C object or GtkWidget enters the public view API.
+The Windows profile follows Microsoft's current `ContentDialog` template rather
+than classic `MessageBoxW`: 320/548 epx minimum/maximum width, 184/756 epx
+minimum/maximum height, 24 epx content and command padding, 12 epx title gap,
+32 epx action height, 8 epx action spacing, an 8 epx overlay radius, a layered
+content/command surface and a 1 epx separator. Primary, Secondary and Close
+remain left/middle/right semantic slots, while the declared default receives
+the Accent treatment. The optional system-message service remains a distinct
+backend facility and is not component-style evidence.
+
+The optional `toast` feature adds `toast_presenter(id, toast, page)` for
+nonmodal foreground feedback. The application owns `Option<ZsToastSpec>` and a
+stable `ZsToastId`; the shared runtime owns the active timeout and emits a typed
+action, close, Escape or timeout result. The renderer exposes one semantic
+action plus an always-available close control and chooses Windows, macOS or GTK
+metrics internally. This is deliberately an in-window feedback surface rather
+than a copy of Notification Center or Windows app-notification chrome. Windows
+uses the non-targeted TeachingTip placement model, macOS stays understated for
+foreground delivery, and GTK follows the AdwToast one-action/close structure.
+All three remain in the existing self-drawn tree and buffered paint path.
+
+The optional `info-bar` feature adds `info_bar(id, spec)` as an ordinary inline
+status surface rather than an overlay or native child control. The application
+owns presence/removal and receives typed action or close events. Severity,
+title, message, one optional action and the default-on close affordance remain
+explicit in `ZsInfoBarSpec`; the shared runtime owns control focus, arrow-key
+movement and Enter/Space/Escape routing. Windows uses Fluent InfoBar geometry,
+macOS uses a restrained rounded status surface rather than modal `NSAlert`
+chrome, and GTK uses AdwBanner-like compact metrics. Severity is always carried
+by both semantic icon and text, and all hosts consume the same draw plan.
+
+The optional `teaching-tip` feature adds
+`teaching_tip(id, open, target_id, spec, page)` as a targeted, nonmodal overlay.
+The application owns visibility and stable presenter/target IDs; the shared
+layout resolves the target's final bounds, flips and clamps the bubble within
+the current viewport, and keeps action/close results typed. The page remains in
+ordinary layout and interactive. Windows, macOS and GTK select TeachingTip,
+NSPopover-like and GtkPopover-like metric profiles while consuming the same
+self-drawn surface and `FillTriangle` tail command; no child native widget or
+global target registry is introduced.
+
+The optional `breadcrumb` feature adds `breadcrumb_bar(items)` as a compact
+root-to-current navigation path. Applications own immutable
+`ZsBreadcrumbItem` values, stable `ZsBreadcrumbId` identities and the explicit
+overflow-open flag; the framework owns transient semantic focus, width-aware
+collapse, popup placement and typed selection/expanded events. The bar is one
+Tab stop with internal arrow/Home/End navigation. Windows and GTK place the
+ellipsis before the surviving trailing path, while the macOS profile preserves
+the root before the ellipsis when space permits. All three profiles use the
+same self-drawn View, hit plan and popup overlay. GTK has no public breadcrumb
+widget to wrap, so its metrics are a ZSUI profile informed by GNOME navigation
+and Adwaita conventions rather than a false native-control claim.
+
+The optional `grid-view` feature adds `grid_view(items)` as a responsive,
+single-select gallery control. Applications own immutable item data, stable
+`ZsGridViewItemId` identities and selected state; the framework derives
+equal-width columns from the final bounds and emits separate typed selection
+and invocation events. One shared plan owns tile paint and hit geometry, while
+one root Tab stop routes two-axis arrows, Home/End, Space and Enter. Windows,
+macOS and GTK select Fluent GridView-, NSCollectionView- and GtkGridView-like
+metric profiles internally, but no backend creates a child collection widget
+or stores an application collection model. Scrolling and virtualization remain
+outside this bounded first pass and are explicit readiness work.
+
+The optional `color-picker` feature adds `color_picker(state)` as a compact
+color well with an expanded color editor. Applications own the selected
+`Color`, expanded flag, active `ZsColorChannel` and alpha policy in
+`ZsColorPickerState`; the framework owns viewport-aware popup placement,
+shared paint/hit geometry, pointer dragging and one root Tab stop with typed
+channel, value and expanded events. Windows uses a Fluent ColorPicker-like
+square HSV spectrum, hue track, preview and RGBA sliders; its first-pass
+spectrum remains at least 256 DIPs high while editable precision fields are
+absent. macOS uses NSColorWell/custom-panel-like compact slider metrics, and
+GTK uses a ColorDialogButton-like entry and HSV editor surface. All remain
+self-drawn through the existing render protocol; no backend creates or drives
+a child picker.
+This bounded first pass follows [Microsoft ColorPicker](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/color-picker),
+[Apple color wells](https://developer.apple.com/design/human-interface-guidelines/color-wells),
+[AppKit NSColorWell](https://developer.apple.com/documentation/appkit/nscolorwell)
+and [GTK4 ColorDialogButton](https://docs.gtk.org/gtk4/class.ColorDialogButton.html).
+Editable RGB/HSV/hex fields, swatches, eyedropper, accessibility range
+providers, HDR/color-space management and AppKit/GTK target evidence remain
+explicit readiness work. This is a platform-informed first pass, not a claim
+of control-for-control WinUI 3 parity.
+
+The optional `command-palette` feature adds
+`command_palette(widget, open, query, items, page)` as a keyboard-first modal
+overlay. Applications own immutable command metadata, stable
+`ZsCommandPaletteItemId` identities, query, highlight and open state, then
+execute the typed invocation message themselves. ZSUI owns stable
+case-insensitive all-term substring filtering, a bounded eight-row render/hit
+plan, disabled-item skipping and the modal search focus scope; it never owns a
+global accelerator, persistence or product command behavior. Windows uses a
+Fluent/PowerToys launcher-like profile, macOS an NSSearchField/Spotlight-like
+profile and GTK a SearchEntry/list-popover-like profile. These are three
+platform-informed self-drawn metric sets, not wrapped child controls or one
+platform skin reused everywhere. The design follows
+[PowerToys Command Palette](https://learn.microsoft.com/en-us/windows/powertoys/command-palette/overview),
+[WinUI commanding](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/commanding),
+[AppKit NSSearchField](https://developer.apple.com/documentation/appkit/nssearchfield),
+[GTK4 SearchEntry](https://docs.gtk.org/gtk4/class.SearchEntry.html) and
+[GTK4 Popover](https://docs.gtk.org/gtk4/class.Popover.html). Fuzzy and
+multilingual ranking, recent-command storage, result virtualization,
+search-dialog/result-list accessibility semantics and AppKit/GTK target proof
+remain explicit readiness work.
+
+For the reusable platform-adaptive navigation layout,
+`src/shell_layout.rs` adds `ZsShellLayoutSpec` /
+`ZsNavigationScaffoldSpec`. This is a generic self-drawn surface contract, not
+a settings-storage model: it describes semantic navigation, content sections,
+rows, description text, row accessories and action buttons, then emits stable
+layout regions and a product-neutral `NativeDrawPlan` for host renderers. The
+internal component profile resolves that declaration to Fluent pane/cards,
+AppKit source-list/forms or GTK sidebar/boxed-list composition and owns the
+corresponding layout metrics.
+`NativeWindowBuilder::shell_layout(...)` now keeps that shell as live runtime
+state on the direct Win32 path. The normal event loop routes
+navigation hover/selection and scrollbar pointer math, plus product-neutral row
+accessory/action events, then replaces the buffered draw plan and invalidates
+the window. This closes the first visible input-state-paint loop while keeping
+application settings outside the framework.
+
+`src/workbench.rs` defines the higher-level desktop workbench family. Its
+declaration separates navigation history, message content blocks, composer
+actions and inspector content from application commands and persistence. The
+layout produces stable DPI-aware regions and a product-neutral
+`NativeDrawPlan`; the retained View caches backend text measurements so layout,
+paint, input and accessibility consume identical geometry. `ZsWorkbenchRuntime`
+adds hit testing, bounded timeline/sidebar/inspector scrolling, conversation
+selection, adaptive sidebar collapse and inspector-tab state. Composer height
+grows within the selected platform profile rather than relying on one fixed
+text box height.
+`ZsWorkbenchShellSpec`, `ZsMessageTimelineSpec`, `ZsComposerSpec` and
+`ZsInspectorPanelSpec` expose those regions as explicit reusable child
+contracts; `workbench_shell(...)` builds the retained View while
+`NativeWindowBuilder::workbench(...)` accepts either the structured shell or
+the flattened compatibility spec and installs the same live retained runtime.
+The internal platform profile owns distinct
+WinUI, AppKit and GTK shell geometry instead of sharing Windows dimensions.
+Direct target interaction proof remains a separate completion gate.
+
+`src/document_shell.rs` defines a smaller document-editor composite. It owns
+the DPI-aware tab strip, command bar, editor-frame inset, status surface,
+semantic icon commands and pointer hit regions. A host can place a native text
+service inside `ZsDocumentShellLayout::editor_content`, preserving IME and
+accessibility while the surrounding surface uses the buffered self-draw path.
+Its compatibility layout and draw-plan entry points resolve tab, toolbar,
+status, editor and command geometry from the internal Windows, AppKit or GTK
+document-shell profile rather than fixed Fluent dimensions. Normal
+applications compose the same semantics with `command_bar`, `tab_view` and
+`text_editor` in one shared View.
+The shell does not own files, encodings, accelerator dispatch or platform
+handles; those remain host/application services.
+
+`src/calculator.rs` defines a feature-gated standard-calculator slice.
+`ZsCalculatorEngine` owns decimal values, pending operations, repeated equals,
+memory and history through typed actions. `ZsCalculatorShellSpec` projects that
+state, while `calculator_view` composes the display, memory row, keypad and
+history from shared View primitives. `ZsCalculatorViewIds` supplies a stable
+per-instance action namespace. The unchanged acceptance source uses
+`native_window(...).stateful_view(...)` on Win32, AppKit and Linux; target
+selection, native lifecycle, text shaping and presentation remain in the
+desktop backends. The low-level direct-draw compatibility shell resolves its
+header, display, history and button treatment from a separate platform profile;
+it does not place Windows dimensions in the application-facing View path.
+Scientific, programmer, graphing and conversion modes remain separate future
+surfaces.
+
+The workbench does not own private glyph strings or an independent visual
+palette. The internal component profile supplies the active platform's spacing,
+control/card radii, control metrics and semantic type ramp; the public Fluent
+constants in `src/style.rs` remain compatibility exports only. `src/icon.rs`
+defines semantic `ZsIcon` values and platform symbol names. A workbench draw plan emits
+`NativeDrawCommand::Icon`; the Windows GDI sink resolves that command with
+Segoe Fluent Icons and uses a raster asset only when `Original` color mode is
+requested. This mirrors the IconElement/IconSource boundary without exposing a
+Windows font code point in component code.
+
+Text nodes carry `SemanticTextStyle` rather than raw widget-local sizes. The
+shared semantic type ramp exposes caption 12/16, body 14/20, body-large 18/24,
+subtitle 20/28, compact `WindowTitle` 24/32, title 28/36, title-large 40/52
+and display 68/92 roles. Heading roles default to semibold 600. The Win32 host
+selects the ZSUI-owned HarfRust/Swash path and resolves caption, body and heading
+roles through the installed Segoe UI Variable Small, Text and Display optical
+families. Font fallback selects the appropriate CJK and complex-script face per
+glyph instead of assigning one locale message font to the whole run; classic
+Segoe UI is the older-system fallback. GDI remains the bounded fallback for
+unsupported ellipsis behavior. Text uses subpixel rasterization while semantic
+icon-font glyphs use grayscale coverage to avoid color fringes.
+AppKit keeps the system `NSFont` family and GTK4 keeps its configured Pango
+system family.
+
+`src/component_catalog.rs` is the authoritative component readiness inventory.
+It distinguishes first-pass runtime surfaces from contract-only and not-started
+components, so a WinUI analogue name is never sufficient evidence by itself.
+
+The reusable desktop bridge for product adapters is `NativeWindowRuntimeDriver`.
+It maps `ProductUiProjection` startup requests into ZSUI window, status
+item/menu and settings declarations and can be used by
+`ZsuiReusableRuntimeHarness`. Status item and settings startup declarations now
+pass through `NativeStatusItemHost` and `NativeSettingsPageModelHost`, and the
+status/settings action contracts live in `src/native_host_actions.rs`.
+`NativeWindowRuntimeDriver` also implements
+status-menu command dispatch and bound settings-item updates so native backends
+have a concrete operation surface instead of only a stored startup snapshot.
+The reusable self-draw command shape is represented in
+`src/render_protocol.rs` as `NativeDrawPlan` and `NativeDrawCommandSink`. The
+protocol includes a filled triangle primitive for targeted overlay tails;
+Win32 GDI, AppKit `NSBezierPath` and GTK Cairo translate it locally. The
+Windows GDI implementation lives in `src/windows_gdi_renderer.rs`; future platform renderers should
+translate the same commands to Direct2D, AppKit, GTK snapshot APIs or Android
+Canvas only when that backend needs it, without leaking
+product state into the drawing layer.
+Win32 main/quick window style mapping, transient-window host, create-params,
+message-loop wrapper and `NativeMainWindowHost` implementation live in
+`src/platform/windows/mod.rs`. That direct host is available as
+framework code and the one-line `native_window(...).run()` convenience path uses
+it on Windows. The Win32 paint path suppresses background erase and renders through buffered paint
+before presenting to the target HDC. It can now also attach a product-neutral
+`NativeDrawPlan` to an `HWND`, so the GDI sink paints real framework draw
+commands instead of only a background fill. The GDI path
+uses internal RAII wrappers for buffered paint, window HDC acquisition,
+compatible memory DCs, smoke-screenshot HBITMAPs, owned main/quick HWND cleanup,
+owned HICON app-icon resources, brushes, pens, fonts and selected-object
+restoration. Window icon paths are now declaration-audited and loaded into
+owned HICON app-icon resources. Win32 tray icons now have a
+`Shell_NotifyIconW` backed RAII owner and a `WindowsWin32StatusItemHost`; the
+direct Windows `NativeWindowHost` path can now create declared status items,
+and native smoke can request one with `native_smoke_run --tray`. Status menus
+now have native command-id table routing, RAII popup-menu creation/cleanup and
+`TrackPopupMenu` selection routing, but a target-smoke artifact that exercises
+real user popup selection is still required before the native backend can be
+called complete.
+AppKit status items use the same shared `TraySpec` declaration. The AppKit
+backend retains `NSStatusItem` resources from `NSStatusBar`, installs detached
+native `NSMenu` trees, loads optional template images and routes status commands
+through the shared application command path. Required status smoke runs on the
+fixed macOS 15 Runner and verifies creation, command lowering/routing and RAII
+menu/status-item teardown rather than inferring support from a target check.
+Target proof still requires the platform smoke artifacts in
+`docs/native-host-smoke.md`.
+
+## Feature-Gated Build
+
+ZSUI should stay usable as a small dependency. The default Cargo feature set is
+`window`, `button` and `label`; heavier services and backends are optional.
+`src/feature_manifest.rs` mirrors the `Cargo.toml` feature graph for tools and
+AI agents through `zsui_feature_manifest()`.
+
+Applications can opt into only the pieces they need:
+
+```toml
+zsui = { version = "0.1", default-features = false, features = [
+    "window",
+    "button",
+    "list",
+    "scroll",
+    "dark-mode",
+] }
+```
+
+Optional dependencies must stay behind explicit feature gates: `clipboard`
+enables `arboard`, `image` enables `png`, `calculator` enables `rust_decimal`,
+`desktop-winit` enables `winit`, `windows-gdi` enables `windows-sys`,
+`windows-win32` selects `windows-rust-text`, which connects the platform-neutral
+ZSUI-owned HarfRust/Swash engine to the buffered Win32 DIB. `windows-gdi`
+retains the fallback paint foundation, while `windows-directwrite` remains an
+explicit comparison backend and proof oracle. `rust-text-proof` adds
+development-only geometry/serialization/difference code.
+`windows-text-proof` builds the multi-font DirectWrite JSON/SVG/PNG oracle in
+`docs/text-rendering.md`; neither proof feature belongs in application builds.
+The production text layout retains exact shaped geometry with unique visual-line
+indices; private subpixel raster-cache bins may be quantized independently and
+must not leak back into measure, hit testing, caret or selection geometry.
+Its Windows policy reads GPOS values from the resolved OpenType face, retains
+wrap-separating spaces for logical geometry, keeps wrapped lines on one
+paragraph baseline phase and includes synthetic-bold strength in glyph advances
+and raster-cache identity. These are retained-layout rules, not proof-only
+postprocessing or font-name overrides.
+`macos-appkit` enables optional `objc2` AppKit bindings, `linux-direct` enables
+the lightweight Wayland/X11, Cairo/Pango, built-in symbolic-vector and portal
+stack, while `linux-direct-lite` selects the same host with the optional
+pure-Rust ZSUI retained text engine and tiny-skia renderer. `linux-direct-lite`
+enables `rust-text` instead of owning a second Cosmic/Swash context. The two
+renderer features are additive in Cargo, so `linux-direct` remains authoritative
+when both are enabled; a lite-only build must omit `linux-direct`. `linux-system-icons`
+optionally adds freedesktop theme lookup plus
+GdkPixbuf decoding, and `linux-gtk` enables optional GTK4 compatibility
+bindings. The shared `accessibility` feature does not pull a Linux window host;
+the Winit-based direct host adds its AccessKit/AT-SPI bridge only through
+`linux-direct-accessibility`, while GTK4 keeps its toolkit accessibility path
+without Winit or Softbuffer. Platform-native window, clipboard, file-dialog
+and menu adapters therefore do not enter builds that omit their backend
+feature. Window adapters own `NSWindow` or Wayland/X11 window instances behind
+strong `WindowId` values; clipboard adapters map `ClipboardData::Text`,
+validated `ClipboardData::ImageRgba` and `Empty` to the target system
+clipboard. File-list transfer remains an explicit unsupported capability.
+Native toolkit objects and callback targets
+stay out of the public application API. The `window` umbrella selects Win32,
+AppKit or `linux-direct` by target; `desktop-winit` remains an explicit blank
+fallback and is not completion evidence for AppKit.
+Advanced controls should be gated by
+widget features or moved into separate crates as they become real
+implementations. Avoid global widget registries that instantiate every control
+type at startup; public examples should import and build only the controls they
+use. Composite conversation/task surfaces remain behind the `workbench`
+feature, document-editor chrome remains behind `document-shell`, and the
+decimal calculator slice remains behind `calculator`. The
+default `window` umbrella enables both desktop backend features while
+target-specific dependency sections ensure only the current platform library is
+compiled. Cargo features are unified across the dependency graph, so the long-term
+shape should prefer a small default `zsui` facade plus split crates or modules:
+`zsui-core`, `zsui-shell`, `zsui-render`, `zsui-style`,
+`zsui-widgets-base`, `zsui-widgets-input`, `zsui-widgets-list` and
+`zsui-widgets-extra`.
+
+## AI Context-Gated Reading
+
+AI documentation follows the same small-core principle as Cargo features.
+`docs/ai-agent.md` is the only bootstrap document. It contains stable boundary
+rules and a task router, not the full implementation/readiness narrative.
+
+`docs/ai/context-packs.json` maps each task family to:
+
+- a small required file set;
+- optional files that are loaded only after a concrete blocker;
+- focused verification commands.
+
+`scripts/ai-context.ps1` validates the manifest and prints one selected pack.
+`AGENTS.md` makes this sequence the default repository workflow. Detailed
+completion material stays in `docs/ai/reference.md`, while
+`src/agent_context.rs` remains available for tools that explicitly need the
+full machine-readable readiness model.
+
+Context packs are routing metadata, not ownership shortcuts. An agent still
+uses `rg` inside required files and can add another pack when a task genuinely
+crosses modules. Pack definitions should remain focused, use relative paths,
+avoid generated output and be validated in CI. New implementation history must
+not accumulate in the bootstrap document.
+
+## Rust-First API Target
+
+The revised long-term target is a Rust-native UI framework, not an inheritance
+based control hierarchy. The canonical machine-readable list lives in
+`src/framework_goals.rs` and is exposed as `zsui_rust_first_goals()`. The
+longer narrative is `docs/framework-goals.md`.
+The target also captures the product direction: keep
+the one-line `zsui::native_window(...).run()?` path as the normal native-window
+entry point, use stable host/rendering behavior as the baseline, add
+Android as an explicit Activity host, and introduce wider
+platform API bindings only when a concrete backend needs them.
+The first implementation layer lives in `src/view/mod.rs`, `src/style.rs` and
+`src/geometry.rs`: typed `View<Msg>` trees, `WidgetId`, explicit app/event/paint
+contexts, `ViewInteractionPlan`, feature-gated scroll containers, typed list
+selection, `Px`/`Dp`/`Dpi`, `UiLength` and theme tokens.
+`src/shell_layout.rs` adds the generic navigation/content shell layout contract
+on top of those typed units and draw commands. One public declaration resolves
+through internal Fluent, AppKit or GTK composition and metric profiles.
+`ProductViewAdapterHost` connects that typed view layer to product adapters, and
+`ZsuiReusableRuntimeHarness::run_view_smoke(...)` verifies the flow from native
+view events to typed messages, `AppCx`, product events and reusable
+`UiCommand` dispatch.
+`typed_native_window(...)` is the opt-in compile-time builder surface. Its
+`NativeWindowContentMissing` state exposes configuration and content transition
+methods but not `build`/`run`; attaching a View, live View, draw plan or shell
+layout returns `NativeWindowContentReady`. The unconstrained
+`native_window(...)` entry point remains for legitimate empty native surfaces.
+
+- Use composition and traits for views/components instead of base classes.
+- Preserve one-line native window creation for ordinary desktop apps.
+- Use typed messages such as `enum Msg` instead of string event names.
+- Own windows, fonts, bitmaps, icons and tray handles with RAII wrappers.
+- Use buffered no-flicker self-draw as the Windows rendering baseline.
+- Use typed units such as `Px`, `Dp` and `Dpi` instead of loose numeric sizes.
+- Use the opt-in native-window content typestate when compile-time constraints
+  are more valuable than an intentionally empty native surface.
+- Avoid global mutable registries; pass explicit app/event/layout/paint contexts.
+- Keep public APIs safe and isolate `unsafe` inside backend modules.
+- Keep control state explicit in application state and derive UI from state.
+- Use theme tokens for colors, radius, spacing and typography.
+- Keep the user-facing UI API declarative Rust, without XML or reflection.
+- Return `Result<T, ZsuiError>` for backend failures instead of panicking.
+- Model platform differences with traits and capability reports.
+- Treat Android as an explicit mobile native host, not a desktop clone.
+- Use Cargo features for widgets, services, platform backends and heavy deps.
+- Split large widget/backend families into smaller crates or feature modules.
+- Add windows-rs or other wider platform bindings only for concrete backend work.
+- Use strong typed IDs for windows, widgets, commands and resources.
+
+## Fully Unified Desktop Authoring Boundary
+
+Ordinary Windows, macOS and Linux applications have one source-level path:
+
+```text
+State + Msg + view + update + semantic specs/tokens
+                         |
+                         v
+              framework PlatformExperience
+                         |
+                         v
+       compile-time Host/Text/Raster/Presenter/Services profile
+                         |
+             +-----------+-----------+
+             |           |           |
+           Win32       AppKit      Linux desktop
+```
+
+The upper boundary is completely platform-neutral. Application View code does
+not receive a platform enum, select a renderer, import raw host objects or
+duplicate a component tree behind target `cfg`. Semantic parameter changes are
+made once through public specs, typed units and theme tokens.
+
+The lower boundary is deliberately not uniform. The framework's platform
+experience layer may map the same semantic navigation, toolbar, tab, form,
+dialog or popup declaration to different composition and interaction rules.
+The statically selected backend profile then supplies the real event loop,
+text layout, rasterization, presentation and operating-system services. This
+keeps application authoring unified without applying a Windows component tree
+or one renderer to every target.
+
+The boundary has three concrete internal layers. `src/platform/identity.rs`
+defines the canonical platform/toolkit identity types, and
+`NativeUiPlatform::current_target` owns the single compile-target identity
+selector. `src/platform/experience.rs`
+consumes that identity, maps it to Fluent, AppKit, GTK or mobile behavior and
+owns the matching backend status and adapter identity. The public backend
+inventory and launch plans are derived from that same experience registration
+instead of repeating toolkit, module-path and status tables.
+`src/platform/style.rs` owns the single low-level desktop design profile used
+by render contracts and deterministic proof. Component-specific
+`Zs*PlatformStyle` names are source-compatible aliases of that one type rather
+than independent platform selectors. Ordinary View construction never accepts
+the profile; applications continue to change semantic specs and theme tokens
+once, while `PlatformExperience` resolves the target profile.
+`src/platform/component_profile/mod.rs` defines the typed
+component-composition contracts and the single style-to-profile resolver.
+Platform-owned defaults live separately in
+`src/platform/component_profile/windows.rs`, `macos.rs` and `gtk.rs`; they
+contain component composition, metrics and interaction conventions but no
+native host or renderer implementation.
+The same profile boundary owns global radius, spacing and control-size tokens,
+the semantic typography ramp and fallback family identity, and text-input focus
+treatment. Backends still resolve installed font families, live font metrics
+and rasterization resources; those target operations do not move into the
+component profile.
+Base controls, navigation rows, tabs, command bars, content dialogs, feedback
+surfaces, breadcrumbs, toggle buttons, number and password boxes, tooltips,
+progress rings, search fields, grid/tree/table collections and shells consume
+those profiles for layout, paint, hit testing and keyboard behavior instead of
+matching platforms in shared component code. The dialog profile owns action
+order, equal-versus-intrinsic sizing, trailing alignment, modal scrim strength
+and visual-order focus traversal; the public dialog model retains only semantic
+Primary, Secondary and Close responses. Feature-gated profiles independently
+own InfoBar, TeachingTip, Toast, BreadcrumbBar, ToggleButton, NumberBox,
+PasswordBox, ToolTip, ProgressRing, AutoSuggestBox, GridView, TreeView,
+DataGrid, TimePicker, ColorPicker and CommandPalette composition, metrics and
+interaction treatments. The direct-draw Document Shell and Calculator Shell
+compatibility surfaces have dedicated feature-gated profiles as well.
+Production `widget_render.rs`, `password_box.rs`, `tooltip.rs`, `progress.rs`,
+`style.rs`, `render_protocol.rs` and the native input focus decorator therefore
+consume resolved profiles rather than direct Windows, macOS or GTK variant
+branches. The reusable Workbench shell also resolves control heights, icon
+sizes and surface radii through the same token profile; it does not depend on
+Fluent compatibility constants.
+`src/platform/backend_profile.rs` describes Host, Text, Raster, Presenter and
+Services choices independently.
+`src/platform/desktop_runtime/` is the production adapter contract: its single
+compile-time selector delegates the event loop, runtime smoke, final-surface
+capture, scaffold `HostCapabilities`, native-host `HostCapabilities`, the active
+`DesktopCapabilities` profile, clipboard and native file panels to a target-owned
+Win32, AppKit, Linux-direct, GTK compatibility or Winit-fallback module.
+`native.rs`, `capability.rs` and the public desktop-service facades consume that
+contract and contain no current-platform matching or production/smoke backend
+selection for those operations. Explicit per-platform capability constructors
+remain available for inspection and contract tests, but only the selected
+adapter decides which profiles are active. A new platform backend therefore
+defines its execution and all active capability views in the same adapter.
+Win32 GDI capture ownership and Winit smoke lifecycle details stay in dedicated
+backend modules; AppKit, Linux-direct and GTK convert target results into one
+platform-neutral proof report at the adapter boundary. Adding another desktop
+backend therefore adds one adapter implementation without changing application
+authoring, desktop-service dispatch or the shared host loop. Public View
+builders do not accept the internal experience or the low-level render-proof
+`ZsPlatformStyle`.
+
+The native-proof document is platform-neutral as well. The selected desktop
+runtime adapter supplies the proof backend identity, fallback typography and
+process-memory sampler. Win32 process counters, Mach task information and
+Linux procfs parsing live under `src/platform/desktop_runtime/`; adding another
+target does not add target `cfg`, native APIs or backend-name inference to
+`native_proof.rs`.
+
+Every successful final-surface capture returns `NativeViewCaptureEvidence`.
+Win32 captures the actual client surface through `WM_PRINTCLIENT` into a GDI
+DIB before PNG encoding, then records client pixel geometry, `GetDpiForWindow`
+scale, derived logical geometry, the draw-plan typography scale and detected
+Windows system typography. AppKit and Linux return the same contract from their
+final `NSView`, Softbuffer or GTK texture. Process memory is sampled before the
+native window is torn down rather than inferred later by an acceptance example.
+
+The selected desktop backend owns a cloned `NativeViewInputRuntime` containing
+the static typed View or shared live View, semantic pointer/keyboard/text/IME
+state, resource policy, close command and command executors. Raw host routes do
+not rebuild that state machine. Win32 only translates messages and UTF-16
+units, defers host effects until locks are released, and maps the shared report
+to its compatibility report. AppKit, Linux and future backends consume the same
+runtime and its platform-neutral surface snapshot without adding a
+target-specific constructor, trait method or compile gate to the input core.
+Semantic menu accelerators follow the same boundary: the shared menu model
+stores only typed keys and modifiers, while `src/platform/menu_accelerator.rs`
+projects AppKit key equivalents and GTK accelerator strings for their native
+menu adapters.
+
+Regression tests scan the
+Gallery, Notepad, Calculator, Workbench and other ordinary desktop application
+sources so target `cfg`, platform enums and raw native handles cannot silently
+return to application authoring or smoke setup.
+
+The shared text-input geometry owns only the `NativeTextShaper` contract, its
+bounded shaped-line cache and the platform-neutral logical-cell fallback.
+Win32 GDI/Uniscribe, AppKit/Core Text, Linux Direct Pango, Linux Direct Lite's
+shared ZSUI text context and GTK Pango construct backend-owned shapers and inject them into
+the per-window input runtime. Their contexts, scale queries and shaping calls
+do not appear as variants in the shared input core, so another platform adds a
+shaper implementation without extending a cross-platform enum or matching on
+its native context type. `src/platform/text_shaper_boundary.rs` contains the
+target execution constraint needed by the owning event loop; the shared input
+module contains no target compile gate.
+
+The retained public View payload is semantic as well: toolbar buttons and
+adaptive navigation nodes store icons, labels, item counts and state, but no
+platform selector. Framework construction plus adaptive layout, paint and hit
+testing resolve the framework-owned experience. Deterministic cross-platform
+proof may attach a crate-private style override to `ViewNode`; that override is
+not an application parameter and is absent from normal public builder output.
+
+Layout, paint, hit testing, caret/selection geometry and accessibility must
+consume the same backend text-layout result. Typography, clipping and density
+corrections therefore belong in reusable framework text/style contracts rather
+than in Gallery or Notepad. Cargo features remain orthogonal: one API shape does
+not imply one always-enabled binary surface.
+
+## Retained UI and scene pipeline
+
+The declarative `view(state)` result is temporary description, not the
+long-lived runtime tree and not the rendering cache. ZSUI reconciles description
+nodes by type plus stable key/`WidgetId`, then keeps state, focus, accessibility
+identity and backend resources on retained elements. A changed description may
+replace configuration without discarding compatible retained state.
+
+```text
+temporary View description
+        |
+        v  reconcile(Type + Key/WidgetId)
+retained Element tree
+        |
+        v  DirtyFlags: style / layout / paint / semantics / composition
+retained RenderObject tree
+        |
+        v  layout only dirty subtrees
+cached DisplayList at repaint boundaries
+        |
+        v  incremental layer/scene patches
+retained LayerTree / SceneTree
+        |
+        +--> software dirty rectangles
+        +--> GPU renderer
+        `--> platform compositor
+```
+
+`Element` and `RenderObject` are different ownership domains: an element owns
+declarative identity and state reconciliation, while a render object owns
+measured geometry, hit-test geometry and paint invalidation. Repaint boundaries
+cache display lists, not arbitrary widgets. Layer promotion is sparse and
+explicit for clipping, opacity, transforms, scrolling, popup surfaces and other
+composition needs; it is not one GPU layer per control.
+
+This is the required migration direction for the current retained View/runtime
+and draw-plan implementation. Documentation must not claim the full
+Element/RenderObject/LayerTree split is complete until those concrete types,
+incremental invalidation tests and target evidence exist. CI screenshots, SVG,
+JSON and pixel comparison validate the framework; they are not nodes in the
+production pipeline and are never enabled by ordinary application features.
+
+## Host Boundary
+
+Applications call `ZsuiHost` operations:
+
+- create and show/hide windows
+- create tray/status menus
+- register global hotkeys
+- read/write clipboard data
+- open file pickers
+- show native dialogs
+- poll events and run the host event loop
+
+`NativeDesktopDialogService` and `NativeWindowHost` both delegate
+`NativeDialogSpec` through the private selected desktop-runtime adapter.
+The platform-neutral spec may carry one validated `DialogButtonLabels` set,
+but button identity remains `DialogResponse` and target adapters retain their
+native action order. Win32 owns `MessageBoxW` modality and localized system
+buttons, applying explicit labels through one scoped thread hook. AppKit presents
+`NSAlert` as an active-window sheet when possible, GTK uses `GtkAlertDialog`,
+and Linux direct projects labels through its desktop-provided Zenity surface or
+reports `Unsupported` when that provider is absent. Application code never
+imports a native dialog type.
+
+Unsupported features return `ZsuiError::Unsupported` or appear in
+`HostCapabilities` degradation reports. A host may accept a window declaration
+and still downgrade unsupported traits such as transparency or always-on-top.
+The native file-panel gate launches and captures the selected target's real
+open and save surfaces, then requires cancellation to return through the same
+`NativeFileDialogService`; specification-only tests are not target evidence.
+Native backend completion also requires the smoke artifact contract in
+`docs/native-host-smoke.md`; code-level host contracts alone are not proof that
+the target OS integration is complete.

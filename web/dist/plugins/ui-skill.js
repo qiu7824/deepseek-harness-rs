@@ -229,7 +229,8 @@ window.__ModuleLoader__.load({
 				key: "skill",
 				locale: NS
 			}, SkillRow));
-			const skills = ctx.get("connection").api.skills;
+			const connection = ctx.get("connection");
+			const skills = connection.api?.skills ?? { list: (payload, signal) => connection.rpc.call("/api", "skill.list", payload, signal).then((result) => ({ result })) };
 			const sessions = ctx.get("sessions");
 			const fetches = /* @__PURE__ */ new Map();
 			const lexiconListeners = /* @__PURE__ */ new Map();

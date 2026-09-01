@@ -1,0 +1,42 @@
+[package]
+name = "slint-notepad-baseline"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "slint-invoice-tool"
+path = "src/bin/invoice_tool.rs"
+
+[[bin]]
+name = "slint-ui-performance"
+path = "src/bin/ui_performance.rs"
+required-features = ["perf-matrix"]
+
+[features]
+perf-matrix = []
+perf-minimal = ["perf-matrix"]
+perf-full = ["perf-matrix"]
+perf-viewer = ["perf-matrix"]
+
+[dependencies]
+rfd = "=0.17.2"
+slint = { version = "=1.17.1", default-features = false, features = [
+    "accessibility",
+    "backend-winit",
+    "compat-1-2",
+    "image-default-formats",
+    "renderer-software",
+    "software-renderer-systemfonts",
+    "std",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "=0.2.186"
+
+[profile.release]
+opt-level = "z"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

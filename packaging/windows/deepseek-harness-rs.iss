@@ -19,8 +19,12 @@
 #endif
 #if Variant == "core"
 #define MyAppId "{{A6F42843-79DD-4FA1-91D2-0B71F8974B78}"
-#else
+#elif Variant == "skin"
 #define MyAppId "{{7D47BC56-AB4A-4E87-8E62-652A319F6C4F}"
+#elif Variant == "free"
+#define MyAppId "{{F0B73461-F37A-407E-BE7D-71D6B84139D2}"
+#else
+#error Unknown release variant
 #endif
 [Setup]
 AppId={#MyAppId}

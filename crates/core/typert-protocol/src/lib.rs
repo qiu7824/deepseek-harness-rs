@@ -12,6 +12,56 @@ use std::sync::Arc;
 use cordis::{ArcValue, Disposer, Service, make_disposer};
 use parking_lot::Mutex;
 
+/// The one Remote failure vocabulary shared by owners, the gateway, and consumers.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteError {
+    /// Stable business or gateway failure code.
+    pub code: String,
+    /// Human diagnostic carried across the wire.
+    pub message: String,
+    /// Structured code-specific payload.
+    pub details: serde_json::Value,
+    /// Structural cross-realm marker; discrimination never relies on type identity.
+    #[serde(rename = "isDSHRemoteError")]
+    pub is_dsh_remote_error: bool,
+}
+
+impl RemoteError {
+    pub fn new(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            details,
+            is_dsh_remote_error: true,
+        }
+    }
+}
+
+impl std::fmt::Display for RemoteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for RemoteError {}
+
+/// Structurally identify a Remote failure represented as JSON.
+pub fn is_dsh_remote_error(value: &serde_json::Value) -> bool {
+    value
+        .get("isDSHRemoteError")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        && value
+            .get("code")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+}
+
 /// Test one generated Remote name against the Connection endpoint grammar.
 /// (TS `isTypertRemoteSegment`.)
 pub fn is_typert_remote_segment(value: &str) -> bool {

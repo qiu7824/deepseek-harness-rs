@@ -178,17 +178,17 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("@deepseek-ai/dsh-client-ui-goal", manifest)
         self.assertIn('goal.phase === "blocked"', source)
 
-    def test_theme_settings_include_exact_skin_catalog_and_bing_wallpaper(self):
+    def test_skin_center_is_an_official_style_bundled_plugin(self):
         theme = (ROOT / "web" / "dist" / "plugins" / "ui-theme.js").read_text(encoding="utf-8")
         host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(encoding="utf-8")
+        skin = (ROOT / "release" / "plugins" / "dsh-skin-center" / "lib" / "client.js").read_text(encoding="utf-8")
+        package = (ROOT / "release" / "plugins" / "dsh-skin-center" / "package.json").read_text(encoding="utf-8")
         for theme_id in (
             "light",
             "dark",
-            "whale-song",
             "blue-fantasy",
             "harbor",
             "xp",
-            "dragon-heir",
             "minecraft",
             "trading",
             "miku",
@@ -196,23 +196,45 @@ class ProductSurfaceContractTests(unittest.TestCase):
         ):
             self.assertIn(f'"{theme_id}"', theme)
             self.assertIn(f'"{theme_id}"', host)
+            self.assertIn(f'"{theme_id}"', skin)
+        for removed in ("whale-song", "dragon-heir"):
+            self.assertNotIn(f'"{removed}"', theme)
+            self.assertNotIn(f'"{removed}"', skin)
         preferences = theme.split("const THEME_PREFERENCES = [", 1)[1].split("];", 1)[0]
         for retired in ("system", "catppuccin", "dracula", "nord", "tokyo-night", "linear", "notion"):
             self.assertNotIn(f'"{retired}"', preferences)
-        self.assertIn("/__dsh-bing-wallpaper", theme)
-        self.assertIn("/__dsh-bing-wallpaper", host)
+        self.assertNotIn("SkinSettings", theme)
+        self.assertNotIn("dshSkinPicker", theme)
+        self.assertIn('id: "appearance"', theme)
+        self.assertIn('label: "外观"', theme)
+        self.assertIn('id: "skins"', skin)
+        self.assertIn('label: "皮肤"', skin)
+        self.assertIn("--dsw-alias-", skin)
+        self.assertIn("settings.section", skin)
+        self.assertIn("data-dsh-skin-center", skin)
+        self.assertIn("data-dsh-skin-option", skin)
+        self.assertIn('const offThemeChange = theme.ctx.on("theme/change", refresh)', skin)
+        self.assertIn("return offThemeChange", skin)
+        self.assertNotIn("theme.ctx.off", skin)
+        self.assertIn('value: selected.id', skin)
+        self.assertIn('disabled: busy', skin)
+        self.assertIn('"data-busy": busy || undefined', skin)
+        self.assertIn("theme.applyTheme(id)", skin)
+        self.assertNotIn("theme.setTheme(id)", skin)
+        self.assertIn('disabled: assetsReady === false && !["light", "dark"].includes(skin.id)', skin)
+        self.assertIn('data-dsh-skin-card', skin)
+        self.assertIn("Skin assets are not installed", skin)
+        self.assertIn('"platform": "web"', package)
+        self.assertIn("dsh-skin-center", (ROOT / "tools" / "stage_release_plugins.py").read_text(encoding="utf-8"))
+        self.assertNotIn("dshSkinPicker{", skin)
         self.assertIn('"ui-wallpaper"', host)
         self.assertNotIn('"ui-history"', host)
         self.assertNotIn("HistoryMemorySettings", theme)
         self.assertNotIn('id: "history-memory"', theme)
         self.assertIn("NO_SKIN", theme)
         self.assertIn("BasicAppearanceSettings", theme)
-        self.assertIn('NO_SKIN ? "外观" : "皮肤与壁纸"', theme)
-        for required in ("SKIN_CATALOG", "dshSkinPicker", "当前皮肤", "data-dsh-skin-option", "选择后立即应用并持久化"):
-            self.assertIn(required, theme)
-        skin_settings = theme[theme.index("function SkinSettings"):theme.index("function BasicAppearanceSettings")]
         for retired_ui in ("全部皮肤", "浅色皮肤", "深色皮肤", "随机皮肤", "搜索皮肤", "主题详情"):
-            self.assertNotIn(retired_ui, skin_settings)
+            self.assertNotIn(retired_ui, skin)
 
     def test_code_graph_and_sidebar_editor_contract(self):
         graph = (ROOT / "web" / "dist" / "plugins" / "ui-code-graph.js").read_text(encoding="utf-8")
@@ -240,7 +262,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
     def test_manual_windows_release_uses_the_same_fallback_version_as_packaging(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn("$refName.StartsWith('v')", workflow)
-        self.assertIn("else { '0.1.0-rc.8' }", workflow)
+        self.assertIn("else { '0.1.2-alpha.2' }", workflow)
         self.assertNotIn("TrimStart('v')", workflow)
 
     def test_release_workflow_gates_and_verifies_core_skin_executables(self):
@@ -260,15 +282,35 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("dsh-launcher", launcher_cargo)
         self.assertIn("zsui", launcher_cargo)
         self.assertIn("winresource", launcher_cargo)
-        self.assertIn("window(", launcher)
+        self.assertIn("NativeWindowBuilder::new", launcher)
         self.assertTrue((ROOT / "crates" / "host" / "dsh-launcher" / "build.rs").is_file())
         self.assertIn("Command::new", launcher)
         self.assertIn("GetUserDefaultUILanguage", launcher)
-        self.assertIn("DeepSeek Harness-rs Launcher", launcher)
-        self.assertIn("DeepSeek Harness-rs 启动器", launcher)
-        self.assertIn("install_skins: \"安装皮肤\"", launcher)
-        self.assertIn("InstallSkins", launcher)
-        self.assertIn(".size(600, 390)", launcher)
+        self.assertIn('title: "DeepSeek Harness-rs"', launcher)
+        self.assertIn('subtitle: "本机服务与 Web 控制台"', launcher)
+        self.assertNotIn('install_skins: "管理皮肤"', launcher)
+        self.assertNotIn("InstallSkins", launcher)
+        self.assertIn(".size(680, 430)", launcher)
+        self.assertIn("toggle(managed)", launcher)
+        self.assertIn("primary_button(state.copy.open_web)", launcher)
+        self.assertIn("ThemeColorToken::Surface", launcher)
+        self.assertIn(".tray(tray)", launcher)
+        self.assertIn(".on_close_requested(ZsuiCommand::HideMainWindow)", launcher)
+        zsui_windows = ROOT / "crates" / "vendor" / "zsui" / "src" / "platform" / "windows"
+        tray = (zsui_windows / "services" / "tray.rs").read_text(encoding="utf-8")
+        application = (zsui_windows / "application.rs").read_text(encoding="utf-8")
+        window_proc = (zsui_windows / "window_proc.rs").read_text(encoding="utf-8")
+        menu = (zsui_windows / "services" / "menu.rs").read_text(encoding="utf-8")
+        self.assertIn("Shell_NotifyIconW", tray)
+        self.assertIn("present_status_item_menu_at_cursor", application)
+        self.assertIn("execute_windows_win32_status_command", application)
+        self.assertIn("window_lifecycle_commands", window_proc)
+        self.assertIn("WM_CLOSE", window_proc)
+        self.assertIn("dispatch_windows_win32_window_view_input", menu)
+        self.assertIn("route.dispatch_app_command(command.clone())", menu)
+        self.assertIn("LauncherStateFile", launcher)
+        self.assertIn("PROCESS_QUERY_LIMITED_INFORMATION", launcher)
+        self.assertIn("stop_owned_child_on_drop", launcher)
         self.assertNotIn("DshServiceManager.ps1", package)
         self.assertNotIn("启动DeepSeek Harness-rs.cmd", package)
         self.assertNotIn("deepseek-harness-rs-web", package)

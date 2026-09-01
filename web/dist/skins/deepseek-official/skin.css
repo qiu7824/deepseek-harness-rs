@@ -1,0 +1,101 @@
+/* Locked DeepSeek Harness official visual reference:
+   https://www.deepseek.com/harness/ */
+:root {
+  --dsw-font-family: "DM Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", "PingFang SC", sans-serif;
+  --ds-font-family-code: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  --dsw-alias-bg-base: #f9f8f8;
+  --dsw-alias-bg-layer-1: rgba(255, 255, 255, 0.72);
+  --dsw-alias-bg-layer-2: rgba(255, 255, 255, 0.5);
+  --dsw-alias-bg-layer-3: rgba(0, 0, 0, 0.03);
+  --dsw-alias-bg-overlay: #ffffff;
+  --dsw-alias-border-l1: rgba(0, 0, 0, 0.06);
+  --dsw-alias-border-l2: rgba(0, 0, 0, 0.1);
+  --dsw-alias-border-l3: rgba(0, 0, 0, 0.2);
+  --dsw-alias-brand-primary: #4d6bfe;
+  --dsw-alias-brand-text: #234792;
+  --dsw-alias-button-primary-fill: #1a1615;
+  --dsw-alias-button-primary-hover: #3b3634;
+  --dsw-alias-button-primary-dimmed: #8d8886;
+  --dsw-alias-label-primary-foreground: #ffffff;
+  --dsw-alias-label-primary: #1e232c;
+  --dsw-alias-label-secondary: rgba(0, 0, 0, 0.7);
+  --dsw-alias-label-tertiary: rgba(0, 0, 0, 0.55);
+  --dsw-alias-label-caption: #8691a1;
+  --dsw-alias-interactive-bg-hover: rgba(0, 0, 0, 0.04);
+  --dsw-alias-interactive-bg-active: rgba(77, 107, 254, 0.1);
+  --dsw-alias-markdown-code-block: rgba(0, 0, 0, 0.05);
+  --dsw-alias-markdown-code-block-banner: rgba(0, 0, 0, 0.03);
+  --dsw-alias-markdown-inline-code: rgba(0, 0, 0, 0.05);
+  --dsw-specific-sidebar-fill: rgba(255, 255, 255, 0.42);
+  --dsw-specific-sidebar-nav-item-active: rgba(77, 107, 254, 0.1);
+  --dsw-specific-sidebar-nav-item-hover: rgba(0, 0, 0, 0.04);
+  --dsw-specific-input-major: rgba(255, 255, 255, 0.64);
+  --dsw-specific-bubble: rgba(77, 107, 254, 0.08);
+
+  color: #1e232c;
+  background-color: #f9f8f8;
+  background-image:
+    radial-gradient(circle at 18% 6%, rgba(77, 107, 254, 0.13), transparent 31%),
+    radial-gradient(circle at 84% 15%, rgba(115, 163, 210, 0.12), transparent 28%),
+    linear-gradient(180deg, #ffffff 0%, #f9f8f8 46%, #f1f4fb 100%);
+  background-attachment: fixed;
+}
+
+body[data-ds-dark-theme] {
+  --dsw-alias-bg-base: #0a0a0a;
+  --dsw-alias-bg-layer-1: rgba(255, 255, 255, 0.06);
+  --dsw-alias-bg-layer-2: rgba(255, 255, 255, 0.04);
+  --dsw-alias-bg-layer-3: rgba(255, 255, 255, 0.02);
+  --dsw-alias-bg-overlay: #262626;
+  --dsw-alias-border-l1: rgba(255, 255, 255, 0.08);
+  --dsw-alias-border-l2: rgba(255, 255, 255, 0.14);
+  --dsw-alias-border-l3: rgba(255, 255, 255, 0.24);
+  --dsw-alias-brand-primary: #6799fe;
+  --dsw-alias-brand-text: #6799fe;
+  --dsw-alias-button-primary-fill: #ffffff;
+  --dsw-alias-button-primary-hover: #dfe7ff;
+  --dsw-alias-button-primary-dimmed: rgba(255, 255, 255, 0.45);
+  --dsw-alias-label-primary-foreground: #0a0a0a;
+  --dsw-alias-label-primary: #ffffff;
+  --dsw-alias-label-secondary: rgba(255, 255, 255, 0.8);
+  --dsw-alias-label-tertiary: rgba(255, 255, 255, 0.58);
+  --dsw-alias-label-caption: rgba(255, 255, 255, 0.4);
+  --dsw-alias-interactive-bg-hover: rgba(255, 255, 255, 0.06);
+  --dsw-alias-interactive-bg-active: rgba(103, 153, 254, 0.15);
+  --dsw-alias-markdown-code-block: rgba(0, 0, 0, 0.35);
+  --dsw-alias-markdown-code-block-banner: rgba(255, 255, 255, 0.04);
+  --dsw-alias-markdown-inline-code: rgba(255, 255, 255, 0.08);
+  --dsw-specific-sidebar-fill: rgba(255, 255, 255, 0.035);
+  --dsw-specific-sidebar-nav-item-active: rgba(103, 153, 254, 0.16);
+  --dsw-specific-sidebar-nav-item-hover: rgba(255, 255, 255, 0.06);
+  --dsw-specific-input-major: rgba(255, 255, 255, 0.075);
+  --dsw-specific-bubble: rgba(103, 153, 254, 0.14);
+
+  color: #ffffff;
+  background-color: #0a0a0a;
+  background-image:
+    radial-gradient(circle at 18% 6%, rgba(49, 87, 184, 0.35), transparent 34%),
+    radial-gradient(circle at 84% 14%, rgba(31, 59, 143, 0.28), transparent 30%),
+    linear-gradient(180deg, #101113 0%, #0a0a0a 58%, #0d1017 100%);
+}
+
+[id="root"] {
+  background: transparent;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+button,
+[role="button"],
+input,
+select,
+textarea,
+[role="dialog"] {
+  border-radius: 10px;
+}

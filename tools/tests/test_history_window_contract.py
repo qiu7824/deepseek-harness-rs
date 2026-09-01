@@ -24,6 +24,31 @@ class HistoryWindowContractTests(unittest.TestCase):
         ):
             self.assertTrue(required in source, required)
 
+    def test_runtime_can_page_through_to_an_unloaded_turn(self):
+        source = RUNTIME.read_text(encoding="utf-8")
+        for required in (
+            "JUMP_PAGE_MESSAGES = 200",
+            "jumpTargetSeq = null",
+            "jumpPromise = null",
+            "loadThrough(seq)",
+            "this.jumpTargetSeq = Math.min",
+            "this.baseSeq > this.jumpTargetSeq",
+            "if (this.baseSeq >= before) return",
+        ):
+            self.assertIn(required, source)
+        conversation = CONVERSATION.read_text(encoding="utf-8")
+        self.assertIn('this.scopedSession("loadThrough").loadThrough(seq)', conversation)
+        self.assertIn("loadThrough: (seq) => scoped.loadThrough(seq)", conversation)
+        for required in (
+            'useProjection("turnOutline")',
+            "mergeTurnOutline(timeline, turnOutline)",
+            "const TurnNavigator =",
+            'className: "dshAlpha3TurnRail"',
+            "loadThrough(item.anchor.seq)",
+            '"chat.turnNavigation.jumpLoad"',
+        ):
+            self.assertIn(required, conversation)
+
     def test_connection_preserves_directional_history_fields(self):
         source = CONNECTION.read_text(encoding="utf-8")
         for required in (

@@ -109,6 +109,9 @@ pub struct DeepSeekCatalogModel {
 pub struct DeepSeekConfig {
     pub api: Option<String>,
     pub api_key_env: Option<String>,
+    /// Send requests without an Authorization header for an explicitly
+    /// configured anonymous OpenAI-compatible route.
+    pub keyless: bool,
     pub base_url: Option<String>,
     pub thinking: Option<ThinkingMode>,
     pub reasoning_effort: Option<DeepSeekReasoningEffort>,
@@ -125,6 +128,7 @@ pub struct DeepSeekConfig {
 pub struct ResolvedDeepSeekOptions {
     pub api: String,
     pub api_key_env: String,
+    pub keyless: bool,
     pub base_url: String,
     pub defaults: RequestDefaults,
     pub max_tokens: u64,
@@ -192,6 +196,7 @@ pub fn resolve_adapter_options(
             .api_key_env
             .clone()
             .unwrap_or_else(|| DEFAULT_API_KEY_ENV.to_string()),
+        keyless: config.keyless,
         base_url: config
             .base_url
             .clone()
@@ -1107,7 +1112,7 @@ async fn request_chunks(
         })?;
         let response = transport::post(
             &url,
-            &api_key,
+            (!connection.keyless).then_some(api_key.as_str()),
             encoded,
             &attribution_headers(&app_identity()),
             cancelled.clone(),
@@ -1302,14 +1307,20 @@ async fn request_responses_chunks(
         )
     })?;
     let url = endpoint_url(&connection.base_url, "openai-responses");
-    let mut response = transport::post(&url, api_key, encoded, attribution, None)
-        .await
-        .map_err(|error| {
-            failure(
-                format!("Responses API request failed: {error}"),
-                "TRANSPORT",
-            )
-        })?;
+    let mut response = transport::post(
+        &url,
+        (!connection.keyless).then_some(api_key),
+        encoded,
+        attribution,
+        None,
+    )
+    .await
+    .map_err(|error| {
+        failure(
+            format!("Responses API request failed: {error}"),
+            "TRANSPORT",
+        )
+    })?;
     if !response.status.is_success() {
         let status = response.status;
         let headers = response.headers.clone();
@@ -1400,23 +1411,27 @@ async fn drive_owned_request(
             return;
         }
     };
-    let raw_key = match key_resolver(&connection).await {
-        Ok(Some(key)) => key,
-        Ok(None) => {
-            let _ = sender
-                .send(error_finish(failure(
-                    format!(
-                        "llm-deepseek: no API key resolved from {}",
-                        connection.api_key_env
-                    ),
-                    "MISSING_CREDENTIAL",
-                )))
-                .await;
-            return;
-        }
-        Err(error) => {
-            let _ = sender.send(error_finish(error.failure)).await;
-            return;
+    let raw_key = if connection.keyless {
+        "keyless-anonymous-route".to_string()
+    } else {
+        match key_resolver(&connection).await {
+            Ok(Some(key)) => key,
+            Ok(None) => {
+                let _ = sender
+                    .send(error_finish(failure(
+                        format!(
+                            "llm-deepseek: no API key resolved from {}",
+                            connection.api_key_env
+                        ),
+                        "MISSING_CREDENTIAL",
+                    )))
+                    .await;
+                return;
+            }
+            Err(error) => {
+                let _ = sender.send(error_finish(error.failure)).await;
+                return;
+            }
         }
     };
     let api_key = match assert_usable_api_key(&raw_key, "llm-deepseek", &connection.api_key_env) {

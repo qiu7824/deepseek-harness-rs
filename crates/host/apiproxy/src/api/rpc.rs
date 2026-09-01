@@ -16,6 +16,7 @@
 //!   while the typed [`RpcResult<T>`] requires its declared value.
 
 use dsh_brand::Branded;
+use dsh_typert_protocol::RemoteError;
 use serde::{Deserialize, Serialize};
 
 /// Brand marker for message correlation ids.
@@ -76,6 +77,9 @@ pub enum RpcErrorCode {
     SubagentDeliveryUnavailable,
     Internal,
 }
+
+/// Shared gateway code used when no more specific typed dispatch failure applies.
+pub const GATEWAY_INTERNAL_CODE: &str = "gateway/internal";
 
 impl RpcErrorCode {
     /// The wire code literal.
@@ -437,6 +441,20 @@ pub enum RpcError {
 pub struct RpcErrorBody<D> {
     pub message: String,
     pub details: D,
+}
+
+impl<D> RpcErrorBody<D>
+where
+    D: Serialize,
+{
+    /// Project one typed RPC body through the shared Remote failure vocabulary.
+    pub fn as_remote_error(&self, code: impl Into<String>) -> RemoteError {
+        RemoteError::new(
+            code,
+            self.message.clone(),
+            serde_json::to_value(&self.details).unwrap_or_else(|_| serde_json::json!({})),
+        )
+    }
 }
 
 impl RpcError {

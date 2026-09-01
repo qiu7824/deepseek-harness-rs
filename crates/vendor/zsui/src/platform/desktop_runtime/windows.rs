@@ -1,0 +1,103 @@
+#[path = "windows_smoke.rs"]
+mod smoke;
+
+use super::{DesktopRuntimeBackend, DesktopRuntimeRequest, DesktopSmokeRequest};
+use crate::{
+    DesktopCapabilities, DialogResponse, FileDialogSpec, HostCapabilities, NativeDialogSpec,
+    NativeWindowSmokeRunReport, SaveFileDialogSpec, ZsuiResult,
+};
+
+#[derive(Default)]
+pub(super) struct Backend;
+
+impl DesktopRuntimeBackend for Backend {
+    #[cfg(test)]
+    fn backend_name(&self) -> &'static str {
+        "windows_win32"
+    }
+
+    fn run_event_loop(self, request: DesktopRuntimeRequest) -> ZsuiResult<()> {
+        let input_routes = request
+            .view_runtimes
+            .iter()
+            .map(crate::windows_win32_host::windows_win32_view_input_route)
+            .collect::<Vec<_>>();
+        let shell_routes = request
+            .shell_runtimes
+            .into_iter()
+            .map(|runtime| runtime.map(crate::windows_win32_host::WindowsWin32ShellInputRoute::new))
+            .collect::<Vec<_>>();
+        crate::windows_win32_host::run_windows_win32_native_window_event_loop_with_routes_and_status_items(
+            &request.windows,
+            &request.draw_plans,
+            &input_routes,
+            &shell_routes,
+            &request.trays,
+        )
+    }
+
+    fn run_smoke_event_loop(
+        self,
+        request: DesktopSmokeRequest,
+    ) -> ZsuiResult<NativeWindowSmokeRunReport> {
+        smoke::run(request)
+    }
+
+    fn scaffold_capabilities(&self) -> HostCapabilities {
+        HostCapabilities::windows_scaffold()
+    }
+
+    fn native_host_capabilities(&self) -> HostCapabilities {
+        HostCapabilities::windows_native_window_host()
+    }
+
+    fn desktop_capabilities(&self) -> DesktopCapabilities {
+        DesktopCapabilities::windows_win32_current()
+    }
+
+    fn native_proof_backend_name(&self) -> &'static str {
+        "win32"
+    }
+
+    fn native_proof_typography(&self, typography_scale: f32) -> crate::NativeTypographyProfile {
+        crate::windows_gdi_renderer::windows_native_typography_profile()
+            .with_typography_scale(typography_scale)
+    }
+
+    fn capture_process_memory(
+        &self,
+        sample_point: &'static str,
+    ) -> Option<crate::NativeProofProcessMemoryEvidence> {
+        super::process_memory::capture_windows(sample_point)
+    }
+
+    #[cfg(feature = "clipboard")]
+    fn read_clipboard(&mut self) -> ZsuiResult<Option<crate::ClipboardData>> {
+        crate::windows_win32_host::windows_read_clipboard()
+    }
+
+    #[cfg(feature = "clipboard")]
+    fn write_clipboard(&mut self, data: &crate::ClipboardData) -> ZsuiResult<()> {
+        crate::windows_win32_host::windows_write_clipboard(data)
+    }
+
+    fn open_file_dialog(
+        &mut self,
+        spec: &FileDialogSpec,
+    ) -> Option<ZsuiResult<Option<Vec<std::path::PathBuf>>>> {
+        Some(crate::windows_win32_host::windows_win32_open_file_dialog(
+            spec,
+        ))
+    }
+
+    fn save_file_dialog(
+        &mut self,
+        spec: &SaveFileDialogSpec,
+    ) -> ZsuiResult<Option<std::path::PathBuf>> {
+        crate::windows_win32_host::windows_win32_save_file_dialog(spec)
+    }
+
+    fn show_native_dialog(&mut self, spec: &NativeDialogSpec) -> ZsuiResult<DialogResponse> {
+        crate::windows_win32_host::windows_win32_show_native_dialog(spec)
+    }
+}

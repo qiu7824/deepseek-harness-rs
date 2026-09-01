@@ -1,0 +1,355 @@
+name: UI Memory Comparison
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "comparisons/common/**"
+      - "comparisons/scripts/**"
+      - "comparisons/slint_notepad/**"
+      - "comparisons/iced_notepad/**"
+      - "examples/zsui_notepad.rs"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ui-memory-comparison.yml"
+  pull_request:
+    paths:
+      - "comparisons/common/**"
+      - "comparisons/scripts/**"
+      - "comparisons/slint_notepad/**"
+      - "comparisons/iced_notepad/**"
+      - "examples/zsui_notepad.rs"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ui-memory-comparison.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-memory-comparison-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-memory:
+    name: macOS 15 Slint and Iced Memory
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: "1"
+      SLINT_BACKEND: winit-software
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            comparisons/slint_notepad -> target
+            comparisons/iced_notepad -> target
+
+      - name: Build release comparison applications
+        run: |
+          cargo build \
+            --release \
+            --locked \
+            --manifest-path comparisons/slint_notepad/Cargo.toml \
+            --bin slint-notepad-baseline
+          cargo build \
+            --release \
+            --locked \
+            --manifest-path comparisons/iced_notepad/Cargo.toml \
+            --bin iced-notepad-baseline
+
+      - name: Run real macOS windows and sample memory
+        run: |
+          root=target/ui-memory-comparison/macos-15-arm64
+          mkdir -p "$root"
+          for run in 1 2 3 4 5; do
+            comparisons/slint_notepad/target/release/slint-notepad-baseline \
+              --benchmark-seconds 6 \
+              --sample-after-ms 3500 \
+              --memory-report "$root/slint-notepad-run$run.json"
+            comparisons/iced_notepad/target/release/iced-notepad-baseline \
+              --benchmark-seconds 6 \
+              --sample-after-ms 3500 \
+              --memory-report "$root/iced-notepad-run$run.json"
+          done
+
+      - name: Summarize macOS memory
+        run: |
+          python3 comparisons/scripts/summarize_memory.py \
+            --input target/ui-memory-comparison/macos-15-arm64 \
+            --runner macos-15-arm64 \
+            --slint-binary comparisons/slint_notepad/target/release/slint-notepad-baseline \
+            --iced-binary comparisons/iced_notepad/target/release/iced-notepad-baseline \
+            --github-summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload macOS measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-memory-comparison-macos-15-arm64
+          path: target/ui-memory-comparison/macos-15-arm64
+          retention-days: 30
+
+  ubuntu-memory:
+    name: Ubuntu 24.04 ZSUI, Slint and Iced Memory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      TZ: UTC
+      RUST_BACKTRACE: "1"
+      SLINT_BACKEND: winit-software
+      WINIT_UNIX_BACKEND: x11
+      ZSUI_LINUX_ICON_THEME: Adwaita
+      ZSUI_LINUX_UI_FONT: Ubuntu Sans 11
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Linux window and font runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            adwaita-icon-theme \
+            dbus-x11 \
+            fonts-noto-cjk \
+            fonts-ubuntu \
+            libfontconfig1-dev \
+            libcairo2-dev \
+            libdbus-1-dev \
+            libgdk-pixbuf-2.0-dev \
+            libpango1.0-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            librsvg2-common \
+            xauth \
+            xvfb
+          fc-cache --force
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            comparisons/slint_notepad -> target
+            comparisons/iced_notepad -> target
+
+      - name: Build release comparison applications
+        run: |
+          cargo build \
+            --release \
+            --locked \
+            --example zsui_notepad \
+            --no-default-features \
+            --features notepad-demo
+          cargo build \
+            --release \
+            --locked \
+            --example zsui_notepad_lite \
+            --no-default-features \
+            --features notepad-demo-lite
+          cargo build \
+            --release \
+            --locked \
+            --manifest-path comparisons/slint_notepad/Cargo.toml \
+            --bin slint-notepad-baseline
+          cargo build \
+            --release \
+            --locked \
+            --manifest-path comparisons/iced_notepad/Cargo.toml \
+            --bin iced-notepad-baseline
+
+      - name: Verify lite renderer linkage
+        run: |
+          if ldd target/release/examples/zsui_notepad_lite | grep -Eiq 'cairo|pango'; then
+            ldd target/release/examples/zsui_notepad_lite
+            echo "linux-direct-lite unexpectedly links Cairo/Pango" >&2
+            exit 1
+          fi
+
+      - name: Run real X11 windows and sample memory
+        run: |
+          root=target/ui-memory-comparison/ubuntu-24.04-x86_64
+          mkdir -p "$root"
+          for run in 1 2 3 4 5; do
+            dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24' \
+              target/release/examples/zsui_notepad \
+                --width 900 \
+                --height 620 \
+                --sample-after-ms 3500 \
+                --memory-report "$root/zsui-notepad-run$run.json"
+            dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24' \
+              target/release/examples/zsui_notepad_lite \
+                --width 900 \
+                --height 620 \
+                --sample-after-ms 3500 \
+                --memory-report "$root/zsui-lite-notepad-run$run.json"
+            dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24' \
+              comparisons/slint_notepad/target/release/slint-notepad-baseline \
+                --benchmark-seconds 6 \
+                --sample-after-ms 3500 \
+                --memory-report "$root/slint-notepad-run$run.json"
+            dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24' \
+              comparisons/iced_notepad/target/release/iced-notepad-baseline \
+                --benchmark-seconds 6 \
+                --sample-after-ms 3500 \
+                --memory-report "$root/iced-notepad-run$run.json"
+          done
+
+      - name: Capture ZSUI Linux resident mappings
+        run: |
+          root=target/ui-memory-comparison/ubuntu-24.04-x86_64
+          export root
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24' \
+            bash -euxo pipefail -c '
+              target/release/examples/zsui_notepad \
+                --width 900 \
+                --height 620 \
+                --sample-after-ms 6500 \
+                --memory-report "$root/zsui-notepad-diagnostic.json" &
+              app_pid=$!
+              sleep 3.5
+              python3 comparisons/scripts/capture_linux_smaps.py \
+                --pid "$app_pid" \
+                --output "$root/zsui-notepad-smaps.json"
+              wait "$app_pid"
+            '
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path(
+              "target/ui-memory-comparison/ubuntu-24.04-x86_64/zsui-notepad-smaps.json"
+          ).read_text(encoding="utf-8"))
+          loaded = {mapping["path"] for mapping in report["largest_mappings"]}
+          offenders = sorted(path for path in loaded if "/librsvg-" in path)
+          if offenders:
+              raise SystemExit(
+                  "lightweight linux-direct unexpectedly loaded librsvg: "
+                  + ", ".join(offenders)
+              )
+          PY
+
+      - name: Capture ZSUI pure-Rust Linux resident mappings
+        run: |
+          root=target/ui-memory-comparison/ubuntu-24.04-x86_64
+          export root
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24' \
+            bash -euxo pipefail -c '
+              target/release/examples/zsui_notepad_lite \
+                --width 900 \
+                --height 620 \
+                --sample-after-ms 6500 \
+                --memory-report "$root/zsui-lite-notepad-diagnostic.json" &
+              app_pid=$!
+              sleep 3.5
+              python3 comparisons/scripts/capture_linux_smaps.py \
+                --pid "$app_pid" \
+                --output "$root/zsui-lite-notepad-smaps.json"
+              wait "$app_pid"
+            '
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path(
+              "target/ui-memory-comparison/ubuntu-24.04-x86_64/zsui-lite-notepad-smaps.json"
+          ).read_text(encoding="utf-8"))
+          loaded = {mapping["path"] for mapping in report["largest_mappings"]}
+          offenders = sorted(
+              path for path in loaded
+              if any(name in path for name in ("/libcairo.so", "/libpango-", "/libpangocairo-"))
+          )
+          if offenders:
+              raise SystemExit(
+                  "linux-direct-lite unexpectedly loaded Cairo/Pango: "
+                  + ", ".join(offenders)
+              )
+          PY
+
+      - name: Capture comparison Linux resident mappings
+        run: |
+          root=target/ui-memory-comparison/ubuntu-24.04-x86_64
+          export root
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24' \
+            bash -euxo pipefail -c '
+              comparisons/slint_notepad/target/release/slint-notepad-baseline \
+                --benchmark-seconds 7 \
+                --sample-after-ms 3500 \
+                --memory-report "$root/slint-notepad-diagnostic.json" &
+              app_pid=$!
+              sleep 3.5
+              python3 comparisons/scripts/capture_linux_smaps.py \
+                --pid "$app_pid" \
+                --output "$root/slint-notepad-smaps.json"
+              wait "$app_pid"
+            '
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24' \
+            bash -euxo pipefail -c '
+              comparisons/iced_notepad/target/release/iced-notepad-baseline \
+                --benchmark-seconds 7 \
+                --sample-after-ms 3500 \
+                --memory-report "$root/iced-notepad-diagnostic.json" &
+              app_pid=$!
+              sleep 3.5
+              python3 comparisons/scripts/capture_linux_smaps.py \
+                --pid "$app_pid" \
+                --output "$root/iced-notepad-smaps.json"
+              wait "$app_pid"
+            '
+
+      - name: Summarize Ubuntu memory
+        run: |
+          python3 comparisons/scripts/summarize_memory.py \
+            --input target/ui-memory-comparison/ubuntu-24.04-x86_64 \
+            --runner ubuntu-24.04-x86_64 \
+            --zsui-binary target/release/examples/zsui_notepad \
+            --zsui-lite-binary target/release/examples/zsui_notepad_lite \
+            --slint-binary comparisons/slint_notepad/target/release/slint-notepad-baseline \
+            --iced-binary comparisons/iced_notepad/target/release/iced-notepad-baseline \
+            --github-summary "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY' >>"$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          root = Path("target/ui-memory-comparison/ubuntu-24.04-x86_64")
+          for framework in ("zsui", "zsui-lite", "slint", "iced"):
+              report = json.loads(
+                  (root / f"{framework}-notepad-smaps.json").read_text(encoding="utf-8")
+              )
+              print(f"\n### {framework.title()} Linux resident mapping diagnosis\n")
+              print("| Category | RSS MiB | PSS MiB | Private MiB |")
+              print("| --- | ---: | ---: | ---: |")
+              for row in report["categories"]:
+                  private = row["Private_Clean"] + row["Private_Dirty"]
+                  print(
+                      f'| {row["category"]} | {row["Rss"] / 1048576:.2f} | '
+                      f'{row["Pss"] / 1048576:.2f} | {private / 1048576:.2f} |'
+                  )
+          PY
+
+      - name: Upload Ubuntu measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-memory-comparison-ubuntu-24.04-x86_64
+          path: target/ui-memory-comparison/ubuntu-24.04-x86_64
+          retention-days: 30

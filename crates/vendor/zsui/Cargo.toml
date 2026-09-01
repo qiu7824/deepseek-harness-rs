@@ -1,0 +1,325 @@
+[package]
+name = "zsui"
+version = "0.2.0"
+edition = "2021"
+license = "MPL-2.0"
+repository = "https://github.com/qiu7824/zsui"
+description = "Rust-first feature-gated native UI framework for Win32, AppKit, and Linux."
+readme = "README.md"
+documentation = "https://docs.rs/zsui"
+keywords = ["gui", "native", "desktop", "win32", "wayland"]
+categories = ["gui"]
+exclude = [
+    "/.github/**",
+    "/comparisons/**",
+    "/docs/images/**",
+    "/docs/platform-proof/**",
+    "/tools/**",
+    "/videos/**",
+    "/AGENTS.md",
+]
+
+[dependencies]
+arboard = { version = "3.4", optional = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"], optional = true }
+cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash", "fontconfig", "shape-run-cache"], optional = true }
+fluent-bundle = { version = "0.16", optional = true }
+png = { version = "0.18", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+swash = { version = "0.2.10", default-features = false, features = ["std", "scale", "render"], optional = true }
+ttf-parser = { version = "0.25.1", default-features = false, optional = true }
+rust_decimal = { version = "1.42.1", default-features = false, features = ["maths", "std"], optional = true }
+sys-locale = { version = "0.3.2", optional = true }
+tiny-skia = { version = "0.11.4", optional = true }
+unic-langid = { version = "0.9.6", optional = true }
+unicode-bidi = { version = "0.3.18", optional = true }
+unicode-segmentation = { version = "1.13.3", optional = true }
+zeroize = { version = "1.8", features = ["alloc"], optional = true }
+
+[target.'cfg(any(target_os = "macos", all(target_os = "linux", not(target_env = "ohos"))))'.dependencies]
+winit = { version = "0.30", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { version = "0.6", optional = true }
+dispatch2 = { version = "0.3", optional = true }
+libc = { version = "0.2", optional = true }
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSAlert", "NSAppearance", "NSApplication", "NSAttributedString", "NSBezierPath", "NSBitmapImageRep", "NSButton", "NSCell", "NSColor", "NSColorSpace", "NSControl", "NSEvent", "NSFont", "NSFontDescriptor", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSParagraphStyle", "NSPasteboard", "NSRunningApplication", "NSSavePanel", "NSPanel", "NSResponder", "NSStatusBar", "NSStatusItem", "NSStringDrawing", "NSText", "NSTextInputClient", "NSTextInputContext", "NSTrackingArea", "NSView", "NSWindow"] }
+objc2-core-graphics = { version = "0.3", optional = true, default-features = false, features = ["std", "CGGeometry", "CGImage", "CGWindow"] }
+objc2-foundation = { version = "0.3", optional = true }
+
+[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
+accesskit = { version = "0.24.1", optional = true }
+accesskit_winit = { version = "0.33.1", default-features = false, features = ["accesskit_unix", "async-io", "rwh_06"], optional = true }
+cairo-rs = { version = "0.22", optional = true }
+freedesktop-icons = { version = "0.4", optional = true }
+gdk-pixbuf = { version = "0.22", optional = true }
+gtk4 = { version = "0.11", optional = true }
+pango = { version = "0.22", optional = true }
+pangocairo = { version = "0.22", optional = true }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
+softbuffer = { version = "0.4.8", default-features = false, features = ["wayland", "wayland-dlopen", "x11", "x11-dlopen"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", optional = true, features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_ProcessStatus", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_Controls", "Win32_UI_Controls_Dialogs", "Win32_UI_HiDpi", "Win32_UI_Input_Ime", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62.2", optional = true, default-features = false, features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_UI_Accessibility"] }
+windows-core = { version = "0.62.2", optional = true }
+
+[features]
+default = ["window", "button", "label"]
+accessibility = ["dep:windows", "dep:windows-core", "gtk4?/v4_10", "objc2-app-kit?/NSAccessibility", "objc2-app-kit?/NSAccessibilityConstants", "objc2-app-kit?/NSAccessibilityElement"]
+window = ["windows-win32", "macos-appkit", "linux-direct"]
+button = ["widgets-base"]
+accordion = ["button", "label"]
+badge = ["widgets-base"]
+split-view = ["widgets-base"]
+breadcrumb = ["widgets-base"]
+canvas = ["widgets-base"]
+flyout = ["widgets-base"]
+menu-flyout = ["widgets-base"]
+context-menu = ["menu-flyout"]
+toggle-button = ["widgets-input"]
+label = ["widgets-base"]
+grid = ["widgets-base"]
+grid-view = ["widgets-list"]
+widgets-base = []
+widgets-input = []
+widgets-list = []
+text-input-core = ["widgets-input", "dep:unicode-bidi", "dep:unicode-segmentation"]
+scroll = []
+list = ["widgets-list", "scroll"]
+virtual-list = ["list", "scroll"]
+paged-list = ["virtual-list"]
+textbox = ["text-input-core"]
+password-box = ["text-input-core", "dep:zeroize"]
+tooltip = ["widgets-base"]
+dialog = ["widgets-base"]
+toast = ["widgets-base"]
+info-bar = ["widgets-base"]
+teaching-tip = ["widgets-base"]
+checkbox = ["widgets-input"]
+toggle = ["widgets-input"]
+slider = ["widgets-input"]
+number-box = ["text-input-core"]
+radio = ["widgets-input"]
+progress = ["widgets-base"]
+progress-ring = ["widgets-base"]
+auto-suggest = ["text-input-core"]
+command-palette = ["text-input-core"]
+tree = ["widgets-list"]
+combo = ["widgets-input"]
+date-picker = ["widgets-input", "dep:chrono"]
+time-picker = ["widgets-input"]
+color-picker = ["widgets-input"]
+tabs = ["widgets-base"]
+table = ["widgets-list"]
+dark-mode = []
+style = []
+localization = ["dep:fluent-bundle", "dep:sys-locale", "dep:unic-langid"]
+shell = ["button", "label"]
+workbench = ["button", "label", "scroll", "textbox", "style"]
+document-shell = ["style", "button"]
+calculator = ["style", "button", "label", "grid", "dep:rust_decimal"]
+tray = ["shell"]
+hotkey = ["shell"]
+settings = ["widgets-input", "widgets-list", "toggle"]
+product-adapter = []
+ui-document = []
+ui-document-runtime = ["ui-document"]
+ui-viewer = ["ui-document-runtime", "window", "button", "accordion", "badge", "split-view", "breadcrumb", "canvas", "image-preview", "video", "icon", "label", "checkbox", "toggle", "toggle-button", "textbox", "password-box", "radio", "slider", "number-box", "combo", "auto-suggest", "command-palette", "tree", "grid-view", "table", "date-picker", "time-picker", "color-picker", "list", "virtual-list", "tabs", "grid", "progress", "progress-ring", "dialog", "toast", "info-bar", "tooltip", "teaching-tip", "flyout", "menu-flyout", "context-menu", "scroll", "shell", "workbench", "document-shell", "native-smoke"]
+android = []
+mobile = ["android"]
+clipboard = ["dep:arboard"]
+image = ["dep:png"]
+icon = ["widgets-base"]
+image-preview = ["image", "widgets-base"]
+video = ["widgets-base"]
+native-smoke = ["image", "dep:objc2-core-graphics"]
+fluent-icons = []
+notepad-demo = ["window", "button", "label", "textbox", "tabs", "dialog", "clipboard", "document-shell"]
+notepad-demo-gtk = ["linux-gtk", "button", "label", "textbox", "tabs", "dialog", "clipboard", "document-shell"]
+notepad-demo-lite = ["linux-direct-lite", "button", "label", "textbox", "tabs", "dialog", "clipboard", "document-shell", "native-smoke"]
+calculator-demo = ["window", "calculator", "native-smoke"]
+component-gallery-demo = ["window", "all-widgets", "native-smoke", "style", "dark-mode"]
+desktop-winit = ["dep:winit"]
+windows-gdi = ["dep:windows-sys", "image"]
+windows-win32 = ["windows-rust-text"]
+windows-directwrite = ["windows-gdi", "dep:windows", "dep:windows-core", "windows/Win32_Graphics_DirectWrite", "windows/Win32_Graphics_Gdi"]
+rust-text = ["dep:cosmic-text", "dep:swash", "dep:ttf-parser"]
+rust-text-proof = ["rust-text"]
+windows-rust-text = ["windows-gdi", "rust-text"]
+windows-text-proof = ["windows-directwrite", "rust-text-proof"]
+macos-appkit = ["dep:block2", "dep:dispatch2", "dep:libc", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
+linux-gtk = ["dep:gtk4", "gtk4/v4_10"]
+linux-direct-host = ["dep:rfd", "dep:softbuffer", "dep:winit"]
+linux-direct-accessibility = ["accessibility", "linux-direct-host", "dep:accesskit", "dep:accesskit_winit"]
+linux-direct = ["linux-direct-host", "dep:cairo-rs", "dep:pango", "dep:pangocairo"]
+linux-direct-lite = ["linux-direct-host", "rust-text", "dep:tiny-skia"]
+linux-system-icons = ["linux-direct", "dep:freedesktop-icons", "dep:gdk-pixbuf"]
+desktop-native = ["windows-win32", "macos-appkit", "linux-direct"]
+all-widgets = ["button", "accordion", "badge", "split-view", "breadcrumb", "canvas", "flyout", "menu-flyout", "context-menu", "toggle-button", "icon", "label", "grid", "grid-view", "scroll", "list", "virtual-list", "paged-list", "image-preview", "video", "textbox", "password-box", "tooltip", "dialog", "toast", "info-bar", "teaching-tip", "checkbox", "toggle", "slider", "number-box", "radio", "progress", "progress-ring", "auto-suggest", "command-palette", "tree", "combo", "date-picker", "time-picker", "color-picker", "tabs", "table", "shell", "workbench", "document-shell"]
+full = [
+    "accessibility",
+    "all-widgets",
+    "clipboard",
+    "calculator",
+    "dark-mode",
+    "document-shell",
+    "desktop-native",
+    "desktop-winit",
+    "hotkey",
+    "localization",
+    "linux-system-icons",
+    "linux-direct-accessibility",
+    "mobile",
+    "native-smoke",
+    "product-adapter",
+    "ui-document",
+    "ui-document-runtime",
+    "ui-viewer",
+    "settings",
+    "style",
+    "tray",
+    "window",
+    "linux-gtk",
+]
+
+[profile.release]
+opt-level = "z"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[dev-dependencies]
+serde_json = "1"
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"
+
+[[example]]
+name = "stable_api"
+path = "examples/stable_api.rs"
+required-features = ["window", "button", "label"]
+
+[[example]]
+name = "compact_service_panel"
+path = "examples/compact_service_panel.rs"
+required-features = ["window", "button", "label", "toggle"]
+
+[[example]]
+name = "text_geometry_proof"
+path = "examples/text_geometry_proof.rs"
+required-features = ["windows-text-proof"]
+
+[[example]]
+name = "ui_performance_minimal"
+path = "examples/ui_performance_minimal.rs"
+required-features = ["window", "button", "label"]
+
+[[example]]
+name = "native_clipboard_smoke"
+path = "examples/native_clipboard_smoke.rs"
+required-features = ["clipboard"]
+
+[[example]]
+name = "native_dialog_smoke"
+path = "examples/native_dialog_smoke.rs"
+required-features = ["native-smoke"]
+
+[[example]]
+name = "native_file_dialog_smoke"
+path = "examples/native_file_dialog_smoke.rs"
+required-features = ["native-smoke"]
+
+[[example]]
+name = "declaration_audit"
+path = "examples/declaration_audit.rs"
+required-features = ["button", "label"]
+
+[[example]]
+name = "rust_first_view"
+path = "examples/rust_first_view.rs"
+required-features = ["button", "label", "textbox", "toggle"]
+
+[[example]]
+name = "workbench_shell"
+path = "examples/workbench_shell.rs"
+required-features = ["workbench", "window"]
+
+[[example]]
+name = "zsui_notepad"
+path = "examples/zsui_notepad.rs"
+required-features = ["notepad-demo"]
+
+[[example]]
+name = "zsui_notepad_gtk"
+path = "examples/zsui_notepad.rs"
+required-features = ["notepad-demo-gtk"]
+
+[[example]]
+name = "zsui_notepad_lite"
+path = "examples/zsui_notepad.rs"
+required-features = ["notepad-demo-lite"]
+
+[[example]]
+name = "zsui_calculator"
+path = "examples/zsui_calculator.rs"
+required-features = ["calculator-demo"]
+
+[[example]]
+name = "list_selection"
+path = "examples/list_selection.rs"
+required-features = ["list", "label"]
+
+[[example]]
+name = "scroll_view"
+path = "examples/scroll_view.rs"
+required-features = ["scroll", "label"]
+
+[[example]]
+name = "paged_virtual_list"
+path = "examples/paged_virtual_list.rs"
+required-features = ["window", "button", "label", "paged-list"]
+
+[[example]]
+name = "image_preview"
+path = "examples/image_preview.rs"
+required-features = ["window", "button", "label", "image-preview"]
+
+[[example]]
+name = "desktop_native_showcase"
+path = "examples/desktop_native_showcase.rs"
+required-features = ["desktop-native", "window", "button", "label", "textbox", "toggle", "list", "scroll", "style"]
+
+[[example]]
+name = "component_gallery"
+path = "examples/component_gallery.rs"
+required-features = ["component-gallery-demo"]
+
+[[example]]
+name = "codex_zsui"
+path = "examples/codex_zsui.rs"
+required-features = ["window", "workbench"]
+
+[[example]]
+name = "product_adapter_view"
+path = "examples/product_adapter_view.rs"
+required-features = ["button", "label"]
+
+[[example]]
+name = "localization"
+path = "examples/localization.rs"
+required-features = ["localization"]
+
+[[bin]]
+name = "zsui-uic"
+path = "src/bin/zsui-uic.rs"
+required-features = ["ui-document"]
+
+[[bin]]
+name = "zsui-viewer"
+path = "src/bin/zsui-viewer.rs"
+required-features = ["ui-viewer"]

@@ -1,0 +1,743 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::time::Duration;
+
+use gtk::gio;
+use gtk::glib::MainContext;
+use gtk::prelude::*;
+#[allow(deprecated)]
+use gtk::{gdk, AlertDialog, FileChooserAction, FileChooserNative, FileFilter, ResponseType};
+use gtk4 as gtk;
+
+use crate::native_clipboard::{native_clipboard_text_write, NativeClipboardTextWrite};
+use crate::native_file_dialog::{
+    native_file_dialog_initial_directory, native_save_dialog_suggested_name,
+};
+use crate::{
+    ClipboardData, ClipboardService, DesktopEvent, DialogButtonLabels, DialogButtons,
+    DialogResponse, FileDialogService, FileDialogSpec, MenuService, NativeDialogService,
+    NativeDialogSpec, SaveFileDialogSpec, WindowId, WindowService, WindowSpec, ZsuiError,
+    ZsuiResult,
+};
+
+struct LinuxGtkRuntimeState {
+    _windows: LinuxGtkWindowService,
+    _menu: Option<crate::linux_gtk_menu::LinuxGtkMenuService>,
+}
+
+#[derive(Debug)]
+pub(crate) struct LinuxGtkNativeWindowRunReport {
+    pub created_window_count: usize,
+    pub native_view_capture: Option<Result<crate::NativeViewCaptureEvidence, String>>,
+    pub proof_input_reports: Vec<crate::native::NativeViewInputDispatchReport>,
+    pub menu_command_routed: bool,
+    pub process_memory: Option<crate::NativeProofProcessMemoryEvidence>,
+    pub accessibility_node_count: usize,
+}
+
+pub(crate) fn run_linux_gtk_native_window_event_loop(
+    specs: &[WindowSpec],
+    draw_plans: &[Option<crate::NativeDrawPlan>],
+    view_runtimes: &[crate::native::NativeViewInputRuntime],
+    auto_close_after_ms: Option<u64>,
+    capture_path: Option<&std::path::Path>,
+    proof_inputs: &[crate::NativeViewSmokeInput],
+) -> ZsuiResult<LinuxGtkNativeWindowRunReport> {
+    if specs.is_empty() {
+        return Ok(LinuxGtkNativeWindowRunReport {
+            created_window_count: 0,
+            native_view_capture: None,
+            proof_input_reports: Vec::new(),
+            menu_command_routed: false,
+            process_memory: None,
+            accessibility_node_count: 0,
+        });
+    }
+    let application = gtk::Application::builder()
+        .application_id("io.github.qiu7824.zsui")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    let specs = Rc::new(specs.to_vec());
+    let draw_plans = Rc::new(draw_plans.to_vec());
+    let view_runtimes = Rc::new(view_runtimes.to_vec());
+    let state = Rc::new(RefCell::new(None::<LinuxGtkRuntimeState>));
+    let startup_error = Rc::new(RefCell::new(None::<String>));
+    let created_count = Rc::new(RefCell::new(0_usize));
+    let capture_path = Rc::new(capture_path.map(PathBuf::from));
+    let capture_result = Rc::new(RefCell::new(None));
+    let proof_inputs = Rc::new(proof_inputs.to_vec());
+    let proof_input_reports = Rc::new(RefCell::new(Vec::new()));
+    let menu_command_routed = Rc::new(RefCell::new(false));
+    let process_memory = Rc::new(RefCell::new(None));
+    let accessibility_node_count = Rc::new(RefCell::new(0_usize));
+
+    application.connect_activate({
+        let specs = Rc::clone(&specs);
+        let draw_plans = Rc::clone(&draw_plans);
+        let view_runtimes = Rc::clone(&view_runtimes);
+        let state = Rc::clone(&state);
+        let startup_error = Rc::clone(&startup_error);
+        let created_count = Rc::clone(&created_count);
+        let capture_path = Rc::clone(&capture_path);
+        let capture_result = Rc::clone(&capture_result);
+        let proof_inputs = Rc::clone(&proof_inputs);
+        let proof_input_reports = Rc::clone(&proof_input_reports);
+        let menu_command_routed = Rc::clone(&menu_command_routed);
+        let process_memory = Rc::clone(&process_memory);
+        let accessibility_node_count = Rc::clone(&accessibility_node_count);
+        move |application| {
+            if state.borrow().is_some() {
+                return;
+            }
+            let mut windows = LinuxGtkWindowService::from_application(application.clone());
+            let mut ids = Vec::with_capacity(specs.len());
+            for (index, spec) in specs.iter().enumerate() {
+                match windows.create_window(&spec.clone().visible(false)) {
+                    Ok(id) => {
+                        if let Some(plan) = draw_plans.get(index).and_then(Clone::clone) {
+                            if let Err(error) = windows.set_window_view_content(
+                                id,
+                                plan,
+                                view_runtimes.get(index).cloned().unwrap_or_default(),
+                            ) {
+                                *startup_error.borrow_mut() = Some(error.to_string());
+                                application.quit();
+                                return;
+                            }
+                        }
+                        ids.push(id)
+                    }
+                    Err(error) => {
+                        *startup_error.borrow_mut() = Some(error.to_string());
+                        application.quit();
+                        return;
+                    }
+                }
+            }
+
+            let mut menu =
+                crate::linux_gtk_menu::LinuxGtkMenuService::from_application(application.clone());
+            let menu = if let Some((window, menu_spec)) = ids
+                .first()
+                .copied()
+                .zip(specs.first().and_then(|spec| spec.menu.as_ref()))
+            {
+                if let Err(error) = menu.set_window_menu(window, Some(menu_spec)) {
+                    *startup_error.borrow_mut() = Some(error.to_string());
+                    application.quit();
+                    return;
+                }
+                if let Some(view_host) = windows.view_hosts.get(&window).cloned() {
+                    menu.set_event_handler(move |event| {
+                        if let DesktopEvent::MenuCommand { command, .. } = event {
+                            view_host.dispatch_app_command(command);
+                        }
+                    });
+                }
+                Some(menu)
+            } else {
+                None
+            };
+            for (id, spec) in ids.iter().copied().zip(specs.iter()) {
+                if spec.visible {
+                    if let Err(error) = windows.set_window_visible(id, true) {
+                        *startup_error.borrow_mut() = Some(error.to_string());
+                        application.quit();
+                        return;
+                    }
+                }
+            }
+            *created_count.borrow_mut() = ids.len();
+            *menu_command_routed.borrow_mut() = auto_close_after_ms.is_some()
+                && menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.invoke_first_enabled_command_for_proof());
+            *state.borrow_mut() = Some(LinuxGtkRuntimeState {
+                _windows: windows,
+                _menu: menu,
+            });
+
+            if let Some(delay) = auto_close_after_ms {
+                let proof_state = Rc::clone(&state);
+                let proof_inputs = Rc::clone(&proof_inputs);
+                let proof_input_reports = Rc::clone(&proof_input_reports);
+                gtk::glib::timeout_add_local_once(
+                    Duration::from_millis((delay / 2).max(1)),
+                    move || {
+                        *proof_input_reports.borrow_mut() = proof_state
+                            .borrow()
+                            .as_ref()
+                            .and_then(|runtime| runtime._windows.view_hosts.values().next())
+                            .map(|host| host.dispatch_proof_inputs(&proof_inputs))
+                            .unwrap_or_default();
+                    },
+                );
+                let application = application.clone();
+                let state = Rc::clone(&state);
+                let capture_path = Rc::clone(&capture_path);
+                let capture_result = Rc::clone(&capture_result);
+                let process_memory = Rc::clone(&process_memory);
+                let accessibility_node_count = Rc::clone(&accessibility_node_count);
+                gtk::glib::timeout_add_local_once(Duration::from_millis(delay.max(1)), move || {
+                    *process_memory.borrow_mut() = crate::desktop_runtime::capture_process_memory(
+                        "native_window_before_teardown",
+                    );
+                    *accessibility_node_count.borrow_mut() = state
+                        .borrow()
+                        .as_ref()
+                        .and_then(|runtime| runtime._windows.view_hosts.values().next())
+                        .map(crate::linux_gtk_renderer::LinuxGtkDrawViewHost::accessibility_node_count)
+                        .unwrap_or(0);
+                    if let Some(path) = capture_path.as_deref() {
+                        let result = state
+                            .borrow()
+                            .as_ref()
+                            .and_then(|runtime| runtime._windows.view_hosts.values().next())
+                            .ok_or_else(|| {
+                                "the GTK event loop has no DrawingArea to capture".to_string()
+                            })
+                            .and_then(|host| host.capture_png(path));
+                        *capture_result.borrow_mut() = Some(result);
+                    }
+                    state.borrow_mut().take();
+                    application.quit()
+                });
+            }
+        }
+    });
+
+    // The example has already consumed ZSUI-specific proof arguments. Passing
+    // the process argv to GApplication would make GTK reject flags such as
+    // `--native-proof` before the activate signal creates the native window.
+    application.run_with_args(&["zsui"]);
+    let native_view_capture = capture_result.borrow_mut().take();
+    let proof_input_reports = std::mem::take(&mut *proof_input_reports.borrow_mut());
+    state.borrow_mut().take();
+    if let Some(error) = startup_error.borrow_mut().take() {
+        return Err(ZsuiError::host("linux_gtk_event_loop", error));
+    }
+    let created_window_count = *created_count.borrow();
+    let menu_command_routed = *menu_command_routed.borrow();
+    let process_memory = process_memory.borrow_mut().take();
+    let accessibility_node_count = *accessibility_node_count.borrow();
+    Ok(LinuxGtkNativeWindowRunReport {
+        created_window_count,
+        native_view_capture,
+        proof_input_reports,
+        menu_command_routed,
+        process_memory,
+        accessibility_node_count,
+    })
+}
+
+#[derive(Debug)]
+pub struct LinuxGtkWindowService {
+    application: gtk::Application,
+    windows: HashMap<WindowId, gtk::ApplicationWindow>,
+    view_hosts: HashMap<WindowId, crate::linux_gtk_renderer::LinuxGtkDrawViewHost>,
+    close_handlers: HashMap<WindowId, gtk::glib::SignalHandlerId>,
+    next_window_id: u64,
+}
+
+impl LinuxGtkWindowService {
+    pub fn for_current_application() -> ZsuiResult<Self> {
+        ensure_gtk_main_thread("gtk_window_service")?;
+        let application = gio::Application::default()
+            .and_then(|application| application.downcast::<gtk::Application>().ok())
+            .ok_or_else(|| {
+                ZsuiError::host(
+                    "gtk_window_service",
+                    "a running GTK Application is required before creating native windows",
+                )
+            })?;
+        Ok(Self::from_application(application))
+    }
+
+    pub(crate) fn from_application(application: gtk::Application) -> Self {
+        Self {
+            application,
+            windows: HashMap::new(),
+            view_hosts: HashMap::new(),
+            close_handlers: HashMap::new(),
+            next_window_id: 1,
+        }
+    }
+
+    pub fn window_count(&self) -> usize {
+        self.windows.len()
+    }
+
+    pub fn set_window_draw_plan(
+        &mut self,
+        window: WindowId,
+        plan: crate::NativeDrawPlan,
+    ) -> ZsuiResult<()> {
+        self.set_window_view_content(
+            window,
+            plan,
+            crate::native::NativeViewInputRuntime::default(),
+        )
+    }
+
+    pub(crate) fn set_window_view_content(
+        &mut self,
+        window: WindowId,
+        plan: crate::NativeDrawPlan,
+        runtime: crate::native::NativeViewInputRuntime,
+    ) -> ZsuiResult<()> {
+        ensure_gtk_main_thread("gtk_set_window_draw_plan")?;
+        let view_host = crate::linux_gtk_renderer::install_linux_gtk_draw_plan(
+            self.window(window, "gtk_set_window_draw_plan")?,
+            plan,
+            runtime,
+        );
+        let native_window = self.window(window, "gtk_set_window_draw_plan")?.clone();
+        if let Some(handler) = self.close_handlers.remove(&window) {
+            native_window.disconnect(handler);
+        }
+        let close_host = view_host.clone();
+        let handler = native_window.connect_close_request(move |_| {
+            if close_host.dispatch_window_close_requested() {
+                gtk::glib::Propagation::Proceed
+            } else {
+                gtk::glib::Propagation::Stop
+            }
+        });
+        let map_host = view_host.clone();
+        native_window.connect_map(move |_| map_host.set_window_suspended(false));
+        let unmap_host = view_host.clone();
+        native_window.connect_unmap(move |_| unmap_host.set_window_suspended(true));
+        self.close_handlers.insert(window, handler);
+        self.view_hosts.insert(window, view_host);
+        Ok(())
+    }
+
+    fn window(&self, id: WindowId, operation: &'static str) -> ZsuiResult<&gtk::ApplicationWindow> {
+        self.windows
+            .get(&id)
+            .ok_or_else(|| ZsuiError::host(operation, format!("unknown window id {}", id.0)))
+    }
+
+    fn allocate_window_id(&mut self) -> ZsuiResult<WindowId> {
+        let id = WindowId(self.next_window_id);
+        self.next_window_id = self.next_window_id.checked_add(1).ok_or_else(|| {
+            ZsuiError::host(
+                "gtk_create_window",
+                "the native window id range is exhausted",
+            )
+        })?;
+        Ok(id)
+    }
+}
+
+impl Drop for LinuxGtkWindowService {
+    fn drop(&mut self) {
+        for (id, handler) in self.close_handlers.drain() {
+            if let Some(window) = self.windows.get(&id) {
+                window.disconnect(handler);
+            }
+        }
+        self.view_hosts.clear();
+        for (_, window) in self.windows.drain() {
+            window.close();
+        }
+    }
+}
+
+impl WindowService for LinuxGtkWindowService {
+    fn create_window(&mut self, spec: &WindowSpec) -> ZsuiResult<WindowId> {
+        ensure_gtk_main_thread("gtk_create_window")?;
+        if spec.always_on_top {
+            return Err(ZsuiError::unsupported(
+                "window_always_on_top",
+                "GTK4 cannot guarantee always-on-top behavior across Wayland compositors",
+            ));
+        }
+        if spec.transparent {
+            return Err(ZsuiError::unsupported(
+                "window_transparency",
+                "the GTK4 transparent window surface is not connected",
+            ));
+        }
+        let window = gtk::ApplicationWindow::builder()
+            .application(&self.application)
+            .title(&spec.title)
+            .default_width(spec.width.min(i32::MAX as u32).max(1) as i32)
+            .default_height(spec.height.min(i32::MAX as u32).max(1) as i32)
+            .build();
+        window.set_resizable(spec.resizable);
+        window.set_decorated(spec.decorations);
+        if spec.min_width.is_some() || spec.min_height.is_some() {
+            window.set_size_request(
+                spec.min_width.map(gtk_dimension).unwrap_or(-1),
+                spec.min_height.map(gtk_dimension).unwrap_or(-1),
+            );
+        }
+        if spec.visible {
+            window.present();
+        }
+        let id = self.allocate_window_id()?;
+        self.windows.insert(id, window);
+        Ok(id)
+    }
+
+    fn set_window_title(&mut self, window: WindowId, title: &str) -> ZsuiResult<()> {
+        ensure_gtk_main_thread("gtk_set_window_title")?;
+        self.window(window, "gtk_set_window_title")?
+            .set_title(Some(title));
+        Ok(())
+    }
+
+    fn set_window_visible(&mut self, window: WindowId, visible: bool) -> ZsuiResult<()> {
+        ensure_gtk_main_thread("gtk_set_window_visible")?;
+        let window_id = window;
+        let window = self.window(window_id, "gtk_set_window_visible")?;
+        if visible {
+            if let Some(host) = self.view_hosts.get(&window_id) {
+                host.set_window_suspended(false);
+            }
+            window.present();
+        } else {
+            if let Some(host) = self.view_hosts.get(&window_id) {
+                host.set_window_suspended(true);
+            }
+            window.set_visible(false);
+        }
+        Ok(())
+    }
+
+    fn request_window_redraw(&mut self, window: WindowId) -> ZsuiResult<()> {
+        ensure_gtk_main_thread("gtk_request_window_redraw")?;
+        self.window(window, "gtk_request_window_redraw")?
+            .queue_draw();
+        Ok(())
+    }
+
+    fn close_window(&mut self, window: WindowId) -> ZsuiResult<()> {
+        ensure_gtk_main_thread("gtk_close_window")?;
+        self.view_hosts.remove(&window);
+        if let Some(handler) = self.close_handlers.remove(&window) {
+            self.window(window, "gtk_close_window")?.disconnect(handler);
+        }
+        let window = self.windows.remove(&window).ok_or_else(|| {
+            ZsuiError::host(
+                "gtk_close_window",
+                format!("unknown window id {}", window.0),
+            )
+        })?;
+        window.close();
+        Ok(())
+    }
+}
+
+fn gtk_dimension(value: u32) -> i32 {
+    value.min(i32::MAX as u32).max(1) as i32
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LinuxGtkClipboardService;
+
+impl ClipboardService for LinuxGtkClipboardService {
+    fn read_clipboard(&mut self) -> ZsuiResult<Option<ClipboardData>> {
+        let clipboard = gtk_system_clipboard("gtk_read_clipboard")?;
+        let text = MainContext::default()
+            .block_on(clipboard.read_text_future())
+            .map(|text| text.map(|text| ClipboardData::Text(text.to_string())))
+            .map_err(|error| ZsuiError::host("gtk_read_clipboard", error.to_string()))?;
+        if text.is_some() {
+            Ok(text)
+        } else {
+            crate::native_clipboard::arboard_read_clipboard_image("gtk_read_clipboard_image")
+        }
+    }
+
+    fn write_clipboard(&mut self, data: &ClipboardData) -> ZsuiResult<()> {
+        if matches!(
+            data,
+            ClipboardData::ImageRgba { .. } | ClipboardData::Files(_)
+        ) {
+            return crate::native_clipboard::arboard_write_clipboard("gtk_write_clipboard", data);
+        }
+        let write = native_clipboard_text_write(data)?;
+        let clipboard = gtk_system_clipboard("gtk_write_clipboard")?;
+        match write {
+            NativeClipboardTextWrite::Clear => clipboard
+                .set_content(None::<&gdk::ContentProvider>)
+                .map_err(|error| ZsuiError::host("gtk_write_clipboard", error.to_string())),
+            NativeClipboardTextWrite::Text(text) => {
+                clipboard.set_text(text);
+                Ok(())
+            }
+        }
+    }
+}
+
+fn gtk_system_clipboard(operation: &'static str) -> ZsuiResult<gdk::Clipboard> {
+    ensure_gtk_main_thread(operation)?;
+    let display = gdk::Display::default().ok_or_else(|| {
+        ZsuiError::host(operation, "GTK has no default display for clipboard access")
+    })?;
+    Ok(display.clipboard())
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LinuxGtkFileDialogService;
+
+impl FileDialogService for LinuxGtkFileDialogService {
+    fn open_file_dialog(&mut self, spec: &FileDialogSpec) -> ZsuiResult<Option<Vec<PathBuf>>> {
+        linux_gtk_open_file_dialog(spec)
+    }
+
+    fn save_file_dialog(&mut self, spec: &SaveFileDialogSpec) -> ZsuiResult<Option<PathBuf>> {
+        linux_gtk_save_file_dialog(spec)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LinuxGtkDialogService;
+
+impl NativeDialogService for LinuxGtkDialogService {
+    fn show_native_dialog(&mut self, spec: &NativeDialogSpec) -> ZsuiResult<DialogResponse> {
+        linux_gtk_show_native_dialog(spec)
+    }
+}
+
+#[allow(deprecated)]
+pub fn linux_gtk_open_file_dialog(spec: &FileDialogSpec) -> ZsuiResult<Option<Vec<PathBuf>>> {
+    ensure_gtk_main_thread("gtk_open_file_dialog")?;
+    let dialog = FileChooserNative::builder()
+        .title(&spec.title)
+        .action(FileChooserAction::Open)
+        .accept_label("Open")
+        .cancel_label("Cancel")
+        .modal(true)
+        .select_multiple(spec.allow_multiple)
+        .build();
+    gtk_bind_file_dialog_to_active_window(&dialog);
+    add_gtk_file_filters(&dialog, &spec.filters);
+    if let Some(directory) = native_file_dialog_initial_directory(spec.current_path.as_deref()) {
+        let _ = dialog.set_current_folder(Some(&gio::File::for_path(directory)));
+    }
+
+    let response = MainContext::default().block_on(dialog.run_future());
+    let result = if response == ResponseType::Accept {
+        gtk_selected_local_paths(&dialog).map(Some)
+    } else {
+        Ok(None)
+    };
+    dialog.destroy();
+    result
+}
+
+#[allow(deprecated)]
+pub fn linux_gtk_save_file_dialog(spec: &SaveFileDialogSpec) -> ZsuiResult<Option<PathBuf>> {
+    ensure_gtk_main_thread("gtk_save_file_dialog")?;
+    let dialog = FileChooserNative::builder()
+        .title(&spec.title)
+        .action(FileChooserAction::Save)
+        .accept_label("Save")
+        .cancel_label("Cancel")
+        .modal(true)
+        .select_multiple(false)
+        .build();
+    gtk_bind_file_dialog_to_active_window(&dialog);
+    add_gtk_file_filters(&dialog, &spec.filters);
+    if let Some(directory) = native_file_dialog_initial_directory(spec.current_path.as_deref()) {
+        let _ = dialog.set_current_folder(Some(&gio::File::for_path(directory)));
+    }
+    if let Some(name) = native_save_dialog_suggested_name(
+        spec.suggested_name.as_deref(),
+        spec.current_path.as_deref(),
+    ) {
+        dialog.set_current_name(&name);
+    }
+
+    let response = MainContext::default().block_on(dialog.run_future());
+    let result = if response == ResponseType::Accept {
+        (|| {
+            let file = dialog.file().ok_or_else(|| {
+                ZsuiError::host(
+                    "gtk_save_file_dialog",
+                    "GTK file chooser returned no selected file",
+                )
+            })?;
+            let path = file.path().ok_or_else(|| {
+                ZsuiError::host(
+                    "gtk_save_file_dialog",
+                    "GTK file chooser returned a non-local file",
+                )
+            })?;
+            Ok(Some(path))
+        })()
+    } else {
+        Ok(None)
+    };
+    dialog.destroy();
+    result
+}
+
+pub fn linux_gtk_show_native_dialog(spec: &NativeDialogSpec) -> ZsuiResult<DialogResponse> {
+    spec.validate()?;
+    ensure_gtk_main_thread("gtk_native_dialog")?;
+    let button_labels = spec.resolved_button_labels();
+    let (labels, cancel_button, default_button) =
+        gtk_native_dialog_buttons(spec.buttons, &button_labels);
+    let dialog = AlertDialog::builder()
+        .message(&spec.title)
+        .detail(&spec.message)
+        .modal(true)
+        .build();
+    dialog.set_buttons(&labels);
+    dialog.set_cancel_button(cancel_button);
+    dialog.set_default_button(default_button);
+    let owner = gio::Application::default()
+        .and_then(|application| application.downcast::<gtk::Application>().ok())
+        .and_then(|application| application.active_window());
+    let response = MainContext::default()
+        .block_on(dialog.choose_future(owner.as_ref()))
+        .map_err(|error| ZsuiError::host("gtk_native_dialog", error.to_string()))?;
+    gtk_native_dialog_response(spec.buttons, response).ok_or_else(|| {
+        ZsuiError::host(
+            "gtk_native_dialog",
+            format!("GtkAlertDialog returned unexpected button index {response}"),
+        )
+    })
+}
+
+fn gtk_native_dialog_buttons<'a>(
+    buttons: DialogButtons,
+    labels: &'a DialogButtonLabels,
+) -> (Vec<&'a str>, i32, i32) {
+    match buttons {
+        DialogButtons::Ok => (vec![&labels.ok], 0, 0),
+        DialogButtons::OkCancel => (vec![&labels.cancel, &labels.ok], 0, 1),
+        DialogButtons::YesNo => (vec![&labels.no, &labels.yes], 0, 1),
+        DialogButtons::YesNoCancel => (vec![&labels.cancel, &labels.no, &labels.yes], 0, 2),
+    }
+}
+
+fn gtk_native_dialog_response(buttons: DialogButtons, response: i32) -> Option<DialogResponse> {
+    match (buttons, response) {
+        (DialogButtons::Ok, 0) => Some(DialogResponse::Ok),
+        (DialogButtons::OkCancel, 0) => Some(DialogResponse::Cancel),
+        (DialogButtons::OkCancel, 1) => Some(DialogResponse::Ok),
+        (DialogButtons::YesNo, 0) => Some(DialogResponse::No),
+        (DialogButtons::YesNo, 1) => Some(DialogResponse::Yes),
+        (DialogButtons::YesNoCancel, 0) => Some(DialogResponse::Cancel),
+        (DialogButtons::YesNoCancel, 1) => Some(DialogResponse::No),
+        (DialogButtons::YesNoCancel, 2) => Some(DialogResponse::Yes),
+        _ => None,
+    }
+}
+
+pub(crate) fn ensure_gtk_main_thread(operation: &'static str) -> ZsuiResult<()> {
+    if gtk::is_initialized() && !gtk::is_initialized_main_thread() {
+        return Err(ZsuiError::host(
+            operation,
+            "GTK desktop services must run on the GTK main thread",
+        ));
+    }
+    if !gtk::is_initialized_main_thread() {
+        gtk::init().map_err(|error| ZsuiError::host(operation, error.to_string()))?;
+    }
+    Ok(())
+}
+
+#[allow(deprecated)]
+fn add_gtk_file_filters(dialog: &FileChooserNative, filters: &[crate::FileDialogFilter]) {
+    for filter_spec in filters {
+        if filter_spec.patterns.is_empty() {
+            continue;
+        }
+        let filter = FileFilter::new();
+        filter.set_name(Some(&filter_spec.name));
+        for pattern in &filter_spec.patterns {
+            filter.add_pattern(pattern);
+        }
+        dialog.add_filter(&filter);
+    }
+}
+
+#[allow(deprecated)]
+fn gtk_bind_file_dialog_to_active_window(dialog: &FileChooserNative) {
+    let owner = gio::Application::default()
+        .and_then(|application| application.downcast::<gtk::Application>().ok())
+        .and_then(|application| application.active_window());
+    dialog.set_transient_for(owner.as_ref());
+}
+
+#[allow(deprecated)]
+fn gtk_selected_local_paths(dialog: &FileChooserNative) -> ZsuiResult<Vec<PathBuf>> {
+    let files = dialog.files();
+    let mut paths = Vec::with_capacity(files.n_items() as usize);
+    for index in 0..files.n_items() {
+        let file = files
+            .item(index)
+            .and_then(|item| item.downcast::<gio::File>().ok())
+            .ok_or_else(|| {
+                ZsuiError::host(
+                    "gtk_open_file_dialog",
+                    "GTK file chooser returned an invalid file object",
+                )
+            })?;
+        let path = file.path().ok_or_else(|| {
+            ZsuiError::host(
+                "gtk_open_file_dialog",
+                "GTK file chooser returned a non-local file",
+            )
+        })?;
+        paths.push(path);
+    }
+    if paths.is_empty() {
+        return Err(ZsuiError::host(
+            "gtk_open_file_dialog",
+            "GTK file chooser accepted without returning a selected file",
+        ));
+    }
+    Ok(paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gtk_file_dialog_service_implements_safe_public_contract() {
+        fn assert_service<T: FileDialogService>() {}
+        assert_service::<LinuxGtkFileDialogService>();
+    }
+
+    #[test]
+    fn gtk_native_dialog_uses_platform_action_order_and_response_mapping() {
+        fn assert_service<T: NativeDialogService>() {}
+        assert_service::<LinuxGtkDialogService>();
+
+        let labels = DialogButtonLabels::new("确定", "取消", "是", "否");
+        assert_eq!(
+            gtk_native_dialog_buttons(DialogButtons::YesNoCancel, &labels),
+            (vec!["取消", "否", "是"], 0, 2)
+        );
+        assert_eq!(
+            gtk_native_dialog_response(DialogButtons::YesNoCancel, 0),
+            Some(DialogResponse::Cancel)
+        );
+        assert_eq!(
+            gtk_native_dialog_response(DialogButtons::YesNoCancel, 2),
+            Some(DialogResponse::Yes)
+        );
+    }
+
+    #[test]
+    fn gtk_clipboard_service_implements_safe_public_contract() {
+        fn assert_service<T: ClipboardService>() {}
+        assert_service::<LinuxGtkClipboardService>();
+    }
+
+    #[test]
+    fn gtk_window_service_implements_safe_public_contract() {
+        fn assert_service<T: WindowService>() {}
+        assert_service::<LinuxGtkWindowService>();
+    }
+}

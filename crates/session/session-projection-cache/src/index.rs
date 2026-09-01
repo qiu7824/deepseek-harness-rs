@@ -431,14 +431,17 @@ impl SessionProjectionCache {
             || record
                 .as_ref()
                 .is_none_or(|record| identity_matches(&record.identity, &identity_of(&tail.meta)));
-        let restored = match (related, registry.restore(&cached, &tail.events, floor)) {
+        let restored = match (
+            related,
+            registry.restore(&tail.meta, &cached, &tail.events, floor),
+        ) {
             (true, Ok(restored)) => restored,
             // An unrelated record, or a row overreaching the stored log end
             // (or predating the floor): one full fresh read.
             _ => {
                 let whole = self.persistence.read_from(id, 0).await?;
                 registry
-                    .restore(&ProjectionCheckpoint::new(), &whole.events, 0)
+                    .restore(&whole.meta, &ProjectionCheckpoint::new(), &whole.events, 0)
                     .expect("base-0 restore never throws")
             }
         };

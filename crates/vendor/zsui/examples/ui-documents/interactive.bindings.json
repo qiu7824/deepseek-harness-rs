@@ -1,0 +1,25 @@
+{
+  "properties": {
+    "profile_name": "string",
+    "account_password": "string",
+    "dark_mode": "boolean",
+    "volume": "number",
+    "retry_count": "nullable_number",
+    "profile_mode": "nullable_integer",
+    "profile_mode_expanded": "boolean",
+    "sync_progress": "nullable_number",
+    "selected_profile": "string",
+    "active_tab": "string"
+  },
+  "actions": {
+    "profile_name_changed": "string",
+    "account_password_changed": "string",
+    "dark_mode_changed": "boolean",
+    "volume_changed": "number",
+    "retry_count_changed": "nullable_number",
+    "profile_mode_selected": "integer",
+    "profile_mode_expanded_changed": "boolean",
+    "selected_profile_changed": "string",
+    "active_tab_selected": "string"
+  }
+}

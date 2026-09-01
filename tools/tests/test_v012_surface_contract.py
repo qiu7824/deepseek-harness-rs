@@ -67,13 +67,12 @@ class V012SurfaceContractTests(unittest.TestCase):
     def test_skin_catalog_matches_product_scope(self):
         theme = THEME.read_text(encoding="utf-8")
         host = HOST.read_text(encoding="utf-8")
+        skin_center = (ROOT / "release" / "plugins" / "dsh-skin-center" / "lib" / "client.js").read_text(encoding="utf-8")
         skin_root = ROOT / "web" / "dist" / "skins"
         market = (
-            "whale-song",
             "blue-fantasy",
             "harbor",
             "xp",
-            "dragon-heir",
             "minecraft",
             "trading",
             "miku",
@@ -82,20 +81,28 @@ class V012SurfaceContractTests(unittest.TestCase):
         for skin in expected:
             self.assertIn(f'"{skin}"', theme)
             self.assertIn(f'"{skin}"', host)
+            self.assertIn(f'"{skin}"', skin_center)
         preferences = theme.split("const THEME_PREFERENCES = [", 1)[1].split("];", 1)[0]
         self.assertEqual(tuple(__import__("re").findall(r'"([a-z0-9-]+)"', preferences)), expected)
         self.assertNotIn('"system"', preferences)
         for retired in ("catppuccin", "dracula", "nord", "tokyo-night", "linear", "notion"):
             self.assertNotIn(f'"{retired}"', preferences)
-        self.assertIn("dshSkinPicker", theme)
-        self.assertIn('"data-dsh-skin-option": skin.id', theme)
+        self.assertNotIn("dshSkinPicker", theme)
+        self.assertIn('"data-dsh-skin-option": skin.id', skin_center)
         self.assertIn('document.documentElement.setAttribute("data-dsh-skin", skinId)', theme)
         self.assertIn("activateSkinAssets", theme)
         self.assertIn("await activateSkinAssets(id)", theme)
         self.assertIn("restoreActiveSkinAssets", theme)
-        self.assertIn("NO_SKIN ? BasicAppearanceSettings", theme)
-        catalog = theme.split("const SKIN_CATALOG = Object.freeze([", 1)[1].split("]);", 1)[0]
-        self.assertEqual(catalog.count("{ id:"), 11)
+        self.assertIn("responseContentType", theme)
+        self.assertIn("skin manifest returned", theme)
+        self.assertIn("skin stylesheet returned", theme)
+        self.assertIn("clearActiveSkinAssets()", theme)
+        self.assertIn("clearActiveSkinAssets();", theme)
+        self.assertIn("await restoreActiveSkinAssets(previous);", theme)
+        self.assertIn('id: "appearance"', theme)
+        self.assertIn('id: "skins"', skin_center)
+        catalog = skin_center.split("const SKINS = Object.freeze([", 1)[1].split("]);", 1)[0]
+        self.assertEqual(catalog.count("{ id:"), 9)
         self.assertNotIn('id: "system"', catalog)
         for skin in market:
             directory = skin_root / skin

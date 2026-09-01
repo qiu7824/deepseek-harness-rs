@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+import json
+import pathlib
+import unittest
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+LAUNCHER = ROOT / "crates" / "host" / "dsh-launcher" / "src" / "main.rs"
+PACKAGE = ROOT / "tools" / "package_release.py"
+VERIFIER = ROOT / "tools" / "verify_release_package.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+INSTALLER = ROOT / "packaging" / "windows" / "deepseek-harness-rs.iss"
+SKIN_CENTER = ROOT / "release" / "plugins" / "dsh-skin-center" / "lib" / "client.js"
+SKINS = ROOT / "web" / "dist" / "skins"
+
+
+class LauncherReleaseContractTests(unittest.TestCase):
+    def test_launcher_exposes_the_complete_desktop_contract(self):
+        source = LAUNCHER.read_text(encoding="utf-8")
+        for required in (
+            "CreateMutexW",
+            "ERROR_ALREADY_EXISTS",
+            "SetForegroundWindow",
+            "TRAY_AUTOSTART_COMMAND",
+            "TRAY_CHECK_UPDATE_COMMAND",
+            ".icon_path(icon_path)",
+            "launcher_icon_path()",
+            "dsh_home_paths::default_dsh_home",
+            "LauncherCommand::SetAutostart",
+            "LauncherCommand::CheckUpdate",
+            "CARGO_PKG_VERSION",
+            "https://api.github.com/repos/qiu7824/deepseek-harness-rs/releases",
+        ):
+            self.assertIn(required, source)
+        self.assertIn("tray_menu_spec(", source)
+        self.assertIn("TRAY_AUTOSTART_COMMAND", source)
+        self.assertIn("copy.check_update", source)
+        self.assertIn("TRAY_QUIT_COMMAND", source)
+        self.assertIn("ZsuiCommand::ShowMainWindow", source)
+        self.assertIn("ZsuiCommand::Quit", source)
+        for section_title in (
+            'service: "服务"',
+            'preferences: "启动与更新"',
+            'last_action: "最近操作"',
+        ):
+            self.assertIn(section_title, source)
+        for forbidden in (
+            "TRAY_OPEN_LOGS_COMMAND",
+            "LauncherCommand::OpenLogs",
+            "LauncherCommand::InstallSkins",
+            "Message::OpenLogs",
+            "Message::InstallSkins",
+            "button(state.copy.open_logs)",
+            "button(state.copy.install_skins)",
+        ):
+            self.assertNotIn(forbidden, source)
+        self.assertNotIn("copy.open_logs", source)
+        self.assertNotIn("copy.install_skins", source)
+        windows = (
+            ROOT / "crates" / "vendor" / "zsui" / "src" / "platform" / "windows" / "window.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn('wide_null("ZsuiMainWindow")', source)
+        self.assertIn("FindWindowW(class_name.as_ptr(), title.as_ptr())", source)
+        self.assertIn("WindowsWindowRole::Quick", windows)
+        self.assertIn("ShowWindow(quick, SW_HIDE)", windows)
+        application = (
+            ROOT
+            / "crates"
+            / "vendor"
+            / "zsui"
+            / "src"
+            / "platform"
+            / "windows"
+            / "application.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn("for lifecycle in &report.window_lifecycle_commands", application)
+        self.assertIn("execute_windows_win32_status_command(owner, lifecycle)", application)
+
+    def test_retained_skin_catalog_matches_the_user_selection(self):
+        expected = {
+            "blue-fantasy",
+            "deepseek-official",
+            "harbor",
+            "miku",
+            "minecraft",
+            "trading",
+            "xp",
+        }
+        actual = {path.name for path in SKINS.iterdir() if path.is_dir()}
+        self.assertEqual(actual, expected)
+
+        catalog = SKIN_CENTER.read_text(encoding="utf-8")
+        for skin in expected:
+            self.assertIn(f'id: "{skin}"', catalog)
+        for removed in ("whale-song", "dragon-heir"):
+            self.assertNotIn(f'id: "{removed}"', catalog)
+
+    def test_official_skin_is_the_default_of_the_skin_variant(self):
+        official = json.loads(
+            (SKINS / "deepseek-official" / "skin.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(official["source"], "https://www.deepseek.com/harness/")
+        package = PACKAGE.read_text(encoding="utf-8")
+        verifier = VERIFIER.read_text(encoding="utf-8")
+        self.assertIn('default_skin = "deepseek-official"', package)
+        self.assertIn('manifest.get("default_skin")', verifier)
+
+    def test_package_defaults_use_the_real_host_schema_and_preserve_user_settings(self):
+        package = PACKAGE.read_text(encoding="utf-8")
+        host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(
+            encoding="utf-8"
+        )
+        verifier = VERIFIER.read_text(encoding="utf-8")
+        self.assertIn("settings.defaults.json", package)
+        self.assertIn('{"ui-theme": {"preference": default_skin}}', package)
+        self.assertNotIn('{"ui-theme": {"skin": default_skin}}', package)
+        self.assertIn('packaged_resource("settings.defaults.json")', host)
+        self.assertIn("merge_package_defaults", host)
+        self.assertIn("settings.defaults.json", verifier)
+
+    def test_release_pipeline_builds_core_skin_and_free_variants(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        installer = INSTALLER.read_text(encoding="utf-8")
+        for variant in ("core", "skin", "free"):
+            self.assertIn(f"--variant {variant}", workflow)
+            self.assertIn(f'Variant == "{variant}"', installer)
+        self.assertIn("mimo-v2.5-free", PACKAGE.read_text(encoding="utf-8"))
+        self.assertIn("mimo-v2.5-free", VERIFIER.read_text(encoding="utf-8"))
+        self.assertIn('stage / "deepseek-black.ico"', PACKAGE.read_text(encoding="utf-8"))
+        self.assertIn('prefix + "deepseek-black.ico"', VERIFIER.read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main()

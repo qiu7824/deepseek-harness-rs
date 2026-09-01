@@ -5699,20 +5699,42 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				result: {
 					mode: "strict",
 					typeSymbol: "@deepseek-ai/dsh-host-plugin-inventory/types#PluginInventorySnapshot",
-					schema: object({ "entries": array(object({
-						"entryId": intersection(string(), unknown()).readonly(),
-						"moduleName": string().readonly(),
-						"description": string().optional().readonly(),
-						"enabled": boolean().readonly(),
-						"fiberPhase": union([
-							literal(null),
-							literal("failed"),
-							literal("pending"),
-							literal("active"),
-							literal("loading"),
-							literal("unloading")
-						]).readonly()
-					})).readonly() })
+					schema: object({
+						"entries": array(object({
+							"entryId": intersection(string(), unknown()).readonly(),
+							"moduleName": string().readonly(),
+							"enabled": boolean().readonly(),
+							"fiberPhase": union([
+								literal(null),
+								literal("pending"),
+								literal("active"),
+								literal("failed"),
+								literal("loading"),
+								literal("unloading")
+							]).readonly()
+						})).readonly(),
+						"agentPresets": array(object({
+							"id": string().readonly(),
+							"trust": union([literal("system"), literal("user")]).readonly(),
+							"name": string().readonly().optional(),
+							"isDefault": boolean().readonly(),
+							"broken": string().readonly().optional(),
+							"rows": array(object({
+								"entryId": union([literal(null), string()]).readonly(),
+								"moduleName": string().readonly(),
+								"enabled": union([literal(false), literal(true), literal("conditional")]).readonly(),
+								"condition": string().readonly().optional(),
+								"fiberPhase": union([
+									literal(null),
+									literal("pending"),
+									literal("active"),
+									literal("failed"),
+									literal("loading"),
+									literal("unloading")
+								]).readonly()
+							})).readonly()
+						})).readonly().optional()
+					})
 				},
 				sourceLocation: {
 					"file": "packages/host/plugin-inventory/src/index.ts",
@@ -5744,7 +5766,6 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					schema: object({ "entry": object({
 						"entryId": string().readonly(),
 						"moduleName": string().readonly(),
-						"description": string().optional().readonly(),
 						"enabled": boolean().readonly(),
 						"fiberPhase": union([
 							literal(null), literal("failed"), literal("pending"),

@@ -1,0 +1,291 @@
+html[data-dsh-skin="trading"] [id="root"]{
+  box-sizing: border-box;
+  height: 100%;
+  padding: 66px 10px 30px;
+  background: #fff;
+  border: 1px solid #ccd5df;
+  box-shadow: 0 1px #fff, 0 3px 12px #17202d1f;
+}
+
+html[data-dsh-skin="trading"] body[data-ds-dark-theme] [id="root"]{
+  background: #10151d;
+  border-color: #232c3a;
+  box-shadow: 0 1px #0a0e15, 0 3px 12px #00000080;
+}
+
+html[data-dsh-skin="trading"] *{
+  border-radius: 3px !important;
+}
+
+html[data-dsh-skin="trading"] [data-pane="sidebar"]{
+  color: var(--dsw-alias-label-primary);
+}
+
+html[data-dsh-skin="trading"] [role="tooltip"]{
+  background: var(--dsw-alias-tooltip-bg);
+  color: var(--dsw-alias-tooltip-fg);
+}
+
+html[data-dsh-skin="trading"] [role="dialog"],html[data-dsh-skin="trading"] [role="dialog"] [class*="navCell"]:not([aria-current="true"]){
+  color: var(--dsw-alias-label-primary);
+}
+
+html[data-dsh-skin="trading"] button[role="tab"],html[data-dsh-skin="trading"] button[role="tab"]:hover,html[data-dsh-skin="trading"] button[role="tab"]:active,html[data-dsh-skin="trading"] button[role="tab"]:disabled,html[data-dsh-skin="trading"] button[role="tab"]:hover:not(:disabled),html[data-dsh-skin="trading"] button[role="tab"]:active:not(:disabled){
+  box-shadow: none;
+  text-shadow: none;
+  color: var(--dsw-alias-label-primary);
+  filter: none;
+  opacity: 1;
+  background-color: #0000;
+  background-image: none;
+  border: 0;
+  transform: none;
+}
+
+html[data-dsh-skin="trading"] ::-webkit-scrollbar{
+  width: 10px;
+  height: 10px;
+}
+
+html[data-dsh-skin="trading"] ::-webkit-scrollbar-track{
+  background: none;
+}
+
+html[data-dsh-skin="trading"] ::-webkit-scrollbar-thumb{
+  background: var(--dsw-alias-border-l3);
+  background-clip: content-box;
+  border: 2px solid #0000;
+  border-radius: 5px;
+}
+
+html[data-dsh-skin="trading"] ::-webkit-scrollbar-thumb:hover{
+  background: var(--dsw-alias-border-l4);
+  background-clip: content-box;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTitlebar{
+  z-index: 1000000;
+  background: var(--dsh-trd-titlebar-bg);
+  border-bottom: 1px solid var(--dsh-trd-border);
+  height: 34px;
+  color: var(--dsh-trd-text);
+  font: 600 13px/34px var(--dsw-font-family);
+  user-select: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  display: flex;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTitlebarIcon{
+  background: var(--dsh-trd-brand);
+  border-radius: 5px;
+  justify-content: center;
+  align-items: center;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  box-shadow: inset 0 1px #ffffff40;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTitlebarIcon svg{
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTitlebarTitle{
+  color: var(--dsh-trd-text);
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTitlebarChips{
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+  display: inline-flex;
+  overflow: hidden;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTitlebarChip{
+  font: 500 12px/1 var(--ds-font-family-code);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  align-items: baseline;
+  gap: 5px;
+  display: inline-flex;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTitlebarChipName{
+  color: var(--dsh-trd-dim);
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTitlebarChipVal{
+  color: var(--dsh-trd-text);
+  font-weight: 600;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTitlebarChipChg[data-trend="up"]{
+  color: var(--dsh-trd-up);
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTitlebarChipChg[data-trend="down"]{
+  color: var(--dsh-trd-down);
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTitlebarChipChg:not([data-trend]){
+  color: var(--dsh-trd-flat);
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTitlebarBtn{
+  text-align: center;
+  width: 26px;
+  color: var(--dsh-trd-dim);
+  border-radius: 4px;
+  display: inline-block;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTitlebarBtn:hover{
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsh-trd-text);
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTape{
+  z-index: 999999;
+  background: var(--dsh-trd-tape-bg);
+  border-bottom: 1px solid var(--dsh-trd-border);
+  user-select: none;
+  height: 30px;
+  position: fixed;
+  top: 34px;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTapeTrack{
+  white-space: nowrap;
+  will-change: transform;
+  align-items: center;
+  height: 100%;
+  animation: 60s linear infinite nudqwq_tradingTapeMove;
+  display: inline-flex;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTape:hover .nudqwq_tradingTapeTrack{
+  animation-play-state: paused;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTapeItem{
+  border-right: 1px solid var(--dsw-alias-border-l2);
+  height: 100%;
+  font: 500 12px/30px var(--ds-font-family-code);
+  font-variant-numeric: tabular-nums;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 16px;
+  display: inline-flex;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTapeName{
+  color: var(--dsh-trd-dim);
+  white-space: nowrap;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTapePrice{
+  color: var(--dsh-trd-text);
+  font-weight: 600;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTapeChg[data-trend="up"]{
+  color: var(--dsh-trd-up);
+  font-weight: 600;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTapeChg[data-trend="down"]{
+  color: var(--dsh-trd-down);
+  font-weight: 600;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingTapeChg:not([data-trend]){
+  color: var(--dsh-trd-flat);
+}
+
+@media (prefers-reduced-motion: reduce){
+  html[data-dsh-skin="trading"] .nudqwq_tradingTapeTrack{
+    animation: none;
+  }
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingStatusbar{
+  z-index: 1000000;
+  background: var(--dsh-trd-statusbar-bg);
+  border-top: 1px solid var(--dsh-trd-border);
+  height: 26px;
+  color: var(--dsh-trd-dim);
+  font: 500 12px/26px var(--ds-font-family-code);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  white-space: nowrap;
+  align-items: center;
+  gap: 14px;
+  padding: 0 10px;
+  display: flex;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingStatusbarGroup{
+  align-items: center;
+  gap: 12px;
+  display: inline-flex;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingStatusbarSpacer{
+  flex: 1;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingStatusbarCell{
+  color: var(--dsh-trd-dim);
+  align-items: baseline;
+  gap: 4px;
+  display: inline-flex;
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingStatusbarCell[data-phase="trading"]{
+  color: var(--dsh-trd-up);
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingStatusbarCell[data-phase="lunch"],html[data-dsh-skin="trading"] .nudqwq_tradingStatusbarCell[data-phase="pre"]{
+  color: var(--dsh-trd-warn);
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingStatusbarCell[data-trend="up"]{
+  color: var(--dsh-trd-up);
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingStatusbarCell[data-trend="down"]{
+  color: var(--dsh-trd-down);
+}
+
+html[data-dsh-skin="trading"] .nudqwq_tradingStatusbarLbLabel{
+  color: var(--dsh-trd-brand);
+  font-weight: 600;
+}
+
+@keyframes nudqwq_tradingTapeMove {
+  0% {
+    transform: translate(0);
+  }
+
+  to {
+    transform: translate(-50%);
+  }
+}

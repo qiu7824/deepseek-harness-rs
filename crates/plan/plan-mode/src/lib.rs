@@ -317,7 +317,7 @@ impl PlanModeController {
                                     Ok(json.clone())
                                 },
                             ),
-                            init: Arc::new(|| {
+                            init: Arc::new(|_header| {
                                 arc(serde_json::json!({ "active": false, "wanted": null }))
                             }),
                             apply: Arc::new(

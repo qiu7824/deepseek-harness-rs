@@ -1,0 +1,1244 @@
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ZsuiFeatureCategory {
+    Core,
+    Shell,
+    Widget,
+    Platform,
+    Backend,
+    Service,
+    Tooling,
+    Profile,
+}
+
+impl ZsuiFeatureCategory {
+    pub const fn category_name(self) -> &'static str {
+        match self {
+            Self::Core => "core",
+            Self::Shell => "shell",
+            Self::Widget => "widget",
+            Self::Platform => "platform",
+            Self::Backend => "backend",
+            Self::Service => "service",
+            Self::Tooling => "tooling",
+            Self::Profile => "profile",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZsuiCargoFeature {
+    pub name: &'static str,
+    pub category: ZsuiFeatureCategory,
+    pub category_name: &'static str,
+    pub default_enabled: bool,
+    pub optional_dependency_names: Vec<&'static str>,
+    pub enables: Vec<&'static str>,
+    pub compile_boundary: &'static str,
+}
+
+impl ZsuiCargoFeature {
+    pub fn new(
+        name: &'static str,
+        category: ZsuiFeatureCategory,
+        default_enabled: bool,
+        optional_dependency_names: Vec<&'static str>,
+        enables: Vec<&'static str>,
+        compile_boundary: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            category,
+            category_name: category.category_name(),
+            default_enabled,
+            optional_dependency_names,
+            enables,
+            compile_boundary,
+        }
+    }
+
+    pub fn enables_optional_dependency(&self) -> bool {
+        !self.optional_dependency_names.is_empty()
+    }
+}
+
+pub fn zsui_default_feature_names() -> Vec<&'static str> {
+    vec!["window", "button", "label"]
+}
+
+pub fn zsui_optional_dependency_feature_names() -> Vec<&'static str> {
+    zsui_feature_manifest()
+        .into_iter()
+        .filter(ZsuiCargoFeature::enables_optional_dependency)
+        .map(|feature| feature.name)
+        .collect()
+}
+
+pub fn zsui_feature_manifest() -> Vec<ZsuiCargoFeature> {
+    use ZsuiFeatureCategory::{Backend, Core, Platform, Profile, Service, Shell, Tooling, Widget};
+
+    vec![
+        ZsuiCargoFeature::new(
+            "window",
+            Shell,
+            true,
+            Vec::new(),
+            vec!["windows-win32", "macos-appkit", "linux-direct"],
+            "window declarations and target-native Win32, AppKit or lightweight Wayland/X11 host paths",
+        ),
+        ZsuiCargoFeature::new(
+            "button",
+            Widget,
+            true,
+            Vec::new(),
+            vec!["widgets-base"],
+            "button component declarations and base widget surface",
+        ),
+        ZsuiCargoFeature::new(
+            "accordion",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["button", "label"],
+            "typed single or multiple disclosure sections with arbitrary nested View content",
+        ),
+        ZsuiCargoFeature::new(
+            "badge",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-base"],
+            "noninteractive dot, numeric and semantic-icon information badges with platform-owned metrics",
+        ),
+        ZsuiCargoFeature::new(
+            "split-view",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-base"],
+            "two-pane adaptive/inline/overlay composition with explicit open state and platform-owned metrics",
+        ),
+        ZsuiCargoFeature::new(
+            "label",
+            Widget,
+            true,
+            Vec::new(),
+            vec!["widgets-base"],
+            "label/text component declarations and renderer-backed Label component",
+        ),
+        ZsuiCargoFeature::new(
+            "grid",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-base"],
+            "typed row/column grid layout with fixed and fractional tracks, gaps and spans",
+        ),
+        ZsuiCargoFeature::new(
+            "canvas",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-base"],
+            "retained custom drawing surface with local-DP geometry, semantic colors and typed activation",
+        ),
+        ZsuiCargoFeature::new(
+            "icon",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-base"],
+            "standalone semantic icon surface with platform-owned metrics and native icon sources",
+        ),
+        ZsuiCargoFeature::new(
+            "flyout",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-base"],
+            "anchored arbitrary-content overlay with platform-native composition and typed dismissal",
+        ),
+        ZsuiCargoFeature::new(
+            "menu-flyout",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-base"],
+            "anchored menu overlay with typed commands, platform-adaptive metrics and keyboard routing",
+        ),
+        ZsuiCargoFeature::new(
+            "context-menu",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["menu-flyout"],
+            "secondary-click menu wrapper with framework-owned invocation, pointer anchoring and dismissal",
+        ),
+        ZsuiCargoFeature::new(
+            "widgets-base",
+            Widget,
+            false,
+            Vec::new(),
+            Vec::new(),
+            "small built-in component declarations shared by button and label",
+        ),
+        ZsuiCargoFeature::new(
+            "widgets-input",
+            Widget,
+            false,
+            Vec::new(),
+            Vec::new(),
+            "input widget declarations such as checkboxes and toggles",
+        ),
+        ZsuiCargoFeature::new(
+            "text-input-core",
+            Widget,
+            false,
+            vec!["unicode-segmentation"],
+            vec!["widgets-input"],
+            "shared Unicode grapheme editing plus target-native shaped caret, visual navigation and hit geometry",
+        ),
+        ZsuiCargoFeature::new(
+            "widgets-list",
+            Widget,
+            false,
+            Vec::new(),
+            Vec::new(),
+            "list-like widget declarations",
+        ),
+        ZsuiCargoFeature::new(
+            "scroll",
+            Widget,
+            false,
+            Vec::new(),
+            Vec::new(),
+            "scroll container declarations and future host contracts",
+        ),
+        ZsuiCargoFeature::new(
+            "list",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-list", "scroll"],
+            "list widget declarations",
+        ),
+        ZsuiCargoFeature::new(
+            "tree",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-list"],
+            "typed hierarchical rows with strong IDs and self-drawn platform disclosure profiles",
+        ),
+        ZsuiCargoFeature::new(
+            "virtual-list",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["list", "scroll"],
+            "viewport-based list layout that materializes and paints visible rows only",
+        ),
+        ZsuiCargoFeature::new(
+            "paged-list",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["virtual-list"],
+            "background page loading, request deduplication and bounded LRU page caching",
+        ),
+        ZsuiCargoFeature::new(
+            "textbox",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["text-input-core"],
+            "text input component declarations",
+        ),
+        ZsuiCargoFeature::new(
+            "password-box",
+            Widget,
+            false,
+            vec!["zeroize"],
+            vec!["text-input-core"],
+            "single-line secure input with redacted state, platform reveal policy and self-drawn native profiles",
+        ),
+        ZsuiCargoFeature::new(
+            "tooltip",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-base"],
+            "attached noninteractive help overlay with platform metrics and native hover/focus timing",
+        ),
+        ZsuiCargoFeature::new(
+            "dialog",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-base"],
+            "modal self-drawn content dialog with platform action layout, typed responses and independently focusable accessibility buttons",
+        ),
+        ZsuiCargoFeature::new(
+            "toggle-button",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-input"],
+            "explicit-state toggle button with self-drawn platform profiles, typed activation and native accessibility toggle state",
+        ),
+        ZsuiCargoFeature::new(
+            "checkbox",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-input"],
+            "checkbox component declarations",
+        ),
+        ZsuiCargoFeature::new(
+            "toggle",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-input"],
+            "owner-drawn toggle declarations and typed View input",
+        ),
+        ZsuiCargoFeature::new(
+            "slider",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-input"],
+            "range-normalized slider layout, paint, typed input and adjustable native accessibility range",
+        ),
+        ZsuiCargoFeature::new(
+            "number-box",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["text-input-core"],
+            "editable finite number input with validated range, platform-style steppers, typed commits and native SpinButton range semantics",
+        ),
+        ZsuiCargoFeature::new(
+            "radio",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-input"],
+            "explicit-state radio button layout, paint and typed selection input",
+        ),
+        ZsuiCargoFeature::new(
+            "progress",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-base"],
+            "determinate/indeterminate progress, platform-native status styling and read-only UIA/AppKit/AccessKit range semantics",
+        ),
+        ZsuiCargoFeature::new(
+            "progress-ring",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-base"],
+            "independently selectable determinate/indeterminate ring with platform metrics, native animation timers and read-only progress semantics",
+        ),
+        ZsuiCargoFeature::new(
+            "auto-suggest",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["text-input-core"],
+            "application-owned strong-id suggestions with platform search-field metrics, popup overlay and typed text, choice or submission events",
+        ),
+        ZsuiCargoFeature::new(
+            "command-palette",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["text-input-core"],
+            "application-owned strong-id commands with self-drawn platform search/list overlays and typed query, highlight, invoke or dismiss events",
+        ),
+        ZsuiCargoFeature::new(
+            "combo",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-input"],
+            "explicit-state combo header, popup overlay and typed pointer or keyboard selection",
+        ),
+        ZsuiCargoFeature::new(
+            "date-picker",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-input"],
+            "calendar date picker with typed date state, popup month navigation and selection",
+        ),
+        ZsuiCargoFeature::new(
+            "time-picker",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-input"],
+            "time picker with typed wall-clock state, minute increments and platform-adaptive popup selection",
+        ),
+        ZsuiCargoFeature::new(
+            "color-picker",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-input"],
+            "application-owned RGBA color well with platform-adaptive self-drawn channel editor and typed input",
+        ),
+        ZsuiCargoFeature::new(
+            "tabs",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-base"],
+            "self-drawn tab view with strong tab ids, selected content and platform keyboard behavior",
+        ),
+        ZsuiCargoFeature::new(
+            "table",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-list"],
+            "typed read-only data grid with strong row and column IDs, sorting and platform-adaptive self-drawn metrics",
+        ),
+        ZsuiCargoFeature::new(
+            "dark-mode",
+            Service,
+            false,
+            Vec::new(),
+            Vec::new(),
+            "theme selection contracts without forcing a renderer backend",
+        ),
+        ZsuiCargoFeature::new(
+            "style",
+            Service,
+            false,
+            Vec::new(),
+            Vec::new(),
+            "style tokens, theme data and future renderer style binding",
+        ),
+        ZsuiCargoFeature::new(
+            "localization",
+            Service,
+            false,
+            vec!["fluent-bundle", "sys-locale", "unic-langid"],
+            Vec::new(),
+            "application-owned Fluent catalogs, locale fallback, runtime language changes and text-direction metadata",
+        ),
+        ZsuiCargoFeature::new(
+            "shell",
+            Shell,
+            false,
+            Vec::new(),
+            Vec::new(),
+            "desktop shell integration boundary",
+        ),
+        ZsuiCargoFeature::new(
+            "workbench",
+            Shell,
+            false,
+            Vec::new(),
+            vec!["button", "label", "scroll", "textbox", "style"],
+            "conversation and task workbench shell with navigation, timeline, composer and inspector",
+        ),
+        ZsuiCargoFeature::new(
+            "document-shell",
+            Shell,
+            false,
+            Vec::new(),
+            vec!["style"],
+            "self-drawn document chrome plus reusable UTF-8/UTF-16 text document lifecycle",
+        ),
+        ZsuiCargoFeature::new(
+            "calculator",
+            Shell,
+            false,
+            vec!["rust_decimal"],
+            vec!["style", "button", "label", "grid"],
+            "decimal calculator engine and platform-adaptive typed View shell",
+        ),
+        ZsuiCargoFeature::new(
+            "tray",
+            Shell,
+            false,
+            Vec::new(),
+            vec!["shell"],
+            "tray/status item declarations and host contracts",
+        ),
+        ZsuiCargoFeature::new(
+            "hotkey",
+            Shell,
+            false,
+            Vec::new(),
+            vec!["shell"],
+            "global hotkey declarations and host contracts",
+        ),
+        ZsuiCargoFeature::new(
+            "settings",
+            Shell,
+            false,
+            Vec::new(),
+            vec!["widgets-input", "widgets-list", "toggle"],
+            "settings page model and settings control declarations",
+        ),
+        ZsuiCargoFeature::new(
+            "product-adapter",
+            Service,
+            false,
+            Vec::new(),
+            Vec::new(),
+            "product adapter runtime harness and AI/tool boundary contracts",
+        ),
+        ZsuiCargoFeature::new(
+            "ui-document",
+            Tooling,
+            false,
+            Vec::new(),
+            Vec::new(),
+            "versioned semantic UI document schema, typed binding manifest and validation tooling",
+        ),
+        ZsuiCargoFeature::new(
+            "ui-document-runtime",
+            Core,
+            false,
+            Vec::new(),
+            vec!["ui-document"],
+            "release-safe UI document to View compiler without file watching or preview transport",
+        ),
+        ZsuiCargoFeature::new(
+            "ui-viewer",
+            Tooling,
+            false,
+            Vec::new(),
+            vec![
+                "ui-document-runtime",
+                "window",
+                "button",
+                "accordion",
+                "badge",
+                "split-view",
+                "breadcrumb",
+                "canvas",
+                "icon",
+                "label",
+                "checkbox",
+                "toggle",
+                "toggle-button",
+                "textbox",
+                "password-box",
+                "radio",
+                "slider",
+                "number-box",
+                "combo",
+                "auto-suggest",
+                "command-palette",
+                "tree",
+                "grid-view",
+                "table",
+                "date-picker",
+                "time-picker",
+                "color-picker",
+                "list",
+                "virtual-list",
+                "image-preview",
+                "video",
+                "tabs",
+                "grid",
+                "progress",
+                "progress-ring",
+                "dialog",
+                "toast",
+                "info-bar",
+                "tooltip",
+                "teaching-tip",
+                "flyout",
+                "menu-flyout",
+                "context-menu",
+                "scroll",
+                "shell",
+                "workbench",
+                "document-shell",
+                "native-smoke",
+            ],
+            "prebuilt target-native development viewer with validated file reload and final-surface smoke",
+        ),
+        ZsuiCargoFeature::new(
+            "android",
+            Platform,
+            false,
+            Vec::new(),
+            Vec::new(),
+            "Android Activity host scaffold and future runtime bridge",
+        ),
+        ZsuiCargoFeature::new(
+            "mobile",
+            Platform,
+            false,
+            Vec::new(),
+            vec!["android"],
+            "Android mobile platform scaffold",
+        ),
+        ZsuiCargoFeature::new(
+            "clipboard",
+            Service,
+            false,
+            vec!["arboard"],
+            Vec::new(),
+            "system UTF-8 text and validated RGBA image clipboard bridge; file lists remain backend-gated",
+        ),
+        ZsuiCargoFeature::new(
+            "accessibility",
+            Service,
+            false,
+            vec!["windows", "windows-core"],
+            Vec::new(),
+            "optional shared accessibility semantics plus Win32 UI Automation, AppKit NSAccessibility and GTK4 accessible properties",
+        ),
+        ZsuiCargoFeature::new(
+            "image",
+            Service,
+            false,
+            vec!["png"],
+            Vec::new(),
+            "PNG decode/encode helpers used by smoke screenshots and GDI icons",
+        ),
+        ZsuiCargoFeature::new(
+            "image-preview",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["image", "widgets-base"],
+            "retained image preview with coalesced background PNG decode and atomic frame replacement",
+        ),
+        ZsuiCargoFeature::new(
+            "video",
+            Widget,
+            false,
+            Vec::new(),
+            vec!["widgets-base"],
+            "latest-frame video and camera-preview surface with application-owned decoding, capture and audio",
+        ),
+        ZsuiCargoFeature::new(
+            "native-smoke",
+            Tooling,
+            false,
+            Vec::new(),
+            vec!["image"],
+            "native target-smoke artifact writing and review helpers",
+        ),
+        ZsuiCargoFeature::new(
+            "fluent-icons",
+            Widget,
+            false,
+            Vec::new(),
+            Vec::new(),
+            "MIT-licensed Fluent System Icons SVG fallback assets for missing native symbols",
+        ),
+        ZsuiCargoFeature::new(
+            "notepad-demo",
+            Tooling,
+            false,
+            Vec::new(),
+            vec![
+                "window",
+                "button",
+                "label",
+                "textbox",
+                "tabs",
+                "dialog",
+                "clipboard",
+                "document-shell",
+            ],
+            "shared self-drawn notepad acceptance example on target-native Win32, AppKit and Linux hosts",
+        ),
+        ZsuiCargoFeature::new(
+            "notepad-demo-gtk",
+            Tooling,
+            false,
+            Vec::new(),
+            vec![
+                "linux-gtk",
+                "button",
+                "label",
+                "textbox",
+                "tabs",
+                "dialog",
+                "clipboard",
+                "document-shell",
+            ],
+            "same shared notepad source built against the real GTK4 application and DrawingArea host",
+        ),
+        ZsuiCargoFeature::new(
+            "notepad-demo-lite",
+            Tooling,
+            false,
+            Vec::new(),
+            vec![
+                "linux-direct-lite",
+                "button",
+                "label",
+                "textbox",
+                "tabs",
+                "dialog",
+                "clipboard",
+                "document-shell",
+                "native-smoke",
+            ],
+            "same shared notepad source built against the opt-in pure-Rust Linux renderer",
+        ),
+        ZsuiCargoFeature::new(
+            "calculator-demo",
+            Tooling,
+            false,
+            Vec::new(),
+            vec!["window", "calculator", "native-smoke"],
+            "shared calculator acceptance example on target-native Win32, AppKit and Linux hosts",
+        ),
+        ZsuiCargoFeature::new(
+            "component-gallery-demo",
+            Tooling,
+            false,
+            Vec::new(),
+            vec!["window", "all-widgets", "native-smoke", "style", "dark-mode"],
+            "complete opt-in component gallery and native smoke acceptance surface",
+        ),
+        ZsuiCargoFeature::new(
+            "desktop-winit",
+            Backend,
+            false,
+            vec!["winit"],
+            Vec::new(),
+            "first-pass macOS/Linux desktop event loop fallback",
+        ),
+        ZsuiCargoFeature::new(
+            "windows-gdi",
+            Backend,
+            false,
+            vec!["windows-sys"],
+            vec!["image"],
+            "Windows GDI renderer, text layout and no-flicker paint foundation",
+        ),
+        ZsuiCargoFeature::new(
+            "windows-win32",
+            Backend,
+            false,
+            Vec::new(),
+            vec!["windows-rust-text"],
+            "direct Win32 HWND host and message loop with ZSUI-owned Rust text and a buffered GDI fallback",
+        ),
+        ZsuiCargoFeature::new(
+            "windows-directwrite",
+            Backend,
+            false,
+            vec!["windows", "windows-core"],
+            vec!["windows-gdi"],
+            "opt-in system DirectWrite shaping and rasterization inside the buffered Win32 GDI surface",
+        ),
+        ZsuiCargoFeature::new(
+            "rust-text",
+            Backend,
+            false,
+            vec!["cosmic-text", "swash", "ttf-parser"],
+            Vec::new(),
+            "ZSUI-owned Rust shaping, retained layout and hinted rasterization pipeline used by the Win32 host",
+        ),
+        ZsuiCargoFeature::new(
+            "rust-text-proof",
+            Tooling,
+            false,
+            Vec::new(),
+            vec!["rust-text"],
+            "development-only text geometry, JSON, SVG and pixel-difference support",
+        ),
+        ZsuiCargoFeature::new(
+            "windows-rust-text",
+            Backend,
+            false,
+            Vec::new(),
+            vec!["windows-gdi", "rust-text"],
+            "ZSUI Rust text compositor inside the buffered Win32 GDI surface with GDI fallback",
+        ),
+        ZsuiCargoFeature::new(
+            "windows-text-proof",
+            Tooling,
+            false,
+            Vec::new(),
+            vec!["windows-directwrite", "rust-text-proof"],
+            "safe DirectWrite glyph-geometry oracle for ZSUI Rust JSON and SVG comparison",
+        ),
+        ZsuiCargoFeature::new(
+            "macos-appkit",
+            Backend,
+            false,
+            vec!["objc2", "objc2-app-kit", "objc2-foundation"],
+            Vec::new(),
+            "macOS AppKit backend boundary with native window, clipboard, file-dialog and typed menu services",
+        ),
+        ZsuiCargoFeature::new(
+            "linux-direct-host",
+            Backend,
+            false,
+            vec!["rfd", "softbuffer", "winit"],
+            Vec::new(),
+            "shared Wayland/X11 window, input, IME, menu, portal and software-presentation host",
+        ),
+        ZsuiCargoFeature::new(
+            "linux-direct-accessibility",
+            Backend,
+            false,
+            vec!["accesskit", "accesskit_winit"],
+            vec!["accessibility", "linux-direct-host"],
+            "optional AccessKit AT-SPI bridge for the Winit-based Linux direct host",
+        ),
+        ZsuiCargoFeature::new(
+            "linux-direct",
+            Backend,
+            false,
+            vec!["cairo-rs", "pango", "pangocairo"],
+            vec!["linux-direct-host"],
+            "lightweight Linux native-window backend with direct software presentation, Pango text, built-in symbolic vectors and XDG portal dialogs",
+        ),
+        ZsuiCargoFeature::new(
+            "linux-direct-lite",
+            Backend,
+            false,
+            vec!["tiny-skia"],
+            vec!["linux-direct-host", "rust-text"],
+            "opt-in pure-Rust Linux renderer using the retained ZSUI text engine and tiny-skia on the shared Wayland/X11 host",
+        ),
+        ZsuiCargoFeature::new(
+            "linux-system-icons",
+            Backend,
+            false,
+            vec!["freedesktop-icons", "gdk-pixbuf"],
+            vec!["linux-direct"],
+            "optional freedesktop icon-theme lookup and raster decoding for Linux applications that require exact desktop theme icons",
+        ),
+        ZsuiCargoFeature::new(
+            "linux-gtk",
+            Backend,
+            false,
+            vec!["gtk4"],
+            Vec::new(),
+            "Linux GTK4 backend boundary with native window, clipboard, file-dialog and typed menu services",
+        ),
+        ZsuiCargoFeature::new(
+            "desktop-native",
+            Profile,
+            false,
+            Vec::new(),
+            vec!["windows-win32", "macos-appkit", "linux-direct"],
+            "target-native desktop backend profile without exposing platform handles to applications",
+        ),
+        ZsuiCargoFeature::new(
+            "all-widgets",
+            Profile,
+            false,
+            Vec::new(),
+            vec![
+                "button",
+                "accordion",
+                "badge",
+                "split-view",
+                "breadcrumb",
+                "canvas",
+                "flyout",
+                "menu-flyout",
+                "context-menu",
+                "toggle-button",
+                "icon",
+                "label",
+                "grid",
+                "grid-view",
+                "scroll",
+                "list",
+                "virtual-list",
+                "paged-list",
+                "image-preview",
+                "video",
+                "textbox",
+                "password-box",
+                "tooltip",
+                "dialog",
+                "toast",
+                "info-bar",
+                "teaching-tip",
+                "checkbox",
+                "toggle",
+                "slider",
+                "number-box",
+                "radio",
+                "progress",
+                "progress-ring",
+                "auto-suggest",
+                "command-palette",
+                "tree",
+                "combo",
+                "date-picker",
+                "time-picker",
+                "color-picker",
+                "tabs",
+                "table",
+                "workbench",
+            ],
+            "explicit opt-in profile for all current widget feature gates",
+        ),
+        ZsuiCargoFeature::new(
+            "full",
+            Profile,
+            false,
+            Vec::new(),
+            vec![
+                "accessibility",
+                "all-widgets",
+                "clipboard",
+                "calculator",
+                "dark-mode",
+                "document-shell",
+                "desktop-native",
+                "desktop-winit",
+                "hotkey",
+                "localization",
+                "linux-gtk",
+                "linux-direct-accessibility",
+                "linux-system-icons",
+                "mobile",
+                "native-smoke",
+                "product-adapter",
+                "ui-document",
+                "ui-document-runtime",
+                "ui-viewer",
+                "settings",
+                "style",
+                "tray",
+                "window",
+            ],
+            "developer profile for checking all current optional surfaces together",
+        ),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_feature_set_stays_small() {
+        assert_eq!(
+            zsui_default_feature_names(),
+            vec!["window", "button", "label"]
+        );
+        let defaults: Vec<_> = zsui_feature_manifest()
+            .into_iter()
+            .filter(|feature| feature.default_enabled)
+            .map(|feature| feature.name)
+            .collect();
+        assert_eq!(defaults, zsui_default_feature_names());
+
+        let window = zsui_feature_manifest()
+            .into_iter()
+            .find(|feature| feature.name == "window")
+            .expect("window feature should be listed");
+        assert_eq!(
+            window.enables,
+            vec!["windows-win32", "macos-appkit", "linux-direct"]
+        );
+    }
+
+    #[test]
+    fn optional_dependency_features_are_explicit() {
+        let names = zsui_optional_dependency_feature_names();
+
+        assert!(names.contains(&"clipboard"));
+        assert!(names.contains(&"accessibility"));
+        assert!(names.contains(&"calculator"));
+        assert!(names.contains(&"image"));
+        assert!(names.contains(&"desktop-winit"));
+        assert!(names.contains(&"windows-gdi"));
+        assert!(names.contains(&"windows-directwrite"));
+        assert!(names.contains(&"rust-text"));
+        assert!(names.contains(&"macos-appkit"));
+        assert!(names.contains(&"linux-direct"));
+        assert!(names.contains(&"linux-system-icons"));
+        assert!(names.contains(&"linux-gtk"));
+        assert!(names.contains(&"password-box"));
+        assert!(names.contains(&"text-input-core"));
+        assert!(names.contains(&"localization"));
+        assert!(!names.contains(&"button"));
+        assert!(!names.contains(&"label"));
+    }
+
+    #[test]
+    fn text_feature_graph_is_explicit() {
+        let manifest = zsui_feature_manifest();
+        let windows_rust = manifest
+            .iter()
+            .find(|feature| feature.name == "windows-rust-text")
+            .expect("Windows Rust text feature should be listed");
+        assert_eq!(windows_rust.enables, vec!["windows-gdi", "rust-text"]);
+        assert!(windows_rust.optional_dependency_names.is_empty());
+
+        let proof = manifest
+            .iter()
+            .find(|feature| feature.name == "windows-text-proof")
+            .expect("Windows text proof feature should be listed");
+        assert_eq!(
+            proof.enables,
+            vec!["windows-directwrite", "rust-text-proof"]
+        );
+        assert!(proof.optional_dependency_names.is_empty());
+
+        let rust_proof = manifest
+            .iter()
+            .find(|feature| feature.name == "rust-text-proof")
+            .expect("portable text proof feature should be listed");
+        assert_eq!(rust_proof.enables, vec!["rust-text"]);
+        assert!(rust_proof.optional_dependency_names.is_empty());
+
+        let linux_lite = manifest
+            .iter()
+            .find(|feature| feature.name == "linux-direct-lite")
+            .expect("Linux lite text feature should be listed");
+        assert_eq!(linux_lite.enables, vec!["linux-direct-host", "rust-text"]);
+        assert_eq!(linux_lite.optional_dependency_names, vec!["tiny-skia"]);
+    }
+
+    #[test]
+    fn notepad_gtk_profile_selects_only_the_gtk_host() {
+        let manifest = zsui_feature_manifest();
+        let gtk = manifest
+            .iter()
+            .find(|feature| feature.name == "notepad-demo-gtk")
+            .expect("GTK notepad profile should be listed");
+
+        assert!(gtk.enables.contains(&"linux-gtk"));
+        assert!(!gtk.enables.contains(&"window"));
+        assert!(!gtk.enables.contains(&"linux-direct"));
+        assert!(!gtk.enables.contains(&"linux-direct-lite"));
+    }
+
+    #[test]
+    fn unicode_segmentation_stays_inside_text_capable_input_slices() {
+        let manifest = zsui_feature_manifest();
+        let text_core = manifest
+            .iter()
+            .find(|feature| feature.name == "text-input-core")
+            .expect("text input core should be listed");
+        let textbox = manifest
+            .iter()
+            .find(|feature| feature.name == "textbox")
+            .expect("textbox should be listed");
+        let checkbox = manifest
+            .iter()
+            .find(|feature| feature.name == "checkbox")
+            .expect("checkbox should be listed");
+
+        assert_eq!(
+            text_core.optional_dependency_names,
+            vec!["unicode-segmentation"]
+        );
+        assert_eq!(text_core.enables, vec!["widgets-input"]);
+        assert_eq!(textbox.enables, vec!["text-input-core"]);
+        assert_eq!(checkbox.enables, vec!["widgets-input"]);
+        assert!(!checkbox.enables.contains(&"text-input-core"));
+    }
+
+    #[test]
+    fn native_accessibility_stays_out_of_defaults_and_widget_profiles() {
+        let manifest = zsui_feature_manifest();
+        let accessibility = manifest
+            .iter()
+            .find(|feature| feature.name == "accessibility")
+            .expect("accessibility feature should be listed");
+        let all_widgets = manifest
+            .iter()
+            .find(|feature| feature.name == "all-widgets")
+            .expect("all-widgets feature should be listed");
+        let linux_direct = manifest
+            .iter()
+            .find(|feature| feature.name == "linux-direct-accessibility")
+            .expect("Linux direct accessibility feature should be listed");
+        let full = manifest
+            .iter()
+            .find(|feature| feature.name == "full")
+            .expect("full feature should be listed");
+
+        assert!(!accessibility.default_enabled);
+        assert_eq!(
+            accessibility.optional_dependency_names,
+            vec!["windows", "windows-core"]
+        );
+        assert!(!all_widgets.enables.contains(&"accessibility"));
+        assert_eq!(
+            linux_direct.optional_dependency_names,
+            vec!["accesskit", "accesskit_winit"]
+        );
+        assert_eq!(
+            linux_direct.enables,
+            vec!["accessibility", "linux-direct-host"]
+        );
+        assert!(full.enables.contains(&"accessibility"));
+        assert!(full.enables.contains(&"linux-direct-accessibility"));
+    }
+
+    #[test]
+    fn localization_is_an_opt_in_service_included_by_full() {
+        let manifest = zsui_feature_manifest();
+        let localization = manifest
+            .iter()
+            .find(|feature| feature.name == "localization")
+            .expect("localization feature should be listed");
+        let all_widgets = manifest
+            .iter()
+            .find(|feature| feature.name == "all-widgets")
+            .expect("all-widgets feature should be listed");
+        let full = manifest
+            .iter()
+            .find(|feature| feature.name == "full")
+            .expect("full feature should be listed");
+
+        assert!(!localization.default_enabled);
+        assert_eq!(
+            localization.optional_dependency_names,
+            vec!["fluent-bundle", "sys-locale", "unic-langid"]
+        );
+        assert!(!all_widgets.enables.contains(&"localization"));
+        assert!(full.enables.contains(&"localization"));
+    }
+
+    #[test]
+    fn ui_document_tooling_is_opt_in_and_included_by_full() {
+        let manifest = zsui_feature_manifest();
+        let ui_document = manifest
+            .iter()
+            .find(|feature| feature.name == "ui-document")
+            .expect("UI document feature should be listed");
+        let full = manifest
+            .iter()
+            .find(|feature| feature.name == "full")
+            .expect("full feature should be listed");
+
+        assert!(!ui_document.default_enabled);
+        assert!(ui_document.optional_dependency_names.is_empty());
+        assert!(full.enables.contains(&"ui-document"));
+        let ui_document_runtime = manifest
+            .iter()
+            .find(|feature| feature.name == "ui-document-runtime")
+            .expect("UI document runtime feature should be listed");
+        assert_eq!(ui_document_runtime.enables, vec!["ui-document"]);
+        assert!(full.enables.contains(&"ui-document-runtime"));
+        let ui_viewer = manifest
+            .iter()
+            .find(|feature| feature.name == "ui-viewer")
+            .expect("UI viewer feature should be listed");
+        assert!(ui_viewer.enables.contains(&"ui-document-runtime"));
+        assert!(ui_viewer.enables.contains(&"window"));
+        assert!(ui_viewer.enables.contains(&"canvas"));
+        assert!(ui_viewer.enables.contains(&"date-picker"));
+        assert!(ui_viewer.enables.contains(&"time-picker"));
+        assert!(ui_viewer.enables.contains(&"color-picker"));
+        assert!(ui_viewer.enables.contains(&"auto-suggest"));
+        assert!(ui_viewer.enables.contains(&"command-palette"));
+        assert!(ui_viewer.enables.contains(&"tree"));
+        assert!(ui_viewer.enables.contains(&"grid-view"));
+        assert!(ui_viewer.enables.contains(&"virtual-list"));
+        assert!(ui_viewer.enables.contains(&"image-preview"));
+        assert!(ui_viewer.enables.contains(&"workbench"));
+        assert!(full.enables.contains(&"ui-viewer"));
+    }
+
+    #[test]
+    fn widget_profile_is_opt_in_not_default() {
+        let manifest = zsui_feature_manifest();
+        let grid = manifest
+            .iter()
+            .find(|feature| feature.name == "grid")
+            .expect("grid feature should be listed");
+        let table = manifest
+            .iter()
+            .find(|feature| feature.name == "table")
+            .expect("table feature should be listed");
+        let dialog = manifest
+            .iter()
+            .find(|feature| feature.name == "dialog")
+            .expect("dialog feature should be listed");
+        let flyout = manifest
+            .iter()
+            .find(|feature| feature.name == "flyout")
+            .expect("flyout feature should be listed");
+        let menu_flyout = manifest
+            .iter()
+            .find(|feature| feature.name == "menu-flyout")
+            .expect("menu-flyout feature should be listed");
+        let context_menu = manifest
+            .iter()
+            .find(|feature| feature.name == "context-menu")
+            .expect("context-menu feature should be listed");
+        let accordion = manifest
+            .iter()
+            .find(|feature| feature.name == "accordion")
+            .expect("accordion feature should be listed");
+        let image_preview = manifest
+            .iter()
+            .find(|feature| feature.name == "image-preview")
+            .expect("image preview feature should be listed");
+        let video = manifest
+            .iter()
+            .find(|feature| feature.name == "video")
+            .expect("video feature should be listed");
+        let all_widgets = manifest
+            .iter()
+            .find(|feature| feature.name == "all-widgets")
+            .expect("all-widgets feature should be listed");
+
+        assert!(!grid.default_enabled);
+        assert!(!table.default_enabled);
+        assert!(!dialog.default_enabled);
+        assert_eq!(dialog.enables, vec!["widgets-base"]);
+        assert_eq!(flyout.enables, vec!["widgets-base"]);
+        assert_eq!(menu_flyout.enables, vec!["widgets-base"]);
+        assert_eq!(context_menu.enables, vec!["menu-flyout"]);
+        assert_eq!(accordion.enables, vec!["button", "label"]);
+        assert_eq!(table.enables, vec!["widgets-list"]);
+        assert_eq!(image_preview.enables, vec!["image", "widgets-base"]);
+        assert_eq!(video.enables, vec!["widgets-base"]);
+        assert!(!table.enables.contains(&"list"));
+        assert!(!table.enables.contains(&"scroll"));
+        assert!(!all_widgets.default_enabled);
+        assert!(all_widgets.enables.contains(&"grid"));
+        assert!(all_widgets.enables.contains(&"canvas"));
+        assert!(all_widgets.enables.contains(&"flyout"));
+        assert!(all_widgets.enables.contains(&"menu-flyout"));
+        assert!(all_widgets.enables.contains(&"context-menu"));
+        assert!(all_widgets.enables.contains(&"accordion"));
+        assert!(all_widgets.enables.contains(&"textbox"));
+        assert!(all_widgets.enables.contains(&"password-box"));
+        assert!(all_widgets.enables.contains(&"image-preview"));
+        assert!(all_widgets.enables.contains(&"video"));
+        assert!(all_widgets.enables.contains(&"tooltip"));
+        assert!(all_widgets.enables.contains(&"dialog"));
+        assert!(all_widgets.enables.contains(&"toggle-button"));
+        assert!(all_widgets.enables.contains(&"toggle"));
+        assert!(all_widgets.enables.contains(&"slider"));
+        assert!(all_widgets.enables.contains(&"number-box"));
+        assert!(all_widgets.enables.contains(&"radio"));
+        assert!(all_widgets.enables.contains(&"progress"));
+        assert!(all_widgets.enables.contains(&"progress-ring"));
+        assert!(all_widgets.enables.contains(&"auto-suggest"));
+        assert!(all_widgets.enables.contains(&"command-palette"));
+        assert!(all_widgets.enables.contains(&"tree"));
+        assert!(all_widgets.enables.contains(&"combo"));
+        assert!(all_widgets.enables.contains(&"date-picker"));
+        assert!(all_widgets.enables.contains(&"time-picker"));
+        assert!(all_widgets.enables.contains(&"color-picker"));
+        assert!(all_widgets.enables.contains(&"tabs"));
+        assert!(all_widgets.enables.contains(&"table"));
+        assert!(all_widgets.enables.contains(&"workbench"));
+    }
+}

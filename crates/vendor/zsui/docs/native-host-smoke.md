@@ -1,0 +1,858 @@
+# Native Host Smoke Artifacts
+
+Target smoke is the evidence layer between code-level contracts and a complete
+native backend. A platform is not system-complete until a real target run stores
+inspectable artifacts under:
+
+```text
+target/native-host-smoke/<platform>/
+```
+
+Generate the smoke manifest with:
+
+```powershell
+cargo run --example native_smoke_manifest -- windows
+```
+
+Use `macos`, `linux`, `android`, `current` or `all` for other
+manifest scopes.
+
+Record the contract-level artifact files with:
+
+```powershell
+cargo run --example native_smoke_record -- windows
+```
+
+This writes `manifest.json`, `launch.log`, `interaction.json`,
+`capabilities.json` and `agent-context.json`. It intentionally does not fake
+`window.png`; run the interactive native smoke command to capture or provide a
+real target screenshot before target-smoke is complete.
+
+Run the first-pass native smoke window with:
+
+```powershell
+cargo run --example native_smoke_run -- windows
+```
+
+On Windows this opens the Win32/GDI native window path, closes it
+automatically, then rewrites `interaction.json` and `launch.log` with the
+observed window lifecycle. It also captures `window.png` into the artifact
+directory through the direct Win32 `HWND`. The same capture returns structured
+client pixel/logical geometry, DPI scale, typography and pre-teardown process
+memory through `NativeViewCaptureEvidence`. macOS enters `NSApplication` with
+owned `NSWindow` objects, and Linux enters the lightweight Wayland/X11 host
+with an owned native window and directly presented surface. All three direct
+desktop paths capture their final native surface into the same evidence schema;
+target-smoke completion still requires reviewing the generated image and
+interaction report.
+
+Windows and macOS can also request a real status item during the same smoke
+run:
+
+```powershell
+cargo run --example native_smoke_run -- windows --tray
+```
+
+On macOS, use the current target with an explicit artifact root:
+
+```bash
+cargo run --example native_smoke_run -- current target/native-proof/macos-status-item --status-item --view
+```
+
+The Windows path uses the `Shell_NotifyIconW` backed
+`WindowsWin32StatusItemHost` and
+records status-item fields in `interaction.json`. It also exercises the
+native status-menu command table and records `status_menu_command_routed`.
+It creates and destroys a native popup menu and records
+`status_menu_popup_destroyed`. Real user popup menu clicks are still separate
+proof before the tray surface is system-complete; the Win32 host exposes the
+`TrackPopupMenu` selection route, but the auto-closing smoke runner does not
+block waiting for manual selection.
+The AppKit path owns a real `NSStatusItem`, attaches a detached native `NSMenu`,
+routes the first enabled command through the shared typed update path and
+removes the status item during teardown. Fixed macOS 15 Native UI Proof run
+`29793379808` requires and verifies creation, recursive command count, command
+routing and native menu attachment/cleanup. A release-time manual menu-bar
+click remains separate from the deterministic selector invocation.
+
+The native window-menu smoke path is:
+
+```powershell
+cargo run --example native_smoke_run -- windows --menu
+```
+
+On Windows this installs an owned `HMENU` plus `HACCEL`, preserves nested and
+disabled item state, and records typed window-menu command routing in
+`interaction.json`. The same `MenuSpec` uses `Primary+O`/`Primary+S`. AppKit
+and the optional GTK4 compatibility service lower those accelerators to native
+menu forms. `linux-direct` owns a self-drawn desktop menu surface and routes
+pointer, keyboard and accelerator commands through the same model; its proof
+does not claim a compositor-owned global menu.
+
+All three direct desktop hosts attach a typed Rust view draw plan to their
+native content surface. Win32 paints through its buffered GDI sink, AppKit
+through a custom `NSView`, and `linux-direct` through a Winit Wayland/X11
+window, Softbuffer final surface and Cairo/Pango. Windows posts native pointer
+messages during the smoke run; AppKit mouse/scroll events and Winit
+pointer/wheel events enter the same typed hit-test/message/executor path. Their
+focusable content views also route Tab/Shift+Tab, keyboard activation and
+direct UTF-8 edits. AppKit `NSTextInputClient` and Winit IME events route
+provisional preedit, committed UTF-8 and candidate-window anchors through the
+shared runtime. Each renderer feeds actual content bounds back into layout
+before painting, so resize updates draw commands, hit targets and text-input
+geometry instead of stretching a startup snapshot. Pointer/Tab focus appends
+the same semantic accent focus ring on all three draw sinks, while native focus
+loss rebuilds the clean plan.
+
+Native resize proof is opt-in through
+`NativeWindowSmokeRunOptions::native_window_resize(Size)` and becomes a hard
+gate with `require_native_window_resize(true)`. The selected backend must resize
+the actual top-level content surface and observe a platform resize callback;
+changing only the shared View surface is not evidence. Win32 uses `SetWindowPos`
+and counts `WM_SIZE` surface changes, AppKit uses `setContentSize:` and counts
+`windowDidResize:`, and `linux-direct` uses Winit `request_inner_size` and counts
+`WindowEvent::Resized`. `NativeWindowResizeEvidence` records the backend,
+requested size, observed initial/final sizes, native-event count and whether the
+exact target was applied before final-surface capture. The Gallery native-proof
+suite fixes two platform-safe scenarios: `resized-small` ends at `800x520`, and
+`resized-large` grows from `960x560` to `1180x640`. Native UI Proof run
+`29809658203` on commit `ee49c40` passed both scenarios on AppKit, X11 and real
+Weston Wayland, including exact final dimensions, at least one native resize
+event, final platform PNGs, post-resize widget bounds, empty message/error lists
+and backend-specific evidence identities. CI run `29809658198` passed the
+locked feature matrix and all desktop target checks for the same commit.
+
+The local Windows command for that shared view-input route is:
+
+```powershell
+cargo run --example native_smoke_run -- windows --view
+```
+
+The dedicated typed scroll smoke path is:
+
+```powershell
+cargo run --features "scroll,label" --example native_smoke_run -- windows --scroll-view
+```
+
+This path scrolls one retained `Scroll`, then drags its thin platform-profile
+thumb through the wider semantic hit target. Track and thumb are separate hit
+kinds, track clicks map by thumb center, and thumb drags retain the pointer's
+original offset instead of jumping the thumb center under the cursor. The same
+geometry is used for paint, hit testing and range clamping.
+
+The dedicated typed slider smoke path is:
+
+```powershell
+cargo run --features "window,label,slider,windows-win32" --example native_smoke_run -- windows --slider-view
+```
+
+It presses the shared slider track, drags the thumb, releases pointer capture
+and sends a Left key step through the same strongly typed `SliderChanged`
+route used by AppKit and GTK4. The smoke runner attaches the framework runtime
+executor, so each emitted `UiCommand` must be executed without an unhandled
+command. The Windows interaction artifact records value
+changes, keyboard changes and completed drags as
+`native_view_slider_value_change_count`,
+`native_view_slider_keyboard_change_count` and
+`native_view_slider_drag_count`. AppKit and GTK4 use their native mouse/gesture
+and keyboard callbacks with the shared runtime, but still require target-machine
+interaction artifacts before their slider path is considered proven.
+
+The Windows native accessibility proof is:
+
+```powershell
+.\scripts\check-windows-slider-accessibility.ps1 -Locked
+```
+
+It locates the retained Slider through real UI Automation, requires a writable
+`RangeValuePattern` with the declared 0-100 range and 5/50 small/large changes,
+then calls `SetValue(42)`. The framework snaps that request to 40, emits the
+same typed `SliderChanged` route and exposes the rebuilt value through UIA.
+AppKit projects the same range through `NSNumber`, set-value and native
+increment/decrement selectors; Linux Direct advertises AccessKit numeric
+set/increment/decrement actions. Their target compiles are required here, while
+target-machine interaction evidence remains a separate completion gate.
+
+The dedicated ToggleButton smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,toggle-button,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-toggle-button --toggle-button-view
+```
+
+It clicks the self-drawn button, activates it with Space, then clicks again so
+the screenshot finishes in the checked state. The application owns the
+explicit Boolean state and receives the same typed callback for pointer and
+keyboard activation. The runtime also records transient hover/pressed redraws
+without introducing a backend-local control tree. The checked background and
+bottom state cue follow the official [Windows App SDK ToggleButton](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.primitives.togglebutton?view=windows-app-sdk-1.8),
+[Apple toggle-button guidance](https://developer.apple.com/design/human-interface-guidelines/toggles),
+and [GTK4 ToggleButton](https://docs.gtk.org/gtk4/class.ToggleButton.html)
+contracts. The Windows artifact must report three toggle events, one keyboard
+activation, pointer visual changes, successful `UiCommand` execution and a
+captured `window.png`. AppKit and GTK4 use the shared state/input path and
+platform metrics but still require target-machine interaction evidence.
+
+The native Windows accessibility proof is:
+
+```powershell
+.\scripts\check-windows-toggle-button-accessibility.ps1 -Locked
+```
+
+It finds the real retained `Pin panel` element as UIA `Button`, rejects an
+incorrect stateless `InvokePattern`, requires `TogglePattern`, then changes the
+state from On to Off. The rebuilt semantic tree must preserve the new state and
+the buffered Win32 host must still capture `window.png`. The same shared
+checked field becomes an AppKit button value with press action and an AccessKit
+`toggled` value with click action; their target compiles are required here.
+
+The dedicated editable NumberBox smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,number-box,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-number-box --number-box-view
+```
+
+It clicks the trailing increment segment, applies small and large keyboard
+steps, clears and replaces the editable draft, then commits `42.5` with Enter.
+The self-drawn header chooses Windows inline down/up buttons, an AppKit-style
+compact vertical two-segment stepper or GTK horizontal decrement/increment
+buttons internally; application code has no platform branch. The behavior and
+shape profiles follow the official [Windows NumberBox](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/number-box),
+[Apple stepper](https://developer.apple.com/design/human-interface-guidelines/steppers),
+and [GTK SpinButton](https://docs.gtk.org/gtk4/class.SpinButton.html) contracts.
+The Windows artifact must capture
+`window.png`, expose three hit targets, keep every pointer/key input handled,
+execute each emitted `UiCommand` without failure or an unhandled command, and
+finish with a nonzero live-view revision. AppKit and GTK4 share the typed
+draft/commit path but still require target-machine interaction evidence.
+
+The Windows NumberBox accessibility proof is:
+
+```powershell
+.\scripts\check-windows-number-box-accessibility.ps1 -Locked
+```
+
+It resolves the retained field as one UIA Spinner, requires writable
+RangeValue with the declared -100 through 100 bounds and 0.5/10 changes, and
+sets the value to -7.5 through the provider. The rebuilt node must expose the
+same value through both RangeValuePattern and the delegated editable
+ValuePattern. AppKit projects populated values as an Incrementor with numeric
+set/increment/decrement selectors, while Linux Direct advertises the matching
+AccessKit SpinButton actions. An empty nullable value keeps the SpinButton role
+without inventing a numeric reading; a portable empty-range representation is
+still tracked separately.
+
+The dedicated secure PasswordBox smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,password-box,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-password-box --password-box-view
+```
+
+It focuses the self-drawn field, inserts Unicode-safe committed text through
+the real Win32 route, then presses and releases the trailing reveal target.
+Windows follows the official [PasswordBox](https://learn.microsoft.com/en-us/uwp/api/windows.ui.xaml.controls.passwordbox?view=winrt-26100)
+and [PasswordRevealMode](https://learn.microsoft.com/en-us/uwp/api/windows.ui.xaml.controls.passwordbox.passwordrevealmode?view=winrt-26100)
+press-and-hold Peek model. macOS defaults to a hidden field following
+[NSSecureTextField](https://developer.apple.com/documentation/appkit/nssecuretextfield),
+while GTK follows [GtkPasswordEntry](https://docs.gtk.org/gtk4/class.PasswordEntry.html)
+and keeps its optional peek affordance disabled by default. The shared draw
+plan, event JSON, IME report and smoke artifacts must not contain the secret;
+only the renderer receives it at the final platform text call. The Windows
+artifact must expose two hit targets, capture `window.png`, handle four text
+inputs and both pointer pairs, execute all four typed `UiCommand` values, and
+finish with no command errors. Alt+F8, caps-lock/accessibility signaling,
+locked memory and target-machine AppKit/GTK evidence remain explicit gaps.
+
+The dedicated attached ToolTip smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,button,label,tooltip,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-tooltip --tooltip-view
+```
+
+It moves focus to a normal self-drawn owner with Tab and captures the concise,
+noninteractive help overlay centered above it. A deterministic Win32 route test
+also advances the pointer-hover deadline and verifies that the tooltip is added
+to the buffered draw plan without adding a second hit target. Runtime behavior
+follows the official [Windows ToolTips](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/tooltips),
+[AppKit `NSView.toolTip`](https://developer.apple.com/documentation/appkit/nsview/tooltip)
+and [GTK `query-tooltip`](https://docs.gtk.org/gtk4/signal.Widget.query-tooltip.html)
+contracts. Win32 reads `SPI_GETMOUSEHOVERTIME` and
+`SPI_GETMESSAGEDURATION`; AppKit and GTK schedule owned one-shot callbacks.
+With `accessibility` enabled, nonempty tooltip text becomes the owner's native
+accessible-description fallback without adding a duplicate focus or hit-test
+node. The real Windows provider probe is:
+
+```powershell
+.\scripts\check-windows-tooltip-accessibility.ps1 -Locked
+```
+
+It requires one UIA Button named `Save document`, the matching
+`Save the current document` HelpText and a final buffered screenshot. Top-level
+overflow outside the current window and target-machine AppKit/GTK artifacts
+remain explicit gaps.
+
+The dedicated self-drawn ContentDialog smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,dialog,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-dialog --content-dialog
+```
+
+The real HWND accessibility probe is:
+
+```powershell
+.\scripts\check-windows-content-dialog-accessibility.ps1 -Locked
+```
+
+It opens a modal dialog over an ordinary page, clicks the scrim to prove that
+background input is blocked without dismissing the dialog, uses Tab to move the
+semantic action focus, and activates the focused response with Enter. The smoke
+application deliberately rebuilds the dialog as open after recording the typed
+result so `window.png` still proves the modal surface. The interaction report
+must contain nonzero `native_view_content_dialog_focus_count` and
+`native_view_content_dialog_response_count`, one executed UI command, no command
+failure, and a nonzero live-view revision. The implementation follows the
+current [Windows dialog guidance](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/dialogs-and-flyouts/dialogs),
+[Apple alert guidance](https://developer.apple.com/design/human-interface-guidelines/alerts),
+and [GTK AlertDialog contract](https://docs.gtk.org/gtk4/class.AlertDialog.html)
+for modal blocking, safe cancellation, default action and platform action order,
+while keeping all three styles in the shared draw tree. Opening the dialog also
+replaces the background page in the unified accessibility tree with one semantic
+Dialog node whose bounds match the visible surface, whose name is the title and
+whose description is the body; Windows exposes UIA `IsDialog=true`. Each visible
+action is a stable semantic child Button with its own bounds, label, focus route
+and activation route. UIA exposes InvokePattern, AppKit exposes press/focus and
+Linux Direct exposes AccessKit Focus/Click without adding child HWND, NSView or
+GtkWidget controls. The Windows probe must find Save, Discard and Cancel as direct
+children, focus Discard through the fragment root and invoke Save through the
+typed Rust update path. The native input runtime restores the previous valid
+focus target after close. Explicit title/body labelled-by relationships, custom
+ViewNode content, response deferrals and target-machine AppKit/Linux
+assistive-technology artifacts remain explicit gaps.
+
+System-owned dialogs use a separate proof executable:
+
+```powershell
+cargo run --release --locked --example native_dialog_smoke --no-default-features --features windows-win32,native-smoke -- --output target/native-system-dialog.json --screenshot target/native-system-dialog.png
+```
+
+The process opens the target adapter selected by `NativeDesktopDialogService`.
+An external verifier must first find and capture the real system window, inspect
+the visible semantic button labels where the platform exposes them, and only
+then activate the default affirmative action. The executable succeeds only
+when the returned `DialogResponse`, screenshot and
+`zsui.native-system-dialog-proof/v1` report agree. Windows uses `MessageBoxW`, AppKit
+uses `NSAlert`, and Linux direct uses the desktop-provided Zenity surface. The
+proof does not accept a shared draw plan or a framework-rendered substitute.
+This standalone scene records `owner_window_supplied=false`; owner/sheet
+modality remains a separate host-integrated interaction gate. It proves the
+optional operating-system message service only; it is not a visual baseline
+for the self-drawn WinUI/AppKit/GTK `ContentDialog` component above.
+
+System-owned open and save panels use a second service proof:
+
+```powershell
+cargo run --release --locked --example native_file_dialog_smoke --no-default-features --features windows-win32,native-smoke -- --output target/native-file-dialog.json --open-screenshot target/native-open-panel.png --save-screenshot target/native-save-panel.png
+```
+
+The executable sends one platform-neutral `FileDialogSpec` and
+`SaveFileDialogSpec` through `NativeFileDialogService`. The fixed target jobs
+must find and capture both real panels before cancelling their native actions.
+The `zsui.native-file-dialog-proof/v1` report records the target surface,
+multiple-selection contract, filters, suggested save name, both cancellation
+results and both screenshots. Windows uses `GetOpenFileNameW` and
+`GetSaveFileNameW`, macOS uses `NSOpenPanel` and `NSSavePanel`, and Linux Direct
+uses the XDG desktop portal. A shared draw plan, an application-rendered file
+browser or a JSON-only contract test is not accepted. The standalone proof
+records `owner_window_supplied=false`. The shared Notepad
+`--file-dialog-proof` path clicks its real Open and Save command buttons, binds
+the resulting Win32 dialog, AppKit sheet, Linux Direct XDG panel or GTK4
+`FileChooserNative` to the live Notepad window, captures both surfaces, cancels
+them natively and requires both results to return through typed application
+state without an unhandled command.
+
+The dedicated self-drawn in-app Toast smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,toast,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-toast --toast
+```
+
+It places a persistent foreground toast over an ordinary page, focuses the
+toast with Tab, moves between its semantic action and close controls with the
+arrow keys, and activates the action with Enter. The application replaces the
+responded toast with a new stable ID so `window.png` retains the surface. The
+interaction report must contain nonzero `native_view_toast_focus_count` and
+`native_view_toast_response_count`, one executed UI command, no command failure
+and a nonzero live-view revision. Deterministic shared and Win32 route tests
+separately advance the five-second deadline and require one typed timeout
+result. The visual/behavior split follows the non-targeted
+[Windows TeachingTip](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/dialogs-and-flyouts/teaching-tip),
+Apple's guidance to keep foreground notification handling subtle in
+[Notifications](https://developer.apple.com/design/human-interface-guidelines/notifications/),
+and the one-action plus mandatory-close
+[AdwToast](https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/class.Toast.html)
+contract without copying system notification chrome. Accessibility live-region
+semantics, hover/focus timeout pause, queues/priorities and target-machine
+AppKit/GTK interaction artifacts remain explicit gaps.
+
+The dedicated self-drawn targeted TeachingTip smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,button,label,teaching-tip,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-teaching-tip --teaching-tip
+```
+
+It resolves a stable Save-button `WidgetId`, draws a viewport-constrained bubble
+with a triangle tail pointing at the button, focuses the page target and then
+the tip with Tab, cycles close/action with the arrow keys, and invokes the action
+with Enter. The application records the typed result and rebuilds the tip open
+so `window.png` retains both target and surface. The interaction report must
+contain two focus traversals, nonzero `native_view_teaching_tip_focus_count` and
+`native_view_teaching_tip_response_count`, one executed UI command, no command
+failure and a nonzero live-view revision. Windows follows
+[TeachingTip](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/dialogs-and-flyouts/teaching-tip),
+macOS uses [Popover](https://developer.apple.com/design/human-interface-guidelines/popovers/)
+metrics, and GTK uses [GtkPopover](https://docs.gtk.org/gtk4/class.Popover.html)
+metrics through the same self-drawn protocol. Light-dismiss, close deferrals,
+arbitrary View/hero/icon content, complete accessibility/RTL placement behavior
+and target-machine AppKit/GTK interaction artifacts remain explicit gaps.
+
+The dedicated self-drawn inline InfoBar smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,info-bar,native-smoke,fluent-icons" --example native_smoke_run -- windows target/native-host-smoke-info-bar --info-bar
+```
+
+It lays out a warning InfoBar inside the normal page flow, focuses its initial
+action with Tab, moves to close and back with the arrow keys, then invokes the
+action with Enter. `window.png` must retain the inline bar, while the interaction
+report contains nonzero `native_view_info_bar_focus_count` and
+`native_view_info_bar_event_count`, one executed UI command, no command failure
+and a nonzero live-view revision. This follows the inline, non-overlapping and
+four-severity [Windows InfoBar](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/infobar)
+contract and the compact [AdwBanner](https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/class.Banner.html)
+shape. The macOS renderer deliberately uses a restrained inline status surface,
+not modal [NSAlert](https://developer.apple.com/documentation/appkit/nsalert)
+chrome. Accessibility live-region announcement, close deferrals, arbitrary View
+content, bidirectional layout and target-machine AppKit/GTK interaction artifacts
+remain explicit gaps.
+
+The dedicated self-drawn BreadcrumbBar smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,breadcrumb,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-breadcrumb --breadcrumb
+```
+
+It constrains a six-item path to force overflow, focuses the bar with Tab,
+moves semantic focus to the ellipsis with Home, opens it with Enter, moves to a
+hidden ancestor with Down and selects it with Enter. The application records
+the typed `ZsBreadcrumbId`, executes one UI command and reopens the flyout so
+`window.png` retains both the shortened path and hidden rows. The interaction
+report must contain nonzero `native_view_breadcrumb_focus_count`, at least two
+`native_view_breadcrumb_expanded_change_count` events, one
+`native_view_breadcrumb_selection_count`, one executed UI command, no command
+failure and a nonzero live-view revision. Windows follows
+[BreadcrumbBar](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/breadcrumbbar),
+macOS uses [Path Control](https://developer.apple.com/design/human-interface-guidelines/path-controls)
+metrics, and GTK uses a ZSUI self-drawn profile informed by
+[GNOME Navigation](https://developer.gnome.org/hig/guidelines/navigation.html),
+because GTK exposes no public breadcrumb control. Accessibility relationships,
+editable/file paths, item icons, drag-and-drop, complete RTL and target-machine
+AppKit/GTK interaction artifacts remain explicit gaps.
+
+The dedicated typed RadioButton smoke path is:
+
+```powershell
+cargo run --no-default-features --features "window,label,radio,windows-win32" --example native_smoke_run -- windows --radio-view
+```
+
+It starts with one selected option, clicks a sibling option, rebuilds the
+stateful view so the selection remains mutually exclusive, activates the
+focused option with Space, then presses Up to move focus and selection back to
+the previous logical option without wrapping. A final Tab stays on that
+selected option because it is the group's only Tab stop. The artifact records
+the common selection route in `native_view_radio_selection_count`, the
+directional keyboard route in `native_view_radio_keyboard_selection_count` and
+the Tab route in `native_view_focus_traversal_count`; all emitted
+`UiCommand` values must execute without failures or unhandled commands. AppKit
+and GTK4 consume the same `RadioSelected` event, single-group Tab stop and
+group navigation through their native pointer and key callbacks. Ctrl+arrow
+focus-only navigation does not emit a selection message and is reported
+separately by `native_view_radio_keyboard_focus_only_count` when exercised;
+AppKit and GTK4 target-machine interaction evidence remains pending.
+
+The dedicated WinUI 3 ProgressBar smoke path is:
+
+```powershell
+cargo run --no-default-features --features "window,label,progress,windows-win32" --example native_smoke_run -- windows --progress-view
+```
+
+The corresponding real UI Automation range proof is:
+
+```powershell
+.\scripts\check-windows-progress-accessibility.ps1 -Locked
+```
+
+It captures determinate, paused, error and indeterminate states through the
+buffered Win32 renderer and keeps every feedback-only bar out of the hit-test
+plan. The Windows profile follows the current WinUI template resources: a 3 DP
+indicator, 1 DP strong-stroke track, 1.5/0.5 DP corner radii, Accent/Caution/
+Critical semantic colors, and the two 40%/60% indeterminate segments on the
+official 2-second timing. It does not create a classic Win32 progress HWND,
+XAML Island or parallel native widget tree. AppKit and GTK retain their own
+profile dimensions rather than inheriting the Windows geometry. The UIA probe
+finds four real `ProgressBar` elements below the self-drawn HWND, requires
+read-only 0..100 `RangeValuePattern` values of 65, 45 and 30 for the three
+determinate bars, requires the indeterminate bar to omit a numeric range, and
+writes `target/windows-progress-accessibility-proof/proof.json` alongside the
+buffered Win32 screenshot.
+
+The independently selectable ProgressRing smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,progress-ring,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-progress-ring --progress-ring-view
+```
+
+It places an active indeterminate ring beside a 65% determinate ring, captures
+the buffered Win32 window and records repeated live-view background refreshes
+while keeping the feedback controls out of the hit-test plan. The shared arc
+command is rendered with GDI+, NSBezierPath or Cairo, and the host loop uses a
+Win32 timer, owned `NSTimer` or cancellable GLib timeout respectively. The
+behavior follows the official [WinUI progress-control guidance](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/progress-controls),
+[AppKit `NSProgressIndicator`](https://developer.apple.com/documentation/appkit/nsprogressindicator)
+and [GTK4 `GtkSpinner`](https://docs.gtk.org/gtk4/class.Spinner.html). macOS and
+Linux target-machine animation screenshots remain required.
+
+The independently selectable AutoSuggestBox smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,auto-suggest,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-auto-suggest --auto-suggest-view
+```
+
+It begins with a visible suggestion overlay, submits the strong-ID `Beta` row
+with the pointer, commits additional text, highlights a result with Down,
+submits it with Enter, exercises the trailing clear button, then types again so
+the captured window finishes with the popup visible. The application owns every
+`ZsAutoSuggestionId`; the framework reports distinct typed text-change reasons,
+chosen IDs and query submissions. The artifact records expansion, highlight,
+submission and clear counters plus the emitted `UiCommand` IDs. Windows uses a
+WinUI-like trailing query/clear column, macOS uses leading search and trailing
+cancel geometry, and GTK uses SearchEntry-style leading search and trailing
+clear geometry. These choices follow the official [WinUI AutoSuggestBox](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/auto-suggest-box),
+[Apple search-field guidance](https://developer.apple.com/design/human-interface-guidelines/search-fields)
+and [GTK4 SearchEntry](https://docs.gtk.org/gtk4/class.SearchEntry.html)
+references. AppKit and GTK4 target-machine interaction screenshots remain
+required.
+
+The independently selectable TreeView smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,tree,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-tree --tree-view
+```
+
+It renders an application-owned hierarchy with globally unique
+`ZsTreeNodeId` values, semantic folder/file icons and an unrealized-child node.
+The route expands with a pointer disclosure, moves selection with Down, invokes
+with Enter, collapses or selects a parent with Left, expands with Right and
+finally selects and invokes a leaf with the pointer. Expansion, selection and
+invocation have separate typed messages and smoke counters; child rows are
+ordinary draw/hit-plan entries rather than native child widgets or a mutable
+backend registry. Windows uses WinUI-like row metrics, macOS uses compact
+disclosure triangles and accent selection, and GTK uses TreeExpander-style
+indentation. These choices follow the official [WinUI TreeView](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/tree-view),
+[Apple disclosure-control](https://developer.apple.com/design/human-interface-guidelines/disclosure-controls),
+[Apple focus and selection](https://developer.apple.com/design/human-interface-guidelines/focus-and-selection/),
+[GTK4 TreeExpander](https://docs.gtk.org/gtk4/class.TreeExpander.html) and
+[GTK4 list-widget](https://docs.gtk.org/gtk4/section-list-widget.html)
+guidance. The Windows smoke must report no failed or unhandled input and must
+capture the selected hierarchy; AppKit and GTK4 target-machine interaction
+screenshots remain required.
+
+The independently selectable GridView smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,grid-view,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-grid-view --gallery-view
+```
+
+It renders seven application-owned tiles with globally unique
+`ZsGridViewItemId` values. At the smoke width the shared render plan derives
+three equal-width columns. Tab focuses the single collection root, Right moves
+from item 1 to item 2, Down moves to item 5 and Enter invokes it. Selection and
+invocation are separate typed messages; only invocation emits the example UI
+command. The interaction artifact must record nonzero
+`native_view_grid_view_selection_count` and
+`native_view_grid_view_invoke_count`, one executed UI command, no command
+failure and a nonzero live-view revision. Tile drawing, icons, text and hit
+geometry stay in one clipped self-drawn plan without child collection widgets.
+Windows follows [Fluent ListView/GridView](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/listview-and-gridview),
+macOS metrics follow [NSCollectionView](https://developer.apple.com/documentation/appkit/nscollectionview),
+and GTK metrics follow [GtkGridView](https://docs.gtk.org/gtk4/class.GridView.html).
+Owned scrolling/virtualization, multi-selection, rubber-band selection, custom
+item templates, accessibility providers and AppKit/GTK target-machine evidence
+remain required.
+
+The independently selectable ColorPicker smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,color-picker,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-color-picker --color-picker-view
+```
+
+It renders the Windows self-drawn Fluent-style first pass with a square HSV
+spectrum, hue track, alpha-aware preview and RGBA sliders. The scripted pointer
+drag changes saturation/value inside the spectrum; Down changes the active
+typed channel, End changes that channel value, and Escape/Space close and reopen
+the overlay without adding internal Tab stops. The interaction artifact must
+record nonzero `native_view_color_picker_value_change_count`,
+`native_view_color_picker_channel_change_count`,
+`native_view_color_picker_drag_count` and
+`native_view_color_picker_expanded_change_count`, three executed example UI
+commands, no command failure and a captured `window.png`. The official
+[WinUI ColorPicker guidance](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/color-picker)
+recommends a square spectrum of at least 256 pixels when editable precision
+fields are absent; the Windows profile keeps a 288-by-256-DP spectrum. Editable
+RGB/HSV/hex fields, saved swatches, eyedropper, accessibility providers,
+HDR/color-space management and AppKit/GTK target-machine evidence remain
+required, so this smoke is not evidence of control-for-control WinUI 3 parity.
+
+The independently selectable CommandPalette smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,command-palette,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-command-palette --command-palette-view
+```
+
+It renders the Windows self-drawn Fluent/PowerToys launcher-like profile with
+a focused search field, semantic icons, shortcut labels and disabled-command
+state. The script types `settings`, moves the strong-ID highlight and invokes
+the result with Enter. The interaction artifact must record nonzero
+`native_view_command_palette_query_change_count`,
+`native_view_command_palette_highlight_change_count`,
+`native_view_command_palette_invoke_count` and
+`native_view_command_palette_open_change_count`, executed example UI commands,
+no command failure and a captured `window.png`. The component only filters,
+renders and routes application-owned metadata; command execution and the
+global accelerator remain application responsibilities. The profile is
+informed by [PowerToys Command Palette](https://learn.microsoft.com/en-us/windows/powertoys/command-palette/overview)
+and [WinUI commanding](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/commanding).
+Fuzzy/pinyin ranking, recent-command persistence, result virtualization,
+complete accessibility semantics and AppKit/GTK target-machine evidence remain
+required.
+
+The independently selectable DataGrid smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,table,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-table --table-view
+```
+
+It renders application-owned columns and rows with globally unique
+`ZsTableColumnId` and `ZsTableRowId` values. Two pointer activations cycle a
+sortable header from ascending to descending, a pointer row activation selects
+and invokes a stable row, and Down/Enter/Home exercise keyboard selection and
+invocation after application-owned reordering. The artifact records separate
+sort, selection and invocation counters plus typed `UiCommand` IDs. Fixed `Dp`
+columns and weighted fill columns produce the same paint and hit geometry;
+headers, separators, selection and semantic sort chevrons remain self-drawn
+without a native child table or backend model. Windows follows current
+[Fluent collection guidance](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/listview-and-gridview)
+and the documented row/column behavior of the archived
+[Windows Community Toolkit DataGrid](https://learn.microsoft.com/en-us/dotnet/communitytoolkit/archive/windows/datagrid),
+while macOS and GTK metrics follow [AppKit `NSTableView`](https://developer.apple.com/documentation/appkit/nstableview)
+and [GTK4 `ColumnView`](https://docs.gtk.org/gtk4/class.ColumnView.html).
+The Windows smoke must report zero failed or unhandled input. Cell editing,
+column resize/reorder, accessibility providers, large-table virtualization and
+AppKit/GTK target-machine screenshots remain required.
+
+The dedicated typed ComboBox smoke path is:
+
+```powershell
+cargo run --no-default-features --features "window,label,combo,windows-win32" --example native_smoke_run -- windows --combo-view
+```
+
+It begins expanded, selects an overlay option with the pointer, reopens with
+Space, selects another option with Down, types `B` to select `Balanced` through
+the one-second type-ahead buffer, reopens, and scrolls the long popup with the
+pointer wheel. The popup follows WinUI's default 15-item cap, shrinks further
+to fit the available viewport, initially keeps the selected option visible,
+and is painted after ordinary siblings. Its visible option hit targets retain
+global indices and overlay priority without becoming extra Tab stops. The
+interaction artifact records
+`native_view_combo_expanded_change_count`,
+`native_view_combo_selection_count`,
+`native_view_combo_keyboard_selection_count`, and
+`native_view_combo_type_ahead_match_count`, and
+`native_view_combo_scroll_count`; all emitted `UiCommand` values must
+execute without failures or unhandled commands. AppKit and GTK4 feed committed
+text and pointer scroll into the same shared typed runtime, while their
+target-machine evidence remains pending.
+
+The dedicated strongly typed Tabs smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,tabs,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-tabs --tabs-view
+```
+
+It clicks the second `ZsTabId`, rebuilds the stateful view with only that page
+laid out and painted, then exercises Windows header focus with Left/Right and
+selection with Space/Enter. The artifact must record nonzero
+`native_view_tab_selection_count`,
+`native_view_tab_keyboard_selection_count`, and
+`native_view_tab_keyboard_focus_only_count`, plus zero failed or unhandled UI
+commands. Ctrl+Tab/Ctrl+Shift+Tab cycling is covered by the native route tests.
+The Gallery navigation proof runs the reusable application-facing path on every
+desktop host: it clicks Advanced and sends Right while that header owns focus.
+Local Win32, X11 and real Weston Wayland retain Advanced and focus About, proving
+the Windows/GTK focus-only rule; AppKit selects About, proving its adjacent-page
+arrow rule. Each target records exact typed selection/keyboard counters, widget
+3 as the final focused header, zero unhandled click/key input, the platform key
+backend and a final platform-surface PNG. Native UI Proof run `29812803034` on
+commit `06c249f` passed the AppKit, X11 and Wayland gates.
+
+The dedicated strongly typed TimePicker smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,label,time-picker,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-time-picker --time-picker-view
+```
+
+It starts with the self-drawn picker open, chooses a 15-minute value through a
+typed popup hit target, closes with Escape, adjusts minutes and hours from the
+keyboard, then reopens the popup. The Windows artifact must capture
+`window.png`, keep all pointer/key inputs handled, execute all emitted
+`UiCommand` values, and retain a nonzero live-view revision. AppKit and GTK4 use
+their own metric profiles through the same `ZsTime` event path, while actual
+target-machine screenshots remain a separate gate.
+
+The dedicated typed Grid layout smoke path is:
+
+```powershell
+cargo run --locked --no-default-features --features "window,button,label,grid,native-smoke" --example native_smoke_run -- windows target/native-host-smoke-grid --grid-view
+```
+
+It lays out fixed and weighted fractional tracks, independent row/column gaps,
+an explicit three-column header span, a two-column content span and a typed
+button hit target from the same DPI-aware geometry. The Windows artifact must
+capture `window.png`, route the `grid_apply` command without an unhandled click
+and keep all six target-smoke files valid. AppKit and GTK4 consume the same
+layout, paint and hit bounds, while their target screenshots remain separate
+gates.
+
+The default `--view` and `--scroll-view` paths exercise
+`NativeWindowBuilder::ui_command_view(...)`, record
+draw-plan command counts in `interaction.json`, post `WM_LBUTTONUP`, hit-test
+through `ViewInteractionPlan`, dispatches into `ViewEventCx<UiCommand>` and
+records the emitted command ids. When an executor is attached it also records
+executed, failed, unhandled and emitted-event counts instead of treating command
+generation as execution proof. It also paints the resulting `NativeDrawPlan`
+through the buffered no-flicker Win32/GDI renderer. When built with the
+`textbox` feature, the same path focuses a textbox and routes `WM_CHAR` text
+input into `TextChanged`/`UiCommand` output. When built with the `checkbox`
+feature, it routes checkbox clicks into `Toggled`/`UiCommand` output. It also
+records typed row selection when built with the `list` feature, including
+Up/Down keyboard selection between focused rows. It also posts `WM_KEYDOWN`
+Tab to prove ordered focus traversal and Enter to prove focused keyboard
+activation into the same `UiCommand` path; the resulting focus-ring repaint is
+counted independently from logical focus changes. The textbox smoke also posts a
+down/move/up drag sequence, verifies Unicode range replacement and records
+`native_view_pointer_*`, `native_view_text_drag_count`,
+`native_view_text_drag_scroll_count` and
+`native_view_text_selection_change_count`. The notepad acceptance smoke also
+commits a combining sequence plus joined emoji, then proves Left/Backspace
+remove one extended grapheme without splitting it. It then routes Home and four
+Right keys over a dedicated Latin/Hebrew row through the shaped visual-order
+caret path. Native proof records privacy-preserving script traits instead of
+the input payload, plus each navigation key's backend, handled state, scalar
+caret and typed selection. The Notepad process rejects any backend that does
+not produce relative Right-key carets `1, 4, 3, 2` for `abאב`. The Win32 probe
+is recorded in `docs/platform-proof/windows/bidi-navigation-smoke-report.json`;
+the AppKit, X11 and Wayland jobs enforce the same structured trace against their
+target-native shapers. The shared movement path orders directed grapheme-cluster
+edges; it does not mistake Core Text/Pango/Cosmic Text's strong caret for the
+only insertion edge at a bidi boundary. These scripted routes do not replace
+real IME candidate window testing. The generic proof host rejects report-count
+mismatches so a
+separate native-menu command cannot shift input-to-caret attribution. Native UI
+Proof run `29801544191` passed this exact trace on AppKit, X11 and Weston
+Wayland. The
+`--date-picker-view` path also posts real
+pointer down/up input through the Win32 host and records
+`native_view_pointer_visual_change_count`; a nonzero count proves that the
+semantic hover/pressed decoration reached the buffered native draw plan without
+claiming the still-pending AppKit/GTK4 target runs.
+Pass `--date-picker-high-contrast` to render the same typed DatePicker path with
+`ZsuiThemeMode::HighContrast`. The smoke report must record
+`high_contrast_draw_plan_window_count=1`, retain nonzero pointer-visual changes,
+capture `window.png`, and finish without failed or unhandled UI commands. This
+proves the explicit Windows high-contrast renderer path; toggling the operating
+system accessibility setting and AppKit/GTK4 target runs remain separate gates.
+When a smoke path supplies `NativeWindowSmokeRunOptions::native_view_scroll(...)`
+and a command-backed scroll target, Win32 also records mouse-wheel scroll
+counters and the emitted scroll `UiCommand`. The default `--view` example does
+not yet include a scroll target because it keeps the existing button/textbox/
+checkbox/list geometry stable; `--scroll-view` supplies that target.
+
+Review the artifact directory with:
+
+```powershell
+cargo run --example native_smoke_review -- windows
+```
+
+The review is read-only. It checks required files, rejects empty artifacts,
+validates JSON artifacts, validates the `window.png` PNG header and reports
+`target_smoke_complete=false` until every required target artifact is present
+and valid.
+
+Required target-smoke artifacts:
+
+- `manifest.json`: serialized `NativeHostSmokePlan`.
+- `launch.log`: native runtime launch output and exit status.
+- `window.png`: screenshot proving the native window was visible.
+- `interaction.json`: structured interaction record.
+- `capabilities.json`: observed host capability report.
+- `agent-context.json`: matching `zsui_agent_context_json()` output.
+
+Windows uses the `win32_gdi` runtime, macOS uses AppKit, and Linux defaults to
+`linux-direct`. All three enter their target-native event loop and paint
+supplied draw plans. AppKit and `linux-direct` now capture their final platform
+view automatically in Native Proof CI; Ubuntu 24.04 X11/Xvfb proof is green,
+while a real Wayland compositor run remains pending.
+Android is still a scaffold/bridge-contract plan until a real Activity runtime
+host exists. Its current device-smoke contract can
+be inspected with:
+
+```powershell
+cargo run --example mobile_scaffold_manifest -- --bridge android
+cargo run --example mobile_scaffold_manifest -- --parity android
+cargo run --example mobile_scaffold_manifest -- --dispatch android
+cargo run --example mobile_scaffold_manifest -- --dispatch-smoke android
+cargo run --example mobile_scaffold_manifest -- --write-contract android
+cargo run --example mobile_scaffold_manifest -- --review-contract android
+cargo run --example mobile_scaffold_manifest -- --write-contract all target/mobile-contract-smoke
+cargo run --example mobile_scaffold_manifest -- --review-contract all target/mobile-contract-smoke
+cargo run --example mobile_scaffold_manifest -- --smoke android
+cargo run --example mobile_scaffold_manifest -- --trace-template android
+cargo run --example mobile_scaffold_manifest -- --review android
+```
+
+The mobile contracts require device-side artifacts such as
+`device-launch.log`, `device-window.png`, `lifecycle.json`, `surface.json` and
+`input.json` before a mobile backend can move beyond scaffold status. The
+parity command reports required callback route coverage and pending FFI symbols.
+The dispatch command maps the required callback symbols to lifecycle, surface,
+typed input and `NativeRuntimeDriver` operations. The dispatch-smoke command
+locally replays the required bridge sequence as a contract smoke only. The
+write-contract command writes local contract JSON artifacts, including
+`device-smoke-plan.json` and `agent-context.json`, but intentionally does not
+create device launch logs, screenshots, lifecycle, surface or input traces. The
+review-contract command validates only those local contract JSON artifacts and
+their expected schemas. Both contract artifact commands accept `all` for the
+configured mobile target. The review command validates device-smoke artifact
+presence, JSON files, PNG headers and device-sourced trace schemas. The
+trace-template command prints the lifecycle/surface/input JSON shape the
+device-side bridge must write. None of these commands generates or fakes device
+proof.
+
+Current Windows proof command sequence:
+
+```powershell
+cargo run --example native_smoke_run -- windows
+cargo run --example native_smoke_review -- windows
+```
+
+The Windows review should report `target_smoke_complete=true` after the run
+because all six required artifacts, including `window.png`, are generated and
+validated.

@@ -39,7 +39,7 @@ fn number(state: &serde_json::Value, key: &str) -> u64 {
 /// The `sessionStats` unit registered on `ctx.sessionProjections`
 /// (exported for the unit spec).
 pub fn session_stats_projection_definition() -> ProjectionDefinition {
-    let init: Arc<dyn Fn() -> ArcValue + Send + Sync> = Arc::new(|| {
+    let init: Arc<dyn Fn(&dsh_session::SessionHeader) -> ArcValue + Send + Sync> = Arc::new(|_| {
         cordis::arc(serde_json::json!({
             "turns": 0, "steps": 0,
             "llmMs": 0, "toolMs": 0, "ttftMs": 0, "ttftSteps": 0,

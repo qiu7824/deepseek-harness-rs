@@ -1,0 +1,189 @@
+param(
+    [switch]$Locked
+)
+
+$ErrorActionPreference = "Stop"
+$workspace = Split-Path -Parent $PSScriptRoot
+$cargoArguments = @(
+    "build",
+    "--example", "zsui_notepad",
+    "--no-default-features",
+    "--features", "notepad-demo,accessibility"
+)
+if ($Locked) {
+    $cargoArguments = @("build", "--locked") + $cargoArguments[1..($cargoArguments.Length - 1)]
+}
+
+Push-Location $workspace
+try {
+    & cargo @cargoArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to build the native accessibility probe application"
+    }
+} finally {
+    Pop-Location
+}
+
+$targetRoot = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+    Join-Path $workspace "target"
+} elseif ([System.IO.Path]::IsPathRooted($env:CARGO_TARGET_DIR)) {
+    $env:CARGO_TARGET_DIR
+} else {
+    Join-Path $workspace $env:CARGO_TARGET_DIR
+}
+$notepad = Join-Path $targetRoot "debug\examples\zsui_notepad.exe"
+if (-not (Test-Path -LiteralPath $notepad -PathType Leaf)) {
+    throw "native accessibility probe executable was not produced: $notepad"
+}
+
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class ZsuiWindowsTextAccessibilityProbeNative
+{
+    private delegate bool EnumWindowsCallback(IntPtr hwnd, IntPtr lparam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr lparam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hwnd, StringBuilder className, int capacity);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam);
+
+    public static IntPtr FindMainWindow(uint expectedProcessId)
+    {
+        IntPtr result = IntPtr.Zero;
+        EnumWindows((hwnd, _) =>
+        {
+            uint processId;
+            GetWindowThreadProcessId(hwnd, out processId);
+            if (processId != expectedProcessId)
+            {
+                return true;
+            }
+
+            StringBuilder className = new StringBuilder(256);
+            GetClassName(hwnd, className, className.Capacity);
+            if (className.ToString() != "ZsuiMainWindow")
+            {
+                return true;
+            }
+
+            result = hwnd;
+            return false;
+        }, IntPtr.Zero);
+        return result;
+    }
+}
+'@
+
+$process = Start-Process -FilePath $notepad -PassThru -WindowStyle Hidden
+try {
+    $hwnd = [IntPtr]::Zero
+    for ($attempt = 0; $attempt -lt 50 -and $hwnd -eq [IntPtr]::Zero; $attempt++) {
+        Start-Sleep -Milliseconds 100
+        if ($process.HasExited) {
+            throw "native accessibility probe exited before creating its main window"
+        }
+        $hwnd = [ZsuiWindowsTextAccessibilityProbeNative]::FindMainWindow([uint32]$process.Id)
+    }
+    if ($hwnd -eq [IntPtr]::Zero) {
+        throw "native accessibility probe did not create a ZsuiMainWindow HWND"
+    }
+
+    # Focus the editor through the real Win32 message route used by the notepad smoke.
+    $editorPoint = [IntPtr](360 -bor (220 -shl 16))
+    [void][ZsuiWindowsTextAccessibilityProbeNative]::SendMessage(
+        $hwnd,
+        0x0201,
+        [IntPtr]1,
+        $editorPoint
+    )
+    [void][ZsuiWindowsTextAccessibilityProbeNative]::SendMessage(
+        $hwnd,
+        0x0202,
+        [IntPtr]0,
+        $editorPoint
+    )
+
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+    if ($null -eq $root) {
+        throw "UI Automation returned no provider for the native HWND"
+    }
+    $condition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Edit
+    )
+    $element = $root.FindFirst(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        $condition
+    )
+    if ($null -eq $element) {
+        throw "UI Automation did not expose the focused self-drawn editor inside the retained semantic tree"
+    }
+    if ($element.Current.FrameworkId -ne "ZSUI") {
+        throw "UI Automation framework id was '$($element.Current.FrameworkId)', expected 'ZSUI'"
+    }
+    if ($element.Current.ClassName -ne "ZsuiSemantictext_box") {
+        throw "UI Automation class name was '$($element.Current.ClassName)', expected 'ZsuiSemantictext_box'"
+    }
+    if ($element.Current.AutomationId -ne "zsui-semantic-1") {
+        throw "UI Automation id was '$($element.Current.AutomationId)', expected 'zsui-semantic-1'"
+    }
+
+    $valuePattern = $element.GetCurrentPattern(
+        [System.Windows.Automation.ValuePattern]::Pattern
+    )
+    if ($null -eq $valuePattern) {
+        throw "UI Automation ValuePattern was not available"
+    }
+    if ($valuePattern.Current.IsReadOnly) {
+        throw "UI Automation unexpectedly reported the editor as read-only"
+    }
+    if (-not $valuePattern.Current.Value.Contains("ZSUI Notepad")) {
+        throw "UI Automation ValuePattern did not expose the application-owned editor text"
+    }
+
+    $textPattern = $element.GetCurrentPattern(
+        [System.Windows.Automation.TextPattern]::Pattern
+    )
+    if ($null -eq $textPattern) {
+        throw "UI Automation TextPattern was not available"
+    }
+    $documentRange = $textPattern.DocumentRange
+    if (-not $documentRange.GetText(-1).Contains("ZSUI Notepad")) {
+        throw "UI Automation TextPattern did not expose the application-owned editor text"
+    }
+    $selectionRanges = $textPattern.GetSelection()
+    if ($selectionRanges.Length -ne 1) {
+        throw "UI Automation TextPattern did not expose exactly one native text selection"
+    }
+    $movedRange = $documentRange.Clone()
+    $moved = $movedRange.MoveEndpointByUnit(
+        [System.Windows.Automation.Text.TextPatternRangeEndpoint]::Start,
+        [System.Windows.Automation.Text.TextUnit]::Character,
+        1
+    )
+    if ($moved -ne 1 -or [string]::IsNullOrEmpty($movedRange.GetText(4))) {
+        throw "UI Automation TextPattern range movement did not preserve readable text"
+    }
+    $movedRange.ScrollIntoView($true)
+    if ($documentRange.GetBoundingRectangles().Length -lt 1) {
+        throw "UI Automation TextPattern returned no native shaped text rectangles"
+    }
+
+    Write-Output "Windows native text accessibility passed: semantic fragment root -> ZSUI Edit/ValuePattern/TextPattern"
+} finally {
+    if (-not $process.HasExited) {
+        Stop-Process -Id $process.Id -Force
+    }
+}

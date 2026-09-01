@@ -7082,6 +7082,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		* remaining public members are manager/runtime entry points.
 		*/
 		const HISTORY_PAGE_MESSAGES = 12;
+		const JUMP_PAGE_MESSAGES = 200;
 		const HISTORY_WINDOW_PAGES = 5;
 		const HISTORY_WINDOW_EVENTS = 4096;
 		function eventEndSeq(event) {
@@ -7117,6 +7118,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			*  passes drop all writes once the generation moves on. */
 			openGeneration = 0;
 			loadingOlder = false;
+			/** Shared low-water target while a turn jump pages backwards. */
+			jumpTargetSeq = null;
+			/** One shared jump completion; repeated callers may only lower its target. */
+			jumpPromise = null;
 			loadingNewer = false;
 			/** Non-tail history window selected by the message rail. */
 			historyTargetSeq = null;
@@ -7491,6 +7496,51 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					this.loadingOlder = false;
 					this.notifier.markDirty();
 				}
+			}
+			/** Page backwards until the bounded window covers one durable sequence. */
+			loadThrough(seq) {
+				if (this.openState !== "open" || !Number.isSafeInteger(seq) || seq < 0 || !this.hasMoreBefore || this.baseSeq <= seq) return Promise.resolve();
+				this.jumpTargetSeq = Math.min(this.jumpTargetSeq ?? seq, seq);
+				if (this.jumpPromise !== null) return this.jumpPromise;
+				// A reader-owned single-page pull wins. The caller can retry once it settles.
+				if (this.loadingOlder) return Promise.resolve();
+				this.loadingOlder = true;
+				this.notifier.markDirty();
+				this.jumpPromise = (async () => {
+					try {
+						while (this.hasMoreBefore && this.jumpTargetSeq !== null && this.baseSeq > this.jumpTargetSeq) {
+							const before = this.baseSeq;
+							const { result } = await this.history({ beforeSeq: this.baseSeq, maxMessages: JUMP_PAGE_MESSAGES });
+							if (!result.ok) return;
+							const older = result.value.events;
+							if (older.length === 0) {
+								this.hasMoreBefore = result.value.hasMoreBefore;
+								this.hasMore = this.hasMoreBefore;
+								this.conversation.prepend([], this.hasMoreBefore);
+								return;
+							}
+							const tail = older[older.length - 1];
+							if (tail === void 0 || eventEndSeq(tail.event) + 1 !== this.baseSeq) return;
+							this.events = [...older.map((entry) => entry.event), ...this.events];
+							this.views = [...older.map((entry) => entry.view), ...this.views];
+							this.historyPages.unshift(this.pageMeta(older));
+							this.baseSeq = eventStartSeq(older[0].event);
+							this.hasMoreBefore = result.value.hasMoreBefore;
+							this.hasMore = this.hasMoreBefore;
+							this.conversation.prepend(older.map(conversationInput), this.hasMoreBefore);
+							this.trimHistoryWindow("tail");
+							if (this.baseSeq >= before) return;
+						}
+					} catch (error) {
+						console.error("[web-runtime] loadThrough failed:", error);
+					} finally {
+						this.jumpTargetSeq = null;
+						this.jumpPromise = null;
+						this.loadingOlder = false;
+						this.notifier.markDirty();
+					}
+				})();
+				return this.jumpPromise;
 			}
 			/** Page down from an indexed historical window and rejoin the live tail. */
 			async loadNewer() {
@@ -7893,6 +7943,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					hasMoreAfter: this.hasMoreAfter,
 					historyBrowsing: this.historyTargetSeq !== null,
 					loadingOlder: this.loadingOlder,
+					baseSeq: this.baseSeq,
 					loadingNewer: this.loadingNewer,
 					promptError: this.promptError,
 					blank: this.blankBit,
@@ -10693,28 +10744,33 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			ctx.typert.contexts.registerClient("agent", { identity: (candidate) => sessions.scopeOf(candidate) });
 			const workspaces = new WorkspaceRuntime(ctx, connection.api, sessions);
 			ctx.effect(() => workspaces.startInitialSelection(), "runtime: initial Workspace selection");
-			const loop = connection.start({
-				onMuxEnvelope: (envelope) => {
-					sessions.handleMuxEnvelope(envelope);
-				},
-				onHostEnvelope: (envelope) => {
-					sessions.handleHostEnvelope(envelope);
-					workspaces.handleHostEnvelope(envelope);
-					const frame = envelope.payload;
-					if (frame.type === "host/remote-event") ctx.remote.$dispatch(frame.event, frame.args);
-				},
-				onConnected: () => {
-					sessions.handleConnected();
-					workspaces.handleConnected();
-					ctx.emit("connection/reset");
-				},
-				onStateChange: (state) => {
-					if (state === "reconnecting") sessions.handleDisconnected();
+			let generation;
+			const syncGeneration = () => {
+				const next = connection.generation.getSnapshot();
+				if (Object.is(generation, next)) return;
+				generation = next;
+				if (next === void 0) {
+					sessions.handleDisconnected();
+					return;
 				}
+				sessions.handleConnected();
+				workspaces.handleConnected();
+				ctx.emit("connection/reset");
+			};
+			const unsubscribeGeneration = connection.generation.subscribe(syncGeneration);
+			const unsubscribeMux = ctx.on("connection/mux-envelope", (envelope) => {
+				sessions.handleMuxEnvelope(envelope);
 			});
+			const unsubscribeHost = ctx.on("connection/host-envelope", (envelope) => {
+				sessions.handleHostEnvelope(envelope);
+				workspaces.handleHostEnvelope(envelope);
+			});
+			syncGeneration();
 			ctx.effect(() => () => {
-				loop.stop();
-			}, "runtime: connection stream loop");
+				unsubscribeGeneration();
+				unsubscribeMux();
+				unsubscribeHost();
+			}, "runtime: connection generation observation");
 		}
 		//#endregion
 		exports.ConversationEventRegistry = ConversationEventRegistry;

@@ -293,6 +293,12 @@ window.__ModuleLoader__.load({
 				this.fetchCandidates(hit, roster);
 			}
 			/**
+			* Keep current candidates mounted while a replacement query settles
+			* (stale-while-revalidate), so mouse drill navigation never loses its
+			* breadcrumb or highlight between the claim and the refreshed results.
+			*/
+			/** drill claim before input mutation */
+			/**
 			* Toggle a menu containing exactly one registered source. The supplied hit
 			* is a synthetic selection span rather than a typed trigger token, but
 			* picks deliberately reuse the ordinary source callback and scoped input

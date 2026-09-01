@@ -1,0 +1,13 @@
+{
+  "id": "deepseek-official",
+  "name": "DeepSeek Harness 官方",
+  "nameEn": "DeepSeek Harness Official",
+  "author": "DeepSeek visual reference · Rust adaptation",
+  "version": "1.0.0",
+  "tagline": "官方品牌蓝 · 通透玻璃表面 · 深浅双主题",
+  "description": "完整参照 www.deepseek.com/harness/ 的正式色板、字体、圆角、层级和玻璃表面语言重建。",
+  "source": "https://www.deepseek.com/harness/",
+  "contributes": {
+    "stylesheet": "skin.css"
+  }
+}

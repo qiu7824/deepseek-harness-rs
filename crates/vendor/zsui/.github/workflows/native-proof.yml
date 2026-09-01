@@ -1,0 +1,3464 @@
+name: Native UI Proof
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "examples/**"
+      - "tests/native-baselines/**"
+      - "tools/native-proof/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/native-proof.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "examples/**"
+      - "tests/native-baselines/**"
+      - "tools/native-proof/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/native-proof.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-viewer-proof:
+    name: Win32 Viewer and Component Proof
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      TZ: UTC
+      ZSUI_NATIVE_PROOF_OS_FAMILY: windows-2025
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Assert runner identity
+        shell: pwsh
+        run: |
+          $caption = (Get-CimInstance Win32_OperatingSystem).Caption
+          if ($caption -notmatch "2025") {
+            throw "expected Windows Server 2025, got $caption"
+          }
+          if (-not [Environment]::Is64BitOperatingSystem) {
+            throw "the Win32 Viewer proof requires an x64 operating system"
+          }
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Win32 Viewer
+        shell: pwsh
+        run: |
+          cargo build `
+            --release `
+            --locked `
+            --bin zsui-viewer `
+            --no-default-features `
+            --features ui-viewer,accessibility
+          cargo build `
+            --release `
+            --locked `
+            --example native_dialog_smoke `
+            --no-default-features `
+            --features windows-win32,native-smoke
+          cargo build `
+            --release `
+            --locked `
+            --example native_file_dialog_smoke `
+            --no-default-features `
+            --features windows-win32,native-smoke
+          cargo build `
+            --release `
+            --locked `
+            --example zsui_notepad `
+            --no-default-features `
+            --features notepad-demo,accessibility,native-smoke
+
+      - name: Run native Win32 RGBA clipboard proof
+        shell: pwsh
+        run: |
+          cargo run `
+            --release `
+            --locked `
+            --example native_clipboard_smoke `
+            --no-default-features `
+            --features windows-win32,clipboard `
+            -- `
+            --output target/native-proof/windows-2025-x86_64/clipboard-image.json
+          $proof = Get-Content target/native-proof/windows-2025-x86_64/clipboard-image.json -Raw | ConvertFrom-Json
+          if (
+            $proof.schema -ne "zsui.native-clipboard-proof/v1" -or
+            $proof.platform -ne "windows" -or
+            -not $proof.image_write_succeeded -or
+            -not $proof.image_read_succeeded -or
+            -not $proof.original_clipboard_restored
+          ) {
+            throw "Win32 RGBA clipboard proof is incomplete"
+          }
+
+      - name: Run native Win32 localized dialog proof
+        shell: pwsh
+        run: |
+          $root = "target/native-proof/windows-2025-x86_64"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $report = Join-Path $root "native-system-dialog.json"
+          $screenshot = Join-Path $root "native-system-dialog.png"
+          $title = "ZSUI 原生对话框验证 / Native Dialog Proof"
+          $process = Start-Process `
+            -FilePath .\target\release\examples\native_dialog_smoke.exe `
+            -ArgumentList @(
+              "--output", $report,
+              "--screenshot", $screenshot
+            ) `
+            -PassThru `
+            -WindowStyle Hidden
+
+          Add-Type -AssemblyName System.Drawing
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class ZsuiDialogProofNative {
+              [StructLayout(LayoutKind.Sequential)]
+              public struct RECT {
+                  public int Left;
+                  public int Top;
+                  public int Right;
+                  public int Bottom;
+              }
+              [DllImport("user32.dll")]
+              public static extern bool GetWindowRect(IntPtr window, out RECT rect);
+              [DllImport("user32.dll")]
+              public static extern IntPtr GetDlgItem(IntPtr dialog, int itemId);
+              [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+              public static extern int GetWindowTextW(
+                  IntPtr window,
+                  System.Text.StringBuilder text,
+                  int capacity
+              );
+              [DllImport("user32.dll")]
+              public static extern bool SetForegroundWindow(IntPtr window);
+              [DllImport("user32.dll")]
+              public static extern IntPtr SendMessageW(
+                  IntPtr window,
+                  uint message,
+                  IntPtr wParam,
+                  IntPtr lParam
+              );
+              [DllImport("user32.dll", SetLastError = true)]
+              public static extern bool PrintWindow(IntPtr window, IntPtr target, uint flags);
+              [DllImport("dwmapi.dll")]
+              public static extern int DwmGetWindowAttribute(
+                  IntPtr window,
+                  uint attribute,
+                  out RECT value,
+                  uint size
+              );
+          }
+          '@
+
+          $window = [IntPtr]::Zero
+          for ($attempt = 0; $attempt -lt 100 -and $window -eq [IntPtr]::Zero; $attempt++) {
+            Start-Sleep -Milliseconds 100
+            if ($process.HasExited) {
+              break
+            }
+            $process.Refresh()
+            if ($process.MainWindowTitle -eq $title) {
+              $window = $process.MainWindowHandle
+            }
+          }
+          if ($window -eq [IntPtr]::Zero) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw "the Win32 MessageBox did not become visible"
+          }
+
+          $rect = New-Object ZsuiDialogProofNative+RECT
+          if (-not [ZsuiDialogProofNative]::GetWindowRect($window, [ref]$rect)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw "GetWindowRect failed for the Win32 MessageBox"
+          }
+          $width = $rect.Right - $rect.Left
+          $height = $rect.Bottom - $rect.Top
+          if ($width -lt 300 -or $height -lt 120) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw "the Win32 MessageBox has invalid geometry ${width}x${height}"
+          }
+          $expectedLabels = @{
+            6 = "是"
+            7 = "否"
+            2 = "取消"
+          }
+          $affirmativeButton = [IntPtr]::Zero
+          foreach ($entry in $expectedLabels.GetEnumerator()) {
+            $button = [ZsuiDialogProofNative]::GetDlgItem($window, $entry.Key)
+            $text = New-Object System.Text.StringBuilder 64
+            if (
+              $button -eq [IntPtr]::Zero -or
+              [ZsuiDialogProofNative]::GetWindowTextW($button, $text, $text.Capacity) -le 0 -or
+              $text.ToString() -ne $entry.Value
+            ) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "the Win32 MessageBox did not expose localized button $($entry.Key)"
+            }
+            if ($entry.Key -eq 6) {
+              $affirmativeButton = $button
+            }
+          }
+          $visible = New-Object ZsuiDialogProofNative+RECT
+          $visibleResult = [ZsuiDialogProofNative]::DwmGetWindowAttribute(
+            $window,
+            9,
+            [ref]$visible,
+            [Runtime.InteropServices.Marshal]::SizeOf($visible)
+          )
+          [void][ZsuiDialogProofNative]::SetForegroundWindow($window)
+          Start-Sleep -Milliseconds 250
+          $bitmap = New-Object System.Drawing.Bitmap($width, $height)
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          try {
+            $target = $graphics.GetHdc()
+            try {
+              if (-not [ZsuiDialogProofNative]::PrintWindow($window, $target, 2)) {
+                throw "PrintWindow failed for the Win32 MessageBox"
+              }
+            } finally {
+              $graphics.ReleaseHdc($target)
+            }
+            $screenshotPath = Join-Path $env:GITHUB_WORKSPACE $screenshot
+            $saved = $false
+            if ($visibleResult -eq 0) {
+              $cropLeft = $visible.Left - $rect.Left
+              $cropTop = $visible.Top - $rect.Top
+              $visibleWidth = $visible.Right - $visible.Left
+              $visibleHeight = $visible.Bottom - $visible.Top
+              if (
+                $cropLeft -ge 0 -and
+                $cropTop -ge 0 -and
+                $visibleWidth -gt 0 -and
+                $visibleHeight -gt 0 -and
+                $cropLeft + $visibleWidth -le $width -and
+                $cropTop + $visibleHeight -le $height
+              ) {
+                $crop = New-Object System.Drawing.Rectangle(
+                  $cropLeft,
+                  $cropTop,
+                  $visibleWidth,
+                  $visibleHeight
+                )
+                $finalBitmap = $bitmap.Clone($crop, $bitmap.PixelFormat)
+                try {
+                  $finalBitmap.Save(
+                    $screenshotPath,
+                    [System.Drawing.Imaging.ImageFormat]::Png
+                  )
+                  $saved = $true
+                } finally {
+                  $finalBitmap.Dispose()
+                }
+              }
+            }
+            if (-not $saved) {
+              $bitmap.Save(
+                $screenshotPath,
+                [System.Drawing.Imaging.ImageFormat]::Png
+              )
+            }
+          } finally {
+            $graphics.Dispose()
+            $bitmap.Dispose()
+          }
+
+          [void][ZsuiDialogProofNative]::SendMessageW(
+            $affirmativeButton,
+            0x00F5,
+            [IntPtr]::Zero,
+            [IntPtr]::Zero
+          )
+          if (-not $process.WaitForExit(10000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw "the Win32 MessageBox did not close after native BM_CLICK activation"
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "native_dialog_smoke exited with code $($process.ExitCode)"
+          }
+
+          $proof = Get-Content $report -Raw | ConvertFrom-Json
+          if (
+            $proof.schema -ne "zsui.native-system-dialog-proof/v1" -or
+            $proof.platform -ne "windows" -or
+            $proof.native_surface -ne "win32_message_box" -or
+            $proof.owner_window_supplied -ne $false -or
+            $proof.actual_response -ne "yes" -or
+            -not $proof.response_matched -or
+            -not $proof.screenshot_captured -or
+            $proof.errors.Count -ne 0
+          ) {
+            throw "Win32 localized native-dialog proof is incomplete"
+          }
+
+      - name: Run native Win32 file-dialog proof
+        shell: pwsh
+        run: |
+          $root = "target/native-proof/windows-2025-x86_64"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $report = Join-Path $root "native-file-dialog.json"
+          $openScreenshot = Join-Path $root "native-open-panel.png"
+          $saveScreenshot = Join-Path $root "native-save-panel.png"
+          $process = Start-Process `
+            -FilePath .\target\release\examples\native_file_dialog_smoke.exe `
+            -ArgumentList @(
+              "--output", $report,
+              "--open-screenshot", $openScreenshot,
+              "--save-screenshot", $saveScreenshot
+            ) `
+            -PassThru `
+            -WindowStyle Hidden
+
+          Add-Type -AssemblyName System.Drawing
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class ZsuiFileDialogProofNative {
+              [StructLayout(LayoutKind.Sequential)]
+              public struct RECT {
+                  public int Left;
+                  public int Top;
+                  public int Right;
+                  public int Bottom;
+              }
+              [DllImport("user32.dll")]
+              public static extern bool GetWindowRect(IntPtr window, out RECT rect);
+              [DllImport("user32.dll")]
+              public static extern IntPtr GetDlgItem(IntPtr dialog, int itemId);
+              [DllImport("user32.dll")]
+              public static extern IntPtr SendMessageW(
+                  IntPtr window,
+                  uint message,
+                  IntPtr wParam,
+                  IntPtr lParam
+              );
+              [DllImport("user32.dll", SetLastError = true)]
+              public static extern bool PrintWindow(IntPtr window, IntPtr target, uint flags);
+          }
+          '@
+
+          function Capture-And-Cancel([string]$title, [string]$screenshot) {
+            $window = [IntPtr]::Zero
+            for ($attempt = 0; $attempt -lt 120 -and $window -eq [IntPtr]::Zero; $attempt++) {
+              Start-Sleep -Milliseconds 100
+              if ($process.HasExited) {
+                break
+              }
+              $process.Refresh()
+              if ($process.MainWindowTitle -eq $title) {
+                $window = $process.MainWindowHandle
+              }
+            }
+            if ($window -eq [IntPtr]::Zero) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "the Win32 file dialog did not become visible: $title"
+            }
+            $rect = New-Object ZsuiFileDialogProofNative+RECT
+            if (-not [ZsuiFileDialogProofNative]::GetWindowRect($window, [ref]$rect)) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "GetWindowRect failed for the Win32 file dialog"
+            }
+            $width = $rect.Right - $rect.Left
+            $height = $rect.Bottom - $rect.Top
+            if ($width -lt 480 -or $height -lt 300) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "the Win32 file dialog has invalid geometry ${width}x${height}"
+            }
+            $bitmap = New-Object System.Drawing.Bitmap($width, $height)
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            try {
+              $target = $graphics.GetHdc()
+              try {
+                if (-not [ZsuiFileDialogProofNative]::PrintWindow($window, $target, 2)) {
+                  throw "PrintWindow failed for the Win32 file dialog"
+                }
+              } finally {
+                $graphics.ReleaseHdc($target)
+              }
+              $bitmap.Save($screenshot, [System.Drawing.Imaging.ImageFormat]::Png)
+            } finally {
+              $graphics.Dispose()
+              $bitmap.Dispose()
+            }
+            $cancel = [ZsuiFileDialogProofNative]::GetDlgItem($window, 2)
+            if ($cancel -eq [IntPtr]::Zero) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "the Win32 file dialog has no native Cancel button"
+            }
+            [void][ZsuiFileDialogProofNative]::SendMessageW(
+              $cancel,
+              0x00F5,
+              [IntPtr]::Zero,
+              [IntPtr]::Zero
+            )
+          }
+
+          Capture-And-Cancel "ZSUI 打开文件验证 / Open File Proof" $openScreenshot
+          Capture-And-Cancel "ZSUI 保存文件验证 / Save File Proof" $saveScreenshot
+          if (-not $process.WaitForExit(10000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw "native_file_dialog_smoke timed out"
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "native_file_dialog_smoke exited with code $($process.ExitCode)"
+          }
+          $proof = Get-Content $report -Raw | ConvertFrom-Json
+          if (
+            $proof.schema -ne "zsui.native-file-dialog-proof/v1" -or
+            $proof.platform -ne "windows" -or
+            $proof.native_open_surface -ne "win32_get_open_file_name" -or
+            $proof.native_save_surface -ne "win32_get_save_file_name" -or
+            $proof.owner_window_supplied -ne $false -or
+            -not $proof.open_allows_multiple -or
+            $proof.suggested_name -ne "zsui-native-proof.txt" -or
+            -not $proof.open_cancelled -or
+            -not $proof.save_cancelled -or
+            -not $proof.open_screenshot_captured -or
+            -not $proof.save_screenshot_captured -or
+            $proof.errors.Count -ne 0
+          ) {
+            throw "Win32 native file-dialog proof is incomplete"
+          }
+
+      - name: Run owner-bound Win32 Notepad file-dialog proof
+        shell: pwsh
+        run: |
+          $root = "target/native-proof/windows-2025-x86_64"
+          $process = Start-Process `
+            -FilePath .\target\release\examples\zsui_notepad.exe `
+            -ArgumentList @(
+              "--file-dialog-proof",
+              "--output", $root,
+              "--width", "960",
+              "--height", "640"
+            ) `
+            -PassThru `
+            -WindowStyle Hidden
+
+          Add-Type -AssemblyName System.Drawing
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public static class ZsuiOwnerFileDialogProofNative {
+              public delegate bool EnumWindowsCallback(IntPtr window, IntPtr parameter);
+              [StructLayout(LayoutKind.Sequential)]
+              public struct RECT {
+                  public int Left;
+                  public int Top;
+                  public int Right;
+                  public int Bottom;
+              }
+              [DllImport("user32.dll")]
+              public static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr parameter);
+              [DllImport("user32.dll")]
+              public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+              [DllImport("user32.dll")]
+              public static extern IntPtr GetWindow(IntPtr window, uint command);
+              [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+              public static extern int GetWindowTextW(IntPtr window, StringBuilder text, int capacity);
+              [DllImport("user32.dll")]
+              public static extern bool GetWindowRect(IntPtr window, out RECT rect);
+              [DllImport("user32.dll")]
+              public static extern IntPtr GetDlgItem(IntPtr dialog, int itemId);
+              [DllImport("user32.dll")]
+              public static extern IntPtr SendMessageW(
+                  IntPtr window,
+                  uint message,
+                  IntPtr wParam,
+                  IntPtr lParam
+              );
+              [DllImport("user32.dll", SetLastError = true)]
+              public static extern bool PrintWindow(IntPtr window, IntPtr target, uint flags);
+              public static IntPtr FindProcessWindow(uint processId, string title) {
+                  IntPtr result = IntPtr.Zero;
+                  EnumWindows((window, parameter) => {
+                      uint candidateProcessId;
+                      GetWindowThreadProcessId(window, out candidateProcessId);
+                      if (candidateProcessId != processId) return true;
+                      var text = new StringBuilder(512);
+                      GetWindowTextW(window, text, text.Capacity);
+                      if (text.ToString() != title) return true;
+                      result = window;
+                      return false;
+                  }, IntPtr.Zero);
+                  return result;
+              }
+          }
+          '@
+
+          function Capture-Owner-Dialog([string]$title, [string]$screenshot) {
+            $window = [IntPtr]::Zero
+            for ($attempt = 0; $attempt -lt 150 -and $window -eq [IntPtr]::Zero; $attempt++) {
+              Start-Sleep -Milliseconds 100
+              if ($process.HasExited) {
+                break
+              }
+              $window = [ZsuiOwnerFileDialogProofNative]::FindProcessWindow(
+                [uint32]$process.Id,
+                $title
+              )
+            }
+            if ($window -eq [IntPtr]::Zero) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "the owner-bound Win32 file dialog did not become visible: $title"
+            }
+            $owner = [ZsuiOwnerFileDialogProofNative]::GetWindow($window, 4)
+            $ownerTitle = New-Object System.Text.StringBuilder 256
+            [void][ZsuiOwnerFileDialogProofNative]::GetWindowTextW(
+              $owner,
+              $ownerTitle,
+              $ownerTitle.Capacity
+            )
+            if ($owner -eq [IntPtr]::Zero -or $ownerTitle.ToString() -ne "ZSUI Notepad") {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "the Win32 file dialog is not owned by the ZSUI Notepad window"
+            }
+            $rect = New-Object ZsuiOwnerFileDialogProofNative+RECT
+            if (-not [ZsuiOwnerFileDialogProofNative]::GetWindowRect($window, [ref]$rect)) {
+              throw "GetWindowRect failed for the owner-bound Win32 file dialog"
+            }
+            $width = $rect.Right - $rect.Left
+            $height = $rect.Bottom - $rect.Top
+            $bitmap = New-Object System.Drawing.Bitmap($width, $height)
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            try {
+              $target = $graphics.GetHdc()
+              try {
+                if (-not [ZsuiOwnerFileDialogProofNative]::PrintWindow($window, $target, 2)) {
+                  throw "PrintWindow failed for the owner-bound Win32 file dialog"
+                }
+              } finally {
+                $graphics.ReleaseHdc($target)
+              }
+              $bitmap.Save($screenshot, [System.Drawing.Imaging.ImageFormat]::Png)
+            } finally {
+              $graphics.Dispose()
+              $bitmap.Dispose()
+            }
+            $cancel = [ZsuiOwnerFileDialogProofNative]::GetDlgItem($window, 2)
+            if ($cancel -eq [IntPtr]::Zero) {
+              throw "the owner-bound Win32 file dialog has no native Cancel button"
+            }
+            [void][ZsuiOwnerFileDialogProofNative]::SendMessageW(
+              $cancel,
+              0x00F5,
+              [IntPtr]::Zero,
+              [IntPtr]::Zero
+            )
+          }
+
+          Capture-Owner-Dialog `
+            "打开文本文档 / Open text document" `
+            (Join-Path $root "notepad-owner-open-panel.png")
+          Capture-Owner-Dialog `
+            "保存文本文档 / Save text document" `
+            (Join-Path $root "notepad-owner-save-panel.png")
+          if (-not $process.WaitForExit(15000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw "owner-bound Win32 Notepad proof timed out"
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "owner-bound Win32 Notepad proof exited with code $($process.ExitCode)"
+          }
+          $proof = Get-Content (Join-Path $root "notepad-file-dialog-owner.json") -Raw | ConvertFrom-Json
+          if (
+            $proof.schema -ne "zsui.native-proof/v1" -or
+            $proof.platform -ne "windows" -or
+            $proof.scenario -ne "notepad-file-dialog-owner" -or
+            $proof.errors.Count -ne 0 -or
+            $proof.runtime.native_view_app_command_count -lt 2 -or
+            $proof.runtime.native_view_unhandled_click_count -ne 0
+          ) {
+            throw "owner-bound Win32 Notepad file-dialog proof is incomplete"
+          }
+
+      - name: Prepare deterministic reload sources
+        shell: pwsh
+        run: |
+          $root = "target/native-proof/windows-2025-x86_64/ui-viewer-reload"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          Copy-Item examples/ui-documents/viewer-reload-workbench.json "$root/view.json"
+          Copy-Item examples/ui-documents/viewer-reload-workbench.bindings.json "$root/view.bindings.json"
+          Copy-Item examples/ui-documents/viewer-reload-workbench.values.json "$root/view.values.json"
+
+      - name: Run real Win32 Viewer reload proof
+        id: win32-viewer
+        shell: pwsh
+        run: |
+          $root = "target/native-proof/windows-2025-x86_64/ui-viewer-reload"
+          $stdout = Join-Path $root "viewer.stdout.log"
+          $stderr = Join-Path $root "viewer.stderr.log"
+          $process = Start-Process `
+            -FilePath .\target\release\zsui-viewer.exe `
+            -ArgumentList @(
+              "$root/view.json",
+              "--bindings", "$root/view.bindings.json",
+              "--values", "$root/view.values.json",
+              "--poll-ms", "50",
+              "--width", "960",
+              "--height", "640",
+              "--smoke", "$root/proof",
+              "--smoke-duration-ms", "3500",
+              "--require-binding-reset",
+              "--reload-document-from", "examples/ui-documents/viewer-reload-workbench-next.json",
+              "--reload-bindings-from", "examples/ui-documents/viewer-reload-workbench-next.bindings.json",
+              "--reload-after-ms", "700"
+            ) `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr
+          @(
+            Get-Content $stdout -ErrorAction SilentlyContinue
+            Get-Content $stderr -ErrorAction SilentlyContinue
+          ) | Tee-Object -FilePath "$root/viewer.log"
+          if ($process.ExitCode -ne 0) {
+            exit $process.ExitCode
+          }
+
+      - name: Run Win32 named component proofs
+        shell: pwsh
+        run: |
+          $root = "target/native-proof/windows-2025-x86_64"
+          foreach ($scene in @("ui-viewer-items-repeater", "ui-viewer-image", "ui-viewer-settings-card", "ui-viewer-workbench", "ui-viewer-workbench-dark", "ui-viewer-workbench-high-contrast")) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $root $scene) | Out-Null
+          }
+
+          function Invoke-ViewerProof {
+            param(
+              [string] $Scene,
+              [string[]] $ViewerArguments
+            )
+            $sceneRoot = Join-Path $root $Scene
+            $stdout = Join-Path $sceneRoot "viewer.stdout.log"
+            $stderr = Join-Path $sceneRoot "viewer.stderr.log"
+            $process = Start-Process `
+              -FilePath .\target\release\zsui-viewer.exe `
+              -ArgumentList $ViewerArguments `
+              -Wait `
+              -PassThru `
+              -RedirectStandardOutput $stdout `
+              -RedirectStandardError $stderr
+            @(
+              Get-Content $stdout -ErrorAction SilentlyContinue
+              Get-Content $stderr -ErrorAction SilentlyContinue
+            ) | Tee-Object -FilePath (Join-Path $sceneRoot "viewer.log")
+            if ($process.ExitCode -ne 0) {
+              exit $process.ExitCode
+            }
+          }
+
+          Invoke-ViewerProof "ui-viewer-items-repeater" @(
+            "examples/ui-documents/items-repeater.json",
+            "--bindings", "examples/ui-documents/items-repeater.bindings.json",
+            "--values", "examples/ui-documents/items-repeater.values.json",
+            "--width", "960",
+            "--height", "640",
+            "--smoke", "$root/ui-viewer-items-repeater",
+            "--smoke-duration-ms", "700",
+            "--smoke-items-repeater-drag", "records"
+          )
+
+          foreach ($theme in @(
+            @{ Name = "dark"; Output = "ui-viewer-workbench-dark" },
+            @{ Name = "high-contrast"; Output = "ui-viewer-workbench-high-contrast" }
+          )) {
+            Invoke-ViewerProof $theme.Output @(
+              "examples/ui-documents/workbench.json",
+              "--bindings", "examples/ui-documents/workbench.bindings.json",
+              "--values", "examples/ui-documents/workbench.values.json",
+              "--width", "1280",
+              "--height", "800",
+              "--theme", $theme.Name,
+              "--smoke", "$root/$($theme.Output)",
+              "--smoke-duration-ms", "700"
+            )
+          }
+
+          Invoke-ViewerProof "ui-viewer-image" @(
+            "examples/ui-documents/image.json",
+            "--bindings", "examples/ui-documents/image.bindings.json",
+            "--values", "examples/ui-documents/image.values.json",
+            "--width", "960",
+            "--height", "640",
+            "--smoke", "$root/ui-viewer-image",
+            "--smoke-duration-ms", "700"
+          )
+
+          Invoke-ViewerProof "ui-viewer-settings-card" @(
+            "examples/ui-documents/settings-card.json",
+            "--bindings", "examples/ui-documents/settings-card.bindings.json",
+            "--values", "examples/ui-documents/settings-card.values.json",
+            "--width", "960",
+            "--height", "640",
+            "--smoke", "$root/ui-viewer-settings-card",
+            "--smoke-duration-ms", "700",
+            "--smoke-click-node", "apply-appearance"
+          )
+
+          Invoke-ViewerProof "ui-viewer-workbench" @(
+            "examples/ui-documents/workbench.json",
+            "--bindings", "examples/ui-documents/workbench.bindings.json",
+            "--values", "examples/ui-documents/workbench.values.json",
+            "--width", "1280",
+            "--height", "800",
+            "--smoke", "$root/ui-viewer-workbench",
+            "--smoke-duration-ms", "900",
+            "--smoke-scroll", "600", "400", "96",
+            "--smoke-workbench-composer", "workbench"
+          )
+
+      - name: Run Win32 Notepad IME proof
+        shell: pwsh
+        run: |
+          $root = "target/native-proof/windows-2025-x86_64"
+          .\target\release\examples\zsui_notepad.exe `
+            --native-proof `
+            --output $root
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Summarize Win32 Viewer proof failure
+        if: failure() && steps.win32-viewer.outcome == 'failure'
+        shell: pwsh
+        run: |
+          $log = "target/native-proof/windows-2025-x86_64/ui-viewer-reload/viewer.log"
+          if (Test-Path $log) {
+            $summary = (Get-Content $log -Tail 50) -join " "
+            Write-Output "::error title=Win32 Viewer proof failure::$summary"
+          }
+
+      - name: Validate Win32 Viewer artifacts
+        shell: pwsh
+        run: |
+          function Assert-True([bool] $Condition, [string] $Message) {
+            if (-not $Condition) {
+              throw $Message
+            }
+          }
+
+          $root = "target/native-proof/windows-2025-x86_64/ui-viewer-reload/proof"
+          $png = Join-Path $root "window.png"
+          $bytes = [IO.File]::ReadAllBytes($png)
+          $signature = [byte[]](137, 80, 78, 71, 13, 10, 26, 10)
+          Assert-True ($bytes.Length -gt 8) "Viewer screenshot is empty"
+          Assert-True (-not (Compare-Object $signature $bytes[0..7])) "Viewer screenshot is not a PNG"
+
+          $proof = Get-Content (Join-Path $root "proof.json") -Raw | ConvertFrom-Json
+          Assert-True ($proof.schema -eq "zsui.ui-viewer-proof/v1") "unexpected Viewer proof schema"
+          Assert-True ($proof.schema_version -eq 1) "unexpected Viewer proof schema version"
+          Assert-True ($proof.platform -eq "windows") "Viewer did not run on Win32"
+          Assert-True ($proof.capture_backend -eq "win32_wm_printclient_dib_png") "unexpected Win32 capture backend"
+          Assert-True ($null -eq $proof.display_server) "Win32 proof must not report a display server"
+          Assert-True ($proof.window.logical_width -eq 960) "unexpected logical width"
+          Assert-True ($proof.window.logical_height -eq 640) "unexpected logical height"
+          Assert-True ($proof.window.pixel_width -gt 0) "missing screenshot pixel width"
+          Assert-True ($proof.window.pixel_height -gt 0) "missing screenshot pixel height"
+
+          $source = $proof.source
+          Assert-True ($source.revision -eq 2) "Viewer did not accept exactly one reload"
+          Assert-True ($source.document_schema_version -eq 1) "unexpected document schema version"
+          Assert-True ($source.node_count -eq 4) "unexpected reloaded workbench node count"
+          Assert-True ($null -eq $source.last_error) "Viewer retained a source error"
+          $nodeIds = @($source.nodes | ForEach-Object id)
+          foreach ($id in @("workbench", "timeline", "composer", "inspector")) {
+            Assert-True ($nodeIds -contains $id) "missing stable node $id"
+          }
+
+          $reload = $source.last_reload
+          Assert-True ($reload.from_revision -eq 1) "unexpected reload source revision"
+          Assert-True ($reload.to_revision -eq 2) "unexpected reload target revision"
+          Assert-True (@($reload.preserved_node_ids).Count -eq 4) "not all workbench nodes were preserved"
+          Assert-True (@($reload.added_node_ids).Count -eq 0) "reload unexpectedly added nodes"
+          Assert-True (@($reload.state_resets).Count -eq 0) "reload unexpectedly reset node state"
+          Assert-True (@($reload.preserved_property_bindings).Count -eq 1) "unexpected preserved binding count"
+          Assert-True ($reload.preserved_property_bindings[0] -eq "timeline_offset") "timeline offset binding was not preserved"
+          Assert-True (@($reload.binding_state_resets).Count -eq 1) "unexpected binding reset count"
+          $reset = $reload.binding_state_resets[0]
+          Assert-True ($reset.binding -eq "composer_draft") "unexpected reset binding"
+          Assert-True ($reset.previous_type -eq "string") "unexpected previous binding type"
+          Assert-True ($null -eq $reset.current_type) "removed binding unexpectedly has a current type"
+          Assert-True ($reset.reason -eq "binding_removed") "unexpected binding reset reason"
+
+          $runtime = $proof.runtime
+          Assert-True ($runtime.created_window_count -eq 1) "Viewer did not create one native window"
+          Assert-True ($runtime.screenshot_captured) "Viewer did not capture its final Win32 surface"
+          Assert-True ($null -eq $runtime.startup_error) "Viewer reported a startup error"
+          Assert-True ($null -eq $runtime.screenshot_error) "Viewer reported a screenshot error"
+          Assert-True ($runtime.native_view_capture.backend -eq $proof.capture_backend) "capture reports disagree"
+          Assert-True ($runtime.native_view_live_revision -ge 2) "live View did not rebuild after reload"
+          Assert-True ($runtime.draw_command_count -gt 0) "reloaded View produced no draw commands"
+          Assert-True ($runtime.text_command_count -gt 0) "reloaded View produced no text commands"
+          Assert-True ($runtime.process_memory_during_runtime.source -eq "win32_get_process_memory_info") "unexpected memory source"
+          Assert-True ($runtime.process_memory_during_runtime.resident_bytes -gt 0) "missing Win32 RSS evidence"
+          Assert-True ($runtime.process_memory_during_runtime.private_bytes -gt 0) "missing Win32 private-byte evidence"
+          Assert-True ($runtime.native_view_capture.typography.source -eq "win32_spi_message_font") "Viewer bypassed the system UI font"
+          Assert-True ($runtime.native_accessibility_backend -eq "win32_uia") "reload View did not expose Win32 UIA"
+          Assert-True ($runtime.native_accessibility_node_count -gt 0) "reload View exposed no UIA nodes"
+
+          $componentRoot = "target/native-proof/windows-2025-x86_64"
+          $minimumNodes = @{
+            "ui-viewer-items-repeater" = 20
+            "ui-viewer-image" = 8
+            "ui-viewer-settings-card" = 8
+            "ui-viewer-workbench" = 20
+            "ui-viewer-workbench-dark" = 20
+            "ui-viewer-workbench-high-contrast" = 20
+          }
+          foreach ($scene in $minimumNodes.Keys) {
+            $sceneRoot = Join-Path $componentRoot $scene
+            $scenePng = Join-Path $sceneRoot "window.png"
+            $sceneBytes = [IO.File]::ReadAllBytes($scenePng)
+            Assert-True (-not (Compare-Object $signature $sceneBytes[0..7])) "$scene screenshot is not a PNG"
+            $sceneProof = Get-Content (Join-Path $sceneRoot "proof.json") -Raw | ConvertFrom-Json
+            $sceneRuntime = $sceneProof.runtime
+            Assert-True ($sceneProof.platform -eq "windows") "$scene did not run on Win32"
+            Assert-True ($sceneProof.capture_backend -eq "win32_wm_printclient_dib_png") "$scene bypassed the Win32 final surface"
+            Assert-True ($sceneRuntime.native_accessibility_backend -eq "win32_uia") "$scene did not expose Win32 UIA"
+            Assert-True ($sceneRuntime.native_accessibility_node_count -ge $minimumNodes[$scene]) "$scene exposed too few UIA nodes"
+            Assert-True ($sceneRuntime.native_view_unhandled_click_count -eq 0) "$scene reported an unhandled click"
+          }
+
+          $repeater = Get-Content (Join-Path $componentRoot "ui-viewer-items-repeater/proof.json") -Raw | ConvertFrom-Json
+          Assert-True ($repeater.source.node_count -eq 64) "ItemsRepeater proof used the wrong materialized document"
+          Assert-True ($repeater.runtime.native_view_items_repeater_viewport_change_count -gt 0) "ItemsRepeater viewport did not change"
+          Assert-True ($repeater.runtime.native_view_items_repeater_scrollbar_drag_count -eq 1) "ItemsRepeater thumb drag did not complete"
+
+          $settings = Get-Content (Join-Path $componentRoot "ui-viewer-settings-card/proof.json") -Raw | ConvertFrom-Json
+          Assert-True ($settings.runtime.native_view_click_count -eq 1) "SettingsCard proof did not click its stable action node"
+          Assert-True ($settings.runtime.native_view_message_count -eq 1) "SettingsCard proof did not emit one typed action"
+
+          $workbench = Get-Content (Join-Path $componentRoot "ui-viewer-workbench/proof.json") -Raw | ConvertFrom-Json
+          $workbenchRuntime = $workbench.runtime
+          Assert-True ($workbenchRuntime.native_view_scroll_count -eq 1) "MessageTimeline did not route its native scroll"
+          Assert-True ($workbenchRuntime.native_view_unhandled_scroll_count -eq 0) "MessageTimeline scroll was unhandled"
+          Assert-True ($workbenchRuntime.native_view_text_input_count -gt 0) "Composer did not route native text"
+          Assert-True ($workbenchRuntime.native_view_text_navigation_count -ge 2) "Composer did not route native text navigation"
+          Assert-True ($workbenchRuntime.native_view_text_drag_count -gt 0) "Composer did not route pointer selection"
+          Assert-True ($workbenchRuntime.native_view_text_selection_change_count -gt 0) "Composer selection did not change"
+          Assert-True ($workbenchRuntime.native_view_unhandled_key_count -eq 0) "Composer reported an unhandled key"
+          $script = $workbenchRuntime.native_view_text_input_script_evidence[0]
+          Assert-True ($script.contains_cjk -and $script.contains_right_to_left -and $script.contains_combining_mark -and $script.contains_joiner) "Composer complex-script proof is incomplete"
+
+          $dark = Get-Content (Join-Path $componentRoot "ui-viewer-workbench-dark/proof.json") -Raw | ConvertFrom-Json
+          Assert-True ($dark.theme -eq "Dark") "Workbench dark proof did not retain its explicit theme"
+          $contrast = Get-Content (Join-Path $componentRoot "ui-viewer-workbench-high-contrast/proof.json") -Raw | ConvertFrom-Json
+          Assert-True ($contrast.theme -eq "HighContrast") "Workbench high-contrast proof did not retain its explicit theme"
+          Assert-True ($contrast.runtime.high_contrast_draw_plan_window_count -eq 1) "Workbench high-contrast draw plan was not active"
+
+          $notepadPng = Join-Path $componentRoot "notepad-interaction.png"
+          $notepadBytes = [IO.File]::ReadAllBytes($notepadPng)
+          Assert-True (-not (Compare-Object $signature $notepadBytes[0..7])) "Notepad screenshot is not a PNG"
+          $notepad = Get-Content (Join-Path $componentRoot "notepad-interaction.json") -Raw | ConvertFrom-Json
+          $notepadRuntime = $notepad.runtime
+          Assert-True ($notepad.platform -eq "windows") "Notepad did not run on Win32"
+          Assert-True ($notepad.capture_backend -eq "win32_wm_printclient_dib_png") "Notepad bypassed the Win32 final surface"
+          Assert-True ($notepadRuntime.native_view_ime_preedit_update_count -eq 2) "Win32 IME preedit updates were not routed"
+          Assert-True ($notepadRuntime.native_view_ime_commit_count -eq 1) "Win32 IME commit was not routed"
+          Assert-True ($notepadRuntime.native_view_ime_cancel_count -eq 1) "Win32 IME cancellation was not routed"
+          Assert-True ($notepadRuntime.native_view_ime_caret_rect_observation_count -ge 4) "Win32 IME caret anchor was not observed"
+          Assert-True (-not $notepadRuntime.native_view_ime_preedit_active) "Win32 IME retained provisional text after the script"
+          Assert-True ($null -ne $notepadRuntime.native_view_ime_caret_rect) "Win32 IME did not expose a caret rectangle"
+          Assert-True (@($notepadRuntime.native_view_ime_preedit_script_evidence).Count -eq 2) "Win32 IME preedit metadata is incomplete"
+          Assert-True (@($notepadRuntime.native_view_ime_commit_script_evidence).Count -eq 1) "Win32 IME commit metadata is incomplete"
+          Assert-True (($notepadRuntime.native_view_ime_preedit_script_evidence | Where-Object { -not $_.contains_cjk }).Count -eq 0) "Win32 IME preedit metadata lost CJK evidence"
+
+      - name: Upload Win32 Viewer proof
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsui-win32-viewer-proof
+          path: target/native-proof/windows-2025-x86_64
+          if-no-files-found: error
+          retention-days: 30
+
+  macos-appkit-proof:
+    name: AppKit Runtime Proof
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      TZ: UTC
+      ZSUI_NATIVE_PROOF_OS_FAMILY: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Assert runner identity
+        shell: bash
+        run: |
+          test "$(sw_vers -productVersion | cut -d. -f1)" = "15"
+          test "$(uname -m)" = "arm64"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build AppKit proof applications
+        run: |
+          cargo build \
+            --release \
+            --locked \
+            --example component_gallery \
+            --no-default-features \
+            --features component-gallery-demo,accessibility
+          cargo build \
+            --release \
+            --locked \
+            --example zsui_notepad \
+            --no-default-features \
+            --features notepad-demo,accessibility,native-smoke
+          cargo build \
+            --release \
+            --locked \
+            --example native_smoke_run \
+            --no-default-features \
+            --features macos-appkit,native-smoke,button,label
+          cargo build \
+            --release \
+            --locked \
+            --bin zsui-viewer \
+            --no-default-features \
+            --features ui-viewer,accessibility
+          cargo build \
+            --release \
+            --locked \
+            --example native_clipboard_smoke \
+            --no-default-features \
+            --features macos-appkit,clipboard
+          cargo build \
+            --release \
+            --locked \
+            --example native_dialog_smoke \
+            --no-default-features \
+            --features macos-appkit,native-smoke
+          cargo build \
+            --release \
+            --locked \
+            --example native_file_dialog_smoke \
+            --no-default-features \
+            --features macos-appkit,native-smoke
+
+      - name: Run native AppKit localized dialog proof
+        run: |
+          set -o pipefail
+          root=target/native-proof/macos-15-arm64
+          report="$root/native-system-dialog.json"
+          screenshot="$root/native-system-dialog.png"
+          mkdir -p "$root"
+          ./target/release/examples/native_dialog_smoke \
+            --output "$report" \
+            --screenshot "$screenshot"
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("target/native-proof/macos-15-arm64")
+          proof = json.loads((root / "native-system-dialog.json").read_text(encoding="utf-8"))
+          assert proof["schema"] == "zsui.native-system-dialog-proof/v1"
+          assert proof["platform"] == "macos"
+          assert proof["native_surface"] == "appkit_nsalert"
+          assert proof["owner_window_supplied"] is False
+          assert proof["actual_response"] == "yes"
+          assert proof["response_matched"] is True
+          assert proof["screenshot_captured"] is True
+          assert proof["localized_button_labels"] == ["确定", "取消", "是", "否"]
+          assert proof["errors"] == []
+          assert (root / "native-system-dialog.png").stat().st_size >= 1024
+          PY
+
+      - name: Run native AppKit file-panel proof
+        run: |
+          set -o pipefail
+          root=target/native-proof/macos-15-arm64
+          ./target/release/examples/native_file_dialog_smoke \
+            --output "$root/native-file-dialog.json" \
+            --open-screenshot "$root/native-open-panel.png" \
+            --save-screenshot "$root/native-save-panel.png"
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("target/native-proof/macos-15-arm64")
+          proof = json.loads((root / "native-file-dialog.json").read_text(encoding="utf-8"))
+          assert proof["schema"] == "zsui.native-file-dialog-proof/v1"
+          assert proof["platform"] == "macos"
+          assert proof["native_open_surface"] == "appkit_nsopenpanel"
+          assert proof["native_save_surface"] == "appkit_nssavepanel"
+          assert proof["owner_window_supplied"] is False
+          assert proof["open_allows_multiple"] is True
+          assert proof["suggested_name"] == "zsui-native-proof.txt"
+          assert proof["open_cancelled"] is True
+          assert proof["save_cancelled"] is True
+          assert proof["open_screenshot_captured"] is True
+          assert proof["save_screenshot_captured"] is True
+          assert proof["errors"] == []
+          assert (root / "native-open-panel.png").stat().st_size >= 1024
+          assert (root / "native-save-panel.png").stat().st_size >= 1024
+          PY
+
+      - name: Run owner-bound AppKit Notepad file-panel proof
+        run: |
+          set -o pipefail
+          root=target/native-proof/macos-15-arm64
+          ZSUI_NATIVE_OWNER_FILE_DIALOG_PROOF_DIR="$root" \
+            ./target/release/examples/zsui_notepad \
+              --file-dialog-proof \
+              --width 960 \
+              --height 640 \
+              --output "$root"
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("target/native-proof/macos-15-arm64")
+          proof = json.loads((root / "notepad-file-dialog-owner.json").read_text(encoding="utf-8"))
+          assert proof["schema"] == "zsui.native-proof/v1"
+          assert proof["platform"] == "macos"
+          assert proof["scenario"] == "notepad-file-dialog-owner"
+          assert proof["errors"] == []
+          assert proof["runtime"]["native_view_app_command_count"] >= 2
+          assert proof["runtime"]["native_view_unhandled_click_count"] == 0
+          assert (root / "notepad-owner-open-panel.png").stat().st_size >= 1024
+          assert (root / "notepad-owner-save-panel.png").stat().st_size >= 1024
+          assert (root / "notepad-file-dialog-owner.png").stat().st_size >= 1024
+          PY
+
+      - name: Run real AppKit proof scenes
+        run: |
+          mkdir -p target/native-proof/macos-15-arm64
+          ./target/release/examples/native_clipboard_smoke \
+            --output target/native-proof/macos-15-arm64/clipboard-image.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          proof = json.loads(Path("target/native-proof/macos-15-arm64/clipboard-image.json").read_text())
+          assert proof["schema"] == "zsui.native-clipboard-proof/v1"
+          assert proof["platform"] == "macos"
+          assert proof["image_write_succeeded"] is True
+          assert proof["image_read_succeeded"] is True
+          assert proof["original_clipboard_restored"] is True
+          PY
+          for page in inputs collections navigation feedback catalog; do
+            ./target/release/examples/component_gallery \
+              --native-proof \
+              --page "$page" \
+              --theme light \
+              --width 1024 \
+              --height 640 \
+              --output target/native-proof/macos-15-arm64
+          done
+          ./target/release/examples/component_gallery \
+            --native-proof \
+            --page inputs \
+            --theme dark \
+            --width 1024 \
+            --height 640 \
+            --output target/native-proof/macos-15-arm64
+          ./target/release/examples/zsui_notepad \
+            --native-proof \
+            --width 960 \
+            --height 640 \
+            --output target/native-proof/macos-15-arm64
+          ./target/release/examples/component_gallery \
+            --native-proof \
+            --page catalog \
+            --theme light \
+            --width 1180 \
+            --height 780 \
+            --resize-width 800 \
+            --resize-height 520 \
+            --scenario resized-small \
+            --screenshot target/native-proof/macos-15-arm64/resized-small.png \
+            --report target/native-proof/macos-15-arm64/resized-small.json
+          ./target/release/examples/component_gallery \
+            --native-proof \
+            --page catalog \
+            --theme light \
+            --width 960 \
+            --height 560 \
+            --resize-width 1180 \
+            --resize-height 640 \
+            --scenario resized-large \
+            --screenshot target/native-proof/macos-15-arm64/resized-large.png \
+            --report target/native-proof/macos-15-arm64/resized-large.json
+          mkdir -p target/native-proof/macos-status-item
+          ./target/release/examples/native_smoke_run \
+            current \
+            target/native-proof/macos-status-item \
+            --status-item \
+            --view \
+            > target/native-proof/macos-status-item/status-item-run.json
+
+      - name: Run real AppKit Viewer proof
+        id: appkit-viewer
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p target/native-proof/macos-15-arm64/ui-viewer-scroll
+          mkdir -p target/native-proof/macos-15-arm64/ui-viewer-items-repeater
+          mkdir -p target/native-proof/macos-15-arm64/ui-viewer-image
+          mkdir -p target/native-proof/macos-15-arm64/ui-viewer-settings-card
+          mkdir -p target/native-proof/macos-15-arm64/ui-viewer-workbench
+          mkdir -p target/native-proof/macos-15-arm64/ui-viewer-workbench-dark
+          mkdir -p target/native-proof/macos-15-arm64/ui-viewer-workbench-high-contrast
+          ./target/release/zsui-viewer \
+              examples/ui-documents/scrolling.json \
+              --bindings examples/ui-documents/scrolling.bindings.json \
+              --values examples/ui-documents/scrolling.values.json \
+              --width 720 \
+              --height 560 \
+              --smoke target/native-proof/macos-15-arm64/ui-viewer-scroll \
+              --smoke-scroll 360 260 96 \
+            2>&1 | tee target/native-proof/macos-15-arm64/ui-viewer-scroll/viewer.log
+          ./target/release/zsui-viewer \
+              examples/ui-documents/items-repeater.json \
+              --bindings examples/ui-documents/items-repeater.bindings.json \
+              --values examples/ui-documents/items-repeater.values.json \
+              --width 960 \
+              --height 640 \
+              --smoke target/native-proof/macos-15-arm64/ui-viewer-items-repeater \
+              --smoke-items-repeater-drag records \
+            2>&1 | tee target/native-proof/macos-15-arm64/ui-viewer-items-repeater/viewer.log
+          ./target/release/zsui-viewer \
+              examples/ui-documents/image.json \
+              --bindings examples/ui-documents/image.bindings.json \
+              --values examples/ui-documents/image.values.json \
+              --width 960 \
+              --height 640 \
+              --smoke target/native-proof/macos-15-arm64/ui-viewer-image \
+              --smoke-duration-ms 700 \
+            2>&1 | tee target/native-proof/macos-15-arm64/ui-viewer-image/viewer.log
+          ./target/release/zsui-viewer \
+              examples/ui-documents/settings-card.json \
+              --bindings examples/ui-documents/settings-card.bindings.json \
+              --values examples/ui-documents/settings-card.values.json \
+              --width 960 \
+              --height 640 \
+              --smoke target/native-proof/macos-15-arm64/ui-viewer-settings-card \
+              --smoke-duration-ms 700 \
+              --smoke-click-node apply-appearance \
+            2>&1 | tee target/native-proof/macos-15-arm64/ui-viewer-settings-card/viewer.log
+          ./target/release/zsui-viewer \
+              examples/ui-documents/workbench.json \
+              --bindings examples/ui-documents/workbench.bindings.json \
+              --values examples/ui-documents/workbench.values.json \
+              --width 1280 \
+              --height 800 \
+              --smoke target/native-proof/macos-15-arm64/ui-viewer-workbench \
+              --smoke-duration-ms 900 \
+              --smoke-scroll 600 400 96 \
+              --smoke-workbench-composer workbench \
+            2>&1 | tee target/native-proof/macos-15-arm64/ui-viewer-workbench/viewer.log
+          for theme in dark high-contrast; do
+            ./target/release/zsui-viewer \
+                examples/ui-documents/workbench.json \
+                --bindings examples/ui-documents/workbench.bindings.json \
+                --values examples/ui-documents/workbench.values.json \
+                --width 1280 \
+                --height 800 \
+                --theme "$theme" \
+                --smoke "target/native-proof/macos-15-arm64/ui-viewer-workbench-$theme" \
+                --smoke-duration-ms 700 \
+              2>&1 | tee "target/native-proof/macos-15-arm64/ui-viewer-workbench-$theme/viewer.log"
+          done
+
+      - name: Summarize AppKit Viewer proof failure
+        if: failure() && steps.appkit-viewer.outcome == 'failure'
+        shell: bash
+        run: |
+          log=target/native-proof/macos-15-arm64/ui-viewer-scroll/viewer.log
+          summary="$(tail -50 "$log" | tr '\n' ' ' || true)"
+          echo "::error title=AppKit Viewer proof failure::$summary"
+
+      - name: Validate AppKit artifacts
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          root = Path("target/native-proof/macos-15-arm64")
+
+          def validate_notepad_text(runtime, backend):
+              scripts = runtime["native_view_text_input_script_evidence"]
+              assert any(item["contains_cjk"] for item in scripts)
+              assert any(item["contains_right_to_left"] for item in scripts)
+              assert any(item["contains_combining_mark"] for item in scripts)
+              assert any(item["contains_joiner"] for item in scripts)
+              assert runtime["native_view_ime_preedit_update_count"] == 2
+              assert runtime["native_view_ime_commit_count"] == 1
+              assert runtime["native_view_ime_cancel_count"] == 1
+              assert runtime["native_view_ime_caret_rect_observation_count"] >= 4
+              assert not runtime["native_view_ime_preedit_active"]
+              assert runtime["native_view_ime_caret_rect"] is not None
+              assert len(runtime["native_view_ime_preedit_script_evidence"]) == 2
+              assert len(runtime["native_view_ime_commit_script_evidence"]) == 1
+              assert all(
+                  item["contains_cjk"]
+                  for item in runtime["native_view_ime_preedit_script_evidence"]
+              )
+              navigation = runtime["native_view_text_navigation_evidence"]
+              assert navigation
+              assert {item["backend"] for item in navigation} == {backend}
+              home_index = max(
+                  index
+                  for index, item in enumerate(navigation)
+                  if item["key"] == "Home" and item["handled"]
+              )
+              line_start = navigation[home_index]["caret"]
+              rights = [
+                  item
+                  for item in navigation[home_index + 1 :]
+                  if item["key"] == "Right"
+              ][:4]
+              assert len(rights) == 4
+              assert [item["caret"] - line_start for item in rights] == [1, 4, 3, 2]
+              assert all(
+                  item["handled"]
+                  and item["selection"] == [item["caret"], item["caret"]]
+                  for item in rights
+              )
+
+          stems = (
+              "gallery-inputs-light",
+              "gallery-inputs-dark",
+              "gallery-collections-light",
+              "gallery-navigation-light",
+              "gallery-feedback-light",
+              "gallery-catalog-light",
+              "resized-small",
+              "resized-large",
+              "notepad-interaction",
+          )
+          for stem in stems:
+              png = root / f"{stem}.png"
+              report = root / f"{stem}.json"
+              if png.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+                  raise SystemExit(f"{png} is not a PNG")
+              proof = json.loads(report.read_text(encoding="utf-8"))
+              runtime = proof["runtime"]
+              capture = runtime.get("native_view_capture") or {}
+              assert proof["schema"] == "zsui.native-proof/v1"
+              assert proof["schema_version"] == 1
+              assert proof["platform"] == "macos"
+              assert proof["backend"] == "appkit"
+              assert proof["capture_backend"] == "appkit_nsview_bitmap_cache"
+              assert proof["os_family"] == "macos-15"
+              assert proof["architecture"] == "arm64"
+              assert proof["errors"] == []
+              assert proof["unhandled_commands"] == []
+              assert isinstance(proof["messages"], list)
+              typography = proof["typography"]
+              assert typography["platform"] == "Macos"
+              assert typography["source"] == "appkit_preferred_body_system_font"
+              assert typography["ui_font_family"]
+              assert typography["configured_ui_font"]
+              assert typography["body_metrics"]["size"] > 0
+              assert typography["body_metrics"]["ascent"] > 0
+              assert typography == capture["typography"]
+              memory = proof["process_memory"]
+              assert memory["source"] == "macos_mach_task_basic_info"
+              assert memory["sample_point"] == "native_window_before_teardown"
+              assert memory["resident_bytes"] > 0
+              assert memory["peak_resident_bytes"] >= memory["resident_bytes"]
+              assert runtime["created_window_count"] == 1
+              assert runtime["screenshot_captured"] is True
+              assert not runtime["screenshot_error"]
+              assert capture["backend"] == "appkit_nsview_bitmap_cache"
+              assert capture["pixel_width"] > 0
+              assert capture["pixel_height"] > 0
+              assert capture["scale_factor"] > 0.0
+              assert 0.75 <= capture["typography_scale"] <= 3.0
+              expected = {
+                  "resized-small": {"width": 800, "height": 520},
+                  "resized-large": {"width": 1180, "height": 640},
+                  "notepad-interaction": {"width": 960, "height": 640},
+              }.get(stem, {"width": 1024, "height": 640})
+              assert proof["window"]["width"] == expected["width"]
+              assert proof["window"]["height"] == expected["height"]
+              assert proof["window"]["logical_width"] == expected["width"]
+              assert proof["window"]["logical_height"] == expected["height"]
+              assert proof["window"]["pixel_width"] == capture["pixel_width"]
+              assert proof["window"]["pixel_height"] == capture["pixel_height"]
+              assert proof["scale_factor"] == capture["scale_factor"]
+              assert proof["typography_scale"] == capture["typography_scale"]
+              assert capture["logical_width"] == expected["width"]
+              assert capture["logical_height"] == expected["height"]
+              assert abs(
+                  capture["pixel_width"]
+                  - capture["logical_width"] * capture["scale_factor"]
+              ) <= 1.0
+              if stem in {"resized-small", "resized-large"}:
+                  resize = runtime["native_window_resize"]
+                  assert proof["scenario"] == stem
+                  assert proof["messages"] == []
+                  assert runtime["native_window_resize_required"] is True
+                  assert runtime["native_window_resize_error"] is None
+                  assert resize["backend"] == "appkit_set_content_size_window_did_resize"
+                  assert resize["requested_size"] == expected
+                  assert resize["final_size"] == expected
+                  assert resize["initial_size"] != expected
+                  assert resize["native_event_count"] >= 1
+                  assert resize["applied"] is True
+              if stem == "gallery-feedback-light":
+                  assert proof["messages"] == ["MenuFlyoutCommand", "MenuFlyoutOpenChanged", "OpenMenuFlyout"]
+                  assert runtime["native_view_message_count"] >= 3
+                  assert runtime["native_view_event_count"] >= 2
+                  assert runtime["native_view_menu_flyout_invoke_count"] == 1
+                  assert runtime["native_view_menu_flyout_open_change_count"] == 1
+                  assert runtime["native_view_menu_flyout_submenu_change_count"] == 4
+                  assert runtime["native_view_key_down_count"] == 9
+                  assert runtime["native_view_keyboard_activation_count"] == 1
+
+                  assert runtime["native_view_focused_widget"] == 408
+                  assert runtime["native_view_unhandled_click_count"] == 0
+                  assert runtime["native_accessibility_backend"] == "appkit_nsaccessibility"
+                  assert runtime["native_accessibility_node_count"] >= 8
+                  assert any(
+                      event.startswith("appkit_accessibility_tree:nodes=8/8,checked=1/1,expanded=2/2,")
+                      for event in runtime["events"]
+                  )
+                  roles = {widget["role"] for widget in proof["widgets"]}
+                  assert {"menu_flyout", "menu_flyout_scrim", "menu_flyout_item"} <= roles
+              if stem == "gallery-navigation-light":
+                  assert proof["messages"] == ["TabSelected"]
+                  assert runtime["native_view_message_count"] == 2
+                  assert runtime["native_view_event_count"] == 3
+                  assert runtime["native_view_tab_selection_count"] == 2
+                  assert runtime["native_view_tab_keyboard_selection_count"] == 1
+                  assert runtime["native_view_tab_keyboard_focus_only_count"] == 0
+                  assert runtime["native_view_key_down_count"] == 1
+                  assert runtime["native_view_unhandled_key_count"] == 0
+                  assert runtime["native_view_unhandled_click_count"] == 0
+                  focused_tabs = [
+                      widget
+                      for widget in proof["widgets"]
+                      if widget["focused"] and widget["role"] == "tab"
+                  ]
+                  assert len(focused_tabs) == 1
+                  assert proof["focused_widget"] == focused_tabs[0]["id"]
+                  assert proof["focused_widget"] == f'widget-{runtime["native_view_focused_widget"]}'
+                  assert any(
+                      item["backend"] == "appkit"
+                      and item["key"] == "Right"
+                      and item["handled"]
+                      for item in runtime["native_view_text_navigation_evidence"]
+                  )
+              if stem == "gallery-catalog-light":
+                  assert runtime["native_view_pointer_down_count"] == 2
+                  assert runtime["native_view_pointer_move_count"] == 1
+                  assert runtime["native_view_pointer_up_count"] == 2
+                  assert runtime["native_view_canvas_pointer_event_count"] == 5
+                  assert runtime["native_view_canvas_pointer_drag_count"] == 1
+                  assert runtime["native_view_unhandled_click_count"] == 0
+              if stem == "notepad-interaction":
+                  validate_notepad_text(runtime, "appkit")
+                  assert runtime["native_accessibility_backend"] == "appkit_nsaccessibility"
+                  assert runtime["native_accessibility_node_count"] > 0
+                  assert any(
+                      event.startswith("appkit_accessibility_tree:nodes=")
+                      for event in runtime["events"]
+                  )
+
+          viewer_root = root / "ui-viewer-scroll"
+          viewer_png = viewer_root / "window.png"
+          if viewer_png.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+              raise SystemExit(f"{viewer_png} is not a PNG")
+          viewer = json.loads(
+              (viewer_root / "proof.json").read_text(encoding="utf-8")
+          )
+          assert viewer["schema"] == "zsui.ui-viewer-proof/v1"
+          assert viewer["schema_version"] == 1
+          assert viewer["platform"] == "macos"
+          assert viewer["capture_backend"] == "appkit_nsview_bitmap_cache"
+          assert viewer["display_server"] is None
+          assert viewer["window"]["logical_width"] == 720
+          assert viewer["window"]["logical_height"] == 560
+          assert viewer["window"]["pixel_width"] > 0
+          assert viewer["window"]["pixel_height"] > 0
+          assert viewer["window"]["scale_factor"] > 0.0
+          source = viewer["source"]
+          assert source["revision"] == 1
+          assert source["document_schema_version"] == 1
+          assert source["document_path"] == "examples/ui-documents/scrolling.json"
+          assert source["binding_path"] == "examples/ui-documents/scrolling.bindings.json"
+          assert source["node_count"] == 15
+          assert len(source["nodes"]) == 15
+          assert len({node["id"] for node in source["nodes"]}) == 15
+          scroll = next(
+              node for node in source["nodes"] if node["id"] == "results-scroll"
+          )
+          assert scroll["component"] == "scroll"
+          assert scroll["child_count"] == 1
+          assert scroll["layout"]["height"] == 392.0
+          runtime = viewer["runtime"]
+          assert runtime["created_window_count"] == 1
+          assert runtime["screenshot_captured"] is True
+          assert runtime["native_view_capture"]["backend"] == viewer["capture_backend"]
+          assert runtime["native_view_scroll_count"] == 1
+          assert runtime["native_view_unhandled_scroll_count"] == 0
+          assert runtime["native_view_event_count"] >= 1
+          assert runtime["native_view_message_count"] >= 1
+          assert runtime["process_memory_during_runtime"]["source"] == "macos_mach_task_basic_info"
+          assert runtime["process_memory_during_runtime"]["resident_bytes"] > 0
+          assert "appkit_proof_input:scroll:handled" in runtime["events"]
+
+          repeater_root = root / "ui-viewer-items-repeater"
+          repeater_png = repeater_root / "window.png"
+          if repeater_png.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+              raise SystemExit(f"{repeater_png} is not a PNG")
+          repeater = json.loads(
+              (repeater_root / "proof.json").read_text(encoding="utf-8")
+          )
+          assert repeater["platform"] == "macos"
+          assert repeater["capture_backend"] == "appkit_nsview_bitmap_cache"
+          assert repeater["source"]["document_path"] == "examples/ui-documents/items-repeater.json"
+          assert repeater["source"]["node_count"] == 64
+          runtime = repeater["runtime"]
+          assert runtime["native_view_items_repeater_viewport_change_count"] >= 1
+          assert runtime["native_view_items_repeater_scrollbar_drag_count"] == 1
+          assert runtime["native_view_pointer_down_count"] == 1
+          assert runtime["native_view_pointer_move_count"] == 1
+          assert runtime["native_view_pointer_up_count"] == 1
+          assert runtime["native_accessibility_backend"] == "appkit_nsaccessibility"
+          assert runtime["native_accessibility_node_count"] >= 20
+
+          minimum_nodes = {
+              "ui-viewer-image": 8,
+              "ui-viewer-settings-card": 8,
+              "ui-viewer-workbench": 20,
+              "ui-viewer-workbench-dark": 20,
+              "ui-viewer-workbench-high-contrast": 20,
+          }
+          component_proofs = {}
+          for scene, minimum in minimum_nodes.items():
+              scene_root = root / scene
+              scene_png = scene_root / "window.png"
+              if scene_png.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+                  raise SystemExit(f"{scene_png} is not a PNG")
+              scene_proof = json.loads(
+                  (scene_root / "proof.json").read_text(encoding="utf-8")
+              )
+              scene_runtime = scene_proof["runtime"]
+              assert scene_proof["platform"] == "macos"
+              assert scene_proof["capture_backend"] == "appkit_nsview_bitmap_cache"
+              assert scene_runtime["native_accessibility_backend"] == "appkit_nsaccessibility"
+              assert scene_runtime["native_accessibility_node_count"] >= minimum
+              assert scene_runtime["native_view_unhandled_click_count"] == 0
+              component_proofs[scene] = scene_proof
+
+          settings_runtime = component_proofs["ui-viewer-settings-card"]["runtime"]
+          assert settings_runtime["native_view_click_count"] == 1
+          assert settings_runtime["native_view_message_count"] == 1
+
+          workbench_runtime = component_proofs["ui-viewer-workbench"]["runtime"]
+          assert workbench_runtime["native_view_scroll_count"] == 1
+          assert workbench_runtime["native_view_unhandled_scroll_count"] == 0
+          assert workbench_runtime["native_view_text_input_count"] > 0
+          assert workbench_runtime["native_view_text_navigation_count"] >= 2
+          assert workbench_runtime["native_view_text_drag_count"] > 0
+          assert workbench_runtime["native_view_text_selection_change_count"] > 0
+          assert workbench_runtime["native_view_unhandled_key_count"] == 0
+          script = workbench_runtime["native_view_text_input_script_evidence"][0]
+          assert script["contains_cjk"]
+          assert script["contains_right_to_left"]
+          assert script["contains_combining_mark"]
+          assert script["contains_joiner"]
+          assert component_proofs["ui-viewer-workbench-dark"]["theme"] == "Dark"
+          contrast = component_proofs["ui-viewer-workbench-high-contrast"]
+          assert contrast["theme"] == "HighContrast"
+          assert contrast["runtime"]["high_contrast_draw_plan_window_count"] == 1
+
+          status = json.loads(
+              Path("target/native-proof/macos-status-item/status-item-run.json")
+              .read_text(encoding="utf-8")
+          )["run"]
+          assert status["status_item_requested"] is True
+          assert status["status_item_required"] is True
+          assert status["status_item_created"] is True
+          assert status["status_item_error"] is None
+          assert status["status_menu_native_command_count"] == 2
+          assert status["status_menu_command_routed"] is True
+          assert status["status_menu_popup_created"] is True
+          assert status["status_menu_popup_destroyed"] is True
+
+      - name: Upload AppKit proof
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsui-appkit-native-proof
+          path: |
+            target/native-proof/macos-15-arm64
+            target/native-proof/macos-status-item
+          if-no-files-found: error
+          retention-days: 30
+
+  linux-direct-proof:
+    name: Linux Native Runtime Proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      TZ: UTC
+      WINIT_UNIX_BACKEND: x11
+      ZSUI_LINUX_UI_FONT: Ubuntu Sans 11
+      ZSUI_NATIVE_PROOF_OS_FAMILY: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Linux proof runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libcairo2-dev \
+            libdbus-1-dev \
+            libgdk-pixbuf-2.0-dev \
+            libgtk-4-dev \
+            libpango1.0-dev \
+            at-spi2-core \
+            libx11-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            adwaita-icon-theme \
+            librsvg2-common \
+            xvfb \
+            xauth \
+            x11-utils \
+            dbus-x11 \
+            imagemagick \
+            xdotool \
+            xdg-desktop-portal \
+            xdg-desktop-portal-gtk \
+            zenity \
+            fonts-ubuntu \
+            fonts-noto-cjk \
+            fonts-noto-color-emoji \
+            python3-pyatspi
+          fc-cache --force
+          fc-match 'Ubuntu Sans:style=Regular'
+          fc-match 'sans-serif:lang=zh-cn'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build lightweight Linux proof applications
+        run: |
+          mkdir -p \
+            target/native-proof/ubuntu-24.04-x86_64 \
+            target/native-proof/ubuntu-24.04-x86_64-gtk4 \
+            target/native-proof/ubuntu-24.04-x86_64-lite
+          cargo build \
+            --release \
+            --locked \
+            --example component_gallery \
+            --no-default-features \
+            --features component-gallery-demo
+          cargo build \
+            --release \
+            --locked \
+            --example zsui_notepad \
+            --no-default-features \
+            --features notepad-demo,native-smoke
+          cargo build \
+            --release \
+            --locked \
+            --example zsui_notepad_lite \
+            --no-default-features \
+            --features notepad-demo-lite
+          cargo build \
+            --release \
+            --locked \
+            --bin zsui-viewer \
+            --no-default-features \
+            --features ui-viewer,linux-direct-accessibility
+          cargo build \
+            --release \
+            --locked \
+            --example native_clipboard_smoke \
+            --no-default-features \
+            --features linux-direct-lite,clipboard
+          cargo build \
+            --release \
+            --locked \
+            --example native_dialog_smoke \
+            --no-default-features \
+            --features linux-direct,native-smoke
+          cargo build \
+            --release \
+            --locked \
+            --example native_file_dialog_smoke \
+            --no-default-features \
+            --features linux-direct,native-smoke
+
+      - name: Build real GTK4 proof application
+        id: gtk-build
+        run: |
+          set -o pipefail
+          cargo build \
+            --release \
+            --locked \
+            --example zsui_notepad_gtk \
+            --no-default-features \
+            --features notepad-demo-gtk,accessibility,native-smoke \
+            2>&1 | tee target/native-proof/ubuntu-24.04-x86_64-gtk4/build.log
+
+      - name: Summarize GTK4 build failure
+        if: failure() && steps.gtk-build.outcome == 'failure'
+        run: |
+          log=target/native-proof/ubuntu-24.04-x86_64-gtk4/build.log
+          summary="$(grep -Eai 'error(\[E[0-9]+\])?|could not compile|not supported' "$log" | tail -20 | tr '\n' ' ' || true)"
+          if test -z "$summary"; then
+            summary="$(tail -30 "$log" | tr '\n' ' ')"
+          fi
+          echo "::error title=GTK4 build failure::$summary"
+
+      - name: Run native Linux localized dialog proof
+        run: |
+          dbus-run-session -- xvfb-run -a bash -euo pipefail -c '
+            root=target/native-proof/ubuntu-24.04-x86_64
+            report="$root/native-system-dialog.json"
+            screenshot="$root/native-system-dialog.png"
+            mkdir -p "$root"
+            ./target/release/examples/native_dialog_smoke \
+              --output "$report" \
+              --screenshot "$screenshot" &
+            dialog_pid=$!
+            window=
+            for attempt in $(seq 1 100); do
+              window=$(xdotool search --onlyvisible --name "Native Dialog Proof" 2>/dev/null | head -n 1 || true)
+              if [ -n "$window" ]; then
+                break
+              fi
+              if ! kill -0 "$dialog_pid" 2>/dev/null; then
+                break
+              fi
+              sleep 0.1
+            done
+            if [ -z "$window" ]; then
+              kill "$dialog_pid" 2>/dev/null || true
+              wait "$dialog_pid" 2>/dev/null || true
+              echo "the Linux desktop dialog did not become visible" >&2
+              exit 1
+            fi
+            xdotool windowraise "$window" 2>/dev/null || true
+            capture="$root/native-system-dialog-capture.png"
+            rm -f "$screenshot" "$capture"
+            for attempt in $(seq 1 40); do
+              if import -window "$window" "$capture" 2>/dev/null \
+                && [ -s "$capture" ] \
+                && [ "$(stat --format=%s "$capture")" -ge 1024 ]; then
+                mv "$capture" "$screenshot"
+                break
+              fi
+              rm -f "$capture"
+              sleep 0.2
+            done
+            if [ ! -s "$screenshot" ] || [ "$(stat --format=%s "$screenshot")" -lt 1024 ]; then
+              kill "$dialog_pid" 2>/dev/null || true
+              wait "$dialog_pid" 2>/dev/null || true
+              echo "the Linux desktop dialog did not produce a valid window capture" >&2
+              exit 1
+            fi
+            xdotool key --window "$window" Return
+            wait "$dialog_pid"
+          '
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("target/native-proof/ubuntu-24.04-x86_64")
+          proof = json.loads((root / "native-system-dialog.json").read_text(encoding="utf-8"))
+          assert proof["schema"] == "zsui.native-system-dialog-proof/v1"
+          assert proof["platform"] == "linux"
+          assert proof["native_surface"] == "linux_desktop_zenity"
+          assert proof["owner_window_supplied"] is False
+          assert proof["actual_response"] == "yes"
+          assert proof["response_matched"] is True
+          assert proof["screenshot_captured"] is True
+          assert proof["localized_button_labels"] == ["确定", "取消", "是", "否"]
+          assert proof["errors"] == []
+          assert (root / "native-system-dialog.png").stat().st_size >= 1024
+          PY
+
+      - name: Run native Linux XDG file-dialog proof
+        run: |
+          dbus-run-session -- xvfb-run -a bash -euo pipefail -c '
+            export XDG_CURRENT_DESKTOP=GNOME
+            export XDG_SESSION_TYPE=x11
+            export GDK_BACKEND=x11
+            export GTK_USE_PORTAL=1
+            dbus-update-activation-environment DISPLAY XAUTHORITY
+            /usr/libexec/xdg-desktop-portal-gtk > /tmp/zsui-portal-gtk.log 2>&1 &
+            portal_gtk_pid=$!
+            /usr/libexec/xdg-desktop-portal > /tmp/zsui-portal.log 2>&1 &
+            portal_pid=$!
+            trap '\''kill "$portal_pid" "$portal_gtk_pid" 2>/dev/null || true'\'' EXIT
+            for attempt in $(seq 1 50); do
+              if gdbus introspect --session \
+                --dest org.freedesktop.portal.Desktop \
+                --object-path /org/freedesktop/portal/desktop \
+                --only-properties >/dev/null 2>&1; then
+                break
+              fi
+              sleep 0.1
+            done
+            gdbus introspect --session \
+              --dest org.freedesktop.portal.Desktop \
+              --object-path /org/freedesktop/portal/desktop \
+              --only-properties >/dev/null
+            root=target/native-proof/ubuntu-24.04-x86_64
+            mkdir -p "$root"
+
+            capture_and_cancel() {
+              title="$1"
+              screenshot="$2"
+              window=
+              for attempt in $(seq 1 120); do
+                window=$(xdotool search --onlyvisible --name "$title" 2>/dev/null | head -n 1 || true)
+                if [ -n "$window" ]; then
+                  break
+                fi
+                if ! kill -0 "$proof_pid" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.1
+              done
+              if [ -z "$window" ]; then
+                kill "$proof_pid" 2>/dev/null || true
+                wait "$proof_pid" 2>/dev/null || true
+                echo "the XDG file dialog did not become visible: $title" >&2
+                exit 1
+              fi
+              xdotool windowactivate --sync "$window" 2>/dev/null || true
+              sleep 0.25
+              if ! import -window "$window" "$screenshot" 2>/dev/null \
+                || [ ! -s "$screenshot" ] \
+                || [ "$(stat --format=%s "$screenshot")" -lt 1024 ]; then
+                kill "$proof_pid" 2>/dev/null || true
+                wait "$proof_pid" 2>/dev/null || true
+                echo "the XDG file dialog did not produce a valid capture: $title" >&2
+                exit 1
+              fi
+              xdotool key --window "$window" Escape
+            }
+
+            ./target/release/examples/native_file_dialog_smoke \
+              --output "$root/native-file-dialog.json" \
+              --open-screenshot "$root/native-open-panel.png" \
+              --save-screenshot "$root/native-save-panel.png" &
+            proof_pid=$!
+            capture_and_cancel "Open File Proof" "$root/native-open-panel.png"
+            capture_and_cancel "Save File Proof" "$root/native-save-panel.png"
+            wait "$proof_pid"
+          '
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("target/native-proof/ubuntu-24.04-x86_64")
+          proof = json.loads((root / "native-file-dialog.json").read_text(encoding="utf-8"))
+          assert proof["schema"] == "zsui.native-file-dialog-proof/v1"
+          assert proof["platform"] == "linux"
+          assert proof["native_open_surface"] == "xdg_desktop_portal_open_file"
+          assert proof["native_save_surface"] == "xdg_desktop_portal_save_file"
+          assert proof["owner_window_supplied"] is False
+          assert proof["open_allows_multiple"] is True
+          assert proof["suggested_name"] == "zsui-native-proof.txt"
+          assert proof["open_cancelled"] is True
+          assert proof["save_cancelled"] is True
+          assert proof["open_screenshot_captured"] is True
+          assert proof["save_screenshot_captured"] is True
+          assert proof["errors"] == []
+          assert (root / "native-open-panel.png").stat().st_size >= 1024
+          assert (root / "native-save-panel.png").stat().st_size >= 1024
+          PY
+
+      - name: Run owner-bound Linux Notepad XDG file-dialog proof
+        run: |
+          dbus-run-session -- xvfb-run -a bash -euo pipefail -c '
+            export XDG_CURRENT_DESKTOP=GNOME
+            export XDG_SESSION_TYPE=x11
+            export GDK_BACKEND=x11
+            export GTK_USE_PORTAL=1
+            dbus-update-activation-environment DISPLAY XAUTHORITY
+            /usr/libexec/xdg-desktop-portal-gtk > /tmp/zsui-owner-portal-gtk.log 2>&1 &
+            portal_gtk_pid=$!
+            /usr/libexec/xdg-desktop-portal > /tmp/zsui-owner-portal.log 2>&1 &
+            portal_pid=$!
+            trap '\''kill "$portal_pid" "$portal_gtk_pid" 2>/dev/null || true'\'' EXIT
+            for attempt in $(seq 1 50); do
+              if gdbus introspect --session \
+                --dest org.freedesktop.portal.Desktop \
+                --object-path /org/freedesktop/portal/desktop \
+                --only-properties >/dev/null 2>&1; then
+                break
+              fi
+              sleep 0.1
+            done
+            gdbus introspect --session \
+              --dest org.freedesktop.portal.Desktop \
+              --object-path /org/freedesktop/portal/desktop \
+              --only-properties >/dev/null
+            root=target/native-proof/ubuntu-24.04-x86_64
+
+            capture_owner_dialog() {
+              title="$1"
+              screenshot="$2"
+              dialog=
+              for attempt in $(seq 1 150); do
+                dialog=$(xdotool search --onlyvisible --name "$title" 2>/dev/null | head -n 1 || true)
+                if [ -n "$dialog" ]; then
+                  break
+                fi
+                if ! kill -0 "$proof_pid" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.1
+              done
+              if [ -z "$dialog" ]; then
+                kill "$proof_pid" 2>/dev/null || true
+                wait "$proof_pid" 2>/dev/null || true
+                echo "the owner-bound Linux file dialog did not become visible: $title" >&2
+                exit 1
+              fi
+              owner=$(xdotool search --onlyvisible --pid "$proof_pid" --name "ZSUI Notepad" 2>/dev/null | head -n 1 || true)
+              if [ -z "$owner" ]; then
+                kill "$proof_pid" 2>/dev/null || true
+                wait "$proof_pid" 2>/dev/null || true
+                echo "the Linux Notepad owner window is missing" >&2
+                exit 1
+              fi
+              owner_hex=$(printf "0x%x" "$owner")
+              transient=$(xprop -id "$dialog" WM_TRANSIENT_FOR 2>/dev/null || true)
+              if ! printf "%s" "$transient" | grep -Fqi "$owner_hex"; then
+                kill "$proof_pid" 2>/dev/null || true
+                wait "$proof_pid" 2>/dev/null || true
+                echo "the XDG file dialog is not transient for the ZSUI Notepad window: $transient" >&2
+                exit 1
+              fi
+              xdotool windowactivate --sync "$dialog" 2>/dev/null || true
+              sleep 0.25
+              if ! import -window "$dialog" "$screenshot" 2>/dev/null \
+                || [ ! -s "$screenshot" ] \
+                || [ "$(stat --format=%s "$screenshot")" -lt 1024 ]; then
+                kill "$proof_pid" 2>/dev/null || true
+                wait "$proof_pid" 2>/dev/null || true
+                echo "the owner-bound XDG file dialog did not produce a valid capture" >&2
+                exit 1
+              fi
+              xdotool key --window "$dialog" Escape
+            }
+
+            ./target/release/examples/zsui_notepad \
+              --file-dialog-proof \
+              --width 960 \
+              --height 640 \
+              --output "$root" &
+            proof_pid=$!
+            capture_owner_dialog \
+              "Open text document" \
+              "$root/notepad-owner-open-panel.png"
+            capture_owner_dialog \
+              "Save text document" \
+              "$root/notepad-owner-save-panel.png"
+            wait "$proof_pid"
+          '
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("target/native-proof/ubuntu-24.04-x86_64")
+          proof = json.loads((root / "notepad-file-dialog-owner.json").read_text(encoding="utf-8"))
+          assert proof["schema"] == "zsui.native-proof/v1"
+          assert proof["platform"] == "linux"
+          assert proof["scenario"] == "notepad-file-dialog-owner"
+          assert proof["errors"] == []
+          assert proof["runtime"]["native_view_app_command_count"] >= 2
+          assert proof["runtime"]["native_view_unhandled_click_count"] == 0
+          assert (root / "notepad-owner-open-panel.png").stat().st_size >= 1024
+          assert (root / "notepad-owner-save-panel.png").stat().st_size >= 1024
+          assert (root / "notepad-file-dialog-owner.png").stat().st_size >= 1024
+          PY
+
+      - name: Run owner-bound GTK4 Notepad file-dialog proof
+        run: |
+          dbus-run-session -- xvfb-run -a bash -euo pipefail -c '
+            export GTK_USE_PORTAL=0
+            root=target/native-proof/ubuntu-24.04-x86_64-gtk4
+
+            capture_owner_dialog() {
+              title="$1"
+              screenshot="$2"
+              dialog=
+              for attempt in $(seq 1 150); do
+                dialog=$(xdotool search --onlyvisible --name "$title" 2>/dev/null | head -n 1 || true)
+                if [ -n "$dialog" ]; then
+                  break
+                fi
+                if ! kill -0 "$proof_pid" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.1
+              done
+              if [ -z "$dialog" ]; then
+                kill "$proof_pid" 2>/dev/null || true
+                wait "$proof_pid" 2>/dev/null || true
+                echo "the owner-bound GTK4 file dialog did not become visible: $title" >&2
+                exit 1
+              fi
+              owner=$(xdotool search --onlyvisible --pid "$proof_pid" --name "ZSUI Notepad" 2>/dev/null | grep -v "^$dialog$" | head -n 1 || true)
+              if [ -z "$owner" ]; then
+                kill "$proof_pid" 2>/dev/null || true
+                wait "$proof_pid" 2>/dev/null || true
+                echo "the GTK4 Notepad owner window is missing" >&2
+                exit 1
+              fi
+              owner_hex=$(printf "0x%x" "$owner")
+              transient=$(xprop -id "$dialog" WM_TRANSIENT_FOR 2>/dev/null || true)
+              if ! printf "%s" "$transient" | grep -Fqi "$owner_hex"; then
+                kill "$proof_pid" 2>/dev/null || true
+                wait "$proof_pid" 2>/dev/null || true
+                echo "the GTK4 file dialog is not transient for the ZSUI Notepad window: $transient" >&2
+                exit 1
+              fi
+              xdotool windowactivate --sync "$dialog" 2>/dev/null || true
+              sleep 0.25
+              if ! import -window "$dialog" "$screenshot" 2>/dev/null \
+                || [ ! -s "$screenshot" ] \
+                || [ "$(stat --format=%s "$screenshot")" -lt 1024 ]; then
+                kill "$proof_pid" 2>/dev/null || true
+                wait "$proof_pid" 2>/dev/null || true
+                echo "the owner-bound GTK4 file dialog did not produce a valid capture" >&2
+                exit 1
+              fi
+              xdotool key --window "$dialog" Escape
+            }
+
+            ./target/release/examples/zsui_notepad_gtk \
+              --file-dialog-proof \
+              --width 960 \
+              --height 640 \
+              --output "$root" &
+            proof_pid=$!
+            capture_owner_dialog \
+              "Open text document" \
+              "$root/notepad-owner-open-panel.png"
+            capture_owner_dialog \
+              "Save text document" \
+              "$root/notepad-owner-save-panel.png"
+            wait "$proof_pid"
+          '
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("target/native-proof/ubuntu-24.04-x86_64-gtk4")
+          proof = json.loads((root / "notepad-file-dialog-owner.json").read_text(encoding="utf-8"))
+          assert proof["schema"] == "zsui.native-proof/v1"
+          assert proof["platform"] == "linux"
+          assert proof["backend"] == "gtk4"
+          assert proof["scenario"] == "notepad-file-dialog-owner"
+          assert proof["errors"] == []
+          assert proof["runtime"]["native_view_app_command_count"] >= 2
+          assert proof["runtime"]["native_view_unhandled_click_count"] == 0
+          assert (root / "notepad-owner-open-panel.png").stat().st_size >= 1024
+          assert (root / "notepad-owner-save-panel.png").stat().st_size >= 1024
+          assert (root / "notepad-file-dialog-owner.png").stat().st_size >= 1024
+          PY
+
+      - name: Verify optional Linux renderer boundaries
+        run: |
+          if ldd target/release/examples/zsui_notepad_lite | grep -Eiq 'cairo|pango'; then
+            ldd target/release/examples/zsui_notepad_lite
+            echo "linux-direct-lite unexpectedly links Cairo/Pango" >&2
+            exit 1
+          fi
+          if cargo tree \
+            --locked \
+            --no-default-features \
+            --features notepad-demo-gtk,accessibility \
+            | grep -Eq ' (winit|softbuffer|accesskit_winit) v'; then
+            cargo tree \
+              --locked \
+              --no-default-features \
+              --features notepad-demo-gtk,accessibility
+            echo "notepad-demo-gtk unexpectedly pulls the Winit/Softbuffer host" >&2
+            exit 1
+          fi
+
+      - name: Run real Linux proof scenes
+        id: linux-scenes
+        run: |
+          set -o pipefail
+          mkdir -p \
+            target/native-proof/ubuntu-24.04-x86_64 \
+            target/native-proof/ubuntu-24.04-x86_64-gtk4 \
+            target/native-proof/ubuntu-24.04-x86_64-lite
+          dbus-run-session -- xvfb-run -a \
+            ./target/release/examples/native_clipboard_smoke \
+              --output target/native-proof/ubuntu-24.04-x86_64-lite/clipboard-image.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          proof = json.loads(Path("target/native-proof/ubuntu-24.04-x86_64-lite/clipboard-image.json").read_text())
+          assert proof["schema"] == "zsui.native-clipboard-proof/v1"
+          assert proof["platform"] == "linux"
+          assert proof["image_write_succeeded"] is True
+          assert proof["image_read_succeeded"] is True
+          assert proof["original_clipboard_restored"] is True
+          PY
+          for page in inputs collections navigation feedback catalog; do
+            dbus-run-session -- xvfb-run -a \
+              ./target/release/examples/component_gallery \
+                --native-proof \
+                --page "$page" \
+                --theme light \
+                --width 1180 \
+                --height 780 \
+                --output target/native-proof/ubuntu-24.04-x86_64 \
+              2>&1 | tee "target/native-proof/ubuntu-24.04-x86_64/gallery-$page-light.log"
+          done
+          dbus-run-session -- xvfb-run -a \
+            ./target/release/examples/component_gallery \
+              --native-proof \
+              --page inputs \
+              --theme dark \
+              --width 1180 \
+              --height 780 \
+              --output target/native-proof/ubuntu-24.04-x86_64 \
+            2>&1 | tee target/native-proof/ubuntu-24.04-x86_64/gallery-inputs-dark.log
+          dbus-run-session -- xvfb-run -a \
+            ./target/release/examples/component_gallery \
+              --native-proof \
+              --page catalog \
+              --theme light \
+              --width 1180 \
+              --height 780 \
+              --resize-width 800 \
+              --resize-height 520 \
+              --scenario resized-small \
+              --screenshot target/native-proof/ubuntu-24.04-x86_64/resized-small.png \
+              --report target/native-proof/ubuntu-24.04-x86_64/resized-small.json \
+            2>&1 | tee target/native-proof/ubuntu-24.04-x86_64/resized-small.log
+          dbus-run-session -- xvfb-run -a \
+            ./target/release/examples/component_gallery \
+              --native-proof \
+              --page catalog \
+              --theme light \
+              --width 960 \
+              --height 560 \
+              --resize-width 1180 \
+              --resize-height 640 \
+              --scenario resized-large \
+              --screenshot target/native-proof/ubuntu-24.04-x86_64/resized-large.png \
+              --report target/native-proof/ubuntu-24.04-x86_64/resized-large.json \
+            2>&1 | tee target/native-proof/ubuntu-24.04-x86_64/resized-large.log
+          dbus-run-session -- xvfb-run -a \
+            ./target/release/examples/zsui_notepad \
+              --native-proof \
+              --width 960 \
+              --height 640 \
+              --output target/native-proof/ubuntu-24.04-x86_64 \
+            2>&1 | tee target/native-proof/ubuntu-24.04-x86_64/notepad.log
+          dbus-run-session -- xvfb-run -a bash -euo pipefail <<'GTK_PROOF'
+          export NO_AT_BRIDGE=0
+          export GTK_A11Y=atspi
+          export ZSUI_NATIVE_PROOF_DURATION_MS=12000
+          root=target/native-proof/ubuntu-24.04-x86_64-gtk4
+          for attempt in $(seq 1 80); do
+            if gdbus introspect \
+              --session \
+              --dest org.a11y.Bus \
+              --object-path /org/a11y/bus \
+              >"$root/atspi-status.log" 2>&1; then
+              break
+            fi
+            sleep 0.1
+          done
+          gdbus call \
+            --session \
+            --dest org.a11y.Bus \
+            --object-path /org/a11y/bus \
+            --method org.freedesktop.DBus.Properties.Set \
+            org.a11y.Status IsEnabled '<false>' \
+            >>"$root/atspi-status.log"
+          gdbus call \
+            --session \
+            --dest org.a11y.Bus \
+            --object-path /org/a11y/bus \
+            --method org.freedesktop.DBus.Properties.Set \
+            org.a11y.Status IsEnabled '<true>' \
+            >>"$root/atspi-status.log"
+          gdbus call \
+            --session \
+            --dest org.a11y.Bus \
+            --object-path /org/a11y/bus \
+            --method org.freedesktop.DBus.Properties.Get \
+            org.a11y.Status IsEnabled \
+            >>"$root/atspi-status.log"
+          ./target/release/examples/zsui_notepad_gtk \
+            --native-proof \
+            --width 960 \
+            --height 640 \
+            --output "$root" \
+            >"$root/notepad.log" 2>&1 &
+          gtk_pid=$!
+          trap 'kill "$gtk_pid" 2>/dev/null || true' EXIT
+          /usr/bin/python3 - <<'PY'
+          import json
+          import time
+          from pathlib import Path
+          import pyatspi
+
+          root = Path("target/native-proof/ubuntu-24.04-x86_64-gtk4")
+          deadline = time.monotonic() + 10.0
+          application = None
+          snapshot = []
+          observed = []
+
+          def children(node):
+              for index in range(node.childCount):
+                  try:
+                      yield node.getChildAtIndex(index)
+                  except Exception:
+                      pass
+
+          def walk(node, limit=256):
+              queue = [node]
+              seen = 0
+              while queue and seen < limit:
+                  current = queue.pop(0)
+                  seen += 1
+                  yield current
+                  queue.extend(children(current))
+
+          while time.monotonic() < deadline and not snapshot:
+              desktop = pyatspi.Registry.getDesktop(0)
+              observed = []
+              for candidate in children(desktop):
+                  try:
+                      nodes = list(walk(candidate))
+                      evidence = [
+                          {"name": node.name or "", "role": node.getRoleName()}
+                          for node in nodes
+                      ]
+                  except Exception:
+                      continue
+                  observed.append(evidence)
+                  if any("ZSUI Notepad" in item["name"] for item in evidence):
+                      text_nodes = [
+                          item for item in evidence if "text" in item["role"].lower()
+                      ]
+                      if text_nodes:
+                          application = candidate
+                          snapshot = evidence
+                          break
+              if not snapshot:
+                  time.sleep(0.1)
+
+          (root / "gtk-atspi-observed.json").write_text(
+              json.dumps({"applications": observed}, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          if application is None:
+              raise SystemExit("AT-SPI did not expose the GTK4 ZSUI Notepad text box")
+          text_nodes = [item for item in snapshot if "text" in item["role"].lower()]
+          (root / "gtk-atspi.json").write_text(
+              json.dumps(
+                  {
+                      "schema": "zsui.gtk4-atspi-proof/v1",
+                      "backend": "gtk4_atspi",
+                      "node_count": len(snapshot),
+                      "text_nodes": text_nodes,
+                      "nodes": snapshot,
+                  },
+                  ensure_ascii=False,
+                  indent=2,
+              ),
+              encoding="utf-8",
+          )
+          PY
+          wait "$gtk_pid"
+          trap - EXIT
+          GTK_PROOF
+          dbus-run-session -- xvfb-run -a \
+            ./target/release/examples/zsui_notepad_lite \
+              --native-proof \
+              --width 960 \
+              --height 640 \
+              --output target/native-proof/ubuntu-24.04-x86_64-lite \
+            2>&1 | tee target/native-proof/ubuntu-24.04-x86_64-lite/notepad.log
+
+      - name: Summarize Linux proof failure
+        if: failure() && steps.linux-scenes.outcome == 'failure'
+        run: |
+          root=target/native-proof/ubuntu-24.04-x86_64
+          gtk_root=target/native-proof/ubuntu-24.04-x86_64-gtk4
+          lite_root=target/native-proof/ubuntu-24.04-x86_64-lite
+          summary="$(grep -Eai 'error|failed|panic|capture|display|xvfb|gtk|at-spi|accessibility' \
+            "$root"/*.log "$gtk_root"/*.log "$lite_root"/*.log \
+            2>/dev/null | tail -30 | tr '\n' ' ' || true)"
+          if test -z "$summary"; then
+            summary="$(tail -30 "$root"/*.log "$gtk_root"/*.log "$lite_root"/*.log \
+              2>/dev/null | tr '\n' ' ' || true)"
+          fi
+          echo "::error title=Linux proof scene failure::$summary"
+
+      - name: Run real Linux Viewer proof
+        id: linux-viewer
+        run: |
+          set -o pipefail
+          mkdir -p target/native-proof/ubuntu-24.04-x86_64/ui-viewer-scroll
+          mkdir -p target/native-proof/ubuntu-24.04-x86_64/ui-viewer-items-repeater
+          mkdir -p target/native-proof/ubuntu-24.04-x86_64/ui-viewer-image
+          mkdir -p target/native-proof/ubuntu-24.04-x86_64/ui-viewer-settings-card
+          mkdir -p target/native-proof/ubuntu-24.04-x86_64/ui-viewer-workbench
+          mkdir -p target/native-proof/ubuntu-24.04-x86_64/ui-viewer-workbench-dark
+          mkdir -p target/native-proof/ubuntu-24.04-x86_64/ui-viewer-workbench-high-contrast
+          dbus-run-session -- xvfb-run -a \
+            ./target/release/zsui-viewer \
+              examples/ui-documents/scrolling.json \
+              --bindings examples/ui-documents/scrolling.bindings.json \
+              --values examples/ui-documents/scrolling.values.json \
+              --width 720 \
+              --height 560 \
+              --smoke target/native-proof/ubuntu-24.04-x86_64/ui-viewer-scroll \
+              --smoke-scroll 360 260 96 \
+            2>&1 | tee target/native-proof/ubuntu-24.04-x86_64/ui-viewer-scroll/viewer.log
+          dbus-run-session -- xvfb-run -a \
+            ./target/release/zsui-viewer \
+              examples/ui-documents/items-repeater.json \
+              --bindings examples/ui-documents/items-repeater.bindings.json \
+              --values examples/ui-documents/items-repeater.values.json \
+              --width 960 \
+              --height 640 \
+              --smoke target/native-proof/ubuntu-24.04-x86_64/ui-viewer-items-repeater \
+              --smoke-items-repeater-drag records \
+            2>&1 | tee target/native-proof/ubuntu-24.04-x86_64/ui-viewer-items-repeater/viewer.log
+          dbus-run-session -- xvfb-run -a \
+            ./target/release/zsui-viewer \
+              examples/ui-documents/image.json \
+              --bindings examples/ui-documents/image.bindings.json \
+              --values examples/ui-documents/image.values.json \
+              --width 960 \
+              --height 640 \
+              --smoke target/native-proof/ubuntu-24.04-x86_64/ui-viewer-image \
+              --smoke-duration-ms 700 \
+            2>&1 | tee target/native-proof/ubuntu-24.04-x86_64/ui-viewer-image/viewer.log
+          dbus-run-session -- xvfb-run -a \
+            ./target/release/zsui-viewer \
+              examples/ui-documents/settings-card.json \
+              --bindings examples/ui-documents/settings-card.bindings.json \
+              --values examples/ui-documents/settings-card.values.json \
+              --width 960 \
+              --height 640 \
+              --smoke target/native-proof/ubuntu-24.04-x86_64/ui-viewer-settings-card \
+              --smoke-duration-ms 700 \
+              --smoke-click-node apply-appearance \
+            2>&1 | tee target/native-proof/ubuntu-24.04-x86_64/ui-viewer-settings-card/viewer.log
+          dbus-run-session -- xvfb-run -a \
+            ./target/release/zsui-viewer \
+              examples/ui-documents/workbench.json \
+              --bindings examples/ui-documents/workbench.bindings.json \
+              --values examples/ui-documents/workbench.values.json \
+              --width 1280 \
+              --height 800 \
+              --smoke target/native-proof/ubuntu-24.04-x86_64/ui-viewer-workbench \
+              --smoke-duration-ms 900 \
+              --smoke-scroll 600 400 96 \
+              --smoke-workbench-composer workbench \
+            2>&1 | tee target/native-proof/ubuntu-24.04-x86_64/ui-viewer-workbench/viewer.log
+          for theme in dark high-contrast; do
+            dbus-run-session -- xvfb-run -a \
+              ./target/release/zsui-viewer \
+                examples/ui-documents/workbench.json \
+                --bindings examples/ui-documents/workbench.bindings.json \
+                --values examples/ui-documents/workbench.values.json \
+                --width 1280 \
+                --height 800 \
+                --theme "$theme" \
+                --smoke "target/native-proof/ubuntu-24.04-x86_64/ui-viewer-workbench-$theme" \
+                --smoke-duration-ms 700 \
+              2>&1 | tee "target/native-proof/ubuntu-24.04-x86_64/ui-viewer-workbench-$theme/viewer.log"
+          done
+
+      - name: Summarize Linux Viewer proof failure
+        if: failure() && steps.linux-viewer.outcome == 'failure'
+        run: |
+          log=target/native-proof/ubuntu-24.04-x86_64/ui-viewer-scroll/viewer.log
+          summary="$(tail -50 "$log" | tr '\n' ' ' || true)"
+          echo "::error title=Linux Viewer proof failure::$summary"
+
+      - name: Validate Linux artifacts
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          root = Path("target/native-proof/ubuntu-24.04-x86_64")
+
+          def validate_notepad_text(runtime, backend):
+              scripts = runtime["native_view_text_input_script_evidence"]
+              assert any(item["contains_cjk"] for item in scripts)
+              assert any(item["contains_right_to_left"] for item in scripts)
+              assert any(item["contains_combining_mark"] for item in scripts)
+              assert any(item["contains_joiner"] for item in scripts)
+              assert runtime["native_view_ime_preedit_update_count"] == 2
+              assert runtime["native_view_ime_commit_count"] == 1
+              assert runtime["native_view_ime_cancel_count"] == 1
+              assert runtime["native_view_ime_caret_rect_observation_count"] >= 4
+              assert not runtime["native_view_ime_preedit_active"]
+              assert runtime["native_view_ime_caret_rect"] is not None
+              assert len(runtime["native_view_ime_preedit_script_evidence"]) == 2
+              assert len(runtime["native_view_ime_commit_script_evidence"]) == 1
+              assert all(
+                  item["contains_cjk"]
+                  for item in runtime["native_view_ime_preedit_script_evidence"]
+              )
+              navigation = runtime["native_view_text_navigation_evidence"]
+              assert navigation
+              assert {item["backend"] for item in navigation} == {backend}
+              home_index = max(
+                  index
+                  for index, item in enumerate(navigation)
+                  if item["key"] == "Home" and item["handled"]
+              )
+              line_start = navigation[home_index]["caret"]
+              rights = [
+                  item
+                  for item in navigation[home_index + 1 :]
+                  if item["key"] == "Right"
+              ][:4]
+              assert len(rights) == 4
+              assert [item["caret"] - line_start for item in rights] == [1, 4, 3, 2]
+              assert all(
+                  item["handled"]
+                  and item["selection"] == [item["caret"], item["caret"]]
+                  for item in rights
+              )
+
+          stems = (
+              "gallery-inputs-light",
+              "gallery-inputs-dark",
+              "gallery-collections-light",
+              "gallery-navigation-light",
+              "gallery-feedback-light",
+              "gallery-catalog-light",
+              "resized-small",
+              "resized-large",
+              "notepad-interaction",
+          )
+          for stem in stems:
+              png = root / f"{stem}.png"
+              report = root / f"{stem}.json"
+              if png.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+                  raise SystemExit(f"{png} is not a PNG")
+              proof = json.loads(report.read_text(encoding="utf-8"))
+              runtime = proof["runtime"]
+              capture = runtime.get("native_view_capture") or {}
+              assert proof["schema"] == "zsui.native-proof/v1"
+              assert proof["schema_version"] == 1
+              assert proof["platform"] == "linux"
+              assert proof["backend"] == "linux-direct"
+              assert proof["capture_backend"] == "winit_softbuffer_pango_cairo"
+              assert proof["display_server"] == "x11"
+              assert proof["os_family"] == "ubuntu-24.04"
+              assert proof["architecture"] == "x86_64"
+              assert proof["errors"] == []
+              assert proof["unhandled_commands"] == []
+              assert isinstance(proof["messages"], list)
+              typography = proof["typography"]
+              assert typography["platform"] == "Gtk"
+              assert typography["source"] == "fontconfig_pango_context"
+              assert typography["ui_font_family"] == "Ubuntu Sans"
+              assert typography["configured_ui_font"] == "Ubuntu Sans 11"
+              assert typography["body_metrics"]["size"] > 0
+              assert typography["body_metrics"]["ascent"] > 0
+              assert typography == capture["typography"]
+              memory = proof["process_memory"]
+              assert memory["source"] == "linux_procfs_status_smaps_rollup"
+              assert memory["sample_point"] == "native_window_before_teardown"
+              assert memory["resident_bytes"] > 0
+              assert memory["peak_resident_bytes"] >= memory["resident_bytes"]
+              assert runtime["created_window_count"] == 1
+              assert runtime["screenshot_captured"] is True
+              assert not runtime["screenshot_error"]
+              assert capture["backend"] == "winit_softbuffer_pango_cairo"
+              assert capture["display_server"] == "x11"
+              assert capture["pixel_width"] > 0
+              assert capture["pixel_height"] > 0
+              assert capture["scale_factor"] > 0.0
+              assert 0.75 <= capture["typography_scale"] <= 3.0
+              expected = {
+                  "resized-small": {"width": 800, "height": 520},
+                  "resized-large": {"width": 1180, "height": 640},
+                  "notepad-interaction": {"width": 960, "height": 640},
+              }.get(stem, {"width": 1180, "height": 780})
+              assert proof["window"]["width"] == expected["width"]
+              assert proof["window"]["height"] == expected["height"]
+              assert proof["window"]["logical_width"] == expected["width"]
+              assert proof["window"]["logical_height"] == expected["height"]
+              assert proof["window"]["pixel_width"] == capture["pixel_width"]
+              assert proof["window"]["pixel_height"] == capture["pixel_height"]
+              assert proof["scale_factor"] == capture["scale_factor"]
+              assert proof["typography_scale"] == capture["typography_scale"]
+              assert capture["logical_width"] == expected["width"]
+              assert capture["logical_height"] == expected["height"]
+              assert abs(
+                  capture["pixel_width"]
+                  - capture["logical_width"] * capture["scale_factor"]
+              ) <= 1.0
+              if stem in {"resized-small", "resized-large"}:
+                  resize = runtime["native_window_resize"]
+                  assert proof["scenario"] == stem
+                  assert proof["messages"] == []
+                  assert runtime["native_window_resize_required"] is True
+                  assert runtime["native_window_resize_error"] is None
+                  assert resize["backend"] == "winit_request_inner_size_window_event"
+                  assert resize["requested_size"] == expected
+                  assert resize["final_size"] == expected
+                  assert resize["initial_size"] != expected
+                  assert resize["native_event_count"] >= 1
+                  assert resize["applied"] is True
+              if stem == "gallery-feedback-light":
+                  assert proof["messages"] == ["MenuFlyoutCommand", "MenuFlyoutOpenChanged", "OpenMenuFlyout"]
+                  assert runtime["native_view_message_count"] >= 3
+                  assert runtime["native_view_event_count"] >= 2
+                  assert runtime["native_view_menu_flyout_invoke_count"] == 1
+                  assert runtime["native_view_menu_flyout_open_change_count"] == 1
+                  assert runtime["native_view_menu_flyout_submenu_change_count"] == 4
+                  assert runtime["native_view_key_down_count"] == 9
+                  assert runtime["native_view_keyboard_activation_count"] == 1
+                  assert runtime["native_view_focused_widget"] == 408
+                  assert runtime["native_view_unhandled_click_count"] == 0
+                  roles = {widget["role"] for widget in proof["widgets"]}
+                  assert {"menu_flyout", "menu_flyout_scrim", "menu_flyout_item"} <= roles
+              if stem == "gallery-navigation-light":
+                  assert proof["messages"] == ["TabSelected"]
+                  assert runtime["native_view_message_count"] == 1
+                  assert runtime["native_view_event_count"] == 3
+                  assert runtime["native_view_tab_selection_count"] == 1
+                  assert runtime["native_view_tab_keyboard_selection_count"] == 0
+                  assert runtime["native_view_tab_keyboard_focus_only_count"] == 1
+                  assert runtime["native_view_key_down_count"] == 1
+                  assert runtime["native_view_unhandled_key_count"] == 0
+                  assert runtime["native_view_unhandled_click_count"] == 0
+                  focused_tabs = [
+                      widget
+                      for widget in proof["widgets"]
+                      if widget["focused"] and widget["role"] == "tab"
+                  ]
+                  assert len(focused_tabs) == 1
+                  assert proof["focused_widget"] == focused_tabs[0]["id"]
+                  assert proof["focused_widget"] == f'widget-{runtime["native_view_focused_widget"]}'
+                  assert any(
+                      item["backend"] == "linux_direct"
+                      and item["key"] == "Right"
+                      and item["handled"]
+                      for item in runtime["native_view_text_navigation_evidence"]
+                  )
+              if stem == "gallery-catalog-light":
+                  assert runtime["native_view_pointer_down_count"] == 2
+                  assert runtime["native_view_pointer_move_count"] == 1
+                  assert runtime["native_view_pointer_up_count"] == 2
+                  assert runtime["native_view_canvas_pointer_event_count"] == 5
+                  assert runtime["native_view_canvas_pointer_drag_count"] == 1
+                  assert runtime["native_view_unhandled_click_count"] == 0
+              if stem == "notepad-interaction":
+                  validate_notepad_text(runtime, "linux_direct")
+
+          viewer_root = root / "ui-viewer-scroll"
+          viewer_png = viewer_root / "window.png"
+          if viewer_png.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+              raise SystemExit(f"{viewer_png} is not a PNG")
+          viewer = json.loads(
+              (viewer_root / "proof.json").read_text(encoding="utf-8")
+          )
+          assert viewer["schema"] == "zsui.ui-viewer-proof/v1"
+          assert viewer["schema_version"] == 1
+          assert viewer["platform"] == "linux"
+          assert viewer["capture_backend"] == "winit_softbuffer_pango_cairo"
+          assert viewer["display_server"] == "x11"
+          assert viewer["window"]["logical_width"] == 720
+          assert viewer["window"]["logical_height"] == 560
+          assert viewer["window"]["pixel_width"] > 0
+          assert viewer["window"]["pixel_height"] > 0
+          assert viewer["window"]["scale_factor"] > 0.0
+          source = viewer["source"]
+          assert source["revision"] == 1
+          assert source["document_schema_version"] == 1
+          assert source["document_path"] == "examples/ui-documents/scrolling.json"
+          assert source["binding_path"] == "examples/ui-documents/scrolling.bindings.json"
+          assert source["node_count"] == 15
+          assert len(source["nodes"]) == 15
+          assert len({node["id"] for node in source["nodes"]}) == 15
+          scroll = next(
+              node for node in source["nodes"] if node["id"] == "results-scroll"
+          )
+          assert scroll["component"] == "scroll"
+          assert scroll["child_count"] == 1
+          assert scroll["layout"]["height"] == 392.0
+          runtime = viewer["runtime"]
+          assert runtime["created_window_count"] == 1
+          assert runtime["screenshot_captured"] is True
+          assert runtime["native_view_capture"]["backend"] == viewer["capture_backend"]
+          assert runtime["native_view_scroll_count"] == 1
+          assert runtime["native_view_unhandled_scroll_count"] == 0
+          assert runtime["native_view_event_count"] >= 1
+          assert runtime["native_view_message_count"] >= 1
+          assert runtime["process_memory_during_runtime"]["source"] == "linux_procfs_status_smaps_rollup"
+          assert runtime["process_memory_during_runtime"]["resident_bytes"] > 0
+          assert "linux_direct_proof_input:scroll:handled" in runtime["events"]
+
+          repeater_root = root / "ui-viewer-items-repeater"
+          repeater_png = repeater_root / "window.png"
+          if repeater_png.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+              raise SystemExit(f"{repeater_png} is not a PNG")
+          repeater = json.loads(
+              (repeater_root / "proof.json").read_text(encoding="utf-8")
+          )
+          assert repeater["platform"] == "linux"
+          assert repeater["capture_backend"] == "winit_softbuffer_pango_cairo"
+          assert repeater["source"]["document_path"] == "examples/ui-documents/items-repeater.json"
+          assert repeater["source"]["node_count"] == 64
+          runtime = repeater["runtime"]
+          assert runtime["native_view_items_repeater_viewport_change_count"] >= 1
+          assert runtime["native_view_items_repeater_scrollbar_drag_count"] == 1
+          assert runtime["native_view_pointer_down_count"] == 1
+          assert runtime["native_view_pointer_move_count"] == 1
+          assert runtime["native_view_pointer_up_count"] == 1
+          assert runtime["native_accessibility_backend"] == "accesskit_atspi"
+          assert runtime["native_accessibility_node_count"] >= 20
+
+          minimum_nodes = {
+              "ui-viewer-image": 8,
+              "ui-viewer-settings-card": 8,
+              "ui-viewer-workbench": 20,
+              "ui-viewer-workbench-dark": 20,
+              "ui-viewer-workbench-high-contrast": 20,
+          }
+          component_proofs = {}
+          for scene, minimum in minimum_nodes.items():
+              scene_root = root / scene
+              scene_png = scene_root / "window.png"
+              if scene_png.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+                  raise SystemExit(f"{scene_png} is not a PNG")
+              scene_proof = json.loads(
+                  (scene_root / "proof.json").read_text(encoding="utf-8")
+              )
+              scene_runtime = scene_proof["runtime"]
+              assert scene_proof["platform"] == "linux"
+              assert scene_proof["capture_backend"] == "winit_softbuffer_pango_cairo"
+              assert scene_runtime["native_accessibility_backend"] == "accesskit_atspi"
+              assert scene_runtime["native_accessibility_node_count"] >= minimum
+              assert scene_runtime["native_view_unhandled_click_count"] == 0
+              component_proofs[scene] = scene_proof
+
+          settings_runtime = component_proofs["ui-viewer-settings-card"]["runtime"]
+          assert settings_runtime["native_view_click_count"] == 1
+          assert settings_runtime["native_view_message_count"] == 1
+
+          workbench_runtime = component_proofs["ui-viewer-workbench"]["runtime"]
+          assert workbench_runtime["native_view_scroll_count"] == 1
+          assert workbench_runtime["native_view_unhandled_scroll_count"] == 0
+          assert workbench_runtime["native_view_text_input_count"] > 0
+          assert workbench_runtime["native_view_text_navigation_count"] >= 2
+          assert workbench_runtime["native_view_text_drag_count"] > 0
+          assert workbench_runtime["native_view_text_selection_change_count"] > 0
+          assert workbench_runtime["native_view_unhandled_key_count"] == 0
+          script = workbench_runtime["native_view_text_input_script_evidence"][0]
+          assert script["contains_cjk"]
+          assert script["contains_right_to_left"]
+          assert script["contains_combining_mark"]
+          assert script["contains_joiner"]
+          assert component_proofs["ui-viewer-workbench-dark"]["theme"] == "Dark"
+          contrast = component_proofs["ui-viewer-workbench-high-contrast"]
+          assert contrast["theme"] == "HighContrast"
+          assert contrast["runtime"]["high_contrast_draw_plan_window_count"] == 1
+
+          lite_root = Path("target/native-proof/ubuntu-24.04-x86_64-lite")
+          lite_png = lite_root / "notepad-interaction.png"
+          lite_report = lite_root / "notepad-interaction.json"
+          if lite_png.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+              raise SystemExit(f"{lite_png} is not a PNG")
+          proof = json.loads(lite_report.read_text(encoding="utf-8"))
+          runtime = proof["runtime"]
+          capture = runtime.get("native_view_capture") or {}
+          assert proof["schema"] == "zsui.native-proof/v1"
+          assert proof["platform"] == "linux"
+          assert proof["backend"] == "linux-direct"
+          assert proof["capture_backend"] == "winit_softbuffer_zsui_rust_text_tiny_skia"
+          assert proof["errors"] == []
+          assert proof["unhandled_commands"] == []
+          assert proof["typography"]["source"] == "zsui_rust_text_fontdb"
+          assert proof["typography"]["rasterization"] == "zsui_rust_text_swash_tiny_skia_softbuffer"
+          assert proof["typography"]["configured_ui_font"] == "Ubuntu Sans 11"
+          assert proof["typography"]["body_metrics"]["ascent"] > 0
+          assert proof["typography"] == capture["typography"]
+          assert capture["backend"] == "winit_softbuffer_zsui_rust_text_tiny_skia"
+          assert capture["display_server"] == "x11"
+          assert runtime["created_window_count"] == 1
+          assert runtime["screenshot_captured"] is True
+          assert not runtime["screenshot_error"]
+          assert proof["process_memory"]["resident_bytes"] > 0
+          assert proof["window"]["width"] == 960
+          assert proof["window"]["height"] == 640
+          validate_notepad_text(runtime, "linux_direct")
+
+          gtk_root = Path("target/native-proof/ubuntu-24.04-x86_64-gtk4")
+          gtk_png = gtk_root / "notepad-interaction.png"
+          gtk_report = gtk_root / "notepad-interaction.json"
+          if gtk_png.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+              raise SystemExit(f"{gtk_png} is not a PNG")
+          proof = json.loads(gtk_report.read_text(encoding="utf-8"))
+          runtime = proof["runtime"]
+          capture = runtime.get("native_view_capture") or {}
+          assert proof["schema"] == "zsui.native-proof/v1"
+          assert proof["platform"] == "linux"
+          assert proof["backend"] == "gtk4"
+          assert proof["capture_backend"] == "gtk_widget_paintable_gsk_texture"
+          assert proof["os_family"] == "ubuntu-24.04"
+          assert proof["architecture"] == "x86_64"
+          assert proof["errors"] == []
+          assert proof["unhandled_commands"] == []
+          assert proof["typography"]["platform"] == "Gtk"
+          assert proof["typography"]["source"] == "gtk_settings_pango_context"
+          assert proof["typography"] == capture["typography"]
+          assert capture["backend"] == "gtk_widget_paintable_gsk_texture"
+          assert capture["logical_width"] == 960
+          assert capture["logical_height"] == 640
+          assert capture["pixel_width"] > 0
+          assert capture["pixel_height"] > 0
+          assert capture["scale_factor"] > 0.0
+          assert runtime["created_window_count"] == 1
+          assert runtime["screenshot_captured"] is True
+          assert not runtime["screenshot_error"]
+          assert runtime["window_menu_command_routed"] is True
+          gtk_log = (gtk_root / "notepad.log").read_text(encoding="utf-8")
+          assert "Unrecognized accessibility backend" not in gtk_log
+          assert runtime["native_accessibility_backend"] == "gtk4_atspi"
+          assert runtime["native_accessibility_node_count"] == 1
+          assert any(
+              event == "native_accessibility_bridge:gtk4_atspi:nodes=1"
+              for event in runtime["events"]
+          )
+          memory = runtime["process_memory_during_runtime"]
+          assert memory["source"] == "linux_procfs_status_smaps_rollup"
+          assert memory["sample_point"] == "native_window_before_teardown"
+          assert memory["resident_bytes"] > 0
+          validate_notepad_text(runtime, "gtk")
+          atspi = json.loads((gtk_root / "gtk-atspi.json").read_text(encoding="utf-8"))
+          assert atspi["schema"] == "zsui.gtk4-atspi-proof/v1"
+          assert atspi["backend"] == "gtk4_atspi"
+          assert atspi["node_count"] >= 3
+          assert atspi["text_nodes"]
+          assert all("text" in node["role"].lower() for node in atspi["text_nodes"])
+
+      - name: Upload Linux proof
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsui-linux-direct-native-proof
+          path: target/native-proof/ubuntu-24.04-x86_64
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload GTK4 native proof
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsui-gtk4-native-proof
+          path: target/native-proof/ubuntu-24.04-x86_64-gtk4
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload pure-Rust Linux proof
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsui-linux-direct-lite-native-proof
+          path: target/native-proof/ubuntu-24.04-x86_64-lite
+          if-no-files-found: error
+          retention-days: 30
+
+  linux-wayland-atspi-proof:
+    name: Wayland Runtime, AT-SPI and Menu Proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      TZ: UTC
+      WINIT_UNIX_BACKEND: wayland
+      ZSUI_LINUX_UI_FONT: Ubuntu Sans 11
+      ZSUI_NATIVE_PROOF_OS_FAMILY: ubuntu-24.04
+      ZSUI_NATIVE_PROOF_DURATION_MS: 12000
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Wayland and AT-SPI proof runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            at-spi2-core \
+            dbus-x11 \
+            libcairo2-dev \
+            libdbus-1-dev \
+            libgdk-pixbuf-2.0-dev \
+            libpango1.0-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            adwaita-icon-theme \
+            librsvg2-common \
+            fonts-ubuntu \
+            fonts-noto-cjk \
+            fonts-noto-color-emoji \
+            python3-pyatspi \
+            weston
+          fc-cache --force
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Wayland proof applications with accessibility
+        run: |
+          cargo build \
+            --release \
+            --locked \
+            --example component_gallery \
+            --no-default-features \
+            --features component-gallery-demo,linux-direct-accessibility
+          cargo build \
+            --release \
+            --locked \
+            --example zsui_notepad \
+            --no-default-features \
+            --features notepad-demo,linux-direct-accessibility
+
+      - name: Run real Wayland, AT-SPI and menu scenes
+        id: wayland-scenes
+        run: |
+          set -o pipefail
+          root=target/native-proof/ubuntu-24.04-wayland-x86_64
+          mkdir -p "$root"
+          dbus-run-session -- bash -euxo pipefail <<'PROOF'
+          root=target/native-proof/ubuntu-24.04-wayland-x86_64
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/zsui-wayland-runtime"
+          export WAYLAND_DISPLAY=wayland-zsui
+          export WINIT_UNIX_BACKEND=wayland
+          export NO_AT_BRIDGE=0
+          export GTK_A11Y=always
+          unset DISPLAY
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+
+          weston_help="$(weston --help 2>&1 || true)"
+          weston_args=(
+            "--socket=$WAYLAND_DISPLAY"
+            "--idle-time=0"
+            "--width=1280"
+            "--height=800"
+            "--log=$PWD/$root/weston.log"
+          )
+          if grep -q -- '--renderer' <<<"$weston_help"; then
+            weston_args+=("--renderer=pixman")
+          else
+            weston_args+=("--use-pixman")
+          fi
+          if grep -q -- '-B,' <<<"$weston_help" || grep -q -- '-B ' <<<"$weston_help"; then
+            weston_args+=("-B" "headless")
+          else
+            weston_args+=("--backend=headless-backend.so")
+          fi
+          weston "${weston_args[@]}" &
+          weston_pid=$!
+          trap 'kill "$weston_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 100); do
+            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" && break
+            kill -0 "$weston_pid"
+            sleep 0.1
+          done
+          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+
+          ./target/release/examples/component_gallery \
+            --native-proof \
+            --page inputs \
+            --theme light \
+            --width 1180 \
+            --height 780 \
+            --output "$root" \
+            >"$root/gallery-inputs-light.log" 2>&1 &
+          gallery_pid=$!
+
+          # AccessKit intentionally activates its Unix adapter only after the
+          # org.a11y.Status IsEnabled property changes. A headless Weston
+          # session has no desktop settings daemon to perform that transition,
+          # so drive the real AT-SPI status service after the app is listening.
+          for attempt in $(seq 1 50); do
+            if gdbus introspect \
+              --session \
+              --dest org.a11y.Bus \
+              --object-path /org/a11y/bus \
+              >"$root/atspi-status.log" 2>&1; then
+              break
+            fi
+            sleep 0.1
+          done
+          sleep 0.5
+          gdbus call \
+            --session \
+            --dest org.a11y.Bus \
+            --object-path /org/a11y/bus \
+            --method org.freedesktop.DBus.Properties.Set \
+            org.a11y.Status IsEnabled '<false>' \
+            >>"$root/atspi-status.log"
+          gdbus call \
+            --session \
+            --dest org.a11y.Bus \
+            --object-path /org/a11y/bus \
+            --method org.freedesktop.DBus.Properties.Set \
+            org.a11y.Status IsEnabled '<true>' \
+            >>"$root/atspi-status.log"
+          gdbus call \
+            --session \
+            --dest org.a11y.Bus \
+            --object-path /org/a11y/bus \
+            --method org.freedesktop.DBus.Properties.Get \
+            org.a11y.Status IsEnabled \
+            >>"$root/atspi-status.log"
+
+          /usr/bin/python3 - <<'PY'
+          import json
+          import time
+          from pathlib import Path
+          import pyatspi
+
+          deadline = time.monotonic() + 10.0
+          application = None
+          snapshot = []
+
+          def children(node):
+              for index in range(node.childCount):
+                  try:
+                      yield node.getChildAtIndex(index)
+                  except Exception:
+                      pass
+
+          def walk(root, limit=1500):
+              queue = [root]
+              seen = 0
+              while queue and seen < limit:
+                  node = queue.pop(0)
+                  seen += 1
+                  yield node
+                  queue.extend(children(node))
+
+          while time.monotonic() < deadline and application is None:
+              desktop = pyatspi.Registry.getDesktop(0)
+              for candidate in children(desktop):
+                  try:
+                      nodes = list(walk(candidate))
+                      names = [node.name or "" for node in nodes]
+                  except Exception:
+                      continue
+                  if any("Component Gallery" in name for name in names):
+                      application = candidate
+                      break
+              if application is None:
+                  time.sleep(0.1)
+
+          if application is None:
+              raise SystemExit("AT-SPI did not expose the ZSUI Component Gallery")
+
+          action_invoked = False
+          for node in walk(application):
+              try:
+                  role = node.getRoleName()
+                  name = node.name or ""
+              except Exception:
+                  continue
+              snapshot.append({"name": name, "role": role})
+              if not action_invoked and role in {"push button", "button"}:
+                  try:
+                      actions = node.queryAction()
+                      for index in range(actions.nActions):
+                          if actions.getName(index) in {"click", "press", "activate"}:
+                              action_invoked = bool(actions.doAction(index))
+                              break
+                  except Exception:
+                      pass
+
+          roles = {item["role"] for item in snapshot}
+          if len(snapshot) < 5:
+              raise SystemExit(f"AT-SPI tree is too small: {len(snapshot)} nodes")
+          if not ({"push button", "button"} & roles):
+              raise SystemExit(f"AT-SPI tree has no button role: {sorted(roles)}")
+          if not action_invoked:
+              raise SystemExit("AT-SPI did not invoke an exposed button action")
+
+          Path(
+              "target/native-proof/ubuntu-24.04-wayland-x86_64/atspi-proof.json"
+          ).write_text(
+              json.dumps(
+                  {
+                      "backend": "accesskit_atspi",
+                      "application": application.name,
+                      "node_count": len(snapshot),
+                      "roles": sorted(roles),
+                      "action_invoked": action_invoked,
+                      "nodes": snapshot,
+                  },
+                  ensure_ascii=False,
+                  indent=2,
+              ),
+              encoding="utf-8",
+          )
+          PY
+          set -e
+          wait "$gallery_pid"
+
+          ./target/release/examples/component_gallery \
+            --native-proof \
+            --page navigation \
+            --theme light \
+            --width 1180 \
+            --height 780 \
+            --output "$root" \
+            >"$root/gallery-navigation-light.log" 2>&1
+
+          ./target/release/examples/component_gallery \
+            --native-proof \
+            --page catalog \
+            --theme light \
+            --width 1180 \
+            --height 780 \
+            --resize-width 800 \
+            --resize-height 520 \
+            --scenario resized-small \
+            --screenshot "$root/resized-small.png" \
+            --report "$root/resized-small.json" \
+            >"$root/resized-small.log" 2>&1
+          ./target/release/examples/component_gallery \
+            --native-proof \
+            --page catalog \
+            --theme light \
+            --width 960 \
+            --height 560 \
+            --resize-width 1180 \
+            --resize-height 640 \
+            --scenario resized-large \
+            --screenshot "$root/resized-large.png" \
+            --report "$root/resized-large.json" \
+            >"$root/resized-large.log" 2>&1
+
+          # Keep this application's adapter inactive while the scripted proof
+          # interaction opens the nested MenuFlyout. Enabling AT-SPI afterwards
+          # makes its initial tree reflect the final state instead of a cached
+          # startup snapshot.
+          gdbus call \
+            --session \
+            --dest org.a11y.Bus \
+            --object-path /org/a11y/bus \
+            --method org.freedesktop.DBus.Properties.Set \
+            org.a11y.Status IsEnabled '<false>' \
+            >>"$root/atspi-status.log"
+
+          ZSUI_NATIVE_PROOF_DURATION_MS=20000 \
+            ./target/release/examples/component_gallery \
+              --native-proof \
+              --page feedback \
+              --theme light \
+              --width 1180 \
+              --height 780 \
+              --output "$root" \
+              >"$root/gallery-feedback-light.log" 2>&1 &
+          feedback_pid=$!
+
+          # The Linux proof driver dispatches scripted inputs at half of the
+          # requested duration. Activate this process's adapter afterwards.
+          sleep 11.0
+          gdbus call \
+            --session \
+            --dest org.a11y.Bus \
+            --object-path /org/a11y/bus \
+            --method org.freedesktop.DBus.Properties.Set \
+            org.a11y.Status IsEnabled '<true>' \
+            >>"$root/atspi-status.log"
+
+          /usr/bin/python3 - <<'PY'
+          import json
+          import time
+          from pathlib import Path
+          import pyatspi
+
+          def children(node):
+              for index in range(node.childCount):
+                  try:
+                      yield node.getChildAtIndex(index)
+                  except Exception:
+                      pass
+
+          def walk(root, limit=1500):
+              queue = [(root, "", 0)]
+              seen = 0
+              while queue and seen < limit:
+                  node, parent_name, depth = queue.pop(0)
+                  seen += 1
+                  yield node, parent_name, depth
+                  queue.extend(
+                      (child, node.name or "", depth + 1)
+                      for child in children(node)
+                  )
+
+          deadline = time.monotonic() + 6.0
+          snapshot = []
+          required = {
+              "自动保存 / Auto save",
+              "更多 / More",
+              "导出 / Export",
+              "PDF 文档 / PDF document",
+          }
+          while time.monotonic() < deadline:
+              snapshot = []
+              desktop = pyatspi.Registry.getDesktop(0)
+              for application in children(desktop):
+                  try:
+                      nodes = list(walk(application))
+                  except Exception:
+                      continue
+                  names = [node.name or "" for node, _, _ in nodes]
+                  if not any("Component Gallery" in name for name in names):
+                      continue
+                  for node, parent_name, depth in nodes:
+                      try:
+                          state = node.getState()
+                          snapshot.append(
+                              {
+                                  "name": node.name or "",
+                                  "role": node.getRoleName(),
+                                  "checked": state.contains(pyatspi.STATE_CHECKED),
+                                  "atspi_expanded": state.contains(pyatspi.STATE_EXPANDED),
+                                  "focused": state.contains(pyatspi.STATE_FOCUSED),
+                                  "selected": state.contains(pyatspi.STATE_SELECTED),
+                                  "parent": parent_name,
+                                  "depth": depth,
+                                  "child_count": node.childCount,
+                              }
+                          )
+                      except Exception:
+                          pass
+              by_name = {item["name"]: item for item in snapshot}
+              if (
+                  required <= by_name.keys()
+                  and by_name["自动保存 / Auto save"]["checked"]
+                  and by_name["导出 / Export"]["parent"] == "更多 / More"
+                  and by_name["PDF 文档 / PDF document"]["parent"] == "导出 / Export"
+              ):
+                  break
+              time.sleep(0.1)
+
+          by_name = {item["name"]: item for item in snapshot}
+          if not required <= by_name.keys():
+              raise SystemExit(
+                  f"AT-SPI did not expose MenuFlyout rows: {sorted(by_name)}"
+              )
+          checked = by_name["自动保存 / Auto save"]
+          submenu = by_name["更多 / More"]
+          nested_submenu = by_name["导出 / Export"]
+          nested_command = by_name["PDF 文档 / PDF document"]
+          if not checked["checked"]:
+              raise SystemExit(f"checked MenuFlyout state is missing: {checked}")
+          if checked["role"] not in {"check menu item", "checkmenuitem"}:
+              raise SystemExit(f"checked MenuFlyout role is missing: {checked}")
+          if submenu["role"] != "menu":
+              raise SystemExit(f"submenu MenuFlyout role is missing: {submenu}")
+          if nested_submenu["role"] != "menu":
+              raise SystemExit(
+                  f"nested submenu MenuFlyout role is missing: {nested_submenu}"
+              )
+          if nested_submenu["parent"] != submenu["name"]:
+              raise SystemExit(
+                  f"nested submenu hierarchy is missing: {nested_submenu}"
+              )
+          if nested_command["parent"] != nested_submenu["name"]:
+              raise SystemExit(
+                  f"nested MenuFlyout command hierarchy is missing: {nested_command}"
+              )
+
+          Path(
+              "target/native-proof/ubuntu-24.04-wayland-x86_64/menu-flyout-atspi-proof.json"
+          ).write_text(
+              json.dumps(
+                  {
+                      "backend": "accesskit_atspi",
+                      "recursive_expansion": {
+                          "source": "visible_atspi_parent_child_tree",
+                          "submenu": submenu["name"],
+                          "nested_submenu": nested_submenu["name"],
+                          "nested_command": nested_command["name"],
+                      },
+                      "rows": [by_name[name] for name in sorted(required)],
+                  },
+                  ensure_ascii=False,
+                  indent=2,
+              ),
+              encoding="utf-8",
+          )
+          PY
+          wait "$feedback_pid"
+
+          gdbus call \
+            --session \
+            --dest org.a11y.Bus \
+            --object-path /org/a11y/bus \
+            --method org.freedesktop.DBus.Properties.Set \
+            org.a11y.Status IsEnabled '<false>' \
+            >>"$root/atspi-status.log" 2>&1
+
+          ZSUI_NATIVE_PROOF_DURATION_MS=20000 \
+          ZSUI_NATIVE_PROOF_OPEN_MENU=1 \
+            ./target/release/examples/zsui_notepad \
+              --native-proof \
+              --menu-proof \
+              --width 960 \
+              --height 640 \
+              --output "$root" \
+              >"$root/notepad.log" 2>&1 &
+          notepad_pid=$!
+
+          # The proof driver opens the native desktop menu at half duration.
+          # Activate this process's adapter afterwards so its initial tree
+          # contains the real menu-item rows rather than only the menu bar.
+          sleep 11.0
+          set +e
+          python3 comparisons/scripts/capture_linux_smaps.py \
+            --pid "$notepad_pid" \
+            --output "$root/notepad-smaps.json" \
+            >"$root/notepad-smaps.log" 2>&1
+          notepad_smaps_status=$?
+          set -e
+          echo "notepad_smaps_status=$notepad_smaps_status" >>"$root/notepad-smaps.log"
+          gdbus call \
+            --session \
+            --dest org.a11y.Bus \
+            --object-path /org/a11y/bus \
+            --method org.freedesktop.DBus.Properties.Set \
+            org.a11y.Status IsEnabled '<true>' \
+            >>"$root/atspi-status.log" 2>&1
+
+          set +e
+          /usr/bin/python3 - <<'PY'
+          import json
+          import time
+          from pathlib import Path
+          import pyatspi
+
+          deadline = time.monotonic() + 6.0
+          application = None
+
+          def children(node):
+              for index in range(node.childCount):
+                  try:
+                      yield node.getChildAtIndex(index)
+                  except Exception:
+                      pass
+
+          def walk(root, limit=600):
+              queue = [root]
+              seen = 0
+              while queue and seen < limit:
+                  node = queue.pop(0)
+                  seen += 1
+                  yield node
+                  queue.extend(children(node))
+
+          while time.monotonic() < deadline and application is None:
+              desktop = pyatspi.Registry.getDesktop(0)
+              for candidate in children(desktop):
+                  try:
+                      nodes = list(walk(candidate))
+                      names = [node.name or "" for node in nodes]
+                  except Exception:
+                      continue
+                  roles = []
+                  for node in nodes:
+                      try:
+                          roles.append(node.getRoleName())
+                      except Exception:
+                          pass
+                  if any("notepad" in name.lower() for name in names) or (
+                      any(role in {"menu bar", "menubar"} for role in roles)
+                      and any("file" in name.lower() for name in names)
+                  ):
+                      application = candidate
+                      break
+              if application is None:
+                  time.sleep(0.1)
+
+          if application is None:
+              raise SystemExit("AT-SPI did not expose ZSUI Notepad")
+          snapshot = []
+          for node in walk(application):
+              try:
+                  snapshot.append({"name": node.name or "", "role": node.getRoleName()})
+              except Exception:
+                  pass
+          roles = {item["role"] for item in snapshot}
+          if not ({"menu bar", "menubar"} & roles):
+              raise SystemExit(f"AT-SPI menu bar role missing: {sorted(roles)}")
+          if not ({"menu item", "menuitem"} & roles):
+              raise SystemExit(f"AT-SPI menu item role missing: {sorted(roles)}")
+          Path(
+              "target/native-proof/ubuntu-24.04-wayland-x86_64/notepad-atspi-proof.json"
+          ).write_text(
+              json.dumps(
+                  {
+                      "backend": "accesskit_atspi",
+                      "application": application.name,
+                      "node_count": len(snapshot),
+                      "roles": sorted(roles),
+                      "nodes": snapshot,
+                  },
+                  ensure_ascii=False,
+                  indent=2,
+              ),
+              encoding="utf-8",
+          )
+          PY
+          notepad_atspi_status=$?
+          set -e
+          echo "notepad_atspi_status=$notepad_atspi_status" >>"$root/notepad-atspi.log"
+          wait "$notepad_pid"
+          if [ "$notepad_atspi_status" -ne 0 ]; then
+            exit "$notepad_atspi_status"
+          fi
+          PROOF
+
+      - name: Summarize Wayland proof failure
+        if: failure() && steps.wayland-scenes.outcome == 'failure'
+        run: |
+          root=target/native-proof/ubuntu-24.04-wayland-x86_64
+          tail -80 "$root"/*.log 2>/dev/null || true
+          summary="$(tail -80 "$root"/*.log 2>/dev/null | tr '\n' ' ' | cut -c 1-1200 || true)"
+          echo "::error title=Wayland proof scene failure::$summary"
+
+      - name: Validate Wayland, AT-SPI and menu artifacts
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          root = Path("target/native-proof/ubuntu-24.04-wayland-x86_64")
+
+          def validate_notepad_text(runtime):
+              scripts = runtime["native_view_text_input_script_evidence"]
+              assert any(item["contains_cjk"] for item in scripts)
+              assert any(item["contains_right_to_left"] for item in scripts)
+              assert any(item["contains_combining_mark"] for item in scripts)
+              assert any(item["contains_joiner"] for item in scripts)
+              assert runtime["native_view_ime_preedit_update_count"] == 2
+              assert runtime["native_view_ime_commit_count"] == 1
+              assert runtime["native_view_ime_cancel_count"] == 1
+              assert runtime["native_view_ime_caret_rect_observation_count"] >= 4
+              assert not runtime["native_view_ime_preedit_active"]
+              assert runtime["native_view_ime_caret_rect"] is not None
+              assert len(runtime["native_view_ime_preedit_script_evidence"]) == 2
+              assert len(runtime["native_view_ime_commit_script_evidence"]) == 1
+              assert all(
+                  item["contains_cjk"]
+                  for item in runtime["native_view_ime_preedit_script_evidence"]
+              )
+              navigation = runtime["native_view_text_navigation_evidence"]
+              assert navigation
+              assert {item["backend"] for item in navigation} == {"linux_direct"}
+              home_index = max(
+                  index
+                  for index, item in enumerate(navigation)
+                  if item["key"] == "Home" and item["handled"]
+              )
+              line_start = navigation[home_index]["caret"]
+              rights = [
+                  item
+                  for item in navigation[home_index + 1 :]
+                  if item["key"] == "Right"
+              ][:4]
+              assert len(rights) == 4
+              assert [item["caret"] - line_start for item in rights] == [1, 4, 3, 2]
+              assert all(
+                  item["handled"]
+                  and item["selection"] == [item["caret"], item["caret"]]
+                  for item in rights
+              )
+
+          gallery = json.loads((root / "gallery-inputs-light.json").read_text("utf-8"))
+          navigation = json.loads((root / "gallery-navigation-light.json").read_text("utf-8"))
+          feedback = json.loads((root / "gallery-feedback-light.json").read_text("utf-8"))
+          notepad = json.loads((root / "notepad-interaction.json").read_text("utf-8"))
+          resized_small = json.loads((root / "resized-small.json").read_text("utf-8"))
+          resized_large = json.loads((root / "resized-large.json").read_text("utf-8"))
+          atspi = json.loads((root / "atspi-proof.json").read_text("utf-8"))
+          menu_atspi = json.loads(
+              (root / "menu-flyout-atspi-proof.json").read_text("utf-8")
+          )
+          notepad_atspi = json.loads(
+              (root / "notepad-atspi-proof.json").read_text("utf-8")
+          )
+
+          for proof in (gallery, navigation, feedback, notepad, resized_small, resized_large):
+              capture = proof["runtime"]["native_view_capture"]
+              assert proof["schema"] == "zsui.native-proof/v1"
+              assert proof["platform"] == "linux"
+              assert proof["backend"] == "linux-direct"
+              assert proof["display_server"] == "wayland"
+              assert capture["display_server"] == "wayland"
+              assert proof["errors"] == []
+              assert proof["unhandled_commands"] == []
+
+          for proof, expected in (
+              (resized_small, {"width": 800, "height": 520}),
+              (resized_large, {"width": 1180, "height": 640}),
+          ):
+              runtime = proof["runtime"]
+              resize = runtime["native_window_resize"]
+              assert proof["scenario"] in {"resized-small", "resized-large"}
+              assert proof["messages"] == []
+              assert proof["window"]["width"] == expected["width"]
+              assert proof["window"]["height"] == expected["height"]
+              assert runtime["native_window_resize_required"] is True
+              assert runtime["native_window_resize_error"] is None
+              assert resize["backend"] == "winit_request_inner_size_window_event"
+              assert resize["requested_size"] == expected
+              assert resize["final_size"] == expected
+              assert resize["initial_size"] != expected
+              assert resize["native_event_count"] >= 1
+              assert resize["applied"] is True
+
+          for proof in (gallery, feedback, notepad):
+              assert proof["runtime"]["native_accessibility_backend"] == "accesskit_atspi"
+              assert proof["runtime"]["native_accessibility_node_count"] >= 5
+
+          assert gallery["runtime"]["native_accessibility_action_count"] >= 1
+          navigation_runtime = navigation["runtime"]
+          assert navigation["messages"] == ["TabSelected"]
+          assert navigation_runtime["native_view_message_count"] == 1
+          assert navigation_runtime["native_view_event_count"] == 3
+          assert navigation_runtime["native_view_tab_selection_count"] == 1
+          assert navigation_runtime["native_view_tab_keyboard_selection_count"] == 0
+          assert navigation_runtime["native_view_tab_keyboard_focus_only_count"] == 1
+          assert navigation_runtime["native_view_key_down_count"] == 1
+          assert navigation_runtime["native_view_unhandled_key_count"] == 0
+          assert navigation_runtime["native_view_unhandled_click_count"] == 0
+          focused_tabs = [
+              widget
+              for widget in navigation["widgets"]
+              if widget["focused"] and widget["role"] == "tab"
+          ]
+          assert len(focused_tabs) == 1
+          assert navigation["focused_widget"] == focused_tabs[0]["id"]
+          assert navigation["focused_widget"] == f'widget-{navigation_runtime["native_view_focused_widget"]}'
+          assert any(
+              item["backend"] == "linux_direct"
+              and item["key"] == "Right"
+              and item["handled"]
+              for item in navigation_runtime["native_view_text_navigation_evidence"]
+          )
+          feedback_runtime = feedback["runtime"]
+          assert feedback["messages"] == ["MenuFlyoutCommand", "MenuFlyoutOpenChanged", "OpenMenuFlyout"]
+          assert feedback_runtime["native_view_message_count"] >= 3
+          assert feedback_runtime["native_view_event_count"] >= 2
+          assert feedback_runtime["native_view_menu_flyout_invoke_count"] == 1
+          assert feedback_runtime["native_view_menu_flyout_open_change_count"] == 1
+          assert feedback_runtime["native_view_menu_flyout_submenu_change_count"] == 4
+          assert feedback_runtime["native_view_key_down_count"] == 9
+          assert feedback_runtime["native_view_keyboard_activation_count"] == 1
+          assert feedback_runtime["native_view_focused_widget"] == 408
+          assert feedback_runtime["native_view_unhandled_click_count"] == 0
+          feedback_roles = {widget["role"] for widget in feedback["widgets"]}
+          assert {"menu_flyout", "menu_flyout_scrim", "menu_flyout_item"} <= feedback_roles
+          assert atspi["backend"] == "accesskit_atspi"
+          assert atspi["node_count"] >= 5
+          assert atspi["action_invoked"] is True
+          assert menu_atspi["backend"] == "accesskit_atspi"
+          menu_rows = {row["name"]: row for row in menu_atspi["rows"]}
+          assert menu_rows["自动保存 / Auto save"]["checked"] is True
+          assert menu_rows["自动保存 / Auto save"]["role"] in {
+              "check menu item",
+              "checkmenuitem",
+          }
+          assert menu_rows["更多 / More"]["role"] == "menu"
+          assert menu_rows["导出 / Export"]["role"] == "menu"
+          assert menu_rows["导出 / Export"]["parent"] == "更多 / More"
+          assert (
+              menu_rows["PDF 文档 / PDF document"]["parent"]
+              == "导出 / Export"
+          )
+          assert menu_atspi["recursive_expansion"] == {
+              "source": "visible_atspi_parent_child_tree",
+              "submenu": "更多 / More",
+              "nested_submenu": "导出 / Export",
+              "nested_command": "PDF 文档 / PDF document",
+          }
+          assert notepad_atspi["backend"] == "accesskit_atspi"
+          assert notepad_atspi["node_count"] >= 5
+          assert {"menu bar", "menu item"} <= set(notepad_atspi["roles"])
+
+          runtime = notepad["runtime"]
+          validate_notepad_text(runtime)
+          assert runtime["window_menu_surface_created"] is True
+          assert runtime["window_menu_surface_height"] == 36
+          assert runtime["window_menu_surface_open_at_capture"] is True
+          assert runtime["window_menu_command_routed"] is True
+          assert (
+              root / "gallery-inputs-light.png"
+          ).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+          assert (
+              root / "gallery-feedback-light.png"
+          ).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+          assert (
+              root / "gallery-navigation-light.png"
+          ).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+          assert (
+              root / "notepad-interaction.png"
+          ).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+          assert (root / "resized-small.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+          assert (root / "resized-large.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+      - name: Upload Wayland, AT-SPI and menu proof
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsui-wayland-atspi-menu-proof
+          path: target/native-proof/ubuntu-24.04-wayland-x86_64
+          if-no-files-found: error
+          retention-days: 30

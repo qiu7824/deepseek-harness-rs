@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "root": {
+    "id": "interactive-root",
+    "component": "stack",
+    "layout": {
+      "direction": "vertical",
+      "padding_token": "page_padding",
+      "gap_token": "content_gap"
+    },
+    "children": [
+      {
+        "id": "interactive-title",
+        "component": "text",
+        "properties": {
+          "text": "Interactive bindings",
+          "text_role": "title"
+        }
+      },
+      {
+        "id": "profile-name",
+        "component": "textbox",
+        "property_bindings": {
+          "value": "profile_name"
+        },
+        "action_bindings": {
+          "change": "profile_name_changed"
+        },
+        "accessibility": {
+          "role": "textbox",
+          "label": "Profile name"
+        }
+      },
+      {
+        "id": "account-password",
+        "component": "password_box",
+        "properties": {
+          "reveal_mode": "peek"
+        },
+        "property_bindings": {
+          "value": "account_password"
+        },
+        "action_bindings": {
+          "change": "account_password_changed"
+        },
+        "accessibility": {
+          "role": "textbox",
+          "label": "Account password"
+        }
+      },
+      {
+        "id": "dark-mode",
+        "component": "checkbox",
+        "properties": {
+          "label": "Dark mode"
+        },
+        "property_bindings": {
+          "checked": "dark_mode"
+        },
+        "action_bindings": {
+          "toggle": "dark_mode_changed"
+        }
+      },
+      {
+        "id": "volume",
+        "component": "slider",
+        "property_bindings": {
+          "value": "volume"
+        },
+        "action_bindings": {
+          "slide": "volume_changed"
+        },
+        "accessibility": {
+          "role": "slider",
+          "label": "Volume"
+        }
+      },
+      {
+        "id": "retry-count",
+        "component": "number_box",
+        "properties": {
+          "minimum": 0.0,
+          "maximum": 10.0,
+          "step": 1.0,
+          "large_step": 5.0,
+          "fraction_digits": 0.0,
+          "wraps": false
+        },
+        "property_bindings": {
+          "value": "retry_count"
+        },
+        "action_bindings": {
+          "change": "retry_count_changed"
+        },
+        "accessibility": {
+          "role": "spinbutton",
+          "label": "Retry count"
+        }
+      },
+      {
+        "id": "profile-mode",
+        "component": "combo_box",
+        "properties": {
+          "options": ["Balanced", "Fast", "Quiet"],
+          "placeholder": "Choose a mode"
+        },
+        "property_bindings": {
+          "selected_index": "profile_mode",
+          "expanded": "profile_mode_expanded"
+        },
+        "action_bindings": {
+          "select": "profile_mode_selected",
+          "expanded_change": "profile_mode_expanded_changed"
+        },
+        "accessibility": {
+          "role": "combobox",
+          "label": "Profile mode"
+        }
+      },
+      {
+        "id": "sync-progress",
+        "component": "progress_ring",
+        "properties": {
+          "minimum": 0.0,
+          "maximum": 100.0,
+          "size": "small"
+        },
+        "property_bindings": {
+          "value": "sync_progress"
+        },
+        "accessibility": {
+          "role": "progressbar",
+          "label": "Sync progress"
+        }
+      },
+      {
+        "id": "profile-list",
+        "component": "list",
+        "property_bindings": {
+          "selected": "selected_profile"
+        },
+        "action_bindings": {
+          "select": "selected_profile_changed"
+        },
+        "accessibility": {
+          "role": "list",
+          "label": "Profile preset"
+        },
+        "children": [
+          {
+            "id": "profile-balanced",
+            "component": "text",
+            "properties": { "text": "均衡 / Balanced" }
+          },
+          {
+            "id": "profile-quiet",
+            "component": "text",
+            "properties": { "text": "安静 / Quiet" }
+          }
+        ]
+      },
+      {
+        "id": "settings-tabs",
+        "component": "tabs",
+        "properties": {
+          "labels": {
+            "general-settings": "General",
+            "advanced-settings": "Advanced"
+          },
+          "icons": {
+            "general-settings": "Settings",
+            "advanced-settings": "Tool"
+          }
+        },
+        "property_bindings": {
+          "selected": "active_tab"
+        },
+        "action_bindings": {
+          "select": "active_tab_selected"
+        },
+        "children": [
+          {
+            "id": "general-settings",
+            "component": "grid",
+            "properties": {
+              "columns": [
+                { "kind": "fixed", "size": 160.0 },
+                { "kind": "fraction", "weight": 1 }
+              ],
+              "rows": [{ "kind": "fraction", "weight": 1 }],
+              "placements": {
+                "general-heading": { "row": 0, "column": 0 },
+                "general-status": { "row": 0, "column": 1 }
+              },
+              "column_gap": 12.0
+            },
+            "children": [
+              {
+                "id": "general-heading",
+                "component": "text",
+                "properties": { "text": "General settings" }
+              },
+              {
+                "id": "general-status",
+                "component": "text",
+                "properties": { "text": "Ready" }
+              }
+            ]
+          },
+          {
+            "id": "advanced-settings",
+            "component": "text",
+            "properties": { "text": "Advanced settings" }
+          }
+        ]
+      }
+    ]
+  }
+}

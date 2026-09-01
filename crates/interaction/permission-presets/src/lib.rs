@@ -537,7 +537,7 @@ impl PermissionPresetService {
                                     Ok(json.clone())
                                 },
                             ),
-                            init: Arc::new(|| arc(knob_state_to_json(&EMPTY_KNOBS))),
+                            init: Arc::new(|_header| arc(knob_state_to_json(&EMPTY_KNOBS))),
                             apply: Arc::new(
                                 move |state: &ArcValue, event: &SessionEvent| -> ArcValue {
                                     let current = downcast::<serde_json::Value>(state)

@@ -11,11 +11,13 @@ dsh-agent = { path = "../../core/agent" }
 dsh-agent-presets = { path = "../../preset/agent-presets" }
 dsh-attachment = { path = "../../attachment/attachment" }
 dsh-brand = { path = "../../util/brand" }
+dsh-typert-protocol = { path = "../../core/typert-protocol" }
 dsh-credentials = { path = "../../credentials/credentials" }
 dsh-commands = { path = "../../interaction/commands" }
 dsh-goal = { path = "../../goal/goal" }
 dsh-host-directory-picker = { path = "../directory-picker" }
 dsh-host-plugin-inventory = { path = "../plugin-inventory" }
+dsh-home-paths = { path = "../../util/home-paths" }
 dsh-cordis-loader = { path = "../../vendor/loader" }
 dsh-atomic-write = { path = "../../util/atomic-write" }
 dsh-llm = { path = "../../core/llm" }

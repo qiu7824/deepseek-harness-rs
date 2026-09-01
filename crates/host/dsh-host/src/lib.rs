@@ -196,6 +196,8 @@ struct OpenAiCompatibleProviderConfig {
     #[serde(default)]
     api_key_env: Option<String>,
     #[serde(default)]
+    keyless: bool,
+    #[serde(default)]
     display_name: Option<String>,
     api: String,
     #[serde(rename = "baseURL")]
@@ -240,7 +242,11 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
     let mut profile = indexmap::IndexMap::new();
     profile.insert(
         "apiKeyEnv".to_string(),
-        Schema::string().role("credential-ref", None).required(true),
+        Schema::string().role("credential-ref", None),
+    );
+    profile.insert(
+        "keyless".to_string(),
+        Schema::boolean().default(Data::Bool(false)),
     );
     profile.insert("displayName".to_string(), Schema::string());
     profile.insert(
@@ -459,9 +465,9 @@ fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSett
                 ));
             }
         }
-        if profile.api_key_env.as_deref().is_none_or(str::is_empty) {
+        if !profile.keyless && profile.api_key_env.as_deref().is_none_or(str::is_empty) {
             return Err(format!(
-                "llm-pi-ai: provider \"{provider}\" needs apiKeyEnv"
+                "llm-pi-ai: provider \"{provider}\" needs apiKeyEnv unless keyless is true"
             ));
         }
     }
@@ -481,6 +487,7 @@ impl OpenAiCompatibleAdapter {
             dsh_llm_deepseek::resolve_adapter_options(&dsh_llm_deepseek::DeepSeekConfig {
                 api: Some(profile.api.clone()),
                 api_key_env: profile.api_key_env.clone(),
+                keyless: profile.keyless,
                 base_url: Some(profile.base_url.clone()),
                 models: Some(
                     profile
@@ -611,7 +618,7 @@ use dsh_host_frontend_static::apply as apply_frontend_static;
 use dsh_host_plugin_inventory::PluginInventoryGateway;
 use dsh_host_webserver::{
     Config as WebConfig, Host as BindHost, RouteDisposer, WebHandlerError, WebRequest, WebResponse,
-    WebRoute, WebRouteKind, WebServer, WebUpgradeRoute, WebUpgraded,
+    WebRoute, WebRouteKind, WebServer, WebUpgradeRoute, WebUpgraded, accept_websocket,
 };
 use dsh_invariants::{InvariantConfig, InvariantRegistry};
 use dsh_jobs_local::LocalJobRegistry;
@@ -654,6 +661,7 @@ fn workspace_context_text(cwd: Option<&str>) -> String {
 
 struct JsonSettingsStorage {
     path: std::path::PathBuf,
+    defaults: serde_json::Map<String, serde_json::Value>,
     document: parking_lot::Mutex<indexmap::IndexMap<String, dsh_schemastery::Data>>,
 }
 
@@ -677,10 +685,42 @@ fn json_to_settings_data(value: &serde_json::Value) -> dsh_schemastery::Data {
     }
 }
 
+fn merge_package_defaults(
+    mut defaults: serde_json::Map<String, serde_json::Value>,
+    user: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    for (key, value) in user {
+        match (defaults.get_mut(&key), value) {
+            (Some(serde_json::Value::Object(base)), serde_json::Value::Object(next)) => {
+                *base = merge_package_defaults(std::mem::take(base), next);
+            }
+            (_, value) => {
+                defaults.insert(key, value);
+            }
+        }
+    }
+    defaults
+}
+
+fn package_settings_defaults() -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let path = packaged_resource("settings.defaults.json");
+    if !path.is_file() {
+        return Ok(serde_json::Map::new());
+    }
+    let value: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?,
+    )
+    .map_err(|error| format!("parse {}: {error}", path.display()))?;
+    value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| format!("{} must contain a JSON object", path.display()))
+}
+
 fn migrate_legacy_theme_settings(
     mut document: indexmap::IndexMap<String, dsh_schemastery::Data>,
 ) -> indexmap::IndexMap<String, dsh_schemastery::Data> {
-    const RETIRED: [&str; 7] = [
+    const RETIRED: [&str; 9] = [
         "system",
         "catppuccin",
         "dracula",
@@ -688,6 +728,8 @@ fn migrate_legacy_theme_settings(
         "tokyo-night",
         "linear",
         "notion",
+        "whale-song",
+        "dragon-heir",
     ];
     let Some(dsh_schemastery::Data::Object(theme)) = document.get_mut("ui-theme") else {
         return document;
@@ -708,7 +750,7 @@ fn migrate_legacy_theme_settings(
 
 #[cfg(test)]
 mod theme_settings_migration_tests {
-    use super::migrate_legacy_theme_settings;
+    use super::{merge_package_defaults, migrate_legacy_theme_settings};
     use dsh_schemastery::Data;
     use indexmap::IndexMap;
 
@@ -751,8 +793,29 @@ mod theme_settings_migration_tests {
 
     #[test]
     fn current_skin_preference_is_preserved() {
-        let migrated = migrate_legacy_theme_settings(document("whale-song"));
-        assert_eq!(preference(&migrated), Some("whale-song"));
+        let migrated = migrate_legacy_theme_settings(document("blue-fantasy"));
+        assert_eq!(preference(&migrated), Some("blue-fantasy"));
+    }
+
+    #[test]
+    fn package_defaults_fill_missing_sections_but_user_values_win() {
+        let defaults = serde_json::json!({
+            "ui-theme": {"preference": "deepseek-official", "fontSize": 14},
+            "agent-default-model": {"provider": "opencode-free", "model": "mimo-v2.5-free"}
+        })
+        .as_object()
+        .cloned()
+        .expect("defaults object");
+        let user = serde_json::json!({
+            "ui-theme": {"preference": "dark"}
+        })
+        .as_object()
+        .cloned()
+        .expect("user object");
+        let merged = merge_package_defaults(defaults, user);
+        assert_eq!(merged["ui-theme"]["preference"], "dark");
+        assert_eq!(merged["ui-theme"]["fontSize"], 14);
+        assert_eq!(merged["agent-default-model"]["model"], "mimo-v2.5-free");
     }
 }
 
@@ -767,15 +830,21 @@ impl dsh_settings::SettingsStorage for JsonSettingsStorage {
     }
 
     async fn load(&self) -> Result<indexmap::IndexMap<String, dsh_schemastery::Data>, String> {
-        if !self.path.exists() {
-            return Ok(self.document.lock().clone());
-        }
-        let value: serde_json::Value = serde_json::from_slice(
-            &tokio::fs::read(&self.path)
-                .await
-                .map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
+        let user = if self.path.exists() {
+            let value: serde_json::Value = serde_json::from_slice(
+                &tokio::fs::read(&self.path)
+                    .await
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            value
+                .as_object()
+                .cloned()
+                .ok_or_else(|| "settings document must be an object".to_string())?
+        } else {
+            serde_json::Map::new()
+        };
+        let value = serde_json::Value::Object(merge_package_defaults(self.defaults.clone(), user));
         let data = json_to_settings_data(&value);
         let dsh_schemastery::Data::Object(document) = data else {
             return Err("settings document must be an object".to_string());
@@ -963,12 +1032,7 @@ async fn pump_websocket_downlink(
     if !trusted_web_request(&request) {
         return Err(WebHandlerError::new("forbidden"));
     }
-    let mut websocket = tokio_tungstenite::WebSocketStream::from_raw_socket(
-        socket,
-        tokio_tungstenite::tungstenite::protocol::Role::Server,
-        None,
-    )
-    .await;
+    let mut websocket = accept_websocket(socket).await;
     let signal = AbortSignal::new();
     let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1429,6 +1493,8 @@ fn compose_host_in_fiber(
 
     let sessions = SessionStore::install(ctx);
     let session_projections = dsh_session_projection::SessionProjectionRegistry::install(ctx);
+    dsh_session_turn_outline::apply(ctx)
+        .map_err(|error| format!("session-turn-outline: {error}"))?;
     let _token_meter = dsh_token_meter::TokenMeter::install(ctx, Default::default());
 
     let _session_titles = dsh_session_title::SessionTitleService::install_with_registry(
@@ -1521,6 +1587,7 @@ fn compose_host_in_fiber(
     let dsh_home = data_root.clone();
     let settings_storage = Arc::new(JsonSettingsStorage {
         path: dsh_home.join("settings.json"),
+        defaults: package_settings_defaults()?,
         document: parking_lot::Mutex::new(indexmap::IndexMap::new()),
     });
     let settings = dsh_settings::SettingsProvider::install(ctx, settings_storage);
@@ -1884,11 +1951,9 @@ fn compose_host_in_fiber(
         [
             "light",
             "dark",
-            "whale-song",
             "blue-fantasy",
             "harbor",
             "xp",
-            "dragon-heir",
             "minecraft",
             "trading",
             "miku",
@@ -3046,6 +3111,7 @@ fn compose_host_in_fiber(
                     }
                 }
             }),
+            dsh_home: data_root.to_string_lossy().into_owned(),
             plugins_document: profile.map(|profile| {
                 data_root
                     .join("profiles")

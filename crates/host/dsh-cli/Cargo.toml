@@ -1,8 +1,8 @@
 [package]
 name = "dsh-host-cli"
-version = "0.1.0-rc.8"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "dsh command-line entry: profile boot, plugin forwarding, and config dumps. Rust port of @deepseek-ai/dsh (apps/cli)"
 
 [[bin]]

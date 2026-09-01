@@ -65,6 +65,8 @@ pub struct ApiProxyDefaults {
     /// Default project directory for new sessions whose create request
     /// carries no cwd.
     pub cwd: String,
+    /// Resolved Harness data home reported to the browser generation.
+    pub dsh_home: String,
     /// Native open-with-default-application; injectable for carrier tests.
     pub open_path: Option<OpenPathFn>,
     /// Whether handing a path to the native opener can work at all.
@@ -90,6 +92,9 @@ impl Default for ApiProxyDefaults {
             cwd: std::env::current_dir()
                 .map(|path| path.to_string_lossy().into_owned())
                 .unwrap_or_default(),
+            dsh_home: dsh_home_paths::resolve_dsh_home(None, &|key| std::env::var(key).ok())
+                .to_string_lossy()
+                .into_owned(),
             open_path: None,
             can_open_path: None,
             plugins_document: None,
@@ -864,6 +869,7 @@ impl ApiProxyService {
         ok(
             request.rpc_id,
             HostDescribeResult {
+                home: self.defaults.dsh_home.clone(),
                 version: HOST_VERSION.to_string(),
                 cwd: self.defaults.cwd.clone(),
                 provider: Some(selection.provider),
@@ -1061,7 +1067,7 @@ impl ApiProxyService {
                 }),
             );
         };
-        ok(request.rpc_id, inventory.list())
+        ok(request.rpc_id, inventory.list().await)
     }
 
     async fn plugin_inventory_set_enabled(
@@ -1158,7 +1164,7 @@ impl ApiProxyService {
             )
             .map(|slot| slot.as_ref().clone())
             .expect("plugin inventory service");
-        let snapshot = inventory.list();
+        let snapshot = inventory.list().await;
         let selected = snapshot
             .entries
             .into_iter()
@@ -6670,10 +6676,11 @@ impl ApiProxyCarrier for ApiProxyService {
             });
         }
 
-        tokio::spawn(async move {
+        let setup = async move {
+            let mut listener_disposers = Vec::new();
             // session/created → host/session-added.
             let tx_created = tx.clone();
-            let _d_created = ctx
+            let d_created = ctx
                 .on(
                     "session/created",
                     Arc::new(move |_dispatch_ctx, args| {
@@ -6714,11 +6721,12 @@ impl ApiProxyCarrier for ApiProxyService {
                     cordis::EventOptions::default().global(true),
                 )
                 .await;
+            listener_disposers.push(d_created);
             // session/disposed retires only the live runtime. The durable
             // session remains in persistence and must stay visible in the
             // browser list; permanent deletion has its own workspace event.
             let tx_disposed = tx.clone();
-            let _d_disposed = ctx
+            let d_disposed = ctx
                 .on(
                     "session/disposed",
                     Arc::new(move |_dispatch_ctx, args| {
@@ -6743,9 +6751,10 @@ impl ApiProxyCarrier for ApiProxyService {
                     cordis::EventOptions::default().global(true),
                 )
                 .await;
+            listener_disposers.push(d_disposed);
             // workspace/session-deleted → host/session-removed.
             let tx_session_deleted = tx.clone();
-            let _d_session_deleted = ctx
+            let d_session_deleted = ctx
                 .on(
                     "workspace/session-deleted",
                     Arc::new(move |_dispatch_ctx, args| {
@@ -6767,11 +6776,12 @@ impl ApiProxyCarrier for ApiProxyService {
                     cordis::EventOptions::default().global(true),
                 )
                 .await;
+            listener_disposers.push(d_session_deleted);
             // agent/status → host/session-status. The Agent Loop already
             // publishes exact Running/Idle transitions; forwarding them is
             // what clears the browser's busy state after turn/end.
             let tx_status = tx.clone();
-            let _d_status = ctx
+            let d_status = ctx
                 .on(
                     "agent/status",
                     Arc::new(move |_dispatch_ctx, args| {
@@ -6798,6 +6808,7 @@ impl ApiProxyCarrier for ApiProxyService {
                     cordis::EventOptions::default().global(true),
                 )
                 .await;
+            listener_disposers.push(d_status);
             // domain/changed → the workspace frame family. A committed
             // workspace id the registry cannot resolve is skipped instead
             // of throwing (the Rust listener has no throw path).
@@ -6806,7 +6817,7 @@ impl ApiProxyCarrier for ApiProxyService {
             let domain_order = committed_order.clone();
             let domain_archived = archived_ids.clone();
             let domain_registry = workspace_registry.clone();
-            let _d_domain = ctx
+            let d_domain = ctx
                 .on(
                     "domain/changed",
                     Arc::new(move |_dispatch_ctx, args| {
@@ -6941,10 +6952,11 @@ impl ApiProxyCarrier for ApiProxyService {
                     cordis::EventOptions::default().global(true),
                 )
                 .await;
+            listener_disposers.push(d_domain);
             // Allowlisted host events ride one verbatim wrapper frame each.
             for name in REMOTE_FORWARDED {
                 let tx_remote = tx.clone();
-                let _d_remote = ctx
+                let d_remote = ctx
                     .on(
                         name,
                         Arc::new(move |_dispatch_ctx, args| {
@@ -6981,21 +6993,25 @@ impl ApiProxyCarrier for ApiProxyService {
                         cordis::EventOptions::default().global(true),
                     )
                     .await;
+                listener_disposers.push(d_remote);
             }
-            // Hold the listeners for the stream's lifetime (the spawned task
-            // outlives the stream; disposers release on process teardown,
-            // same retention posture as the mux stream).
-            std::future::pending::<()>().await;
-        });
+            listener_disposers
+        };
+        let listener_disposers = futures::executor::block_on(setup);
         let _ = request;
         let stream_signal = signal.clone();
-        let stream = futures::stream::unfold(rx, move |mut rx| {
+        let resources = crate::interactions::MuxResources::listeners(listener_disposers);
+        let stream = futures::stream::unfold((rx, resources), move |(mut rx, resources)| {
             let signal = stream_signal.clone();
             async move {
                 if signal.aborted() {
                     return None;
                 }
-                rx.recv().await.map(|frame| (frame, rx))
+                tokio::select! {
+                    biased;
+                    _ = signal.cancelled() => None,
+                    frame = rx.recv() => frame.map(|frame| (frame, (rx, resources))),
+                }
             }
         });
         Box::pin(stream)

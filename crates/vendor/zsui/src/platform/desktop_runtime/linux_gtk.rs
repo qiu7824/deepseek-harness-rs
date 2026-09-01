@@ -1,0 +1,151 @@
+use super::{
+    complete_native_smoke, DesktopNativeSmokeMetadata, DesktopNativeSmokeOutcome,
+    DesktopRuntimeBackend, DesktopRuntimeRequest, DesktopSmokeRequest,
+};
+use crate::{
+    DesktopCapabilities, DialogResponse, FileDialogSpec, HostCapabilities, NativeDialogSpec,
+    NativeWindowSmokeRunReport, SaveFileDialogSpec, ZsuiError, ZsuiResult,
+};
+
+#[derive(Default)]
+pub(super) struct Backend;
+
+impl DesktopRuntimeBackend for Backend {
+    #[cfg(test)]
+    fn backend_name(&self) -> &'static str {
+        "linux_gtk"
+    }
+
+    fn run_event_loop(self, request: DesktopRuntimeRequest) -> ZsuiResult<()> {
+        let _shell_runtimes = request.shell_runtimes;
+        if !request.trays.is_empty() {
+            return Err(ZsuiError::unsupported(
+                "native_window_status_item",
+                "the GTK4 status-item runtime is not connected to the unified event loop",
+            ));
+        }
+        crate::linux_gtk_services::run_linux_gtk_native_window_event_loop(
+            &request.windows,
+            &request.draw_plans,
+            &request.view_runtimes,
+            None,
+            None,
+            &[],
+        )
+        .map(|_| ())
+    }
+
+    fn run_smoke_event_loop(
+        self,
+        request: DesktopSmokeRequest,
+    ) -> ZsuiResult<NativeWindowSmokeRunReport> {
+        if request.windows.is_empty() {
+            return Ok(NativeWindowSmokeRunReport::empty(request.options));
+        }
+        let run = crate::linux_gtk_services::run_linux_gtk_native_window_event_loop(
+            &request.windows,
+            &request.draw_plans,
+            std::slice::from_ref(&request.view_runtime),
+            Some(request.options.auto_close_after_ms),
+            request
+                .options
+                .screenshot_file
+                .as_deref()
+                .map(std::path::Path::new),
+            &request.options.native_view_inputs,
+        )?;
+        let native_window_resize_error = request
+            .options
+            .native_window_resize
+            .map(|_| "GTK4 smoke resize proof is not connected".to_string());
+        complete_native_smoke(
+            request,
+            DesktopNativeSmokeOutcome {
+                created_window_count: run.created_window_count,
+                proof_input_reports: run.proof_input_reports,
+                native_view_capture: run.native_view_capture,
+                native_window_resize: None,
+                native_window_resize_error,
+                menu_command_routed: run.menu_command_routed,
+                menu_surface_created: false,
+                menu_surface_height: 0,
+                menu_surface_open_at_capture: false,
+                status_item_created: false,
+                status_menu_native_command_count: 0,
+                status_menu_command_routed: false,
+                status_menu_popup_created: false,
+                status_menu_popup_destroyed: false,
+                process_memory: run.process_memory,
+                accessibility_backend: (run.accessibility_node_count > 0).then_some("gtk4_atspi"),
+                accessibility_node_count: run.accessibility_node_count,
+                accessibility_action_count: 0,
+            },
+            DesktopNativeSmokeMetadata {
+                proof_backend: "gtk",
+                screenshot_backend: "gtk_widget_paintable_gsk_texture",
+                missing_capture_error:
+                    "the GTK event loop exited before the final DrawingArea capture",
+            },
+        )
+    }
+
+    fn scaffold_capabilities(&self) -> HostCapabilities {
+        HostCapabilities::linux_scaffold()
+    }
+
+    fn native_host_capabilities(&self) -> HostCapabilities {
+        HostCapabilities::linux_native_window_host()
+    }
+
+    fn desktop_capabilities(&self) -> DesktopCapabilities {
+        DesktopCapabilities::linux_gtk_current()
+    }
+
+    fn native_proof_backend_name(&self) -> &'static str {
+        "gtk4"
+    }
+
+    fn native_proof_typography(&self, typography_scale: f32) -> crate::NativeTypographyProfile {
+        crate::NativeTypographyProfile::fallback(
+            crate::ZsTypographyPlatformStyle::Gtk,
+            typography_scale,
+        )
+    }
+
+    fn capture_process_memory(
+        &self,
+        sample_point: &'static str,
+    ) -> Option<crate::NativeProofProcessMemoryEvidence> {
+        super::process_memory::capture_linux(sample_point)
+    }
+
+    #[cfg(feature = "clipboard")]
+    fn read_clipboard(&mut self) -> ZsuiResult<Option<crate::ClipboardData>> {
+        let mut clipboard = crate::linux_gtk_services::LinuxGtkClipboardService;
+        crate::ClipboardService::read_clipboard(&mut clipboard)
+    }
+
+    #[cfg(feature = "clipboard")]
+    fn write_clipboard(&mut self, data: &crate::ClipboardData) -> ZsuiResult<()> {
+        let mut clipboard = crate::linux_gtk_services::LinuxGtkClipboardService;
+        crate::ClipboardService::write_clipboard(&mut clipboard, data)
+    }
+
+    fn open_file_dialog(
+        &mut self,
+        spec: &FileDialogSpec,
+    ) -> Option<ZsuiResult<Option<Vec<std::path::PathBuf>>>> {
+        Some(crate::linux_gtk_services::linux_gtk_open_file_dialog(spec))
+    }
+
+    fn save_file_dialog(
+        &mut self,
+        spec: &SaveFileDialogSpec,
+    ) -> ZsuiResult<Option<std::path::PathBuf>> {
+        crate::linux_gtk_services::linux_gtk_save_file_dialog(spec)
+    }
+
+    fn show_native_dialog(&mut self, spec: &NativeDialogSpec) -> ZsuiResult<DialogResponse> {
+        crate::linux_gtk_services::linux_gtk_show_native_dialog(spec)
+    }
+}
