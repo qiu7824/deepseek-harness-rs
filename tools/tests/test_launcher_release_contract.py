@@ -23,6 +23,7 @@ class LauncherReleaseContractTests(unittest.TestCase):
             "ERROR_ALREADY_EXISTS",
             "libc::flock",
             "libc::LOCK_EX | libc::LOCK_NB",
+            "unix_single_instance_lock_rejects_contention_and_reopens_after_drop",
             "SetForegroundWindow",
             "TRAY_AUTOSTART_COMMAND",
             "TRAY_CHECK_UPDATE_COMMAND",
@@ -145,6 +146,7 @@ class LauncherReleaseContractTests(unittest.TestCase):
         self.assertIn("mimo-v2.5-free", VERIFIER.read_text(encoding="utf-8"))
         self.assertIn('stage / "deepseek-black.ico"', PACKAGE.read_text(encoding="utf-8"))
         self.assertIn('prefix + "deepseek-black.ico"', VERIFIER.read_text(encoding="utf-8"))
+        self.assertIn("cargo test --locked -p dsh-launcher", workflow)
 
     def test_launcher_uses_only_supported_native_desktop_services(self):
         source = LAUNCHER.read_text(encoding="utf-8")

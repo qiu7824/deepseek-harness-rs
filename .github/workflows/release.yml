@@ -42,7 +42,7 @@ jobs:
           python -m unittest tools.tests.test_history_window_contract tools.tests.test_product_surface_contract tools.tests.test_v012_surface_contract tools.tests.test_v012_alpha2_sync_contract tools.tests.test_release_integrity tools.tests.test_launcher_release_contract -v
           node tools/tests/connection_controller_harness.js
           node tools/tests/turn_usage_optional_harness.js
-          cargo test --locked -p dsh-schedule -p dsh-host-plugin-inventory -p dsh-host-apiproxy -p dsh-typert-protocol -p dsh-web-search-deepseek
+          cargo test --locked -p dsh-launcher -p dsh-schedule -p dsh-host-plugin-inventory -p dsh-host-apiproxy -p dsh-typert-protocol -p dsh-web-search-deepseek
           for file in release/plugins/*/lib/client.js; do node --check "$file"; done
           for file in web/dist/plugins/*.js; do node --check "$file"; done
           cargo fmt --all -- --check

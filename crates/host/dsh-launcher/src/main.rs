@@ -993,7 +993,11 @@ fn acquire_single_instance() -> io::Result<Option<SingleInstanceGuard>> {
 fn acquire_single_instance() -> io::Result<Option<SingleInstanceGuard>> {
     let runtime_root = launcher_runtime_root(Path::new("."));
     fs::create_dir_all(&runtime_root)?;
-    let lock_path = runtime_root.join("dsh-launcher.lock");
+    acquire_unix_single_instance_at(&runtime_root.join("dsh-launcher.lock"))
+}
+
+#[cfg(unix)]
+fn acquire_unix_single_instance_at(lock_path: &Path) -> io::Result<Option<SingleInstanceGuard>> {
     let lock = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -1925,6 +1929,30 @@ mod tests {
             executable: PathBuf::from(r"C:\Harness\deepseek-harness-rs.exe"),
         };
         assert!(!state.matches_process(&observed));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_single_instance_lock_rejects_contention_and_reopens_after_drop() {
+        let root = unique_test_root("single-instance");
+        std::fs::create_dir_all(&root).expect("create lock test root");
+        let lock_path = root.join("dsh-launcher.lock");
+
+        let first = super::acquire_unix_single_instance_at(&lock_path)
+            .expect("acquire first Unix launcher lock")
+            .expect("first Unix launcher lock should be available");
+        assert!(
+            super::acquire_unix_single_instance_at(&lock_path)
+                .expect("check contended Unix launcher lock")
+                .is_none()
+        );
+
+        drop(first);
+        let reopened = super::acquire_unix_single_instance_at(&lock_path)
+            .expect("reacquire Unix launcher lock")
+            .expect("Unix launcher lock should reopen after drop");
+        drop(reopened);
+        std::fs::remove_dir_all(root).expect("remove lock test root");
     }
 
     #[test]
