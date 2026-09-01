@@ -161,6 +161,9 @@ class LauncherReleaseContractTests(unittest.TestCase):
         self.assertIn("builder.tray(tray)", source)
         self.assertIn("let close_command = ZsuiCommand::Quit", source)
         self.assertIn(".on_close_requested(close_command)", source)
+        self.assertIn("let initial_window_visible = !background", source)
+        self.assertIn("let initial_window_visible = true", source)
+        self.assertIn(".visible(initial_window_visible)", source)
         self.assertIn("if !request.trays.is_empty()", linux)
 
     def test_launcher_mutable_files_live_under_the_user_home(self):

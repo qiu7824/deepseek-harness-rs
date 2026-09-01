@@ -1525,6 +1525,10 @@ fn main() -> Result<(), zsui::ZsuiError> {
         return Ok(());
     };
     let background = std::env::args_os().any(|argument| argument == "--background");
+    #[cfg(target_os = "linux")]
+    let initial_window_visible = true;
+    #[cfg(not(target_os = "linux"))]
+    let initial_window_visible = !background;
     let controller = Arc::new(Mutex::new(ServiceController::discover().unwrap_or_else(
         |_error| ServiceController {
             root: Path::new(".").to_path_buf(),
@@ -1565,7 +1569,7 @@ fn main() -> Result<(), zsui::ZsuiError> {
         .size(680, 430)
         .min_size(600, 390)
         .icon_path(icon_path)
-        .visible(!background)
+        .visible(initial_window_visible)
         .resizable(false)
         .invalidation_handle(invalidation)
         .release_view_when_hidden();
