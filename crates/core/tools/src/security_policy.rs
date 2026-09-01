@@ -235,7 +235,7 @@ fn classify_tool_security_with_config(
     config: &SecurityPolicyConfig,
 ) -> SecurityDecision {
     match tool {
-        "read" | "read_file" => {
+        "read" | "read_file" | "read_image" => {
             let Some(path) = target_path(arguments, workspace) else {
                 return SecurityDecision::Ask {
                     reason: "无法确认读取路径安全性，需要用户确认".to_string(),
@@ -411,6 +411,23 @@ mod tests {
     }
 
     #[test]
+    fn read_image_sensitive_path_requires_the_same_unremembered_approval() {
+        let decision = classify_tool_security(
+            "read_image",
+            &json!({"file_path": ".env"}),
+            Some("D:/workspace"),
+        );
+        assert_eq!(
+            decision,
+            SecurityDecision::Ask {
+                reason: "读取敏感路径需要用户确认".to_string(),
+                grant_key: None,
+                rememberable: false,
+            }
+        );
+    }
+
+    #[test]
     fn sensitive_read_deny_policy_blocks_without_approval() {
         let decision = classify_tool_security_with_config(
             "read",
@@ -569,17 +586,19 @@ mod tests {
 
     #[test]
     fn subagent_sensitive_access_is_hard_denied_without_approval_round_trip() {
-        let decision = classify_tool_security_for_actor(
-            "read",
-            &json!({"file_path": ".ssh/id_ed25519"}),
-            Some("D:/workspace"),
-            true,
-        );
-        assert_eq!(
-            decision,
-            SecurityDecision::Deny {
-                reason: "子代理不得访问敏感路径".to_string(),
-            }
-        );
+        for tool in ["read", "read_image"] {
+            let decision = classify_tool_security_for_actor(
+                tool,
+                &json!({"file_path": ".ssh/id_ed25519"}),
+                Some("D:/workspace"),
+                true,
+            );
+            assert_eq!(
+                decision,
+                SecurityDecision::Deny {
+                    reason: "子代理不得访问敏感路径".to_string(),
+                }
+            );
+        }
     }
 }

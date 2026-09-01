@@ -171,7 +171,7 @@ window.__ModuleLoader__.load({
 			"loading": "加载中",
 			"unavailable": "不可用",
 			"preset.readOnly": "仅可查看",
-			"preset.workspaceWrite": "可写入工作区",
+			"preset.workspaceWrite": "工作区内修改",
 			"preset.fullAccess": "完全权限",
 			"confirm.title": "确认启用完全权限？",
 			"confirm.description": "启用完全权限后，新会话将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任后续任务时使用。",
@@ -197,7 +197,7 @@ window.__ModuleLoader__.load({
 		/** Simplified Chinese dictionary for the current-session popup gate. */
 		const accessZh = {
 			"preset.readOnly": "仅可查看",
-			"preset.workspaceWrite": "可写入工作区",
+			"preset.workspaceWrite": "工作区内修改",
 			"preset.fullAccess": "完全权限",
 			"confirm.title": "确认启用完全权限？",
 			"confirm.description": "启用完全权限后，智能体将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。",

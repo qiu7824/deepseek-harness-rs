@@ -2783,23 +2783,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsh-session-persistence-sqlite"
-version = "0.1.0-rc.8"
-dependencies = [
- "async-trait",
- "cordis",
- "dsh-invariants",
- "dsh-session",
- "dsh-session-persistence",
- "parking_lot",
- "rusqlite",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "dsh-session-projection"
 version = "0.1.0-rc.8"
 dependencies = [
@@ -2868,7 +2851,6 @@ dependencies = [
  "dsh-llm",
  "dsh-session",
  "dsh-session-persistence",
- "dsh-session-persistence-sqlite",
  "dsh-session-query",
  "futures",
  "parking_lot",
@@ -2952,7 +2934,6 @@ dependencies = [
  "dsh-session",
  "dsh-session-persistence",
  "dsh-session-persistence-jsonl",
- "dsh-session-persistence-sqlite",
  "dsh-session-projection",
  "futures",
  "parking_lot",

@@ -107,7 +107,43 @@ class ProductSurfaceContractTests(unittest.TestCase):
             subagent_prompt.index("STANDARD.decode(data)"),
         )
         self.assertIn("max_images_per_message", subagent_prompt)
+        self.assertIn("max_message_image_bytes", subagent_prompt)
+        self.assertIn(".admit_followup(parent", subagent_prompt)
+        self.assertIn("store.save_images(&pending_images)", subagent_prompt)
+        self.assertLess(
+            subagent_prompt.index("STANDARD.decode(data)"),
+            subagent_prompt.index("store.save_images(&pending_images)"),
+        )
+        self.assertLess(
+            subagent_prompt.index(".admit_followup(parent"),
+            subagent_prompt.index("store.save_images(&pending_images)"),
+        )
+        self.assertIn(".followup(parent,", subagent_prompt)
+        text_only_branch = subagent_prompt[
+            subagent_prompt.index("if pending_images.is_empty()") : subagent_prompt.index(
+                "let admission = match runtime", subagent_prompt.index("if pending_images.is_empty()")
+            )
+        ]
+        self.assertIn('error.code == "CANCELLED"', text_only_branch)
+        self.assertIn("RpcError::Cancelled", text_only_branch)
+        self.assertIn("runtime.abort_followup(admission).await", subagent_prompt)
+        self.assertIn("runtime.submit_followup(admission", subagent_prompt)
+        self.assertNotIn("store\n                        .save_image(", subagent_prompt)
         self.assertIn("MODEL_DOES_NOT_SUPPORT_IMAGES", continuation)
+        self.assertIn("async fn cold_materialize(", continuation)
+        self.assertIn("self.cold_materialize(parent", continuation)
+        submit_followup = continuation[
+            continuation.index("pub fn submit_followup(") : continuation.index(
+                "async fn cold_resume(", continuation.index("pub fn submit_followup(")
+            )
+        ]
+        self.assertNotIn("prepare_submit(", submit_followup)
+        self.assertNotIn("submit_admitted(", submit_followup)
+        self.assertIn("self.commit_admitted(", submit_followup)
+        self.assertIn("fn commit_admitted(", continuation)
+        self.assertIn("let message_id = runtime.submit_followup(admission", subagent_prompt)
+        self.assertIn("match store.save_images(&pending_images).await", subagent_prompt)
+        self.assertIn("runtime.abort_followup(admission).await", subagent_prompt)
         self.assertIn("QueueImageThumb", conversation)
         self.assertIn("conversation.resolveImage(sessionId, attachment)", conversation)
         self.assertNotIn("ctx.uiConversation.imageUrl", conversation)

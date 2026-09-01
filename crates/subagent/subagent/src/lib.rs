@@ -39,8 +39,8 @@ pub use crate::child_agent::{
 };
 pub use crate::continuation::{
     ContinuableStart, ContinuableStartSpec, ContinuationHost, SubagentContinuationManager,
-    SubagentFollowupOptions, SubagentInterruptAuthority, SubagentReportDelivery,
-    SubagentReportOptions,
+    SubagentFollowupAdmission, SubagentFollowupOptions, SubagentInterruptAuthority,
+    SubagentReportDelivery, SubagentReportOptions,
 };
 pub use crate::depth::{assert_subagent_max_depth, delegation_depth_of};
 pub use crate::descriptor::{

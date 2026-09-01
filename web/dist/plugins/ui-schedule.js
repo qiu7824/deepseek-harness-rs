@@ -6,9 +6,10 @@ window.__ModuleLoader__.load({
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		let react_jsx_runtime = require("react/jsx-runtime");
 		let react = require("react");
+		let react_dom = require("react-dom");
 		let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
 		//#region \0dsh-css:D:\deepwork\_upstream_deepseek_harness_v012a2\packages\client\ui-schedule\src\client\ScheduleCatalogAction.module.css.mjs
-		const css = ".oVLzAG_root{position:relative}.oVLzAG_trigger{min-height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;border-radius:6px;align-items:center;gap:4px;padding:3px 2px;font-size:12px;line-height:18px;display:inline-flex}.oVLzAG_trigger:hover,.oVLzAG_trigger:focus-visible{color:var(--dsw-alias-label-secondary)}.oVLzAG_trigger svg{flex:none}.oVLzAG_trigger>svg:last-child{transition:transform .12s}.oVLzAG_triggerOpen{transform:rotate(180deg)}.oVLzAG_count{margin-left:2px}.oVLzAG_menu{z-index:100;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-specific-menu);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);width:336px;max-width:min(336px,100vw - 32px);max-height:min(420px,100vh - 140px);box-shadow:var(--dsw-shadow-lv3);border-radius:12px;flex-direction:column;gap:2px;margin:0;padding:4px;list-style:none;display:flex;position:absolute;top:calc(100% + 5px);right:0;overflow:auto}.oVLzAG_row{box-sizing:border-box;width:100%;min-height:54px;color:var(--dsw-alias-label-primary);border-radius:8px;flex-direction:column;flex-shrink:0;gap:3px;padding:8px 10px;display:flex}.oVLzAG_rowOverdue{background:var(--dsw-alias-state-warn-tertiary)}.oVLzAG_status{color:var(--dsw-alias-label-tertiary);align-items:center;gap:5px;font-size:11px;line-height:16px;display:inline-flex}.oVLzAG_statusDot{background:var(--dsw-alias-state-business-primary);border-radius:50%;flex:none;width:8px;height:8px}.oVLzAG_rowOverdue .oVLzAG_status{color:var(--dsw-alias-state-warn-label)}.oVLzAG_rowOverdue .oVLzAG_statusDot{background:var(--dsw-alias-state-warn-primary)}.oVLzAG_prompt{overflow-wrap:anywhere;white-space:normal;font-size:13px;line-height:18px}.oVLzAG_metadata{min-width:0;color:var(--dsw-alias-label-tertiary);flex-wrap:wrap;align-items:center;gap:5px;font-size:11px;line-height:16px;display:flex}.oVLzAG_relativeOverdue{color:var(--dsw-alias-state-warn-label)}";
+		const css = ".oVLzAG_root{position:relative}.oVLzAG_trigger{min-height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;border-radius:6px;align-items:center;gap:4px;padding:3px 2px;font-size:12px;line-height:18px;display:inline-flex}.oVLzAG_trigger:hover,.oVLzAG_trigger:focus-visible{color:var(--dsw-alias-label-secondary)}.oVLzAG_trigger svg{flex:none}.oVLzAG_trigger>svg:last-child{transition:transform .12s}.oVLzAG_triggerOpen{transform:rotate(180deg)}.oVLzAG_count{margin-left:2px}.oVLzAG_menu{z-index:100;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-specific-menu);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);width:336px;max-width:min(336px,100vw - 32px);max-height:min(420px,100vh - 140px);box-shadow:var(--dsw-shadow-lv3);border-radius:12px;flex-direction:column;gap:2px;margin:0;padding:4px;list-style:none;display:flex;position:fixed;overflow:auto}.oVLzAG_row{box-sizing:border-box;width:100%;min-height:54px;color:var(--dsw-alias-label-primary);border-radius:8px;flex-direction:column;flex-shrink:0;gap:3px;padding:8px 10px;display:flex}.oVLzAG_rowOverdue{background:var(--dsw-alias-state-warn-tertiary)}.oVLzAG_status{color:var(--dsw-alias-label-tertiary);align-items:center;gap:5px;font-size:11px;line-height:16px;display:inline-flex}.oVLzAG_statusDot{background:var(--dsw-alias-state-business-primary);border-radius:50%;flex:none;width:8px;height:8px}.oVLzAG_rowOverdue .oVLzAG_status{color:var(--dsw-alias-state-warn-label)}.oVLzAG_rowOverdue .oVLzAG_statusDot{background:var(--dsw-alias-state-warn-primary)}.oVLzAG_prompt{overflow-wrap:anywhere;white-space:normal;font-size:13px;line-height:18px}.oVLzAG_metadata{min-width:0;color:var(--dsw-alias-label-tertiary);flex-wrap:wrap;align-items:center;gap:5px;font-size:11px;line-height:16px;display:flex}.oVLzAG_relativeOverdue{color:var(--dsw-alias-state-warn-label)}";
 		const tagId = "@deepseek-ai/dsh-client-ui-schedule/ScheduleCatalogAction.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -35,6 +36,7 @@ window.__ModuleLoader__.load({
 		//#region lib/types/client/ScheduleCatalogAction.js
 		const EMPTY_RECORDS = [];
 		const SECOND_MS = 1e3;
+		const MEASURE_STYLE = { visibility: "hidden", left: 0, top: 0 };
 		const SECOND_UNIT = {
 			unit: "second",
 			seconds: 1
@@ -113,6 +115,41 @@ window.__ModuleLoader__.load({
 				return leftTime - rightTime || left.index - right.index;
 			}).map(({ record }) => record);
 		}
+		function useAnchoredPosition({ open, anchorRef, panelRef, side, gap, margin }) {
+			const [position, setPosition] = (0, react.useState)(null);
+			(0, react.useLayoutEffect)(() => {
+				if (!open) {
+					setPosition(null);
+					return;
+				}
+				const place = () => {
+					const anchor = anchorRef.current;
+					const panel = panelRef.current;
+					if (anchor === null || panel === null) return;
+					const rect = anchor.getBoundingClientRect();
+					const width = panel.offsetWidth;
+					const height = panel.offsetHeight;
+					let left = rect.left;
+					let top = side === "bottom" ? rect.bottom + gap : rect.top - height - gap;
+					left = Math.min(Math.max(left, margin), Math.max(margin, window.innerWidth - width - margin));
+					if (side === "bottom" && top + height > window.innerHeight - margin) top = rect.top - height - gap;
+					if (side !== "bottom" && top < margin) top = rect.bottom + gap;
+					top = Math.min(Math.max(top, margin), Math.max(margin, window.innerHeight - height - margin));
+					setPosition({ left, top });
+				};
+				place();
+				window.addEventListener("resize", place);
+				window.addEventListener("scroll", place, true);
+				const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
+				if (observer !== null) observer.observe(panelRef.current);
+				return () => {
+					observer?.disconnect();
+					window.removeEventListener("resize", place);
+					window.removeEventListener("scroll", place, true);
+				};
+			}, [open, anchorRef, panelRef, side, gap, margin]);
+			return position;
+		}
 		/** Read-only current-Session active reminder catalog. */
 		function ScheduleCatalogAction({ useSession, useProjection, t }) {
 			const openState = useSession((snapshot) => snapshot.openState);
@@ -122,10 +159,20 @@ window.__ModuleLoader__.load({
 			const [now, setNow] = (0, react.useState)(() => Date.now());
 			const rootRef = (0, react.useRef)(null);
 			const triggerRef = (0, react.useRef)(null);
+			const catalogRef = (0, react.useRef)(null);
+			const catalogPosition = useAnchoredPosition({
+				open,
+				anchorRef: triggerRef,
+				panelRef: catalogRef,
+				side: "bottom",
+				gap: 5,
+				margin: 16
+			});
 			(0, react.useEffect)(() => {
 				if (!open) return;
 				const close = (event) => {
-					if (rootRef.current !== null && !rootRef.current.contains(event.target)) setOpen(false);
+					if (rootRef.current?.contains(event.target) || catalogRef.current?.contains(event.target)) return;
+					setOpen(false);
 				};
 				document.addEventListener("pointerdown", close);
 				return () => document.removeEventListener("pointerdown", close);
@@ -173,8 +220,10 @@ window.__ModuleLoader__.load({
 					(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, { className: open ? ScheduleCatalogAction_module_css_default.triggerOpen : void 0 })
 				]
 			});
-			const catalog = open ? (0, react_jsx_runtime.jsx)("ul", {
+			const catalog = open ? (0, react_dom.createPortal)((0, react_jsx_runtime.jsx)("ul", {
+				ref: catalogRef,
 				className: ScheduleCatalogAction_module_css_default.menu,
+				style: catalogPosition ?? MEASURE_STYLE,
 				"aria-label": t("list.aria"),
 				children: rows.map((record) => {
 					const overdue = Date.parse(record.scheduledAt) <= now;
@@ -214,7 +263,7 @@ window.__ModuleLoader__.load({
 						]
 					}, record.id);
 				})
-			}) : null;
+			}), document.body) : null;
 			return (0, react_jsx_runtime.jsxs)("div", {
 				ref: rootRef,
 				className: ScheduleCatalogAction_module_css_default.root,

@@ -158,7 +158,11 @@ class V012Alpha2SyncContractTests(unittest.TestCase):
         self.assertIn("ScheduleCatalogAction", ui)
         self.assertIn('useProjection("schedule")', ui)
         self.assertIn('name: "conversation.session.header.actions"', ui)
-        self.assertNotIn("useDismissOnOutsidePointer", ui)
+        self.assertIn("createPortal", ui)
+        self.assertIn("useAnchoredPosition", ui)
+        self.assertIn("catalogRef", ui)
+        self.assertIn("position:fixed", ui)
+        self.assertIn("margin: 16", ui)
 
     def test_turn_usage_and_time_details_are_synced(self):
         chat = self.source("ui-conversation.js")
@@ -216,13 +220,30 @@ class V012Alpha2SyncContractTests(unittest.TestCase):
 
     def test_permission_labels_are_localized(self):
         permission = self.source("ui-permission.js")
+        conversation = self.source("ui-conversation.js")
         for required in (
             'preset.readOnly": "仅可查看"',
-            'preset.workspaceWrite": "可写入工作区"',
+            'preset.workspaceWrite": "工作区内修改"',
             'preset.fullAccess": "完全权限"',
             "displayPermissionPreset(option.value, option.name, t)",
         ):
             self.assertIn(required, permission)
+        self.assertIn('permission.workspaceWrite": "工作区内修改"', conversation)
+        self.assertNotIn('permission.workspaceWrite": "工作区写入"', conversation)
+
+    def test_removed_sqlite_session_persistence_backend_is_absent(self):
+        persistence = ROOT / "crates" / "session" / "session-persistence-sqlite"
+        self.assertFalse(persistence.exists())
+        query_cargo = (
+            ROOT / "crates" / "session" / "session-query-sqlite" / "Cargo.toml"
+        ).read_text(encoding="utf-8")
+        title_cargo = (
+            ROOT / "crates" / "session" / "session-title" / "Cargo.toml"
+        ).read_text(encoding="utf-8")
+        lock = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
+        self.assertNotIn("dsh-session-persistence-sqlite", query_cargo)
+        self.assertNotIn("dsh-session-persistence-sqlite", title_cargo)
+        self.assertNotIn('name = "dsh-session-persistence-sqlite"', lock)
 
     def test_input_and_tool_polish_are_synced(self):
         conversation = self.source("ui-conversation.js")
@@ -278,10 +299,8 @@ class V012Alpha2SyncContractTests(unittest.TestCase):
     def test_ignorable_compatibility_is_retained(self):
         event = (ROOT / "crates" / "core" / "session" / "src" / "types.rs").read_text(encoding="utf-8")
         coordinator = (ROOT / "crates" / "session" / "session-persistence" / "src" / "coordinator.rs").read_text(encoding="utf-8")
-        sqlite = (ROOT / "crates" / "session" / "session-persistence-sqlite" / "src" / "schema.rs").read_text(encoding="utf-8")
         self.assertIn("pub ignorable: Option<bool>", event)
         self.assertIn("event.ignorable == Some(true)", coordinator)
-        self.assertIn("ignorable         INTEGER", sqlite)
 
     def test_product_version_matches_alpha3(self):
         cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")

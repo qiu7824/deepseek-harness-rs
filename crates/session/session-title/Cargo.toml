@@ -24,4 +24,3 @@ regex = { workspace = true }
 tokio = { workspace = true }
 dsh-session-persistence = { path = "../session-persistence" }
 dsh-session-persistence-jsonl = { path = "../session-persistence-jsonl" }
-dsh-session-persistence-sqlite = { path = "../session-persistence-sqlite" }

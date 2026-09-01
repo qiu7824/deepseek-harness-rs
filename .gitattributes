@@ -3,6 +3,7 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
+web/dist/plugins/*.js binary
 
 *.png binary
 *.jpg binary

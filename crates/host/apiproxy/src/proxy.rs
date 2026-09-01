@@ -53,6 +53,28 @@ type PresetSwitch = (
 type PresetSwitches =
     Arc<parking_lot::Mutex<std::collections::HashMap<dsh_session::SessionId, PresetSwitch>>>;
 
+#[derive(Debug)]
+enum SubagentPromptPart {
+    Text(String),
+    Image(usize),
+}
+
+fn subagent_attachment_error(
+    rpc_id: RpcId,
+    message: impl Into<String>,
+    reason: impl Into<String>,
+) -> RpcResponse<serde_json::Value> {
+    err(
+        rpc_id,
+        RpcError::AttachmentError(RpcErrorBody {
+            message: message.into(),
+            details: crate::api::rpc::ReasonDetails {
+                reason: reason.into(),
+            },
+        }),
+    )
+}
+
 /// The host app version reported by `host.describe` (the TS placeholder —
 /// reads apps/cli's package version once the CLI lands).
 pub const HOST_VERSION: &str = "0.0.1";
@@ -5188,107 +5210,113 @@ impl ApiProxyService {
             .ctx
             .get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false)
             .map(|slot| slot.as_ref().clone());
-        let mut content = Vec::with_capacity(request.payload.content.len());
+        let image_count = request
+            .payload
+            .content
+            .iter()
+            .filter(|part| matches!(part, crate::api::sessions::PromptContentPart::Image { .. }))
+            .count() as u64;
+        let store = if image_count == 0 {
+            None
+        } else {
+            let Some(store) = attachment_store.as_ref() else {
+                return subagent_attachment_error(
+                    request.rpc_id,
+                    "subagent image input requires the attachments service",
+                    "ATTACHMENT_SERVICE_UNAVAILABLE",
+                );
+            };
+            let limits = store.image_limits();
+            if image_count > limits.max_images_per_message {
+                return subagent_attachment_error(
+                    request.rpc_id,
+                    "subagent image count exceeds the deployment limit",
+                    "TOO_MANY_IMAGES",
+                );
+            }
+            Some(store)
+        };
+        let limits = store.map(|store| store.image_limits());
+        let mut pending_images = Vec::with_capacity(image_count as usize);
+        let mut pending_parts = Vec::with_capacity(request.payload.content.len());
+        let mut admission_content = Vec::with_capacity(request.payload.content.len());
+        let mut message_image_bytes = 0_u64;
         for part in &request.payload.content {
             match part {
                 crate::api::sessions::PromptContentPart::Text { text } => {
-                    content.push(dsh_llm::ContentBlock::Text { text: text.clone() });
+                    pending_parts.push(SubagentPromptPart::Text(text.clone()));
+                    admission_content.push(dsh_llm::ContentBlock::Text { text: text.clone() });
                 }
                 crate::api::sessions::PromptContentPart::Image {
                     media_type,
                     data,
                     name,
                 } => {
-                    let Some(store) = attachment_store.as_ref() else {
-                        return err(
-                            request.rpc_id,
-                            RpcError::AttachmentError(RpcErrorBody {
-                                message: "subagent image input requires the attachments service"
-                                    .to_string(),
-                                details: crate::api::rpc::ReasonDetails {
-                                    reason: "ATTACHMENT_SERVICE_UNAVAILABLE".to_string(),
-                                },
-                            }),
-                        );
-                    };
-                    let limits = store.image_limits();
-                    if content
-                        .iter()
-                        .filter(|block| matches!(block, dsh_llm::ContentBlock::Image { .. }))
-                        .count() as u64
-                        >= limits.max_images_per_message
-                    {
-                        return err(
-                            request.rpc_id,
-                            RpcError::AttachmentError(RpcErrorBody {
-                                message: "subagent image count exceeds the deployment limit"
-                                    .to_string(),
-                                details: crate::api::rpc::ReasonDetails {
-                                    reason: "TOO_MANY_IMAGES".to_string(),
-                                },
-                            }),
-                        );
-                    }
-                    let max_decoded_bytes =
-                        limits.max_image_bytes.min(limits.max_message_image_bytes);
+                    let limits = limits.expect("image count guarantees attachment limits");
+                    let remaining_message_bytes = limits
+                        .max_message_image_bytes
+                        .saturating_sub(message_image_bytes);
+                    let max_decoded_bytes = limits.max_image_bytes.min(remaining_message_bytes);
                     let max_encoded_bytes = max_decoded_bytes
                         .saturating_add(2)
                         .saturating_div(3)
                         .saturating_mul(4);
                     if data.len() as u64 > max_encoded_bytes {
-                        return err(
+                        let reason = if remaining_message_bytes < limits.max_image_bytes {
+                            "MESSAGE_IMAGES_TOO_LARGE"
+                        } else {
+                            "IMAGE_TOO_LARGE"
+                        };
+                        return subagent_attachment_error(
                             request.rpc_id,
-                            RpcError::AttachmentError(RpcErrorBody {
-                                message: "subagent image exceeds the deployment byte limit"
-                                    .to_string(),
-                                details: crate::api::rpc::ReasonDetails {
-                                    reason: "IMAGE_TOO_LARGE".to_string(),
-                                },
-                            }),
+                            "subagent images exceed the deployment byte limit",
+                            reason,
                         );
                     }
                     use base64::Engine;
                     let bytes = match base64::engine::general_purpose::STANDARD.decode(data) {
                         Ok(bytes) => bytes,
                         Err(error) => {
-                            return err(
+                            return subagent_attachment_error(
                                 request.rpc_id,
-                                RpcError::AttachmentError(RpcErrorBody {
-                                    message: format!("image data is not valid base64: {error}"),
-                                    details: crate::api::rpc::ReasonDetails {
-                                        reason: "INVALID_IMAGE".to_string(),
-                                    },
-                                }),
+                                format!("image data is not valid base64: {error}"),
+                                "INVALID_IMAGE",
                             );
                         }
                     };
-                    let saved = match store
-                        .save_image(&dsh_attachment::SaveImageAttachment {
-                            data: bytes,
-                            media_type: *media_type,
-                            name: name.clone(),
-                        })
-                        .await
-                    {
-                        Ok(reference) => reference,
-                        Err(error) => {
-                            return err(
+                    let decoded_bytes = bytes.len() as u64;
+                    if decoded_bytes > limits.max_image_bytes {
+                        return subagent_attachment_error(
+                            request.rpc_id,
+                            "subagent image exceeds the deployment byte limit",
+                            "IMAGE_TOO_LARGE",
+                        );
+                    }
+                    message_image_bytes = match message_image_bytes.checked_add(decoded_bytes) {
+                        Some(total) if total <= limits.max_message_image_bytes => total,
+                        _ => {
+                            return subagent_attachment_error(
                                 request.rpc_id,
-                                RpcError::AttachmentError(RpcErrorBody {
-                                    message: error.to_string(),
-                                    details: crate::api::rpc::ReasonDetails { reason: error.code },
-                                }),
+                                "subagent images exceed the aggregate deployment byte limit",
+                                "MESSAGE_IMAGES_TOO_LARGE",
                             );
                         }
                     };
-                    content.push(dsh_llm::ContentBlock::Image {
+                    let image_index = pending_images.len();
+                    pending_images.push(dsh_attachment::SaveImageAttachment {
+                        data: bytes,
+                        media_type: *media_type,
+                        name: name.clone(),
+                    });
+                    pending_parts.push(SubagentPromptPart::Image(image_index));
+                    admission_content.push(dsh_llm::ContentBlock::Image {
                         attachment: dsh_llm::ImageAttachmentRef {
-                            attachment_id: saved.attachment_id.to_string(),
-                            media_type: Some(saved.media_type.as_str().to_string()),
-                            bytes: Some(saved.bytes),
-                            width: Some(saved.width),
-                            height: Some(saved.height),
-                            name: saved.name,
+                            attachment_id: format!("pending:{image_index}"),
+                            media_type: Some(media_type.as_str().to_string()),
+                            bytes: Some(decoded_bytes),
+                            width: None,
+                            height: None,
+                            name: name.clone(),
                         },
                     });
                 }
@@ -5303,8 +5331,37 @@ impl ApiProxyService {
             source,
             signal: Arc::new(move || abort_flag.aborted()),
         };
-        match runtime.followup(parent, &child_id, &content, options).await {
-            Ok(message_id) => ok(request.rpc_id, SubagentPromptReceipt { message_id }),
+        if pending_images.is_empty() {
+            return match runtime
+                .followup(parent, &child_id, &admission_content, options)
+                .await
+            {
+                Ok(message_id) => ok(request.rpc_id, SubagentPromptReceipt { message_id }),
+                Err(error) => {
+                    if signal.aborted() || error.code == "CANCELLED" {
+                        return err(
+                            request.rpc_id,
+                            RpcError::Cancelled(RpcErrorBody {
+                                message: "subagent prompt was cancelled".to_string(),
+                                details: EmptyDetails {},
+                            }),
+                        );
+                    }
+                    err(
+                        request.rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message: format!("subagent prompt failed: {error}"),
+                            details: EmptyDetails {},
+                        }),
+                    )
+                }
+            };
+        }
+        let admission = match runtime
+            .admit_followup(parent, &child_id, &admission_content, options)
+            .await
+        {
+            Ok(admission) => admission,
             Err(error) => {
                 if signal.aborted() || error.code == "CANCELLED" {
                     return err(
@@ -5324,15 +5381,54 @@ impl ApiProxyService {
                         }),
                     );
                 }
-                err(
+                return err(
                     request.rpc_id,
                     RpcError::Internal(RpcErrorBody {
                         message: format!("subagent prompt failed: {error}"),
                         details: EmptyDetails {},
                     }),
-                )
+                );
+            }
+        };
+        let saved_images = if pending_images.is_empty() {
+            Vec::new()
+        } else {
+            let store = store.expect("pending images guarantee attachment store");
+            match store.save_images(&pending_images).await {
+                Ok(references) => references,
+                Err(error) => {
+                    runtime.abort_followup(admission).await;
+                    return subagent_attachment_error(
+                        request.rpc_id,
+                        error.to_string(),
+                        error.code,
+                    );
+                }
+            }
+        };
+        let mut content = Vec::with_capacity(pending_parts.len());
+        for part in pending_parts {
+            match part {
+                SubagentPromptPart::Text(text) => {
+                    content.push(dsh_llm::ContentBlock::Text { text });
+                }
+                SubagentPromptPart::Image(index) => {
+                    let saved = &saved_images[index];
+                    content.push(dsh_llm::ContentBlock::Image {
+                        attachment: dsh_llm::ImageAttachmentRef {
+                            attachment_id: saved.attachment_id.to_string(),
+                            media_type: Some(saved.media_type.as_str().to_string()),
+                            bytes: Some(saved.bytes),
+                            width: Some(saved.width),
+                            height: Some(saved.height),
+                            name: saved.name.clone(),
+                        },
+                    });
+                }
             }
         }
+        let message_id = runtime.submit_followup(admission, &content);
+        ok(request.rpc_id, SubagentPromptReceipt { message_id })
     }
 
     async fn subagent_interrupt(

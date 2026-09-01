@@ -295,6 +295,33 @@ impl SubagentRuntime {
             .await
     }
 
+    /// Admit a live follow-up before a caller persists external resources.
+    pub async fn admit_followup(
+        &self,
+        parent: Arc<dyn Agent>,
+        child_id: &dsh_session::SessionId,
+        content: &[dsh_llm::ContentBlock],
+        options: crate::continuation::SubagentFollowupOptions,
+    ) -> Result<crate::continuation::SubagentFollowupAdmission, SubagentError> {
+        self.manager()
+            .admit_followup(parent, child_id, content, &options)
+            .await
+    }
+
+    /// Submit a previously admitted follow-up after resource persistence.
+    pub fn submit_followup(
+        &self,
+        admission: crate::continuation::SubagentFollowupAdmission,
+        content: &[dsh_llm::ContentBlock],
+    ) -> dsh_llm::MessageId {
+        self.manager().submit_followup(admission, content)
+    }
+
+    /// Roll back one unaccepted preflight admission.
+    pub async fn abort_followup(&self, admission: crate::continuation::SubagentFollowupAdmission) {
+        self.manager().abort_followup(admission).await;
+    }
+
     /// Interrupt one live continuable child's current turn (TS `interrupt`).
     pub fn interrupt(
         &self,

@@ -59,6 +59,26 @@ pub struct SubagentFollowupOptions {
     pub signal: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
+/// An image-capable continuation admitted against the current child
+/// activation. The private fields keep the capability result and exact live
+/// ownership bound to the later submit call.
+pub struct SubagentFollowupAdmission {
+    activation: Arc<parking_lot::Mutex<Activation>>,
+    options: SubagentFollowupOptions,
+    _gate: tokio::sync::OwnedMutexGuard<()>,
+    rollback_on_drop: bool,
+}
+
+impl SubagentFollowupAdmission {
+    fn commit(&mut self) {
+        self.rollback_on_drop = false;
+    }
+
+    fn rollback_activation(&self) -> Option<Arc<parking_lot::Mutex<Activation>>> {
+        self.rollback_on_drop.then(|| self.activation.clone())
+    }
+}
+
 /// Options for one continuable child's report to its direct parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentReportDelivery {
@@ -142,18 +162,22 @@ struct ChildLock {
 }
 
 impl ChildLock {
-    async fn run<T, F, Fut>(&self, child_id: &SessionId, operation: F) -> T
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = T>,
-    {
+    async fn acquire(&self, child_id: &SessionId) -> tokio::sync::OwnedMutexGuard<()> {
         let gate = self
             .tails
             .lock()
             .entry(child_id.as_str().to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
-        let _guard = gate.lock_owned().await;
+        gate.lock_owned().await
+    }
+
+    async fn run<T, F, Fut>(&self, child_id: &SessionId, operation: F) -> T
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        let _guard = self.acquire(child_id).await;
         operation().await
     }
 }
@@ -445,61 +469,93 @@ impl SubagentContinuationManager {
         content: &[ContentBlock],
         options: &SubagentFollowupOptions,
     ) -> Result<MessageId, SubagentError> {
-        self.assert_admitting(parent.as_ref())?;
-        loop {
-            let live = self
-                .locks
-                .run(child_id, || {
-                    let manager = self;
-                    let parent = parent.clone();
-                    let content = content.to_vec();
-                    let options = options.clone();
-                    async move {
-                        let activation = {
-                            let activations = manager.activations.lock();
-                            activations.get(child_id.as_str()).cloned()
-                        };
-                        match activation {
-                            None => manager
-                                .cold_resume(parent, child_id, &content, &options)
-                                .await
-                                .map(Some),
-                            Some(activation) => {
-                                if dsh_llm::content_has_image(&content) {
-                                    let child = activation.lock().handle().agent.clone();
-                                    manager
-                                        .assert_image_capable(&child, &options.signal)
-                                        .await?;
-                                }
-                                manager
-                                    .submit_admitted(
-                                        &activation,
-                                        &content,
-                                        &options.source,
-                                        parent,
-                                        &options.signal,
-                                    )
-                                    .map(Some)
-                            }
-                        }
-                    }
-                })
-                .await;
-            match live {
-                Ok(Some(message_id)) => return Ok(message_id),
-                Ok(None) => {
-                    // The disposal cutoff race: retry.
-                    self.assert_admitting(parent.as_ref())?;
-                    if (options.signal)() {
-                        return Err(SubagentError::new(
-                            "CANCELLED",
-                            "subagent request was aborted",
-                        ));
-                    }
-                    continue;
+        let _gate = self.locks.acquire(child_id).await;
+        let activation = {
+            let activations = self.activations.lock();
+            activations.get(child_id.as_str()).cloned()
+        };
+        match activation {
+            None => self.cold_resume(parent, child_id, content, options).await,
+            Some(activation) => {
+                if dsh_llm::content_has_image(content) {
+                    let child = activation.lock().handle().agent.clone();
+                    self.assert_image_capable(&child, &options.signal).await?;
                 }
-                Err(error) => return Err(error),
+                self.submit_admitted(
+                    &activation,
+                    content,
+                    &options.source,
+                    parent,
+                    &options.signal,
+                )
             }
+        }
+    }
+
+    /// Complete lineage, ownership, cancellation, and model-capability
+    /// admission without accepting the message. Callers that must persist
+    /// external resources can do so only after this returns.
+    pub async fn admit_followup(
+        &self,
+        parent: Arc<dyn Agent>,
+        child_id: &SessionId,
+        content: &[ContentBlock],
+        options: &SubagentFollowupOptions,
+    ) -> Result<SubagentFollowupAdmission, SubagentError> {
+        self.assert_admitting(parent.as_ref())?;
+        let gate = self.locks.acquire(child_id).await;
+        let existing = {
+            let activations = self.activations.lock();
+            activations.get(child_id.as_str()).cloned()
+        };
+        let (activation, rollback_on_drop) = match existing {
+            Some(activation) => (activation, false),
+            None => (
+                self.cold_materialize(parent.clone(), child_id, options)
+                    .await?,
+                true,
+            ),
+        };
+        if dsh_llm::content_has_image(content) {
+            let child = activation.lock().handle().agent.clone();
+            if let Err(error) = self.assert_image_capable(&child, &options.signal).await {
+                if rollback_on_drop {
+                    let _ = self.dispose(&activation).await;
+                }
+                return Err(error);
+            }
+        }
+        if let Err(error) = self.prepare_submit(&activation, &parent, child_id, &options.signal) {
+            if rollback_on_drop {
+                let _ = self.dispose(&activation).await;
+            }
+            return Err(error);
+        }
+        Ok(SubagentFollowupAdmission {
+            activation,
+            options: options.clone(),
+            _gate: gate,
+            rollback_on_drop,
+        })
+    }
+
+    /// Accept one message after a caller completed any post-admission resource
+    /// persistence. Re-check the no-yield cutoffs before publishing.
+    pub fn submit_followup(
+        &self,
+        mut admission: SubagentFollowupAdmission,
+        content: &[ContentBlock],
+    ) -> MessageId {
+        let message_id =
+            self.commit_admitted(&admission.activation, content, &admission.options.source);
+        admission.commit();
+        message_id
+    }
+
+    /// Roll back a freshly materialized but not yet accepted admission.
+    pub async fn abort_followup(&self, admission: SubagentFollowupAdmission) {
+        if let Some(activation) = admission.rollback_activation() {
+            let _ = self.dispose(&activation).await;
         }
     }
 
@@ -510,6 +566,26 @@ impl SubagentContinuationManager {
         content: &[ContentBlock],
         options: &SubagentFollowupOptions,
     ) -> Result<MessageId, SubagentError> {
+        let activation = self
+            .cold_materialize(parent.clone(), child_id, options)
+            .await?;
+        self.submit_materialized(
+            activation,
+            content,
+            options.source.clone(),
+            parent,
+            &options.signal,
+        )
+        .await
+    }
+
+    /// Reconstruct one persisted child without accepting the waiting turn.
+    async fn cold_materialize(
+        &self,
+        parent: Arc<dyn Agent>,
+        child_id: &SessionId,
+        options: &SubagentFollowupOptions,
+    ) -> Result<Arc<parking_lot::Mutex<Activation>>, SubagentError> {
         let persistence = self.require_persistence()?;
         let loaded = persistence.inspect(child_id).await.map_err(|error| {
             SubagentError::new(
@@ -585,14 +661,7 @@ impl SubagentContinuationManager {
                 signal: &options.signal,
             })
             .await?;
-        self.submit_materialized(
-            activation,
-            content,
-            options.source.clone(),
-            parent,
-            &options.signal,
-        )
-        .await
+        Ok(activation)
     }
 
     /// Interrupt one live continuable child's current turn.
@@ -978,22 +1047,20 @@ impl SubagentContinuationManager {
     }
 
     /// Cross the final admission cutoff and submit without yielding.
-    fn submit_admitted(
+    fn prepare_submit(
         &self,
         activation: &Arc<parking_lot::Mutex<Activation>>,
-        content: &[ContentBlock],
-        source: &MessageSource,
-        parent: Arc<dyn Agent>,
+        parent: &Arc<dyn Agent>,
+        child_id: &SessionId,
         signal: &Arc<dyn Fn() -> bool + Send + Sync>,
-    ) -> Result<MessageId, SubagentError> {
-        if (signal)() {
+    ) -> Result<(), SubagentError> {
+        if signal() {
             return Err(SubagentError::new(
                 "CANCELLED",
                 "subagent request was aborted",
             ));
         }
         self.assert_admitting(parent.as_ref())?;
-        let child_id = activation.lock().child_id.clone();
         {
             let activation_guard = activation.lock();
             if activation_guard.disposal.is_some() {
@@ -1005,8 +1072,32 @@ impl SubagentContinuationManager {
                 ));
             }
         }
-        self.authorize_lineage(&parent, &child_id, activation)?;
-        self.acquire_ownership(&parent, &child_id, activation)?;
+        self.authorize_lineage(parent, child_id, activation)?;
+        self.acquire_ownership(parent, child_id, activation)?;
+        Ok(())
+    }
+
+    /// Cross the final admission cutoff and submit without yielding.
+    fn submit_admitted(
+        &self,
+        activation: &Arc<parking_lot::Mutex<Activation>>,
+        content: &[ContentBlock],
+        source: &MessageSource,
+        parent: Arc<dyn Agent>,
+        signal: &Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<MessageId, SubagentError> {
+        let child_id = activation.lock().child_id.clone();
+        self.prepare_submit(activation, &parent, &child_id, signal)?;
+        Ok(self.commit_admitted(activation, content, source))
+    }
+
+    /// Publish one already-admitted follow-up without another fallible cutoff.
+    fn commit_admitted(
+        &self,
+        activation: &Arc<parking_lot::Mutex<Activation>>,
+        content: &[ContentBlock],
+        source: &MessageSource,
+    ) -> MessageId {
         let message = create_user_message(content.to_vec(), source.clone());
         let message_id = message.id.clone();
         let child_agent = activation.lock().handle().agent.clone();
@@ -1017,7 +1108,7 @@ impl SubagentContinuationManager {
             .insert(message_id.as_str().to_string());
         activation.lock().announced = true;
         activation.lock().poke.notify_waiters();
-        Ok(message_id)
+        message_id
     }
 
     /// Authorize one operation against the durable direct-parent lineage.
@@ -1192,7 +1283,9 @@ impl SubagentContinuationManager {
         let child_id = activation.lock().child_id.clone();
         activation.lock().poke.notify_waiters();
         let child_agent = activation.lock().handle().agent.clone();
-        child_agent.cancel(dsh_session::AgentCancelCause::Parent, None);
+        if activation.lock().announced {
+            child_agent.cancel(dsh_session::AgentCancelCause::Parent, None);
+        }
         let children = {
             let activation = activation.lock();
             activation

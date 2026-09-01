@@ -6231,7 +6231,7 @@ window.__ModuleLoader__.load({
 			"placeholder.steerQueue": "Cmd/Ctrl+Enter 插话发送全部排队消息",
 			"input.accessMode": "访问模式，当前：{name}",
 			"permission.fullAccess": "完全访问",
-			"permission.workspaceWrite": "工作区写入",
+			"permission.workspaceWrite": "工作区内修改",
 			"image.dropTitle": "图片拖动到此处即可添加",
 			"image.dropDesc": "最多 {count} 张，每张 {size}",
 			"image.dropBlocked": "当前无法添加图片",
