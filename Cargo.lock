@@ -1337,7 +1337,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "dsh-acp"
-version = "0.1.2-alpha.2"
+version = "0.1.2-alpha.3"
 dependencies = [
  "dsh-jsonrpc-runtime",
  "parking_lot",
@@ -1568,7 +1568,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-code-graph"
-version = "0.1.2-alpha.2"
+version = "0.1.2-alpha.3"
 dependencies = [
  "ignore",
  "serde",
@@ -1709,7 +1709,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-compaction-tool-result-pruner"
-version = "0.1.2-alpha.2"
+version = "0.1.2-alpha.3"
 dependencies = [
  "async-trait",
  "cordis",
@@ -2172,7 +2172,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-host-cli"
-version = "0.1.2-alpha.2"
+version = "0.1.2-alpha.3"
 dependencies = [
  "cordis",
  "dsh-acp",
@@ -2352,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-jsonrpc-runtime"
-version = "0.1.2-alpha.2"
+version = "0.1.2-alpha.3"
 dependencies = [
  "serde_json",
 ]
@@ -2369,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-launcher"
-version = "0.1.2-alpha.2"
+version = "0.1.2-alpha.3"
 dependencies = [
  "dsh-home-paths",
  "libc",
@@ -3017,7 +3017,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-session-turn-outline"
-version = "0.1.2-alpha.2"
+version = "0.1.2-alpha.3"
 dependencies = [
  "cordis",
  "dsh-llm",
@@ -3113,7 +3113,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-skin-installer"
-version = "0.1.2-alpha.2"
+version = "0.1.2-alpha.3"
 dependencies = [
  "winresource",
  "zip",
@@ -3533,6 +3533,7 @@ dependencies = [
  "async-trait",
  "cordis",
  "dsh-agent",
+ "dsh-attachment",
  "dsh-fs",
  "dsh-fs-local",
  "dsh-fs-observation-policy",
@@ -3832,7 +3833,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-tool-web"
-version = "0.1.2-alpha.2"
+version = "0.1.2-alpha.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3937,7 +3938,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-web"
-version = "0.1.2-alpha.2"
+version = "0.1.2-alpha.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3950,7 +3951,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-web-search-deepseek"
-version = "0.1.2-alpha.2"
+version = "0.1.2-alpha.3"
 dependencies = [
  "anyhow",
  "async-trait",

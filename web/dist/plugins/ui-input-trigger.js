@@ -384,6 +384,19 @@ window.__ModuleLoader__.load({
 						if (state.highlight === null) return "pass";
 						this.pick(state.highlight.source, state.highlight.index);
 						return "pick-highlighted";
+					case "tab": {
+						if (state.highlight === null) return "pass";
+						const group = state.groups.find((candidate) => candidate.source === state.highlight.source);
+						if (group === void 0 || group.status !== "ready") return "consumed";
+						const item = group.items[state.highlight.index];
+						if (item === void 0) return "pass";
+						if (item.drill === true) {
+							this.pick(state.highlight.source, state.highlight.index, "drill");
+							return "consumed";
+						}
+						this.pick(state.highlight.source, state.highlight.index);
+						return "pick-highlighted";
+					}
 				}
 			}
 			/**

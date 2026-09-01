@@ -3723,6 +3723,10 @@ window.__ModuleLoader__.load({
 					if (keyboard.arbitrate(e.key === "ArrowUp" ? "up" : "down", composing) === "consumed") e.preventDefault();
 					return;
 				}
+				if (e.key === "Tab") {
+					if (keyboard.arbitrate("tab", composing) !== "pass") e.preventDefault();
+					return;
+				}
 				if (e.key === "Escape") {
 					keyboard.dismissPopup();
 					if (keyboard.arbitrate("escape", composing) === "consumed") e.preventDefault();
@@ -6378,6 +6382,7 @@ window.__ModuleLoader__.load({
 			"row.failed": "失败",
 			"row.stopped": "已停止",
 			"queue.count": "{n} 条排队消息",
+			"queue.image": "排队图片",
 			"queue.edit": "编辑排队消息",
 			"queue.edit.unsupported": "包含非文本内容，暂不支持编辑",
 			"queue.save": "保存排队消息",
@@ -6573,6 +6578,7 @@ window.__ModuleLoader__.load({
 			"row.failed": "Failed",
 			"row.stopped": "Stopped",
 			"queue.count": "{n} queued messages",
+			"queue.image": "Queued image",
 			"queue.edit": "Edit queued message",
 			"queue.edit.unsupported": "Contains non-text content; editing is not supported yet",
 			"queue.save": "Save queued message",
@@ -6915,7 +6921,16 @@ window.__ModuleLoader__.load({
 		* Queue strip: one item renders directly; multiple items default to a
 		* collapsible count header; an empty queue renders nothing.
 		*/
-		function QueueDock({ useSession, updateQueue, notify, t }) {
+		function QueueImageThumb({ attachment, loadImage, label }) {
+			const [url, setUrl] = (0, react.useState)(null);
+			(0, react.useEffect)(() => {
+				let alive = true;
+				loadImage(attachment).then((value) => { if (alive) setUrl(value); }, () => {});
+				return () => { alive = false; };
+			}, [attachment, loadImage]);
+			return url === null ? (0, react_jsx_runtime.jsx)("span", { style: { width: 28, height: 28, borderRadius: 6, background: "var(--dsw-alias-interactive-bg-hover)", flex: "none" }, "aria-hidden": true }) : (0, react_jsx_runtime.jsx)("img", { src: url, alt: label, style: { width: 28, height: 28, borderRadius: 6, objectFit: "cover", flex: "none" } });
+		}
+		function QueueDock({ useSession, updateQueue, notify, loadImage, t }) {
 			const inbox = useSession((s) => s.queue);
 			const queue = (0, react.useMemo)(() => inbox.filter((row) => row.placement === "queued"), [inbox]);
 			const running = useSession((s) => s.running);
@@ -7022,10 +7037,10 @@ window.__ModuleLoader__.load({
 											saveEdit();
 										}
 									}
-								}) : (0, react_jsx_runtime.jsx)("span", {
+								}) : (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [row.content.filter((block) => block.type === "image" && block.attachment !== void 0).map((block, index) => (0, react_jsx_runtime.jsx)(QueueImageThumb, { attachment: block.attachment, loadImage, label: t("queue.image") }, `${block.attachment.attachmentId}:${index}`)), (0, react_jsx_runtime.jsx)("span", {
 									className: QueueDock_module_css_default.preview,
 									children: row.preview
-								}),
+								})] }),
 								queueMutable && (0, react_jsx_runtime.jsx)("div", {
 									className: QueueDock_module_css_default.actions,
 									children: editing?.id === row.id ? (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
@@ -7145,6 +7160,7 @@ window.__ModuleLoader__.load({
 						if (conversation === void 0) throw new Error("queue dock: conversation service unavailable");
 						return {
 							updateQueue: (itemId, action) => conversation.updateQueue(itemId, action),
+							loadImage: (attachment) => conversation.resolveImage(sessionId, attachment),
 							notify: (level, text) => {
 								conversation.input.for(actx).notify(level, text);
 							}

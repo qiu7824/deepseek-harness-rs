@@ -8,6 +8,7 @@ license = "MIT"
 cordis = { path = "../../vendor/cordis" }
 dsh-fs = { path = "../fs" }
 dsh-fs-observation-policy = { path = "../fs-observation-policy" }
+dsh-attachment = { path = "../../attachment/attachment" }
 dsh-agent = { path = "../../core/agent" }
 dsh-llm = { path = "../../core/llm" }
 dsh-tools = { path = "../../core/tools" }

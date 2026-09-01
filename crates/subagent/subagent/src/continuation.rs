@@ -464,15 +464,23 @@ impl SubagentContinuationManager {
                                 .cold_resume(parent, child_id, &content, &options)
                                 .await
                                 .map(Some),
-                            Some(activation) => manager
-                                .submit_admitted(
-                                    &activation,
-                                    &content,
-                                    &options.source,
-                                    parent,
-                                    &options.signal,
-                                )
-                                .map(Some),
+                            Some(activation) => {
+                                if dsh_llm::content_has_image(&content) {
+                                    let child = activation.lock().handle().agent.clone();
+                                    manager
+                                        .assert_image_capable(&child, &options.signal)
+                                        .await?;
+                                }
+                                manager
+                                    .submit_admitted(
+                                        &activation,
+                                        &content,
+                                        &options.source,
+                                        parent,
+                                        &options.signal,
+                                    )
+                                    .map(Some)
+                            }
                         }
                     }
                 })
@@ -915,6 +923,10 @@ impl SubagentContinuationManager {
         parent: Arc<dyn Agent>,
         signal: &Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<MessageId, SubagentError> {
+        if dsh_llm::content_has_image(content) {
+            let child = activation.lock().handle().agent.clone();
+            self.assert_image_capable(&child, signal).await?;
+        }
         match self.submit_admitted(&activation, content, &source, parent, signal) {
             Ok(message_id) => Ok(message_id),
             Err(error) => {
@@ -922,6 +934,47 @@ impl SubagentContinuationManager {
                 Err(error)
             }
         }
+    }
+
+    async fn assert_image_capable(
+        &self,
+        agent: &Arc<dyn Agent>,
+        signal: &Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<(), SubagentError> {
+        if signal() {
+            return Err(SubagentError::new(
+                "CANCELLED",
+                "subagent request was aborted",
+            ));
+        }
+        let (Some(provider), Some(model)) = (
+            agent.options().provider.clone(),
+            agent.options().model.clone(),
+        ) else {
+            return Ok(());
+        };
+        let Some(llm) = self
+            .ctx
+            .get_typed::<Arc<dsh_llm::LlmRuntime>>("llm", false)
+            .map(|slot| slot.as_ref().clone())
+        else {
+            return Ok(());
+        };
+        let info = llm
+            .resolve_model_info(&provider, &model, None)
+            .await
+            .map_err(|error| SubagentError::new("MODEL_INFO_UNAVAILABLE", error.to_string()))?;
+        if info
+            .input_modalities
+            .as_ref()
+            .is_some_and(|modalities| !modalities.contains(&dsh_llm::ModelModality::Image))
+        {
+            return Err(SubagentError::new(
+                "MODEL_DOES_NOT_SUPPORT_IMAGES",
+                format!("Model \"{model}\" does not support image input."),
+            ));
+        }
+        Ok(())
     }
 
     /// Cross the final admission cutoff and submit without yielding.

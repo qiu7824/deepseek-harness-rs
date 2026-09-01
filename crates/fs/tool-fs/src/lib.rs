@@ -171,6 +171,12 @@ impl Service {
         prompt.section(ctx, PromptSection { name:"tool:write".into(), order:101.0, text:PromptText::Static("Use the write tool to create files or completely replace file contents. Existing files are overwritten, so read an existing file first and prefer edit for targeted changes.".into()), complete:None });
         prompt.section(ctx, PromptSection { name:"tool:edit".into(), order:102.0, text:PromptText::Static("Use the edit tool for targeted changes to existing UTF-8 text files. It replaces literal old_string with new_string; by default old_string must appear exactly once.".into()), complete:None });
         tools.register(ctx, service.read_definition())?;
+        if ctx
+            .get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false)
+            .is_some()
+        {
+            tools.register(ctx, service.read_image_definition())?;
+        }
         tools.register(ctx, service.write_definition())?;
         tools.register(ctx, service.edit_definition())?;
         Ok(service)
@@ -356,6 +362,59 @@ impl Service {
                     }]),
                 })
             })),
+            present_result: None,
+        }
+    }
+
+    fn read_image_definition(self: &Arc<Self>) -> ToolDefinition {
+        let service = self.clone();
+        ToolDefinition {
+            name: "read_image".into(),
+            description: "Read a PNG/JPEG/WebP/GIF file and return the image itself. Extension-less paths are detected from file content.".into(),
+            parameters: serde_json::json!({"type":"object","additionalProperties":false,"properties":{"file_path":{"type":"string"}},"required":["file_path"]}),
+            output: output_object(
+                |_args, value| {
+                    let image = &value["image"];
+                    Ok(vec![
+                        dsh_llm::ContentBlock::Text { text: format!(
+                            "<path>{}</path>\n<type>image</type>\n<content>\n{} image, {}x{} px, {} bytes\n</content>",
+                            value["path"].as_str().unwrap_or(""), image["mediaType"].as_str().unwrap_or(""),
+                            image["width"].as_u64().unwrap_or(0), image["height"].as_u64().unwrap_or(0), image["bytes"].as_u64().unwrap_or(0),
+                        ) },
+                        dsh_llm::ContentBlock::Image { attachment: dsh_llm::ImageAttachmentRef {
+                            attachment_id: image["attachmentId"].as_str().unwrap_or("").to_string(),
+                            media_type: image["mediaType"].as_str().map(str::to_string), bytes: image["bytes"].as_u64(),
+                            width: image["width"].as_u64(), height: image["height"].as_u64(), name: image["name"].as_str().map(str::to_string),
+                        }},
+                    ])
+                },
+                serde_json::json!({"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"image":{"type":"object","additionalProperties":false,"properties":{"attachmentId":{"type":"string"},"mediaType":{"type":"string"},"bytes":{"type":"integer"},"width":{"type":"integer"},"height":{"type":"integer"},"name":{"type":"string"}},"required":["attachmentId","mediaType","bytes","width","height"]}},"required":["path","image"]}),
+                None,
+            ),
+            timeout_ms: None,
+            is_concurrency_safe: Some(Arc::new(|_| true)),
+            execute: Arc::new(move |args, run| {
+                let service = service.clone();
+                let args = args.clone();
+                let exec = run.execution.clone();
+                Box::pin(async move {
+                    let path = args.get("file_path").and_then(serde_json::Value::as_str).ok_or_else(|| ToolBodyError::plain("file_path is required"))?;
+                    if path.trim().is_empty() { return Err(ToolBodyError::plain("file_path must be a non-empty string")); }
+                    let target = target(&service.fs, path, &exec).await?;
+                    let info = service.fs.stat(&target, Some(signal(&exec))).await.map_err(body_error)?.ok_or_else(|| body_error(FsError::new(format!("cannot read \"{}\": not found", target.display_path), FsErrorCode::FsNotFound)))?;
+                    if info.kind != FsInfoType::File { return Err(body_error(FsError::new(format!("cannot read \"{}\": not a regular file", target.display_path), FsErrorCode::FsNotRegularFile))); }
+                    let attachments = service.ctx.get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false).map(|slot| slot.as_ref().clone()).ok_or_else(|| ToolBodyError::plain("read_image requires the attachments service"))?;
+                    let limits = attachments.image_limits();
+                    let data = service.fs.read_bytes(&target, Some(signal(&exec)), limits.max_image_bytes.min(limits.max_message_image_bytes)).await.map_err(body_error)?;
+                    let media_type = image_media_type_for_path(path).or_else(|| sniff_image_media_type(&data)).ok_or_else(|| ToolBodyError::plain(format!("cannot read \"{}\": the file content is not a supported PNG/JPEG/WebP/GIF image", target.display_path)))?;
+                    if !limits.media_types.contains(&media_type) { return Err(ToolBodyError::plain(format!("cannot read \"{}\": {} images are not accepted by this deployment", target.display_path, media_type.as_str()))); }
+                    let saved = attachments.save_image(&dsh_attachment::SaveImageAttachment { data, media_type, name: std::path::Path::new(&target.display_path).file_name().map(|name| name.to_string_lossy().into_owned()) }).await.map_err(|error| ToolBodyError::plain(error.to_string()))?;
+                    emit_observed(&service.ctx, &target, FsObservation::Present { version: info.version }, &exec);
+                    Ok(serde_json::json!({"path":target.display_path,"image":{"attachmentId":saved.attachment_id.to_string(),"mediaType":saved.media_type.as_str(),"bytes":saved.bytes,"width":saved.width,"height":saved.height,"name":saved.name}}))
+                })
+            }),
+            finalize_content: None,
+            present_call: Some(Arc::new(|args| Some(ToolCallView::Generic { title: format!("Read image {}", args["file_path"].as_str().unwrap_or("")), kind: Some(ToolCallKind::Read), raw_input: None, content: None, locations: Some(vec![FileLocation { path: args["file_path"].as_str().unwrap_or("").into(), line: None }]) }))),
             present_result: None,
         }
     }
@@ -558,6 +617,62 @@ impl Service {
                 })
             })),
         }
+    }
+}
+
+fn image_media_type_for_path(path: &str) -> Option<dsh_attachment::ImageMediaType> {
+    let extension = std::path::Path::new(path)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => Some(dsh_attachment::ImageMediaType::Png),
+        "jpg" | "jpeg" => Some(dsh_attachment::ImageMediaType::Jpeg),
+        "webp" => Some(dsh_attachment::ImageMediaType::Webp),
+        "gif" => Some(dsh_attachment::ImageMediaType::Gif),
+        _ => None,
+    }
+}
+
+pub fn sniff_image_media_type(data: &[u8]) -> Option<dsh_attachment::ImageMediaType> {
+    if data.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
+        return Some(dsh_attachment::ImageMediaType::Png);
+    }
+    if data.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Some(dsh_attachment::ImageMediaType::Jpeg);
+    }
+    if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        return Some(dsh_attachment::ImageMediaType::Gif);
+    }
+    if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        return Some(dsh_attachment::ImageMediaType::Webp);
+    }
+    None
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn sniffs_supported_extensionless_image_signatures() {
+        assert_eq!(
+            sniff_image_media_type(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
+            Some(dsh_attachment::ImageMediaType::Png)
+        );
+        assert_eq!(
+            sniff_image_media_type(&[0xff, 0xd8, 0xff, 0]),
+            Some(dsh_attachment::ImageMediaType::Jpeg)
+        );
+        assert_eq!(
+            sniff_image_media_type(b"GIF89a"),
+            Some(dsh_attachment::ImageMediaType::Gif)
+        );
+        assert_eq!(
+            sniff_image_media_type(b"RIFFxxxxWEBP"),
+            Some(dsh_attachment::ImageMediaType::Webp)
+        );
+        assert_eq!(sniff_image_media_type(b"plain text"), None);
     }
 }
 

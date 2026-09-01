@@ -7020,7 +7020,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		//#region lib/types/client/sessions/queue-mirror.js
 		const QUEUE_PREVIEW_CHARS = 200;
 		function previewOf(content) {
-			const flat = content.map((block) => block.type === "text" ? block.text : `[${block.type}]`).join(" ").replace(/\s+/g, " ").trim();
+			const flat = content.filter((block) => block.type !== "image").map((block) => block.type === "text" ? block.text : `[${block.type}]`).join(" ").replace(/\s+/g, " ").trim();
 			const chars = Array.from(flat);
 			return chars.length > QUEUE_PREVIEW_CHARS ? `${chars.slice(0, QUEUE_PREVIEW_CHARS).join("")}…` : flat;
 		}
@@ -7249,21 +7249,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 							details: { childSessionId: this.address.childSessionId }
 						}
 					};
-					else if (content.some((part) => part.type === "image")) result = {
-						ok: false,
-						error: {
-							code: "attachment-error",
-							message: "Image input is unavailable for subagent continuations.",
-							details: { reason: "SUBAGENT_IMAGE_UNSUPPORTED" }
-						}
-					};
 					else {
 						const routed = (await this.api.subagents.prompt({
 							...this.address,
-							content: content.flatMap((part) => part.type === "text" ? [{
-								type: "text",
-								text: part.text
-							}] : []),
+							content,
 							clientTimeZone: resolvedClientTimeZone()
 						})).result;
 						result = routed.ok ? {

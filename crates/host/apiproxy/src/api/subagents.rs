@@ -133,7 +133,7 @@ pub struct SubagentPromptRequest {
     pub parent_session_id: SessionId,
     pub child_session_id: SessionId,
     pub mode: SubagentMode,
-    pub content: Vec<dsh_llm::ContentBlock>,
+    pub content: Vec<crate::api::sessions::PromptContentPart>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_time_zone: Option<String>,
 }

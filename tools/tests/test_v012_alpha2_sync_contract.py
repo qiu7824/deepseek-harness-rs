@@ -236,6 +236,16 @@ class V012Alpha2SyncContractTests(unittest.TestCase):
         self.assertIn("diffTotals", tool)
         self.assertNotIn("ctx.remote.$host", tool)
 
+    def test_alpha3_tab_completion_and_stalled_host_tolerance_are_synced(self):
+        trigger = self.source("ui-input-trigger.js")
+        conversation = self.source("ui-conversation.js")
+        connection = self.source("connection.js")
+        self.assertIn('case "tab": {', trigger)
+        self.assertIn('keyboard.arbitrate("tab", composing)', conversation)
+        self.assertIn("generation is still not ready after", connection)
+        self.assertNotIn("connection generation was not ready within", connection)
+
+
     def test_home_logo_hover_animation_is_synced(self):
         conversation = self.source("ui-conversation.js")
         self.assertIn("HeroFish", conversation)
@@ -273,13 +283,13 @@ class V012Alpha2SyncContractTests(unittest.TestCase):
         self.assertIn("event.ignorable == Some(true)", coordinator)
         self.assertIn("ignorable         INTEGER", sqlite)
 
-    def test_product_version_matches_alpha2(self):
+    def test_product_version_matches_alpha3(self):
         cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
         cli = (ROOT / "crates" / "host" / "dsh-cli" / "Cargo.toml").read_text(encoding="utf-8")
         web = json.loads((ROOT / "web" / "package.json").read_text(encoding="utf-8"))
-        self.assertIn('version = "0.1.2-alpha.2"', cargo)
+        self.assertIn('version = "0.1.2-alpha.3"', cargo)
         self.assertIn("version.workspace = true", cli)
-        self.assertEqual(web["version"], "0.1.2-alpha.2")
+        self.assertEqual(web["version"], "0.1.2-alpha.3")
 
 
 if __name__ == "__main__":

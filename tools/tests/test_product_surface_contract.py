@@ -88,6 +88,31 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertNotIn("restoreImages(imageIds)", sink)
         self.assertNotIn("shell.setDraft(text)", sink)
 
+    def test_subagent_and_queue_image_delivery_surface_is_enabled(self):
+        runtime = RUNTIME.read_text(encoding="utf-8")
+        conversation = CONVERSATION.read_text(encoding="utf-8")
+        subagents = (ROOT / "crates" / "host" / "apiproxy" / "src" / "api" / "subagents.rs").read_text(encoding="utf-8")
+        proxy = (ROOT / "crates" / "host" / "apiproxy" / "src" / "proxy.rs").read_text(encoding="utf-8")
+        continuation = (ROOT / "crates" / "subagent" / "subagent" / "src" / "continuation.rs").read_text(encoding="utf-8")
+        self.assertNotIn("SUBAGENT_IMAGE_UNSUPPORTED", runtime)
+        self.assertIn("content,", runtime)
+        self.assertIn("filter((block) => block.type !== \"image\")", runtime)
+        self.assertIn("PromptContentPart", subagents)
+        self.assertIn("subagent image input requires the attachments service", proxy)
+        subagent_prompt = proxy[
+            proxy.index("async fn subagent_prompt(") : proxy.index("async fn subagent_interrupt(")
+        ]
+        self.assertLess(
+            subagent_prompt.index("max_encoded_bytes"),
+            subagent_prompt.index("STANDARD.decode(data)"),
+        )
+        self.assertIn("max_images_per_message", subagent_prompt)
+        self.assertIn("MODEL_DOES_NOT_SUPPORT_IMAGES", continuation)
+        self.assertIn("QueueImageThumb", conversation)
+        self.assertIn("conversation.resolveImage(sessionId, attachment)", conversation)
+        self.assertNotIn("ctx.uiConversation.imageUrl", conversation)
+
+
     def test_approval_protocol_is_fail_closed_with_three_decisions(self):
         connection = CONNECTION.read_text(encoding="utf-8")
         conversation = CONVERSATION.read_text(encoding="utf-8")
@@ -262,7 +287,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
     def test_manual_windows_release_uses_the_same_fallback_version_as_packaging(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn("$refName.StartsWith('v')", workflow)
-        self.assertIn("else { '0.1.2-alpha.2' }", workflow)
+        self.assertIn("else { '0.1.2-alpha.3' }", workflow)
         self.assertNotIn("TrimStart('v')", workflow)
 
     def test_release_workflow_gates_and_verifies_core_skin_executables(self):
@@ -294,16 +319,16 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("toggle(managed)", launcher)
         self.assertIn("primary_button(state.copy.open_web)", launcher)
         self.assertIn("ThemeColorToken::Surface", launcher)
-        self.assertIn(".tray(tray)", launcher)
-        self.assertIn(".on_close_requested(ZsuiCommand::HideMainWindow)", launcher)
+        self.assertIn("builder.tray(tray)", launcher)
+        self.assertIn("let close_command = ZsuiCommand::HideMainWindow", launcher)
+        self.assertIn(".on_close_requested(close_command)", launcher)
         zsui_windows = ROOT / "crates" / "vendor" / "zsui" / "src" / "platform" / "windows"
         tray = (zsui_windows / "services" / "tray.rs").read_text(encoding="utf-8")
-        application = (zsui_windows / "application.rs").read_text(encoding="utf-8")
         window_proc = (zsui_windows / "window_proc.rs").read_text(encoding="utf-8")
         menu = (zsui_windows / "services" / "menu.rs").read_text(encoding="utf-8")
         self.assertIn("Shell_NotifyIconW", tray)
-        self.assertIn("present_status_item_menu_at_cursor", application)
-        self.assertIn("execute_windows_win32_status_command", application)
+        self.assertIn("present_status_item_menu_at_cursor", tray)
+        self.assertIn("dispatch_windows_win32_app_command", tray)
         self.assertIn("window_lifecycle_commands", window_proc)
         self.assertIn("WM_CLOSE", window_proc)
         self.assertIn("dispatch_windows_win32_window_view_input", menu)
