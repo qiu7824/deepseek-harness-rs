@@ -24,7 +24,7 @@ use std::sync::Arc;
 use cordis::{
     ArcValue, Context, EventOptions, InjectSpec, Listener, Plugin, PluginError, downcast,
 };
-use dsh_agent::{AgentLifecyclePayload, AgentRegistry, AgentStatus, AgentStatusPayload};
+use dsh_agent::{AgentRegistry, AgentStatus, AgentStatusPayload};
 use dsh_session_projection::SessionProjectionRegistry;
 
 pub use crate::domain::{
@@ -63,60 +63,48 @@ pub fn apply(ctx: &Context) {
         Arc::new(parking_lot::Mutex::new(HashMap::new()));
     let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    let created_listener: Arc<Listener> = Arc::new({
+    let attach_root: Arc<dyn Fn(Arc<dyn dsh_agent::Agent>) + Send + Sync> = Arc::new({
         let ctx = ctx.clone();
         let runtimes = runtimes.clone();
         let stopping = stopping.clone();
-        move |_listener_ctx, args| {
+        move |agent| {
             let ctx = ctx.clone();
             let runtimes = runtimes.clone();
             let stopping = stopping.clone();
-            Box::pin(async move {
-                let Some(payload) = args
-                    .first()
-                    .and_then(|value| downcast::<AgentLifecyclePayload>(value))
-                    .cloned()
-                else {
-                    return None;
-                };
-                let agent = payload.agent;
-                let registry = ctx
-                    .get_typed::<Arc<AgentRegistry>>("agents", false)
-                    .map(|slot| slot.as_ref().clone());
-                let is_root = registry.as_ref().is_some_and(|registry| {
-                    registry
-                        .roots()
-                        .iter()
-                        .any(|root| Arc::ptr_eq(root, &agent))
-                });
-                let key = Arc::as_ptr(&agent).cast::<()>() as usize;
-                if stopping.load(std::sync::atomic::Ordering::SeqCst)
-                    || runtimes.lock().contains_key(&key)
-                    || !is_root
-                {
-                    return None;
-                }
-                // Agent-scoped ownership: register tools + status listener,
-                // start the runtime, and dispose everything together.
-                let runtime = ScheduleRuntime::new(&ctx, agent.clone());
-                let owner: cordis::Disposer = agent.ctx().effect(
-                    "schedule.runtime()",
-                    Box::pin({
-                        let ctx = ctx.clone();
-                        let agent = agent.clone();
-                        let runtime = runtime.clone();
-                        let runtimes = runtimes.clone();
-                        async move {
-                            let disposers = register_schedule_tools(
-                                &ctx,
-                                agent.ctx(),
-                                agent.clone(),
-                                Arc::new({
-                                    let runtime = runtime.clone();
-                                    move || runtime.request_drive()
-                                }),
-                            );
-                            let stop_status: cordis::Disposer = agent
+            let registry = ctx
+                .get_typed::<Arc<AgentRegistry>>("agents", false)
+                .map(|slot| slot.as_ref().clone());
+            let key = Arc::as_ptr(&agent).cast::<()>() as usize;
+            if stopping.load(std::sync::atomic::Ordering::SeqCst)
+                || runtimes.lock().contains_key(&key)
+                || registry
+                    .as_ref()
+                    .is_none_or(|registry| registry.is_owned_by(agent.id(), &agent))
+            {
+                return;
+            }
+            // Agent-scoped ownership: register tools + status listener,
+            // start the runtime, and dispose everything together.
+            let runtime = ScheduleRuntime::new(&ctx, agent.clone());
+            let owner: cordis::Disposer = agent.ctx().effect(
+                "schedule.runtime()",
+                Box::pin({
+                    let ctx = ctx.clone();
+                    let agent = agent.clone();
+                    let runtime = runtime.clone();
+                    let runtimes = runtimes.clone();
+                    async move {
+                        let disposers = register_schedule_tools(
+                            &ctx,
+                            agent.ctx(),
+                            agent.clone(),
+                            Arc::new({
+                                let runtime = runtime.clone();
+                                move || runtime.request_drive()
+                            }),
+                        );
+                        let stop_status: cordis::Disposer =
+                            agent
                                 .ctx()
                                 .on(
                                     "agent/status",
@@ -153,46 +141,70 @@ pub fn apply(ctx: &Context) {
                                     EventOptions::default(),
                                 )
                                 .await;
-                            runtime.start();
-                            Some(cordis::events::make_disposer({
+                        runtime.start();
+                        Some(cordis::events::make_disposer({
+                            let runtime = runtime.clone();
+                            let runtimes = runtimes.clone();
+                            let key = Arc::as_ptr(&agent).cast::<()>() as usize;
+                            move || {
+                                let stop_status = stop_status.clone();
+                                let disposers = disposers.clone();
                                 let runtime = runtime.clone();
                                 let runtimes = runtimes.clone();
-                                let key = Arc::as_ptr(&agent).cast::<()>() as usize;
-                                move || {
-                                    let stop_status = stop_status.clone();
-                                    let disposers = disposers.clone();
-                                    let runtime = runtime.clone();
-                                    let runtimes = runtimes.clone();
-                                    Box::pin(async move {
-                                        stop_status().await;
-                                        disposers().await;
-                                        runtime.dispose().await;
-                                        runtimes.lock().remove(&key);
-                                    })
-                                }
-                            }))
-                        }
-                    }),
-                );
-                runtimes.lock().insert(key, owner);
+                                Box::pin(async move {
+                                    stop_status().await;
+                                    disposers().await;
+                                    runtime.dispose().await;
+                                    runtimes.lock().remove(&key);
+                                })
+                            }
+                        }))
+                    }
+                }),
+            );
+            runtimes.lock().insert(key, owner);
+        }
+    });
+
+    let session_start_listener: Arc<Listener> = Arc::new({
+        let attach_root = attach_root.clone();
+        move |_listener_ctx, args| {
+            let attach_root = attach_root.clone();
+            Box::pin(async move {
+                if let Some(payload) = args
+                    .first()
+                    .and_then(|value| downcast::<dsh_agent::AgentSessionStartPayload>(value))
+                    .cloned()
+                {
+                    attach_root(payload.agent);
+                }
                 None
             })
         }
     });
 
-    let stop_created = futures::executor::block_on(ctx.on(
-        "agent/created",
-        created_listener,
-        EventOptions::default(),
+    let stop_session_start = futures::executor::block_on(ctx.on(
+        "agent/session-start",
+        session_start_listener,
+        EventOptions::default().global(true),
     ));
 
+    if let Some(registry) = ctx
+        .get_typed::<Arc<AgentRegistry>>("agents", false)
+        .map(|slot| slot.as_ref().clone())
+    {
+        for root in registry.roots() {
+            attach_root(root);
+        }
+    }
+
     let disposer: cordis::Disposer = cordis::events::make_disposer(move || {
-        let stop_created = stop_created.clone();
+        let stop_session_start = stop_session_start.clone();
         let runtimes = runtimes.clone();
         let stopping = stopping.clone();
         Box::pin(async move {
             stopping.store(true, std::sync::atomic::Ordering::SeqCst);
-            stop_created().await;
+            stop_session_start().await;
             let cleanups: Vec<cordis::Disposer> =
                 runtimes.lock().drain().map(|(_, value)| value).collect();
             for cleanup in cleanups {

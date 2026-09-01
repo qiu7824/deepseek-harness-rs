@@ -148,6 +148,20 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("conversation.resolveImage(sessionId, attachment)", conversation)
         self.assertNotIn("ctx.uiConversation.imageUrl", conversation)
 
+    def test_schedule_lifecycle_observes_scoped_agent_creation(self):
+        schedule = (
+            ROOT / "crates" / "schedule" / "schedule" / "src" / "lib.rs"
+        ).read_text(encoding="utf-8")
+        listener = schedule[
+            schedule.index('ctx.on(\n        "agent/session-start"') : schedule.index(
+                "let disposer", schedule.index('ctx.on(\n        "agent/session-start"')
+            )
+        ]
+        self.assertIn("EventOptions::default().global(true)", listener)
+        self.assertIn("for root in registry.roots()", schedule)
+        self.assertIn("attach_root(root)", schedule)
+
+
 
     def test_approval_protocol_is_fail_closed_with_three_decisions(self):
         connection = CONNECTION.read_text(encoding="utf-8")
