@@ -146,7 +146,11 @@ class LauncherReleaseContractTests(unittest.TestCase):
         self.assertIn("mimo-v2.5-free", VERIFIER.read_text(encoding="utf-8"))
         self.assertIn('stage / "deepseek-black.ico"', PACKAGE.read_text(encoding="utf-8"))
         self.assertIn('prefix + "deepseek-black.ico"', VERIFIER.read_text(encoding="utf-8"))
-        self.assertIn("cargo test --locked -p dsh-launcher", workflow)
+        gate = workflow.split("- name: 版本与产品门禁", 1)[1].split(
+            "- name: 构建正式二进制", 1
+        )[0]
+        self.assertIn("cargo test --locked -p dsh-launcher", gate)
+        self.assertNotIn("if:", gate)
 
     def test_launcher_uses_only_supported_native_desktop_services(self):
         source = LAUNCHER.read_text(encoding="utf-8")
