@@ -21,6 +21,8 @@ class LauncherReleaseContractTests(unittest.TestCase):
         for required in (
             "CreateMutexW",
             "ERROR_ALREADY_EXISTS",
+            "libc::flock",
+            "libc::LOCK_EX | libc::LOCK_NB",
             "SetForegroundWindow",
             "TRAY_AUTOSTART_COMMAND",
             "TRAY_CHECK_UPDATE_COMMAND",

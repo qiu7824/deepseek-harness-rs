@@ -8,6 +8,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+
 #[cfg(windows)]
 use std::{
     ffi::OsStr,
@@ -945,8 +948,17 @@ impl Drop for SingleInstanceGuard {
     }
 }
 
-#[cfg(not(windows))]
-struct SingleInstanceGuard;
+#[cfg(unix)]
+struct SingleInstanceGuard(fs::File);
+
+#[cfg(unix)]
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
 
 #[cfg(windows)]
 fn focus_existing_launcher() {
@@ -977,9 +989,27 @@ fn acquire_single_instance() -> io::Result<Option<SingleInstanceGuard>> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn acquire_single_instance() -> io::Result<Option<SingleInstanceGuard>> {
-    Ok(Some(SingleInstanceGuard))
+    let runtime_root = launcher_runtime_root(Path::new("."));
+    fs::create_dir_all(&runtime_root)?;
+    let lock_path = runtime_root.join("dsh-launcher.lock");
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(lock_path)?;
+    let status = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if status == 0 {
+        Ok(Some(SingleInstanceGuard(lock)))
+    } else {
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::WouldBlock {
+            Ok(None)
+        } else {
+            Err(error)
+        }
+    }
 }
 
 #[derive(Debug)]
