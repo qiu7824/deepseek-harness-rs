@@ -15,6 +15,13 @@ SKIN_CENTER = ROOT / "release" / "plugins" / "dsh-skin-center" / "lib" / "client
 SKINS = ROOT / "web" / "dist" / "skins"
 
 
+def workflow_step(workflow: str, name: str) -> str:
+    marker = f"      - name: {name}\n"
+    start = workflow.index(marker)
+    end = workflow.find("\n      - ", start + len(marker))
+    return workflow[start:] if end < 0 else workflow[start:end]
+
+
 class LauncherReleaseContractTests(unittest.TestCase):
     def test_launcher_exposes_the_complete_desktop_contract(self):
         source = LAUNCHER.read_text(encoding="utf-8")
@@ -146,11 +153,26 @@ class LauncherReleaseContractTests(unittest.TestCase):
         self.assertIn("mimo-v2.5-free", VERIFIER.read_text(encoding="utf-8"))
         self.assertIn('stage / "deepseek-black.ico"', PACKAGE.read_text(encoding="utf-8"))
         self.assertIn('prefix + "deepseek-black.ico"', VERIFIER.read_text(encoding="utf-8"))
-        gate = workflow.split("- name: 版本与产品门禁", 1)[1].split(
-            "- name: 构建正式二进制", 1
-        )[0]
+        gate = workflow_step(workflow, "版本与产品门禁")
         self.assertIn("cargo test --locked -p dsh-launcher", gate)
         self.assertNotIn("if:", gate)
+
+    def test_workflow_step_extracts_only_one_named_step(self):
+        workflow = """jobs:
+  build:
+    steps:
+      - name: 版本与产品门禁
+        run: |
+          echo gate
+      - name: 旁路步骤
+        run: cargo test --locked -p dsh-launcher
+      - name: 构建正式二进制
+        run: cargo build
+"""
+        gate = workflow_step(workflow, "版本与产品门禁")
+        self.assertIn("echo gate", gate)
+        self.assertNotIn("旁路步骤", gate)
+        self.assertNotIn("cargo test --locked -p dsh-launcher", gate)
 
     def test_launcher_uses_only_supported_native_desktop_services(self):
         source = LAUNCHER.read_text(encoding="utf-8")
