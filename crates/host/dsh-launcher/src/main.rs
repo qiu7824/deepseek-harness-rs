@@ -324,6 +324,16 @@ fn active_home(_root: &Path) -> PathBuf {
 }
 
 fn stop_process(identity: &ProcessIdentity) -> io::Result<()> {
+    let observed = inspect_process(identity.pid)?;
+    if observed != *identity {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "owned process {} identity changed before stop",
+                identity.pid
+            ),
+        ));
+    }
     stop_process_platform(identity)
 }
 
@@ -495,7 +505,7 @@ fn process_creation_time_macos(pid: i32) -> io::Result<u64> {
             buffersize: i32,
         ) -> i32;
     }
-    let expected = size_of::<ProcBsdInfo>();
+    let expected = std::mem::size_of::<ProcBsdInfo>();
     let length = unsafe {
         proc_pidinfo(
             pid,
@@ -815,7 +825,7 @@ fn set_autostart(enabled: bool) -> io::Result<()> {
     }
     let command = format!("\"{}\" --background", std::env::current_exe()?.display());
     let value = wide_null(command);
-    let byte_len = value.len() * size_of::<u16>();
+    let byte_len = value.len() * std::mem::size_of::<u16>();
     let bytes = unsafe { std::slice::from_raw_parts(value.as_ptr().cast::<u8>(), byte_len) };
     let status = unsafe {
         RegSetValueExW(
@@ -1044,8 +1054,12 @@ impl ServiceController {
                 self.child = Some(child);
                 return Err(self.copy.foreign_port.to_string());
             }
+            #[cfg(windows)]
             child
                 .kill()
+                .map_err(|error| format!("{}: {error}", self.copy.stop_failed))?;
+            #[cfg(unix)]
+            stop_process(&identity)
                 .map_err(|error| format!("{}: {error}", self.copy.stop_failed))?;
             child
                 .wait()
@@ -1576,6 +1590,8 @@ mod tests {
         assert!(source.contains("libc::kill(pid, libc::SIGTERM)"));
         assert!(source.contains("libc::kill(pid, 0)"));
         assert!(source.contains("fn process_creation_time_macos(pid: i32)"));
+        assert!(source.contains("let observed = inspect_process(identity.pid)?;"));
+        assert!(source.contains("#[cfg(unix)]\n            stop_process(&identity)"));
     }
 
     #[test]
