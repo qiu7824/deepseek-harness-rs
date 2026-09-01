@@ -227,9 +227,11 @@ impl LauncherStateFile {
 }
 
 fn launcher_state_path(root: &Path) -> PathBuf {
-    launcher_runtime_root(root)
-        .join("run")
-        .join(LAUNCHER_STATE_FILE)
+    launcher_state_path_in_runtime_root(&launcher_runtime_root(root))
+}
+
+fn launcher_state_path_in_runtime_root(runtime_root: &Path) -> PathBuf {
+    runtime_root.join("run").join(LAUNCHER_STATE_FILE)
 }
 
 fn launcher_runtime_root(root: &Path) -> PathBuf {
@@ -246,8 +248,11 @@ fn launcher_log_dir(root: &Path) -> PathBuf {
 }
 
 fn read_launcher_state(root: &Path) -> io::Result<Option<LauncherStateFile>> {
-    let path = launcher_state_path(root);
-    match fs::read(&path) {
+    read_launcher_state_at(&launcher_state_path(root))
+}
+
+fn read_launcher_state_at(path: &Path) -> io::Result<Option<LauncherStateFile>> {
+    match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map(Some)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
@@ -257,7 +262,10 @@ fn read_launcher_state(root: &Path) -> io::Result<Option<LauncherStateFile>> {
 }
 
 fn write_launcher_state(root: &Path, state: &LauncherStateFile) -> io::Result<()> {
-    let path = launcher_state_path(root);
+    write_launcher_state_at(&launcher_state_path(root), state)
+}
+
+fn write_launcher_state_at(path: &Path, state: &LauncherStateFile) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("launcher state path has no parent"))?;
@@ -265,10 +273,10 @@ fn write_launcher_state(root: &Path, state: &LauncherStateFile) -> io::Result<()
     let temp = parent.join(format!(".{LAUNCHER_STATE_FILE}.tmp-{}", std::process::id()));
     let bytes = serde_json::to_vec_pretty(state).map_err(io::Error::other)?;
     fs::write(&temp, bytes)?;
-    if let Err(error) = fs::rename(&temp, &path) {
+    if let Err(error) = fs::rename(&temp, path) {
         if error.kind() == io::ErrorKind::AlreadyExists || path.exists() {
-            fs::remove_file(&path)?;
-            fs::rename(&temp, &path)?;
+            fs::remove_file(path)?;
+            fs::rename(&temp, path)?;
         } else {
             let _ = fs::remove_file(&temp);
             return Err(error);
@@ -1851,8 +1859,8 @@ mod tests {
 
     #[test]
     fn launcher_state_round_trips_the_exact_owned_process_identity() {
-        let root = unique_test_root("state-roundtrip");
-        let state_path = super::launcher_state_path(&root);
+        let runtime_root = unique_test_root("state-roundtrip");
+        let state_path = super::launcher_state_path_in_runtime_root(&runtime_root);
         let state = LauncherStateFile::owned(
             4242,
             7_654_321,
@@ -1860,15 +1868,11 @@ mod tests {
             PathBuf::from(r"C:\Users\Administrator\AppData\Local\DeepSeek Harness"),
             DEFAULT_PORT,
         );
-        write_launcher_state(&root, &state).expect("write launcher state");
-        let restored = read_launcher_state(&root)
-            .expect("read launcher state")
-            .expect("state should exist");
+        super::write_launcher_state_at(&state_path, &state).expect("write launcher state");
+        let restored = super::read_launcher_state_at(&state_path)
+            .expect("read isolated launcher state")
+            .expect("isolated launcher state should exist");
         assert_eq!(restored, state);
-        let runtime_root = state_path
-            .parent()
-            .and_then(std::path::Path::parent)
-            .expect("launcher state should have a runtime root");
         std::fs::remove_dir_all(runtime_root).expect("remove test runtime root");
     }
 
