@@ -227,7 +227,22 @@ impl LauncherStateFile {
 }
 
 fn launcher_state_path(root: &Path) -> PathBuf {
-    root.join("run").join(LAUNCHER_STATE_FILE)
+    launcher_runtime_root(root)
+        .join("run")
+        .join(LAUNCHER_STATE_FILE)
+}
+
+fn launcher_runtime_root(root: &Path) -> PathBuf {
+    let home = active_home(root);
+    if home == root {
+        root.to_path_buf()
+    } else {
+        home.join("launcher")
+    }
+}
+
+fn launcher_log_dir(root: &Path) -> PathBuf {
+    launcher_runtime_root(root).join("logs")
 }
 
 fn read_launcher_state(root: &Path) -> io::Result<Option<LauncherStateFile>> {
@@ -368,10 +383,68 @@ fn stop_process_platform(identity: &ProcessIdentity) -> io::Result<()> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
+struct LinuxPidFd(i32);
+
+#[cfg(target_os = "linux")]
+impl Drop for LinuxPidFd {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.0);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_pidfd_open(pid: u32) -> io::Result<LinuxPidFd> {
+    let pid = i32::try_from(pid)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "pid exceeds i32"))?;
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(LinuxPidFd(fd as i32))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_pidfd_send_signal(pidfd: &LinuxPidFd, signal: i32) -> io::Result<()> {
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.0,
+            signal,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stop_process_platform(identity: &ProcessIdentity) -> io::Result<()> {
+    let pidfd = linux_pidfd_open(identity.pid)?;
+    let observed = inspect_process(identity.pid)?;
+    if observed != *identity {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "owned process {} identity changed before pidfd stop",
+                identity.pid
+            ),
+        ));
+    }
+    linux_pidfd_send_signal(&pidfd, libc::SIGTERM)
+}
+
+#[cfg(target_os = "macos")]
 fn stop_process_platform(identity: &ProcessIdentity) -> io::Result<()> {
     let pid = i32::try_from(identity.pid)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "PID does not fit pid_t"))?;
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "pid exceeds i32"))?;
     let status = unsafe { libc::kill(pid, libc::SIGTERM) };
     if status == 0 {
         Ok(())
@@ -972,7 +1045,7 @@ impl ServiceController {
                 self.executable.display()
             ));
         }
-        let log_dir = self.root.join("logs");
+        let log_dir = launcher_log_dir(&self.root);
         fs::create_dir_all(&log_dir).map_err(|error| error.to_string())?;
         let stdout =
             fs::File::create(log_dir.join("dsh.out.log")).map_err(|error| error.to_string())?;
@@ -1027,7 +1100,7 @@ impl ServiceController {
             {
                 self.child = None;
                 let _ = remove_launcher_state(&self.root);
-                let error = fs::read_to_string(self.root.join("logs").join("dsh.err.log"))
+                let error = fs::read_to_string(launcher_log_dir(&self.root).join("dsh.err.log"))
                     .unwrap_or_default();
                 let detail = error.lines().last().unwrap_or(self.copy.start_failed);
                 return Err(format!("{}: {detail}", self.copy.start_failed));
@@ -1479,7 +1552,7 @@ fn main() -> Result<(), zsui::ZsuiError> {
             }
         });
     let command_controller = Arc::clone(&controller);
-    NativeWindowBuilder::new(copy.title)
+    let builder = NativeWindowBuilder::new(copy.title)
         .app_name("DeepSeek Harness-rs")
         .size(680, 430)
         .min_size(600, 390)
@@ -1487,8 +1560,15 @@ fn main() -> Result<(), zsui::ZsuiError> {
         .visible(!background)
         .resizable(false)
         .invalidation_handle(invalidation)
-        .release_view_when_hidden()
-        .tray(tray)
+        .release_view_when_hidden();
+    #[cfg(not(target_os = "linux"))]
+    let builder = builder.tray(tray);
+    #[cfg(target_os = "linux")]
+    let builder = {
+        let _unsupported_tray = tray;
+        builder
+    };
+    builder
         .on_close_requested(ZsuiCommand::HideMainWindow)
         .app_command_executor(move |command| match command {
             ZsuiCommand::Custom { id, .. } => {
@@ -1587,6 +1667,10 @@ mod tests {
     fn unix_launcher_inspects_and_stops_the_spawned_host_process() {
         let source = include_str!("main.rs");
         assert!(source.contains("/proc/{pid}/exe"));
+        assert!(source.contains("linux_pidfd_send_signal(&pidfd, libc::SIGTERM)"));
+        assert!(source.contains("libc::syscall"));
+        assert!(source.contains("libc::SYS_pidfd_open"));
+        assert!(source.contains("libc::SYS_pidfd_send_signal"));
         assert!(source.contains("libc::kill(pid, libc::SIGTERM)"));
         assert!(source.contains("libc::kill(pid, 0)"));
         assert!(source.contains("fn process_creation_time_macos(pid: i32)"));
@@ -1764,6 +1848,7 @@ mod tests {
     #[test]
     fn launcher_state_round_trips_the_exact_owned_process_identity() {
         let root = unique_test_root("state-roundtrip");
+        let state_path = super::launcher_state_path(&root);
         let state = LauncherStateFile::owned(
             4242,
             7_654_321,
@@ -1776,7 +1861,11 @@ mod tests {
             .expect("read launcher state")
             .expect("state should exist");
         assert_eq!(restored, state);
-        std::fs::remove_dir_all(root).expect("remove test root");
+        let runtime_root = state_path
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("launcher state should have a runtime root");
+        std::fs::remove_dir_all(runtime_root).expect("remove test runtime root");
     }
 
     #[test]

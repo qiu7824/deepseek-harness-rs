@@ -89,7 +89,7 @@ jobs:
             cp -R "$STAGE"/. "$PKG/opt/deepseek-harness-rs/${variant}/"
             printf 'Package: deepseek-harness-rs-%s\nVersion: %s\nSection: devel\nPriority: optional\nArchitecture: amd64\nMaintainer: DeepSeek Harness-rs\nDescription: Rust native DeepSeek Harness Web Agent (%s variant)\n' "$variant" "$VERSION" "$variant" > "$PKG/DEBIAN/control"
             ln -s "/opt/deepseek-harness-rs/${variant}/dsh-launcher" "$PKG/usr/bin/deepseek-harness-rs-${variant}"
-            dpkg-deb --build "$PKG" "dist/deepseek-harness-rs-v${VERSION}-linux-x86_64-${variant}.deb"
+            dpkg-deb --root-owner-group --build "$PKG" "dist/deepseek-harness-rs-v${VERSION}-linux-x86_64-${variant}.deb"
           done
       - name: macOS PKG 安装包
         if: matrix.platform == 'macos'

@@ -54,12 +54,16 @@ pub unsafe extern "system" fn zsui_win32_default_window_proc(
         WM_CLOSE => {
             if take_windows_win32_window_close_approval(hwnd) {
                 DefWindowProcW(hwnd, msg, wparam, lparam)
-            } else if dispatch_windows_win32_window_close_requested(hwnd)
-                .is_some_and(|report| report.handled && !report.quit_requested)
-            {
-                0
             } else {
-                DefWindowProcW(hwnd, msg, wparam, lparam)
+                match dispatch_windows_win32_window_close_requested(hwnd) {
+                    Some(report) if report.handled && !report.quit_requested => {
+                        for command in &report.window_lifecycle_commands {
+                            execute_windows_win32_lifecycle_command(hwnd, command);
+                        }
+                        0
+                    }
+                    _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+                }
             }
         }
         WM_NCDESTROY => {

@@ -144,6 +144,30 @@ class LauncherReleaseContractTests(unittest.TestCase):
         self.assertIn('stage / "deepseek-black.ico"', PACKAGE.read_text(encoding="utf-8"))
         self.assertIn('prefix + "deepseek-black.ico"', VERIFIER.read_text(encoding="utf-8"))
 
+    def test_launcher_uses_only_supported_native_desktop_services(self):
+        source = LAUNCHER.read_text(encoding="utf-8")
+        linux = (
+            ROOT
+            / "crates"
+            / "vendor"
+            / "zsui"
+            / "src"
+            / "platform"
+            / "desktop_runtime"
+            / "linux_direct.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn("let builder = NativeWindowBuilder::new(copy.title)", source)
+        self.assertIn("#[cfg(not(target_os = \"linux\"))]", source)
+        self.assertIn("builder.tray(tray)", source)
+        self.assertIn("if !request.trays.is_empty()", linux)
+
+    def test_launcher_mutable_files_live_under_the_user_home(self):
+        source = LAUNCHER.read_text(encoding="utf-8")
+        self.assertIn("fn launcher_runtime_root(root: &Path) -> PathBuf", source)
+        self.assertIn('home.join("launcher")', source)
+        self.assertIn("launcher_log_dir(&self.root)", source)
+        self.assertNotIn('self.root.join("logs")', source)
+
 
 if __name__ == "__main__":
     unittest.main()

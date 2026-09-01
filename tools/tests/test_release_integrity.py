@@ -90,6 +90,10 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self.assertNotIn("contains(github.ref_name, '-rc')", workflow)
         self.assertIn("python tools/verify_release_version.py", workflow)
 
+    def test_linux_deb_records_root_owned_payload(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("dpkg-deb --root-owner-group --build", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

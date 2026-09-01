@@ -3716,6 +3716,7 @@ mod tests {
             tooltip: Some("ZSUI".to_string()),
             icon: Some(9),
             menu: menu.clone(),
+            menu_provider: None,
         });
 
         assert_eq!(
@@ -3767,6 +3768,7 @@ mod tests {
             tooltip: Some("Restored".to_string()),
             icon: Some(27),
             menu: MenuSpec::new().item("Quit", Command::Quit),
+            menu_provider: None,
         };
         let data = route.notify_data();
 
@@ -3778,6 +3780,46 @@ mod tests {
         assert_ne!(data.uFlags & NIF_TIP, 0);
         assert_ne!(data.uFlags & NIF_ICON, 0);
         assert_eq!(data.szTip[0], 'R' as u16);
+    }
+
+    #[test]
+    fn native_lifecycle_commands_show_hide_and_toggle_a_real_window() {
+        let host = WindowsWin32MainWindowHost::new();
+        let module = unsafe { WindowsWin32MainWindowHost::module_handle() };
+        let cursor = unsafe { WindowsWin32MainWindowHost::arrow_cursor() };
+        assert!(unsafe { host.register_window_class(WindowsWindowRole::Quick, module, cursor) });
+        let title = wide_null("ZSUI lifecycle command regression");
+        let hwnd = unsafe {
+            host.create_window(
+                WindowsWindowRole::Quick,
+                &title,
+                320,
+                200,
+                module,
+                &NativeWindowOptions::tool_window(),
+            )
+        };
+        assert!(!hwnd.is_null());
+
+        assert!(execute_windows_win32_lifecycle_command(
+            hwnd,
+            &Command::ShowMainWindow
+        ));
+        assert_ne!(unsafe { IsWindowVisible(hwnd) }, 0);
+        assert!(execute_windows_win32_lifecycle_command(
+            hwnd,
+            &Command::HideMainWindow
+        ));
+        assert_eq!(unsafe { IsWindowVisible(hwnd) }, 0);
+        assert!(execute_windows_win32_lifecycle_command(
+            hwnd,
+            &Command::ToggleMainWindow
+        ));
+        assert_ne!(unsafe { IsWindowVisible(hwnd) }, 0);
+
+        unsafe {
+            DestroyWindow(hwnd);
+        }
     }
 
     #[test]

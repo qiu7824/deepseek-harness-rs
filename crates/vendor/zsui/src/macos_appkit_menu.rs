@@ -69,6 +69,7 @@ pub struct MacosAppKitMenuService {
     menu: Option<Retained<NSMenu>>,
     target: Retained<ZsuiAppKitMenuTarget>,
     command_handler: Rc<RefCell<Option<Rc<dyn Fn(u32)>>>>,
+    command_model: Option<Rc<RefCell<Option<NativeMenuModel>>>>,
     receiver: Receiver<u32>,
     next_native_id: u32,
 }
@@ -101,6 +102,7 @@ impl MacosAppKitMenuService {
             menu: None,
             target: ZsuiAppKitMenuTarget::new(mtm, sender, Rc::clone(&command_handler)),
             command_handler,
+            command_model: None,
             receiver,
             next_native_id: 1,
         })
@@ -138,9 +140,11 @@ impl MacosAppKitMenuService {
     }
 
     pub(crate) fn set_command_handler(&mut self, handler: impl Fn(crate::Command) + 'static) {
-        let model = self.model.clone();
+        let model = Rc::new(RefCell::new(self.model.clone()));
+        self.command_model = Some(Rc::clone(&model));
         *self.command_handler.borrow_mut() = Some(Rc::new(move |native_id| {
             if let Some(command) = model
+                .borrow()
                 .as_ref()
                 .and_then(|model| model.command_for_native_id(native_id))
             {
@@ -151,6 +155,25 @@ impl MacosAppKitMenuService {
 
     pub(crate) fn set_detached_menu(&mut self, menu: &MenuSpec) -> ZsuiResult<()> {
         self.set_menu(None, Some(menu), false)
+    }
+
+    pub(crate) fn refreshed_detached_menu(&mut self, menu: &MenuSpec) -> ZsuiResult<&NSMenu> {
+        let mtm = appkit_menu_main_thread_marker()?;
+        let model = NativeMenuModel::lower(menu, self.next_native_id)?;
+        let native_menu = build_appkit_menu(&model, &self.target, mtm);
+        if let Some(command_model) = self.command_model.as_ref() {
+            *command_model.borrow_mut() = Some(model.clone());
+        }
+        self.next_native_id = model.next_native_id();
+        self.window = None;
+        self.model = Some(model);
+        self.menu = Some(native_menu);
+        self.native_menu().ok_or_else(|| {
+            ZsuiError::host(
+                "macos_appkit_menu",
+                "refreshed detached menu was not retained",
+            )
+        })
     }
 
     pub(crate) fn native_menu(&self) -> Option<&NSMenu> {

@@ -250,16 +250,52 @@ pub fn dispatch_windows_win32_window_menu_command(
     Some(result)
 }
 
+fn windows_win32_lifecycle_command(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::ShowMainWindow | Command::HideMainWindow | Command::ToggleMainWindow
+    )
+}
+
+fn execute_windows_win32_lifecycle_command(hwnd: HWND, command: &Command) -> bool {
+    if hwnd.is_null() {
+        return false;
+    }
+    unsafe {
+        match command {
+            Command::ShowMainWindow => {
+                ShowWindow(hwnd, SW_SHOW);
+                SetForegroundWindow(hwnd);
+                true
+            }
+            Command::HideMainWindow => {
+                ShowWindow(hwnd, SW_HIDE);
+                true
+            }
+            Command::ToggleMainWindow => {
+                if IsWindowVisible(hwnd) != 0 {
+                    ShowWindow(hwnd, SW_HIDE);
+                } else {
+                    ShowWindow(hwnd, SW_SHOW);
+                    SetForegroundWindow(hwnd);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 fn dispatch_windows_win32_app_command(hwnd: HWND, command: Command) {
     if hwnd.is_null() {
         return;
     }
-    if dispatch_windows_win32_window_view_input(hwnd, |route| {
+    let _report = dispatch_windows_win32_window_view_input(hwnd, |route| {
         route.dispatch_app_command(command.clone())
-    })
-    .is_none()
-        && command == Command::Quit
-    {
+    });
+    if windows_win32_lifecycle_command(&command) {
+        execute_windows_win32_lifecycle_command(hwnd, &command);
+    } else if command == Command::Quit {
         unsafe {
             PostMessageW(hwnd, WM_CLOSE, 0, 0);
         }
