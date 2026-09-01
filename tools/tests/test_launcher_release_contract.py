@@ -157,12 +157,27 @@ class LauncherReleaseContractTests(unittest.TestCase):
             / "linux_direct.rs"
         ).read_text(encoding="utf-8")
         self.assertIn("let builder = NativeWindowBuilder::new(copy.title)", source)
-        self.assertIn("#[cfg(not(target_os = \"linux\"))]", source)
-        self.assertIn("builder.tray(tray)", source)
-        self.assertIn("let close_command = ZsuiCommand::Quit", source)
+        self.assertIn(
+            '#[cfg(not(target_os = "linux"))]\n    let builder = builder.tray(tray);',
+            source,
+        )
+        self.assertIn(
+            '#[cfg(target_os = "linux")]\n    let close_command = ZsuiCommand::Quit;',
+            source,
+        )
+        self.assertIn(
+            '#[cfg(not(target_os = "linux"))]\n    let close_command = ZsuiCommand::HideMainWindow;',
+            source,
+        )
         self.assertIn(".on_close_requested(close_command)", source)
-        self.assertIn("let initial_window_visible = !background", source)
-        self.assertIn("let initial_window_visible = true", source)
+        self.assertIn(
+            '#[cfg(target_os = "linux")]\n    let initial_window_visible = true;',
+            source,
+        )
+        self.assertIn(
+            '#[cfg(not(target_os = "linux"))]\n    let initial_window_visible = !background;',
+            source,
+        )
         self.assertIn(".visible(initial_window_visible)", source)
         self.assertIn("if !request.trays.is_empty()", linux)
 
