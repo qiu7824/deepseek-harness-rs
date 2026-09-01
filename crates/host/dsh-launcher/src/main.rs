@@ -1568,8 +1568,12 @@ fn main() -> Result<(), zsui::ZsuiError> {
         let _unsupported_tray = tray;
         builder
     };
+    #[cfg(target_os = "linux")]
+    let close_command = ZsuiCommand::Quit;
+    #[cfg(not(target_os = "linux"))]
+    let close_command = ZsuiCommand::HideMainWindow;
     builder
-        .on_close_requested(ZsuiCommand::HideMainWindow)
+        .on_close_requested(close_command)
         .app_command_executor(move |command| match command {
             ZsuiCommand::Custom { id, .. } => {
                 let action = match id.as_str() {

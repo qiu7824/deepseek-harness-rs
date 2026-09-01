@@ -159,6 +159,8 @@ class LauncherReleaseContractTests(unittest.TestCase):
         self.assertIn("let builder = NativeWindowBuilder::new(copy.title)", source)
         self.assertIn("#[cfg(not(target_os = \"linux\"))]", source)
         self.assertIn("builder.tray(tray)", source)
+        self.assertIn("let close_command = ZsuiCommand::Quit", source)
+        self.assertIn(".on_close_requested(close_command)", source)
         self.assertIn("if !request.trays.is_empty()", linux)
 
     def test_launcher_mutable_files_live_under_the_user_home(self):
