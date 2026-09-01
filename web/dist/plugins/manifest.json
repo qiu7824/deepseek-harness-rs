@@ -1,5 +1,5 @@
 {
-  "rev": "v012-alpha2-fixture-ready-20260831",
+  "rev": "v012-alpha3-rust-sync-20260901",
   "entries": [
     {
       "id": "@deepseek-ai/dsh-typert-registry",
@@ -33,7 +33,7 @@
     {
       "id": "@deepseek-ai/dsh-client-connection",
       "url": "/plugins/connection.js",
-      "rev": "80637b2af856c104",
+      "rev": "30e6a9a9c37d108f",
       "inject": [],
       "immediately": true
     },
@@ -49,7 +49,7 @@
     {
       "id": "@deepseek-ai/dsh-client-runtime",
       "url": "/plugins/client-runtime.js",
-      "rev": "b323b9ebaeba4826",
+      "rev": "c6506f3285077ba8",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-typert-registry",
@@ -155,7 +155,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-conversation",
       "url": "/plugins/ui-conversation.js",
-      "rev": "fb8b2fe2caa6d3f2",
+      "rev": "0f4792d7e75fa7f7",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -226,7 +226,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-input-trigger",
       "url": "/plugins/ui-input-trigger.js",
-      "rev": "eb97a32face73afa",
+      "rev": "25e70d044a2143a4",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-locale"

@@ -229,12 +229,12 @@ window.__ModuleLoader__.load({
 				}
 			}
 		};
-		/** Await source readiness without letting a stalled carrier wedge startup forever. */
+		/** Await source readiness while reporting, but not cancelling, a slow Host. */
 		function waitForReady(ready, timeoutMs, signal) {
 			return new Promise((resolve, reject) => {
 				let settled = false;
 				const timeout = setTimeout(() => {
-					finish({ error: /* @__PURE__ */ new Error(`connection generation was not ready within ${String(timeoutMs)}ms`) });
+					console.warn(`[connection] generation is still not ready after ${String(timeoutMs)}ms`);
 				}, timeoutMs);
 				const aborted = () => {
 					finish({ error: new Error("connection generation aborted", { cause: signal.reason }) });

@@ -88,6 +88,21 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertNotIn("restoreImages(imageIds)", sink)
         self.assertNotIn("shell.setDraft(text)", sink)
 
+    def test_subagent_and_queue_image_delivery_surface_is_enabled(self):
+        runtime = RUNTIME.read_text(encoding="utf-8")
+        conversation = CONVERSATION.read_text(encoding="utf-8")
+        subagents = (ROOT / "crates" / "host" / "apiproxy" / "src" / "api" / "subagents.rs").read_text(encoding="utf-8")
+        proxy = (ROOT / "crates" / "host" / "apiproxy" / "src" / "proxy.rs").read_text(encoding="utf-8")
+        continuation = (ROOT / "crates" / "subagent" / "subagent" / "src" / "continuation.rs").read_text(encoding="utf-8")
+        self.assertNotIn("SUBAGENT_IMAGE_UNSUPPORTED", runtime)
+        self.assertIn("content,", runtime)
+        self.assertIn("filter((block) => block.type !== \"image\")", runtime)
+        self.assertIn("PromptContentPart", subagents)
+        self.assertIn("subagent image input requires the attachments service", proxy)
+        self.assertIn("MODEL_DOES_NOT_SUPPORT_IMAGES", continuation)
+        self.assertIn("QueueImageThumb", conversation)
+        self.assertIn("ctx.uiConversation.imageUrl(sessionId, attachment)", conversation)
+
     def test_approval_protocol_is_fail_closed_with_three_decisions(self):
         connection = CONNECTION.read_text(encoding="utf-8")
         conversation = CONVERSATION.read_text(encoding="utf-8")
@@ -262,7 +277,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
     def test_manual_windows_release_uses_the_same_fallback_version_as_packaging(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn("$refName.StartsWith('v')", workflow)
-        self.assertIn("else { '0.1.2-alpha.2' }", workflow)
+        self.assertIn("else { '0.1.2-alpha.3' }", workflow)
         self.assertNotIn("TrimStart('v')", workflow)
 
     def test_release_workflow_gates_and_verifies_core_skin_executables(self):
