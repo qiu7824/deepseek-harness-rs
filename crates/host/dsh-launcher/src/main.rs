@@ -67,6 +67,14 @@ unsafe extern "system" {
 const LAUNCHER_CONTENT_PADDING: Dp = Dp::new(24.0);
 const LAUNCHER_SECTION_GAP: Dp = Dp::new(16.0);
 const LAUNCHER_ACTION_GAP: Dp = Dp::new(8.0);
+/// Fixed window size. The content stacks four sections (title, service,
+/// preferences, last action); 430px clipped the last section on Windows
+/// once title-bar chrome is subtracted, so the height must fit ~470px of
+/// content plus decorations.
+const LAUNCHER_WINDOW_WIDTH: u32 = 680;
+const LAUNCHER_WINDOW_HEIGHT: u32 = 520;
+const LAUNCHER_WINDOW_MIN_WIDTH: u32 = 600;
+const LAUNCHER_WINDOW_MIN_HEIGHT: u32 = 470;
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1766,8 +1774,8 @@ fn main() -> Result<(), zsui::ZsuiError> {
     let job_dispatcher = jobs.clone();
     let builder = NativeWindowBuilder::new(copy.title)
         .app_name("DeepSeek Harness-rs")
-        .size(680, 430)
-        .min_size(600, 390)
+        .size(LAUNCHER_WINDOW_WIDTH, LAUNCHER_WINDOW_HEIGHT)
+        .min_size(LAUNCHER_WINDOW_MIN_WIDTH, LAUNCHER_WINDOW_MIN_HEIGHT)
         .icon_path(icon_path)
         .visible(initial_window_visible)
         .resizable(false)
@@ -1863,8 +1871,9 @@ mod tests {
 
     use super::{
         DEFAULT_PORT, Dp, LAUNCHER_ACTION_GAP, LAUNCHER_CONTENT_PADDING, LAUNCHER_SECTION_GAP,
-        LauncherAction, LauncherCommand, LauncherJobs, LauncherStateFile, MenuItemSpec, MenuSpec,
-        PRIMARY_ACTIONS, ProcessIdentity, SECONDARY_ACTIONS, ServiceController, ServiceOwnership,
+        LAUNCHER_WINDOW_HEIGHT, LAUNCHER_WINDOW_MIN_HEIGHT, LAUNCHER_WINDOW_WIDTH, LauncherAction,
+        LauncherCommand, LauncherJobs, LauncherStateFile, MenuItemSpec, MenuSpec, PRIMARY_ACTIONS,
+        ProcessIdentity, SECONDARY_ACTIONS, ServiceController, ServiceOwnership,
         TRAY_RESTART_COMMAND, TRAY_START_COMMAND, TRAY_STOP_COMMAND, UiInvalidationHandle,
         chinese_copy, core_executable_name, english_copy, is_newer_version, now_unix_millis,
         parse_version, tray_menu_spec, update_status_from,
@@ -2057,6 +2066,15 @@ mod tests {
         assert!(!jobs.is_busy());
         assert_ne!(jobs.ownership.get(), ServiceOwnership::ManagedRunning);
         std::fs::remove_dir_all(root).expect("remove worker test root");
+    }
+
+    #[test]
+    fn launcher_window_fits_all_four_sections() {
+        // The 430px height clipped the last-action section on Windows once
+        // title-bar chrome is subtracted; keep the window tall enough.
+        assert_eq!(LAUNCHER_WINDOW_WIDTH, 680);
+        assert!(LAUNCHER_WINDOW_HEIGHT >= 500);
+        assert!(LAUNCHER_WINDOW_MIN_HEIGHT >= 470);
     }
 
     #[test]
