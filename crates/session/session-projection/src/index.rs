@@ -262,7 +262,7 @@ impl SessionProjectionRegistry {
             values.insert(registration.def.key.clone(), parsed);
         }
         ProjectionSnapshot {
-            as_of_seq: session.seq() as i64 - 1,
+            as_of_seq: session.seq().get() as i64 - 1,
             values,
         }
     }
@@ -343,7 +343,7 @@ impl SessionProjectionRegistry {
     ) -> Result<(ProjectionSnapshot, ProjectionCheckpoint), String> {
         let end_seq = events
             .last()
-            .map(|event| event.seq as i64)
+            .map(|event| event.seq.get() as i64)
             .unwrap_or(base_seq - 1);
         let mut values = serde_json::Map::new();
         let mut refreshed = ProjectionCheckpoint::new();
@@ -367,7 +367,7 @@ impl SessionProjectionRegistry {
             };
             let from = row.map(|row| row.seq).unwrap_or(base_seq - 1);
             for event in events {
-                if event.seq as i64 > from {
+                if event.seq.get() as i64 > from {
                     state = (def.apply)(&state, event);
                 }
             }
@@ -431,7 +431,7 @@ impl SessionProjectionRegistry {
                         // event (seq = log index, so the prefix slice is
                         // exact), then take the normal gate.
                         let events = session.events();
-                        let prefix = &events[..event.seq as usize];
+                        let prefix = &events[..event.seq.get() as usize];
                         cells.insert(
                             session.identity(),
                             build_cell(&registration.def, session.header(), prefix),
@@ -444,7 +444,7 @@ impl SessionProjectionRegistry {
                 let next = (registration.def.apply)(&cell.state, event);
                 let changed = !Arc::ptr_eq(&next, &cell.state);
                 cell.state = next;
-                cell.observed_seq = event.seq as i64;
+                cell.observed_seq = event.seq.get() as i64;
                 (cell.state.clone(), changed)
             };
             if changed {
@@ -466,7 +466,12 @@ impl SessionProjectionRegistry {
                     let value = (registration.def.schema)(&raw)
                         .expect("session projection view violated its schema");
                     for (_, listener) in &listeners {
-                        listener(session, &registration.def.key, &value, event.seq as i64);
+                        listener(
+                            session,
+                            &registration.def.key,
+                            &value,
+                            event.seq.get() as i64,
+                        );
                     }
                 }
             }
@@ -486,7 +491,10 @@ fn build_cell(
     }
     UnitCell {
         state,
-        observed_seq: events.last().map(|event| event.seq as i64).unwrap_or(-1),
+        observed_seq: events
+            .last()
+            .map(|event| event.seq.get() as i64)
+            .unwrap_or(-1),
         observed_view: None,
     }
 }

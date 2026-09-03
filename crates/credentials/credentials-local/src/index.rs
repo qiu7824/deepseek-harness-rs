@@ -38,7 +38,9 @@ use dsh_credentials::{CredentialProvider, CredentialRef, credential_ref};
 use dsh_home_paths::{canonicalize_watch_path, resolve_dsh_home};
 use dsh_launch_environment::{LaunchEnvironmentSource, launch_environment_of};
 
-use crate::document::{parse_credentials_document, render_document};
+use crate::document::{
+    DOCUMENT_VERSION, parse_credentials_document, render_document, render_flat_layout_migration,
+};
 
 /// Basename of the credentials document inside the harness home.
 pub const CREDENTIALS_FILENAME: &str = ".credentials.yaml";
@@ -351,19 +353,49 @@ impl LocalCredentialProvider {
     /// Boot read: an absent file is an empty store; an invalid one fails the
     /// plugin's activation, because a credentials document that exists but
     /// cannot be trusted must never be treated as "no credentials stored".
+    /// The exact pre-release flat layout is upgraded once under the same
+    /// cross-process writer lock used by ordinary edits.
     async fn load_initial(&self) -> Result<(), String> {
         assert_owner_only(&self.spec.filename).await?;
-        let text = match (self.reader)(Path::new(&self.spec.filename)).await {
+        let mut text = match (self.reader)(Path::new(&self.spec.filename)).await {
             Ok(text) => text,
             Err(error) if is_enoent(&error) => return Ok(()),
             Err(error) => return Err(error.to_string()),
         };
+        if render_flat_layout_migration(&text).is_some() {
+            text = self.migrate_flat_document().await?;
+        }
         let values = parse_credentials_document(&text, &self.spec.filename)?;
         *self.state.lock() = ProviderState {
             text: Some(text),
             values,
         };
         Ok(())
+    }
+
+    /// Migrate only a document that still has the recognized flat layout at
+    /// lock acquisition time. A concurrent process may have migrated or
+    /// replaced it after the unlocked boot read; that winner is returned
+    /// untouched and goes through the ordinary strict parser.
+    async fn migrate_flat_document(&self) -> Result<String, String> {
+        let filename = PathBuf::from(&self.spec.filename);
+        let migrated = dsh_atomic_write::with_file_lock(&filename, async {
+            let current = (self.reader)(&filename)
+                .await
+                .map_err(|error| error.to_string())?;
+            let Some(next) = render_flat_layout_migration(&current) else {
+                return Ok::<String, String>(current);
+            };
+            (self.writer)(&filename, next.as_bytes()).await?;
+            Ok(next)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        self.ctx.named_logger(None).info(vec![cordis::arc(format!(
+            "credentials-local: migrated {} to the version {} layout; values are unchanged",
+            self.spec.filename, DOCUMENT_VERSION
+        ))]);
+        Ok(migrated)
     }
 
     /// Queue a reload; only a rejection escapes the queue's error surface.

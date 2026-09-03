@@ -286,7 +286,7 @@ impl ScheduleRuntime {
     fn read_folded(&self) -> Option<FoldedSchedules> {
         match fold_schedule_events(
             &self.agent.session().events(),
-            self.agent.session().header().seed_length.unwrap_or(0) as usize,
+            self.agent.session().inherited_event_count().get() as usize,
         ) {
             Ok(folded) => Some(folded),
             Err(error) => {

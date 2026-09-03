@@ -76,9 +76,9 @@ impl RuntimeContextProjection {
                 if retained.is_none() {
                     retained = Some(None);
                 }
-                if surface_nodes.contains(&event.seq) {
+                if surface_nodes.contains(&event.seq.get()) {
                     retained = Some(Some(Retained {
-                        seq: event.seq,
+                        seq: event.seq.get(),
                         text: text_of(&message),
                     }));
                     break;
@@ -108,7 +108,7 @@ impl RuntimeContextProjection {
                     {
                         if is_owned(&message) {
                             *retained.lock() = Some(Some(Retained {
-                                seq: event.seq,
+                                seq: event.seq.get(),
                                 text: text_of(&message),
                             }));
                         }

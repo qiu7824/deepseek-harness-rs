@@ -16,6 +16,7 @@ pub fn seed_descriptor_turn(
         session_id(child_id.as_str()),
         seed.map(|events| events.to_vec()),
         None,
+        None,
     )?;
     staged.append(
         "subagent/descriptor",

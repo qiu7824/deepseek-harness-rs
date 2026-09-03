@@ -81,6 +81,12 @@ pub async fn start_in_process_run(
             )
         })?;
 
+    let inherited_event_count = options
+        .seed
+        .as_ref()
+        .map(|_| dsh_session::SessionLogOffset::new(activation_boundary as u64))
+        .transpose()
+        .map_err(|error| SubagentError::new("CHILD_CREATE_FAILED", error))?;
     let handle = registry
         .create(dsh_agent::CreateAgentOptions {
             session_id: Some(child_id.clone()),
@@ -90,6 +96,7 @@ pub async fn start_in_process_run(
                 activation_boundary as u64,
             )),
             seed: options.seed,
+            inherited_event_count,
             agent_options: Some(resolve_child_agent_options(
                 parent.as_ref(),
                 request.request.agent_options.as_ref(),

@@ -321,7 +321,7 @@ fn coalesce_history_transport_events_inner(
         .collect();
     let mut compact: Vec<SessionEvent> = Vec::new();
     for mut event in events {
-        if event.type_ == "assistant/chunk" && completed_sources.contains(&event.seq) {
+        if event.type_ == "assistant/chunk" && completed_sources.contains(&event.seq.get()) {
             continue;
         }
         if strip_provenance
@@ -353,17 +353,17 @@ fn coalesce_history_transport_events_inner(
             .unwrap_or_default();
         if let Some(serde_json::Value::String(existing)) = previous.data["chunk"].get_mut(field) {
             existing.push_str(delta);
-            previous.data["__historyEndSeq"] = serde_json::Value::from(event.seq);
+            previous.data["__historyEndSeq"] = serde_json::Value::from(event.seq.get());
             previous.time = event.time;
         } else {
             compact.push(event);
         }
     }
     if let (Some(first), Some(raw_start)) = (compact.first_mut(), raw_start) {
-        first.data["__historyStartSeq"] = serde_json::Value::from(raw_start);
+        first.data["__historyStartSeq"] = serde_json::Value::from(raw_start.get());
     }
     if let (Some(last), Some(raw_end)) = (compact.last_mut(), raw_end) {
-        last.data["__historyEndSeq"] = serde_json::Value::from(raw_end);
+        last.data["__historyEndSeq"] = serde_json::Value::from(raw_end.get());
     }
     compact.shrink_to_fit();
     compact
@@ -373,6 +373,7 @@ pub(crate) fn coalesce_history_transport_events(events: Vec<SessionEvent>) -> Ve
     coalesce_history_transport_events_inner(events, true)
 }
 
+#[cfg(test)]
 pub(crate) fn coalesce_history_transport_batch(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
     coalesce_history_transport_events_inner(events, false)
 }
@@ -649,17 +650,21 @@ pub trait SessionsApi: Send + Sync {
 mod history_paging_contract_tests {
     use super::*;
 
+    fn seq(value: u64) -> dsh_session::SessionSeq {
+        dsh_session::SessionSeq::new(value).expect("test sequence is valid")
+    }
+
     #[test]
     fn history_transport_coalesces_contiguous_text_deltas() {
         let events: Vec<SessionEvent> = (0..4)
-            .map(|seq| SessionEvent {
+            .map(|value| SessionEvent {
                 type_: "assistant/chunk".to_string(),
-                seq,
-                time: seq as i64,
+                seq: seq(value),
+                time: value as i64,
                 data: serde_json::json!({
                     "turn": 1,
                     "step": 2,
-                    "chunk": {"type": "text-delta", "index": 0, "text": seq.to_string()}
+                    "chunk": {"type": "text-delta", "index": 0, "text": value.to_string()}
                 }),
                 ignorable: None,
                 surface_op: None,
@@ -680,7 +685,7 @@ mod history_paging_contract_tests {
         let mut initial = String::with_capacity(4_096);
         initial.push('a');
         let initial_ptr = initial.as_ptr();
-        let make = |seq, text: String| {
+        let make = |value: u64, text: String| {
             let mut chunk = serde_json::Map::new();
             chunk.insert(
                 "type".to_string(),
@@ -694,8 +699,8 @@ mod history_paging_contract_tests {
             data.insert("chunk".to_string(), serde_json::Value::Object(chunk));
             SessionEvent {
                 type_: "assistant/chunk".to_string(),
-                seq,
-                time: seq as i64,
+                seq: seq(value),
+                time: value as i64,
                 data: serde_json::Value::Object(data),
                 ignorable: None,
                 surface_op: None,
@@ -724,7 +729,7 @@ mod history_paging_contract_tests {
     fn serialized_event_length_matches_json_without_allocating_a_vec() {
         let event = SessionEvent {
             type_: "user/message".to_string(),
-            seq: 7,
+            seq: seq(7),
             time: 9,
             data: serde_json::json!({"message":{"role":"user","content":[{"type":"text","text":"hello"}]}}),
             ignorable: None,
@@ -739,10 +744,10 @@ mod history_paging_contract_tests {
 
     #[test]
     fn history_transport_preserves_delta_boundaries() {
-        let make = |seq, step, kind: &str, text: &str| SessionEvent {
+        let make = |value: u64, step, kind: &str, text: &str| SessionEvent {
             type_: "assistant/chunk".to_string(),
-            seq,
-            time: seq as i64,
+            seq: seq(value),
+            time: value as i64,
             data: serde_json::json!({
                 "turn": 1,
                 "step": step,
@@ -759,17 +764,20 @@ mod history_paging_contract_tests {
         ]);
         assert_eq!(compact.len(), 3);
         assert_eq!(
-            compact.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            compact
+                .iter()
+                .map(|event| event.seq.get())
+                .collect::<Vec<_>>(),
             vec![0, 1, 2]
         );
     }
 
     #[test]
     fn history_transport_coalesces_contiguous_tool_call_argument_deltas() {
-        let make = |seq, arguments: &str| SessionEvent {
+        let make = |value: u64, arguments: &str| SessionEvent {
             type_: "assistant/chunk".to_string(),
-            seq,
-            time: seq as i64,
+            seq: seq(value),
+            time: value as i64,
             data: serde_json::json!({
                 "turn": 2,
                 "step": 1,
@@ -803,14 +811,14 @@ mod history_paging_contract_tests {
 
     #[test]
     fn history_transport_elides_completed_assistant_provenance_chunks() {
-        let chunk = |seq| SessionEvent {
+        let chunk = |value: u64| SessionEvent {
             type_: "assistant/chunk".to_string(),
-            seq,
-            time: seq as i64,
+            seq: seq(value),
+            time: value as i64,
             data: serde_json::json!({
                 "turn": 1,
                 "step": 1,
-                "chunk": {"type": "text-delta", "index": 0, "text": seq.to_string()}
+                "chunk": {"type": "text-delta", "index": 0, "text": value.to_string()}
             }),
             ignorable: None,
             surface_op: None,
@@ -818,7 +826,7 @@ mod history_paging_contract_tests {
         };
         let message = SessionEvent {
             type_: "assistant/message".to_string(),
-            seq: 4,
+            seq: seq(4),
             time: 4,
             data: serde_json::json!({
                 "turn": 1,
@@ -831,7 +839,7 @@ mod history_paging_contract_tests {
         };
         let events = vec![
             SessionEvent {
-                seq: 0,
+                seq: seq(0),
                 type_: "step/start".to_string(),
                 time: 0,
                 data: serde_json::json!({"turn":1,"step":1}),
@@ -857,10 +865,10 @@ mod history_paging_contract_tests {
 
     #[test]
     fn history_transport_elides_completed_chunks_across_persistence_batches() {
-        let chunk = |seq| SessionEvent {
+        let chunk = |value: u64| SessionEvent {
             type_: "assistant/chunk".to_string(),
-            seq,
-            time: seq as i64,
+            seq: seq(value),
+            time: value as i64,
             data: serde_json::json!({
                 "turn": 1,
                 "step": 1,
@@ -872,7 +880,7 @@ mod history_paging_contract_tests {
         };
         let message = SessionEvent {
             type_: "assistant/message".to_string(),
-            seq: 513,
+            seq: seq(513),
             time: 513,
             data: serde_json::json!({"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}),
             ignorable: None,

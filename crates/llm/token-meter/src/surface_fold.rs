@@ -66,7 +66,7 @@ fn node_for(event: &SessionEvent) -> MeterSurfaceNode {
         })
         .unwrap_or(0);
     MeterSurfaceNode {
-        seq: event.seq,
+        seq: event.seq.get(),
         heuristic_tokens,
         image_free_tokens,
         images,

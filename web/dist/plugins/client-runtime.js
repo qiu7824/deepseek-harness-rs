@@ -7096,6 +7096,48 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		function eventContainsSeq(event, seq) {
 			return eventStartSeq(event) <= seq && seq <= eventEndSeq(event);
 		}
+		function historyChunkKey(event) {
+			if (event?.type !== "assistant/chunk") return null;
+			const chunk = event.data?.chunk;
+			if (chunk === null || typeof chunk !== "object" || !["text-delta", "reasoning-delta", "tool-call-delta"].includes(chunk.type)) return null;
+			return {
+				turn: event.data.turn,
+				step: event.data.step,
+				index: chunk.index,
+				type: chunk.type,
+				id: chunk.id,
+				name: chunk.name
+			};
+		}
+		function sameHistoryChunkRun(left, right) {
+			return left !== null && right !== null && left.turn === right.turn && left.step === right.step && left.index === right.index && left.type === right.type && left.id === right.id && left.name === right.name;
+		}
+		function compactSingleHistoryPage(events, views) {
+			const compactedEvents = [];
+			const compactedViews = [];
+			for (let index = 0; index < events.length; index += 1) {
+				const event = events[index];
+				const key = historyChunkKey(event);
+				const previous = compactedEvents.at(-1);
+				const previousKey = historyChunkKey(previous);
+				if (sameHistoryChunkRun(previousKey, key)) {
+					const field = key.type === "tool-call-delta" ? "argumentsDelta" : "text";
+					const delta = event.data.chunk[field];
+					if (typeof previous.data.chunk[field] === "string" && typeof delta === "string") {
+						previous.data.chunk[field] += delta;
+						previous.data.__historyEndSeq = eventEndSeq(event);
+						previous.time = event.time;
+						continue;
+					}
+				}
+				compactedEvents.push(key === null ? event : {
+					...event,
+					data: { ...event.data, chunk: { ...event.data.chunk } }
+				});
+				compactedViews.push(views[index]);
+			}
+			return { events: compactedEvents, views: compactedViews };
+		}
 		var Session = class {
 			sessionId;
 			api;
@@ -7431,13 +7473,13 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					this.views.splice(0, drop);
 				}
 				if (this.events.length > HISTORY_WINDOW_EVENTS && this.historyPages.length === 1) {
-					const excess = this.events.length - HISTORY_WINDOW_EVENTS;
-					this.events.splice(0, excess);
-					this.views.splice(0, excess);
+					const compacted = compactSingleHistoryPage(this.events, this.views);
+					this.events = compacted.events;
+					this.views = compacted.views;
 					const page = this.historyPages[0];
 					page.firstSeq = eventStartSeq(this.events[0]);
+					page.lastSeq = eventEndSeq(this.events[this.events.length - 1]);
 					page.eventCount = this.events.length;
-					this.hasMoreBefore = true;
 				}
 				// Never cut a raw event range: one page is the minimum retention unit.
 				// A single oversized safe page may exceed the soft event limit, preserving

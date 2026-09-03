@@ -8,6 +8,7 @@ import pathlib
 import re
 import subprocess
 import tarfile
+import tempfile
 import zipfile
 
 
@@ -20,6 +21,49 @@ def validated_release_component(field: str, value: str) -> str:
     if SAFE_RELEASE_COMPONENT.fullmatch(value) is None or value in {".", ".."}:
         raise ValueError(f"invalid {field}: {value!r}")
     return value
+
+
+def tree_files(root: pathlib.Path) -> dict[str, pathlib.Path]:
+    return {
+        path.relative_to(root).as_posix(): path
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def assert_same_tree(actual: pathlib.Path, expected: pathlib.Path) -> None:
+    actual_files = tree_files(actual)
+    expected_files = tree_files(expected)
+    if set(actual_files) != set(expected_files):
+        raise SystemExit(
+            "extracted archive differs from verified stage: "
+            f"missing={sorted(set(expected_files)-set(actual_files))[:20]}, "
+            f"extra={sorted(set(actual_files)-set(expected_files))[:20]}"
+        )
+    for name, expected_path in expected_files.items():
+        if actual_files[name].read_bytes() != expected_path.read_bytes():
+            raise SystemExit(f"extracted archive byte mismatch: {name}")
+
+
+def extract_portable_archive(archive: pathlib.Path, target: pathlib.Path) -> None:
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as package:
+            package.extractall(target)
+    else:
+        with tarfile.open(archive, "r:gz") as package:
+            package.extractall(target, filter="data")
+
+
+def read_archive_file(archive: pathlib.Path, name: str) -> bytes:
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as package:
+            return package.read(name)
+    with tarfile.open(archive, "r:gz") as package:
+        member = package.getmember(name)
+        handle = package.extractfile(member)
+        if handle is None:
+            raise SystemExit(f"unreadable archive member: {name}")
+        return handle.read()
 
 
 def main() -> None:
@@ -148,7 +192,16 @@ def main() -> None:
     }
     if manifest != expected_manifest:
         raise SystemExit(f"unexpected PACKAGE.json: {manifest}")
+    if manifest["variant"] != args.variant:
+        raise SystemExit("package manifest variant does not match the requested variant")
     settings_entry = prefix + "settings.defaults.json"
+    forbidden_skin_paths = sorted(
+        name for name in names if "/skins/" in name or "/skin.json" in name
+    )
+    if forbidden_skin_paths:
+        raise SystemExit(
+            f"archive leaks physical skin assets outside the embedded skin payload: {forbidden_skin_paths[:5]}"
+        )
     if args.variant == "free":
         if settings_entry not in names:
             raise SystemExit("free archive is missing its package defaults")
@@ -180,15 +233,30 @@ def main() -> None:
     if forbidden_names:
         raise SystemExit(f"archive leaks temporary files: {forbidden_names[:5]}")
 
-    staged_host = ROOT / "dist" / suffix / f"deepseek-harness-rs{executable_suffix}"
+    staged_root = ROOT / "dist" / suffix
+    staged_host = staged_root / f"deepseek-harness-rs{executable_suffix}"
     release_host = ROOT / "target" / "release" / f"dsh{executable_suffix}"
     if not staged_host.is_file() or not release_host.is_file():
         raise SystemExit("release host binary is missing from stage or target")
     if hashlib.sha256(staged_host.read_bytes()).digest() != hashlib.sha256(release_host.read_bytes()).digest():
         raise SystemExit("packaged host does not match target/release host")
-    version_output = subprocess.check_output([str(staged_host), "--version"], text=True).strip()
-    if version_output.rsplit(" ", 1)[-1] != version:
-        raise SystemExit(f"packaged host version mismatch: {version_output}")
+    archived_host = read_archive_file(archive, host)
+    if hashlib.sha256(archived_host).digest() != hashlib.sha256(release_host.read_bytes()).digest():
+        raise SystemExit("archive host does not match target/release host")
+    if args.platform == "windows":
+        with tempfile.TemporaryDirectory() as temporary:
+            extracted_parent = pathlib.Path(temporary)
+            extract_portable_archive(archive, extracted_parent)
+            extracted_root = extracted_parent / suffix
+            if not extracted_root.is_dir():
+                raise SystemExit(f"archive root is missing: {extracted_root}")
+            assert_same_tree(extracted_root, staged_root)
+            extracted_host = extracted_root / f"deepseek-harness-rs{executable_suffix}"
+            version_output = subprocess.check_output(
+                [str(extracted_host), "--version"], text=True
+            ).strip()
+            if version_output.rsplit(" ", 1)[-1] != version:
+                raise SystemExit(f"packaged host version mismatch: {version_output}")
 
     plugin_manifest_name = prefix + "web/dist/plugins/manifest.json"
     if archive.suffix == ".zip":

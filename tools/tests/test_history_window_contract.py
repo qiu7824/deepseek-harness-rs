@@ -24,30 +24,35 @@ class HistoryWindowContractTests(unittest.TestCase):
         ):
             self.assertTrue(required in source, required)
 
-    def test_runtime_can_page_through_to_an_unloaded_turn(self):
+    def test_runtime_loads_one_targeted_page_for_an_unloaded_turn(self):
         source = RUNTIME.read_text(encoding="utf-8")
         for required in (
-            "JUMP_PAGE_MESSAGES = 200",
-            "jumpTargetSeq = null",
-            "jumpPromise = null",
-            "loadThrough(seq)",
-            "this.jumpTargetSeq = Math.min",
-            "this.baseSeq > this.jumpTargetSeq",
-            "if (this.baseSeq >= before) return",
+            "historyTargetSeq = null",
+            "async loadAround(targetSeq, force = false)",
+            "this.history({ afterSeq: targetSeq, maxMessages: HISTORY_PAGE_MESSAGES })",
+            "eventContainsSeq(entry.event, targetSeq)",
+            "async returnLatest()",
         ):
             self.assertIn(required, source)
         conversation = CONVERSATION.read_text(encoding="utf-8")
-        self.assertIn('this.scopedSession("loadThrough").loadThrough(seq)', conversation)
-        self.assertIn("loadThrough: (seq) => scoped.loadThrough(seq)", conversation)
         for required in (
+            'this.scopedSession("loadAround").loadAround(seq)',
+            "loadAround: (seq) => scoped.loadAround(seq)",
             'useProjection("turnOutline")',
             "mergeTurnOutline(timeline, turnOutline)",
             "const TurnNavigator =",
             'className: "dshAlpha3TurnRail"',
-            "loadThrough(item.anchor.seq)",
+            "loadAround(item.anchor.seq)",
             '"chat.turnNavigation.jumpLoad"',
         ):
             self.assertIn(required, conversation)
+        self.assertNotIn("loadThrough(item.anchor.seq)", conversation)
+
+    def test_single_live_page_compacts_stream_deltas_without_cutting_its_prefix(self):
+        source = RUNTIME.read_text(encoding="utf-8")
+        self.assertIn("function compactSingleHistoryPage", source)
+        self.assertIn("compactSingleHistoryPage(this.events, this.views)", source)
+        self.assertNotIn("this.events.splice(0, excess)", source)
 
     def test_connection_preserves_directional_history_fields(self):
         source = CONNECTION.read_text(encoding="utf-8")

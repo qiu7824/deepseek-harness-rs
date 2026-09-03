@@ -134,7 +134,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("self.cold_materialize(parent", continuation)
         submit_followup = continuation[
             continuation.index("pub fn submit_followup(") : continuation.index(
-                "async fn cold_resume(", continuation.index("pub fn submit_followup(")
+                "pub async fn abort_followup", continuation.index("pub fn submit_followup(")
             )
         ]
         self.assertNotIn("prepare_submit(", submit_followup)
@@ -337,7 +337,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
     def test_manual_windows_release_uses_the_same_fallback_version_as_packaging(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn("$refName.StartsWith('v')", workflow)
-        self.assertIn("else { '0.1.2-alpha.3' }", workflow)
+        self.assertIn("else { '0.1.2-alpha.4' }", workflow)
         self.assertNotIn("TrimStart('v')", workflow)
 
     def test_release_workflow_gates_and_verifies_core_skin_executables(self):
@@ -398,8 +398,10 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("LanguageDetectionMethod=uilanguage", installer)
         self.assertIn('#if Variant == "core"', installer)
         self.assertIn('DefaultDirName={localappdata}\\Programs\\DeepSeek Harness-rs\\{#Variant}', installer)
-        self.assertIn('Languages: chinesesimp', installer)
-        self.assertIn('Languages: english', installer)
+        self.assertIn('chinesesimp.DesktopShortcut=', installer)
+        self.assertIn('chinesesimp.LauncherName=', installer)
+        self.assertIn('english.DesktopShortcut=', installer)
+        self.assertIn('english.LauncherName=', installer)
         self.assertIn("/DChineseMessages=$language", workflow)
         self.assertTrue((ROOT / "packaging" / "windows" / "ChineseSimplified.isl").is_file())
         self.assertIn("skin executable leaks bundled skin assets", verifier)

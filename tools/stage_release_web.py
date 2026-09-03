@@ -17,14 +17,23 @@ REQUIRED_RELIABILITY_BUNDLES = (
     "web/dist/plugins/ui-input-trigger.js",
 )
 
+REQUIRED_ALPHA4_BUNDLES = (
+    "web/dist/plugins/ui-settings-models.js",
+    "web/dist/plugins/ui-conversation.js",
+    "web/dist/plugins/ui-theme.js",
+    "web/dist/plugins/ui-trajectory.js",
+    "web/dist/plugins/ui-model-selection.js",
+)
+
 
 def stage_release_web(target: pathlib.Path) -> dict[str, object]:
     if not SOURCE.is_dir():
         raise FileNotFoundError(f"missing web distribution: {SOURCE}")
 
-    missing = [relative for relative in REQUIRED_RELIABILITY_BUNDLES if not (ROOT / relative).is_file()]
+    required_bundles = REQUIRED_RELIABILITY_BUNDLES + REQUIRED_ALPHA4_BUNDLES
+    missing = [relative for relative in required_bundles if not (ROOT / relative).is_file()]
     if missing:
-        raise FileNotFoundError(f"missing required reliability bundles: {', '.join(missing)}")
+        raise FileNotFoundError(f"missing required release bundles: {', '.join(missing)}")
 
     temporary = sorted(
         path.relative_to(SOURCE).as_posix()

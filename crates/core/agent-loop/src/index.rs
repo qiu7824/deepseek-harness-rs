@@ -555,7 +555,12 @@ impl AgentLoop {
                     .to_string()
             })?;
         let inspection = persistence.inspect(id).await?;
-        let session = Session::from_restore(id.clone(), inspection.events, &inspection.meta)?;
+        let session = Session::from_restore(
+            id.clone(),
+            inspection.events,
+            &inspection.meta,
+            inspection.inherited_event_count,
+        )?;
         let preparation = SessionPreparation::create(session, SessionPreparationOptions::default());
         self.setup_and_publish(
             owner_ctx,
@@ -693,8 +698,8 @@ impl AgentFactory for AgentLoop {
             Some(id.clone()),
             Some(dsh_session::CreateSessionOptions {
                 seed: options.seed.clone(),
+                inherited_event_count: options.inherited_event_count,
                 meta: Some(options.meta.clone().unwrap_or_default()),
-                ..Default::default()
             }),
         )?;
         let preparation = SessionPreparation::create(session, SessionPreparationOptions::default());

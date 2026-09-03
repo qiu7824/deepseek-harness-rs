@@ -18,10 +18,11 @@ pub use coordinator::{
 };
 pub use history_window::{HistoryWindowSelection, HistoryWindowTooLarge, select_history_window};
 pub use index::{
-    SessionEventChunk, SessionInspection, SessionListMetadata, SessionLocation, SessionPersistence,
-    SessionPersistenceApi, SessionPersistenceSnapshot, SessionRawArtifact,
-    SessionReadForwardWindowRequest, SessionReadFromResult, SessionReadWindowRequest,
-    SessionReadWindowResult, SessionUserMessageEvents,
+    NonpackedEventVisitor, SessionEventChunk, SessionInspection, SessionListMetadata,
+    SessionLocation, SessionPersistence, SessionPersistenceApi, SessionPersistenceSnapshot,
+    SessionRawArtifact, SessionReadForwardWindowRequest, SessionReadFromResult,
+    SessionReadWindowRequest, SessionReadWindowResult, SessionStorageMetadata,
+    SessionUserMessageEvents,
 };
 pub use preparations::{
     DiscardOutcome, PreparationEntry, PreparedSource, PreparedSourceLoader,

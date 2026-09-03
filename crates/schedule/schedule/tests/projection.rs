@@ -1,11 +1,11 @@
 use dsh_schedule::{schedule_id, schedule_projection_definition};
-use dsh_session::{SessionEvent, SessionHeader, session_id};
+use dsh_session::{SessionEvent, SessionHeader, SessionSeq, session_id};
 use dsh_session_projection::SessionProjectionRegistry;
 
 fn event(type_: &str, seq: u64, data: serde_json::Value) -> SessionEvent {
     SessionEvent {
         type_: type_.to_string(),
-        seq,
+        seq: SessionSeq::new(seq).unwrap(),
         time: seq as i64,
         data,
         ignorable: None,
@@ -14,14 +14,14 @@ fn event(type_: &str, seq: u64, data: serde_json::Value) -> SessionEvent {
     }
 }
 
-fn header(seed_length: Option<u64>) -> SessionHeader {
+fn header(is_seeded: bool) -> SessionHeader {
     SessionHeader {
         version: dsh_session::SESSION_FORMAT_VERSION,
         id: session_id("projection-test"),
         created_at: 0,
         cwd: None,
         parent_session: None,
-        seed_length,
+        is_seeded,
         origin: None,
         delegation_depth: None,
         agent_preset: None,
@@ -31,7 +31,7 @@ fn header(seed_length: Option<u64>) -> SessionHeader {
 #[test]
 fn schedule_projection_preserves_order_and_applies_terminal_changes() {
     let definition = schedule_projection_definition();
-    let mut state = (definition.init)(&header(None));
+    let mut state = (definition.init)(&header(false));
     let create_after = event(
         "schedule/change",
         0,
@@ -88,7 +88,7 @@ fn schedule_projection_preserves_order_and_applies_terminal_changes() {
 #[should_panic(expected = "schedule projection rejected durable event")]
 fn schedule_projection_fails_loud_on_corrupt_schedule_change() {
     let definition = schedule_projection_definition();
-    let state = (definition.init)(&header(None));
+    let state = (definition.init)(&header(false));
     let corrupt = event(
         "schedule/change",
         0,
@@ -98,9 +98,9 @@ fn schedule_projection_fails_loud_on_corrupt_schedule_change() {
 }
 
 #[test]
-fn schedule_projection_ignores_inherited_seed_events() {
+fn schedule_projection_replays_inherited_events_into_the_child_view() {
     let definition = schedule_projection_definition();
-    let mut state = (definition.init)(&header(Some(1)));
+    let mut state = (definition.init)(&header(true));
     let inherited = event(
         "schedule/change",
         0,
@@ -135,13 +135,14 @@ fn schedule_projection_ignores_inherited_seed_events() {
     state = (definition.apply)(&state, &child);
     let view_value = (definition.view)(&state);
     let view: &serde_json::Value = cordis::downcast(&view_value).unwrap();
-    assert_eq!(view.as_array().unwrap().len(), 1);
-    assert_eq!(view[0]["id"], "child");
+    assert_eq!(view.as_array().unwrap().len(), 2);
+    assert_eq!(view[0]["id"], "parent");
+    assert_eq!(view[1]["id"], "child");
 }
 
 #[test]
-fn schedule_projection_invalidates_pre_seed_length_checkpoints() {
-    assert_eq!(schedule_projection_definition().state_version, 2);
+fn schedule_projection_invalidates_pre_alpha4_seed_cut_checkpoints() {
+    assert_eq!(schedule_projection_definition().state_version, 3);
 }
 
 #[tokio::test]

@@ -102,7 +102,7 @@ fn validate_event(
     event: &SessionEvent,
     fail: &dyn Fn(&str),
 ) -> SessionTraceTransition {
-    if (event.seq as i64) <= trace.last_seq {
+    if (event.seq.get() as i64) <= trace.last_seq {
         invariant_fail(
             fail,
             format!(
@@ -288,7 +288,7 @@ fn validate_event(
         _ => {}
     }
     SessionTraceTransition {
-        last_seq: event.seq as i64,
+        last_seq: event.seq.get() as i64,
         open_turn,
         open_step,
         next_turn,
@@ -393,7 +393,7 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
             let traces = Arc::clone(&traces_for_publish);
             let seed_after_publish = Arc::clone(&seed_after_publish);
             Box::pin(async move {
-                let key = (session_ptr(&session), event.seq);
+                let key = (session_ptr(&session), event.seq.get());
                 let entry = { staged.lock().remove(&key) };
                 match entry {
                     Some(entry) if session_ptr(&entry.session) == session_ptr(&session) => {
@@ -403,7 +403,7 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
                             let trace_is_current = traces
                                 .lock()
                                 .get(&session_ptr(&session))
-                                .is_some_and(|(_, trace)| trace.last_seq == event.seq as i64);
+                                .is_some_and(|(_, trace)| trace.last_seq == event.seq.get() as i64);
                             if !trace_is_current {
                                 seed_after_publish(&session, &|message| panic!("{message}"));
                             }
@@ -463,7 +463,7 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
                     .and_then(|(weak, trace)| weak.upgrade().is_some().then(|| trace.clone()));
                 let rebuild_after_publish = trace
                     .as_ref()
-                    .is_none_or(|trace| trace.last_seq + 1 != event.seq as i64);
+                    .is_none_or(|trace| trace.last_seq + 1 != event.seq.get() as i64);
                 if let Some(mut trace) = trace.filter(|_| !rebuild_after_publish) {
                     let transition = validate_event(&trace, &event, &|message| panic!("{message}"));
                     apply_transition(&mut trace, transition);
@@ -472,7 +472,7 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
                         .insert(ptr, (Arc::downgrade(&session.inner), trace));
                 }
                 staged.lock().insert(
-                    (ptr, event.seq),
+                    (ptr, event.seq.get()),
                     StagedTransition {
                         session,
                         rebuild_after_publish,

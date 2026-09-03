@@ -154,6 +154,9 @@ impl SessionQueryEngine {
             session_id.clone(),
             Some(loaded.events.clone()),
             Some(&loaded.header),
+            loaded.header.is_seeded.then_some(
+                dsh_session::SessionLogOffset::new(0).expect("zero is a valid Session log offset"),
+            ),
         )
         .map_err(|error| {
             SessionQueryError::new(
@@ -272,7 +275,7 @@ impl SessionQueryEngine {
         let loaded = self.corpus.load(session_id, None).await?;
         Ok(SessionSurfaceSnapshot {
             session: loaded.header.clone(),
-            captured_through_seq: loaded.events.last().map(|event| event.seq),
+            captured_through_seq: loaded.events.last().map(|event| event.seq.get()),
             events: crate::tracing::current_surface_events(session_id, &loaded.events)?,
         })
     }

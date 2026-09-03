@@ -1,0 +1,21 @@
+[package]
+name = "dsh-web-fetch-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Anonymous public HTTP(S) fetch provider"
+
+[dependencies]
+async-trait.workspace = true
+cordis = { path = "../../vendor/cordis" }
+dsh-web = { path = "../web" }
+futures.workspace = true
+reqwest = { version = "=0.12.24", default-features = false, features = ["rustls-tls", "stream", "gzip", "brotli", "deflate"] }
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url = "2.5"
+
+[dev-dependencies]
+axum.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

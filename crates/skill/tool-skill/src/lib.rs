@@ -606,7 +606,7 @@ fn catalog_history(agent: &Arc<dyn dsh_agent::Agent>) -> CatalogHistory {
         };
         let digest = digest_catalog_entries(&entries);
         published = true;
-        if visible.contains(&event.seq) {
+        if visible.contains(&event.seq.get()) {
             return CatalogHistory {
                 visible_digest: Some(digest),
                 published,

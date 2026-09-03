@@ -36,13 +36,14 @@ jobs:
       - name: 版本与产品门禁
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.2-alpha.3"
+          VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.2-alpha.4"
           python tools/verify_release_version.py --version "$VERSION"
+          python tools/verify_free_model_catalog.py --model mimo-v2.5-free
           python tools/verify_product_surface.py
-          python -m unittest tools.tests.test_history_window_contract tools.tests.test_product_surface_contract tools.tests.test_v012_surface_contract tools.tests.test_v012_alpha2_sync_contract tools.tests.test_release_integrity tools.tests.test_launcher_release_contract -v
+          python -m unittest tools.tests.test_history_window_contract tools.tests.test_product_surface_contract tools.tests.test_v012_surface_contract tools.tests.test_v012_alpha2_sync_contract tools.tests.test_v012_alpha4_sync_contract tools.tests.test_release_integrity tools.tests.test_launcher_release_contract tools.tests.test_client_performance -v
           node tools/tests/connection_controller_harness.js
           node tools/tests/turn_usage_optional_harness.js
-          cargo test --locked -p dsh-launcher -p dsh-schedule -p dsh-host-plugin-inventory -p dsh-host-apiproxy -p dsh-typert-protocol -p dsh-web-search-deepseek
+          cargo test --locked -p dsh-launcher -p dsh-schedule -p dsh-host-plugin-inventory -p dsh-host-apiproxy -p dsh-typert-protocol -p dsh-web -p dsh-web-fetch-http -p dsh-web-search-deepseek -p dsh-tool-web
           for file in release/plugins/*/lib/client.js; do node --check "$file"; done
           for file in web/dist/plugins/*.js; do node --check "$file"; done
           cargo fmt --all -- --check
@@ -51,17 +52,24 @@ jobs:
       - name: 固化正式 Web 产物
         shell: bash
         run: python tools/stage_release_web.py
+      - name: 解析发布产物前缀
+        id: release
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.2-alpha.4"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "prefix=deepseek-harness-rs-v${VERSION}-${{ matrix.platform }}-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
       - name: 生成便携包
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.2-alpha.3"
+          VERSION="${{ steps.release.outputs.version }}"
           python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant core --version "$VERSION"
           python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant skin --version "$VERSION"
           python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant free --version "$VERSION"
       - name: 核验便携包内容
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.2-alpha.3"
+          VERSION="${{ steps.release.outputs.version }}"
           python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant core --version "$VERSION"
           python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant skin --version "$VERSION"
           python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant free --version "$VERSION"
@@ -70,17 +78,26 @@ jobs:
         shell: pwsh
         run: |
           $refName = "${env:GITHUB_REF_NAME}"
-          $version = if ($refName.StartsWith('v')) { $refName.Substring(1) } else { '0.1.2-alpha.3' }
-          choco install innosetup -y --no-progress
+          $version = if ($refName.StartsWith('v')) { $refName.Substring(1) } else { '0.1.2-alpha.4' }
+          choco install innosetup --version 6.1.2 -y --no-progress
           $language = "$env:GITHUB_WORKSPACE\packaging\windows\ChineseSimplified.isl"
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-core" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "/DIconFile=$env:GITHUB_WORKSPACE\packaging\windows\deepseek-black.ico" "/DChineseMessages=$language" "/DVariant=core" packaging\windows\deepseek-harness-rs.iss
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-skin" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "/DIconFile=$env:GITHUB_WORKSPACE\packaging\windows\deepseek-black.ico" "/DChineseMessages=$language" "/DVariant=skin" packaging\windows\deepseek-harness-rs.iss
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-free" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "/DIconFile=$env:GITHUB_WORKSPACE\packaging\windows\deepseek-black.ico" "/DChineseMessages=$language" "/DVariant=free" packaging\windows\deepseek-harness-rs.iss
+      - name: 核验 Windows 安装器内容
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          VERSION="${{ steps.release.outputs.version }}"
+          choco install innounp --version 0.50 -y --no-progress
+          for variant in core skin free; do
+            python tools/verify_installer_package.py --platform windows --arch x86_64 --variant "$variant" --version "$VERSION"
+          done
       - name: Linux DEB 安装包
         if: matrix.platform == 'linux'
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.2-alpha.3"
+          VERSION="${{ steps.release.outputs.version }}"
           for variant in core skin free; do
             STAGE="dist/deepseek-harness-rs-v${VERSION}-linux-x86_64-${variant}"
             PKG="dist/deb-${variant}"
@@ -91,11 +108,19 @@ jobs:
             ln -s "/opt/deepseek-harness-rs/${variant}/dsh-launcher" "$PKG/usr/bin/deepseek-harness-rs-${variant}"
             dpkg-deb --root-owner-group --build "$PKG" "dist/deepseek-harness-rs-v${VERSION}-linux-x86_64-${variant}.deb"
           done
+      - name: 核验 Linux DEB 内容
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          VERSION="${{ steps.release.outputs.version }}"
+          for variant in core skin free; do
+            python tools/verify_installer_package.py --platform linux --arch x86_64 --variant "$variant" --version "$VERSION"
+          done
       - name: macOS PKG 安装包
         if: matrix.platform == 'macos'
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.2-alpha.3"
+          VERSION="${{ steps.release.outputs.version }}"
           for variant in core skin free; do
             STAGE="dist/deepseek-harness-rs-v${VERSION}-macos-${{ matrix.arch }}-${variant}"
             PKGROOT="dist/pkgroot-${variant}"
@@ -105,23 +130,46 @@ jobs:
             ln -s "../lib/deepseek-harness-rs/${variant}/dsh-launcher" "$PKGROOT/usr/local/bin/deepseek-harness-rs-${variant}"
             pkgbuild --root "$PKGROOT" --identifier "io.github.qiu7824.deepseek-harness-rs.${variant}" --version "$VERSION" "dist/deepseek-harness-rs-v${VERSION}-macos-${{ matrix.arch }}-${variant}.pkg"
           done
+      - name: 核验 macOS PKG 内容
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          VERSION="${{ steps.release.outputs.version }}"
+          for variant in core skin free; do
+            python tools/verify_installer_package.py --platform macos --arch ${{ matrix.arch }} --variant "$variant" --version "$VERSION"
+          done
       - name: 生成校验和
         shell: bash
         run: |
-          cd dist; python - <<'PY'
-          import hashlib,pathlib
-          files=[p for p in pathlib.Path('.').glob('*') if p.is_file()]
-          pathlib.Path('SHA256SUMS.txt').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in sorted(files)))
+          cd dist; RELEASE_PREFIX="${{ steps.release.outputs.prefix }}" CHECKSUM_FILE="SHA256SUMS-${{ matrix.platform }}-${{ matrix.arch }}.txt" python - <<'PY'
+          import hashlib,os,pathlib
+          prefix=os.environ['RELEASE_PREFIX']
+          files=[p for p in pathlib.Path('.').glob(f'{prefix}-*') if p.is_file()]
+          platform='${{ matrix.platform }}'
+          portable_ext='zip' if platform == 'windows' else 'tar.gz'
+          install_ext={'windows': 'setup.exe', 'linux': 'deb', 'macos': 'pkg'}[platform]
+          variants=('core', 'skin', 'free')
+          expected={f'{prefix}-{variant}-portable.{portable_ext}' for variant in variants}
+          expected.update(
+              f'{prefix}-{variant}-{install_ext}' if platform == 'windows'
+              else f'{prefix}-{variant}.{install_ext}'
+              for variant in variants
+          )
+          actual={p.name for p in files}
+          if actual != expected:
+              raise SystemExit(f'unexpected release artifact set: missing={sorted(expected-actual)}, extra={sorted(actual-expected)}')
+          pathlib.Path(os.environ['CHECKSUM_FILE']).write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in sorted(files)))
           PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: 上传当前平台产物
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: deepseek-harness-rs-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
-            dist/*-portable.*
-            dist/*.exe
-            dist/*.deb
-            dist/*.pkg
-            dist/SHA256SUMS.txt
+            dist/${{ steps.release.outputs.prefix }}-*-portable.*
+            dist/${{ steps.release.outputs.prefix }}-*.exe
+            dist/${{ steps.release.outputs.prefix }}-*.deb
+            dist/${{ steps.release.outputs.prefix }}-*.pkg
+            dist/SHA256SUMS-${{ matrix.platform }}-${{ matrix.arch }}.txt
           if-no-files-found: error
   publish:
     if: startsWith(github.ref, 'refs/tags/')
@@ -130,6 +178,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with: { path: dist, merge-multiple: true }
+      - name: 合并发布校验和
+        shell: bash
+        run: |
+          cd dist
+          cat SHA256SUMS-*.txt | sort -k2 > SHA256SUMS.txt
+          rm SHA256SUMS-*.txt
       - uses: softprops/action-gh-release@e5ee6bc58a36b838b92fc1217f2e4b414b5abcc8
         with:
           prerelease: ${{ contains(github.ref_name, '-') }}

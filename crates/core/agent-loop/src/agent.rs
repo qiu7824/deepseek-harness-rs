@@ -820,7 +820,7 @@ impl ReactLoopAgent {
                         None,
                     )
                     .expect("assistant/chunk");
-                chunk_seqs.push(event.seq);
+                chunk_seqs.push(event.seq.get());
                 assembler.push(&chunk);
             }
             if signal.aborted() {

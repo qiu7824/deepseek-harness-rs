@@ -110,8 +110,14 @@ impl RunProfileHandle {
         }
         self.host.as_ref().map(|host| {
             let address = host.readiness().bound_addr;
-            format!("http://127.0.0.1:{}", address.port())
+            format!("http://{}:{}", host.web_server.host(), address.port())
         })
+    }
+
+    pub fn exposes_network(&self) -> bool {
+        self.host
+            .as_ref()
+            .is_some_and(|host| host.web_server.host() == "0.0.0.0")
     }
 
     pub fn output(&self) -> Option<&str> {
@@ -192,13 +198,14 @@ pub async fn run_profile_with_interrupt(
     let surface = resolve_profile_surface(&composed)?;
     match surface {
         ProfileSurface::Web => {
-            let port = parse_web_port(&request.args)?;
+            let web = parse_web_launch(&request.args)?;
             let ctx = Context::root();
-            let host = dsh_host::compose_persistent_host_at_port(
+            let host = dsh_host::compose_persistent_host_at_bind(
                 &ctx,
                 request.home.clone(),
                 Some(&request.profile),
-                port,
+                web.host,
+                web.port,
             )?;
             let companions = dsh_host::mount_companions(&host);
             let (host, ()) = own_host_result(host, companions).await?;
@@ -212,16 +219,64 @@ pub async fn run_profile_with_interrupt(
     }
 }
 
-fn parse_web_port(args: &[String]) -> Result<u16, String> {
-    match args {
-        [] => Ok(3080),
-        [flag, value] if flag == "--port" => value.parse::<u16>().map_err(|_| {
-            format!("dsh: --port must be an integer from 0 through 65535, got {value:?}")
-        }),
-        _ => Err(format!(
-            "dsh: the Rust web surface accepts only --port <port>, got {args:?}"
-        )),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WebLaunchOptions {
+    host: dsh_host::BindHost,
+    port: u16,
+}
+
+fn parse_web_launch(args: &[String]) -> Result<WebLaunchOptions, String> {
+    let mut launch = WebLaunchOptions {
+        host: dsh_host::BindHost::Loopback,
+        port: 3080,
+    };
+    let mut saw_host = false;
+    let mut saw_port = false;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let Some(value) = args.get(index + 1) else {
+            return Err(format!("dsh: {flag} needs a value"));
+        };
+        match flag {
+            "--host" => {
+                if saw_host {
+                    return Err("dsh: --host may be specified only once".to_string());
+                }
+                launch.host = match value.as_str() {
+                    "127.0.0.1" => dsh_host::BindHost::Loopback,
+                    "0.0.0.0" => dsh_host::BindHost::AllInterfaces,
+                    _ => {
+                        return Err(format!(
+                            "dsh: --host must be 127.0.0.1 or 0.0.0.0, got {value:?}"
+                        ));
+                    }
+                };
+                saw_host = true;
+            }
+            "--port" => {
+                if saw_port {
+                    return Err("dsh: --port may be specified only once".to_string());
+                }
+                launch.port = value.parse::<u16>().map_err(|_| {
+                    format!("dsh: --port must be an integer from 0 through 65535, got {value:?}")
+                })?;
+                saw_port = true;
+            }
+            _ => {
+                return Err(format!(
+                    "dsh: the Rust web surface accepts --host <127.0.0.1|0.0.0.0> and --port <port>, got {args:?}"
+                ));
+            }
+        }
+        index += 2;
     }
+    Ok(launch)
+}
+
+#[cfg(test)]
+fn parse_web_port(args: &[String]) -> Result<u16, String> {
+    parse_web_launch(args).map(|launch| launch.port)
 }
 
 async fn run_headless(
@@ -403,5 +458,32 @@ fn headless_outcome(events: &[dsh_session::SessionEvent]) -> Result<String, Stri
             reason.kind()
         )),
         (None, _) => Err("dsh: headless model produced no terminal result".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod web_bind_tests {
+    use super::parse_web_port;
+
+    #[test]
+    fn web_port_parser_accepts_explicit_all_interface_host() {
+        assert_eq!(
+            parse_web_port(&[
+                "--host".to_string(),
+                "0.0.0.0".to_string(),
+                "--port".to_string(),
+                "0".to_string(),
+            ]),
+            Ok(0)
+        );
+        assert_eq!(
+            parse_web_port(&[
+                "--port".to_string(),
+                "4096".to_string(),
+                "--host".to_string(),
+                "127.0.0.1".to_string(),
+            ]),
+            Ok(4096)
+        );
     }
 }

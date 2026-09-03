@@ -5464,7 +5464,7 @@ window.__ModuleLoader__.load({
 		});
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-conversation\src\client\chat\ChatView.module.css.mjs
-		const css$11 = ".R15qIq_root{flex-direction:column;flex:auto;min-height:0;display:flex;position:relative}.R15qIq_scroll{min-height:0;padding:16px calc(var(--dsh-composer-side-clearance) + 32px) 16px calc(var(--dsh-composer-side-clearance) + 16px);flex:auto;overflow-y:auto}.R15qIq_outline{z-index:3;position:absolute;right:8px;top:18px;bottom:18px;width:18px;display:flex;flex-direction:column;align-items:center;gap:5px}.R15qIq_outlineTrack{position:absolute;top:0;bottom:0;width:2px;border-radius:2px;background:var(--dsw-alias-border-l2)}.R15qIq_outlineProgress{position:absolute;top:0;width:2px;border-radius:2px;background:var(--dsw-alias-label-secondary)}.R15qIq_outlineDot{z-index:1;width:8px;height:8px;border:0;border-radius:50%;padding:0;background:var(--dsw-alias-label-caption);cursor:pointer}.R15qIq_outlineDot:hover,.R15qIq_outlineDot:focus-visible{background:var(--dsw-alias-label-primary);transform:scale(1.25)}[data-conversation-scroll] .R15qIq_root{flex:none;height:auto;min-height:auto}[data-conversation-scroll] .R15qIq_scroll{flex:none;min-height:auto;overflow:visible}.R15qIq_column{max-width:var(--dsh-chat-content-width);flex-direction:column;gap:16px;width:100%;margin:0 auto;display:flex}.R15qIq_flowItem{min-width:0}.R15qIq_flowItem:empty{display:none}.R15qIq_callRow{border-radius:6px}.R15qIq_turnStatus{height:26px;font:var(--dsw-font-s-strong-14);white-space:nowrap;background:linear-gradient(90deg, var(--dsw-static-deepseek-500) 0%, var(--dsw-static-deepseek-500) 40%, var(--dsw-static-deepseek-200) 50%, var(--dsw-static-deepseek-500) 60%, var(--dsw-static-deepseek-500) 100%);color:#0000;-webkit-text-fill-color:transparent;background-position:100% 0;background-size:250% 100%;-webkit-background-clip:text;background-clip:text;flex:none;align-self:flex-start;align-items:center;animation:1.8s linear infinite R15qIq_dsh-turn-status-shimmer;display:inline-flex}.R15qIq_turnStatusClock{font:var(--dsw-font-xs-13);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-caption);-webkit-text-fill-color:var(--dsw-alias-label-caption);margin-left:8px;font-weight:400}@keyframes R15qIq_dsh-turn-status-shimmer{to{background-position:0 0}}@media (prefers-reduced-motion:reduce){.R15qIq_turnStatus{background-position:0 0;background-size:100% 100%;animation:none}}.R15qIq_hint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}.R15qIq_openError{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}.R15qIq_older{justify-content:center;display:flex}.R15qIq_older button{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover-solid);cursor:pointer;border:none;border-radius:14px;padding:4px 12px;font-size:12px}.R15qIq_older button:disabled{cursor:default;opacity:.6}.R15qIq_toBottomSlot{z-index:8;height:0;padding-right:max(0px, calc((100% - var(--dsh-chat-content-width)) / 2));pointer-events:none;justify-content:flex-end;display:flex;position:sticky;bottom:16px}[data-conversation-scroll] .R15qIq_toBottomSlot{bottom:calc(var(--dsh-composer-height,152px) + 16px)}.R15qIq_toBottom{border:1px solid var(--dsw-alias-border-l2);width:34px;height:34px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-button-floating-fill);box-shadow:var(--dsw-shadow-lv2);cursor:pointer;pointer-events:auto;border-radius:100px;justify-content:center;align-items:center;margin-top:-34px;padding:0;display:flex}.R15qIq_toBottom:hover{background:var(--dsw-alias-button-floating-hover)}";
+		const css$11 = ".R15qIq_root{flex-direction:column;flex:auto;min-height:0;display:flex;position:relative}.R15qIq_scroll{min-height:0;padding:16px calc(var(--dsh-composer-side-clearance) + 32px) 16px calc(var(--dsh-composer-side-clearance) + 16px);flex:auto;overflow-y:auto;container-type:inline-size}.R15qIq_outline{z-index:3;position:absolute;right:8px;top:18px;bottom:18px;width:18px;display:flex;flex-direction:column;align-items:center;gap:5px}.R15qIq_outlineTrack{position:absolute;top:0;bottom:0;width:2px;border-radius:2px;background:var(--dsw-alias-border-l2)}.R15qIq_outlineProgress{position:absolute;top:0;width:2px;border-radius:2px;background:var(--dsw-alias-label-secondary)}.R15qIq_outlineDot{z-index:1;width:8px;height:8px;border:0;border-radius:50%;padding:0;background:var(--dsw-alias-label-caption);cursor:pointer}.R15qIq_outlineDot:hover,.R15qIq_outlineDot:focus-visible{background:var(--dsw-alias-label-primary);transform:scale(1.25)}[data-conversation-scroll] .R15qIq_root{flex:none;height:auto;min-height:auto}[data-conversation-scroll] .R15qIq_scroll{flex:none;min-height:auto;overflow:visible}.R15qIq_column{max-width:var(--dsh-chat-content-width);flex-direction:column;gap:16px;width:100%;margin:0 auto;display:flex}.R15qIq_flowItem{min-width:0}.R15qIq_flowItem:empty{display:none}.R15qIq_callRow{border-radius:6px}.R15qIq_turnStatus{height:26px;font:var(--dsw-font-s-strong-14);white-space:nowrap;background:linear-gradient(90deg, var(--dsw-static-deepseek-500) 0%, var(--dsw-static-deepseek-500) 40%, var(--dsw-static-deepseek-200) 50%, var(--dsw-static-deepseek-500) 60%, var(--dsw-static-deepseek-500) 100%);color:#0000;-webkit-text-fill-color:transparent;background-position:100% 0;background-size:250% 100%;-webkit-background-clip:text;background-clip:text;flex:none;align-self:flex-start;align-items:center;animation:1.8s linear infinite R15qIq_dsh-turn-status-shimmer;display:inline-flex}.R15qIq_turnStatusClock{font:var(--dsw-font-xs-13);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-caption);-webkit-text-fill-color:var(--dsw-alias-label-caption);margin-left:8px;font-weight:400}@keyframes R15qIq_dsh-turn-status-shimmer{to{background-position:0 0}}@media (prefers-reduced-motion:reduce){.R15qIq_turnStatus{background-position:0 0;background-size:100% 100%;animation:none}}.R15qIq_hint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}.R15qIq_openError{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}.R15qIq_older{justify-content:center;display:flex}.R15qIq_older button{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover-solid);cursor:pointer;border:none;border-radius:14px;padding:4px 12px;font-size:12px}.R15qIq_older button:disabled{cursor:default;opacity:.6}.R15qIq_toBottomSlot{z-index:8;height:0;padding-right:max(0px, calc((100% - var(--dsh-chat-content-width)) / 2));pointer-events:none;justify-content:flex-end;display:flex;position:sticky;bottom:16px}[data-conversation-scroll] .R15qIq_toBottomSlot{bottom:calc(var(--dsh-composer-height,152px) + 16px)}.R15qIq_toBottom{--dsw-elevation-stroke-color:var(--dsw-alias-border-l3);corner-shape:round;width:34px;height:34px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-button-floating-fill);box-shadow:var(--dsw-elevation-panel);cursor:pointer;pointer-events:auto;border:0;border-radius:100px;justify-content:center;align-items:center;margin-top:-34px;padding:0;display:flex}.R15qIq_toBottom:hover{background:var(--dsw-alias-button-floating-hover)}";
 		const tagId$11 = "@deepseek-ai/dsh-client-ui-conversation/ChatView.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$11) + "]") === null) {
 			const tag = document.createElement("style");
@@ -5539,6 +5539,7 @@ window.__ModuleLoader__.load({
 		});
 		//#endregion
 		//#region lib/types/client/chat/ChatView.js
+		const SCROLL_SAMPLE_INTERVAL_MS = 500;
 		/** Active column host when present; otherwise the view-local scroller. */
 		function scrollerOf(from) {
 			return from.closest("[data-conversation-scroll]") ?? from;
@@ -5596,6 +5597,12 @@ window.__ModuleLoader__.load({
 			for (const turn of timeline.turns.values()) if (turn.status === "open" && turn.start !== void 0) latest = turn.start.time;
 			return latest;
 		}
+		const ChatNodeList = (0, react.memo)(function ChatNodeList({ order, ...seatProps }) {
+			return order.map((nodeKey) => (0, react_jsx_runtime.jsx)(ChatNodeSeat, {
+				nodeKey,
+				...seatProps
+			}, nodeKey));
+		});
 		const EMPTY_TURN_OUTLINE = [];
 		const turnNavigatorStyleId = "dsh-alpha3-turn-navigator";
 		if (typeof document !== "undefined" && document.getElementById(turnNavigatorStyleId) === null) {
@@ -5627,11 +5634,90 @@ window.__ModuleLoader__.load({
 			for (const [turn, anchor] of anchors) if (!merged.has(turn)) merged.set(turn, { turn, seq: anchor.seq, prompt: "", response: "", anchor: { kind: "loaded", key: anchor.key } });
 			return [...merged.values()].sort((left, right) => left.turn - right.turn);
 		}
-		const TurnNavigator = (0, react.memo)(function TurnNavigator({ items, activeTurn, busyTurn, onNavigate, t }) {
+		function turnNavigatorWindow(length, scrollTop, viewportHeight) {
+			if (length <= 56) return { start: 0, end: length };
+			const firstVisible = Math.max(0, Math.floor(scrollTop / 12));
+			const visibleRows = Math.max(1, Math.ceil(viewportHeight / 12));
+			let start = Math.max(0, firstVisible - 10);
+			let end = Math.min(length, firstVisible + visibleRows + 11);
+			if (end - start < 56) {
+				if (start === 0) end = Math.min(length, 56);
+				else if (end === length) start = Math.max(0, length - 56);
+			}
+			return { start, end };
+		}
+		function TurnNavigatorView({ items, activeTurn, busyTurn, onNavigate, t }) {
 			const [preview, setPreview] = (0, react.useState)(null);
+			const [scrollTop, setScrollTop] = (0, react.useState)(0);
+			const frameRef = (0, react.useRef)(null);
+			const scrollFrameRef = (0, react.useRef)(null);
+			const pendingScrollTopRef = (0, react.useRef)(0);
+			const viewportHeight = frameRef.current?.clientHeight ?? 420;
+			const windowRange = turnNavigatorWindow(items.length, scrollTop, viewportHeight);
+			const activeIndex = items.findIndex((item) => item.turn === activeTurn);
+			(0, react.useEffect)(() => {
+				const frame = frameRef.current;
+				if (frame === null || activeIndex < 0) return;
+				const top = activeIndex * 12;
+				const bottom = top + 4;
+				if (top >= frame.scrollTop && bottom <= frame.scrollTop + frame.clientHeight) return;
+				const next = Math.max(0, top - Math.max(0, frame.clientHeight - 4) / 2);
+				frame.scrollTop = next;
+				setScrollTop(next);
+			}, [activeIndex]);
+			(0, react.useEffect)(() => () => {
+				if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+			}, []);
 			if (items.length < 2) return null;
-			return (0, react_jsx_runtime.jsx)("div", { className: "dshAlpha3TurnRail", children: (0, react_jsx_runtime.jsxs)("nav", { className: "dshAlpha3TurnRailFrame", "aria-label": t("chat.turnNavigation.label"), children: [(0, react_jsx_runtime.jsx)("div", { className: "dshAlpha3TurnRailMarks", children: items.map((item) => (0, react_jsx_runtime.jsx)("button", { type: "button", className: "dshAlpha3TurnMark", "data-active": item.turn === activeTurn || void 0, "data-unloaded": item.anchor.kind === "unloaded" || void 0, "data-busy": item.turn === busyTurn || void 0, "aria-label": t(item.anchor.kind === "loaded" ? "chat.turnNavigation.jump" : "chat.turnNavigation.jumpLoad", { turn: item.turn }), "aria-current": item.turn === activeTurn ? "true" : void 0, "aria-busy": item.turn === busyTurn ? "true" : void 0, onClick: () => onNavigate(item), onMouseEnter: (event) => setPreview({ item, top: Math.max(8, Math.min(window.innerHeight - 108, event.currentTarget.getBoundingClientRect().top - 48)) }), onMouseLeave: () => setPreview(null), onFocus: (event) => setPreview({ item, top: Math.max(8, Math.min(window.innerHeight - 108, event.currentTarget.getBoundingClientRect().top - 48)) }), onBlur: () => setPreview(null) }, item.turn)) }), preview !== null && (0, react_jsx_runtime.jsxs)("div", { role: "tooltip", className: "dshAlpha3TurnPreview", style: { top: preview.top }, children: [(0, react_jsx_runtime.jsx)("div", { className: "dshAlpha3TurnPrompt", children: preview.item.prompt || t("chat.turnNavigation.turn", { turn: preview.item.turn }) }), preview.item.response !== "" && (0, react_jsx_runtime.jsx)("div", { className: "dshAlpha3TurnResponse", children: preview.item.response })] })] }) });
-		});
+			const visible = items.slice(windowRange.start, windowRange.end);
+			const onScroll = (event) => {
+				pendingScrollTopRef.current = event.currentTarget.scrollTop;
+				setPreview(null);
+				if (scrollFrameRef.current !== null) return;
+				scrollFrameRef.current = requestAnimationFrame(() => {
+					scrollFrameRef.current = null;
+					setScrollTop(pendingScrollTopRef.current);
+				});
+			};
+			return (0, react_jsx_runtime.jsx)("div", {
+				className: "dshAlpha3TurnRail",
+				children: (0, react_jsx_runtime.jsxs)("nav", {
+					ref: frameRef,
+					className: "dshAlpha3TurnRailFrame",
+					"aria-label": t("chat.turnNavigation.label"),
+					onScroll,
+					children: [(0, react_jsx_runtime.jsx)("div", {
+						className: "dshAlpha3TurnRailMarks",
+						style: { position: "relative", display: "block", minHeight: `${items.length * 12}px` },
+						children: visible.map((item, offset) => {
+							const index = windowRange.start + offset;
+							return (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "dshAlpha3TurnMark",
+								style: { position: "absolute", top: `${index * 12}px`, right: 0 },
+								"data-active": item.turn === activeTurn || void 0,
+								"data-unloaded": item.anchor.kind === "unloaded" || void 0,
+								"data-busy": item.turn === busyTurn || void 0,
+								"aria-label": t(item.anchor.kind === "loaded" ? "chat.turnNavigation.jump" : "chat.turnNavigation.jumpLoad", { turn: item.turn }),
+								"aria-current": item.turn === activeTurn ? "true" : void 0,
+								"aria-busy": item.turn === busyTurn ? "true" : void 0,
+								onClick: () => onNavigate(item),
+								onMouseEnter: (event) => setPreview({ item, top: Math.max(8, Math.min(window.innerHeight - 108, event.currentTarget.getBoundingClientRect().top - 48)) }),
+								onMouseLeave: () => setPreview(null),
+								onFocus: (event) => setPreview({ item, top: Math.max(8, Math.min(window.innerHeight - 108, event.currentTarget.getBoundingClientRect().top - 48)) }),
+								onBlur: () => setPreview(null)
+							}, item.turn);
+						})
+					}), preview !== null && (0, react_jsx_runtime.jsxs)("div", {
+						role: "tooltip",
+						className: "dshAlpha3TurnPreview",
+						style: { top: preview.top },
+						children: [(0, react_jsx_runtime.jsx)("div", { className: "dshAlpha3TurnPrompt", children: preview.item.prompt || t("chat.turnNavigation.turn", { turn: preview.item.turn }) }), preview.item.response !== "" && (0, react_jsx_runtime.jsx)("div", { className: "dshAlpha3TurnResponse", children: preview.item.response })]
+					})]
+				})
+			});
+		}
+		const TurnNavigator = (0, react.memo)(TurnNavigatorView);
 		const turnPulseStyleId = "dsh-turn-status-pulse";
 		if (typeof document !== "undefined" && document.getElementById(turnPulseStyleId) === null) {
 			const style = document.createElement("style");
@@ -5677,7 +5763,7 @@ window.__ModuleLoader__.load({
 		* The chat view slot entry: pure component over the composed props; each
 		* ordered business Node crosses the keyed renderer seat.
 		*/
-		function ChatView({ useSession, useSessions, useStore, useProjection, renderSlot, sessionId, openFile, loadOlder, loadThrough, loadNewer, loadImage, inspectCall, chatScroll, forkAt, fileMentions, t }) {
+		function ChatView({ useSession, useSessions, useStore, useProjection, renderSlot, sessionId, openFile, loadOlder, loadAround, loadNewer, loadImage, inspectCall, chatScroll, forkAt, fileMentions, t }) {
 			const order = useSession((s) => s.chat.order);
 			const nodeStore = useSession((s) => s.chat.nodes);
 			const timeline = useSession((s) => s.chat.timeline);
@@ -5712,6 +5798,8 @@ window.__ModuleLoader__.load({
 			const columnRef = (0, react.useRef)(null);
 			const atBottomRef = (0, react.useRef)(true);
 			const [atBottom, setAtBottom] = (0, react.useState)(true);
+			const scrollSamplePendingRef = (0, react.useRef)(false);
+			const [, setScrollSampleTick] = (0, react.useState)(0);
 			/** Last position delivered or written on the main thread. */
 			const observedTopRef = (0, react.useRef)(0);
 			/** Paging anchor: semantic row/position at click, updated by reader scrolls
@@ -5764,7 +5852,7 @@ window.__ModuleLoader__.load({
 				};
 				if (settle() || item.anchor.kind === "loaded") return;
 				setBusyTurn(item.turn);
-				Promise.resolve(loadThrough(item.anchor.seq)).finally(() => {
+				Promise.resolve(loadAround(item.anchor.seq)).finally(() => {
 					requestAnimationFrame(() => {
 						settle();
 						setBusyTurn(null);
@@ -5772,6 +5860,7 @@ window.__ModuleLoader__.load({
 				});
 			};
 			(0, react.useLayoutEffect)(() => {
+				if (scrollSamplePendingRef.current) return;
 				const local = listRef.current;
 				/* v8 ignore next -- ref-null guard: React attaches the ref before layout effects run. */
 				if (local === null) return;
@@ -5863,6 +5952,15 @@ window.__ModuleLoader__.load({
 				/* v8 ignore next -- ref-null guard: effect runs after the list node commits. */
 				if (local === null) return;
 				const el = scrollerOf(local);
+				let sampleTimer;
+				const sample = () => {
+					if (!scrollSamplePendingRef.current) return;
+					scrollSamplePendingRef.current = false;
+					if (sampleTimer !== void 0) window.clearTimeout(sampleTimer);
+					sampleTimer = void 0;
+					onScrollRef.current();
+					setScrollSampleTick((tick) => tick + 1);
+				};
 				const onWheel = (event) => {
 					if (event.deltaY > 0) readerForwardIntentRef.current = true;
 					else if (event.deltaY < 0) readerForwardIntentRef.current = false;
@@ -5875,17 +5973,22 @@ window.__ModuleLoader__.load({
 					readerForwardIntentRef.current = true;
 				};
 				const onScroll = () => {
-					onScrollRef.current();
+					scrollSamplePendingRef.current = true;
+					sampleTimer ??= window.setTimeout(sample, SCROLL_SAMPLE_INTERVAL_MS);
 				};
 				el.addEventListener("wheel", onWheel, { passive: true });
 				el.addEventListener("keydown", onKeyDown);
 				el.addEventListener("pointerdown", onPointerDown);
 				el.addEventListener("scroll", onScroll, { passive: true });
+				el.addEventListener("scrollend", sample, { passive: true });
 				return () => {
 					el.removeEventListener("wheel", onWheel);
 					el.removeEventListener("keydown", onKeyDown);
 					el.removeEventListener("pointerdown", onPointerDown);
 					el.removeEventListener("scroll", onScroll);
+					el.removeEventListener("scrollend", sample);
+					if (sampleTimer !== void 0) window.clearTimeout(sampleTimer);
+					scrollSamplePendingRef.current = false;
 				};
 			}, []);
 			(0, react.useEffect)(() => {
@@ -5948,8 +6051,8 @@ window.__ModuleLoader__.load({
 									code: openError.code
 								})
 							}),
-							order.map((nodeKey) => (0, react_jsx_runtime.jsx)(ChatNodeSeat, {
-								nodeKey,
+							(0, react_jsx_runtime.jsx)(ChatNodeList, {
+								order,
 								useSession,
 								selectedCallId,
 								cwd,
@@ -5960,7 +6063,7 @@ window.__ModuleLoader__.load({
 								fileMentions,
 								renderSlot,
 								t
-							}, nodeKey)),
+							}),
 							running && (0, react_jsx_runtime.jsx)(TurnStatus, {
 								startTime: runningTurnStart,
 								toolActive: runningCalls.length > 0,
@@ -9576,7 +9679,7 @@ window.__ModuleLoader__.load({
 		var accessibility_module_css_default = { "visuallyHidden": "bj5vea_visuallyHidden" };
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-conversation\src\client\chat\ReasoningRow.module.css.mjs
-		const css$3 = ".yiubIW_root{flex-direction:column;display:flex}.yiubIW_row{position:relative;overflow:hidden}.yiubIW_root[data-state=running] .yiubIW_row:after{content:\"\";inset-block:0;background:linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent) 55%, transparent 100%);pointer-events:none;width:300px;animation:2.6s ease-out infinite yiubIW_dsh-reasoning-row-sweep;position:absolute;left:0}@keyframes yiubIW_dsh-reasoning-row-sweep{0%{left:-300px}90%,to{left:100%}}.yiubIW_leading{flex-shrink:0}.yiubIW_chevron{color:var(--dsw-alias-label-secondary)}.yiubIW_title{font-weight:400}.yiubIW_separator{background:var(--dsw-alias-label-caption);border-radius:1px;flex:none;width:2px;height:2px;margin:0 8px}.yiubIW_summary{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:auto;font-size:14px;line-height:24px;overflow:hidden}.yiubIW_summary[data-follow-end]{text-overflow:clip}.yiubIW_thinkBody{color:var(--dsw-alias-label-tertiary);white-space:pre-wrap;word-break:break-word;padding:4px 0 4px 22px;font-size:14px;line-height:24px}@media (prefers-reduced-motion:reduce){.yiubIW_root[data-state=running] .yiubIW_row:after{animation:none}}";
+		const css$3 = ".yiubIW_root{flex-direction:column;display:flex}.yiubIW_root:not([data-expanded]){contain:size layout;height:calc(24px + var(--dsh-content-font-delta,0px))}.yiubIW_row{position:relative;overflow:hidden}.yiubIW_root[data-state=running] .yiubIW_row:after{content:\"\";inset-block:0;background:linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent) 55%, transparent 100%);pointer-events:none;width:300px;animation:2.6s ease-out infinite yiubIW_dsh-reasoning-row-sweep;position:absolute;left:0}@keyframes yiubIW_dsh-reasoning-row-sweep{0%{left:-300px}90%,to{left:100%}}.yiubIW_leading{flex-shrink:0}.yiubIW_chevron{color:var(--dsw-alias-label-secondary)}.yiubIW_title{font-weight:400}.yiubIW_separator{background:var(--dsw-alias-label-caption);border-radius:1px;flex:none;width:2px;height:2px;margin:0 8px}.yiubIW_summary{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:auto;font-size:14px;line-height:24px;overflow:hidden}.yiubIW_summary[data-follow-end]{text-overflow:clip}.yiubIW_thinkBody{color:var(--dsw-alias-label-tertiary);white-space:pre-wrap;word-break:break-word;padding:4px 0 4px 22px;font-size:14px;line-height:24px}@media (prefers-reduced-motion:reduce){.yiubIW_root[data-state=running] .yiubIW_row:after{animation:none}}";
 		const tagId$3 = "@deepseek-ai/dsh-client-ui-conversation/ReasoningRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$3) + "]") === null) {
 			const tag = document.createElement("style");
@@ -9594,7 +9697,8 @@ window.__ModuleLoader__.load({
 			"dsh-reasoning-row-sweep": "yiubIW_dsh-reasoning-row-sweep",
 			"separator": "yiubIW_separator",
 			"leading": "yiubIW_leading",
-			"summary": "yiubIW_summary"
+			"summary": "yiubIW_summary",
+			"summaryText": "yiubIW_summaryText"
 		};
 		//#endregion
 		//#region lib/types/client/chat/ReasoningRow.js
@@ -9635,6 +9739,7 @@ window.__ModuleLoader__.load({
 				className: ReasoningRow_module_css_default.root,
 				"data-variant": "think",
 				"data-state": running ? "running" : "ok",
+				"data-expanded": expanded || void 0,
 				children: [running && (0, react_jsx_runtime.jsx)("span", {
 					className: accessibility_module_css_default.visuallyHidden,
 					children: t("row.running")
@@ -9658,7 +9763,10 @@ window.__ModuleLoader__.load({
 						ref: summaryRef,
 						className: ReasoningRow_module_css_default.summary,
 						"data-follow-end": running || void 0,
-						children: summary
+						children: (0, react_jsx_runtime.jsx)("span", {
+							className: ReasoningRow_module_css_default.summaryText,
+							children: summary
+						})
 					})] }),
 					children: (0, react_jsx_runtime.jsx)("div", {
 						className: ReasoningRow_module_css_default.thinkBody,
@@ -10522,7 +10630,7 @@ window.__ModuleLoader__.load({
 						loadOlder: () => {
 							scoped.loadOlder();
 						},
-						loadThrough: (seq) => scoped.loadThrough(seq),
+						loadAround: (seq) => scoped.loadAround(seq),
 						loadNewer: () => scoped.loadNewer(),
 						loadImage: (attachment) => conversation.resolveImage(sessionId, attachment),
 						inspectCall: (callId) => {

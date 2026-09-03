@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use cordis::{Context, Service};
-use dsh_session::{SessionEvent, SessionHeader, SessionId};
+use dsh_session::{SessionEvent, SessionHeader, SessionId, SessionLogOffset};
 
 use crate::revision::SessionPersistenceRevision;
 
@@ -26,11 +26,20 @@ pub struct SessionPersistenceSnapshot {
     pub revision: SessionPersistenceRevision,
 }
 
+/// Logical Session header paired with its exact inherited cut.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionStorageMetadata {
+    pub meta: SessionHeader,
+    pub inherited_event_count: SessionLogOffset,
+}
+
 /// Immutable logical session prepared from persistence or a live owner.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionInspection {
     /// Validated immutable session metadata.
     pub meta: SessionHeader,
+    /// Number of leading events inherited from the fork parent.
+    pub inherited_event_count: SessionLogOffset,
     /// Validated contiguous logical event log.
     pub events: Vec<SessionEvent>,
 }
@@ -40,6 +49,8 @@ pub struct SessionInspection {
 pub struct SessionRawArtifact {
     /// The session header parsed from the artifact's own first line.
     pub meta: SessionHeader,
+    /// Number of leading events inherited from the fork parent.
+    pub inherited_event_count: SessionLogOffset,
     /// The artifact's base filename on disk, without any physical encoding
     /// suffix.
     pub filename: String,
@@ -61,6 +72,8 @@ pub struct SessionLocation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionReadFromResult {
     pub meta: SessionHeader,
+    pub inherited_event_count: SessionLogOffset,
+    pub from_seq: SessionLogOffset,
     pub events: Vec<SessionEvent>,
 }
 
@@ -144,6 +157,10 @@ impl Service for dyn SessionPersistenceApi {
     }
 }
 
+/// Visitor used by bounded scans that skip packed stream chunks.
+pub type NonpackedEventVisitor =
+    Arc<dyn for<'a> Fn(&'a [SessionEvent]) -> Result<bool, String> + Send + Sync>;
+
 /// The backend contract (TS abstract members + defaults).
 #[async_trait::async_trait]
 pub trait SessionPersistenceApi: Send + Sync {
@@ -161,7 +178,11 @@ pub trait SessionPersistenceApi: Send + Sync {
     }
 
     /// Register a new session's metadata (lazy materialization allowed).
-    async fn create(&self, meta: SessionHeader) -> Result<(), String>;
+    async fn create(
+        &self,
+        meta: SessionHeader,
+        inherited_event_count: Option<SessionLogOffset>,
+    ) -> Result<(), String>;
 
     /// Durably persist a batch of events.
     async fn append(&self, id: &SessionId, events: &[SessionEvent]) -> Result<(), String>;
@@ -184,11 +205,12 @@ pub trait SessionPersistenceApi: Send + Sync {
             Some(id.clone()),
             Some(dsh_session::CreateSessionOptions {
                 seed: Some(loaded.events.clone()),
+                inherited_event_count: Some(loaded.inherited_event_count),
                 meta: Some(dsh_session::CreateSessionMeta {
                     cwd: loaded.meta.cwd.clone(),
                     parent_session: loaded.meta.parent_session.clone(),
                     created_at: Some(loaded.meta.created_at),
-                    seed_length: loaded.meta.seed_length,
+                    is_seeded: Some(loaded.meta.is_seeded),
                     origin: loaded.meta.origin.clone(),
                     delegation_depth: loaded.meta.delegation_depth,
                     agent_preset: loaded.meta.agent_preset.clone(),
@@ -290,6 +312,18 @@ pub trait SessionPersistenceApi: Send + Sync {
         }
     }
 
+    /// Visit non-packed event envelopes without materializing assistant/tool
+    /// stream chunk rows. Returning `false` stops the scan early.
+    async fn visit_nonpacked_events(
+        &self,
+        id: &SessionId,
+        visitor: NonpackedEventVisitor,
+    ) -> Result<(), String> {
+        let whole = self.read_from(id, 0).await?;
+        let _ = visitor(&whole.events)?;
+        Ok(())
+    }
+
     /// Read only human-authored user messages for lightweight navigation
     /// projections. Backends should override this to skip packed assistant runs.
     async fn read_user_message_events(
@@ -300,7 +334,7 @@ pub trait SessionPersistenceApi: Send + Sync {
         let last_seq = whole
             .events
             .last()
-            .map(|event| event.seq as i64)
+            .map(|event| event.seq.get() as i64)
             .unwrap_or(-1);
         Ok(SessionUserMessageEvents {
             meta: whole.meta,
@@ -375,7 +409,7 @@ pub trait SessionPersistenceApi: Send + Sync {
             last_seq: whole
                 .events
                 .last()
-                .map(|event| event.seq as i64)
+                .map(|event| event.seq.get() as i64)
                 .unwrap_or(-1),
             meta: whole.meta,
             blank,

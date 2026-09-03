@@ -50,6 +50,7 @@ dsh-tool-ask-user = { path = "../../interaction/tool-ask-user" }
 dsh-tool-todo = { path = "../../todo/tool-todo" }
 dsh-tool-web = { path = "../../web/tool-web" }
 dsh-web = { path = "../../web/web" }
+dsh-web-fetch-http = { path = "../../web/web-fetch-http" }
 dsh-web-search-deepseek = { path = "../../web/web-search-deepseek" }
 dsh-tool-str-replace-editor = { path = "../../fs/tool-str-replace-editor" }
 dsh-tool-fs = { path = "../../fs/tool-fs" }

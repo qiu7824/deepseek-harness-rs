@@ -68,7 +68,7 @@ pub fn interrupted_turn_closers(events: &[SessionEvent]) -> Vec<SessionEvent> {
                 if let Some(call_id) = event.data.get("callId").and_then(|value| value.as_str())
                     && let Some(entry) = pending_calls.get_mut(call_id)
                 {
-                    entry.call_seq = Some(event.seq);
+                    entry.call_seq = Some(event.seq.get());
                 }
             }
             "tool/result" => {
@@ -93,7 +93,7 @@ pub fn interrupted_turn_closers(events: &[SessionEvent]) -> Vec<SessionEvent> {
         return Vec::new();
     };
 
-    let mut seq = last.seq + 1;
+    let mut seq = last.seq.get() + 1;
     let time = last.time;
     let mut closers: Vec<SessionEvent> = Vec::new();
 
@@ -114,7 +114,7 @@ pub fn interrupted_turn_closers(events: &[SessionEvent]) -> Vec<SessionEvent> {
         // the data payload.
         let event = SessionEvent {
             type_: "tool/result".to_string(),
-            seq,
+            seq: crate::SessionSeq::new(seq).expect("repair seq fits the Session wire"),
             time,
             data,
             ignorable: None,
@@ -128,7 +128,7 @@ pub fn interrupted_turn_closers(events: &[SessionEvent]) -> Vec<SessionEvent> {
     if let Some(step) = open_step {
         closers.push(SessionEvent {
             type_: "step/end".to_string(),
-            seq,
+            seq: crate::SessionSeq::new(seq).expect("repair seq fits the Session wire"),
             time,
             data: serde_json::json!({"turn": turn, "step": step}),
             ignorable: None,
@@ -139,7 +139,7 @@ pub fn interrupted_turn_closers(events: &[SessionEvent]) -> Vec<SessionEvent> {
     }
     closers.push(SessionEvent {
         type_: "turn/end".to_string(),
-        seq,
+        seq: crate::SessionSeq::new(seq).expect("repair seq fits the Session wire"),
         time,
         data: serde_json::json!({"turn": turn, "reason": {"kind": "interrupted"}}),
         ignorable: None,

@@ -1306,11 +1306,11 @@ async fn index_persisted_streaming(
                 }
                 let document = dsh_session_query::SessionEventSearchDocument {
                     session_id: session_id.clone(),
-                    seq: event.seq,
+                    seq: event.seq.get(),
                     type_: event.type_.clone(),
                     time: event.time,
                     surface: surface_by_seq
-                        .get(&event.seq)
+                        .get(&event.seq.get())
                         .copied()
                         .unwrap_or(SessionEventSurface::LogOnly),
                     text,
@@ -1404,7 +1404,7 @@ fn same_header(a: &SessionHeader, b: &SessionHeader) -> bool {
         && a.created_at == b.created_at
         && a.cwd == b.cwd
         && a.parent_session == b.parent_session
-        && a.seed_length == b.seed_length
+        && a.is_seeded == b.is_seeded
         && a.delegation_depth.unwrap_or(0) == b.delegation_depth.unwrap_or(0)
         && a.agent_preset == b.agent_preset
 }
@@ -1421,7 +1421,7 @@ fn header_option_bindings(header: &SessionHeader) -> Vec<Option<Binding>> {
             .parent_session
             .as_ref()
             .map(|id| Binding::Text(id.as_str().to_string())),
-        header.seed_length.map(|v| Binding::Integer(v as i64)),
+        header.is_seeded.then_some(Binding::Integer(0)),
         header.delegation_depth.map(|v| Binding::Integer(v as i64)),
         header.agent_preset.clone().map(Binding::Text),
     ]
@@ -1625,7 +1625,7 @@ fn read_header_row(
                     created_at: row.get::<_, i64>(2)? as u64,
                     cwd: row.get(3)?,
                     parent_session: row.get::<_, Option<String>>(4)?.map(session_id),
-                    seed_length: row.get::<_, Option<i64>>(5)?.map(|v| v as u64),
+                    is_seeded: row.get::<_, Option<i64>>(5)?.is_some(),
                     origin: None,
                     delegation_depth: row.get::<_, Option<i64>>(6)?.map(|v| v as u64),
                     agent_preset: row.get(7)?,
@@ -1701,7 +1701,7 @@ fn row_header(row: &SessionHeaderRow) -> SessionHeader {
         created_at: row.created_at as u64,
         cwd: row.cwd.clone(),
         parent_session: row.parent_session.as_ref().map(session_id),
-        seed_length: row.seed_length.map(|value| value as u64),
+        is_seeded: row.seed_length.is_some(),
         origin: None,
         delegation_depth: row.delegation_depth.map(|value| value as u64),
         agent_preset: row.agent_preset.clone(),

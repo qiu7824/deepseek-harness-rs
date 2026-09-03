@@ -20,11 +20,11 @@ pub fn build_session_event_records(
         .iter()
         .map(|event| SessionEventRecord {
             session_id: session_id.clone(),
-            seq: event.seq,
+            seq: event.seq.get(),
             type_: event.type_.clone(),
             time: event.time,
             surface: surface_by_seq
-                .get(&event.seq)
+                .get(&event.seq.get())
                 .copied()
                 .unwrap_or(SessionEventSurface::LogOnly),
         })
@@ -46,11 +46,11 @@ pub fn build_session_event_search_documents(
         }
         documents.push(SessionEventSearchDocument {
             session_id: session_id.clone(),
-            seq: event.seq,
+            seq: event.seq.get(),
             type_: event.type_.clone(),
             time: event.time,
             surface: surface_by_seq
-                .get(&event.seq)
+                .get(&event.seq.get())
                 .copied()
                 .unwrap_or(SessionEventSurface::LogOnly),
             text,

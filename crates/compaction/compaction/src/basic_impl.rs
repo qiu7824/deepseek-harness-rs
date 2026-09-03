@@ -180,8 +180,8 @@ impl BasicCompactionEngine {
                 Some(SurfaceIntent {
                     surface_op: SurfaceOp::Replace { start, end },
                     source_event_seqs: Some(
-                        std::iter::once(start_event.seq)
-                            .chain(std::iter::once(summary_event.seq))
+                        std::iter::once(start_event.seq.get())
+                            .chain(std::iter::once(summary_event.seq.get()))
                             .chain(shadowed_seqs.iter().copied())
                             .collect(),
                     ),
@@ -201,9 +201,9 @@ impl BasicCompactionEngine {
         Ok(CompactionResult {
             compaction_id: compaction,
             source_command_id: source_command_id.cloned(),
-            start_seq: start_event.seq,
-            summary_seq: summary_event.seq,
-            end_seq: end_event.seq,
+            start_seq: start_event.seq.get(),
+            summary_seq: summary_event.seq.get(),
+            end_seq: end_event.seq.get(),
             summary,
             shadowed_range: (start, end),
             shadowed_seqs,

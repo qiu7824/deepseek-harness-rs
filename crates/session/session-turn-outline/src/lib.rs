@@ -142,7 +142,7 @@ pub fn turn_outline_projection_definition() -> ProjectionDefinition {
                 let mut next = state;
                 next.turns.push(TurnOutlineEntry {
                     turn,
-                    seq: event.seq,
+                    seq: event.seq.get(),
                     prompt: String::new(),
                     response: String::new(),
                 });
@@ -236,7 +236,7 @@ mod tests {
     fn event(type_: &str, seq: u64, data: Value) -> SessionEvent {
         SessionEvent {
             type_: type_.to_string(),
-            seq,
+            seq: dsh_session::SessionSeq::new(seq).expect("test sequence is valid"),
             time: seq as i64,
             data,
             ignorable: None,
@@ -252,7 +252,7 @@ mod tests {
             created_at: 0,
             cwd: None,
             parent_session: None,
-            seed_length: None,
+            is_seeded: false,
             origin: None,
             delegation_depth: None,
             agent_preset: None,

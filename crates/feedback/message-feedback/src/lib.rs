@@ -573,6 +573,7 @@ impl MessageFeedbackService {
             .expect("message-feedback: readFrom failed");
         SessionInspection {
             meta: result.meta,
+            inherited_event_count: result.inherited_event_count,
             events: result.events,
         }
     }

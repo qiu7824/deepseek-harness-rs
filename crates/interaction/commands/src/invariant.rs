@@ -78,7 +78,7 @@ pub fn validate_event(
                     .and_then(|value| value.as_str())
                     .unwrap_or("");
                 let valid_source = kind == "success"
-                    && source < event.seq
+                    && source < event.seq.get()
                     && histories.lock().get(session_id).is_some_and(|history| {
                         history.get(source as usize).is_some_and(|source_event| {
                             source_event.seq == source

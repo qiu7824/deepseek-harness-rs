@@ -6,8 +6,8 @@
 //!
 //! # Deviations
 //!
-//! - Continuable cold resume currently rejects with `NOT_RESUMABLE`; live
-//!   creation, followup, interruption, reporting, and descendant drain are ported.
+//! - Continuable creation, cold resume, adjacent-Agent messaging, host prompt
+//!   queueing, interruption, settlement, and descendant drain are ported.
 //! - `SubagentProvider.prepareContinuable` is a defaulted trait method
 //!   rejecting with `SUBAGENT_NOT_CONTINUABLE` (the TS optional-method
 //!   capability).
@@ -40,7 +40,6 @@ pub use crate::child_agent::{
 pub use crate::continuation::{
     ContinuableStart, ContinuableStartSpec, ContinuationHost, SubagentContinuationManager,
     SubagentFollowupAdmission, SubagentFollowupOptions, SubagentInterruptAuthority,
-    SubagentReportDelivery, SubagentReportOptions,
 };
 pub use crate::depth::{assert_subagent_max_depth, delegation_depth_of};
 pub use crate::descriptor::{

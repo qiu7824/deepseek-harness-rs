@@ -328,7 +328,7 @@ async fn run_prompt(prepared: PreparedPrompt) -> Result<&'static str, String> {
     );
     let mut baseline = 0_u64;
     let admitted = prepared.slot.admit(&prepared.ticket, || {
-        baseline = prepared.agent.session().seq() as u64;
+        baseline = prepared.agent.session().seq().get();
         prepared.agent.followup(message);
     });
     if !admitted {

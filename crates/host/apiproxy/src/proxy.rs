@@ -3258,7 +3258,7 @@ impl ApiProxyService {
     ) -> Result<(Vec<dsh_session::SessionEvent>, bool), usize> {
         const MAX_HISTORY_EVENTS: usize = 4_096;
         let after_seq = u64::try_from(after_seq).unwrap_or(0);
-        let start = events.partition_point(|event| event.seq < after_seq);
+        let start = events.partition_point(|event| event.seq.get() < after_seq);
         let mut messages = 0_u64;
         let mut end = events.len();
         for (offset, event) in events[start..].iter().enumerate() {
@@ -3279,33 +3279,6 @@ impl ApiProxyService {
         Ok((events[start..end].to_vec(), end < events.len()))
     }
 
-    fn history_message(event: &dsh_session::SessionEvent) -> bool {
-        matches!(event.type_.as_str(), "user/message" | "assistant/message")
-            && event.surface_op.as_ref().is_none_or(|op| op.is_append())
-    }
-
-    fn trim_compact_history_tail(
-        events: &mut Vec<dsh_session::SessionEvent>,
-        max_messages: u64,
-    ) -> bool {
-        let mut messages = 0_u64;
-        let mut keep_from = 0_usize;
-        for (index, event) in events.iter().enumerate().rev() {
-            if Self::history_message(event) {
-                messages += 1;
-                if messages >= max_messages.max(1) {
-                    keep_from = index;
-                    break;
-                }
-            }
-        }
-        if keep_from == 0 {
-            return false;
-        }
-        events.drain(0..keep_from);
-        true
-    }
-
     fn compact_history_bytes(events: &[dsh_session::SessionEvent]) -> usize {
         events
             .iter()
@@ -3318,7 +3291,14 @@ impl ApiProxyService {
         session_id: &dsh_session::SessionId,
         from_seq: u64,
         max_messages: u64,
-    ) -> Result<(Vec<dsh_session::SessionEvent>, bool), String> {
+    ) -> Result<
+        (
+            Vec<dsh_session::SessionEvent>,
+            bool,
+            dsh_session::SessionHeader,
+        ),
+        String,
+    > {
         const MAX_HISTORY_EVENTS: usize = 4_096;
         const MAX_COMPACT_BYTES: usize = 8 * 1024 * 1024;
         let window = persistence
@@ -3332,6 +3312,7 @@ impl ApiProxyService {
             )
             .await?;
         let has_more = window.has_more;
+        let meta = window.meta;
         let mut compact = crate::api::sessions::coalesce_history_transport_events(window.events);
         if Self::compact_history_bytes(&compact) > MAX_COMPACT_BYTES {
             return Err(format!(
@@ -3341,62 +3322,45 @@ impl ApiProxyService {
         if let Some(first) = compact.first_mut() {
             first.data["__historyStartSeq"] = serde_json::Value::from(from_seq);
         }
-        Ok((compact, has_more))
+        Ok((compact, has_more, meta))
     }
 
     async fn read_cold_tail_compact(
         persistence: &Arc<dyn dsh_session_persistence::SessionPersistenceApi>,
         session_id: &dsh_session::SessionId,
         max_messages: u64,
-    ) -> Result<(Vec<dsh_session::SessionEvent>, bool), String> {
-        const READ_CHUNK_EVENTS: usize = 512;
+    ) -> Result<
+        (
+            Vec<dsh_session::SessionEvent>,
+            bool,
+            dsh_session::SessionHeader,
+        ),
+        String,
+    > {
         const MAX_COMPACT_EVENTS: usize = 4_096;
         const MAX_COMPACT_BYTES: usize = 8 * 1024 * 1024;
-        #[derive(Default)]
-        struct TailFold {
-            compact: Vec<dsh_session::SessionEvent>,
-            dropped: bool,
-        }
-        let state = Arc::new(Mutex::new(TailFold::default()));
-        let visitor = {
-            let state = state.clone();
-            Arc::new(move |events: &[dsh_session::SessionEvent]| {
-                let batch = crate::api::sessions::coalesce_history_transport_batch(events.to_vec());
-                let mut state = state.lock();
-                state.compact.extend(batch);
-                state.dropped |= Self::trim_compact_history_tail(&mut state.compact, max_messages);
-                if state.compact.len() > MAX_COMPACT_EVENTS {
-                    let excess = state.compact.len() - MAX_COMPACT_EVENTS;
-                    state.compact.drain(0..excess);
-                    state.dropped = true;
-                }
-                while Self::compact_history_bytes(&state.compact) > MAX_COMPACT_BYTES
-                    && state.compact.len() > 1
-                {
-                    state.compact.remove(0);
-                    state.dropped = true;
-                }
-                Ok(())
-            })
-                as Arc<
-                    dyn for<'a> Fn(&'a [dsh_session::SessionEvent]) -> Result<(), String>
-                        + Send
-                        + Sync,
-                >
-        };
-        persistence
-            .visit_event_chunks(session_id, READ_CHUNK_EVENTS, visitor)
+        let window = persistence
+            .read_window(
+                session_id,
+                dsh_session_persistence::SessionReadWindowRequest {
+                    before_seq: None,
+                    max_messages,
+                    max_events: MAX_COMPACT_EVENTS,
+                },
+            )
             .await?;
-        let mut state = state.lock();
-        let compact = crate::api::sessions::coalesce_history_transport_events(std::mem::take(
-            &mut state.compact,
-        ));
+        if let Some(required) = window.oversized_event_count {
+            return Err(format!(
+                "session.history: one safe tail group requires {required} events, above the {MAX_COMPACT_EVENTS} event budget"
+            ));
+        }
+        let compact = crate::api::sessions::coalesce_history_transport_events(window.events);
         if Self::compact_history_bytes(&compact) > MAX_COMPACT_BYTES {
             return Err(format!(
                 "session.history: compact tail exceeds the {MAX_COMPACT_BYTES} byte budget"
             ));
         }
-        Ok((compact, state.dropped))
+        Ok((compact, window.has_more, window.meta))
     }
 
     async fn session_history(
@@ -3486,7 +3450,7 @@ impl ApiProxyService {
                 };
                 if let Some(after_seq) = request.payload.after_seq {
                     let from_seq = u64::try_from(after_seq).unwrap_or(0);
-                    let compact = match Self::read_cold_forward_compact(
+                    let (events, has_more, meta) = match Self::read_cold_forward_compact(
                         &persistence,
                         &session_id,
                         from_seq,
@@ -3507,14 +3471,10 @@ impl ApiProxyService {
                             );
                         }
                     };
-                    cold_header = persistence
-                        .read_list_metadata(&session_id)
-                        .await
-                        .ok()
-                        .map(|metadata| metadata.meta);
-                    compact
+                    cold_header = Some(meta);
+                    (events, has_more)
                 } else if request.payload.before_seq.is_none() {
-                    let compact = match Self::read_cold_tail_compact(
+                    let (events, has_more, meta) = match Self::read_cold_tail_compact(
                         &persistence,
                         &session_id,
                         requested_messages,
@@ -3534,12 +3494,8 @@ impl ApiProxyService {
                             );
                         }
                     };
-                    cold_header = persistence
-                        .read_list_metadata(&session_id)
-                        .await
-                        .ok()
-                        .map(|metadata| metadata.meta);
-                    compact
+                    cold_header = Some(meta);
+                    (events, has_more)
                 } else {
                     let before_seq = request
                         .payload
@@ -3613,10 +3569,10 @@ impl ApiProxyService {
             .map(|slot| slot.as_ref().clone());
         let first_seq = page_events
             .first()
-            .and_then(|event| i64::try_from(event.seq).ok());
+            .and_then(|event| i64::try_from(event.seq.get()).ok());
         let last_seq = page_events
             .last()
-            .and_then(|event| i64::try_from(event.seq).ok());
+            .and_then(|event| i64::try_from(event.seq.get()).ok());
         let page_events = if live_session.is_some() || request.payload.before_seq.is_some() {
             crate::api::sessions::coalesce_history_transport_events(page_events)
         } else {
@@ -4010,14 +3966,17 @@ impl ApiProxyService {
                     }
                 }
             };
-        let last_seq = events.last().map(|event| event.seq as i64).unwrap_or(-1);
+        let last_seq = events
+            .last()
+            .map(|event| event.seq.get() as i64)
+            .unwrap_or(-1);
         let at_seq = request.payload.at_seq;
         // An in-log anchor belongs to the turn containing it; omitted and
         // past-end anchors retain the last-completed-turn shortcut.
         let anchored_boundary = at_seq.and_then(|at| {
             events
                 .iter()
-                .find(|event| event.type_ == "turn/end" && (event.seq as i64) >= at)
+                .find(|event| event.type_ == "turn/end" && (event.seq.get() as i64) >= at)
                 .map(|event| event.seq)
         });
         let boundary = match anchored_boundary {
@@ -4083,14 +4042,27 @@ impl ApiProxyService {
         let meta = dsh_session::CreateSessionMeta {
             cwd: header.cwd.clone(),
             parent_session: Some(session_id.clone()),
-            seed_length: Some(cut),
+            is_seeded: Some(true),
             agent_preset: resolved_preset.clone(),
             ..Default::default()
+        };
+        let inherited_event_count = match dsh_session::SessionLogOffset::new(seed.len() as u64) {
+            Ok(value) => value,
+            Err(error) => {
+                return err(
+                    request.rpc_id,
+                    RpcError::Internal(RpcErrorBody {
+                        message: format!("forked session seed is too large: {error}"),
+                        details: EmptyDetails {},
+                    }),
+                );
+            }
         };
         match agents
             .create(dsh_agent::CreateAgentOptions {
                 session_id: Some(child_id.clone()),
                 seed: Some(seed),
+                inherited_event_count: Some(inherited_event_count),
                 meta: Some(meta),
                 agent_options: Some(agent_options),
                 setup: Some(composed_agent_setup(
@@ -4634,45 +4606,58 @@ impl ApiProxyService {
     ) -> RpcResponse<serde_json::Value> {
         let session_id = request.payload.session_id.clone();
         let attachment_id = request.payload.attachment_id.to_string();
-        let events: Vec<dsh_session::SessionEvent> =
-            match self.sessions().and_then(|store| store.get(&session_id)) {
-                Some(session) => session.events().to_vec(),
-                None => {
-                    let Some(persistence) = self
-                        .ctx
-                        .get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
-                            "sessionPersistence",
-                            false,
-                        )
-                        .map(|slot| slot.as_ref().clone())
-                    else {
-                        return err(
-                            request.rpc_id,
-                            RpcError::SessionNotFound(RpcErrorBody {
-                                message: format!("session \"{session_id}\" not found"),
-                                details: crate::api::rpc::SessionIdDetails {
-                                    session_id: session_id.to_string(),
-                                },
-                            }),
-                        );
-                    };
-                    match persistence.inspect(&session_id).await {
-                        Ok(inspection) => inspection.events,
-                        Err(_) => {
-                            return err(
-                                request.rpc_id,
-                                RpcError::SessionNotFound(RpcErrorBody {
-                                    message: format!("session \"{session_id}\" not found"),
-                                    details: crate::api::rpc::SessionIdDetails {
-                                        session_id: session_id.to_string(),
-                                    },
-                                }),
-                            );
-                        }
-                    }
-                }
+        let reference = if let Some(session) =
+            self.sessions().and_then(|store| store.get(&session_id))
+        {
+            let events = session.events();
+            Self::referenced_image(events.as_slice(), &attachment_id)
+        } else {
+            let Some(persistence) = self
+                .ctx
+                .get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
+                    "sessionPersistence",
+                    false,
+                )
+                .map(|slot| slot.as_ref().clone())
+            else {
+                return err(
+                    request.rpc_id,
+                    RpcError::SessionNotFound(RpcErrorBody {
+                        message: format!("session \"{session_id}\" not found"),
+                        details: crate::api::rpc::SessionIdDetails {
+                            session_id: session_id.to_string(),
+                        },
+                    }),
+                );
             };
-        let Some(reference) = Self::referenced_image(&events, &attachment_id) else {
+            let found = Arc::new(parking_lot::Mutex::new(None));
+            let found_for_visitor = found.clone();
+            let attachment_for_visitor = attachment_id.clone();
+            let visitor: dsh_session_persistence::NonpackedEventVisitor = Arc::new(move |events| {
+                if let Some(reference) = Self::referenced_image(events, &attachment_for_visitor) {
+                    *found_for_visitor.lock() = Some(reference);
+                    return Ok(false);
+                }
+                Ok(true)
+            });
+            if persistence
+                .visit_nonpacked_events(&session_id, visitor)
+                .await
+                .is_err()
+            {
+                return err(
+                    request.rpc_id,
+                    RpcError::SessionNotFound(RpcErrorBody {
+                        message: format!("session \"{session_id}\" not found"),
+                        details: crate::api::rpc::SessionIdDetails {
+                            session_id: session_id.to_string(),
+                        },
+                    }),
+                );
+            }
+            found.lock().clone()
+        };
+        let Some(reference) = reference else {
             return err(
                 request.rpc_id,
                 RpcError::AttachmentError(RpcErrorBody {
@@ -6696,7 +6681,7 @@ impl ApiProxyCarrier for ApiProxyService {
                 payload: serde_json::json!({
                     "type": "session/subscribed",
                     "sessionId": session.id(),
-                    "lastSeq": session.seq() as i64 - 1,
+                    "lastSeq": session.seq().get() as i64 - 1,
                 }),
             });
         }

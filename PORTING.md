@@ -4,6 +4,16 @@
 > 源码（只读）：`D:\HermesTemp\deepseek-harness`
 > Rust 项目：`D:\deepwork\deepseek-harness-rs`
 
+## 0. `0.1.2-alpha.4` 同步说明
+
+- Session 坐标已拆分为 `SessionSeq` 与 `SessionLogOffset`，事件身份和日志间隙不再混用；历史读取改为显式有界快照/窗口。
+- 逻辑 Session 头使用 `is_seeded`，继承事件数量独立携带；JSONL/Zstd v0 物理头仍兼容缺失、零和非零 `seedLength`。
+- continuable Agent 的模型消息统一为 `agent-message`，`send_message({ agent_id, message })` 只允许直接父子双向投递；旧 report 体系不再作为正式路径。
+- Rust Host 的模型发现可在服务端安全复用 Profile headers；浏览器候选列表支持搜索和可见结果选择。
+- Rust 原生 `web_fetch` 已接入公开 HTTP(S) 抓取，并对 scheme、DNS/IP、逐跳重定向、超时、响应体和取消执行 fail-closed 边界。
+- PTC/code 默认不公开通用 `workflow` 工具，但 workflow engine 仍供 Ralph/其他预设使用。
+- 正式发布分为 `core`、`skin`、`free`，由四平台 GitHub Actions 生成便携包、安装包和最终校验和。
+
 ## 1. 规模与范围
 
 自动统计文件：`docs/porting/loc.json`（脚本 `docs/porting/count-loc.mjs`）。

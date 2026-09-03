@@ -329,7 +329,7 @@ pub fn child_session_meta(
         cwd: parent_header.cwd.clone(),
         parent_session: Some(parent_header.id.clone()),
         created_at: None,
-        seed_length: (lineage_seed_length > 0).then_some(lineage_seed_length),
+        is_seeded: Some(lineage_seed_length > 0),
         origin: Some("subagent".to_string()),
         delegation_depth: Some(child_depth),
         agent_preset: parent_header.agent_preset.clone(),

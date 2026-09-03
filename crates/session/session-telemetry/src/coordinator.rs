@@ -221,14 +221,14 @@ impl SessionTelemetryCoordinator {
             .lock()
             .get(&session.identity())
             .map(|seq| *seq as i64)
-            .unwrap_or(session.first_live_seq() as i64 - 1);
+            .unwrap_or(session.first_live_seq().get() as i64 - 1);
         let events = session.events();
         for event in events.iter() {
-            if through_seq.is_some_and(|through| event.seq > through) {
+            if through_seq.is_some_and(|through| event.seq.get() > through) {
                 break;
             }
             self.contain(|| {
-                if event.seq as i64 <= cursor {
+                if event.seq.get() as i64 <= cursor {
                     self.track(session, event);
                 } else {
                     self.capture_event(session, event);
@@ -285,7 +285,7 @@ impl SessionTelemetryCoordinator {
             session,
             ProjectedRecord {
                 record,
-                seq: Some(event.seq),
+                seq: Some(event.seq.get()),
             },
         );
     }
@@ -470,7 +470,7 @@ fn identity_of(session: &Session, event: &SessionEvent) -> Vec<(String, Attribut
         ),
         (
             "event.seq".to_string(),
-            AttributeValue::Num(event.seq as f64),
+            AttributeValue::Num(event.seq.get() as f64),
         ),
     ];
     let header = session.header();
@@ -483,10 +483,10 @@ fn identity_of(session: &Session, event: &SessionEvent) -> Vec<(String, Attribut
             AttributeValue::Str(parent.as_str().to_string()),
         ));
     }
-    if let Some(seed_length) = header.seed_length {
+    if header.is_seeded {
         attributes.push((
-            "session.seed_length".to_string(),
-            AttributeValue::Num(seed_length as f64),
+            "session.is_seeded".to_string(),
+            AttributeValue::Str("true".to_string()),
         ));
     }
     attributes

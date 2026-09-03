@@ -6,10 +6,10 @@
 use std::path::{Path, PathBuf};
 
 use dsh_session::{
-    SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionId, decode_storage_record,
-    pack_chunk_runs,
+    SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionId, SessionLogOffset,
+    decode_storage_record, pack_chunk_runs,
 };
-use dsh_session_persistence::session_format_version_refusal;
+use dsh_session_persistence::{SessionStorageMetadata, session_format_version_refusal};
 
 /// Physical encoding selected for JSONL session artifacts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -78,36 +78,48 @@ pub struct HeaderLine {
     pub agent_preset: Option<String>,
 }
 
-/// Build the header line object from a [`SessionHeader`] (TS
-/// `toHeaderLine`).
-pub fn to_header_line(header: &SessionHeader) -> HeaderLine {
-    HeaderLine {
+/// Build the version-0 physical header from logical metadata and its cut.
+pub fn to_header_line(
+    header: &SessionHeader,
+    inherited_event_count: Option<SessionLogOffset>,
+) -> Result<HeaderLine, String> {
+    if header.is_seeded && inherited_event_count.is_none() {
+        return Err("seeded session header requires an inherited event count".to_string());
+    }
+    let cut = inherited_event_count.unwrap_or(SessionLogOffset::ZERO);
+    if !header.is_seeded && cut != SessionLogOffset::ZERO {
+        return Err("unseeded session header inherited event count must be 0".to_string());
+    }
+    Ok(HeaderLine {
         type_: "session".to_string(),
         version: header.version,
         id: header.id.clone(),
         created_at: header.created_at,
         cwd: header.cwd.clone(),
         parent_session: header.parent_session.clone(),
-        seed_length: header.seed_length,
+        seed_length: header.is_seeded.then_some(cut.get()),
         origin: header.origin.clone(),
         delegation_depth: header.delegation_depth.unwrap_or(0),
         agent_preset: header.agent_preset.clone(),
-    }
+    })
 }
 
-/// Parse a header line back into a [`SessionHeader`] (TS `fromHeaderLine`).
-pub fn from_header_line(line: &HeaderLine) -> SessionHeader {
-    SessionHeader {
-        version: line.version,
-        id: line.id.clone(),
-        created_at: line.created_at,
-        cwd: line.cwd.clone(),
-        parent_session: line.parent_session.clone(),
-        seed_length: line.seed_length,
-        origin: line.origin.clone(),
-        delegation_depth: Some(line.delegation_depth),
-        agent_preset: line.agent_preset.clone(),
-    }
+/// Translate a version-0 physical header into logical metadata and its cut.
+pub fn from_header_line(line: &HeaderLine) -> Result<SessionStorageMetadata, String> {
+    Ok(SessionStorageMetadata {
+        meta: SessionHeader {
+            version: line.version,
+            id: line.id.clone(),
+            created_at: line.created_at,
+            cwd: line.cwd.clone(),
+            parent_session: line.parent_session.clone(),
+            is_seeded: line.seed_length.is_some(),
+            origin: line.origin.clone(),
+            delegation_depth: Some(line.delegation_depth),
+            agent_preset: line.agent_preset.clone(),
+        },
+        inherited_event_count: SessionLogOffset::new(line.seed_length.unwrap_or(0))?,
+    })
 }
 
 /// Whether a parsed first line is a well-formed session header (TS
@@ -124,6 +136,12 @@ fn is_header_line(value: &serde_json::Value) -> bool {
             .get("delegationDepth")
             .and_then(|v| v.as_u64())
             .is_some()
+        && match record.get("seedLength") {
+            None => true,
+            Some(value) => value
+                .as_u64()
+                .is_some_and(|value| SessionLogOffset::new(value).is_ok()),
+        }
         && match record.get("origin") {
             None => true,
             Some(value) => value.as_str() == Some("subagent"),
@@ -233,13 +251,14 @@ pub fn event_lines(events: &[SessionEvent], pack_chunks: bool) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionLogScan {
     pub meta: SessionHeader,
+    pub inherited_event_count: SessionLogOffset,
     pub events: Vec<SessionEvent>,
     pub committed_bytes: usize,
 }
 
 /// Parse one complete header record supplied independently from event rows
 /// (TS `parseHeaderRecord`).
-fn parse_header_record(record: &[u8]) -> Result<SessionHeader, String> {
+fn parse_header_record(record: &[u8]) -> Result<SessionStorageMetadata, String> {
     if record.is_empty()
         || record.last() != Some(&0x0A)
         || record
@@ -257,7 +276,7 @@ fn parse_header_record(record: &[u8]) -> Result<SessionHeader, String> {
     }
     let line: HeaderLine = serde_json::from_value(parsed)
         .map_err(|_| "corrupt session log: first line is not a session header".to_string())?;
-    Ok(from_header_line(&line))
+    from_header_line(&line)
 }
 
 /// Refuse a header carrying a format version this build does not read.
@@ -283,6 +302,7 @@ fn refuse_foreign_format_version(parsed: &serde_json::Value) -> Result<(), Strin
 /// supplied header record (TS `SessionLogScanner`).
 pub struct SessionLogScanner {
     meta: SessionHeader,
+    inherited_event_count: SessionLogOffset,
     events: Vec<SessionEvent>,
     fragments: Vec<u8>,
     fragment_bytes: usize,
@@ -297,9 +317,10 @@ impl SessionLogScanner {
     /// Create an event scanner from exactly one newline-terminated header
     /// record.
     pub fn new(header_record: &[u8]) -> Result<Self, String> {
-        let meta = parse_header_record(header_record)?;
+        let storage = parse_header_record(header_record)?;
         Ok(Self {
-            meta,
+            meta: storage.meta,
+            inherited_event_count: storage.inherited_event_count,
             events: Vec::new(),
             fragments: Vec::new(),
             fragment_bytes: 0,
@@ -359,6 +380,7 @@ impl SessionLogScanner {
         self.finished = true;
         SessionLogScan {
             meta: self.meta,
+            inherited_event_count: self.inherited_event_count,
             events: self.events,
             committed_bytes: self.committed_bytes,
         }
@@ -402,7 +424,7 @@ impl SessionLogScanner {
 
         let row_start = self.events.len();
         for event in decoded.iter() {
-            if event.seq != self.events.len() as u64 {
+            if event.seq.get() != self.events.len() as u64 {
                 let expected = self.events.len();
                 self.events.truncate(row_start);
                 self.issue = Some(format!(
@@ -447,10 +469,15 @@ pub fn scan_log(buffer: &[u8]) -> Result<SessionLogScan, String> {
 /// Parse just the header line of a log into a [`SessionHeader`], or `None`
 /// if it is missing/not a header (TS `parseHeaderMeta`).
 pub fn parse_header_meta(first_line: &str) -> Option<SessionHeader> {
+    parse_header_storage(first_line).map(|storage| storage.meta)
+}
+
+/// Parse the logical header together with the exact inherited cut.
+pub fn parse_header_storage(first_line: &str) -> Option<SessionStorageMetadata> {
     let parsed: serde_json::Value = serde_json::from_str(first_line).ok()?;
     if !is_header_line(&parsed) {
         return None;
     }
     let line: HeaderLine = serde_json::from_value(parsed).ok()?;
-    Some(from_header_line(&line))
+    from_header_line(&line).ok()
 }

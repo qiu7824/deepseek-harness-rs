@@ -56,7 +56,7 @@ pub fn installer() -> InvariantInstaller {
                         let events = session.events();
                         let folded = fold_schedule_events(
                             &events,
-                            session.header().seed_length.unwrap_or(0) as usize,
+                            session.inherited_event_count().get() as usize,
                         );
                         match folded {
                             Ok(folded) => {
@@ -109,7 +109,7 @@ pub fn installer() -> InvariantInstaller {
                                 return None;
                             }
                         };
-                        let seed_length = session.header().seed_length.unwrap_or(0) as usize;
+                        let seed_length = session.inherited_event_count().get() as usize;
                         let mut traces = traces.lock();
                         let folded = traces.entry(session.identity()).or_insert_with(|| {
                             // A session created without a prior `session/created`

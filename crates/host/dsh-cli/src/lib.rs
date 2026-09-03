@@ -199,6 +199,7 @@ dsh: boot a DeepSeek Harness profile — an ordered stack of plugin-bundle patch
 
 Examples:
   dsh --profile web                          boot the web profile (same as: dsh web)
+  dsh web --host 0.0.0.0 --port 3080        expose web/API to a trusted network (unsafe without a firewall)
   dsh --profile headless \"run the tests\"     answer one task, print the result, and exit
   dsh --profile tui --patch ./extra.yml      boot a custom profile with one extra overlay
   dsh --profile tui --resume <session>       arguments after the launcher flags reach the app

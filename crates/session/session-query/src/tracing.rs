@@ -80,11 +80,11 @@ pub fn trace_event(
 
     let mut derived_event_seqs: Vec<u64> = Vec::new();
     for event in events {
-        if event.seq <= seq {
+        if event.seq.get() <= seq {
             continue;
         }
         if event_sources(event).contains(&seq) {
-            derived_event_seqs.push(event.seq);
+            derived_event_seqs.push(event.seq.get());
         }
     }
 
@@ -210,12 +210,12 @@ fn analyze_event_log(
             .iter()
             .map(|event| SessionEventRecord {
                 session_id: session_id.clone(),
-                seq: event.seq,
+                seq: event.seq.get(),
                 type_: event.type_.clone(),
                 time: event.time,
-                surface: if current.contains(&event.seq) {
+                surface: if current.contains(&event.seq.get()) {
                     SessionEventSurface::Current
-                } else if replaced_by.contains_key(&event.seq) {
+                } else if replaced_by.contains_key(&event.seq.get()) {
                     SessionEventSurface::Shadowed
                 } else {
                     SessionEventSurface::LogOnly

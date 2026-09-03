@@ -571,7 +571,7 @@ impl GoalService {
             cache: Mutex::new(GoalCache {
                 state: fold,
                 activation: GoalActivation::Disarmed,
-                observed_seq: session.seq(),
+                observed_seq: session.seq().get() as usize,
                 pending_activation: None,
             }),
             session,
@@ -738,7 +738,7 @@ impl GoalService {
         change: &GoalChangeMeta,
         activation: GoalActivation,
     ) -> Result<(), GoalError> {
-        cache.pending_activation = Some((session.seq() as u64, activation));
+        cache.pending_activation = Some((session.seq().get(), activation));
         let json = change_to_json(change);
         if let Err(error) = session.append("goal/change", json, None) {
             cache.pending_activation = None;

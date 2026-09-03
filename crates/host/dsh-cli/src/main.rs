@@ -127,6 +127,11 @@ async fn async_main() {
                 }
             };
             if let Some(url) = handle.readiness_url() {
+                if handle.exposes_network() {
+                    eprintln!(
+                        "WARNING: dsh web is listening on all network interfaces without transport authentication. Any machine that can reach this port can control this Harness instance; use a trusted network and firewall."
+                    );
+                }
                 println!("dsh web: {url}");
                 if let Err(error) = interrupt.waiter().await {
                     eprintln!("dsh: {error}");

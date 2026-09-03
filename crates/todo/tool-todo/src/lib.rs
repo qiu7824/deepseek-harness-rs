@@ -492,8 +492,13 @@ mod tests {
     }
 
     fn session() -> Session {
-        Session::create(dsh_session::session_id("todo-service-test"), None, None)
-            .expect("detached test session")
+        Session::create(
+            dsh_session::session_id("todo-service-test"),
+            None,
+            None,
+            None,
+        )
+        .expect("detached test session")
     }
 
     fn current(session: &Session) -> Vec<TodoItem> {

@@ -46,7 +46,9 @@ impl LlmAdapter for BlockingFirstTurnAdapter {
         if call == 0 {
             let entered = Arc::clone(&self.first_entered);
             let release = Arc::clone(&self.release_first);
-            entered.notify_waiters();
+            // Retain a permit if the test has not begun waiting yet; a
+            // broadcast-only edge would make this harness scheduler-dependent.
+            entered.notify_one();
             let chunks = vec![
                 StreamChunk::BlockStart {
                     index: 0,

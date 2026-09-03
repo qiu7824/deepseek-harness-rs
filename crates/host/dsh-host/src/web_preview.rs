@@ -1662,7 +1662,7 @@ impl PreviewService {
             .expect("preview file response")
     }
 
-    async fn handle(self: Arc<Self>, request: WebRequest) -> WebResponse {
+    async fn handle(self: Arc<Self>, request: WebRequest, allow_remote_host: bool) -> WebResponse {
         let tail = request
             .uri()
             .path()
@@ -1678,12 +1678,14 @@ impl PreviewService {
                 .as_deref()
                 == Some(self.site_token.as_str())
         });
-        let loopback_host = request
+        let allowed_host = request
             .headers()
             .get(header::HOST)
             .and_then(|value| value.to_str().ok())
-            .is_some_and(super::is_loopback_authority);
-        if !loopback_host || (!site_request && !super::trusted_web_request(&request)) {
+            .is_some_and(|authority| super::allowed_web_authority(authority, allow_remote_host));
+        if !allowed_host
+            || (!site_request && !super::trusted_web_request(&request, allow_remote_host))
+        {
             return error(StatusCode::FORBIDDEN, "forbidden", "预览请求来源不可信");
         }
         if let Some(site_tail) = tail.strip_prefix("site/").map(str::to_string) {
@@ -1932,6 +1934,7 @@ pub fn register(
     terminals: Arc<TerminalSessionService>,
     subprocess: Arc<dyn SubprocessRuntime>,
     sandbox: Arc<dyn SandboxProvider>,
+    allow_remote_host: bool,
 ) -> RouteDisposer {
     let service = PreviewService::new(registry, agents, terminals, subprocess, sandbox);
     web_server.register(WebRoute {
@@ -1939,7 +1942,9 @@ pub fn register(
         path: ROUTE.to_string(),
         handler: Arc::new(move |request| {
             let service = Arc::clone(&service);
-            Box::pin(async move { Ok::<_, WebHandlerError>(service.handle(request).await) })
+            Box::pin(async move {
+                Ok::<_, WebHandlerError>(service.handle(request, allow_remote_host).await)
+            })
         }),
     })
 }

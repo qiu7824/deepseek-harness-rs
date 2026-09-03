@@ -155,7 +155,7 @@ fn assert_provenance(event: &SessionEvent, shadowed_seqs: &[u64]) -> Result<(), 
         }
         let mut non_earlier_source: Option<u64> = None;
         for source in raw {
-            if non_earlier_source.is_none() && *source >= event.seq {
+            if non_earlier_source.is_none() && *source >= event.seq.get() {
                 non_earlier_source = Some(*source);
             }
             if !sources.insert(*source) {
@@ -289,7 +289,9 @@ fn plan_surface_event(
     match op {
         SurfaceOp::Append => {
             assert_provenance(event, &[])?;
-            Ok(Some(SurfacePlan::Append { seq: event.seq }))
+            Ok(Some(SurfacePlan::Append {
+                seq: event.seq.get(),
+            }))
         }
         SurfaceOp::Replace { .. } => {
             let (start_idx, end_idx, shadowed_seqs) = replacement_range(state, &op)?;
@@ -300,7 +302,7 @@ fn plan_surface_event(
                 SurfaceOp::Append => unreachable!(),
             };
             Ok(Some(SurfacePlan::Replace(SurfaceReplacePlan {
-                seq: event.seq,
+                seq: event.seq.get(),
                 start,
                 end,
                 start_idx,
@@ -421,7 +423,9 @@ impl StreamingSurfaceFold {
         let plan = match op {
             SurfaceOp::Append => {
                 assert_provenance(event, &[])?;
-                Some(SurfacePlan::Append { seq: event.seq })
+                Some(SurfacePlan::Append {
+                    seq: event.seq.get(),
+                })
             }
             SurfaceOp::Replace { start, end } => {
                 let (start_idx, end_idx, shadowed_seqs) = replacement_range(&self.state, &op)?;
@@ -450,7 +454,7 @@ impl StreamingSurfaceFold {
                     }
                 }
                 Some(SurfacePlan::Replace(SurfaceReplacePlan {
-                    seq: event.seq,
+                    seq: event.seq.get(),
                     start,
                     end,
                     start_idx,
@@ -468,7 +472,7 @@ impl StreamingSurfaceFold {
         if event.type_ == "tool/result"
             && let Some(metadata) = with_nulled_result_content(&event.data)
         {
-            self.current_tool_results.insert(event.seq, metadata);
+            self.current_tool_results.insert(event.seq.get(), metadata);
         }
         Ok(())
     }
@@ -484,11 +488,12 @@ impl StreamingSurfaceFold {
 #[cfg(test)]
 mod streaming_tests {
     use super::*;
+    use crate::SessionSeq;
 
     fn event(seq: u64, surface_op: SurfaceOp, sources: Option<Vec<u64>>) -> SessionEvent {
         SessionEvent {
             type_: "user/message".to_string(),
-            seq,
+            seq: SessionSeq::new(seq).unwrap(),
             time: seq as i64,
             data: serde_json::json!({"role":"user","content":[{"type":"text","text":seq.to_string()}]}),
             ignorable: Some(false),

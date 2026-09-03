@@ -142,7 +142,7 @@ impl ToolResultPruner {
             .into_iter()
             .filter_map(|seq| {
                 session
-                    .event_at(seq)
+                    .event_at(dsh_session::SessionSeq::new(seq).ok()?)
                     .filter(|event| event.type_ == "tool/result")
                     .map(|event| (seq, event))
             })
@@ -197,7 +197,7 @@ impl ToolResultPruner {
             )?;
             result.pruned.push(PrunedEntry {
                 original_seq: seq,
-                replacement_seq: replacement.seq,
+                replacement_seq: replacement.seq.get(),
                 call_id: tool_call_id.as_str().to_string(),
                 chars_before: before,
                 chars_after: after,

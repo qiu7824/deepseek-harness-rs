@@ -231,7 +231,7 @@ pub fn collect_session_title_messages(
 ) -> Vec<SessionTitleUserMessage> {
     let mut messages = Vec::new();
     for event in events {
-        if through_seq.is_some_and(|seq| event.seq > seq) {
+        if through_seq.is_some_and(|seq| event.seq.get() > seq) {
             break;
         }
         if event.type_ != "user/message" {
@@ -261,7 +261,7 @@ pub fn collect_session_title_messages(
             continue;
         }
         messages.push(SessionTitleUserMessage {
-            seq: event.seq,
+            seq: event.seq.get(),
             text,
         });
     }
@@ -289,7 +289,7 @@ pub fn fold_session_title(events: &[SessionEvent]) -> Option<SessionTitleSnapsho
         title,
         message_seqs,
         source,
-        event_seq: event.seq,
+        event_seq: event.seq.get(),
         updated_at: event.time,
     })
 }
@@ -557,7 +557,7 @@ mod session_list_metadata_tests {
             created_at: 0,
             cwd: None,
             parent_session: None,
-            seed_length: None,
+            is_seeded: false,
             origin: None,
             delegation_depth: None,
             agent_preset: None,
@@ -567,7 +567,7 @@ mod session_list_metadata_tests {
     fn event(seq: u64, time: i64, type_: &str) -> SessionEvent {
         SessionEvent {
             type_: type_.to_string(),
-            seq,
+            seq: dsh_session::SessionSeq::new(seq).expect("test sequence is valid"),
             time,
             data: serde_json::json!({}),
             ignorable: None,
@@ -1042,7 +1042,8 @@ impl SessionTitleService {
         let registration = self.registration.lock().clone();
         if let Some(registration) = registration {
             if !registration.closing.load(Ordering::SeqCst) {
-                let messages = collect_session_title_messages(&session.events(), Some(event.seq));
+                let messages =
+                    collect_session_title_messages(&session.events(), Some(event.seq.get()));
                 let should_schedule = registration.provider.automatic()
                     == SessionTitleAutomaticMode::AllPrompts
                     || (session.header().parent_session.is_none()
@@ -1055,7 +1056,7 @@ impl SessionTitleService {
                     state.lock().pending = Some(PendingAutomaticWork {
                         registration,
                         revision,
-                        through_seq: event.seq,
+                        through_seq: event.seq.get(),
                     });
                 }
             }
@@ -1093,7 +1094,7 @@ impl SessionTitleService {
         let Some(pending) = state.lock().pending.clone() else {
             return;
         };
-        if pending.through_seq >= event.seq {
+        if pending.through_seq >= event.seq.get() {
             return;
         }
         let Some(provider) = event
@@ -1153,7 +1154,7 @@ impl SessionTitleService {
         let Some(boundary) = boundary else {
             return;
         };
-        if boundary.type_ != "step/start" || boundary.seq <= pending.through_seq {
+        if boundary.type_ != "step/start" || boundary.seq.get() <= pending.through_seq {
             return;
         }
         let Some(route) = session.request_header().map(|header| header.config) else {

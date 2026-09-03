@@ -77,7 +77,7 @@ pub fn apply_compaction_event(
             trace.compaction = Some(CompactionTrace {
                 compaction_id: id.to_string(),
                 source_command_id,
-                start_seq: event.seq,
+                start_seq: event.seq.get(),
                 turn,
                 summarized: false,
             });

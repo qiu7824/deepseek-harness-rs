@@ -235,7 +235,6 @@ async fn resolve_candidate_rows(
                 .iter()
                 .map(|(index, header)| {
                     let persistence = persistence.clone();
-                    let projections = listing.projections.clone();
                     let cache = listing.cache.clone();
                     let subagent_parents = listing.subagent_parents.clone();
                     let signal = signal.cloned();
@@ -381,7 +380,7 @@ async fn resolve_cold_identity(
                     child_id,
                     SubagentIdentityProjection::OneShot {
                         label: Some(title.to_string()),
-                        seq: header.seed_length.unwrap_or(0),
+                        seq: 0,
                     },
                     "inactive",
                     has_children,
@@ -417,8 +416,7 @@ async fn resolve_cold_identity(
     }
     const IDENTITY_CHUNK_EVENTS: usize = 256;
     let mut from_seq = 0_u64;
-    let mut descriptor = None;
-    loop {
+    let descriptor = loop {
         if let Err(error) = assert_listing_not_cancelled(signal) {
             return SubagentListEntry::Diagnostic {
                 id: child_id,
@@ -437,18 +435,18 @@ async fn resolve_cold_identity(
                 };
             }
         };
-        descriptor = chunk
+        let descriptor = chunk
             .events
             .into_iter()
             .find(|event| event.type_ == "subagent/descriptor");
         if descriptor.is_some() {
-            break;
+            break descriptor;
         }
         match chunk.next_seq {
             Some(next) if next > from_seq => from_seq = next,
-            _ => break,
+            _ => break None,
         }
-    }
+    };
     let after = match persistence.read_snapshot(&child_id).await {
         Ok(Some(snapshot)) => snapshot,
         _ => {

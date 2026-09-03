@@ -557,7 +557,7 @@ fn append_tool_call(
         "arguments": block.arguments,
     });
     let event = session.append("tool/call", data, None)?;
-    Ok(event.seq)
+    Ok(event.seq.get())
 }
 
 /// Append a model-ordered result linked to its call event.

@@ -149,8 +149,9 @@ class V012Alpha2SyncContractTests(unittest.TestCase):
         self.assertIn("register(ctx, schedule_projection_definition())", schedule)
         projection = (ROOT / "crates" / "schedule" / "schedule" / "src" / "projection.rs").read_text(encoding="utf-8")
         framework = (ROOT / "crates" / "session" / "session-projection" / "src" / "index.rs").read_text(encoding="utf-8")
-        self.assertIn("header.seed_length.unwrap_or(0)", projection)
-        self.assertIn("if event.seq < seed_length", projection)
+        self.assertNotIn("header.seed_length", projection)
+        self.assertNotIn("if event.seq < seed_length", projection)
+        self.assertIn("including inherited events", projection)
         self.assertIn("Fn(&SessionHeader)", framework)
         self.assertIn("dsh-session-projection", cargo)
         self.assertTrue(any(row["url"] == "/plugins/ui-schedule.js" for row in manifest["entries"]))
@@ -302,13 +303,13 @@ class V012Alpha2SyncContractTests(unittest.TestCase):
         self.assertIn("pub ignorable: Option<bool>", event)
         self.assertIn("event.ignorable == Some(true)", coordinator)
 
-    def test_product_version_matches_alpha3(self):
+    def test_product_version_matches_alpha4(self):
         cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
         cli = (ROOT / "crates" / "host" / "dsh-cli" / "Cargo.toml").read_text(encoding="utf-8")
         web = json.loads((ROOT / "web" / "package.json").read_text(encoding="utf-8"))
-        self.assertIn('version = "0.1.2-alpha.3"', cargo)
+        self.assertIn('version = "0.1.2-alpha.4"', cargo)
         self.assertIn("version.workspace = true", cli)
-        self.assertEqual(web["version"], "0.1.2-alpha.3")
+        self.assertEqual(web["version"], "0.1.2-alpha.4")
 
 
 if __name__ == "__main__":

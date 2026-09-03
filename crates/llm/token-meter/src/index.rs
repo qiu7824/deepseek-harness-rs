@@ -380,7 +380,7 @@ impl TokenMeter {
         let mut assembler = LocalBlockAssembler::new();
         let mut seen = std::collections::HashSet::new();
         for seq in source_seqs {
-            if *seq >= event.seq {
+            if *seq >= event.seq.get() {
                 return Err(format!(
                     "token meter: assistant/message at seq {} source seq {seq} is not earlier",
                     event.seq
@@ -392,12 +392,14 @@ impl TokenMeter {
                     event.seq
                 ));
             }
-            let source = session.event_at(*seq).ok_or_else(|| {
-                format!(
-                    "token meter: assistant/message at seq {} cites missing source seq {seq}",
-                    event.seq
-                )
-            })?;
+            let source = session
+                .event_at(dsh_session::SessionSeq::new(*seq).map_err(|error| error.to_string())?)
+                .ok_or_else(|| {
+                    format!(
+                        "token meter: assistant/message at seq {} cites missing source seq {seq}",
+                        event.seq
+                    )
+                })?;
             if source.type_ != "assistant/chunk" {
                 return Err(format!(
                     "token meter: assistant/message at seq {} source seq {seq} is not assistant/chunk",

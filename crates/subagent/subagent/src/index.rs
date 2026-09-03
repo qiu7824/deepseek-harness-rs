@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use cordis::{ArcValue, Context, Disposer, InjectSpec, Plugin, PluginError};
 use dsh_agent::Agent;
+use dsh_tools::ToolDefinition;
 
 use crate::descriptor::{SubagentDescriptorData, snapshot_subagent_descriptor};
 use crate::error::SubagentError;
@@ -36,6 +37,7 @@ pub struct SubagentRuntime {
     providers: Arc<parking_lot::Mutex<HashMap<String, Arc<dyn SubagentProvider>>>>,
     continuations:
         Arc<std::sync::OnceLock<std::sync::Weak<crate::continuation::SubagentContinuationManager>>>,
+    adjacent_send_message_tools: Arc<parking_lot::Mutex<Vec<std::sync::Weak<ToolDefinition>>>>,
 }
 
 /// The runtime's continuation host hooks (TS `ContinuationHost`).
@@ -67,6 +69,10 @@ impl crate::continuation::ContinuationHost for RuntimeContinuationHost {
             parent.clone(),
         )
     }
+
+    fn has_adjacent_send_message_tool(&self, agent: &Arc<dyn Agent>) -> bool {
+        self.runtime.has_adjacent_send_message_tool(agent)
+    }
 }
 
 impl SubagentRuntime {
@@ -76,6 +82,7 @@ impl SubagentRuntime {
             ctx: ctx.clone(),
             providers: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             continuations: Arc::new(std::sync::OnceLock::new()),
+            adjacent_send_message_tools: Arc::new(parking_lot::Mutex::new(Vec::new())),
         });
         ctx.register_service(runtime.clone());
         // Install the continuable-subagent manager behind this runtime.
@@ -132,6 +139,42 @@ impl SubagentRuntime {
             }),
         );
         runtime
+    }
+
+    /// Mark the exact bundled adjacent-Agent `send_message` definition.
+    pub fn mark_adjacent_send_message_tool(&self, definition: &Arc<ToolDefinition>) -> Disposer {
+        let definition = Arc::downgrade(definition);
+        self.adjacent_send_message_tools
+            .lock()
+            .push(definition.clone());
+        let registrations = self.adjacent_send_message_tools.clone();
+        cordis::make_disposer(move || {
+            let registrations = registrations.clone();
+            let definition = definition.clone();
+            Box::pin(async move {
+                registrations
+                    .lock()
+                    .retain(|candidate| !std::sync::Weak::ptr_eq(candidate, &definition));
+            })
+        })
+    }
+
+    fn has_adjacent_send_message_tool(&self, agent: &Arc<dyn Agent>) -> bool {
+        let Some(visible) = self
+            .ctx
+            .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
+            .map(|slot| slot.as_ref().clone())
+            .and_then(|tools| tools.get("send_message", Some(agent.scope_key())))
+        else {
+            return false;
+        };
+        let mut registrations = self.adjacent_send_message_tools.lock();
+        registrations.retain(|candidate| candidate.strong_count() > 0);
+        registrations.iter().any(|candidate| {
+            candidate
+                .upgrade()
+                .is_some_and(|registered| Arc::ptr_eq(&registered, &visible))
+        })
     }
 
     /// Register a provider under its name (TS `registerProvider`).
@@ -282,7 +325,7 @@ impl SubagentRuntime {
         self.manager().start_continuable(spec).await
     }
 
-    /// Deliver one later message to a continuable child (TS `followup`).
+    /// Queue one host-authored prompt as a direct-child turn.
     pub async fn followup(
         &self,
         parent: Arc<dyn Agent>,
@@ -292,6 +335,19 @@ impl SubagentRuntime {
     ) -> Result<dsh_llm::MessageId, SubagentError> {
         self.manager()
             .followup(parent, child_id, content, &options)
+            .await
+    }
+
+    /// Deliver one model-authored message between exact live adjacent Agents.
+    pub async fn send_message(
+        &self,
+        sender: Arc<dyn Agent>,
+        target_id: &dsh_session::SessionId,
+        content: &[dsh_llm::ContentBlock],
+        signal: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<dsh_llm::MessageId, SubagentError> {
+        self.manager()
+            .send_message(sender, target_id, content, signal)
             .await
     }
 
@@ -329,17 +385,6 @@ impl SubagentRuntime {
         authority: &crate::continuation::SubagentInterruptAuthority,
     ) -> Result<(), SubagentError> {
         self.manager().interrupt(target_session_id, authority)
-    }
-
-    /// Deliver selected content from one live continuable child to its
-    /// durable direct parent (TS `reportFrom`).
-    pub async fn report_from(
-        &self,
-        child: Arc<dyn Agent>,
-        content: &[dsh_llm::ContentBlock],
-        options: crate::continuation::SubagentReportOptions,
-    ) -> Result<dsh_llm::MessageId, SubagentError> {
-        self.manager().report_from(&child, content, &options).await
     }
 
     /// Close admission below exact live parent Agents (TS

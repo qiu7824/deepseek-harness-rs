@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io::Read;
 use std::sync::{
@@ -10,16 +12,56 @@ use serde::de::{DeserializeSeed, Error as _, IgnoredAny, MapAccess, SeqAccess, V
 
 #[derive(Debug)]
 pub enum PackedStreamError {
-    Noncanonical(String, usize, bool),
+    Noncanonical(usize, bool),
     Invalid(String),
 }
 
+#[cfg(test)]
+thread_local! {
+    static PACKED_EVENT_BUILDS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_packed_event_builds() {
+    PACKED_EVENT_BUILDS.set(0);
+}
+
+#[cfg(test)]
+fn packed_event_builds() -> usize {
+    PACKED_EVENT_BUILDS.get()
+}
+
+#[cfg(test)]
 pub fn visit_reader<R, F>(reader: R, on_event: &mut F) -> Result<bool, PackedStreamError>
 where
     R: Read,
     F: FnMut(SessionEvent) -> Result<bool, String>,
 {
-    visit_reader_inner(reader, None, on_event)
+    visit_reader_inner(reader, None, None, false, on_event)
+}
+
+/// Visit only events at or after `from_seq`. Canonical packed members before
+/// the cut are consumed as ignored JSON values instead of materializing their
+/// strings and `SessionEvent`s, keeping far indexed reads allocation-bounded.
+pub fn visit_reader_from<R, F>(
+    reader: R,
+    from_seq: u64,
+    on_event: &mut F,
+) -> Result<bool, PackedStreamError>
+where
+    R: Read,
+    F: FnMut(SessionEvent) -> Result<bool, String>,
+{
+    visit_reader_inner(reader, None, Some(from_seq), false, on_event)
+}
+
+/// Visit only event envelopes, skipping canonical packed chunk payloads.
+pub fn visit_nonpacked_reader<R, F>(reader: R, on_event: &mut F) -> Result<bool, PackedStreamError>
+where
+    R: Read,
+    F: FnMut(SessionEvent) -> Result<bool, String>,
+{
+    visit_reader_inner(reader, None, None, true, on_event)
 }
 
 pub fn visit_tail_reader<R, F>(
@@ -31,12 +73,14 @@ where
     R: Read,
     F: FnMut(SessionEvent) -> Result<bool, String>,
 {
-    visit_reader_inner(reader, Some(capacity), on_event)
+    visit_reader_inner(reader, Some(capacity), None, false, on_event)
 }
 
 fn visit_reader_inner<R, F>(
     reader: R,
     tail_capacity: Option<usize>,
+    from_seq: Option<u64>,
+    skip_packed: bool,
     on_event: &mut F,
 ) -> Result<bool, PackedStreamError>
 where
@@ -71,10 +115,17 @@ where
             on_event: &mut counted,
             accepting,
             tail_capacity,
+            from_seq,
+            skip_packed,
         }
         .deserialize(&mut de);
         match result {
-            Ok(next) => accepting = next,
+            Ok(next) => {
+                accepting = next;
+                if skip_packed && !accepting {
+                    return Ok(false);
+                }
+            }
             Err(error)
                 if error.is_eof()
                     && (error.column() == 0 || bytes.load(Ordering::Relaxed) == before) =>
@@ -82,11 +133,7 @@ where
                 return Ok(accepting);
             }
             Err(error) if error.to_string().contains("noncanonical packed") => {
-                return Err(PackedStreamError::Noncanonical(
-                    error.to_string(),
-                    emitted,
-                    accepting,
-                ));
+                return Err(PackedStreamError::Noncanonical(emitted, accepting));
             }
             Err(error) => return Err(PackedStreamError::Invalid(error.to_string())),
         }
@@ -97,6 +144,8 @@ struct RecordSeed<'a, F> {
     on_event: &'a mut F,
     accepting: bool,
     tail_capacity: Option<usize>,
+    from_seq: Option<u64>,
+    skip_packed: bool,
 }
 
 impl<'de, F> DeserializeSeed<'de> for RecordSeed<'_, F>
@@ -113,6 +162,8 @@ where
             on_event: self.on_event,
             accepting: self.accepting,
             tail_capacity: self.tail_capacity,
+            from_seq: self.from_seq,
+            skip_packed: self.skip_packed,
         })
     }
 }
@@ -121,6 +172,8 @@ struct RecordVisitor<'a, F> {
     on_event: &'a mut F,
     accepting: bool,
     tail_capacity: Option<usize>,
+    from_seq: Option<u64>,
+    skip_packed: bool,
 }
 
 impl<'de, F> Visitor<'de> for RecordVisitor<'_, F>
@@ -155,6 +208,12 @@ where
             }
             let event: SessionEvent = serde_json::from_value(serde_json::Value::Object(object))
                 .map_err(M::Error::custom)?;
+            if self
+                .from_seq
+                .is_some_and(|from_seq| event.seq.get() < from_seq)
+            {
+                return Ok(self.accepting);
+            }
             return if self.accepting {
                 (self.on_event)(event).map_err(M::Error::custom)
             } else {
@@ -166,6 +225,13 @@ where
         expect_key(&mut map, "time0")?;
         let time0 = map.next_value()?;
         expect_key(&mut map, "data")?;
+        if self.skip_packed {
+            let _: IgnoredAny = map.next_value()?;
+            if map.next_key::<IgnoredAny>()?.is_some() {
+                return Err(M::Error::custom("packed record has trailing fields"));
+            }
+            return Ok(self.accepting);
+        }
         let accepted = map.next_value_seed(DataSeed {
             kind: type_,
             seq0,
@@ -173,6 +239,7 @@ where
             on_event: self.on_event,
             accepting: self.accepting,
             tail_capacity: self.tail_capacity,
+            from_seq: self.from_seq,
         })?;
         if map.next_key::<IgnoredAny>()?.is_some() {
             return Err(M::Error::custom("packed record has trailing fields"));
@@ -201,6 +268,7 @@ struct DataSeed<'a, F> {
     on_event: &'a mut F,
     accepting: bool,
     tail_capacity: Option<usize>,
+    from_seq: Option<u64>,
 }
 
 impl<'de, F> DeserializeSeed<'de> for DataSeed<'_, F>
@@ -275,6 +343,7 @@ where
             on_event: self.seed.on_event,
             accepting: self.seed.accepting,
             tail_capacity: self.seed.tail_capacity,
+            from_seq: self.seed.from_seq,
         })?;
         if map.next_key::<IgnoredAny>()?.is_some() {
             return Err(M::Error::custom("packed data has trailing fields"));
@@ -296,6 +365,7 @@ struct MembersSeed<'a, F> {
     on_event: &'a mut F,
     accepting: bool,
     tail_capacity: Option<usize>,
+    from_seq: Option<u64>,
 }
 
 impl<'de, F> DeserializeSeed<'de> for MembersSeed<'_, F>
@@ -333,7 +403,29 @@ where
         let mut k = 0_usize;
         let mut time = self.seed.time0;
         let mut tail = self.seed.tail_capacity.map(VecDeque::with_capacity);
-        while let Some(member) = seq.next_element::<String>()? {
+        loop {
+            let event_seq = self.seed.seq0.saturating_add(k as u64);
+            let materialize = tail.is_some()
+                || (self.seed.accepting
+                    && self
+                        .seed
+                        .from_seq
+                        .is_none_or(|from_seq| event_seq >= from_seq));
+            let member = if materialize {
+                let Some(member) = seq.next_element::<String>()? else {
+                    break;
+                };
+                Some(member)
+            } else {
+                if seq.next_element::<IgnoredAny>()?.is_none() {
+                    break;
+                }
+                None
+            };
+            self.seed
+                .seq0
+                .checked_add(k as u64)
+                .ok_or_else(|| A::Error::custom(format!("{} seq overflow", self.seed.kind)))?;
             if k > 0 {
                 let gap =
                     self.seed.dt.get(k - 1).ok_or_else(|| {
@@ -343,14 +435,17 @@ where
                     .checked_add(*gap)
                     .ok_or_else(|| A::Error::custom("packed member time overflow"))?;
             }
-            if let Some(tail) = tail.as_mut() {
-                tail.push_back((k, time, member));
-                if tail.len() > self.seed.tail_capacity.unwrap_or(0) {
-                    tail.pop_front();
+            if let Some(member) = member {
+                if let Some(tail) = tail.as_mut() {
+                    tail.push_back((k, time, member));
+                    if tail.len() > self.seed.tail_capacity.unwrap_or(0) {
+                        tail.pop_front();
+                    }
+                } else if self.seed.accepting {
+                    let event =
+                        packed_event(&self.seed, k, time, member).map_err(A::Error::custom)?;
+                    self.seed.accepting = (self.seed.on_event)(event).map_err(A::Error::custom)?;
                 }
-            } else if self.seed.accepting {
-                let event = packed_event(&self.seed, k, time, member).map_err(A::Error::custom)?;
-                self.seed.accepting = (self.seed.on_event)(event).map_err(A::Error::custom)?;
             }
             k += 1;
         }
@@ -376,6 +471,8 @@ fn packed_event<F>(
     time: i64,
     member: String,
 ) -> Result<SessionEvent, String> {
+    #[cfg(test)]
+    PACKED_EVENT_BUILDS.set(PACKED_EVENT_BUILDS.get() + 1);
     let chunk = match seed.kind {
         "text-chunks" => {
             serde_json::json!({"type":"text-delta","index":seed.index,"text":member})
@@ -394,10 +491,11 @@ fn packed_event<F>(
     };
     Ok(SessionEvent {
         type_: "assistant/chunk".into(),
-        seq: seed
-            .seq0
-            .checked_add(k as u64)
-            .ok_or_else(|| format!("{} seq overflow", seed.kind))?,
+        seq: dsh_session::SessionSeq::new(
+            seed.seq0
+                .checked_add(k as u64)
+                .ok_or_else(|| format!("{} seq overflow", seed.kind))?,
+        )?,
         time,
         data: serde_json::json!({"turn":seed.turn,"step":seed.step,"chunk":chunk}),
         ignorable: None,
@@ -406,28 +504,19 @@ fn packed_event<F>(
     })
 }
 
-pub fn visit_frame<R, F>(reader: R, on_event: &mut F) -> Result<bool, PackedStreamError>
+pub fn visit_frame_from<R, F>(
+    reader: R,
+    from_seq: u64,
+    on_event: &mut F,
+) -> Result<bool, PackedStreamError>
 where
     R: Read,
     F: FnMut(SessionEvent) -> Result<bool, String>,
 {
-    match visit_reader(reader, on_event) {
-        ok @ Ok(_) => ok,
-        Err(PackedStreamError::Noncanonical(message, emitted, accepting)) => {
-            Err(PackedStreamError::Noncanonical(message, emitted, accepting))
-        }
-        Err(error) => Err(error),
-    }
+    visit_reader_from(reader, from_seq, on_event)
 }
 
-pub fn fallback_visit<R, F>(reader: R, on_event: &mut F) -> Result<bool, String>
-where
-    R: Read,
-    F: FnMut(SessionEvent) -> Result<bool, String>,
-{
-    fallback_visit_skip(reader, 0, true, on_event)
-}
-
+#[cfg(test)]
 pub fn fallback_visit_skip<R, F>(
     reader: R,
     mut skip: usize,
@@ -441,6 +530,72 @@ where
     let records = serde_json::Deserializer::from_reader(reader).into_iter::<StorageRecord>();
     for record in records {
         let record = record.map_err(|error| format!("invalid JSONL event record: {error}"))?;
+        if accepting
+            && !dsh_session::visit_decoded_storage_record_events(record, &mut |event| {
+                if skip > 0 {
+                    skip -= 1;
+                    return Ok(true);
+                }
+                on_event(event)
+            })?
+        {
+            accepting = false;
+        }
+    }
+    Ok(accepting)
+}
+
+pub fn fallback_visit_skip_from<R, F>(
+    reader: R,
+    from_seq: u64,
+    mut skip: usize,
+    mut accepting: bool,
+    on_event: &mut F,
+) -> Result<bool, String>
+where
+    R: Read,
+    F: FnMut(SessionEvent) -> Result<bool, String>,
+{
+    let records = serde_json::Deserializer::from_reader(reader).into_iter::<StorageRecord>();
+    for record in records {
+        let record = record.map_err(|error| format!("invalid JSONL event record: {error}"))?;
+        if accepting
+            && !dsh_session::visit_decoded_storage_record_events(
+                record,
+                &mut |event: SessionEvent| {
+                    if event.seq.get() < from_seq {
+                        return Ok(true);
+                    }
+                    if skip > 0 {
+                        skip -= 1;
+                        return Ok(true);
+                    }
+                    on_event(event)
+                },
+            )?
+        {
+            accepting = false;
+        }
+    }
+    Ok(accepting)
+}
+
+pub fn fallback_visit_nonpacked<R, F>(
+    reader: R,
+    mut skip: usize,
+    mut accepting: bool,
+    on_event: &mut F,
+) -> Result<bool, String>
+where
+    R: Read,
+    F: FnMut(SessionEvent) -> Result<bool, String>,
+{
+    let records = serde_json::Deserializer::from_reader(reader).into_iter::<StorageRecord>();
+    for record in records {
+        let record = record.map_err(|error| format!("invalid JSONL event record: {error}"))?;
+        if matches!(&record, StorageRecord::Row(_)) {
+            continue;
+        }
         if accepting
             && !dsh_session::visit_decoded_storage_record_events(record, &mut |event| {
                 if skip > 0 {
@@ -501,7 +656,7 @@ mod tests {
     fn noncanonical_order_requests_fallback() {
         let input = r#"{"seq0":0,"type":"text-chunks","time0":0,"data":{"turn":0,"step":0,"index":0,"dt":[],"texts":["a"]}}"#;
         let error = visit_reader(input.as_bytes(), &mut |_| Ok(true)).unwrap_err();
-        assert!(matches!(error, PackedStreamError::Noncanonical(_, _, _)));
+        assert!(matches!(error, PackedStreamError::Noncanonical(_, _)));
     }
 
     #[test]
@@ -516,7 +671,7 @@ mod tests {
             Ok(true)
         })
         .unwrap_err();
-        let PackedStreamError::Noncanonical(_, emitted, accepting) = error else {
+        let PackedStreamError::Noncanonical(emitted, accepting) = error else {
             panic!("expected noncanonical fallback");
         };
         assert!(accepting);
@@ -529,6 +684,78 @@ mod tests {
             events.iter().map(|event| event.seq).collect::<Vec<_>>(),
             [0, 1]
         );
+    }
+
+    #[test]
+    fn forward_cut_builds_only_retained_packed_events() {
+        let members = 1_000_usize;
+        let input = serde_json::json!({
+            "type": "text-chunks",
+            "seq0": 0,
+            "time0": 0,
+            "data": {
+                "turn": 0,
+                "step": 0,
+                "index": 0,
+                "dt": vec![1; members - 1],
+                "texts": vec!["payload"; members],
+            }
+        })
+        .to_string();
+        reset_packed_event_builds();
+        let mut events = Vec::new();
+
+        visit_reader_from(input.as_bytes(), 998, &mut |event| {
+            events.push(event);
+            Ok(true)
+        })
+        .unwrap();
+
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.seq.get())
+                .collect::<Vec<_>>(),
+            [998, 999]
+        );
+        assert_eq!(packed_event_builds(), 2);
+    }
+
+    #[test]
+    fn nonpacked_scan_never_builds_chunk_events() {
+        let packed = serde_json::json!({
+            "type": "text-chunks",
+            "seq0": 0,
+            "time0": 0,
+            "data": {
+                "turn": 0,
+                "step": 0,
+                "index": 0,
+                "dt": vec![1; 999],
+                "texts": vec!["payload"; 1_000],
+            }
+        });
+        let event = SessionEvent {
+            type_: "user/message".into(),
+            seq: dsh_session::SessionSeq::new(1_000).unwrap(),
+            time: 1_000,
+            data: serde_json::json!({"content": []}),
+            ignorable: None,
+            surface_op: None,
+            source_event_seqs: None,
+        };
+        let input = format!("{}\n{}", packed, serde_json::to_string(&event).unwrap());
+        reset_packed_event_builds();
+        let mut events = Vec::new();
+
+        visit_nonpacked_reader(input.as_bytes(), &mut |event| {
+            events.push(event);
+            Ok(true)
+        })
+        .unwrap();
+
+        assert_eq!(events, [event]);
+        assert_eq!(packed_event_builds(), 0);
     }
 
     #[test]

@@ -10,9 +10,8 @@ use serde_json::Value;
 use crate::domain::{FoldedSchedules, apply_change, decode_schedule_change};
 use crate::types::{ScheduleId, ScheduleRecord};
 
-fn empty_state(seed_length: u64) -> Value {
+fn empty_state() -> Value {
     serde_json::json!({
-        "seedLength": seed_length,
         "active": [],
         "seenIds": [],
     })
@@ -22,17 +21,10 @@ fn folded_from_state(state: &Value) -> Result<FoldedSchedules, String> {
     let object = state
         .as_object()
         .ok_or_else(|| "schedule projection state must be an object".to_string())?;
-    if object.len() != 3
-        || !object.contains_key("seedLength")
-        || !object.contains_key("active")
-        || !object.contains_key("seenIds")
-    {
+    if object.len() != 2 || !object.contains_key("active") || !object.contains_key("seenIds") {
         return Err("schedule projection state carries unexpected keys".to_string());
     }
-    object
-        .get("seedLength")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| "schedule projection seedLength is invalid".to_string())?;
+
     let active: Vec<ScheduleRecord> = serde_json::from_value(
         object
             .get("active")
@@ -67,9 +59,8 @@ fn folded_from_state(state: &Value) -> Result<FoldedSchedules, String> {
     Ok(FoldedSchedules { active, seen_ids })
 }
 
-fn state_from_folded(seed_length: u64, folded: &FoldedSchedules) -> Value {
+fn state_from_folded(folded: &FoldedSchedules) -> Value {
     serde_json::json!({
-        "seedLength": seed_length,
         "active": folded.active,
         "seenIds": folded.seen_ids,
     })
@@ -87,13 +78,6 @@ fn validate_view(value: &ArcValue) -> Result<Value, String> {
 pub fn schedule_projection_definition() -> ProjectionDefinition {
     let apply: ProjectionApply = Arc::new(|state_value, event: &SessionEvent| {
         let state = downcast::<Value>(state_value).expect("schedule projection state must be JSON");
-        let seed_length = state
-            .get("seedLength")
-            .and_then(Value::as_u64)
-            .expect("schedule projection seedLength must be valid");
-        if event.seq < seed_length {
-            return Arc::clone(state_value);
-        }
         if event.type_ != "schedule/change" {
             return Arc::clone(state_value);
         }
@@ -102,12 +86,12 @@ pub fn schedule_projection_definition() -> ProjectionDefinition {
             .expect("schedule projection rejected durable event: malformed schedule/change");
         apply_change(&mut folded, &change)
             .expect("schedule projection rejected durable event: invalid Schedule transition");
-        arc(state_from_folded(seed_length, &folded))
+        arc(state_from_folded(&folded))
     });
     ProjectionDefinition {
         key: "schedule".to_string(),
         schema: Arc::new(validate_view),
-        init: Arc::new(|header| arc(empty_state(header.seed_length.unwrap_or(0)))),
+        init: Arc::new(|_header| arc(empty_state())),
         apply,
         view: Arc::new(|state_value| {
             let state =
@@ -115,9 +99,9 @@ pub fn schedule_projection_definition() -> ProjectionDefinition {
             let folded = folded_from_state(state).expect("schedule projection state must be valid");
             arc(serde_json::to_value(folded.active).expect("schedule records serialize"))
         }),
-        // v2 adds seedLength to persisted state. Older checkpoints must be
-        // invalidated so restore replays from the session header instead of
-        // feeding the legacy state shape into this strict projection.
-        state_version: 2,
+        // v3 removes the obsolete physical seedLength cut. Projections fold
+        // the logical child log, including inherited events, so forked state
+        // remains visible and only future schedule changes mutate the child.
+        state_version: 3,
     }
 }

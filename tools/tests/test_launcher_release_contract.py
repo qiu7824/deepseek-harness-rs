@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import unittest
 
 
@@ -140,6 +141,16 @@ class LauncherReleaseContractTests(unittest.TestCase):
         self.assertIn('packaged_resource("settings.defaults.json")', host)
         self.assertIn("merge_package_defaults", host)
         self.assertIn("settings.defaults.json", verifier)
+
+    def test_windows_variants_have_distinct_installer_and_shortcut_identity(self):
+        installer = INSTALLER.read_text(encoding="utf-8")
+        app_ids = re.findall(r'#define MyAppId "([^"]+)"', installer)
+        self.assertEqual(len(app_ids), 3)
+        self.assertEqual(len(set(app_ids)), 3)
+        self.assertIn('#define MyAppName "DeepSeek Harness-rs (" + MyVariantDisplay + ")"', installer)
+        self.assertIn("DefaultGroupName={#MyAppName}", installer)
+        self.assertIn('Name: "{group}\\{#MyAppName}"', installer)
+        self.assertIn('Name: "{autodesktop}\\{#MyAppName}"', installer)
 
     def test_release_pipeline_builds_core_skin_and_free_variants(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")

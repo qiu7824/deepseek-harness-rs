@@ -39,8 +39,8 @@ pub use surface::{
 pub use types::{
     AgentCancelCause, CreateSessionMeta, CreateSessionOptions, EpochHeader, RequestContext,
     RequestHeaderReason, SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionId,
-    SessionIdTag, SurfaceIntent, SurfaceOp, TodoItem, TodoStatus, TurnEndCancelCause,
-    TurnEndReason, assistant_chunk_data, assistant_message_data, end_seed_data,
+    SessionIdTag, SessionLogOffset, SessionSeq, SurfaceIntent, SurfaceOp, TodoItem, TodoStatus,
+    TurnEndCancelCause, TurnEndReason, assistant_chunk_data, assistant_message_data, end_seed_data,
     request_header_data, session_id, snapshot_session_header, step_data, todo_write_data,
     tool_call_data, tool_result_data, turn_end_data, turn_start_data, validate_session_header,
 };

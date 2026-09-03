@@ -4,14 +4,16 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 > 当前版本仍是预发布版本。功能状态以本README的兼容矩阵和GitHub Release说明为准。
 
+当前发布线：`0.1.2-alpha.4`。
+
 ## 下载
 
 从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases) 下载对应平台的完整包：
 
-- `dsh-windows-x86_64.zip`
-- `dsh-linux-x86_64.tar.gz`
-- `dsh-macos-x86_64.tar.gz`
-- `dsh-macos-aarch64.tar.gz`
+- `deepseek-harness-rs-v0.1.2-alpha.4-windows-x86_64-{core,skin,free}-portable.zip`
+- `deepseek-harness-rs-v0.1.2-alpha.4-linux-x86_64-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.2-alpha.4-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
+- 对应的 Windows `setup.exe`、Linux `.deb` 与 macOS `.pkg` 安装包
 
 完整包包含二进制、`web/dist`、`config/agent-presets`、随附Web插件和安全说明。不要只复制二进制后再期待完整Web界面和随附插件可用。
 
@@ -33,6 +35,8 @@ http://127.0.0.1:58080/
 启动器由固定 commit 的 ZSUI 构建，不依赖 CMD、PowerShell、WebView 或额外运行时；负责启动、停止、重启正式 `deepseek-harness-rs web` 进程以及打开网页、日志目录。Windows 安装器和启动器按系统 UI 语言自动显示简体中文或英文。
 
 需要扩展皮肤时，另行下载 `skin` 包并运行其中的 `deepseek-harness-rs-skin`（Windows 为 `.exe`）；它只把皮肤资产安装到同目录的 `web/dist/skins`，默认 `core` 包始终不携带皮肤资源。
+
+`free` 包与 `core` 使用同一套正式运行时和 Web 界面，但附带 OpenCode Zen 免密默认模型 `mimo-v2.5-free`；发布准备必须通过 `https://opencode.ai/zen/v1/models` 重新确认该精确 ID，其中不包含任何凭据，也不包含皮肤载荷。
 
 ## 命令行入口
 
@@ -131,10 +135,12 @@ Web插件与主应用同源运行，拥有页面级JavaScript能力。只安装�
 
 | 能力 | 状态 |
 |---|---|
-| 会话、持久化、历史分页 | 已接入正式Host |
+| 会话、持久化、历史分页 | 已实现强类型 `SessionSeq` / `SessionLogOffset`、显式有界读取，并保持 v0 JSONL/Zstd `seedLength` 兼容 |
 | DeepSeek长流、reasoning、tool、图片、usage | 已实现，发布后仍需按真实Provider复验 |
-| 子智能体 | 内置spawn/fork可用；外部Codex/Claude Code提供方未默认安装 |
-| 工作流 | 引擎和工具已实现，最新Release仍需真实模型E2E |
+| 子智能体 | continuable 直接父子可双向使用 `send_message({ agent_id, message })`；外部Codex/Claude Code提供方未默认安装 |
+| 网页抓取 | 已实现 Rust 原生 `web_fetch`，只允许公开 HTTP(S)，并限制重定向、DNS/IP、超时、体积和取消 |
+| 模型发现 | 服务端可安全复用 Profile headers 而不向浏览器返回凭据；模型候选支持搜索和仅对可见结果全选 |
+| 工作流 | 引擎继续保留；PTC/code 预设刻意不提供通用 `workflow` 工具，但保留 `run_code` 和 Ralph |
 | 终端 | 已实现持久终端、输入、关闭和回收 |
 | MCP | 底层客户端实现；正式Host尚未组合配置入口 |
 | LSP | 底层registry/tool实现；正式Host尚未组合 |

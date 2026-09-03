@@ -59,10 +59,28 @@ pub struct SubagentFollowupOptions {
     pub signal: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
+#[derive(Clone)]
+enum ChildDeliveryOptions {
+    Steer {
+        signal: Arc<dyn Fn() -> bool + Send + Sync>,
+    },
+    Queue(SubagentFollowupOptions),
+}
+
+impl ChildDeliveryOptions {
+    fn signal(&self) -> &Arc<dyn Fn() -> bool + Send + Sync> {
+        match self {
+            Self::Steer { signal } => signal,
+            Self::Queue(options) => &options.signal,
+        }
+    }
+}
+
 /// An image-capable continuation admitted against the current child
 /// activation. The private fields keep the capability result and exact live
 /// ownership bound to the later submit call.
 pub struct SubagentFollowupAdmission {
+    manager: std::sync::Weak<SubagentContinuationManager>,
     activation: Arc<parking_lot::Mutex<Activation>>,
     options: SubagentFollowupOptions,
     _gate: tokio::sync::OwnedMutexGuard<()>,
@@ -79,17 +97,23 @@ impl SubagentFollowupAdmission {
     }
 }
 
-/// Options for one continuable child's report to its direct parent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubagentReportDelivery {
-    Quiet,
-    Wakeup,
-}
-
-#[derive(Clone)]
-pub struct SubagentReportOptions {
-    pub delivery: SubagentReportDelivery,
-    pub signal: Arc<dyn Fn() -> bool + Send + Sync>,
+impl Drop for SubagentFollowupAdmission {
+    fn drop(&mut self) {
+        if !self.rollback_on_drop {
+            return;
+        }
+        self.rollback_on_drop = false;
+        let Some(manager) = self.manager.upgrade() else {
+            return;
+        };
+        let activation = self.activation.clone();
+        SubagentContinuationManager::begin_disposal(&activation);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = manager.dispose_serialized(&activation).await;
+            });
+        }
+    }
 }
 
 /// Authority under which one interrupt request is admitted.
@@ -112,6 +136,7 @@ pub trait ContinuationHost: Send + Sync + 'static {
         child_id: &SessionId,
         parent: &Arc<dyn Agent>,
     ) -> ActivationObserver;
+    fn has_adjacent_send_message_tool(&self, agent: &Arc<dyn Agent>) -> bool;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -187,6 +212,7 @@ pub struct SubagentContinuationManager {
     pub ctx: Context,
     self_arc: std::sync::OnceLock<std::sync::Weak<Self>>,
     activations: parking_lot::Mutex<HashMap<String, Arc<parking_lot::Mutex<Activation>>>>,
+    admission_gate: parking_lot::Mutex<()>,
     materializations: parking_lot::Mutex<HashMap<u64, HashSet<usize>>>,
     next_materialization: std::sync::atomic::AtomicU64,
     materialization_changed: tokio::sync::Notify,
@@ -211,7 +237,12 @@ impl Drop for MaterializationGuard {
 }
 
 impl SubagentContinuationManager {
-    fn begin_materialization(&self, parent: &Arc<dyn Agent>) -> MaterializationGuard {
+    fn begin_materialization(
+        &self,
+        parent: &Arc<dyn Agent>,
+    ) -> Result<MaterializationGuard, SubagentError> {
+        let _admission = self.admission_gate.lock();
+        self.assert_admitting(parent.as_ref())?;
         let token = self
             .next_materialization
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -221,10 +252,10 @@ impl SubagentContinuationManager {
             .map(|agent| Arc::as_ptr(&agent).cast::<()>() as usize)
             .collect();
         self.materializations.lock().insert(token, lineage);
-        MaterializationGuard {
+        Ok(MaterializationGuard {
             manager: self.self_arc.get().expect("manager weak").clone(),
             token,
-        }
+        })
     }
 
     async fn wait_materializations(&self, roots: Option<&HashSet<usize>>) {
@@ -251,6 +282,7 @@ impl SubagentContinuationManager {
             ctx: ctx.clone(),
             self_arc: std::sync::OnceLock::new(),
             activations: parking_lot::Mutex::new(HashMap::new()),
+            admission_gate: parking_lot::Mutex::new(()),
             materializations: parking_lot::Mutex::new(HashMap::new()),
             next_materialization: std::sync::atomic::AtomicU64::new(1),
             materialization_changed: tokio::sync::Notify::new(),
@@ -440,10 +472,16 @@ impl SubagentContinuationManager {
                             signal: &spec.signal,
                         })
                         .await?;
+                    let child = activation.lock().handle().agent.clone();
+                    let initial_prompt = if manager.host.has_adjacent_send_message_tool(&child) {
+                        Self::continuable_initial_prompt(parent.id(), &spec.request.prompt)
+                    } else {
+                        spec.request.prompt.clone()
+                    };
                     manager
                         .submit_materialized(
                             activation,
-                            &spec.request.prompt,
+                            &initial_prompt,
                             MessageSource::User {
                                 rpc_id: None,
                                 client_time_zone: None,
@@ -461,6 +499,21 @@ impl SubagentContinuationManager {
         })
     }
 
+    fn continuable_initial_prompt(
+        parent_id: &SessionId,
+        prompt: &[ContentBlock],
+    ) -> Vec<ContentBlock> {
+        let mut prompt = prompt.to_vec();
+        let encoded_parent_id = serde_json::to_string(parent_id.as_str())
+            .expect("a session id is always JSON-serializable");
+        prompt.push(ContentBlock::Text {
+            text: format!(
+                "Your parent agent id is {encoded_parent_id}. Before you finish, send your result to that agent with send_message({{ agent_id: {encoded_parent_id}, message: \"<self-contained result>\" }}). The parent shares your workspace but does not automatically receive your transcript, tool output, or reasoning. Send one self-contained result; use the same call for an update when you need the parent to act before you finish."
+            ),
+        });
+        prompt
+    }
+
     /// Deliver one later message to a known continuable child.
     pub async fn followup(
         &self,
@@ -469,24 +522,97 @@ impl SubagentContinuationManager {
         content: &[ContentBlock],
         options: &SubagentFollowupOptions,
     ) -> Result<MessageId, SubagentError> {
+        self.deliver_to_child(
+            parent,
+            child_id,
+            content,
+            ChildDeliveryOptions::Queue(options.clone()),
+        )
+        .await
+    }
+
+    /// Deliver one model-authored message between exact live adjacent Agents.
+    pub async fn send_message(
+        &self,
+        sender: Arc<dyn Agent>,
+        target_id: &SessionId,
+        content: &[ContentBlock],
+        signal: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<MessageId, SubagentError> {
+        let exact_live_sender = self
+            .agents()
+            .get(sender.id())
+            .is_some_and(|live| Arc::ptr_eq(&live, &sender));
+        if !exact_live_sender {
+            return Err(SubagentError::new(
+                "UNAUTHORIZED",
+                "message delivery requires the exact live sender agent",
+            ));
+        }
+        self.assert_admitting(sender.as_ref())?;
+        let sender_activation = self.activations.lock().get(sender.id().as_str()).cloned();
+        if let Some(activation) = sender_activation {
+            let is_direct_parent = {
+                let activation = activation.lock();
+                Arc::ptr_eq(&activation.handle().agent, &sender)
+                    && activation.parent_session == *target_id
+            };
+            if is_direct_parent {
+                if signal() {
+                    return Err(SubagentError::new(
+                        "CANCELLED",
+                        "subagent request was aborted",
+                    ));
+                }
+                return self.send_to_parent(&activation, &sender, content);
+            }
+        }
+        if sender.session().header().parent_session.as_ref() == Some(target_id) {
+            return Err(SubagentError::new(
+                "UNAUTHORIZED",
+                format!(
+                    "agent \"{}\" is not a resident continuable child and cannot send to parent \"{target_id}\"",
+                    sender.id().as_str()
+                ),
+            ));
+        }
+        self.deliver_to_child(
+            sender,
+            target_id,
+            content,
+            ChildDeliveryOptions::Steer { signal },
+        )
+        .await
+    }
+
+    async fn deliver_to_child(
+        &self,
+        parent: Arc<dyn Agent>,
+        child_id: &SessionId,
+        content: &[ContentBlock],
+        options: ChildDeliveryOptions,
+    ) -> Result<MessageId, SubagentError> {
         let _gate = self.locks.acquire(child_id).await;
         let activation = {
             let activations = self.activations.lock();
             activations.get(child_id.as_str()).cloned()
         };
         match activation {
-            None => self.cold_resume(parent, child_id, content, options).await,
+            None => {
+                self.cold_resume_delivery(parent, child_id, content, &options)
+                    .await
+            }
             Some(activation) => {
                 if dsh_llm::content_has_image(content) {
                     let child = activation.lock().handle().agent.clone();
-                    self.assert_image_capable(&child, &options.signal).await?;
+                    self.assert_image_capable(&child, options.signal()).await?;
                 }
-                self.submit_admitted(
+                self.submit_delivery_admitted(
                     &activation,
                     content,
-                    &options.source,
+                    &options,
                     parent,
-                    &options.signal,
+                    options.signal(),
                 )
             }
         }
@@ -532,6 +658,7 @@ impl SubagentContinuationManager {
             return Err(error);
         }
         Ok(SubagentFollowupAdmission {
+            manager: self.self_arc.get().expect("manager weak").clone(),
             activation,
             options: options.clone(),
             _gate: gate,
@@ -540,7 +667,8 @@ impl SubagentContinuationManager {
     }
 
     /// Accept one message after a caller completed any post-admission resource
-    /// persistence. Re-check the no-yield cutoffs before publishing.
+    /// persistence. The held child gate is the reservation: drain/disposal
+    /// waits for this infallible commit so persisted resources cannot orphan.
     pub fn submit_followup(
         &self,
         mut admission: SubagentFollowupAdmission,
@@ -553,30 +681,32 @@ impl SubagentContinuationManager {
     }
 
     /// Roll back a freshly materialized but not yet accepted admission.
-    pub async fn abort_followup(&self, admission: SubagentFollowupAdmission) {
+    pub async fn abort_followup(&self, mut admission: SubagentFollowupAdmission) {
         if let Some(activation) = admission.rollback_activation() {
+            admission.commit();
             let _ = self.dispose(&activation).await;
         }
     }
 
-    async fn cold_resume(
+    async fn cold_resume_delivery(
         &self,
         parent: Arc<dyn Agent>,
         child_id: &SessionId,
         content: &[ContentBlock],
-        options: &SubagentFollowupOptions,
+        options: &ChildDeliveryOptions,
     ) -> Result<MessageId, SubagentError> {
+        let materialize_options = match options {
+            ChildDeliveryOptions::Queue(options) => options.clone(),
+            ChildDeliveryOptions::Steer { signal } => SubagentFollowupOptions {
+                source: Self::agent_message_source(&parent),
+                signal: signal.clone(),
+            },
+        };
         let activation = self
-            .cold_materialize(parent.clone(), child_id, options)
+            .cold_materialize(parent.clone(), child_id, &materialize_options)
             .await?;
-        self.submit_materialized(
-            activation,
-            content,
-            options.source.clone(),
-            parent,
-            &options.signal,
-        )
-        .await
+        self.submit_materialized_delivery(activation, content, options, parent)
+            .await
     }
 
     /// Reconstruct one persisted child without accepting the waiting turn.
@@ -606,7 +736,7 @@ impl SubagentContinuationManager {
                 format!("subagent \"{child_id}\" belongs to another parent session"),
             ));
         }
-        let seed_length = loaded.meta.seed_length.unwrap_or(0) as usize;
+        let seed_length = loaded.inherited_event_count.get() as usize;
         let descriptor =
             fold_subagent_descriptor(&loaded.events[seed_length.min(loaded.events.len())..])
                 .map_err(|error| SubagentError::new("NOT_RESUMABLE", error))?
@@ -711,97 +841,36 @@ impl SubagentContinuationManager {
         Ok(())
     }
 
-    /// Deliver explicitly selected content from one resident continuable
-    /// child to its durable direct parent.
-    pub async fn report_from(
-        &self,
-        child: &Arc<dyn Agent>,
-        content: &[ContentBlock],
-        options: &SubagentReportOptions,
-    ) -> Result<MessageId, SubagentError> {
-        if (options.signal)() {
-            return Err(SubagentError::new(
-                "CANCELLED",
-                "subagent request was aborted",
-            ));
-        }
-        self.assert_admitting(child.as_ref())?;
-        let activation = {
-            let activations = self.activations.lock();
-            activations.get(child.id().as_str()).cloned()
-        }
-        .ok_or_else(|| {
-            SubagentError::new(
-                "UNAUTHORIZED",
-                format!(
-                    "agent \"{}\" is not a live continuable subagent and cannot report",
-                    child.id().as_str()
-                ),
-            )
-        })?;
-        let parent_id = child
-            .session()
-            .header()
-            .parent_session
-            .clone()
-            .ok_or_else(|| {
-                SubagentError::new(
-                    "PARENT_UNAVAILABLE",
-                    "direct parent is not live; report was not delivered",
-                )
-            })?;
-        let parent = self.agents().get(&parent_id).ok_or_else(|| {
-            SubagentError::new(
-                "PARENT_UNAVAILABLE",
-                "direct parent is not live; report was not delivered",
-            )
-        })?;
-        let mut content_blocks = vec![ContentBlock::Text {
-            text: format!(
-                "Background subagent {} reported:",
-                activation.lock().child_id.as_str()
-            ),
-        }];
-        content_blocks.extend(content.iter().cloned());
-        let message = create_user_message(
-            content_blocks,
-            MessageSource::SubagentReport {
-                form: dsh_llm::ContextForm::Relay,
-                sender_session_id: activation.lock().child_id.as_str().to_string(),
-            },
-        );
-        let message_id = message.id.clone();
-        match options.delivery {
-            SubagentReportDelivery::Wakeup => parent.followup(message),
-            SubagentReportDelivery::Quiet => parent.inject(message),
-        }
-        Ok(message_id)
-    }
-
     /// Close admission, await materializations, then dispose the stable live
     /// Activation forest child-first.
     pub async fn drain(&self) -> Result<(), SubagentError> {
-        self.draining
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        {
+            let _admission = self.admission_gate.lock();
+            self.draining
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         self.wait_materializations(None).await;
         let roots = {
-            let activations = self.activations.lock();
+            let activations = self
+                .activations
+                .lock()
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
             let mut owned: HashSet<String> = HashSet::new();
-            for activation in activations.values() {
-                let activation = activation.lock();
-                for child in &activation.owned_children {
+            for activation in &activations {
+                for child in &activation.lock().owned_children {
                     owned.insert(child.clone());
                 }
             }
             activations
-                .values()
+                .into_iter()
                 .filter(|activation| !owned.contains(activation.lock().child_id.as_str()))
-                .cloned()
                 .collect::<Vec<_>>()
         };
         let mut failures: Vec<String> = Vec::new();
         for root in roots {
-            if let Err(error) = self.dispose(&root).await {
+            if let Err(error) = self.dispose_serialized(&root).await {
                 failures.push(error);
             }
         }
@@ -835,6 +904,7 @@ impl SubagentContinuationManager {
             return Ok(());
         }
         {
+            let _admission = self.admission_gate.lock();
             let mut closing = self.closing_scopes.lock();
             for root in &roots {
                 closing.entry(*root).or_default().insert(*root);
@@ -842,9 +912,14 @@ impl SubagentContinuationManager {
         }
         self.wait_materializations(Some(&roots)).await;
         let targets = {
-            let activations = self.activations.lock();
-            activations
+            let activations = self
+                .activations
+                .lock()
                 .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            activations
+                .into_iter()
                 .filter(|activation| {
                     let activation = activation.lock();
                     let agent = activation.handle().agent.clone();
@@ -853,12 +928,11 @@ impl SubagentContinuationManager {
                         .iter()
                         .any(|root| *root != agent_key && activation.ancestry.contains(root))
                 })
-                .cloned()
                 .collect::<Vec<_>>()
         };
         let mut failures: Vec<String> = Vec::new();
         for target in targets {
-            if let Err(error) = self.dispose(&target).await {
+            if let Err(error) = self.dispose_serialized(&target).await {
                 failures.push(error);
             }
         }
@@ -892,8 +966,7 @@ impl SubagentContinuationManager {
             delegated_policies,
             signal,
         } = input;
-        self.assert_admitting(parent.as_ref())?;
-        let _materialization = self.begin_materialization(&parent);
+        let _materialization = self.begin_materialization(&parent)?;
         if (signal)() {
             return Err(SubagentError::new(
                 "CANCELLED",
@@ -926,6 +999,12 @@ impl SubagentContinuationManager {
                             lineage_seed_length as u64,
                         )),
                         seed: Some(seed.to_vec()),
+                        inherited_event_count: Some(
+                            dsh_session::SessionLogOffset::new(lineage_seed_length as u64)
+                                .map_err(|error| {
+                                    SubagentError::new("CHILD_CREATE_FAILED", error)
+                                })?,
+                        ),
                         agent_options: Some(child_options),
                         setup: None,
                     })
@@ -997,6 +1076,27 @@ impl SubagentContinuationManager {
             self.assert_image_capable(&child, signal).await?;
         }
         match self.submit_admitted(&activation, content, &source, parent, signal) {
+            Ok(message_id) => Ok(message_id),
+            Err(error) => {
+                let _ = self.dispose(&activation).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn submit_materialized_delivery(
+        &self,
+        activation: Arc<parking_lot::Mutex<Activation>>,
+        content: &[ContentBlock],
+        options: &ChildDeliveryOptions,
+        parent: Arc<dyn Agent>,
+    ) -> Result<MessageId, SubagentError> {
+        if dsh_llm::content_has_image(content) {
+            let child = activation.lock().handle().agent.clone();
+            self.assert_image_capable(&child, options.signal()).await?;
+        }
+        match self.submit_delivery_admitted(&activation, content, options, parent, options.signal())
+        {
             Ok(message_id) => Ok(message_id),
             Err(error) => {
                 let _ = self.dispose(&activation).await;
@@ -1091,6 +1191,26 @@ impl SubagentContinuationManager {
         Ok(self.commit_admitted(activation, content, source))
     }
 
+    fn submit_delivery_admitted(
+        &self,
+        activation: &Arc<parking_lot::Mutex<Activation>>,
+        content: &[ContentBlock],
+        options: &ChildDeliveryOptions,
+        parent: Arc<dyn Agent>,
+        signal: &Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<MessageId, SubagentError> {
+        let child_id = activation.lock().child_id.clone();
+        self.prepare_submit(activation, &parent, &child_id, signal)?;
+        Ok(match options {
+            ChildDeliveryOptions::Queue(options) => {
+                self.commit_admitted(activation, content, &options.source)
+            }
+            ChildDeliveryOptions::Steer { .. } => {
+                self.commit_agent_message(activation, content, &parent)
+            }
+        })
+    }
+
     /// Publish one already-admitted follow-up without another fallible cutoff.
     fn commit_admitted(
         &self,
@@ -1101,14 +1221,108 @@ impl SubagentContinuationManager {
         let message = create_user_message(content.to_vec(), source.clone());
         let message_id = message.id.clone();
         let child_agent = activation.lock().handle().agent.clone();
-        child_agent.followup(message);
+        Self::send_waking(activation, &message_id, || child_agent.followup(message));
+        activation.lock().announced = true;
+        message_id
+    }
+
+    /// Build the durable `agent-message` source for one authorized adjacent sender.
+    fn agent_message_source(sender: &Arc<dyn Agent>) -> MessageSource {
+        MessageSource::AgentMessage {
+            form: dsh_llm::ContextForm::Relay,
+            sender_session_id: sender.id().as_str().to_string(),
+        }
+    }
+
+    fn agent_message(sender: &Arc<dyn Agent>, content: &[ContentBlock]) -> dsh_llm::UserMessage {
+        let mut blocks = vec![ContentBlock::Text {
+            text: format!("Agent {} sent a message:", sender.id().as_str()),
+        }];
+        blocks.extend(content.iter().cloned());
+        create_user_message(blocks, Self::agent_message_source(sender))
+    }
+
+    fn send_waking(
+        activation: &Arc<parking_lot::Mutex<Activation>>,
+        message_id: &MessageId,
+        send: impl FnOnce(),
+    ) {
         activation
             .lock()
             .accepted
             .insert(message_id.as_str().to_string());
-        activation.lock().announced = true;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(send));
+        if let Err(payload) = result {
+            activation.lock().accepted.remove(message_id.as_str());
+            std::panic::resume_unwind(payload);
+        }
         activation.lock().poke.notify_waiters();
+    }
+
+    fn commit_agent_message(
+        &self,
+        activation: &Arc<parking_lot::Mutex<Activation>>,
+        content: &[ContentBlock],
+        sender: &Arc<dyn Agent>,
+    ) -> MessageId {
+        let message = Self::agent_message(sender, content);
+        let message_id = message.id.clone();
+        let child_agent = activation.lock().handle().agent.clone();
+        Self::send_waking(activation, &message_id, || child_agent.steer(message));
+        activation.lock().announced = true;
         message_id
+    }
+
+    fn send_to_parent(
+        &self,
+        activation: &Arc<parking_lot::Mutex<Activation>>,
+        sender: &Arc<dyn Agent>,
+        content: &[ContentBlock],
+    ) -> Result<MessageId, SubagentError> {
+        if activation.lock().disposal.is_some() {
+            return Err(SubagentError::new(
+                "ACTIVATION_CLOSING",
+                format!(
+                    "subagent \"{}\" activation is being disposed; the message was not delivered",
+                    sender.id().as_str()
+                ),
+            ));
+        }
+        let parent_id = activation.lock().parent_session.clone();
+        let parent = self.agents().get(&parent_id).ok_or_else(|| {
+            SubagentError::new(
+                "PARENT_UNAVAILABLE",
+                "direct parent is not live; the message was not delivered",
+            )
+        })?;
+        let message = Self::agent_message(sender, content);
+        let message_id = message.id.clone();
+        if let Some(parent_activation) = self
+            .activations
+            .lock()
+            .get(parent.id().as_str())
+            .cloned()
+            .filter(|candidate| Arc::ptr_eq(&candidate.lock().handle().agent, &parent))
+        {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Self::send_waking(&parent_activation, &message_id, || parent.steer(message));
+            }));
+            return match result {
+                Ok(()) => Ok(message_id),
+                Err(_) => Err(SubagentError::new(
+                    "PARENT_UNAVAILABLE",
+                    "direct parent is not live; the message was not delivered",
+                )),
+            };
+        }
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parent.steer(message)))
+            .map(|()| message_id)
+            .map_err(|_| {
+                SubagentError::new(
+                    "PARENT_UNAVAILABLE",
+                    "direct parent is not live; the message was not delivered",
+                )
+            })
     }
 
     /// Authorize one operation against the durable direct-parent lineage.
@@ -1152,8 +1366,8 @@ impl SubagentContinuationManager {
         child_id: &SessionId,
         _child_activation: &Arc<parking_lot::Mutex<Activation>>,
     ) -> Result<(), SubagentError> {
-        let activations = self.activations.lock();
-        let Some(parent_activation) = activations.get(parent.id().as_str()).cloned() else {
+        let parent_activation = self.activations.lock().get(parent.id().as_str()).cloned();
+        let Some(parent_activation) = parent_activation else {
             return Ok(());
         };
         let mut parent_activation = parent_activation.lock();
@@ -1174,8 +1388,13 @@ impl SubagentContinuationManager {
 
     /// Remove one child from its live owner's set.
     fn release_ownership(&self, child_id: &SessionId) {
-        let activations = self.activations.lock();
-        for activation in activations.values() {
+        let activations = self
+            .activations
+            .lock()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for activation in activations {
             let mut activation = activation.lock();
             if activation.owned_children.remove(child_id.as_str()) {
                 activation.poke.notify_waiters();
@@ -1229,14 +1448,14 @@ impl SubagentContinuationManager {
                             {
                                 return None;
                             }
-                            Some(Box::pin(async move { manager.dispose(&activation).await }))
+                            Some(manager.dispose(&activation).await)
                         }
                     })
                     .await;
                 match settling {
                     None => continue,
-                    Some(disposal) => {
-                        if let Err(error) = disposal.await {
+                    Some(result) => {
+                        if let Err(error) = result {
                             manager.ctx.logger.warn(
                                 &manager.ctx,
                                 vec![cordis::arc(format!(
@@ -1252,20 +1471,32 @@ impl SubagentContinuationManager {
         });
     }
 
+    /// Mark an Activation as closing synchronously and return its idempotent result slot.
+    fn begin_disposal(activation: &Arc<parking_lot::Mutex<Activation>>) -> ActivationDisposal {
+        let mut activation = activation.lock();
+        if let Some(slot) = &activation.disposal {
+            return slot.clone();
+        }
+        let slot = Arc::new(tokio::sync::Mutex::new(None));
+        activation.disposal = Some(slot.clone());
+        slot
+    }
+
+    /// Dispose after every already-admitted operation for this child settles.
+    async fn dispose_serialized(
+        &self,
+        activation: &Arc<parking_lot::Mutex<Activation>>,
+    ) -> Result<(), String> {
+        let child_id = activation.lock().child_id.clone();
+        self.locks.run(&child_id, || self.dispose(activation)).await
+    }
+
     /// Stop one Activation immediately, then release it child-first.
     async fn dispose(
         &self,
         activation: &Arc<parking_lot::Mutex<Activation>>,
     ) -> Result<(), String> {
-        let existing = { activation.lock().disposal.clone() };
-        let slot = match existing {
-            Some(slot) => slot,
-            None => {
-                let slot = Arc::new(tokio::sync::Mutex::new(None));
-                activation.lock().disposal = Some(slot.clone());
-                slot
-            }
-        };
+        let slot = Self::begin_disposal(activation);
         let mut guard = slot.clone().lock_owned().await;
         if let Some(result) = &*guard {
             return result.clone();
@@ -1286,17 +1517,22 @@ impl SubagentContinuationManager {
         if activation.lock().announced {
             child_agent.cancel(dsh_session::AgentCancelCause::Parent, None);
         }
+        let child_ids = activation
+            .lock()
+            .owned_children
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
         let children = {
-            let activation = activation.lock();
-            activation
-                .owned_children
+            let activations = self.activations.lock();
+            child_ids
                 .iter()
-                .filter_map(|child| self.activations.lock().get(child).cloned())
+                .filter_map(|child| activations.get(child).cloned())
                 .collect::<Vec<_>>()
         };
         let mut failures: Vec<String> = Vec::new();
         for child in children {
-            if let Err(error) = Box::pin(self.dispose(&child)).await {
+            if let Err(error) = Box::pin(self.dispose_serialized(&child)).await {
                 failures.push(error);
             }
         }

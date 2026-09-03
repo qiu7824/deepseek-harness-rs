@@ -4,16 +4,18 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
+Current release line: `0.1.2-alpha.4`.
+
 [中文说明](README.zh.md)
 
 ## Downloads
 
 Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases):
 
-- `dsh-windows-x86_64.zip`
-- `dsh-linux-x86_64.tar.gz`
-- `dsh-macos-x86_64.tar.gz`
-- `dsh-macos-aarch64.tar.gz`
+- `deepseek-harness-rs-v0.1.2-alpha.4-windows-x86_64-{core,skin,free}-portable.zip`
+- `deepseek-harness-rs-v0.1.2-alpha.4-linux-x86_64-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.2-alpha.4-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
+- matching Windows `setup.exe`, Linux `.deb`, and macOS `.pkg` installers
 
 A complete package contains the binary, `web/dist`, `config/agent-presets`, bundled Web plugins, and security documentation. Copying only the binary does not provide a complete Web installation.
 
@@ -35,6 +37,8 @@ http://127.0.0.1:58080/
 The launcher is built with ZSUI at a fixed commit and requires no CMD, PowerShell, WebView, or extra runtime. It starts, stops, and restarts the real `deepseek-harness-rs web` process and opens the Web UI or log directory. The Windows installer and launcher automatically use Simplified Chinese or English from the operating-system UI language.
 
 For extension skins, download the separate `skin` package and run `deepseek-harness-rs-skin` (`.exe` on Windows). It installs only the skin payload into the adjacent `web/dist/skins`; the default `core` archive never bundles skin assets.
+
+The `free` package keeps the same production runtime and Web surface as `core`, but includes a package-default keyless OpenCode Zen preset for `mimo-v2.5-free`. Release preparation must confirm that exact ID against `https://opencode.ai/zen/v1/models`; the package contains no credential value and no skin payload.
 
 ## Data, profiles, and workspaces
 
@@ -115,10 +119,12 @@ Bundled plugins:
 
 | Capability | Status |
 |---|---|
-| Sessions, persistence, history paging | Connected to the production Host |
+| Sessions, persistence, history paging | Strong `SessionSeq` / `SessionLogOffset` coordinates, explicit bounded reads, and v0 JSONL/Zstd `seedLength` compatibility are implemented |
 | DeepSeek streaming, reasoning, tools, images, usage | Implemented; final Release still requires real-provider verification |
-| Subagents | In-process spawn/fork available; optional Codex/Claude Code providers are not installed by default |
-| Workflows | Engine and tool implemented; latest Release still needs real-model E2E |
+| Subagents | Continuable direct parent/child messaging uses `send_message({ agent_id, message })` in both directions; optional Codex/Claude Code providers are not installed by default |
+| Web fetch | Rust-native `web_fetch` is implemented with public HTTP(S)-only, redirect/DNS/IP, timeout, size, and cancellation bounds |
+| Model discovery | Saved Profile headers can be resolved server-side without returning credentials to the browser; the model picker supports filtered search and visible-only selection |
+| Workflows | Engine remains available; the PTC/code preset deliberately omits the generic `workflow` tool while retaining `run_code` and Ralph |
 | Terminal | Persistent terminal lifecycle implemented |
 | MCP | Client library implemented; not composed into the production Host configuration |
 | LSP | Registry/tool libraries implemented; not composed into the production Host |

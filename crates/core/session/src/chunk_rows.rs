@@ -587,9 +587,10 @@ fn visit_row_events_from(
         };
         if !on_event(SessionEvent {
             type_: "assistant/chunk".to_string(),
-            seq: seq0
-                .checked_add(k as u64)
-                .ok_or_else(|| format!("{kind} seq overflow"))?,
+            seq: crate::SessionSeq::new(
+                seq0.checked_add(k as u64)
+                    .ok_or_else(|| format!("{kind} seq overflow"))?,
+            )?,
             time,
             data: serde_json::json!({"turn": turn, "step": step, "chunk": chunk}),
             ignorable: None,

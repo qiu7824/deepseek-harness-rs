@@ -26,8 +26,20 @@ class ReleaseIntegrityTests(unittest.TestCase):
 
         required = [
             "tools/stage_release_web.py",
+            "tools/package_release.py",
+            "tools/verify_release_package.py",
+            "tools/verify_free_model_catalog.py",
+            "tools/verify_installer_package.py",
             "tools/tests/connection_controller_harness.js",
             "tools/tests/test_v012_alpha2_sync_contract.py",
+            "tools/tests/test_v012_alpha4_sync_contract.py",
+            "crates/web/web-fetch-http/Cargo.toml",
+            "crates/web/web-fetch-http/src/lib.rs",
+            "web/dist/plugins/ui-conversation.js",
+            "web/dist/plugins/ui-theme.js",
+            "web/dist/plugins/ui-trajectory.js",
+            "web/dist/plugins/ui-model-selection.js",
+            "web/dist/plugins/ui-settings-models.js",
             "web/dist/plugins/ui-schedule.js",
             "web/dist/skins/deepseek-official/skin.json",
         ]
@@ -38,6 +50,14 @@ class ReleaseIntegrityTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 1, result.stdout)
+
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", *required],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(tracked.returncode, 0, tracked.stderr)
 
     def test_manifest_revisions_cover_every_declared_bundle(self):
         manifest_path = ROOT / "web" / "dist" / "plugins" / "manifest.json"
@@ -71,6 +91,30 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self.assertNotIn("else ROOT / \"web\" / \"dist\"", source)
         self.assertIn("missing staged web distribution", source)
 
+    def test_installer_verifier_rejects_missing_packages_before_extraction(self):
+        source = (ROOT / "tools" / "verify_installer_package.py").read_text(
+            encoding="utf-8"
+        )
+        package_guard = 'if not package.is_file():\n        raise SystemExit(f"missing installer package: {package}")'
+        self.assertIn(package_guard, source)
+        self.assertLess(source.index(package_guard), source.index("verify_windows(package, stage)"))
+
+    def test_portable_verifier_executes_the_host_extracted_from_the_archive(self):
+        source = (ROOT / "tools" / "verify_release_package.py").read_text(
+            encoding="utf-8"
+        )
+        for marker in (
+            "archived_host = read_archive_file(archive, host)",
+            "archive host does not match target/release host",
+            "with tempfile.TemporaryDirectory() as temporary:",
+            "extracted_root",
+            "extracted_host",
+            "assert_same_tree(extracted_root, staged_root)",
+            "subprocess.check_output(\n                [str(extracted_host), \"--version\"]",
+        ):
+            self.assertIn(marker, source)
+        self.assertNotIn("subprocess.check_output([str(staged_host), \"--version\"]", source)
+
     def test_release_path_components_reject_traversal(self):
         package = load_tool("package_release")
         verifier = load_tool("verify_release_package")
@@ -89,6 +133,16 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self.assertIn("contains(github.ref_name, '-')", workflow)
         self.assertNotIn("contains(github.ref_name, '-rc')", workflow)
         self.assertIn("python tools/verify_release_version.py", workflow)
+
+    def test_release_workflow_runs_web_fetch_and_client_performance_regressions(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        for marker in (
+            "-p dsh-web ",
+            "-p dsh-web-fetch-http",
+            "-p dsh-tool-web",
+            "tools.tests.test_client_performance",
+        ):
+            self.assertIn(marker, workflow)
 
     def test_linux_deb_records_root_owned_payload(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")

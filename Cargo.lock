@@ -184,6 +184,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc-no-stdlib"
+version = "2.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
+
+[[package]]
+name = "alloc-stdlib"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e76a019e91224d279006ff972f1e984179a6e9feb050adba6ce8274aef23195"
+dependencies = [
+ "alloc-no-stdlib",
+]
+
+[[package]]
 name = "android-activity"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -318,6 +333,18 @@ dependencies = [
  "event-listener-strategy",
  "futures-core",
  "pin-project-lite",
+]
+
+[[package]]
+name = "async-compression"
+version = "0.4.43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3976abdc8fe7d1133d43d304afd42abdf5bc3e1319d263d223bde07b5efc4be8"
+dependencies = [
+ "compression-codecs",
+ "compression-core",
+ "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]
@@ -713,6 +740,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "brotli"
+version = "8.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5cc91aac060a7a1e25823bdccbfb6af1875b88f17c6daac97894eed8207166b3"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
+ "brotli-decompressor",
+]
+
+[[package]]
+name = "brotli-decompressor"
+version = "5.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a32acac15fe1967bc3986b2a6347dffc965602354ea6f450ad07e8bfd253583"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
+]
+
+[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -936,6 +984,24 @@ dependencies = [
  "bytes",
  "memchr",
 ]
+
+[[package]]
+name = "compression-codecs"
+version = "0.4.38"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce2548391e9c1929c21bf6aa2680af86fe4c1b33e6cea9ac1cfeec0bd11218cf"
+dependencies = [
+ "brotli",
+ "compression-core",
+ "flate2",
+ "memchr",
+]
+
+[[package]]
+name = "compression-core"
+version = "0.4.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc14f565cf027a105f7a44ccf9e5b424348421a1d8952a8fc9d499d313107789"
 
 [[package]]
 name = "concurrent-queue"
@@ -1337,7 +1403,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "dsh-acp"
-version = "0.1.2-alpha.3"
+version = "0.1.2-alpha.4"
 dependencies = [
  "dsh-jsonrpc-runtime",
  "parking_lot",
@@ -1568,7 +1634,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-code-graph"
-version = "0.1.2-alpha.3"
+version = "0.1.2-alpha.4"
 dependencies = [
  "ignore",
  "serde",
@@ -1709,7 +1775,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-compaction-tool-result-pruner"
-version = "0.1.2-alpha.3"
+version = "0.1.2-alpha.4"
 dependencies = [
  "async-trait",
  "cordis",
@@ -2091,6 +2157,7 @@ dependencies = [
  "dsh-user-approval",
  "dsh-user-questions",
  "dsh-web",
+ "dsh-web-fetch-http",
  "dsh-web-search-deepseek",
  "dsh-workflow",
  "dsh-workflow-node",
@@ -2172,7 +2239,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-host-cli"
-version = "0.1.2-alpha.3"
+version = "0.1.2-alpha.4"
 dependencies = [
  "cordis",
  "dsh-acp",
@@ -2352,7 +2419,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-jsonrpc-runtime"
-version = "0.1.2-alpha.3"
+version = "0.1.2-alpha.4"
 dependencies = [
  "serde_json",
 ]
@@ -2369,7 +2436,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-launcher"
-version = "0.1.2-alpha.3"
+version = "0.1.2-alpha.4"
 dependencies = [
  "dsh-home-paths",
  "libc",
@@ -2998,7 +3065,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-session-turn-outline"
-version = "0.1.2-alpha.3"
+version = "0.1.2-alpha.4"
 dependencies = [
  "cordis",
  "dsh-llm",
@@ -3094,7 +3161,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-skin-installer"
-version = "0.1.2-alpha.3"
+version = "0.1.2-alpha.4"
 dependencies = [
  "winresource",
  "zip",
@@ -3814,7 +3881,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-tool-web"
-version = "0.1.2-alpha.3"
+version = "0.1.2-alpha.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3919,7 +3986,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-web"
-version = "0.1.2-alpha.3"
+version = "0.1.2-alpha.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3931,8 +3998,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-web-fetch-http"
+version = "0.1.2-alpha.4"
+dependencies = [
+ "async-trait",
+ "axum",
+ "cordis",
+ "dsh-web",
+ "futures",
+ "reqwest",
+ "serde",
+ "thiserror 2.0.20",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "dsh-web-search-deepseek"
-version = "0.1.2-alpha.3"
+version = "0.1.2-alpha.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7012,6 +7095,7 @@ version = "0.12.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d0946410b9f7b082a427e4ef5c8ff541a88b357bc6c637c40db3a68ac70a36f"
 dependencies = [
+ "async-compression",
  "base64 0.22.1",
  "bytes",
  "futures-core",

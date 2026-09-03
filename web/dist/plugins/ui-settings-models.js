@@ -58,12 +58,13 @@ window.__ModuleLoader__.load({
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-settings-models\src\client\ModelsSection.module.css.mjs
 		const css$3 = ".-\\35 oaCW_section{max-width:720px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;display:flex}.-\\35 oaCW_title{color:var(--dsw-alias-label-primary);margin:0;font-size:16px;font-weight:500;line-height:24px}.-\\35 oaCW_intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:14px;line-height:22px}.-\\35 oaCW_notice{color:var(--dsw-alias-state-warn-label);margin:0;font-size:12px;line-height:18px}.-\\35 oaCW_savedNotice{color:var(--dsw-alias-state-success-primary);margin:0;font-size:12px;line-height:18px}.-\\35 oaCW_rows{flex-direction:column;gap:8px;margin:12px 0 0;padding:0;list-style:none;display:flex}.-\\35 oaCW_rowCard{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;flex-direction:column;gap:12px;padding:12px 14px;display:flex}.-\\35 oaCW_rowHead{align-items:center;gap:10px;display:flex}.-\\35 oaCW_rowIdentity{align-items:center;gap:6px;min-width:0;display:inline-flex}.-\\35 oaCW_rowName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px}.-\\35 oaCW_rowTag{border:1px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-secondary);border-radius:4px;flex:none;padding:1px 6px;font-size:11px;line-height:16px}.-\\35 oaCW_credentialDot{box-sizing:border-box;border-radius:50%;flex:none;width:8px;height:8px;display:inline-block}.-\\35 oaCW_credentialDotConfigured{background:var(--dsw-alias-state-success-primary)}.-\\35 oaCW_credentialDotMissing{background:var(--dsw-alias-state-error-primary)}.-\\35 oaCW_rowActions{align-items:center;gap:4px;margin-left:auto;display:inline-flex}.-\\35 oaCW_primaryButton,.-\\35 oaCW_secondaryButton,.-\\35 oaCW_addButton{box-sizing:border-box;height:36px;font:inherit;cursor:pointer;border:none;border-radius:18px;justify-content:center;align-items:center;gap:4px;padding:0 14px;font-size:14px;line-height:22px;display:inline-flex}.-\\35 oaCW_primaryButton{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}.-\\35 oaCW_primaryButton:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}.-\\35 oaCW_secondaryButton,.-\\35 oaCW_addButton{border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);background:0 0}.-\\35 oaCW_secondaryButton:hover:not(:disabled),.-\\35 oaCW_addButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.-\\35 oaCW_secondaryButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}.-\\35 oaCW_dangerButton{box-sizing:border-box;height:36px;color:var(--dsw-alias-state-error-primary);font:inherit;cursor:pointer;background:0 0;border:none;border-radius:18px;justify-content:center;align-items:center;padding:0 14px;font-size:14px;line-height:22px;display:inline-flex}.-\\35 oaCW_dangerButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger)}.-\\35 oaCW_rowActions .-\\35 oaCW_secondaryButton,.-\\35 oaCW_rowActions .-\\35 oaCW_dangerButton{border-radius:14px;height:28px;padding:0 10px;font-size:12px;line-height:18px}.-\\35 oaCW_primaryButton:disabled,.-\\35 oaCW_secondaryButton:disabled,.-\\35 oaCW_dangerButton:disabled,.-\\35 oaCW_addButton:disabled,.-\\35 oaCW_linkButton:disabled,.-\\35 oaCW_addModelButton:disabled{opacity:.4;cursor:default}.-\\35 oaCW_primaryButton:focus-visible,.-\\35 oaCW_secondaryButton:focus-visible,.-\\35 oaCW_dangerButton:focus-visible,.-\\35 oaCW_addButton:focus-visible,.-\\35 oaCW_linkButton:focus-visible,.-\\35 oaCW_addModelButton:focus-visible,.-\\35 oaCW_iconButton:focus-visible,.-\\35 oaCW_customizedSummary:focus-visible{box-shadow:0 0 0 2px var(--dsw-alias-border-l3);outline:none}.-\\35 oaCW_editor{background:var(--dsw-alias-bg-module-platform);border-radius:12px;flex-direction:column;gap:14px;padding:14px 16px;display:flex}.-\\35 oaCW_editorHeader{align-items:baseline;gap:8px;display:flex}.-\\35 oaCW_editorTitle{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px}.-\\35 oaCW_editorRoute{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}.-\\35 oaCW_field{flex-direction:column;gap:6px;display:flex}.-\\35 oaCW_fieldLabel{color:var(--dsw-alias-label-secondary);align-items:center;gap:10px;font-size:12px;font-weight:500;line-height:18px;display:inline-flex}.-\\35 oaCW_linkButton{box-sizing:border-box;height:28px;color:var(--dsw-alias-label-tertiary);font:inherit;cursor:pointer;background:0 0;border:none;border-radius:14px;align-items:center;padding:0 10px;font-size:12px;line-height:18px;display:inline-flex}.-\\35 oaCW_linkButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}.-\\35 oaCW_advancedHint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:18px}.-\\35 oaCW_editorActions{justify-content:flex-end;gap:8px;display:flex}.-\\35 oaCW_addBlock{flex-direction:column;gap:12px;display:flex}.-\\35 oaCW_addActions{flex-wrap:wrap;gap:10px;display:flex}.-\\35 oaCW_addButton{border:1px dashed var(--dsw-alias-border-l3);border-radius:12px;flex:1 1 0;gap:6px;min-width:180px;height:44px}.-\\35 oaCW_addCard,.-\\35 oaCW_setupCard{background:var(--dsw-alias-bg-module-platform);border-radius:12px;flex-direction:column;gap:14px;padding:14px 16px;list-style:none;display:flex}.-\\35 oaCW_addCard .-\\35 oaCW_editor,.-\\35 oaCW_setupCard .-\\35 oaCW_editor{background:0 0;padding:0}.-\\35 oaCW_customized{border-top:1px solid var(--dsw-alias-border-l2);padding-top:10px}.-\\35 oaCW_customizedSummary{cursor:pointer;width:fit-content;color:var(--dsw-alias-label-secondary);border-radius:6px;align-items:center;gap:6px;margin-left:-4px;padding:2px 4px;font-size:12px;font-weight:500;line-height:18px;list-style:none;display:flex}.-\\35 oaCW_customizedSummary::-webkit-details-marker{display:none}.-\\35 oaCW_customizedSummary:before{content:\"\";border-bottom:1.5px solid;border-right:1.5px solid;width:5px;height:5px;transition:transform .12s;transform:rotate(-45deg)translate(-1px,-1px)}.-\\35 oaCW_customized[open]>.-\\35 oaCW_customizedSummary:before{transform:rotate(45deg)translate(-1px,-1px)}.-\\35 oaCW_customizedSummary:hover{color:var(--dsw-alias-label-primary)}.-\\35 oaCW_customizedBody{flex-direction:column;gap:12px;padding-top:12px;display:flex}.-\\35 oaCW_modelCatalog{border-top:1px solid var(--dsw-alias-border-l2);flex-direction:column;gap:10px;padding-top:12px;display:flex}.-\\35 oaCW_modelCatalogHeading{flex-direction:column;gap:2px;display:flex}.-\\35 oaCW_modelCatalogTitle{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500;line-height:18px}.-\\35 oaCW_modelCatalogMeta,.-\\35 oaCW_modelEmpty{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:18px}.-\\35 oaCW_modelList{flex-direction:column;gap:8px;display:flex}.-\\35 oaCW_modelListHead{justify-content:space-between;align-items:flex-start;gap:12px;display:flex}.-\\35 oaCW_modelEntry{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px}.-\\35 oaCW_modelRow{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) auto auto;align-items:center;gap:6px;display:grid}.-\\35 oaCW_iconButton{box-sizing:border-box;width:28px;height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:6px;justify-content:center;align-items:center;display:inline-flex}.-\\35 oaCW_iconButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.-\\35 oaCW_iconButton:disabled{cursor:default;opacity:.4}.-\\35 oaCW_iconButtonDanger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}.-\\35 oaCW_modelAdvanced{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;padding:8px 4px 2px;display:grid}.-\\35 oaCW_modelField{flex-direction:column;gap:4px;display:flex}.-\\35 oaCW_modelFieldLabel{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}.-\\35 oaCW_modelEmpty{border:1px dashed var(--dsw-alias-border-l3);text-align:center;border-radius:8px;padding:12px}.-\\35 oaCW_addModelButton{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);height:28px;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;background:0 0;border-radius:14px;align-self:flex-start;align-items:center;gap:4px;padding:0 10px;font-size:12px;line-height:18px;display:inline-flex}.-\\35 oaCW_addModelButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.-\\35 oaCW_input{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);width:100%;height:32px;font:inherit;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:8px;padding:0 10px;font-size:14px;line-height:22px}select.-\\35 oaCW_input{cursor:pointer;max-width:240px}.-\\35 oaCW_input:focus{border-color:var(--dsw-alias-brand-primary);outline:none}.-\\35 oaCW_input::placeholder{color:var(--dsw-alias-label-dimmed)}.-\\35 oaCW_input:disabled{opacity:.6;cursor:default}.-\\35 oaCW_selectInput{appearance:none;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\");background-position:right 12px center;background-repeat:no-repeat;background-size:12px 12px;padding-right:32px}.-\\35 oaCW_error{color:var(--dsw-alias-state-error-primary);margin:0;font-size:12px;line-height:18px}.-\\35 oaCW_deleteDialog{width:min(480px,100%)}.-\\35 oaCW_deleteConfirm:not(:disabled){border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.-\\35 oaCW_deleteConfirm:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger)}.-\\35 oaCW_hiddenLabel{clip:rect(0 0 0 0);white-space:nowrap;width:1px;height:1px;position:absolute;overflow:hidden}@media (prefers-reduced-motion:reduce){.-\\35 oaCW_customizedSummary:before{transition:none}}.-\\35 oaCW_fetchDialog{--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);max-width:520px}.-\\35 oaCW_candidateList{flex-direction:column;gap:2px;max-height:320px;margin:0;padding:0;list-style:none;display:flex;overflow-y:auto}.-\\35 oaCW_candidate{border-radius:6px}.-\\35 oaCW_candidateLabel{cursor:pointer;align-items:center;gap:8px;padding:6px 8px;display:flex}.-\\35 oaCW_candidateId{font-family:var(--ds-font-family-code);overflow-wrap:anywhere;flex:auto;font-size:13px}";
+		const candidateFilterCss = ".-\\35 oaCW_candidateToolbar{align-items:center;gap:8px;margin-bottom:6px;display:flex}.-\\35 oaCW_candidateSearch{flex:240px;min-width:0}.-\\35 oaCW_candidateEmpty{color:var(--dsw-alias-label-secondary);text-align:center;margin:24px 0;font-size:13px;line-height:20px}";
 		const tagId$3 = "@deepseek-ai/dsh-client-ui-settings-models/ModelsSection.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$3) + "]") === null) {
 			const tag = document.createElement("style");
 			tag.dataset.plugin = "@deepseek-ai/dsh-client-ui-settings-models";
 			tag.dataset.pluginCss = tagId$3;
-			tag.textContent = css$3;
+			tag.textContent = css$3 + candidateFilterCss;
 			document.head.appendChild(tag);
 		}
 		var ModelsSection_module_css_default = {
@@ -72,6 +73,7 @@ window.__ModuleLoader__.load({
 			"secondaryButton": "-5oaCW_secondaryButton",
 			"editor": "-5oaCW_editor",
 			"candidate": "-5oaCW_candidate",
+			"candidateEmpty": "-5oaCW_candidateEmpty",
 			"candidateLabel": "-5oaCW_candidateLabel",
 			"fetchDialog": "-5oaCW_fetchDialog",
 			"rowIdentity": "-5oaCW_rowIdentity",
@@ -106,6 +108,8 @@ window.__ModuleLoader__.load({
 			"modelCatalog": "-5oaCW_modelCatalog",
 			"setupCard": "-5oaCW_setupCard",
 			"candidateList": "-5oaCW_candidateList",
+			"candidateSearch": "-5oaCW_candidateSearch",
+			"candidateToolbar": "-5oaCW_candidateToolbar",
 			"rows": "-5oaCW_rows",
 			"modelRow": "-5oaCW_modelRow",
 			"addCard": "-5oaCW_addCard",
@@ -761,6 +765,7 @@ window.__ModuleLoader__.load({
 			const [failure, setFailure] = (0, react.useState)(void 0);
 			const [candidates, setCandidates] = (0, react.useState)(void 0);
 			const [picked, setPicked] = (0, react.useState)(/* @__PURE__ */ new Set());
+			const [candidateQuery, setCandidateQuery] = (0, react.useState)("");
 			const [expanded, setExpanded] = (0, react.useState)(/* @__PURE__ */ new Set());
 			const [editing, setEditing] = (0, react.useState)(/* @__PURE__ */ new Map());
 			/** Buffer key for one capacity field; the row half moves when rows do. */
@@ -819,6 +824,7 @@ window.__ModuleLoader__.load({
 						return;
 					}
 					const known = new Set(models.map((model) => textOf(model, "id")));
+					setCandidateQuery("");
 					setCandidates(found);
 					setPicked(new Set(found.filter((model) => !known.has(model.id)).map((model) => model.id)));
 				} catch (error) {
@@ -830,6 +836,7 @@ window.__ModuleLoader__.load({
 			const closePicker = () => {
 				setCandidates(void 0);
 				setPicked(/* @__PURE__ */ new Set());
+				setCandidateQuery("");
 			};
 			const adoptPicked = () => {
 				/* v8 ignore next -- the dialog only renders with candidates loaded */
@@ -846,6 +853,18 @@ window.__ModuleLoader__.load({
 				setPicked((current) => {
 					const next = new Set(current);
 					if (!next.delete(id)) next.add(id);
+					return next;
+				});
+			};
+			const activeCandidates = candidates ?? [];
+			const normalizedCandidateQuery = candidateQuery.trim().toLowerCase();
+			const visibleCandidates = normalizedCandidateQuery.length === 0 ? activeCandidates : activeCandidates.filter((candidate) => candidate.id.toLowerCase().includes(normalizedCandidateQuery) || candidate.name?.toLowerCase().includes(normalizedCandidateQuery) === true);
+			const allVisibleCandidatesPicked = visibleCandidates.length > 0 && visibleCandidates.every((candidate) => picked.has(candidate.id));
+			const toggleVisibleCandidates = () => {
+				setPicked((current) => {
+					const next = new Set(current);
+					if (visibleCandidates.every((candidate) => current.has(candidate.id))) for (const candidate of visibleCandidates) next.delete(candidate.id);
+					else for (const candidate of visibleCandidates) next.add(candidate.id);
 					return next;
 				});
 			};
@@ -983,6 +1002,20 @@ window.__ModuleLoader__.load({
 										editCapacity(index, "maxTokens", event.target.value);
 									}
 								})]
+							}), (0, react_jsx_runtime.jsxs)("label", {
+								className: ModelsSection_module_css_default["modelField"],
+								children: [(0, react_jsx_runtime.jsx)("span", {
+									className: ModelsSection_module_css_default["modelFieldLabel"],
+									children: t("modelImageInput")
+								}), (0, react_jsx_runtime.jsx)("input", {
+									type: "checkbox",
+									checked: Array.isArray(model.input) && model.input.includes("image"),
+									"aria-label": `${t("modelImageInput")} ${index + 1}`,
+									disabled,
+									onChange: (event) => {
+										patch(index, { input: event.target.checked ? ["text", "image"] : ["text"] });
+									}
+								})]
 							})]
 						}) : null]
 					}, index)),
@@ -1015,9 +1048,31 @@ window.__ModuleLoader__.load({
 							onClick: adoptPicked,
 							children: t("fetchAdopt")
 						})] }),
-						children: (0, react_jsx_runtime.jsx)("ul", {
+						children: [(0, react_jsx_runtime.jsxs)("div", {
+							className: ModelsSection_module_css_default["candidateToolbar"],
+							children: [(0, react_jsx_runtime.jsx)("input", {
+								className: `${ModelsSection_module_css_default["input"]} ${ModelsSection_module_css_default["candidateSearch"]}`,
+								type: "search",
+								value: candidateQuery,
+								placeholder: t("fetchSearch"),
+								"aria-label": t("fetchSearch"),
+								onChange: (event) => {
+									setCandidateQuery(event.target.value);
+								}
+							}), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+								variant: "ghost",
+								size: "sm",
+								disabled: visibleCandidates.length === 0,
+								onClick: toggleVisibleCandidates,
+								children: t(allVisibleCandidatesPicked ? "fetchDeselectAll" : "fetchSelectAll")
+							})]
+						}), visibleCandidates.length === 0 ? (0, react_jsx_runtime.jsx)("p", {
+							className: ModelsSection_module_css_default["candidateEmpty"],
+							role: "status",
+							children: t("fetchNoMatches")
+						}) : (0, react_jsx_runtime.jsx)("ul", {
 							className: ModelsSection_module_css_default["candidateList"],
-							children: (candidates ?? []).map((candidate) => (0, react_jsx_runtime.jsx)("li", {
+							children: visibleCandidates.map((candidate) => (0, react_jsx_runtime.jsx)("li", {
 								className: ModelsSection_module_css_default["candidate"],
 								children: (0, react_jsx_runtime.jsxs)("label", {
 									className: ModelsSection_module_css_default["candidateLabel"],
@@ -1033,7 +1088,7 @@ window.__ModuleLoader__.load({
 									})]
 								})
 							}, candidate.id))
-						})
+						})]
 					})
 				]
 			});
@@ -2518,12 +2573,17 @@ window.__ModuleLoader__.load({
 			modelDuplicate: "Each model ID may appear once.",
 			modelContextWindow: "Context window",
 			modelMaxTokens: "Max output tokens",
+			modelImageInput: "Accepts image input",
 			fetchModels: "Fetch available models",
 			fetching: "Asking the provider…",
 			fetchNeedsBaseUrl: "Enter the base URL first, then fetch.",
 			fetchEmpty: "The provider listed no models. Add them by hand.",
 			fetchTitle: "Choose models to add",
 			fetchDescription: "These are the models this provider has available. Choose the ones to add.",
+			fetchSearch: "Search models",
+			fetchNoMatches: "No matching models.",
+			fetchSelectAll: "Select all",
+			fetchDeselectAll: "Deselect all",
 			fetchAdopt: "Add selected",
 			customAdd: "Add a custom provider",
 			customTitle: "Custom provider",
@@ -2615,12 +2675,17 @@ window.__ModuleLoader__.load({
 			modelDuplicate: "每个模型 ID 只能出现一次。",
 			modelContextWindow: "上下文窗口",
 			modelMaxTokens: "最大输出 token",
+			modelImageInput: "支持图片输入",
 			fetchModels: "获取可用模型",
 			fetching: "正在询问提供方…",
 			fetchNeedsBaseUrl: "请先填写 API 地址，再获取。",
 			fetchEmpty: "该提供方没有列出任何模型，请手动添加。",
 			fetchTitle: "选择要添加的模型",
 			fetchDescription: "以下是模型提供方的可用模型，勾选要添加的模型。",
+			fetchSearch: "搜索模型",
+			fetchNoMatches: "没有匹配的模型。",
+			fetchSelectAll: "全选",
+			fetchDeselectAll: "取消全选",
 			fetchAdopt: "添加所选",
 			customAdd: "添加自定义提供方",
 			customTitle: "自定义提供方",

@@ -85,7 +85,7 @@ fn input_error(error: &crate::domain::ScheduleInputError) -> ScheduleToolError {
 fn fold_for_tool(agent: &dyn Agent) -> Result<crate::domain::FoldedSchedules, ScheduleToolError> {
     fold_schedule_events(
         &agent.session().events(),
-        agent.session().header().seed_length.unwrap_or(0) as usize,
+        agent.session().inherited_event_count().get() as usize,
     )
     .map_err(|_| corrupt_log_error())
 }

@@ -1774,7 +1774,7 @@ mod tests {
             let (mut stream, _) = server.accept().expect("receive update request");
             let mut request = [0_u8; 4096];
             let _ = stream.read(&mut request).expect("read update request");
-            let body = r#"[{"tag_name":"v0.1.2-alpha.4","html_url":"https://example.invalid/release","draft":false}]"#;
+            let body = r#"[{"tag_name":"v0.1.2-alpha.5","html_url":"https://example.invalid/release","draft":false}]"#;
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -1786,7 +1786,7 @@ mod tests {
         let message = update_status_from(&address, english_copy()).expect("check update");
         worker.join().expect("join update fixture");
         assert!(message.contains("Update available"));
-        assert!(message.contains("v0.1.2-alpha.4"));
+        assert!(message.contains("v0.1.2-alpha.5"));
         assert!(message.contains("https://example.invalid/release"));
     }
 

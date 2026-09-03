@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use cordis::{BoxFuture, Context};
 use dsh_llm::{LlmCallConfig, LlmFailure, ResolvedRetryPolicy};
 use dsh_scope::ScopeKey;
-use dsh_session::{AgentCancelCause, Session, SessionId, UserMessage};
+use dsh_session::{AgentCancelCause, Session, SessionId, SessionLogOffset, UserMessage};
 use parking_lot::Mutex;
 
 use crate::inbox::Inbox;
@@ -304,6 +304,8 @@ pub struct CreateAgentOptions {
     pub meta: Option<dsh_session::CreateSessionMeta>,
     /// Initial replay/fork history.
     pub seed: Option<Vec<dsh_session::SessionEvent>>,
+    /// Exact prefix inherited from the parent when `seed` represents a fork.
+    pub inherited_event_count: Option<SessionLogOffset>,
     /// Per-agent options (model, …).
     pub agent_options: Option<AgentOptions>,
     /// Creation-time composition of the agent's scoped world.

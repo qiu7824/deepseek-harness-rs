@@ -55,7 +55,7 @@ pub fn select_history_window(
     max_events: usize,
 ) -> Result<HistoryWindowSelection, HistoryWindowTooLarge> {
     let end = before_seq
-        .map(|before| events.partition_point(|event| event.seq < before))
+        .map(|before| events.partition_point(|event| event.seq.get() < before))
         .unwrap_or(events.len());
     let mut count = 0_u64;
     let mut cut_seq = 0_u64;
@@ -70,14 +70,14 @@ pub fn select_history_window(
             .source_event_seqs
             .as_ref()
             .and_then(|sources| sources.iter().copied().min())
-            .unwrap_or(event.seq)
-            .min(event.seq);
+            .unwrap_or(event.seq.get())
+            .min(event.seq.get());
         if count >= max_messages {
             cut_seq = group_start;
             break;
         }
     }
-    let start = events[..end].partition_point(|event| event.seq < cut_seq);
+    let start = events[..end].partition_point(|event| event.seq.get() < cut_seq);
     let selection = HistoryWindowSelection {
         start,
         end,
@@ -137,7 +137,7 @@ mod tests {
     fn event(seq: u64, type_: &str, append_surface: bool) -> SessionEvent {
         SessionEvent {
             type_: type_.to_string(),
-            seq,
+            seq: dsh_session::SessionSeq::new(seq).unwrap(),
             time: seq as i64,
             data: serde_json::json!({}),
             ignorable: None,

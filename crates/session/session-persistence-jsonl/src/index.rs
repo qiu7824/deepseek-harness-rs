@@ -12,24 +12,25 @@
 //!   them; it is `size:mtimeNs:ctimeNs` (source-qualified within one root).
 
 use std::collections::VecDeque;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cordis::{Context, Service};
 use dsh_session::{
-    SessionEvent, SessionHeader, SessionId, SessionPreparation, StorageRecord,
+    SessionEvent, SessionHeader, SessionId, SessionLogOffset, SessionPreparation, StorageRecord,
     decode_storage_record, visit_decoded_storage_record_tail,
 };
 use dsh_session_persistence::{
-    PersistenceBackend, PersistenceCoordinator, PersistenceCoordinatorOptions,
-    SessionReadForwardWindowRequest, SessionReadWindowRequest, SessionReadWindowResult,
-    StoredPrefix,
+    NonpackedEventVisitor, PersistenceBackend, PersistenceCoordinator,
+    PersistenceCoordinatorOptions, SessionReadForwardWindowRequest, SessionReadWindowRequest,
+    SessionReadWindowResult, StoredPrefix,
 };
 use parking_lot::Mutex;
 
 use crate::format::{
     JsonlCompression, SessionLogScanner, event_lines, log_path, log_suffix, parse_header_meta,
-    project_dir, scan_log, session_dir, to_header_line,
+    parse_header_storage, project_dir, scan_log, session_dir, to_header_line,
 };
 use crate::zstd::{
     compress_zstd_frame, decode_zstd_frames, decompress_zstd_frame, decompress_zstd_prefix,
@@ -145,6 +146,14 @@ fn file_revision(
 
 fn stream_zstd_events(
     path: &Path,
+    on_event: impl FnMut(SessionEvent) -> Result<bool, String>,
+) -> Result<(), String> {
+    stream_zstd_events_from(path, 0, on_event)
+}
+
+fn stream_zstd_events_from(
+    path: &Path,
+    from_seq: u64,
     mut on_event: impl FnMut(SessionEvent) -> Result<bool, String>,
 ) -> Result<(), String> {
     let before = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
@@ -157,7 +166,8 @@ fn stream_zstd_events(
         return Err("empty or header-less Zstandard session log".to_string());
     }
     for frame in &scan.frames[1..] {
-        if !visit_zstd_frame_events(&mapping[frame.start..frame.end], &mut on_event)? {
+        if !visit_zstd_frame_events_from(&mapping[frame.start..frame.end], from_seq, &mut on_event)?
+        {
             let after = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
             if before != after {
                 return Err("session artifact changed during streaming read".to_string());
@@ -172,17 +182,104 @@ fn stream_zstd_events(
     Ok(())
 }
 
-fn visit_zstd_frame_events(
+fn stream_jsonl_nonpacked_events(
+    path: &Path,
+    mut on_event: impl FnMut(SessionEvent) -> Result<bool, String>,
+) -> Result<(), String> {
+    let before = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
+
+    let open_body = || -> Result<BufReader<std::fs::File>, String> {
+        let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        let mut reader = BufReader::new(file);
+        let mut header = String::new();
+        if reader
+            .read_line(&mut header)
+            .map_err(|error| error.to_string())?
+            == 0
+        {
+            return Err("empty or header-less JSONL session log".to_string());
+        }
+        Ok(reader)
+    };
+
+    let mut reader = open_body()?;
+    let accepted = match crate::packed_stream::visit_nonpacked_reader(&mut reader, &mut on_event) {
+        Ok(accepted) => accepted,
+        Err(crate::packed_stream::PackedStreamError::Noncanonical(emitted, accepting)) => {
+            let reader = open_body()?;
+            crate::packed_stream::fallback_visit_nonpacked(
+                reader,
+                emitted,
+                accepting,
+                &mut on_event,
+            )?
+        }
+        Err(crate::packed_stream::PackedStreamError::Invalid(message)) => return Err(message),
+    };
+    let _ = accepted;
+
+    let after = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
+    if before != after {
+        return Err("session artifact changed during non-packed read".to_string());
+    }
+    Ok(())
+}
+
+fn stream_zstd_nonpacked_events(
+    path: &Path,
+    mut on_event: impl FnMut(SessionEvent) -> Result<bool, String>,
+) -> Result<(), String> {
+    let before = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    // SAFETY: read-only mapping of a revision-checked snapshot candidate.
+    let mapping =
+        unsafe { memmap2::MmapOptions::new().map(&file) }.map_err(|error| error.to_string())?;
+    let scan = scan_zstd_frames(&mapping)?;
+    if scan.frames.is_empty() {
+        return Err("empty or header-less Zstandard session log".to_string());
+    }
+    for frame in &scan.frames[1..] {
+        let bytes = &mapping[frame.start..frame.end];
+        let decoder = zstd::stream::read::Decoder::new(bytes).map_err(|error| error.to_string())?;
+        let accepted = match crate::packed_stream::visit_nonpacked_reader(decoder, &mut on_event) {
+            Ok(accepted) => accepted,
+            Err(crate::packed_stream::PackedStreamError::Noncanonical(emitted, accepting)) => {
+                let decoder =
+                    zstd::stream::read::Decoder::new(bytes).map_err(|error| error.to_string())?;
+                crate::packed_stream::fallback_visit_nonpacked(
+                    decoder,
+                    emitted,
+                    accepting,
+                    &mut on_event,
+                )?
+            }
+            Err(crate::packed_stream::PackedStreamError::Invalid(message)) => return Err(message),
+        };
+        if !accepted {
+            break;
+        }
+    }
+    let after = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
+    if before != after {
+        return Err("session artifact changed during non-packed read".to_string());
+    }
+    Ok(())
+}
+
+fn visit_zstd_frame_events_from(
     frame: &[u8],
+    from_seq: u64,
     on_event: &mut impl FnMut(SessionEvent) -> Result<bool, String>,
 ) -> Result<bool, String> {
     let decoder = zstd::stream::read::Decoder::new(frame).map_err(|error| error.to_string())?;
-    match crate::packed_stream::visit_frame(decoder, on_event) {
+    match crate::packed_stream::visit_frame_from(decoder, from_seq, on_event) {
         Ok(accepted) => Ok(accepted),
-        Err(crate::packed_stream::PackedStreamError::Noncanonical(_, emitted, accepting)) => {
+        Err(crate::packed_stream::PackedStreamError::Noncanonical(emitted, accepting)) => {
             let decoder =
                 zstd::stream::read::Decoder::new(frame).map_err(|error| error.to_string())?;
-            crate::packed_stream::fallback_visit_skip(decoder, emitted, accepting, on_event)
+            crate::packed_stream::fallback_visit_skip_from(
+                decoder, from_seq, emitted, accepting, on_event,
+            )
         }
         Err(crate::packed_stream::PackedStreamError::Invalid(message)) => Err(message),
     }
@@ -196,7 +293,7 @@ fn visit_zstd_frame_tail(
     let decoder = zstd::stream::read::Decoder::new(frame).map_err(|error| error.to_string())?;
     match crate::packed_stream::visit_tail_reader(decoder, capacity, on_event) {
         Ok(accepted) => Ok(accepted),
-        Err(crate::packed_stream::PackedStreamError::Noncanonical(_, emitted, mut accepting)) => {
+        Err(crate::packed_stream::PackedStreamError::Noncanonical(emitted, mut accepting)) => {
             let decoder =
                 zstd::stream::read::Decoder::new(frame).map_err(|error| error.to_string())?;
             let records =
@@ -472,6 +569,7 @@ impl JsonlSessionPersistence {
                 .map_err(|error| format!("{error} (raw log: {})", path.to_string_lossy()))?;
             StoredPrefix::<JsonlTornMarker> {
                 meta: scan.meta,
+                inherited_event_count: scan.inherited_event_count,
                 events: scan.events,
                 revision: revision.clone(),
                 torn_marker: if scan.committed_bytes < buffer.len() {
@@ -535,7 +633,7 @@ impl JsonlSessionPersistence {
             let mut frame_tail = VecDeque::with_capacity(capacity);
             let mut frame_dropped = false;
             visit_zstd_frame_tail(&mapping[frame.start..frame.end], capacity, &mut |event| {
-                if event.seq >= before_seq {
+                if event.seq.get() >= before_seq {
                     return Ok(true);
                 }
                 frame_tail.push_back(event);
@@ -641,6 +739,7 @@ impl JsonlSessionPersistence {
             let finished = scanner.finish();
             return Ok(StoredPrefix {
                 meta: finished.meta,
+                inherited_event_count: finished.inherited_event_count,
                 events: finished.events,
                 revision: dsh_session_persistence::session_persistence_revision(""),
                 torn_marker: None,
@@ -653,6 +752,7 @@ impl JsonlSessionPersistence {
         let recovered_events = recovered.events[complete.event_count..].to_vec();
         Ok(StoredPrefix {
             meta: recovered.meta,
+            inherited_event_count: recovered.inherited_event_count,
             events: recovered.events,
             revision: dsh_session_persistence::session_persistence_revision(""),
             torn_marker: Some(JsonlTornMarker {
@@ -718,6 +818,7 @@ impl JsonlSessionPersistence {
     async fn materialize(
         &self,
         meta: &SessionHeader,
+        inherited_event_count: SessionLogOffset,
         events: &[SessionEvent],
     ) -> Result<(), String> {
         let project = project_dir(&self.root.to_string_lossy(), meta.cwd.as_deref());
@@ -737,7 +838,7 @@ impl JsonlSessionPersistence {
         if self.exists(&opposite).await {
             return Err(self.encoding_mismatch(&opposite));
         }
-        let content = self.encode_materialization(meta, events)?;
+        let content = self.encode_materialization(meta, inherited_event_count, events)?;
         tokio::fs::create_dir_all(&self.root)
             .await
             .map_err(|e| e.to_string())?;
@@ -814,11 +915,12 @@ impl JsonlSessionPersistence {
     fn encode_materialization(
         &self,
         meta: &SessionHeader,
+        inherited_event_count: SessionLogOffset,
         events: &[SessionEvent],
     ) -> Result<Vec<u8>, String> {
         let header = format!(
             "{}\n",
-            serde_json::to_string(&to_header_line(meta))
+            serde_json::to_string(&to_header_line(meta, Some(inherited_event_count))?)
                 .map_err(|e| format!("header is not JSON-serializable: {e}"))?
         );
         let body = format!("{}\n", event_lines(events, self.pack_chunks));
@@ -1057,28 +1159,33 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         } else {
             String::from_utf8_lossy(&buffer).to_string()
         };
-        let meta = parse_header_meta(content.split('\n').next().unwrap_or(""));
-        let Some(meta) = meta else {
+        let storage = parse_header_storage(content.split('\n').next().unwrap_or(""));
+        let Some(storage) = storage else {
             return Err(format!(
                 "corrupt session log: invalid header line in \"{}\"",
                 path.to_string_lossy()
             ));
         };
-        if meta.id != *id {
+        if storage.meta.id != *id {
             return Err(format!(
                 "corrupt session log: invalid header line in \"{}\"",
                 path.to_string_lossy()
             ));
         }
         Ok(Some(dsh_session_persistence::SessionRawArtifact {
-            meta,
+            meta: storage.meta,
+            inherited_event_count: storage.inherited_event_count,
             filename: "session.jsonl".to_string(),
             content,
         }))
     }
 
-    async fn create(&self, meta: SessionHeader) -> Result<(), String> {
-        self.coordinator().create(meta).await
+    async fn create(
+        &self,
+        meta: SessionHeader,
+        inherited_event_count: Option<SessionLogOffset>,
+    ) -> Result<(), String> {
+        self.coordinator().create(meta, inherited_event_count).await
     }
 
     async fn append(&self, id: &SessionId, events: &[SessionEvent]) -> Result<(), String> {
@@ -1139,12 +1246,9 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         }
         let mut events = Vec::with_capacity(max_events.min(4_096));
         let mut next_seq = None;
-        stream_zstd_events(&path, |event| {
-            if event.seq < from_seq {
-                return Ok(true);
-            }
+        stream_zstd_events_from(&path, from_seq, |event| {
             if events.len() == max_events {
-                next_seq = Some(event.seq);
+                next_seq = Some(event.seq.get());
                 return Ok(false);
             }
             events.push(event);
@@ -1180,10 +1284,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let mut has_more = false;
         let mut message_boundary_reached = false;
         let mut expected = request.after_seq;
-        stream_zstd_events(&path, |event| {
-            if event.seq < request.after_seq {
-                return Ok(true);
-            }
+        stream_zstd_events_from(&path, request.after_seq, |event| {
             if event.seq != expected {
                 return Err(format!(
                     "corrupt session log: seq gap (expected {expected}, got {})",
@@ -1253,6 +1354,40 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         Ok(())
     }
 
+    async fn visit_nonpacked_events(
+        &self,
+        id: &SessionId,
+        visitor: NonpackedEventVisitor,
+    ) -> Result<(), String> {
+        self.ensure_root_encoding().await?;
+        let Some(path) = self.find_log(id).await? else {
+            return Err(format!("session \"{}\" not found", id.as_str()));
+        };
+        let (header_line, format_name) = if self.compression == JsonlCompression::Zstd {
+            (
+                self.read_first_zstd_line(&path)
+                    .await?
+                    .ok_or_else(|| "empty or header-less Zstandard session log".to_string())?,
+                "Zstandard",
+            )
+        } else {
+            (
+                self.read_first_line(&path)
+                    .await?
+                    .ok_or_else(|| "empty or header-less JSONL session log".to_string())?,
+                "JSONL",
+            )
+        };
+        let meta = parse_header_meta(&header_line)
+            .ok_or_else(|| format!("invalid {format_name} session header"))?;
+        self.assert_stored_identity(&path, &meta, Some(id)).await?;
+        if self.compression == JsonlCompression::Zstd {
+            stream_zstd_nonpacked_events(&path, |event| visitor(std::slice::from_ref(&event)))
+        } else {
+            stream_jsonl_nonpacked_events(&path, |event| visitor(std::slice::from_ref(&event)))
+        }
+    }
+
     async fn read_user_message_events(
         &self,
         id: &SessionId,
@@ -1265,7 +1400,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             let last_seq = whole
                 .events
                 .last()
-                .map(|event| event.seq as i64)
+                .map(|event| event.seq.get() as i64)
                 .unwrap_or(-1);
             dsh_session_persistence::SessionUserMessageEvents {
                 meta: whole.meta,
@@ -1304,7 +1439,8 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             let mut frame_messages = Vec::new();
             let mut frame_last_seq = -1_i64;
             let fast = crate::packed_stream::visit_tail_reader(decoder, 1, &mut |event| {
-                frame_last_seq = frame_last_seq.max(i64::try_from(event.seq).unwrap_or(i64::MAX));
+                frame_last_seq =
+                    frame_last_seq.max(i64::try_from(event.seq.get()).unwrap_or(i64::MAX));
                 if event.type_ == "user/message" {
                     frame_messages.push(event);
                 }
@@ -1312,7 +1448,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             });
             match fast {
                 Ok(_) => {}
-                Err(crate::packed_stream::PackedStreamError::Noncanonical(_, _, _)) => {
+                Err(crate::packed_stream::PackedStreamError::Noncanonical(_, _)) => {
                     frame_messages.clear();
                     frame_last_seq = -1;
                     let decoder = zstd::stream::read::Decoder::new(bytes)
@@ -1327,7 +1463,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
                             1,
                             &mut |event: SessionEvent| {
                                 frame_last_seq = frame_last_seq
-                                    .max(i64::try_from(event.seq).unwrap_or(i64::MAX));
+                                    .max(i64::try_from(event.seq.get()).unwrap_or(i64::MAX));
                                 if event.type_ == "user/message" {
                                     frame_messages.push(event);
                                 }
@@ -1428,7 +1564,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
                 last_seq: whole
                     .events
                     .last()
-                    .map(|event| event.seq as i64)
+                    .map(|event| event.seq.get() as i64)
                     .unwrap_or(-1),
                 meta: whole.meta,
                 blank,
@@ -1451,7 +1587,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
                 last_seq: whole
                     .events
                     .last()
-                    .map(|event| event.seq as i64)
+                    .map(|event| event.seq.get() as i64)
                     .unwrap_or(-1),
                 meta: whole.meta,
                 blank,
@@ -1469,7 +1605,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let mut last_seq = -1_i64;
         for frame in &scan.frames[1..] {
             for event in self.decode_zstd_event_frame(&buffer[frame.start..frame.end])? {
-                last_seq = event.seq as i64;
+                last_seq = event.seq.get() as i64;
                 if event.type_ == "turn/start" {
                     blank = false;
                 } else if event.type_ == "user/message" {
@@ -1645,6 +1781,7 @@ impl PersistenceBackend<JsonlTornMarker> for JsonlSessionPersistence {
     async fn append_batch(
         &self,
         meta: &SessionHeader,
+        inherited_event_count: SessionLogOffset,
         events: &[SessionEvent],
         is_materialized: bool,
     ) -> Result<(), String> {
@@ -1652,7 +1789,7 @@ impl PersistenceBackend<JsonlTornMarker> for JsonlSessionPersistence {
         if is_materialized {
             self.append_lines(meta, events).await
         } else {
-            self.materialize(meta, events).await
+            self.materialize(meta, inherited_event_count, events).await
         }
     }
 
@@ -1710,19 +1847,84 @@ impl PersistenceBackend<JsonlTornMarker> for JsonlSessionPersistence {
 #[cfg(test)]
 mod history_window_tests {
     use super::*;
-    use dsh_session::{SESSION_FORMAT_VERSION, SurfaceOp, session_id};
+    use dsh_session::{SESSION_FORMAT_VERSION, SessionSeq, SurfaceOp, session_id};
     use dsh_session_persistence::{SessionPersistenceApi, SessionReadForwardWindowRequest};
 
     fn event(seq: u64, type_: &str, append_surface: bool) -> SessionEvent {
         SessionEvent {
             type_: type_.to_string(),
-            seq,
+            seq: SessionSeq::new(seq).unwrap(),
             time: seq as i64,
             data: serde_json::json!({}),
             ignorable: None,
             surface_op: append_surface.then_some(SurfaceOp::Append),
             source_event_seqs: None,
         }
+    }
+
+    #[tokio::test]
+    async fn plain_jsonl_nonpacked_scan_skips_large_packed_chunk_rows() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-jsonl-plain-scan-{}", uuid::Uuid::new_v4()));
+        let ctx = Context::root();
+        let backend = JsonlSessionPersistence::install(
+            &ctx,
+            JsonlConfig {
+                root: root.to_string_lossy().to_string(),
+                compression: JsonlCompression::None,
+                ..JsonlConfig::default()
+            },
+        )
+        .expect("install jsonl persistence");
+        let id = session_id("jsonl-plain-nonpacked");
+        SessionPersistenceApi::create(
+            backend.as_ref(),
+            SessionHeader {
+                version: SESSION_FORMAT_VERSION,
+                id: id.clone(),
+                created_at: 1,
+                cwd: Some("C:/workspace".to_string()),
+                parent_session: None,
+                is_seeded: false,
+                origin: None,
+                delegation_depth: None,
+                agent_preset: Some("standard".to_string()),
+            },
+            None,
+        )
+        .await
+        .expect("create session");
+        let mut events = Vec::new();
+        for seq in 0..2_000 {
+            let mut chunk = event(seq, "assistant/chunk", false);
+            chunk.data = serde_json::json!({
+                "turn": 1,
+                "step": 1,
+                "chunk": { "type": "text-delta", "index": 0, "text": "x" }
+            });
+            events.push(chunk);
+        }
+        events.push(event(2_000, "user/message", true));
+        SessionPersistenceApi::append(backend.as_ref(), &id, &events)
+            .await
+            .expect("append events");
+
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen_for_visitor = seen.clone();
+        SessionPersistenceApi::visit_nonpacked_events(
+            backend.as_ref(),
+            &id,
+            Arc::new(move |events| {
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0].type_, "user/message");
+                seen_for_visitor.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(false)
+            }),
+        )
+        .await
+        .expect("scan nonpacked events");
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let _ = tokio::fs::remove_dir_all(root).await;
     }
 
     #[tokio::test]
@@ -1747,11 +1949,12 @@ mod history_window_tests {
                 created_at: 1,
                 cwd: Some("C:/workspace".to_string()),
                 parent_session: None,
-                seed_length: None,
+                is_seeded: false,
                 origin: None,
                 delegation_depth: None,
                 agent_preset: Some("standard".to_string()),
             },
+            None,
         )
         .await
         .expect("create session");
@@ -1778,7 +1981,10 @@ mod history_window_tests {
         .expect("read bounded window");
 
         assert!(window.events.len() <= 512);
-        assert_eq!(window.events.last().map(|event| event.seq), Some(2_001));
+        assert_eq!(
+            window.events.last().map(|event| event.seq.get()),
+            Some(2_001)
+        );
         assert_eq!(window.oversized_event_count, None);
         assert!(window.has_more);
         let metadata = SessionPersistenceApi::read_list_metadata(backend.as_ref(), &id)
@@ -1792,8 +1998,8 @@ mod history_window_tests {
             .await
             .expect("read first event chunk");
         assert_eq!(first.events.len(), 1_000);
-        assert_eq!(first.events.first().map(|event| event.seq), Some(0));
-        assert_eq!(first.events.last().map(|event| event.seq), Some(999));
+        assert_eq!(first.events.first().map(|event| event.seq.get()), Some(0));
+        assert_eq!(first.events.last().map(|event| event.seq.get()), Some(999));
         assert_eq!(first.next_seq, Some(1_000));
 
         let path = backend
@@ -1850,11 +2056,12 @@ mod history_window_tests {
                 created_at: 1,
                 cwd: Some("D:/workspace".to_string()),
                 parent_session: None,
-                seed_length: None,
+                is_seeded: false,
                 origin: None,
                 delegation_depth: None,
                 agent_preset: Some("standard".to_string()),
             },
+            None,
         )
         .await
         .expect("create session");
@@ -1889,8 +2096,14 @@ mod history_window_tests {
         .await
         .expect("read forward window");
 
-        assert_eq!(window.events.first().map(|event| event.seq), Some(4_000));
-        assert_eq!(window.events.last().map(|event| event.seq), Some(4_099));
+        assert_eq!(
+            window.events.first().map(|event| event.seq.get()),
+            Some(4_000)
+        );
+        assert_eq!(
+            window.events.last().map(|event| event.seq.get()),
+            Some(4_099)
+        );
         assert_eq!(window.events.len(), 100);
         assert!(window.has_more);
 
@@ -1923,11 +2136,12 @@ mod history_window_tests {
                 created_at: 1,
                 cwd: Some("D:/workspace".to_string()),
                 parent_session: None,
-                seed_length: None,
+                is_seeded: false,
                 origin: None,
                 delegation_depth: None,
                 agent_preset: Some("standard".to_string()),
             },
+            None,
         )
         .await
         .expect("create session");
@@ -1984,11 +2198,12 @@ mod history_window_tests {
                 created_at: 1,
                 cwd: Some("D:/workspace".to_string()),
                 parent_session: None,
-                seed_length: None,
+                is_seeded: false,
                 origin: None,
                 delegation_depth: None,
                 agent_preset: Some("standard".to_string()),
             },
+            None,
         )
         .await
         .expect("create session");
@@ -2022,8 +2237,11 @@ mod history_window_tests {
         .expect("read bounded failed turn");
 
         assert_eq!(window.events.len(), 4_096);
-        assert_eq!(window.events.first().map(|event| event.seq), Some(3));
-        assert_eq!(window.events.last().map(|event| event.seq), Some(4_098));
+        assert_eq!(window.events.first().map(|event| event.seq.get()), Some(3));
+        assert_eq!(
+            window.events.last().map(|event| event.seq.get()),
+            Some(4_098)
+        );
         assert_eq!(window.oversized_event_count, None);
         assert!(window.has_more);
 

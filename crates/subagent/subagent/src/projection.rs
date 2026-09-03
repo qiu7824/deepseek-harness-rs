@@ -167,13 +167,13 @@ pub(crate) fn descriptor_identity(event: &SessionEvent) -> Option<SubagentIdenti
         crate::descriptor::SubagentDescriptorData::OneShot { label, .. } => {
             Some(SubagentIdentityProjection::OneShot {
                 label,
-                seq: event.seq,
+                seq: event.seq.get(),
             })
         }
         crate::descriptor::SubagentDescriptorData::Continuable { label, .. } => {
             Some(SubagentIdentityProjection::Continuable {
                 label,
-                seq: event.seq,
+                seq: event.seq.get(),
             })
         }
     }
@@ -219,6 +219,6 @@ pub fn same_lifecycle(meta: &SessionHeader, expected: &SessionHeader) -> bool {
         && meta.created_at == expected.created_at
         && meta.cwd == expected.cwd
         && meta.parent_session == expected.parent_session
-        && meta.seed_length == expected.seed_length
+        && meta.is_seeded == expected.is_seeded
         && meta.delegation_depth == expected.delegation_depth
 }

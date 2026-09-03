@@ -6,6 +6,7 @@
 //! same way the runtime sees it: a string `type` plus a lossless-JSON
 //! `data` payload, with typed constructors for every core event.
 
+use std::fmt;
 use std::path::Path;
 
 use dsh_brand::Branded;
@@ -26,6 +27,101 @@ pub type SessionId = Branded<SessionIdTag>;
 pub fn session_id(id: impl Into<String>) -> SessionId {
     Branded::new(id)
 }
+
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+macro_rules! session_position {
+    ($name:ident, $doc:literal) => {
+        #[doc = $doc]
+        #[repr(transparent)]
+        #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(u64);
+
+        impl $name {
+            pub const ZERO: Self = Self(0);
+
+            pub fn new(value: u64) -> Result<Self, String> {
+                if value > MAX_SAFE_INTEGER {
+                    return Err(format!(
+                        "{} must be a non-negative safe integer, got {value}",
+                        stringify!($name)
+                    ));
+                }
+                Ok(Self(value))
+            }
+
+            pub const fn get(self) -> u64 {
+                self.0
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter
+                    .debug_tuple(stringify!($name))
+                    .field(&self.0)
+                    .finish()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(formatter)
+            }
+        }
+
+        impl PartialEq<u64> for $name {
+            fn eq(&self, other: &u64) -> bool {
+                self.0 == *other
+            }
+        }
+
+        impl PartialEq<$name> for u64 {
+            fn eq(&self, other: &$name) -> bool {
+                *self == other.0
+            }
+        }
+
+        impl From<$name> for u64 {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+
+        impl std::ops::Add<u64> for $name {
+            type Output = u64;
+
+            fn add(self, rhs: u64) -> Self::Output {
+                self.0 + rhs
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.serialize_u64(self.0)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let value = u64::deserialize(deserializer)?;
+                Self::new(value).map_err(D::Error::custom)
+            }
+        }
+    };
+}
+
+session_position!(SessionSeq, "Sequence number of one existing Session event.");
+session_position!(
+    SessionLogOffset,
+    "A Session log gap, prefix length, or read offset."
+);
 
 /// The on-disk session format version, stamped into every newly-written
 /// [`SessionHeader`] and enforced by every persistence backend on load.
@@ -52,13 +148,9 @@ pub struct SessionHeader {
         rename = "parentSession"
     )]
     pub parent_session: Option<SessionId>,
-    /// How many leading events were inherited through a seed.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "seedLength"
-    )]
-    pub seed_length: Option<u64>,
+    /// Whether this session contains a fork-inherited event prefix.
+    #[serde(rename = "isSeeded")]
+    pub is_seeded: bool,
     /// Coarse product classification for a subagent child session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
@@ -83,6 +175,8 @@ pub struct SessionHeader {
 pub struct CreateSessionOptions {
     /// Initial replay or fork history supplied at construction.
     pub seed: Option<Vec<crate::SessionEvent>>,
+    /// Exact fork-inherited prefix length for a seeded Session.
+    pub inherited_event_count: Option<SessionLogOffset>,
     /// Storage metadata folded into the [`SessionHeader`].
     pub meta: Option<CreateSessionMeta>,
 }
@@ -93,7 +187,7 @@ pub struct CreateSessionMeta {
     pub cwd: Option<String>,
     pub parent_session: Option<SessionId>,
     pub created_at: Option<u64>,
-    pub seed_length: Option<u64>,
+    pub is_seeded: Option<bool>,
     pub origin: Option<String>,
     pub delegation_depth: Option<u64>,
     pub agent_preset: Option<String>,
@@ -347,7 +441,7 @@ pub struct SessionEvent {
     #[serde(rename = "type")]
     pub type_: String,
     /// Monotonic sequence number within the session.
-    pub seq: u64,
+    pub seq: SessionSeq,
     /// Unix epoch milliseconds.
     pub time: i64,
     pub data: JsonValue,
@@ -505,17 +599,19 @@ pub fn validate_session_header(id: &SessionId, input: &JsonValue) -> Result<Sess
     {
         return Err("session header parentSession must be a string".to_string());
     }
-    for (key, field) in [
-        ("seedLength", "seedLength"),
-        ("delegationDepth", "delegationDepth"),
-    ] {
-        if let Some(value) = record.get(key)
-            && value.as_u64().is_none()
-        {
-            return Err(format!(
-                "session header {field} must be a non-negative safe integer"
-            ));
-        }
+    if record.contains_key("seedLength") {
+        return Err("session header has invalid field \"seedLength\"".to_string());
+    }
+    let is_seeded = record
+        .get("isSeeded")
+        .and_then(JsonValue::as_bool)
+        .ok_or_else(|| "session header isSeeded must be a boolean".to_string())?;
+    if let Some(value) = record.get("delegationDepth")
+        && value.as_u64().is_none()
+    {
+        return Err(
+            "session header delegationDepth must be a non-negative safe integer".to_string(),
+        );
     }
     if let Some(origin) = record.get("origin")
         && origin.as_str() != Some("subagent")
@@ -537,7 +633,7 @@ pub fn validate_session_header(id: &SessionId, input: &JsonValue) -> Result<Sess
         parent_session: record
             .get("parentSession")
             .and_then(|value| value.as_str().map(session_id)),
-        seed_length: record.get("seedLength").and_then(|value| value.as_u64()),
+        is_seeded,
         origin: record
             .get("origin")
             .and_then(|value| value.as_str().map(str::to_string)),
@@ -564,6 +660,7 @@ pub fn snapshot_session_header(
             "version": SESSION_FORMAT_VERSION,
             "id": id,
             "createdAt": now,
+            "isSeeded": false,
         }),
     };
     let snapshot = snapshot_json_value(&input)

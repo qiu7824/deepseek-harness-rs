@@ -209,9 +209,9 @@ async fn prompt(
             client_time_zone: None,
         },
     );
-    let baseline = agent.session().seq() as u64;
+    let baseline = agent.session().seq().get();
     agent.followup(message.clone());
-    let receipt_end = agent.session().seq() as u64;
+    let receipt_end = agent.session().seq().get();
     for event in agent.session().events_from(baseline) {
         notify_event(&session_id_text, &event)?;
     }

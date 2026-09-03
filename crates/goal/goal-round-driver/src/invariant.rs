@@ -162,7 +162,7 @@ async fn install_event_checks(
             if let Err(error) = apply_goal_event(&mut state, &event) {
                 fail(&error);
             }
-            staged.lock().insert((key, event.seq), state);
+            staged.lock().insert((key, event.seq.get()), state);
             None
         })
     });
@@ -193,7 +193,7 @@ async fn install_event_checks(
                 return None;
             };
             let key = session_key(&session);
-            if let Some(state) = staged.lock().remove(&(key, event.seq)) {
+            if let Some(state) = staged.lock().remove(&(key, event.seq.get())) {
                 states.lock().insert(key, state);
             } else {
                 seed_session(&session, &states, &fail);

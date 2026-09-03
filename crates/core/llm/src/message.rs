@@ -180,16 +180,9 @@ pub enum MessageSource {
         baseline_identity: Option<String>,
         changes: Vec<AgentInstructionChange>,
     },
-    /// A model coordinator's follow-up to one of its children (TS
-    /// `coordinator` source augmentation).
-    Coordinator {
-        form: ContextForm,
-        #[serde(rename = "senderSessionId")]
-        sender_session_id: String,
-    },
-    /// Durable attribution for a continuable child's explicit parent report
-    /// (TS `subagent-report` source augmentation).
-    SubagentReport {
+    /// Durable attribution for one model-authored message between adjacent
+    /// Agents.
+    AgentMessage {
         form: ContextForm,
         #[serde(rename = "senderSessionId")]
         sender_session_id: String,
@@ -215,8 +208,7 @@ impl MessageSource {
             MessageSource::SkillCatalog { .. } => "skill-catalog",
             MessageSource::SkillInvocation { .. } => "skill-invocation",
             MessageSource::AgentInstructions { .. } => "agent-instructions",
-            MessageSource::Coordinator { .. } => "coordinator",
-            MessageSource::SubagentReport { .. } => "subagent-report",
+            MessageSource::AgentMessage { .. } => "agent-message",
             MessageSource::SubagentSettled { .. } => "subagent-settled",
         }
     }

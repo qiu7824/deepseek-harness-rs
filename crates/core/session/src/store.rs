@@ -36,7 +36,8 @@ use crate::json::snapshot_json_value;
 use crate::surface::{SurfaceManager, derive_event_message};
 use crate::types::{
     CreateSessionOptions, EpochHeader, RequestContext, SessionEvent, SessionHeader, SessionId,
-    SurfaceIntent, end_seed_data, session_id, snapshot_session_header, validate_session_header,
+    SessionLogOffset, SessionSeq, SurfaceIntent, end_seed_data, session_id,
+    snapshot_session_header, validate_session_header,
 };
 
 /// Store attachment keyed by session identity (TS `attachments` WeakMap).
@@ -291,6 +292,7 @@ fn assert_supported_request_header(
 #[derive(Default)]
 pub(crate) struct SessionState {
     log: Vec<SessionEvent>,
+    events_snapshot: Option<Arc<Vec<SessionEvent>>>,
     surface: SurfaceManager,
     header_fold: Option<EpochHeader>,
     header_fold_seq: usize,
@@ -311,7 +313,8 @@ pub struct Session {
 pub(crate) struct SessionInner {
     pub id: SessionId,
     pub header: SessionHeader,
-    pub first_live_seq: usize,
+    pub first_live_seq: SessionLogOffset,
+    pub inherited_event_count: SessionLogOffset,
     pub state: Mutex<SessionState>,
 }
 
@@ -334,8 +337,9 @@ impl Session {
         id: SessionId,
         seed: Option<Vec<SessionEvent>>,
         header: Option<&SessionHeader>,
+        inherited_event_count: Option<SessionLogOffset>,
     ) -> Result<Session, String> {
-        Self::construct(id, seed, header, false)
+        Self::construct(id, seed, header, false, inherited_event_count)
     }
 
     /// Restore a detached session by taking ownership of fresh persistence
@@ -344,8 +348,15 @@ impl Session {
         id: SessionId,
         seed: Vec<SessionEvent>,
         header: &SessionHeader,
+        inherited_event_count: SessionLogOffset,
     ) -> Result<Session, String> {
-        Self::construct(id, Some(seed), Some(header), true)
+        Self::construct(
+            id,
+            Some(seed),
+            Some(header),
+            true,
+            Some(inherited_event_count),
+        )
     }
 
     fn construct(
@@ -353,6 +364,7 @@ impl Session {
         seed: Option<Vec<SessionEvent>>,
         header: Option<&SessionHeader>,
         restore: bool,
+        supplied_inherited_event_count: Option<SessionLogOffset>,
     ) -> Result<Session, String> {
         let had_seed = seed.is_some();
         let mut state = SessionState::default();
@@ -378,7 +390,7 @@ impl Session {
                     &snapshot.data,
                     &format!("seed event at index {index}"),
                 )?;
-                if snapshot.seq != index as u64 {
+                if snapshot.seq.get() != index as u64 {
                     return Err(format!(
                         "seed event at index {index} has seq {} (expected {index}); seed must be contiguous from 0",
                         snapshot.seq
@@ -391,7 +403,7 @@ impl Session {
                 state.log.push(snapshot);
             }
         }
-        let first_live_seq = state.log.len();
+        let first_live_seq = SessionLogOffset::new(state.log.len() as u64)?;
         let header = match header {
             Some(header) => {
                 let value = serde_json::to_value(header).map_err(|_| {
@@ -401,6 +413,20 @@ impl Session {
             }
             None => snapshot_session_header(&id, None)?,
         };
+        if header.is_seeded && !had_seed {
+            return Err("seeded session requires an explicit constructor seed".to_string());
+        }
+        if header.is_seeded && supplied_inherited_event_count.is_none() {
+            return Err("seeded session requires an inherited event count".to_string());
+        }
+        let inherited_event_count =
+            supplied_inherited_event_count.unwrap_or(SessionLogOffset::ZERO);
+        if !header.is_seeded && inherited_event_count != SessionLogOffset::ZERO {
+            return Err("unseeded session inherited event count must be 0".to_string());
+        }
+        if inherited_event_count.get() > state.log.len() as u64 {
+            return Err("session inherited event count exceeds its event log".to_string());
+        }
         // Appended here so the marker is already in `events` when a backend
         // captures the creation seed; re-marking is skipped.
         if had_seed
@@ -408,7 +434,8 @@ impl Session {
         {
             let event = SessionEvent {
                 type_: "session/end-seed".to_string(),
-                seq: state.log.len() as u64,
+                seq: SessionSeq::new(state.log.len() as u64)
+                    .expect("a Rust Vec length fits the public Session wire"),
                 time: now_ms(),
                 data: end_seed_data(),
                 ignorable: None,
@@ -426,6 +453,7 @@ impl Session {
                 id,
                 header,
                 first_live_seq,
+                inherited_event_count,
                 state: Mutex::new(state),
             }),
         })
@@ -453,15 +481,52 @@ impl Session {
     }
 
     /// The first seq appended IN THIS PROCESS (TS `firstLiveSeq`).
-    pub fn first_live_seq(&self) -> usize {
+    pub fn first_live_seq(&self) -> SessionLogOffset {
         self.inner.first_live_seq
     }
 
-    /// An immutable snapshot of the append-only event log. The snapshot is
-    /// reused until the next append; a previously returned array does not
-    /// grow later.
+    /// Number of leading events inherited from this Session's fork parent.
+    pub fn inherited_event_count(&self) -> SessionLogOffset {
+        self.inner.inherited_event_count
+    }
+
+    /// Materialize an immutable snapshot of a half-open event range.
+    pub fn snapshot_events(
+        &self,
+        from_seq: SessionLogOffset,
+        to_seq_exclusive: Option<SessionLogOffset>,
+    ) -> Arc<Vec<SessionEvent>> {
+        let mut state = self.inner.state.lock();
+        let end = to_seq_exclusive
+            .map(|value| value.get() as usize)
+            .unwrap_or(state.log.len())
+            .min(state.log.len());
+        let start = (from_seq.get() as usize).min(end);
+        if start == 0 && end == state.log.len() {
+            if let Some(snapshot) = &state.events_snapshot {
+                return Arc::clone(snapshot);
+            }
+            let snapshot = Arc::new(state.log.clone());
+            state.events_snapshot = Some(Arc::clone(&snapshot));
+            return snapshot;
+        }
+        Arc::new(state.log[start..end].to_vec())
+    }
+
+    /// Return this Session's child-owned events after its inherited prefix.
+    pub fn own_events(&self) -> Arc<Vec<SessionEvent>> {
+        self.snapshot_events(self.inherited_event_count(), None)
+    }
+
+    /// Compatibility wrapper for Rust consumers while they migrate to the
+    /// explicit-cost snapshot/read APIs.
     pub fn events(&self) -> Arc<Vec<SessionEvent>> {
-        Arc::new(self.inner.state.lock().log.clone())
+        self.snapshot_events(SessionLogOffset::ZERO, None)
+    }
+
+    /// Whether one existing event belongs to this Session rather than its parent.
+    pub fn is_own_seq(&self, seq: SessionSeq) -> bool {
+        seq.get() >= self.inherited_event_count().get() && seq.get() < self.seq().get()
     }
 
     /// Clone only the durable tail at or after `from_seq` without
@@ -490,14 +555,15 @@ impl Session {
 
     /// Clone one event by durable sequence without materializing the full
     /// immutable [`Self::events`] snapshot.
-    pub fn event_at(&self, seq: u64) -> Option<SessionEvent> {
-        let index = usize::try_from(seq).ok()?;
+    pub fn event_at(&self, seq: SessionSeq) -> Option<SessionEvent> {
+        let index = seq.get() as usize;
         self.inner.state.lock().log.get(index).cloned()
     }
 
     /// The next event's sequence number — always the log length.
-    pub fn seq(&self) -> usize {
-        self.inner.state.lock().log.len()
+    pub fn seq(&self) -> SessionLogOffset {
+        SessionLogOffset::new(self.inner.state.lock().log.len() as u64)
+            .expect("a Rust Vec length fits the public Session wire")
     }
 
     /// The ordered surface over this session's event log (snapshot per
@@ -561,7 +627,7 @@ impl Session {
                 }
                 let event = SessionEvent {
                     type_: type_.to_string(),
-                    seq: state.log.len() as u64,
+                    seq: SessionSeq::new(state.log.len() as u64)?,
                     time: now_ms(),
                     data: data_snapshot,
                     ignorable: None,
@@ -589,6 +655,7 @@ impl Session {
                     None => Vec::new(),
                 };
                 state.log.push(event.clone());
+                state.events_snapshot = None;
                 Ok((Some(event), listeners))
             })();
         let (event, listeners) = match outcome {
@@ -1026,12 +1093,20 @@ impl SessionStore {
                 .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as u64),
             cwd: meta.as_ref().and_then(|meta| meta.cwd.clone()),
             parent_session: meta.as_ref().and_then(|meta| meta.parent_session.clone()),
-            seed_length: meta.as_ref().and_then(|meta| meta.seed_length),
+            is_seeded: meta
+                .as_ref()
+                .and_then(|meta| meta.is_seeded)
+                .unwrap_or(false),
             origin: meta.as_ref().and_then(|meta| meta.origin.clone()),
             delegation_depth: meta.as_ref().and_then(|meta| meta.delegation_depth),
             agent_preset: meta.as_ref().and_then(|meta| meta.agent_preset.clone()),
         };
-        Session::create(session_id, options.seed, Some(&header))
+        Session::create(
+            session_id,
+            options.seed,
+            Some(&header),
+            options.inherited_event_count,
+        )
     }
 
     /// Enter a prepared session into the store: install the publication
@@ -1250,13 +1325,16 @@ impl SessionStore {
         let meta = crate::types::CreateSessionMeta {
             cwd: live_source.header().cwd.clone(),
             parent_session: Some(live_source.id().clone()),
-            seed_length: Some(seed.len() as u64),
+            is_seeded: Some(true),
             ..Default::default()
         };
         self.create(
             caller,
             child_session_id,
             Some(CreateSessionOptions {
+                inherited_event_count: Some(
+                    SessionLogOffset::new(seed.len() as u64).map_err(ForkError::Store)?,
+                ),
                 seed: Some(seed),
                 meta: Some(meta),
             }),
@@ -1300,7 +1378,7 @@ impl SessionStore {
             Some(boundary) => boundary,
             None => match events.last() {
                 None => return Ok(Vec::new()),
-                Some(last) => last.seq,
+                Some(last) => last.seq.get(),
             },
         };
         if boundary >= events.len() as u64 {

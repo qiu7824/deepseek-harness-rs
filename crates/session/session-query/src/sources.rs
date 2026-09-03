@@ -16,7 +16,7 @@ pub fn assert_session_headers_compatible(
         || a.created_at != b.created_at
         || a.cwd != b.cwd
         || a.parent_session != b.parent_session
-        || a.seed_length != b.seed_length
+        || a.is_seeded != b.is_seeded
         || a.delegation_depth.unwrap_or(0) != b.delegation_depth.unwrap_or(0)
     {
         return Err(SessionQueryError::new(

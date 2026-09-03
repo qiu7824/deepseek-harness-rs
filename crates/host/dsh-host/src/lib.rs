@@ -147,10 +147,21 @@ struct OpenAiCompatibleModelConfig {
     context_window: Option<u64>,
     #[serde(default)]
     max_tokens: Option<u64>,
+    /// Request modalities this exact model accepts. An empty or absent list is
+    /// deliberately text-only until a provider-level fallback is declared.
+    #[serde(default)]
+    input: Vec<OpenAiInputModality>,
     /// Hermes-style stable effort ids mapped to exact provider wire values.
     /// `off: null` means disabling reasoning is represented by omission.
     #[serde(default)]
     reasoning_efforts: Option<ReasoningEffortsConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum OpenAiInputModality {
+    Text,
+    Image,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -202,7 +213,15 @@ struct OpenAiCompatibleProviderConfig {
     api: String,
     #[serde(rename = "baseURL")]
     base_url: String,
+    #[serde(default)]
+    headers: indexmap::IndexMap<String, String>,
+    #[serde(default = "default_openai_input")]
+    default_input: Vec<OpenAiInputModality>,
     models: Vec<OpenAiCompatibleModelConfig>,
+}
+
+fn default_openai_input() -> Vec<OpenAiInputModality> {
+    vec![OpenAiInputModality::Text]
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -228,6 +247,13 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
         Schema::number().min(1.0).step(1.0),
     );
     model.insert("maxTokens".to_string(), Schema::number().min(1.0).step(1.0));
+    model.insert(
+        "input".to_string(),
+        Schema::array(Schema::union(vec![
+            Schema::constant(Data::String("text".to_string())),
+            Schema::constant(Data::String("image".to_string())),
+        ])),
+    );
     model.insert(
         "reasoningEfforts".to_string(),
         Schema::union(vec![
@@ -258,6 +284,21 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
         .required(true),
     );
     profile.insert("baseURL".to_string(), Schema::string().required(true));
+    // Deployment headers are Host-owned configuration. The browser only needs
+    // their configured state, never their names or values.
+    profile.insert(
+        "headers".to_string(),
+        Schema::dict(Schema::string(), None).role("secret", None),
+    );
+    profile.insert(
+        "defaultInput".to_string(),
+        Schema::array(Schema::union(vec![
+            Schema::constant(Data::String("text".to_string())),
+            Schema::constant(Data::String("image".to_string())),
+        ]))
+        .min(1.0)
+        .default(Data::Array(vec![Data::String("text".to_string())])),
+    );
     profile.insert(
         "models".to_string(),
         Schema::array(Schema::object(model)).required(true),
@@ -292,8 +333,86 @@ fn discovery_models_url(base_url: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
+type DiscoveryCredentialResolver =
+    Arc<dyn Fn() -> cordis::BoxFuture<'static, Result<Option<String>, String>> + Send + Sync>;
+
+fn validated_discovery_headers(
+    provider: &str,
+    headers: &indexmap::IndexMap<String, String>,
+) -> Result<reqwest::header::HeaderMap, String> {
+    const MAX_PROFILE_HEADERS: usize = 64;
+    const MAX_PROFILE_HEADER_NAME_BYTES: usize = 256;
+    const MAX_PROFILE_HEADER_VALUE_BYTES: usize = 8 * 1024;
+    const MAX_PROFILE_HEADER_BYTES: usize = 64 * 1024;
+
+    if headers.len() > MAX_PROFILE_HEADERS {
+        return Err(format!(
+            "llm-pi-ai: provider \"{provider}\" declares too many headers (maximum {MAX_PROFILE_HEADERS})"
+        ));
+    }
+    let mut total = 0usize;
+    let mut validated = reqwest::header::HeaderMap::new();
+    for (name, value) in headers {
+        if name.len() > MAX_PROFILE_HEADER_NAME_BYTES
+            || value.len() > MAX_PROFILE_HEADER_VALUE_BYTES
+            || total
+                .checked_add(name.len())
+                .and_then(|size| size.checked_add(value.len()))
+                .is_none_or(|size| size > MAX_PROFILE_HEADER_BYTES)
+        {
+            return Err(format!(
+                "llm-pi-ai: provider \"{provider}\" header \"{name}\" exceeds the supported size limit"
+            ));
+        }
+        let header_name =
+            reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+                format!(
+                    "llm-pi-ai: provider \"{provider}\" header \"{name}\" is not valid for HTTP"
+                )
+            })?;
+        let header_value = reqwest::header::HeaderValue::from_str(value).map_err(|_| {
+            format!("llm-pi-ai: provider \"{provider}\" header \"{name}\" is not valid for HTTP")
+        })?;
+        total += name.len() + value.len();
+        validated.append(header_name, header_value);
+    }
+    Ok(validated)
+}
+
+fn same_discovery_endpoint(requested: &str, stored: &str) -> bool {
+    let normalize = |raw: &str| {
+        reqwest::Url::parse(raw).ok().map(|url| {
+            (
+                url.scheme().to_ascii_lowercase(),
+                url.username().to_string(),
+                url.password().map(str::to_string),
+                url.host_str().map(str::to_ascii_lowercase),
+                url.port_or_known_default(),
+                url.path().trim_end_matches('/').to_string(),
+            )
+        })
+    };
+    normalize(requested) == normalize(stored) && normalize(requested).is_some()
+}
+
+fn usable_discovery_api_key(raw: &str) -> Result<String, String> {
+    match dsh_llm::normalize_api_key(raw) {
+        dsh_llm::ApiKeyCheck::Ok { value } => Ok(value),
+        dsh_llm::ApiKeyCheck::Rejected {
+            reason: dsh_llm::ApiKeyRejection::Empty,
+        } => Err("model discovery API key is blank".to_string()),
+        dsh_llm::ApiKeyCheck::Rejected {
+            reason: dsh_llm::ApiKeyRejection::IllegalCharacters,
+        } => {
+            Err("model discovery API key contains characters no HTTP header can carry".to_string())
+        }
+    }
+}
+
 async fn discover_openai_compatible_models(
     request: dsh_llm::LlmModelDiscoveryRequest,
+    stored_profile: Option<OpenAiCompatibleProviderConfig>,
+    resolve_stored_api_key: Option<DiscoveryCredentialResolver>,
 ) -> Result<Vec<dsh_llm::LlmDiscoveredModel>, String> {
     if request
         .api
@@ -313,10 +432,46 @@ async fn discover_openai_compatible_models(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| format!("model discovery client failed: {error}"))?;
-    let mut builder = client.get(url);
-    if let Some(api_key) = request.api_key.as_deref().filter(|key| !key.is_empty()) {
-        builder = builder.bearer_auth(api_key);
+    let provider = request.provider.as_deref().unwrap_or("");
+    let mut headers = match stored_profile.as_ref() {
+        Some(profile) => validated_discovery_headers(provider, &profile.headers)?,
+        None => reqwest::header::HeaderMap::new(),
+    };
+    let draft_has_api_key = request.api_key.is_some();
+    // Host-owned deployment headers are applied first. Reserved request facts
+    // below overwrite them explicitly: Accept and attribution are Harness-owned,
+    // while a draft/stored API key owns Authorization when present.
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+    for (name, value) in dsh_llm::attribution_headers(&dsh_llm::app_identity()) {
+        let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+            .expect("static attribution header name");
+        let value = reqwest::header::HeaderValue::from_str(&value)
+            .expect("static attribution header value");
+        headers.insert(name, value);
     }
+    let supplied_api_key = match request.api_key.as_deref() {
+        Some(draft) => Some(usable_discovery_api_key(draft)?),
+        None => match resolve_stored_api_key {
+            Some(resolve) => resolve()
+                .await?
+                .map(|key| usable_discovery_api_key(&key))
+                .transpose()?,
+            None => None,
+        },
+    };
+    if let Some(api_key) = supplied_api_key {
+        let value =
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|_| {
+                "model discovery API key cannot be represented as authorization".to_string()
+            })?;
+        headers.insert(reqwest::header::AUTHORIZATION, value);
+    } else if draft_has_api_key {
+        headers.remove(reqwest::header::AUTHORIZATION);
+    }
+    let builder = client.get(url).headers(headers);
     let response = if let Some(signal) = request.signal.as_ref() {
         tokio::select! {
             response = builder.send() => response,
@@ -371,14 +526,20 @@ async fn discover_openai_compatible_models(
             id: id.to_string(),
             name: item
                 .get("name")
+                .or_else(|| item.get("display_name"))
                 .and_then(serde_json::Value::as_str)
+                .filter(|name| !name.is_empty())
                 .map(str::to_string),
             context_window: item
                 .get("context_window")
-                .and_then(serde_json::Value::as_u64),
-            max_tokens: item
-                .get("max_tokens")
+                .or_else(|| item.get("context_length"))
                 .and_then(serde_json::Value::as_u64)
+                .filter(|value| *value > 0),
+            max_tokens: item
+                .get("max_output_tokens")
+                .or_else(|| item.get("max_tokens"))
+                .and_then(serde_json::Value::as_u64)
+                .filter(|value| *value > 0)
                 .or_else(|| dsh_llm_deepseek::inferred_model_max_tokens(id)),
         });
     }
@@ -404,6 +565,11 @@ fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSett
                 "llm-pi-ai: provider \"{provider}\" must use openai-completions or openai-responses"
             ));
         }
+        if profile.default_input.is_empty() {
+            return Err(format!(
+                "llm-pi-ai: provider \"{provider}\" defaultInput must contain at least one modality"
+            ));
+        }
         if !(profile.base_url.starts_with("https://")
             || profile.base_url.starts_with("http://127.0.0.1")
             || profile.base_url.starts_with("http://localhost"))
@@ -412,6 +578,7 @@ fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSett
                 "llm-pi-ai: provider \"{provider}\" needs an HTTPS baseURL (loopback HTTP is allowed for testing)"
             ));
         }
+        validated_discovery_headers(provider, &profile.headers)?;
         if profile.models.is_empty() || profile.models.iter().any(|model| model.id.is_empty()) {
             return Err(format!(
                 "llm-pi-ai: provider \"{provider}\" needs at least one named model"
@@ -529,7 +696,14 @@ impl OpenAiCompatibleAdapter {
                                     })
                                 }
                             },
-                            image_input: None,
+                            image_input: Some(
+                                (if model.input.is_empty() {
+                                    &profile.default_input
+                                } else {
+                                    &model.input
+                                })
+                                .contains(&OpenAiInputModality::Image),
+                            ),
                         })
                         .collect(),
                 ),
@@ -616,9 +790,10 @@ use dsh_host_directory_picker_browse::{BrowseDirectoryPicker, Config as PickerCo
 use dsh_host_frontend_static::Config as FrontendConfig;
 use dsh_host_frontend_static::apply as apply_frontend_static;
 use dsh_host_plugin_inventory::PluginInventoryGateway;
+pub use dsh_host_webserver::Host as BindHost;
 use dsh_host_webserver::{
-    Config as WebConfig, Host as BindHost, RouteDisposer, WebHandlerError, WebRequest, WebResponse,
-    WebRoute, WebRouteKind, WebServer, WebUpgradeRoute, WebUpgraded, accept_websocket,
+    Config as WebConfig, RouteDisposer, WebHandlerError, WebRequest, WebResponse, WebRoute,
+    WebRouteKind, WebServer, WebUpgradeRoute, WebUpgraded, accept_websocket,
 };
 use dsh_invariants::{InvariantConfig, InvariantRegistry};
 use dsh_jobs_local::LocalJobRegistry;
@@ -1005,31 +1180,42 @@ fn origin_matches_host(origin: &str, host: &str) -> bool {
         == canonical_authority(host, Some(80))
 }
 
-fn trusted_web_request(request: &WebRequest) -> bool {
-    let host = request
-        .headers()
+fn allowed_web_authority(authority: &str, allow_remote_host: bool) -> bool {
+    is_loopback_authority(authority)
+        || (allow_remote_host
+            && authority.trim() == authority
+            && canonical_authority(authority, None).is_some())
+}
+
+fn trusted_web_headers(headers: &http::HeaderMap, allow_remote_host: bool) -> bool {
+    let host = headers
         .get(http::header::HOST)
         .and_then(|value| value.to_str().ok());
-    host.is_some_and(is_loopback_authority)
-        && !request
-            .headers()
+    let trusted_host =
+        host.is_some_and(|authority| allowed_web_authority(authority, allow_remote_host));
+    trusted_host
+        && !headers
             .get("sec-fetch-site")
             .and_then(|value| value.to_str().ok())
             .is_some_and(|site| site == "cross-site")
-        && !request
-            .headers()
+        && !headers
             .get(http::header::ORIGIN)
             .and_then(|value| value.to_str().ok())
             .is_some_and(|origin| !host.is_some_and(|host| origin_matches_host(origin, host)))
+}
+
+fn trusted_web_request(request: &WebRequest, allow_remote_host: bool) -> bool {
+    trusted_web_headers(request.headers(), allow_remote_host)
 }
 
 async fn pump_websocket_downlink(
     request: WebRequest,
     socket: WebUpgraded,
     api: Arc<ApiProxyService>,
+    allow_remote_host: bool,
     host_stream: bool,
 ) -> Result<(), WebHandlerError> {
-    if !trusted_web_request(&request) {
+    if !trusted_web_request(&request, allow_remote_host) {
         return Err(WebHandlerError::new("forbidden"));
     }
     let mut websocket = accept_websocket(socket).await;
@@ -1085,24 +1271,13 @@ async fn pump_websocket_downlink(
     Ok(())
 }
 
-async fn bridge_api_request(request: WebRequest, handler: Arc<FetchHandler>) -> WebResponse {
+async fn bridge_api_request(
+    request: WebRequest,
+    handler: Arc<FetchHandler>,
+    allow_remote_host: bool,
+) -> WebResponse {
     let (parts, incoming) = request.into_parts();
-    let host = parts
-        .headers
-        .get(http::header::HOST)
-        .and_then(|value| value.to_str().ok());
-    let trusted_host = host.is_some_and(is_loopback_authority);
-    let cross_site = parts
-        .headers
-        .get("sec-fetch-site")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|site| site == "cross-site");
-    let mismatched_origin = parts
-        .headers
-        .get(http::header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|origin| !host.is_some_and(|host| origin_matches_host(origin, host)));
-    if !trusted_host || cross_site || mismatched_origin {
+    if !trusted_web_headers(&parts.headers, allow_remote_host) {
         return http::Response::builder()
             .status(http::StatusCode::FORBIDDEN)
             .body(WebBody::from("forbidden"))
@@ -1338,6 +1513,7 @@ struct HostCompositionPlugin {
     output: Arc<parking_lot::Mutex<Option<Result<HostSpine, String>>>>,
     data_root: Option<std::path::PathBuf>,
     profile: Option<String>,
+    bind_host: BindHost,
     port: u16,
 }
 
@@ -1352,6 +1528,7 @@ impl Plugin for HostCompositionPlugin {
             ctx,
             self.data_root.clone(),
             self.profile.as_deref(),
+            self.bind_host,
             self.port,
         ));
         Ok(())
@@ -1361,7 +1538,7 @@ impl Plugin for HostCompositionPlugin {
 /// Compose the M6 host spine synchronously (the async service bindings
 /// settle through their own fibers).
 pub fn compose_host(ctx: &Context) -> Result<HostSpine, String> {
-    compose_host_with_root(ctx, None, None, 0)
+    compose_host_with_root(ctx, None, None, BindHost::Loopback, 0)
 }
 
 /// Compose the long-running application Host against the stable DSH home.
@@ -1377,7 +1554,7 @@ pub fn compose_persistent_host_at(
     root: impl Into<std::path::PathBuf>,
     profile: Option<&str>,
 ) -> Result<HostSpine, String> {
-    compose_host_with_root(ctx, Some(root.into()), profile, 0)
+    compose_host_with_root(ctx, Some(root.into()), profile, BindHost::Loopback, 0)
 }
 
 /// Compose a persistent Host at an explicitly selected home and TCP port.
@@ -1388,13 +1565,26 @@ pub fn compose_persistent_host_at_port(
     profile: Option<&str>,
     port: u16,
 ) -> Result<HostSpine, String> {
-    compose_host_with_root(ctx, Some(root.into()), profile, port)
+    compose_persistent_host_at_bind(ctx, root, profile, BindHost::Loopback, port)
+}
+
+/// Compose a persistent Host with an explicit listen address. All-interface
+/// binding is intentionally opt-in; callers must surface the exposure warning.
+pub fn compose_persistent_host_at_bind(
+    ctx: &Context,
+    root: impl Into<std::path::PathBuf>,
+    profile: Option<&str>,
+    bind_host: BindHost,
+    port: u16,
+) -> Result<HostSpine, String> {
+    compose_host_with_root(ctx, Some(root.into()), profile, bind_host, port)
 }
 
 fn compose_host_with_root(
     ctx: &Context,
     data_root: Option<std::path::PathBuf>,
     profile: Option<&str>,
+    bind_host: BindHost,
     port: u16,
 ) -> Result<HostSpine, String> {
     let output = Arc::new(parking_lot::Mutex::new(None));
@@ -1403,6 +1593,7 @@ fn compose_host_with_root(
             output: Arc::clone(&output),
             data_root,
             profile: profile.map(str::to_string),
+            bind_host,
             port,
         }),
         arc(()),
@@ -1442,6 +1633,7 @@ fn compose_host_in_fiber(
     ctx: &Context,
     configured_root: Option<std::path::PathBuf>,
     profile: Option<&str>,
+    bind_host: BindHost,
     bind_port: u16,
 ) -> Result<HostSpine, String> {
     // Package-owned invariant companions run first so every later append is
@@ -2049,16 +2241,6 @@ fn compose_host_in_fiber(
         },
     )
     .map_err(|error| format!("session-title-first-prompt-llm: {error}"))?;
-    for settings_ns in ["llm-deepseek", "llm-pi-ai"] {
-        let discovery = Arc::new(|request: &dsh_llm::LlmModelDiscoveryRequest| {
-            let request = request.clone();
-            Box::pin(async move { discover_openai_compatible_models(request).await })
-                as cordis::BoxFuture<'static, Result<Vec<dsh_llm::LlmDiscoveredModel>, String>>
-        });
-        let _discovery = llm
-            .register_model_discovery(ctx, settings_ns, discovery)
-            .map_err(|error| format!("{settings_ns} discovery: {error}"))?;
-    }
     let _attachments = dsh_attachment_local::LocalAttachmentStore::install(
         ctx,
         dsh_attachment_local::Config {
@@ -2102,6 +2284,38 @@ fn compose_host_in_fiber(
             dsh_settings::SettingsRegisterOptions::default(),
         )
         .map_err(|error| format!("settings llm-deepseek: {error}"))?;
+    let deepseek_discovery_scope = deepseek_scope.clone();
+    let deepseek_discovery_credentials = credentials.clone();
+    let deepseek_discovery = Arc::new(move |request: &dsh_llm::LlmModelDiscoveryRequest| {
+        let request = request.clone();
+        let scope = deepseek_discovery_scope.clone();
+        let credentials = deepseek_discovery_credentials.clone();
+        Box::pin(async move {
+            let value = (scope.get)()
+                .to_json()
+                .ok_or_else(|| "llm-deepseek settings are not JSON-compatible".to_string())?;
+            let api_key_env = value
+                .get("apiKeyEnv")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(dsh_llm_deepseek::DEFAULT_API_KEY_ENV)
+                .to_string();
+            let resolver: DiscoveryCredentialResolver = Arc::new(move || {
+                let credentials = credentials.clone();
+                let api_key_env = api_key_env.clone();
+                Box::pin(async move {
+                    let reference = dsh_credentials::credential_ref(&api_key_env);
+                    Ok(credentials
+                        .resolve(&reference)
+                        .await
+                        .map(|resolved| resolved.value))
+                })
+            });
+            discover_openai_compatible_models(request, None, Some(resolver)).await
+        }) as cordis::BoxFuture<'static, Result<Vec<dsh_llm::LlmDiscoveredModel>, String>>
+    });
+    let _deepseek_discovery = llm
+        .register_model_discovery(ctx, "llm-deepseek", deepseek_discovery)
+        .map_err(|error| format!("llm-deepseek discovery: {error}"))?;
     let _deepseek_directory = llm
         .register_configurable_providers(
             ctx,
@@ -2118,6 +2332,7 @@ fn compose_host_in_fiber(
         ctx,
         dsh_web::Config {
             search_provider: Some("deepseek-official".to_string()),
+            fetch_provider: Some(dsh_web_fetch_http::LOCAL_FETCH_PROVIDER_ID.to_string()),
         },
     );
     let web_credentials = credentials.clone();
@@ -2146,6 +2361,11 @@ fn compose_host_in_fiber(
     let _web_provider = web
         .register_search_provider(web_provider)
         .map_err(|error| format!("web-search-deepseek: {error}"))?;
+    let _web_fetch_provider = web
+        .register_fetch_provider(Arc::new(dsh_web_fetch_http::HttpFetchProvider::new(
+            dsh_web_fetch_http::HttpFetchLimits::default(),
+        )))
+        .map_err(|error| format!("web-fetch-http: {error}"))?;
 
     let deepseek_scope_for_options = deepseek_scope.clone();
     let deepseek_credentials = credentials.clone();
@@ -2224,6 +2444,45 @@ fn compose_host_in_fiber(
         .map_err(|error| format!("settings llm-pi-ai: {error}"))?;
     let initial_pi = openai_profiles(&(pi_scope.get)())?;
     let pi_profiles = Arc::new(parking_lot::Mutex::new(initial_pi.providers));
+    let pi_discovery_profiles = pi_profiles.clone();
+    let pi_discovery_credentials = credentials.clone();
+    let pi_discovery = Arc::new(move |request: &dsh_llm::LlmModelDiscoveryRequest| {
+        let request = request.clone();
+        let profiles = pi_discovery_profiles.clone();
+        let credentials = pi_discovery_credentials.clone();
+        Box::pin(async move {
+            let stored_profile = request
+                .provider
+                .as_ref()
+                .and_then(|provider| profiles.lock().get(provider).cloned());
+            let stored_profile = stored_profile.filter(|profile| {
+                request
+                    .base_url
+                    .as_deref()
+                    .is_some_and(|base_url| same_discovery_endpoint(base_url, &profile.base_url))
+            });
+            let resolver = stored_profile.as_ref().and_then(|profile| {
+                profile.api_key_env.clone().map(|api_key_env| {
+                    Arc::new(move || {
+                        let credentials = credentials.clone();
+                        let api_key_env = api_key_env.clone();
+                        Box::pin(async move {
+                            let reference = dsh_credentials::credential_ref(&api_key_env);
+                            Ok(credentials
+                                .resolve(&reference)
+                                .await
+                                .map(|resolved| resolved.value))
+                        })
+                            as cordis::BoxFuture<'static, Result<Option<String>, String>>
+                    }) as DiscoveryCredentialResolver
+                })
+            });
+            discover_openai_compatible_models(request, stored_profile, resolver).await
+        }) as cordis::BoxFuture<'static, Result<Vec<dsh_llm::LlmDiscoveredModel>, String>>
+    });
+    let _pi_discovery = llm
+        .register_model_discovery(ctx, "llm-pi-ai", pi_discovery)
+        .map_err(|error| format!("llm-pi-ai discovery: {error}"))?;
     let pi_adapter: Arc<dyn dsh_llm::LlmAdapter> = Arc::new(OpenAiCompatibleAdapter {
         profiles: pi_profiles.clone(),
         credentials: credentials.clone(),
@@ -3004,7 +3263,7 @@ fn compose_host_in_fiber(
     let web_server = futures::executor::block_on(WebServer::install(
         ctx,
         WebConfig {
-            host: BindHost::Loopback,
+            host: bind_host,
             port: bind_port,
         },
     ))
@@ -3064,6 +3323,7 @@ fn compose_host_in_fiber(
         terminals.clone(),
         subprocess.clone(),
         sandbox.clone(),
+        bind_host == BindHost::AllInterfaces,
     );
     let boot_profile = profile.map(|profile| data_root.join("profiles").join(profile));
     let _ = web_server.tap_index(Arc::new(move |html| {
@@ -3198,12 +3458,15 @@ fn compose_host_in_fiber(
             })
         }),
     });
+    let allow_remote_host = bind_host == BindHost::AllInterfaces;
     let api_route = web_server.register(WebRoute {
         kind: WebRouteKind::Prefix,
         path: "/api".to_string(),
         handler: Arc::new(move |request| {
             let fetch_handler = Arc::clone(&fetch_handler);
-            Box::pin(async move { Ok(bridge_api_request(request, fetch_handler).await) })
+            Box::pin(async move {
+                Ok(bridge_api_request(request, fetch_handler, allow_remote_host).await)
+            })
         }),
     });
     let mux_api = api_proxy.clone();
@@ -3211,7 +3474,9 @@ fn compose_host_in_fiber(
         path: "/api/events.mux".to_string(),
         handler: Arc::new(move |request, socket| {
             let api = mux_api.clone();
-            Box::pin(async move { pump_websocket_downlink(request, socket, api, false).await })
+            Box::pin(async move {
+                pump_websocket_downlink(request, socket, api, allow_remote_host, false).await
+            })
         }),
     });
     let host_api = api_proxy.clone();
@@ -3219,7 +3484,9 @@ fn compose_host_in_fiber(
         path: "/api/events.host".to_string(),
         handler: Arc::new(move |request, socket| {
             let api = host_api.clone();
-            Box::pin(async move { pump_websocket_downlink(request, socket, api, true).await })
+            Box::pin(async move {
+                pump_websocket_downlink(request, socket, api, allow_remote_host, true).await
+            })
         }),
     });
     data_root_transferred.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -3303,14 +3570,14 @@ pub async fn boot_report(spine: &HostSpine) -> Result<serde_json::Value, String>
         created_at: 1,
         cwd: None,
         parent_session: None,
-        seed_length: None,
+        is_seeded: false,
         origin: None,
         delegation_depth: None,
         agent_preset: None,
     };
     let durable_event = dsh_session::SessionEvent {
         type_: "user/message".to_string(),
-        seq: 0,
+        seq: dsh_session::SessionSeq::ZERO,
         time: 1,
         data: serde_json::to_value(dsh_llm::create_user_message(
             vec![dsh_llm::ContentBlock::Text {
@@ -3328,7 +3595,7 @@ pub async fn boot_report(spine: &HostSpine) -> Result<serde_json::Value, String>
     };
     spine
         .persistence
-        .create(durable_header.clone())
+        .create(durable_header.clone(), None)
         .await
         .map_err(|error| format!("persisted create: {error}"))?;
     spine
@@ -3474,6 +3741,7 @@ mod reasoning_tests {
             name: None,
             context_window: None,
             max_tokens: None,
+            input: Vec::new(),
             reasoning_efforts: None,
         }
     }
@@ -3529,5 +3797,424 @@ mod reasoning_tests {
             workspace_context_text(Some(r"\\?\UNC\server\share\repo")),
             r"Current workspace (authoritative session working directory): \\server\share\repo. Use this exact path and drive for workspace-relative work; do not infer it from the Harness checkout or sandbox fallback."
         );
+    }
+}
+
+#[cfg(test)]
+mod remote_bind_policy_tests {
+    use super::trusted_web_headers;
+
+    fn headers(host: &str, origin: Option<&str>, fetch_site: Option<&str>) -> http::HeaderMap {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(http::header::HOST, host.parse().expect("host header"));
+        if let Some(origin) = origin {
+            headers.insert(http::header::ORIGIN, origin.parse().expect("origin header"));
+        }
+        if let Some(fetch_site) = fetch_site {
+            headers.insert(
+                "sec-fetch-site",
+                fetch_site.parse().expect("fetch-site header"),
+            );
+        }
+        headers
+    }
+
+    #[test]
+    fn remote_authority_requires_explicit_all_interface_policy() {
+        let headers = headers(
+            "192.168.1.50:3080",
+            Some("http://192.168.1.50:3080"),
+            Some("same-origin"),
+        );
+        assert!(!trusted_web_headers(&headers, false));
+        assert!(trusted_web_headers(&headers, true));
+    }
+
+    #[test]
+    fn all_interface_policy_still_rejects_cross_site_or_mismatched_origin() {
+        let cross_site = headers(
+            "192.168.1.50:3080",
+            Some("http://192.168.1.50:3080"),
+            Some("cross-site"),
+        );
+        assert!(!trusted_web_headers(&cross_site, true));
+
+        let mismatched = headers(
+            "192.168.1.50:3080",
+            Some("http://attacker.invalid"),
+            Some("same-origin"),
+        );
+        assert!(!trusted_web_headers(&mismatched, true));
+    }
+}
+
+#[cfg(test)]
+mod image_capability_tests {
+    use std::sync::Arc;
+
+    use dsh_llm::LlmAdapter;
+
+    use super::{OpenAiCompatibleAdapter, json_to_settings_data, openai_profiles};
+
+    async fn modalities(settings: serde_json::Value) -> Vec<dsh_llm::ModelModality> {
+        let parsed = openai_profiles(&json_to_settings_data(&settings)).expect("valid profile");
+        let context = cordis::Context::root();
+        let home = std::env::temp_dir().join(format!(
+            "dsh-host-image-capability-{}",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(&home)
+            .await
+            .expect("create temporary home");
+        let credentials = dsh_credentials_local::LocalCredentialProvider::install(
+            &context,
+            dsh_credentials_local::Config {
+                dsh_home: Some(home.to_string_lossy().into_owned()),
+                watch: Some(false),
+                ..Default::default()
+            },
+        )
+        .expect("install credentials");
+        let adapter = OpenAiCompatibleAdapter {
+            profiles: Arc::new(parking_lot::Mutex::new(parsed.providers)),
+            credentials: credentials.clone(),
+            attachment_ctx: context,
+        };
+        let models = adapter.list_models("acme").await;
+        credentials.drain().await;
+        tokio::fs::remove_dir_all(home)
+            .await
+            .expect("remove temporary home");
+        models
+            .into_iter()
+            .find(|model| model.id == "gpt-5.6-sol")
+            .expect("configured model")
+            .input_modalities
+            .expect("declared modalities")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn configured_gpt_image_modality_reaches_runtime_catalog() {
+        let modalities = modalities(serde_json::json!({
+            "providers": {
+                "acme": {
+                    "apiKeyEnv": "ACME_API_KEY",
+                    "api": "openai-responses",
+                    "baseURL": "https://acme.example/v1",
+                    "models": [{
+                        "id": "gpt-5.6-sol",
+                        "input": ["text", "image"]
+                    }]
+                }
+            }
+        }))
+        .await;
+        assert!(modalities.contains(&dsh_llm::ModelModality::Image));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn provider_default_image_modality_reaches_runtime_catalog() {
+        let modalities = modalities(serde_json::json!({
+            "providers": {
+                "acme": {
+                    "apiKeyEnv": "ACME_API_KEY",
+                    "api": "openai-responses",
+                    "baseURL": "https://acme.example/v1",
+                    "defaultInput": ["text", "image"],
+                    "models": [{"id": "gpt-5.6-sol"}]
+                }
+            }
+        }))
+        .await;
+        assert!(modalities.contains(&dsh_llm::ModelModality::Image));
+    }
+
+    #[test]
+    fn empty_provider_default_input_is_rejected() {
+        let error = openai_profiles(&json_to_settings_data(&serde_json::json!({
+            "providers": {
+                "acme": {
+                    "apiKeyEnv": "ACME_API_KEY",
+                    "api": "openai-responses",
+                    "baseURL": "https://acme.example/v1",
+                    "defaultInput": [],
+                    "models": [{"id": "gpt-5.6-sol"}]
+                }
+            }
+        })))
+        .expect_err("empty defaultInput must be rejected");
+        assert!(error.contains("defaultInput"));
+    }
+}
+
+#[cfg(test)]
+mod model_discovery_profile_tests {
+    use std::sync::Arc;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::{
+        DiscoveryCredentialResolver, OpenAiCompatibleProviderConfig,
+        discover_openai_compatible_models, openai_profiles, same_discovery_endpoint,
+    };
+
+    fn settings_with_headers(headers: serde_json::Value) -> dsh_schemastery::Data {
+        super::json_to_settings_data(&serde_json::json!({
+            "providers": {
+                "acme": {
+                    "apiKeyEnv": "ACME_API_KEY",
+                    "api": "openai-completions",
+                    "baseURL": "https://acme.example/v1",
+                    "headers": headers,
+                    "models": [{"id": "acme-large"}]
+                }
+            }
+        }))
+    }
+
+    async fn listing_server() -> (
+        String,
+        tokio::sync::oneshot::Receiver<String>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listing server");
+        let address = listener.local_addr().expect("listing address");
+        let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept discovery request");
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = stream
+                    .read(&mut buffer)
+                    .await
+                    .expect("read discovery request");
+                if read == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&buffer[..read]);
+                if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8(bytes).expect("ASCII HTTP request");
+            let _ = request_tx.send(request);
+            let body = r#"{"data":[{"id":"acme-large","name":"Acme Large"}]}"#;
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write discovery response");
+        });
+        (
+            format!("http://127.0.0.1:{}/v1", address.port()),
+            request_rx,
+            task,
+        )
+    }
+
+    #[test]
+    fn discovery_endpoint_binding_includes_the_base_path() {
+        assert!(same_discovery_endpoint(
+            "https://acme.example/v1/",
+            "https://ACME.example:443/v1"
+        ));
+        assert!(!same_discovery_endpoint(
+            "https://acme.example/v1/tenant-b",
+            "https://acme.example/v1/tenant-a"
+        ));
+    }
+
+    #[test]
+    fn profile_headers_are_validated_when_settings_load() {
+        let error = openai_profiles(&settings_with_headers(serde_json::json!({
+            "X-Good": "ok",
+            "Bad Header": "tenant-secret"
+        })))
+        .expect_err("invalid header name must be rejected");
+        assert!(error.contains("provider \"acme\" header \"Bad Header\""));
+        assert!(!error.contains("tenant-secret"));
+    }
+
+    #[test]
+    fn profile_headers_are_bounded_without_echoing_values() {
+        let secret = "s".repeat(8193);
+        let error = openai_profiles(&settings_with_headers(serde_json::json!({
+            "X-Tenant-Secret": secret
+        })))
+        .expect_err("oversized header value must be rejected");
+        assert!(error.contains("provider \"acme\" header \"X-Tenant-Secret\""));
+        assert!(!error.contains(&"s".repeat(128)));
+    }
+
+    #[tokio::test]
+    async fn discovery_merges_stored_headers_with_draft_key_and_reserved_headers() {
+        let (base_url, request_rx, server) = listing_server().await;
+        let profile: OpenAiCompatibleProviderConfig = serde_json::from_value(serde_json::json!({
+            "apiKeyEnv": "ACME_API_KEY",
+            "api": "openai-completions",
+            "baseURL": base_url,
+            "headers": {
+                "Accept": "text/plain",
+                "Authorization": "Bearer stored-header",
+                "User-Agent": "spoofed-agent",
+                "X-Company-Code": "private-tenant"
+            },
+            "models": [{"id": "acme-large"}]
+        }))
+        .expect("profile");
+        let credential_resolutions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let resolutions = Arc::clone(&credential_resolutions);
+
+        let models = discover_openai_compatible_models(
+            dsh_llm::LlmModelDiscoveryRequest {
+                provider: Some("acme".to_string()),
+                base_url: Some(profile.base_url.clone()),
+                api: Some(profile.api.clone()),
+                api_key: Some("draft-key".to_string()),
+                signal: None,
+            },
+            Some(profile),
+            Some(Arc::new(move || {
+                let resolutions = Arc::clone(&resolutions);
+                Box::pin(async move {
+                    resolutions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(Some("stored-key".to_string()))
+                })
+            })),
+        )
+        .await
+        .expect("discover models");
+
+        assert_eq!(models[0].id, "acme-large");
+        assert_eq!(
+            credential_resolutions.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "draft key must keep stored credential resolution lazy"
+        );
+        let request = request_rx
+            .await
+            .expect("captured discovery request")
+            .to_ascii_lowercase();
+        assert!(request.contains("accept: application/json\r\n"));
+        assert!(request.contains("authorization: bearer draft-key\r\n"));
+        assert!(request.contains("x-company-code: private-tenant\r\n"));
+        assert!(request.contains(&format!(
+            "user-agent: {}\r\n",
+            dsh_llm::user_agent(&dsh_llm::app_identity()).to_ascii_lowercase()
+        )));
+        assert!(!request.contains("stored-header"));
+        assert!(!request.contains("spoofed-agent"));
+        server.await.expect("listing server");
+    }
+
+    #[tokio::test]
+    async fn discovery_does_not_reuse_stored_secrets_for_a_different_endpoint() {
+        let (stored_base_url, _stored_request_rx, stored_server) = listing_server().await;
+        let (attacker_base_url, attacker_request_rx, attacker_server) = listing_server().await;
+        let profile: OpenAiCompatibleProviderConfig = serde_json::from_value(serde_json::json!({
+            "apiKeyEnv": "ACME_API_KEY",
+            "api": "openai-completions",
+            "baseURL": stored_base_url,
+            "headers": {"X-Company-Code": "private-tenant"},
+            "models": [{"id": "acme-large"}]
+        }))
+        .expect("profile");
+        let credential_resolutions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let resolutions = Arc::clone(&credential_resolutions);
+        let stored_profile =
+            same_discovery_endpoint(&attacker_base_url, &profile.base_url).then_some(profile);
+        let resolver = stored_profile.as_ref().and_then(|profile| {
+            profile.api_key_env.clone().map(|_api_key_env| {
+                Arc::new(move || {
+                    let resolutions = Arc::clone(&resolutions);
+                    Box::pin(async move {
+                        resolutions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(Some("stored-key".to_string()))
+                    })
+                        as cordis::BoxFuture<'static, Result<Option<String>, String>>
+                }) as DiscoveryCredentialResolver
+            })
+        });
+
+        discover_openai_compatible_models(
+            dsh_llm::LlmModelDiscoveryRequest {
+                provider: Some("acme".to_string()),
+                base_url: Some(attacker_base_url),
+                api: Some("openai-completions".to_string()),
+                api_key: None,
+                signal: None,
+            },
+            stored_profile,
+            resolver,
+        )
+        .await
+        .expect("discover models without stored secrets");
+
+        assert_eq!(
+            credential_resolutions.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        let request = attacker_request_rx
+            .await
+            .expect("captured attacker discovery request")
+            .to_ascii_lowercase();
+        assert!(!request.contains("authorization:"));
+        assert!(!request.contains("private-tenant"));
+        attacker_server.await.expect("attacker listing server");
+        stored_server.abort();
+    }
+
+    #[tokio::test]
+    async fn discovery_resolves_stored_credential_only_when_draft_omits_it() {
+        let (base_url, request_rx, server) = listing_server().await;
+        let profile: OpenAiCompatibleProviderConfig = serde_json::from_value(serde_json::json!({
+            "apiKeyEnv": "ACME_API_KEY",
+            "api": "openai-completions",
+            "baseURL": base_url,
+            "headers": {"X-Company-Code": "private-tenant"},
+            "models": [{"id": "acme-large"}]
+        }))
+        .expect("profile");
+        let credential_resolutions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let resolutions = Arc::clone(&credential_resolutions);
+
+        discover_openai_compatible_models(
+            dsh_llm::LlmModelDiscoveryRequest {
+                provider: Some("acme".to_string()),
+                base_url: Some(profile.base_url.clone()),
+                api: Some(profile.api.clone()),
+                api_key: None,
+                signal: None,
+            },
+            Some(profile),
+            Some(Arc::new(move || {
+                let resolutions = Arc::clone(&resolutions);
+                Box::pin(async move {
+                    resolutions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(Some("stored-key".to_string()))
+                })
+            })),
+        )
+        .await
+        .expect("discover models");
+
+        assert_eq!(
+            credential_resolutions.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        let request = request_rx
+            .await
+            .expect("captured discovery request")
+            .to_ascii_lowercase();
+        assert!(request.contains("authorization: bearer stored-key\r\n"));
+        server.await.expect("listing server");
     }
 }

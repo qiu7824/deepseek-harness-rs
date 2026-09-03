@@ -1,86 +1,98 @@
-//! Credentials-document mechanics: strict parse validation and the
-//! comment-preserving line editor. Rust port of the TS
-//! `parseCredentialsDocument` + `renderDocument` behavior
-//! (`packages/credentials/credentials-local/src/index.ts`).
+//! Credentials-document mechanics for the version-1 credentials layout.
 //!
-//! The TS uses the `yaml` package's AST (`Document`), which preserves
-//! comments and formatting through `setIn`/`deleteIn`. The Rust port has no
-//! comment-preserving YAML AST, so the editor works on the LINE level guided
-//! by a scan of top-level entries; the strict shape validation still runs
-//! through `serde_yaml`. For the flat `REF: scalar` documents this package
-//! owns, the line editor reproduces the TS bytes exactly (patches touch only
-//! the edited entry and its own leading comments; sibling block scalars stay
-//! verbatim).
+//! Current Harness documents store environment-style references and opaque
+//! credential records in separate namespaces:
 //!
-//! # Deviations
+//! ```yaml
+//! version: 1
+//! refs:
+//!   DEEPSEEK_API_KEY: value
+//! records: {}
+//! ```
 //!
-//! - Explicit `? ` complex-key forms are not line-editable (they parse, but
-//!   a patch would append a duplicate plain key); such documents are outside
-//!   the strict flat shape this package validates.
-//! - YAML parse error positions come from `serde_yaml` (0-based, converted
-//!   to the TS 1-based `line, column` wording); the exact line/column may
-//!   differ from the `yaml` package on the same malformed input.
+//! Pre-release Rust builds wrote a flat `CredentialRef: string` mapping.  The
+//! recognizer below upgrades only that exact old shape; ambiguous documents
+//! remain hard failures.  Reference edits are line based so an untouched
+//! `records` section (including its comments and scalar spelling) is preserved
+//! byte-for-byte.
+
+use std::sync::OnceLock;
 
 use indexmap::IndexMap;
 
-use dsh_credentials::credential_ref;
+/// The only structured credentials-document version this build reads/writes.
+pub const DOCUMENT_VERSION: u64 = 1;
 
-/// Describe one YAML parse failure without quoting the source: the parser's
-/// own message embeds the offending line, which here holds a secret.
+/// Describe one YAML parse failure without quoting source text. Parser
+/// messages can contain the offending line, which may hold a secret.
 fn describe_yaml_error(error: &serde_yaml::Error) -> String {
-    // serde_yaml rejects duplicate mapping keys itself; report the TS
-    // `yaml` package's code for that shape so diagnostics stay stable.
-    if error.to_string().contains("duplicate") {
-        let location = error.location();
-        let position = location
-            .map(|location| {
-                format!(
-                    " at line {}, column {}",
-                    location.line() + 1,
-                    location.column() + 1
-                )
-            })
-            .unwrap_or_default();
-        return format!("DUPLICATE_KEY{position}");
-    }
+    let code = if error.to_string().contains("duplicate") {
+        "DUPLICATE_KEY"
+    } else {
+        "PARSE_ERROR"
+    };
     let Some(location) = error.location() else {
-        return "PARSE_ERROR".to_string();
+        return code.to_string();
     };
     format!(
-        "PARSE_ERROR at line {}, column {}",
+        "{code} at line {}, column {}",
         location.line() + 1,
         location.column() + 1
     )
 }
 
-/// Parse one credentials document into its entries. The document is a strict
-/// mapping of `CredentialRef` to non-empty string: a non-mapping root, a key
-/// that is not a POSIX identifier, a non-string value, and an empty string
-/// are all rejected rather than skipped, because this file holds nothing but
-/// credentials and a silently ignored entry reads as "the key I stored has no
-/// effect". Duplicate keys are rejected. An empty document is an empty store.
-pub fn parse_credentials_document(
-    text: &str,
+fn ref_pattern() -> &'static regex::Regex {
+    static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        regex::Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").expect("credential ref pattern")
+    })
+}
+
+fn key_segment_pattern() -> &'static regex::Regex {
+    static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        regex::Regex::new(r"^[a-z][a-z0-9-]*$").expect("credential key segment pattern")
+    })
+}
+
+fn assert_ref_name(key: &str) -> Result<(), String> {
+    if ref_pattern().is_match(key) {
+        Ok(())
+    } else {
+        Err(format!(
+            "credential ref \"{key}\" must match {}",
+            ref_pattern().as_str()
+        ))
+    }
+}
+
+fn assert_record_key(key: &str) -> Result<(), String> {
+    let segments: Vec<_> = key.split('/').collect();
+    if segments.len() != 2 {
+        return Err(format!("credential key \"{key}\" must be \"<scope>/<id>\""));
+    }
+    for segment in segments {
+        if !key_segment_pattern().is_match(segment) {
+            return Err(format!(
+                "credential key segment \"{segment}\" must match {}",
+                key_segment_pattern().as_str()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn mapping_field<'a>(
+    mapping: &'a serde_yaml::Mapping,
+    name: &str,
+) -> Option<&'a serde_yaml::Value> {
+    mapping.get(serde_yaml::Value::String(name.to_string()))
+}
+
+fn parse_flat_mapping(
+    mapping: &serde_yaml::Mapping,
     filename: &str,
 ) -> Result<IndexMap<String, String>, String> {
-    // Whole-document shape validation through the YAML parser; its message is
-    // never surfaced — only the code and position leave this function.
-    let value: serde_yaml::Value = serde_yaml::from_str(text).map_err(|error| {
-        format!(
-            "credentials-local: invalid document at {filename}: {}",
-            describe_yaml_error(&error)
-        )
-    })?;
-    // An empty document (comments and blank lines only) parses to Null; the
-    // TS `document.toJS() ?? {}` treats it as the empty store.
-    let serde_yaml::Value::Mapping(mapping) = value else {
-        if value.is_null() {
-            return Ok(IndexMap::new());
-        }
-        return Err(format!(
-            "credentials-local: {filename} must be a mapping of credential reference to value"
-        ));
-    };
     let mut entries = IndexMap::new();
     for (key, value) in mapping {
         let key = key.as_str().ok_or_else(|| {
@@ -88,18 +100,7 @@ pub fn parse_credentials_document(
                 "credentials-local: {filename} must be a mapping of credential reference to value"
             )
         })?;
-        // credential_ref rejects anything that is not a POSIX identifier,
-        // which is exactly the constraint a stored reference must satisfy to
-        // be addressable through the seam. The panic is contained here.
-        let checked =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| credential_ref(key)));
-        if let Err(payload) = checked {
-            let message = payload
-                .downcast::<String>()
-                .map(|message| *message)
-                .unwrap_or_else(|_| "credential ref shape invalid".to_string());
-            return Err(message);
-        }
+        assert_ref_name(key)?;
         let Some(stored) = value.as_str() else {
             return Err(format!(
                 "credentials-local: the value for \"{key}\" in {filename} must be a string"
@@ -112,90 +113,488 @@ pub fn parse_credentials_document(
         }
         entries.insert(key.to_string(), stored.to_string());
     }
-    // serde_yaml silently keeps the LAST duplicate; the line scan below is
-    // the duplicate-key rejection the TS parser performs.
-    if let Some(duplicate) = duplicate_top_level_key(text) {
-        return Err(format!(
-            "credentials-local: invalid document at {filename}: DUPLICATE_KEY at line {}, column 1",
-            duplicate
-        ));
+    Ok(entries)
+}
+
+fn section_mapping<'a>(
+    value: Option<&'a serde_yaml::Value>,
+    name: &str,
+    filename: &str,
+) -> Result<Option<&'a serde_yaml::Mapping>, String> {
+    match value {
+        None | Some(serde_yaml::Value::Null) => Ok(None),
+        Some(serde_yaml::Value::Mapping(mapping)) => Ok(Some(mapping)),
+        Some(_) => Err(format!(
+            "credentials-local: \"{name}\" in {filename} must be a mapping"
+        )),
+    }
+}
+
+fn parse_refs(
+    section: Option<&serde_yaml::Value>,
+    filename: &str,
+) -> Result<IndexMap<String, String>, String> {
+    let mut entries = IndexMap::new();
+    let Some(mapping) = section_mapping(section, "refs", filename)? else {
+        return Ok(entries);
+    };
+    for (key, value) in mapping {
+        let key = key.as_str().ok_or_else(|| {
+            format!("credentials-local: \"refs\" in {filename} must use string keys")
+        })?;
+        assert_ref_name(key)?;
+        let Some(stored) = value.as_str() else {
+            return Err(format!(
+                "credentials-local: the value for \"{key}\" in {filename} must be a string"
+            ));
+        };
+        if stored.is_empty() {
+            return Err(format!(
+                "credentials-local: the value for \"{key}\" in {filename} is empty; remove the key instead"
+            ));
+        }
+        entries.insert(key.to_string(), stored.to_string());
     }
     Ok(entries)
 }
 
-/// Detect the line (1-based) of the second occurrence of a duplicated
-/// top-level mapping key, when one exists.
-fn duplicate_top_level_key(text: &str) -> Option<usize> {
-    let mut seen = Vec::new();
-    for (index, line) in text.lines().enumerate() {
-        let Some(key) = plain_key_of(line) else {
-            continue;
-        };
-        if seen.contains(&key) {
-            return Some(index + 1);
-        }
-        seen.push(key);
-    }
-    None
+fn record_fields<'a>(
+    key: &str,
+    value: &'a serde_yaml::Value,
+    filename: &str,
+) -> Result<&'a serde_yaml::Mapping, String> {
+    value.as_mapping().ok_or_else(|| {
+        format!("credentials-local: record \"{key}\" in {filename} must be a mapping")
+    })
 }
 
-/// The bare mapping key of a top-level `KEY: …` line (unquoted or quoted
-/// POSIX identifier), or `None` when the line is not an entry start.
-fn plain_key_of(line: &str) -> Option<String> {
-    let trimmed = line.trim_start();
-    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("---") {
+fn string_field_name<'a>(
+    key: &str,
+    field: &'a serde_yaml::Value,
+    filename: &str,
+) -> Result<&'a str, String> {
+    field.as_str().ok_or_else(|| {
+        format!("credentials-local: record \"{key}\" in {filename} has a non-string field name")
+    })
+}
+
+fn validate_json_value(value: &serde_yaml::Value, key: &str, filename: &str) -> Result<(), String> {
+    match value {
+        serde_yaml::Value::Null | serde_yaml::Value::Bool(_) | serde_yaml::Value::String(_) => {
+            Ok(())
+        }
+        serde_yaml::Value::Number(number) => {
+            if number.as_f64().is_some_and(f64::is_finite) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "credentials-local: record \"{key}\" payload in {filename} holds a non-finite number"
+                ))
+            }
+        }
+        serde_yaml::Value::Sequence(sequence) => {
+            for nested in sequence {
+                validate_json_value(nested, key, filename)?;
+            }
+            Ok(())
+        }
+        serde_yaml::Value::Mapping(mapping) => {
+            for (field, nested) in mapping {
+                if field.as_str().is_none() {
+                    return Err(format!(
+                        "credentials-local: record \"{key}\" payload in {filename} has a non-string object key"
+                    ));
+                }
+                validate_json_value(nested, key, filename)?;
+            }
+            Ok(())
+        }
+        serde_yaml::Value::Tagged(_) => Err(format!(
+            "credentials-local: record \"{key}\" payload in {filename} holds a value JSON cannot represent"
+        )),
+    }
+}
+
+fn validate_api_key_record(
+    key: &str,
+    fields: &serde_yaml::Mapping,
+    filename: &str,
+) -> Result<(), String> {
+    for field in fields.keys() {
+        let field = string_field_name(key, field, filename)?;
+        if !matches!(field, "kind" | "key" | "env") {
+            return Err(format!(
+                "credentials-local: record \"{key}\" in {filename} has unknown field \"{field}\""
+            ));
+        }
+    }
+    if let Some(value) = mapping_field(fields, "key")
+        && value.as_str().is_none_or(str::is_empty)
+    {
+        return Err(format!(
+            "credentials-local: record \"{key}\" in {filename} has a non-string or empty key"
+        ));
+    }
+    if let Some(env) = mapping_field(fields, "env") {
+        let env = env.as_mapping().ok_or_else(|| {
+            format!("credentials-local: record \"{key}\" in {filename} has a non-mapping env")
+        })?;
+        for (name, value) in env {
+            let name = name.as_str().ok_or_else(|| {
+                format!(
+                    "credentials-local: record \"{key}\" env in {filename} has a non-string name"
+                )
+            })?;
+            assert_ref_name(name)?;
+            if value.as_str().is_none_or(str::is_empty) {
+                return Err(format!(
+                    "credentials-local: record \"{key}\" env \"{name}\" in {filename} must be a non-empty string"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_grant_record(
+    key: &str,
+    fields: &serde_yaml::Mapping,
+    filename: &str,
+) -> Result<(), String> {
+    for field in fields.keys() {
+        let field = string_field_name(key, field, filename)?;
+        if !matches!(field, "kind" | "payload") {
+            return Err(format!(
+                "credentials-local: record \"{key}\" in {filename} has unknown field \"{field}\""
+            ));
+        }
+    }
+    let payload = mapping_field(fields, "payload").ok_or_else(|| {
+        format!("credentials-local: record \"{key}\" in {filename} has no payload")
+    })?;
+    validate_json_value(payload, key, filename)
+}
+
+fn validate_records(section: Option<&serde_yaml::Value>, filename: &str) -> Result<(), String> {
+    let Some(records) = section_mapping(section, "records", filename)? else {
+        return Ok(());
+    };
+    for (key, value) in records {
+        let key = key.as_str().ok_or_else(|| {
+            format!("credentials-local: \"records\" in {filename} must use string keys")
+        })?;
+        assert_record_key(key)?;
+        let fields = record_fields(key, value, filename)?;
+        let kind = mapping_field(fields, "kind")
+            .and_then(serde_yaml::Value::as_str)
+            .ok_or_else(|| {
+                format!("credentials-local: record \"{key}\" in {filename} has no kind")
+            })?;
+        match kind {
+            "api-key" => validate_api_key_record(key, fields, filename)?,
+            "grant" => validate_grant_record(key, fields, filename)?,
+            _ => {
+                return Err(format!(
+                    "credentials-local: record \"{key}\" in {filename} has unknown kind"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse a credentials document and return its reference namespace. Version-1
+/// record entries are strictly validated even though the pre-alpha Rust seam
+/// does not yet expose them; accepting a document must never mean silently
+/// discarding an invalid or misspelled credential record. Recognized legacy
+/// flat documents remain readable so callers can migrate them atomically.
+pub fn parse_credentials_document(
+    text: &str,
+    filename: &str,
+) -> Result<IndexMap<String, String>, String> {
+    let value: serde_yaml::Value = serde_yaml::from_str(text).map_err(|error| {
+        format!(
+            "credentials-local: invalid document at {filename}: {}",
+            describe_yaml_error(&error)
+        )
+    })?;
+    let serde_yaml::Value::Mapping(mapping) = value else {
+        if value.is_null() {
+            return Ok(IndexMap::new());
+        }
+        return Err(format!("credentials-local: {filename} must be a mapping"));
+    };
+    if mapping.is_empty() {
+        return Ok(IndexMap::new());
+    }
+
+    let version = mapping_field(&mapping, "version");
+    if version.is_none() {
+        return parse_flat_mapping(&mapping, filename);
+    }
+    if version.and_then(serde_yaml::Value::as_u64) != Some(DOCUMENT_VERSION) {
+        return Err(format!(
+            "credentials-local: {filename} declares an unsupported version; this build reads version {DOCUMENT_VERSION}"
+        ));
+    }
+    for key in mapping.keys() {
+        let key = key.as_str().ok_or_else(|| {
+            format!("credentials-local: {filename} must use string top-level keys")
+        })?;
+        if !matches!(key, "version" | "refs" | "records") {
+            return Err(format!(
+                "credentials-local: unknown top-level key \"{key}\" in {filename}"
+            ));
+        }
+    }
+    let refs = parse_refs(mapping_field(&mapping, "refs"), filename)?;
+    validate_records(mapping_field(&mapping, "records"), filename)?;
+    Ok(refs)
+}
+
+/// Render the exact one-shot migration for a recognized pre-release flat
+/// document. Values and comments are only indented, never parsed and
+/// re-serialized. Ambiguous or malformed input is declined.
+pub fn render_flat_layout_migration(text: &str) -> Option<String> {
+    let value: serde_yaml::Value = serde_yaml::from_str(text).ok()?;
+    let mapping = value.as_mapping()?;
+    if mapping.is_empty() || mapping_field(mapping, "version").is_some() {
         return None;
     }
-    let rest = trimmed.strip_prefix('"').unwrap_or(trimmed);
-    if rest == trimmed {
-        // Unquoted key: an identifier directly followed by `:`.
-        let colon = trimmed.find(':')?;
-        let candidate = &trimmed[..colon];
-        if candidate.is_empty() {
+    for line in text.lines() {
+        if line.starts_with('%') || line == "---" || line == "..." {
             return None;
-        }
-        if !candidate
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
-        {
-            return None;
-        }
-        Some(candidate.to_string())
-    } else {
-        // Quoted key: read to the closing quote.
-        let closing = rest.find('"')?;
-        let candidate = &rest[..closing];
-        if candidate
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
-        {
-            Some(candidate.to_string())
-        } else {
-            None
         }
     }
+    for (key, value) in mapping {
+        let key = key.as_str()?;
+        if !ref_pattern().is_match(key) {
+            return None;
+        }
+        if value.as_str().is_none_or(str::is_empty) {
+            return None;
+        }
+    }
+    let body = text
+        .split('\n')
+        .map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("  {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "version: {DOCUMENT_VERSION}\nrefs:\n{body}{}",
+        if text.ends_with('\n') { "" } else { "\n" }
+    )
+    .into()
 }
 
-/// Render the next document text with one reference set or deleted. Editing
-/// the scanned line ranges rather than rebuilding the document keeps
-/// comments and the formatting of every untouched entry; an absent document
-/// starts a fresh one.
+#[derive(Debug, Clone)]
+struct LineSpan {
+    start: usize,
+    end: usize,
+    key_end: Option<usize>,
+    indent: usize,
+    key: Option<String>,
+    blank: bool,
+    comment: bool,
+}
+
+fn lines_of(text: &str) -> Vec<LineSpan> {
+    let mut spans = Vec::new();
+    let mut offset = 0;
+    for piece in text.split_inclusive('\n') {
+        let content = piece
+            .strip_suffix('\n')
+            .unwrap_or(piece)
+            .strip_suffix('\r')
+            .unwrap_or_else(|| piece.strip_suffix('\n').unwrap_or(piece));
+        let indent = content
+            .as_bytes()
+            .iter()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .count();
+        let trimmed = content[indent..].trim_end();
+        let blank = trimmed.is_empty();
+        let comment = trimmed.starts_with('#');
+        let key = if blank || comment || trimmed.starts_with("---") || trimmed.starts_with("...") {
+            None
+        } else {
+            plain_key_of(trimmed)
+        };
+        let key_end = key
+            .as_ref()
+            .and_then(|_| content.find(':').map(|colon| offset + colon + 1));
+        spans.push(LineSpan {
+            start: offset,
+            end: offset + piece.len(),
+            key_end,
+            indent,
+            key,
+            blank,
+            comment,
+        });
+        offset += piece.len();
+    }
+    if text.is_empty() {
+        return spans;
+    }
+    if !text.ends_with('\n') && spans.is_empty() {
+        spans.push(LineSpan {
+            start: 0,
+            end: text.len(),
+            key_end: None,
+            indent: 0,
+            key: None,
+            blank: false,
+            comment: false,
+        });
+    }
+    spans
+}
+
+fn plain_key_of(trimmed: &str) -> Option<String> {
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        let closing = rest.find('"')?;
+        if !rest[closing + 1..].trim_start().starts_with(':') {
+            return None;
+        }
+        return Some(rest[..closing].to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix('\'') {
+        let closing = rest.find('\'')?;
+        if !rest[closing + 1..].trim_start().starts_with(':') {
+            return None;
+        }
+        return Some(rest[..closing].to_string());
+    }
+    let colon = trimmed.find(':')?;
+    let candidate = trimmed[..colon].trim_end();
+    if candidate.is_empty() || candidate.starts_with(['?', '-']) {
+        return None;
+    }
+    Some(candidate.to_string())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SectionSpan {
+    start: usize,
+    header_end: usize,
+    end: usize,
+    key_end: usize,
+}
+
+fn top_level_section(text: &str, name: &str) -> Option<SectionSpan> {
+    let lines = lines_of(text);
+    let (index, line) = lines
+        .iter()
+        .enumerate()
+        .find(|(_, line)| line.indent == 0 && line.key.as_deref() == Some(name))?;
+    let end = lines[index + 1..]
+        .iter()
+        .find(|line| line.indent == 0 && line.key.is_some())
+        .map_or(text.len(), |line| line.start);
+    Some(SectionSpan {
+        start: line.start,
+        header_end: line.end,
+        end,
+        key_end: line.key_end.expect("mapping key line has a colon"),
+    })
+}
+
+fn nested_indent(text: &str, section: SectionSpan) -> Option<usize> {
+    lines_of(&text[section.header_end..section.end])
+        .into_iter()
+        .filter(|line| line.key.is_some() && line.indent > 0)
+        .map(|line| line.indent)
+        .min()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EntrySpan {
+    start: usize,
+    key_end: usize,
+    end: usize,
+    indent: usize,
+}
+
+fn nested_entry(text: &str, section: SectionSpan, name: &str) -> Option<EntrySpan> {
+    let body = &text[section.header_end..section.end];
+    let indent = nested_indent(text, section)?;
+    let lines = lines_of(body);
+    let (index, line) = lines
+        .iter()
+        .enumerate()
+        .find(|(_, line)| line.indent == indent && line.key.as_deref() == Some(name))?;
+    let mut end = line.end;
+    for next in &lines[index + 1..] {
+        if next.blank || next.comment || next.indent <= indent {
+            break;
+        }
+        end = next.end;
+    }
+    Some(EntrySpan {
+        start: section.header_end + line.start,
+        key_end: section.header_end + line.key_end.expect("entry key line has a colon"),
+        end: section.header_end + end,
+        indent,
+    })
+}
+
+fn annotation_start(text: &str, floor: usize, entry: EntrySpan) -> usize {
+    let prefix = &text[floor..entry.start];
+    let lines = lines_of(prefix);
+    let mut start = entry.start;
+    for line in lines.iter().rev() {
+        if line.blank {
+            break;
+        }
+        if line.comment && line.indent >= entry.indent {
+            start = floor + line.start;
+            continue;
+        }
+        break;
+    }
+    start
+}
+
+fn new_document(reference: &str, value: &str) -> String {
+    format!(
+        "version: {DOCUMENT_VERSION}\nrefs:\n  {reference}: {}\n",
+        serialize_scalar(value)
+    )
+}
+
+/// Render one reference set/delete in the version-1 document without touching
+/// the records namespace. The caller has already parsed the cached text, so an
+/// invalid document is never repaired or overwritten here.
 pub fn render_document(
     text: Option<&str>,
     reference: &dsh_credentials::CredentialRef,
     value: Option<&str>,
 ) -> String {
     let reference = reference.to_string();
-    let Some(text) = text else {
-        let value = value.expect("an absent document only renders a set");
-        return format!("{reference}: {}\n", serialize_scalar(value));
+    let Some(original) = text else {
+        return new_document(
+            &reference,
+            value.expect("an absent document only renders a set"),
+        );
     };
-    let entry = locate_entry(text, &reference);
-    match (entry, value) {
-        (Some(entry), Some(value)) => {
-            // Patch only the entry's own lines: keep everything through the
-            // `KEY:` prefix, then the freshly serialized value.
-            let mut out = String::with_capacity(text.len() + 16);
+    let migrated = render_flat_layout_migration(original);
+    let text = migrated.as_deref().unwrap_or(original);
+
+    let refs = parse_credentials_document(text, "<cached credentials document>")
+        .expect("render_document receives only previously admitted text");
+    let section = top_level_section(text, "refs");
+    let entry = section.and_then(|section| nested_entry(text, section, &reference));
+
+    match (section, entry, value) {
+        (_, Some(entry), Some(value)) => {
+            let mut out = String::with_capacity(text.len() + value.len() + 8);
             out.push_str(&text[..entry.key_end]);
             out.push(' ');
             out.push_str(&serialize_scalar(value));
@@ -203,113 +602,78 @@ pub fn render_document(
             out.push_str(&text[entry.end..]);
             out
         }
-        (Some(entry), None) => {
-            // Delete the entry and the comment block directly above it (its
-            // own annotation); a document left with only blank lines
-            // renders as the empty mapping.
-            let annotation_start = annotation_start_of(text, entry.start);
-            let mut remaining = String::new();
-            remaining.push_str(&text[..annotation_start]);
-            remaining.push_str(&text[entry.end..]);
-            if remaining.trim().is_empty() {
-                "{}\n".to_string()
-            } else {
-                remaining
-            }
-        }
-        (None, Some(value)) => {
-            // Append a fresh entry to the existing document.
-            let mut out = text.to_string();
-            if !out.is_empty() && !out.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push_str(&format!("{reference}: {}\n", serialize_scalar(value)));
+        (Some(section), Some(entry), None) if refs.len() == 1 => {
+            let mut out = String::with_capacity(text.len());
+            out.push_str(&text[..section.start]);
+            out.push_str("refs: {}\n");
+            out.push_str(&text[entry.end..]);
             out
         }
-        (None, None) => text.to_string(),
-    }
-}
-
-/// Byte ranges of one top-level entry: `start` at the entry's key line,
-/// `key_end` just after the `KEY:` prefix, `end` after the entry's last
-/// line (including its newline). Indented continuation lines (block
-/// scalars, folded quoted scalars) extend the range to the next top-level
-/// entry or the end of the document.
-struct EntrySpan {
-    key: String,
-    start: usize,
-    key_end: usize,
-    end: usize,
-}
-
-fn locate_entry(text: &str, reference: &str) -> Option<EntrySpan> {
-    let mut offset = 0;
-    let mut pending: Option<EntrySpan> = None;
-    for line in text.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        let blank_or_meta =
-            trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("---");
-        if !blank_or_meta && let Some(key) = plain_key_of(line) {
-            if let Some(span) = pending.take()
-                && span.key == reference
-            {
-                return Some(span);
+        (Some(section), Some(entry), None) => {
+            let start = annotation_start(text, section.header_end, entry);
+            let mut out = String::with_capacity(text.len());
+            out.push_str(&text[..start]);
+            out.push_str(&text[entry.end..]);
+            out
+        }
+        (_, None, None) => text.to_string(),
+        (Some(section), None, Some(value)) => {
+            let header = &text[section.key_end..section.header_end];
+            let block_style = header.trim().is_empty();
+            if !block_style {
+                let mut out = String::with_capacity(text.len() + value.len() + 16);
+                out.push_str(&text[..section.key_end]);
+                out.push('\n');
+                out.push_str(&format!("  {reference}: {}\n", serialize_scalar(value)));
+                out.push_str(&text[section.header_end..]);
+                return out;
             }
-            let colon = line.find(':').expect("key line has colon");
-            pending = Some(EntrySpan {
-                key,
-                start: offset,
-                key_end: offset + colon + 1,
-                end: offset + line.len(),
-            });
-            offset += line.len();
-            continue;
-        }
-        // Indented non-comment lines extend the pending entry's value span
-        // (block scalars and folded quoted scalars); blank and comment lines
-        // stay out of the span so annotations survive a patch.
-        if let Some(span) = pending.as_mut() {
-            let indented = line.starts_with(' ') || line.starts_with('\t');
-            if indented && !trimmed.starts_with('#') {
-                span.end = offset + line.len();
-            }
-        }
-        offset += line.len();
-    }
-    match pending {
-        Some(span) if span.key == reference => Some(span),
-        _ => None,
-    }
-}
-
-/// The start of the comment block directly above `entry_start`: consecutive
-/// comment lines immediately preceding the entry (blank lines stop the
-/// block, per the TS annotation semantics).
-fn annotation_start_of(text: &str, entry_start: usize) -> usize {
-    let prefix = &text[..entry_start];
-    let mut end = prefix.len();
-    let mut saw_comment = false;
-    for line in prefix.split_inclusive('\n').rev() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('#') {
-            saw_comment = true;
-            end -= line.len();
-            continue;
-        }
-        if trimmed.trim().is_empty() {
-            if saw_comment {
+            let indent = nested_indent(text, section).unwrap_or(2);
+            let mut insertion = section.end;
+            let body_lines = lines_of(&text[section.header_end..section.end]);
+            for line in body_lines.iter().rev() {
+                if line.blank || (line.comment && line.indent == 0) {
+                    insertion = section.header_end + line.start;
+                    continue;
+                }
                 break;
             }
-            end -= line.len();
-            continue;
+            let mut out = String::with_capacity(text.len() + value.len() + indent + 8);
+            out.push_str(&text[..insertion]);
+            if insertion > 0 && !text[..insertion].ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&" ".repeat(indent));
+            out.push_str(&reference);
+            out.push_str(": ");
+            out.push_str(&serialize_scalar(value));
+            out.push('\n');
+            out.push_str(&text[insertion..]);
+            out
         }
-        break;
+        (None, None, Some(value)) => {
+            if refs.is_empty() && top_level_section(text, "version").is_none() {
+                return new_document(&reference, value);
+            }
+            let version = top_level_section(text, "version")
+                .expect("a non-empty admitted structured document has a version");
+            let insertion = version.header_end;
+            let mut out = String::with_capacity(text.len() + value.len() + 20);
+            out.push_str(&text[..insertion]);
+            out.push_str("refs:\n  ");
+            out.push_str(&reference);
+            out.push_str(": ");
+            out.push_str(&serialize_scalar(value));
+            out.push('\n');
+            out.push_str(&text[insertion..]);
+            out
+        }
+        (None, Some(_), _) => unreachable!("an entry cannot exist without its section"),
     }
-    end
 }
 
-/// Serialize one scalar for a single-line entry. Plain style when the value
-/// is unambiguous; double-quoted otherwise.
+/// Serialize one scalar for a single-line entry. Plain style is used only when
+/// YAML re-parses it as the same string; everything ambiguous is quoted.
 pub fn serialize_scalar(value: &str) -> String {
     if is_plain_safe(value) {
         value.to_string()
@@ -332,14 +696,8 @@ pub fn serialize_scalar(value: &str) -> String {
     }
 }
 
-/// Whether a scalar can round-trip as a plain (unquoted) YAML scalar.
 fn is_plain_safe(value: &str) -> bool {
-    if value.is_empty() || value.contains('\n') || value.contains('\r') {
-        return false;
-    }
-    // A plain scalar may never contain a double quote; a leading quote or
-    // indicator character would change the token's kind.
-    if value.contains('"') {
+    if value.is_empty() || value.contains('\n') || value.contains('\r') || value.contains('"') {
         return false;
     }
     let first = value.chars().next().expect("non-empty");
@@ -349,17 +707,12 @@ fn is_plain_safe(value: &str) -> bool {
     {
         return false;
     }
-    // A plain scalar must not contain ": " or end with ":".
     if value.contains(": ") || value.ends_with(':') || value.contains(" #") {
         return false;
     }
-    // Control characters and leading/trailing whitespace disqualify.
-    if value.chars().any(|ch| ch.is_control()) || value.trim() != value {
+    if value.chars().any(char::is_control) || value.trim() != value {
         return false;
     }
-    // Plain style must re-parse as the same STRING: a bare `1`, `true`,
-    // `null` would materialize as an implicit scalar type (the TS `yaml`
-    // package quotes those too).
     matches!(
         serde_yaml::from_str::<serde_yaml::Value>(value),
         Ok(serde_yaml::Value::String(parsed)) if parsed == value

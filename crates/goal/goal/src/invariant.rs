@@ -142,7 +142,7 @@ pub fn installer() -> InvariantInstaller {
                                 return None;
                             };
                             apply_checked(&mut state, &event, &fail);
-                            staged.lock().insert((key, event.seq), state);
+                            staged.lock().insert((key, event.seq.get()), state);
                             None
                         })
                     });
@@ -177,7 +177,7 @@ pub fn installer() -> InvariantInstaller {
                                 return None;
                             };
                             let key = session_key(&session);
-                            let candidate = staged.lock().remove(&(key, event.seq));
+                            let candidate = staged.lock().remove(&(key, event.seq.get()));
                             if let Some(state) = candidate {
                                 states.lock().insert(key, state);
                             } else {

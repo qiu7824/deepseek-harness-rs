@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use cordis::{Context, EventOptions, Listener, arc, downcast, make_disposer};
 use dsh_session::{
-    SESSION_FORMAT_VERSION, Session, SessionEvent, SessionHeader, SessionId, SessionStore,
-    interrupted_turn_closers, snapshot_json_value,
+    SESSION_FORMAT_VERSION, Session, SessionEvent, SessionHeader, SessionId, SessionLogOffset,
+    SessionStore, interrupted_turn_closers, snapshot_json_value,
 };
 use dsh_timeout::MAX_TIMER_DELAY_MS;
 use futures::FutureExt;
@@ -126,6 +126,7 @@ impl Default for PersistenceCoordinatorOptions {
 #[derive(Clone)]
 pub struct StoredPrefix<TornMarker = ()> {
     pub meta: SessionHeader,
+    pub inherited_event_count: SessionLogOffset,
     pub events: Vec<SessionEvent>,
     pub revision: SessionPersistenceRevision,
     pub torn_marker: Option<TornMarker>,
@@ -135,6 +136,7 @@ pub struct StoredPrefix<TornMarker = ()> {
 #[derive(Clone)]
 pub struct StoredSuffix {
     pub meta: SessionHeader,
+    pub inherited_event_count: SessionLogOffset,
     pub events: Vec<SessionEvent>,
 }
 
@@ -160,6 +162,7 @@ pub trait PersistenceBackend<TornMarker: Clone + Send + Sync + 'static = ()>: Se
     async fn append_batch(
         &self,
         meta: &SessionHeader,
+        inherited_event_count: SessionLogOffset,
         events: &[SessionEvent],
         is_materialized: bool,
     ) -> Result<(), String>;
@@ -214,6 +217,7 @@ pub trait PersistenceBackend<TornMarker: Clone + Send + Sync + 'static = ()>: Se
 #[derive(Clone)]
 struct SessionState {
     meta: SessionHeader,
+    inherited_event_count: SessionLogOffset,
     /// The next seq the backend expects to append (the stored log length).
     cursor: u64,
     /// Whether lazy creation has produced a durable artifact.
@@ -391,7 +395,7 @@ fn migrate_legacy_steering_event(
     }
     message.insert(
         "id".to_string(),
-        JsonValue::String(legacy_message_id(id, event.seq)),
+        JsonValue::String(legacy_message_id(id, event.seq.get())),
     );
     message.insert("role".to_string(), JsonValue::String("user".to_string()));
     let mut migrated = event.clone();
@@ -579,7 +583,7 @@ fn migrate_legacy_message_event(
             let mut record = data.clone();
             record.insert(
                 "id".to_string(),
-                JsonValue::String(legacy_message_id(id, event.seq)),
+                JsonValue::String(legacy_message_id(id, event.seq.get())),
             );
             record.insert("role".to_string(), JsonValue::String("user".to_string()));
             migrated.data = JsonValue::Object(record);
@@ -604,7 +608,7 @@ fn migrate_legacy_message_event(
             event_data.insert(
                 "message".to_string(),
                 serde_json::json!({
-                    "id": legacy_message_id(id, event.seq),
+                    "id": legacy_message_id(id, event.seq.get()),
                     "role": "assistant",
                     "content": content,
                     "source": source,
@@ -631,11 +635,11 @@ fn migrate_legacy_message_event(
                 }
             }
             let message_id = match inherited_id {
-                None => legacy_message_id(id, event.seq),
+                None => legacy_message_id(id, event.seq.get()),
                 Some(start) => message_ids
                     .get(&start)
                     .cloned()
-                    .unwrap_or_else(|| legacy_message_id(id, event.seq)),
+                    .unwrap_or_else(|| legacy_message_id(id, event.seq.get())),
             };
             event_data.insert(
                 "message".to_string(),
@@ -688,7 +692,7 @@ fn snapshot_stored_events(
         let migrated_steering = migrate_legacy_steering_event(&migrated_turn, id)?;
         let snapshot = migrate_legacy_message_event(&migrated_steering, id, &message_ids);
         if let Some(message_id) = event_message_id(&snapshot) {
-            message_ids.insert(snapshot.seq, message_id);
+            message_ids.insert(snapshot.seq.get(), message_id);
         }
         out.push(snapshot);
     }
@@ -745,18 +749,34 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
 
     /// Register detached session metadata for lazy creation on the first
     /// append.
-    pub async fn create(self: &Arc<Self>, meta: SessionHeader) -> Result<(), String> {
+    pub async fn create(
+        self: &Arc<Self>,
+        meta: SessionHeader,
+        inherited_event_count: Option<SessionLogOffset>,
+    ) -> Result<(), String> {
         let snapshot_value = serde_json::to_value(&meta)
             .map_err(|_| "session metadata must be losslessly JSON-serializable".to_string())?;
         let snapshot = snapshot_json_value(&snapshot_value)
             .ok_or_else(|| "session metadata must be losslessly JSON-serializable".to_string())?;
         let snapshot: SessionHeader = serde_json::from_value(snapshot)
             .map_err(|_| "session metadata must be losslessly JSON-serializable".to_string())?;
+        if snapshot.is_seeded && inherited_event_count.is_none() {
+            return Err("seeded session metadata requires an inherited event count".to_string());
+        }
+        let inherited_event_count = inherited_event_count.unwrap_or(SessionLogOffset::ZERO);
+        if !snapshot.is_seeded && inherited_event_count != SessionLogOffset::ZERO {
+            return Err("unseeded session metadata inherited event count must be 0".to_string());
+        }
         let id = snapshot.id.clone();
-        self.serialize(&id, self.create_core(snapshot)).await
+        self.serialize(&id, self.create_core(snapshot, inherited_event_count))
+            .await
     }
 
-    fn create_core(self: &Arc<Self>, meta: SessionHeader) -> BoxOpFuture<()> {
+    fn create_core(
+        self: &Arc<Self>,
+        meta: SessionHeader,
+        inherited_event_count: SessionLogOffset,
+    ) -> BoxOpFuture<()> {
         let coordinator = Arc::clone(self);
         Box::pin(async move {
             let id = meta.id.clone();
@@ -778,6 +798,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 id.as_str().to_string(),
                 SessionState {
                     meta,
+                    inherited_event_count,
                     cursor: 0,
                     materialized: false,
                     owner: None,
@@ -878,7 +899,12 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             }
             coordinator
                 .backend
-                .append_batch(&state.meta, &events, state.materialized)
+                .append_batch(
+                    &state.meta,
+                    state.inherited_event_count,
+                    &events,
+                    state.materialized,
+                )
                 .await?;
             state.materialized = true;
             state.cursor += events.len() as u64;
@@ -1039,12 +1065,15 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 coordinator.assert_stored_id(&id, &suffix.meta)?;
                 coordinator.assert_version(&suffix.meta)?;
                 if suffix.events.iter().any(needs_legacy_prefix) {
-                    let (meta, events) = coordinator.read_stored_prefix(&id).await?;
+                    let (meta, inherited_event_count, events) =
+                        coordinator.read_stored_prefix(&id).await?;
                     return Ok(SessionReadFromResult {
                         meta,
+                        inherited_event_count,
+                        from_seq: SessionLogOffset::new(from_seq)?,
                         events: events
                             .into_iter()
-                            .filter(|event| event.seq >= from_seq)
+                            .filter(|event| event.seq.get() >= from_seq)
                             .collect(),
                     });
                 }
@@ -1052,15 +1081,19 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 coordinator.assert_events_supported(&suffix.meta, &events)?;
                 return Ok(SessionReadFromResult {
                     meta: suffix.meta,
+                    inherited_event_count: suffix.inherited_event_count,
+                    from_seq: SessionLogOffset::new(from_seq)?,
                     events,
                 });
             }
-            let (meta, events) = coordinator.read_stored_prefix(&id).await?;
+            let (meta, inherited_event_count, events) = coordinator.read_stored_prefix(&id).await?;
             Ok(SessionReadFromResult {
                 meta,
+                inherited_event_count,
+                from_seq: SessionLogOffset::new(from_seq)?,
                 events: events
                     .into_iter()
-                    .filter(|event| event.seq >= from_seq)
+                    .filter(|event| event.seq.get() >= from_seq)
                     .collect(),
             })
         })
@@ -1070,7 +1103,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
     async fn read_stored_prefix(
         &self,
         id: &SessionId,
-    ) -> Result<(SessionHeader, Vec<SessionEvent>), String> {
+    ) -> Result<(SessionHeader, SessionLogOffset, Vec<SessionEvent>), String> {
         let stored = self
             .backend
             .load_stored(id)
@@ -1080,7 +1113,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         self.assert_version(&stored.meta)?;
         let events = snapshot_stored_events(&stored.events, id)?;
         self.assert_events_supported(&stored.meta, &events)?;
-        Ok((stored.meta, events))
+        Ok((stored.meta, stored.inherited_event_count, events))
     }
 
     /// Read, repair in memory, validate, and freeze one cold source once
@@ -1110,11 +1143,12 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             Some(id.clone()),
             Some(dsh_session::CreateSessionOptions {
                 seed: Some(balanced.clone()),
+                inherited_event_count: Some(stored.inherited_event_count),
                 meta: Some(dsh_session::CreateSessionMeta {
                     cwd: meta.cwd.clone(),
                     parent_session: meta.parent_session.clone(),
                     created_at: Some(meta.created_at),
-                    seed_length: meta.seed_length,
+                    is_seeded: Some(meta.is_seeded),
                     origin: meta.origin.clone(),
                     delegation_depth: meta.delegation_depth,
                     agent_preset: meta.agent_preset.clone(),
@@ -1123,6 +1157,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         )?;
         let inspection = SessionInspection {
             meta: session.header().clone(),
+            inherited_event_count: session.inherited_event_count(),
             events: balanced,
         };
         Ok(Arc::new(PreparedSessionSource {
@@ -1172,12 +1207,14 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         let existing = self.states.lock().get(id.as_str()).cloned();
         let state = existing.unwrap_or(SessionState {
             meta: source.inspection.meta.clone(),
+            inherited_event_count: source.inspection.inherited_event_count,
             cursor,
             materialized: true,
             owner: None,
         });
         let mut state = state;
         state.meta = source.inspection.meta.clone();
+        state.inherited_event_count = source.inspection.inherited_event_count;
         state.cursor = cursor;
         state.materialized = true;
         self.states
@@ -1229,6 +1266,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         }
         Ok(SessionInspection {
             meta: state.meta,
+            inherited_event_count: state.inherited_event_count,
             events: events.as_ref().clone(),
         })
     }
@@ -1237,6 +1275,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
     fn inspect_live(&self, session: &Session) -> SessionInspection {
         SessionInspection {
             meta: session.header().clone(),
+            inherited_event_count: session.inherited_event_count(),
             events: session.events().as_ref().clone(),
         }
     }
@@ -1610,7 +1649,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         if !source.session.ptr_eq(session)
             || state.owner.is_some()
             || state.cursor != source.inspection.events.len() as u64
-            || session.first_live_seq() as u64 != state.cursor
+            || session.first_live_seq().get() != state.cursor
         {
             panic!(
                 "session \"{}\" preparation no longer matches its persistence state",
@@ -1647,6 +1686,40 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             init,
             writes,
         }
+    }
+
+    fn assert_lineage_matches(
+        &self,
+        session: &Session,
+        stored_meta: &SessionHeader,
+        stored_inherited_event_count: SessionLogOffset,
+    ) -> Result<(), String> {
+        let live_meta = session.header();
+        let live_inherited_event_count = session.inherited_event_count();
+        if stored_meta.is_seeded != live_meta.is_seeded
+            || stored_meta.parent_session != live_meta.parent_session
+            || stored_inherited_event_count != live_inherited_event_count
+        {
+            return Err(format!(
+                "session \"{}\" persisted lineage does not match the live session (persisted parentSession={}, isSeeded={}, inheritedEventCount={}; live parentSession={}, isSeeded={}, inheritedEventCount={}) (id collision)",
+                session.id().as_str(),
+                stored_meta
+                    .parent_session
+                    .as_ref()
+                    .map(|id| id.as_str())
+                    .unwrap_or("undefined"),
+                stored_meta.is_seeded,
+                stored_inherited_event_count,
+                live_meta
+                    .parent_session
+                    .as_ref()
+                    .map(|id| id.as_str())
+                    .unwrap_or("undefined"),
+                live_meta.is_seeded,
+                live_inherited_event_count,
+            ));
+        }
+        Ok(())
     }
 
     /// Whether a live session's `seed` reproduces the first `cursor`
@@ -1704,6 +1777,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                             .unwrap_or_else(|| "undefined".to_string())
                     ));
                 }
+                self.assert_lineage_matches(session, &tracked.meta, tracked.inherited_event_count)?;
                 if !self
                     .seed_matches_persisted(&id, seed, tracked.cursor)
                     .await?
@@ -1747,7 +1821,8 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         // Case 4: a genuinely new session. Register meta (lazy), then persist
         // its seed once.
         let meta = session.header().clone();
-        self.create_core(meta).await?;
+        self.create_core(meta, session.inherited_event_count())
+            .await?;
         {
             let mut states = self.states.lock();
             if let Some(created) = states.get_mut(id.as_str()) {
@@ -1782,6 +1857,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             ));
         }
         self.assert_version(&meta)?;
+        self.assert_lineage_matches(session, &meta, stored.inherited_event_count)?;
         let stored_events = snapshot_stored_events(&stored.events, session.id())?;
         self.assert_events_supported(&meta, &stored_events)?;
         if !seed_covers_prefix(seed, &stored_events) {
@@ -1801,6 +1877,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             session.id().as_str().to_string(),
             SessionState {
                 meta,
+                inherited_event_count: stored.inherited_event_count,
                 cursor,
                 materialized: true,
                 owner: Some(session.clone()),
@@ -1875,7 +1952,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 .unwrap_or(0);
             let fresh: Vec<SessionEvent> = batch
                 .into_iter()
-                .filter(|event| event.seq >= cursor)
+                .filter(|event| event.seq.get() >= cursor)
                 .collect();
             coordinator.append_core(id, fresh).await
         })
@@ -1908,5 +1985,20 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             let coordinator = Arc::clone(&coordinator);
             Box::pin(async move { coordinator.commit_prepared(source).await })
         })
+    }
+}
+
+#[cfg(test)]
+mod lineage_guard_tests {
+    #[test]
+    fn persisted_lineage_guard_compares_parent_session() {
+        let source = include_str!("coordinator.rs");
+        let guard = source
+            .split("fn assert_lineage_matches")
+            .nth(1)
+            .and_then(|tail| tail.split("/// Whether a live session").next())
+            .expect("lineage guard source");
+        assert!(guard.contains("stored_meta.parent_session"));
+        assert!(guard.contains("live_meta.parent_session"));
     }
 }

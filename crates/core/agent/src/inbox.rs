@@ -77,8 +77,8 @@ impl Inbox {
             mutation_owner: Mutex::new(None),
             mutation_released: parking_lot::Condvar::new(),
         };
-        let seed_length = session.header().seed_length.unwrap_or(0) as usize;
-        for event in session.events().iter().skip(seed_length) {
+        let inherited_event_count = session.inherited_event_count().get() as usize;
+        for event in session.events().iter().skip(inherited_event_count) {
             if event.type_ != "agent/inbox/spliced" {
                 continue;
             }
