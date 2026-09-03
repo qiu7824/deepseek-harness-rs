@@ -5,6 +5,7 @@ use std::io;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -663,6 +664,7 @@ struct Copy {
     open_failed: &'static str,
     shell_open_failed: &'static str,
     lock_error: &'static str,
+    working: &'static str,
 }
 
 fn chinese_copy() -> Copy {
@@ -698,6 +700,7 @@ fn chinese_copy() -> Copy {
         open_failed: "打开失败",
         shell_open_failed: "系统打开命令失败",
         lock_error: "启动器状态不可用",
+        working: "正在执行，请稍候…",
     }
 }
 
@@ -734,6 +737,7 @@ fn english_copy() -> Copy {
         open_failed: "Open failed",
         shell_open_failed: "System open command failed",
         lock_error: "Launcher status is unavailable",
+        working: "Working, please wait…",
     }
 }
 
@@ -793,7 +797,15 @@ fn update_status(copy: Copy) -> Result<String, String> {
 }
 
 fn update_status_from(url: &str, copy: Copy) -> Result<String, String> {
-    let mut response = ureq::get(url)
+    // Bounded so a blackholed network can only stall the worker thread, and
+    // even that worker always finishes on its own.
+    let agent = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(8)))
+            .build(),
+    );
+    let mut response = agent
+        .get(url)
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "deepseek-harness-rs-launcher")
         .call()
@@ -1291,51 +1303,200 @@ enum Message {
     Refresh,
 }
 
-struct State {
-    controller: Arc<Mutex<ServiceController>>,
-    copy: Copy,
-    ownership: ServiceOwnership,
-    autostart: bool,
-    status: String,
+/// Thread-shared service snapshot behind the launcher window.
+///
+/// The ZSUI `update` function runs on the UI thread, so slow operations
+/// (service start/stop polling, update check over the network, port probes)
+/// must not run there. Worker threads mutate this shared snapshot and then
+/// call [`UiInvalidationHandle::request_rebuild`]; the window rebuild only
+/// performs microsecond lock reads and never blocks.
+#[derive(Debug, Clone)]
+struct SharedOwnership(Arc<Mutex<ServiceOwnership>>);
+
+impl SharedOwnership {
+    fn new(ownership: ServiceOwnership) -> Self {
+        Self(Arc::new(Mutex::new(ownership)))
+    }
+
+    fn get(&self) -> ServiceOwnership {
+        self.0
+            .lock()
+            .map(|guard| *guard)
+            .unwrap_or_else(|poisoned| *poisoned.into_inner())
+    }
+
+    fn set(&self, ownership: ServiceOwnership) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = ownership;
+        }
+    }
 }
 
-impl State {
-    fn new(controller: Arc<Mutex<ServiceController>>) -> Self {
+impl PartialEq<ServiceOwnership> for SharedOwnership {
+    fn eq(&self, other: &ServiceOwnership) -> bool {
+        self.get() == *other
+    }
+}
+
+/// Cloneable handles for running one launcher command at a time on a worker
+/// thread. `dispatch` never blocks the caller; a second command issued while
+/// a job is running is rejected so tray clicks and window buttons cannot
+/// pile up duplicate service operations.
+#[derive(Debug, Clone)]
+struct LauncherJobs {
+    controller: Arc<Mutex<ServiceController>>,
+    copy: Copy,
+    status: Arc<Mutex<String>>,
+    ownership: SharedOwnership,
+    busy: Arc<AtomicBool>,
+    invalidation: UiInvalidationHandle,
+    update_url: Option<String>,
+}
+
+impl LauncherJobs {
+    fn new(controller: Arc<Mutex<ServiceController>>, invalidation: UiInvalidationHandle) -> Self {
+        Self::with_update_url(controller, invalidation, None)
+    }
+
+    fn with_update_url(
+        controller: Arc<Mutex<ServiceController>>,
+        invalidation: UiInvalidationHandle,
+        update_url: Option<String>,
+    ) -> Self {
         let copy = localized_copy();
         let ownership = controller
             .lock()
             .map(|mut controller| controller.ownership())
             .unwrap_or(ServiceOwnership::ForeignPort);
-        let autostart = autostart_enabled().unwrap_or(false);
+        let status = ownership_label(copy, ownership).to_string();
         Self {
             controller,
             copy,
-            ownership,
-            autostart,
-            status: ownership_label(copy, ownership).to_string(),
+            status: Arc::new(Mutex::new(status)),
+            ownership: SharedOwnership::new(ownership),
+            busy: Arc::new(AtomicBool::new(false)),
+            invalidation,
+            update_url,
         }
     }
 
-    fn refresh(&mut self) {
-        self.ownership = self
+    fn status_text(&self) -> String {
+        self.status
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
+    fn set_status(&self, status: String) {
+        if let Ok(mut guard) = self.status.lock() {
+            *guard = status;
+        }
+    }
+
+    fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::Acquire)
+    }
+
+    fn refresh_snapshot(&self) {
+        let ownership = self
             .controller
             .lock()
             .map(|mut controller| controller.ownership())
             .unwrap_or(ServiceOwnership::ForeignPort);
+        self.ownership.set(ownership);
+    }
+
+    fn dispatch(&self, command: LauncherCommand) -> bool {
+        if self
+            .busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        self.set_status(self.copy.working.to_string());
+        let jobs = self.clone();
+        std::thread::spawn(move || {
+            let result = jobs
+                .controller
+                .lock()
+                .map_err(|_| jobs.copy.lock_error.to_string())
+                .and_then(|mut controller| match command {
+                    LauncherCommand::CheckUpdate => jobs.jobs_update_status(),
+                    _ => controller.execute(command),
+                });
+            jobs.refresh_snapshot();
+            jobs.set_status(match result {
+                Ok(message) => message,
+                Err(error) => error,
+            });
+            jobs.busy.store(false, Ordering::Release);
+            jobs.invalidation.request_rebuild();
+        });
+        true
+    }
+
+    fn jobs_update_status(&self) -> Result<String, String> {
+        // Production checks the GitHub releases API. Tests inject a local
+        // fixture URL so the full dispatch path stays hermetic.
+        match self.update_url.clone() {
+            Some(url) => update_status_from(&url, self.copy),
+            None => update_status(self.copy),
+        }
+    }
+}
+
+struct State {
+    jobs: LauncherJobs,
+    copy: Copy,
+    autostart: bool,
+}
+
+/// The view keeps reading `state.ownership` exactly as before. The snapshot
+/// itself lives behind `LauncherJobs` where worker threads can refresh it;
+/// every read in `view` is a microsecond lock, never a blocking probe.
+impl std::ops::Deref for State {
+    type Target = LauncherJobs;
+
+    fn deref(&self) -> &Self::Target {
+        &self.jobs
+    }
+}
+
+impl State {
+    fn new(jobs: LauncherJobs) -> Self {
+        let copy = localized_copy();
+        let autostart = autostart_enabled().unwrap_or(false);
+        Self {
+            jobs,
+            copy,
+            autostart,
+        }
+    }
+
+    fn refresh(&mut self) {
+        self.jobs.refresh_snapshot();
         self.autostart = autostart_enabled().unwrap_or(false);
     }
 
     fn run(&mut self, command: LauncherCommand) {
+        // Only instant local operations (autostart registry flip) stay on the
+        // UI thread. Everything slow goes through `dispatch`.
         let result = self
+            .jobs
             .controller
             .lock()
             .map_err(|_| self.copy.lock_error.to_string())
             .and_then(|mut controller| controller.execute(command));
-        self.status = match result {
+        self.jobs.set_status(match result {
             Ok(message) => message,
             Err(error) => error,
-        };
+        });
         self.refresh();
+    }
+
+    fn dispatch(&mut self, command: LauncherCommand) {
+        self.jobs.dispatch(command);
     }
 }
 
@@ -1360,13 +1521,15 @@ fn text_style(role: TextRole, color: ColorRole, weight: TextWeight) -> SemanticT
 }
 
 fn view(state: &State) -> ViewNode<Message> {
+    let status = state.jobs.status_text();
+    let busy = state.is_busy();
     let managed = state.ownership == ServiceOwnership::ManagedRunning;
-    let status_icon = match state.ownership {
+    let status_icon = match state.ownership.get() {
         ServiceOwnership::Stopped => ZsIcon::Info,
         ServiceOwnership::ManagedRunning => ZsIcon::Success,
         ServiceOwnership::ForeignPort => ZsIcon::Warning,
     };
-    let status_color = match state.ownership {
+    let status_color = match state.ownership.get() {
         ServiceOwnership::Stopped => ColorRole::SecondaryText,
         ServiceOwnership::ManagedRunning => ColorRole::Success,
         ServiceOwnership::ForeignPort => ColorRole::Warning,
@@ -1403,7 +1566,7 @@ fn view(state: &State) -> ViewNode<Message> {
                 row([
                     column([
                         styled_text(
-                            ownership_label(state.copy, state.ownership),
+                            ownership_label(state.copy, state.ownership.get()),
                             text_style(TextRole::BodyLarge, status_color, TextWeight::Semibold),
                         ),
                         styled_text(
@@ -1430,9 +1593,11 @@ fn view(state: &State) -> ViewNode<Message> {
                 row([
                     primary_button(state.copy.open_web).on_click(Message::OpenWeb),
                     button(state.copy.restart)
-                        .enabled(managed)
+                        .enabled(managed && !busy)
                         .on_click(Message::Restart),
-                    button(state.copy.refresh).on_click(Message::Refresh),
+                    button(state.copy.refresh)
+                        .enabled(!busy)
+                        .on_click(Message::Refresh),
                 ])
                 .gap(LAUNCHER_ACTION_GAP.into()),
             ],
@@ -1467,7 +1632,7 @@ fn view(state: &State) -> ViewNode<Message> {
         section(
             state.copy.last_action,
             [styled_text(
-                &state.status,
+                &status,
                 text_style(
                     TextRole::Caption,
                     ColorRole::SecondaryText,
@@ -1485,15 +1650,17 @@ fn view(state: &State) -> ViewNode<Message> {
 }
 
 fn update(state: &mut State, message: Message, _cx: &mut AppCx) {
+    // Slow commands run on a worker thread via `dispatch` so the window
+    // never freezes. Only the instant autostart flip stays synchronous.
     match message {
-        Message::SetRunning(true) => state.run(LauncherCommand::Start),
-        Message::SetRunning(false) => state.run(LauncherCommand::Stop),
-        Message::Restart => state.run(LauncherCommand::Restart),
-        Message::OpenWeb => state.run(LauncherCommand::OpenWeb),
+        Message::SetRunning(true) => state.dispatch(LauncherCommand::Start),
+        Message::SetRunning(false) => state.dispatch(LauncherCommand::Stop),
+        Message::Restart => state.dispatch(LauncherCommand::Restart),
+        Message::OpenWeb => state.dispatch(LauncherCommand::OpenWeb),
         Message::SetAutostart(enabled) => state.run(LauncherCommand::SetAutostart(enabled)),
-        Message::CheckUpdate => state.run(LauncherCommand::CheckUpdate),
+        Message::CheckUpdate => state.dispatch(LauncherCommand::CheckUpdate),
         Message::Refresh => {
-            state.run(LauncherCommand::Refresh);
+            state.dispatch(LauncherCommand::Refresh);
         }
     }
 }
@@ -1573,12 +1740,10 @@ fn main() -> Result<(), zsui::ZsuiError> {
     )));
     let copy = localized_copy();
     let invalidation = UiInvalidationHandle::new();
+    let jobs = LauncherJobs::new(Arc::clone(&controller), invalidation.clone());
 
     let icon_path = launcher_icon_path().to_string_lossy().into_owned();
-    let tray_ownership = controller
-        .lock()
-        .map(|mut controller| controller.ownership())
-        .unwrap_or(ServiceOwnership::ForeignPort);
+    let tray_ownership = jobs.ownership.get();
     let tray = TraySpec::new()
         .tooltip(copy.title)
         .icon_path(icon_path.clone())
@@ -1588,16 +1753,17 @@ fn main() -> Result<(), zsui::ZsuiError> {
             autostart_enabled().unwrap_or(false),
         ))
         .dynamic_menu({
-            let controller = Arc::clone(&controller);
+            let jobs = jobs.clone();
             move || {
-                let ownership = controller
-                    .lock()
-                    .map(|mut controller| controller.ownership())
-                    .unwrap_or(ServiceOwnership::ForeignPort);
-                tray_menu_spec(copy, ownership, autostart_enabled().unwrap_or(false))
+                tray_menu_spec(
+                    copy,
+                    jobs.ownership.get(),
+                    autostart_enabled().unwrap_or(false),
+                )
             }
         });
     let command_controller = Arc::clone(&controller);
+    let job_dispatcher = jobs.clone();
     let builder = NativeWindowBuilder::new(copy.title)
         .app_name("DeepSeek Harness-rs")
         .size(680, 430)
@@ -1634,43 +1800,53 @@ fn main() -> Result<(), zsui::ZsuiError> {
                     _ => None,
                 };
                 if let Some(action) = action {
-                    command_controller
-                        .lock()
-                        .map_err(|_| {
-                            zsui::ZsuiError::host(
-                                "launcher_command",
-                                localized_copy().lock_error.to_string(),
-                            )
-                        })?
-                        .execute(action)
-                        .map_err(|error| zsui::ZsuiError::host("launcher_command", error))?;
+                    match action {
+                        // The autostart registry flip is instant and keeps the
+                        // previous synchronous path.
+                        LauncherCommand::SetAutostart(_) => {
+                            command_controller
+                                .lock()
+                                .map_err(|_| {
+                                    zsui::ZsuiError::host(
+                                        "launcher_command",
+                                        localized_copy().lock_error.to_string(),
+                                    )
+                                })?
+                                .execute(action)
+                                .map_err(|error| {
+                                    zsui::ZsuiError::host("launcher_command", error)
+                                })?;
+                        }
+                        // Slow commands run on a worker thread. The view maps
+                        // the same command to a Message, which hits the busy
+                        // guard in `dispatch`, so one tray click executes once.
+                        slow => {
+                            job_dispatcher.dispatch(slow);
+                        }
+                    }
                 }
                 Ok(Vec::new())
             }
             _ => Ok(Vec::new()),
         })
-        .stateful_view_with_app_commands(State::new(controller), view, update, |command| {
-            match command {
-                ZsuiCommand::Custom { id, .. } if id == TRAY_OPEN_HARNESS_COMMAND => {
-                    Some(Message::OpenWeb)
-                }
-                ZsuiCommand::Custom { id, .. } if id == TRAY_START_COMMAND => {
-                    Some(Message::SetRunning(true))
-                }
-                ZsuiCommand::Custom { id, .. } if id == TRAY_STOP_COMMAND => {
-                    Some(Message::SetRunning(false))
-                }
-                ZsuiCommand::Custom { id, .. } if id == TRAY_RESTART_COMMAND => {
-                    Some(Message::Restart)
-                }
-                ZsuiCommand::Custom { id, .. } if id == TRAY_AUTOSTART_COMMAND => {
-                    Some(Message::SetAutostart(!autostart_enabled().unwrap_or(false)))
-                }
-                ZsuiCommand::Custom { id, .. } if id == TRAY_CHECK_UPDATE_COMMAND => {
-                    Some(Message::CheckUpdate)
-                }
-                _ => None,
+        .stateful_view_with_app_commands(State::new(jobs), view, update, |command| match command {
+            ZsuiCommand::Custom { id, .. } if id == TRAY_OPEN_HARNESS_COMMAND => {
+                Some(Message::OpenWeb)
             }
+            ZsuiCommand::Custom { id, .. } if id == TRAY_START_COMMAND => {
+                Some(Message::SetRunning(true))
+            }
+            ZsuiCommand::Custom { id, .. } if id == TRAY_STOP_COMMAND => {
+                Some(Message::SetRunning(false))
+            }
+            ZsuiCommand::Custom { id, .. } if id == TRAY_RESTART_COMMAND => Some(Message::Restart),
+            ZsuiCommand::Custom { id, .. } if id == TRAY_AUTOSTART_COMMAND => {
+                Some(Message::SetAutostart(!autostart_enabled().unwrap_or(false)))
+            }
+            ZsuiCommand::Custom { id, .. } if id == TRAY_CHECK_UPDATE_COMMAND => {
+                Some(Message::CheckUpdate)
+            }
+            _ => None,
         })
         .run()
         .map(|_| ())
@@ -1681,15 +1857,17 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::{Duration, Instant};
 
     use super::{
         DEFAULT_PORT, Dp, LAUNCHER_ACTION_GAP, LAUNCHER_CONTENT_PADDING, LAUNCHER_SECTION_GAP,
-        LauncherAction, LauncherStateFile, MenuItemSpec, MenuSpec, PRIMARY_ACTIONS,
-        ProcessIdentity, SECONDARY_ACTIONS, ServiceController, ServiceOwnership,
-        TRAY_RESTART_COMMAND, TRAY_START_COMMAND, TRAY_STOP_COMMAND, chinese_copy,
-        core_executable_name, english_copy, is_newer_version, now_unix_millis, parse_version,
-        read_launcher_state, tray_menu_spec, update_status_from, write_launcher_state,
+        LauncherAction, LauncherCommand, LauncherJobs, LauncherStateFile, MenuItemSpec, MenuSpec,
+        PRIMARY_ACTIONS, ProcessIdentity, SECONDARY_ACTIONS, ServiceController, ServiceOwnership,
+        TRAY_RESTART_COMMAND, TRAY_START_COMMAND, TRAY_STOP_COMMAND, UiInvalidationHandle,
+        chinese_copy, core_executable_name, english_copy, is_newer_version, now_unix_millis,
+        parse_version, tray_menu_spec, update_status_from,
     };
 
     #[test]
@@ -1788,6 +1966,97 @@ mod tests {
         assert!(message.contains("Update available"));
         assert!(message.contains("v0.1.2-alpha.5"));
         assert!(message.contains("https://example.invalid/release"));
+    }
+
+    #[test]
+    fn slow_commands_run_on_a_worker_thread_and_stay_single_flight() {
+        // Fixture accepts the update request and closes without answering, so
+        // a synchronous update check would block for seconds. `dispatch` must
+        // return immediately while the worker finishes in the background.
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind slow update fixture");
+        let address = format!(
+            "http://{}/releases",
+            server.local_addr().expect("fixture address")
+        );
+        let fixture = thread::spawn(move || {
+            let (mut stream, _) = server.accept().expect("receive update request");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).expect("read update request");
+            thread::sleep(Duration::from_secs(4));
+        });
+        let controller = ServiceController {
+            root: PathBuf::from("."),
+            executable: PathBuf::from("dsh-test-missing-host"),
+            child: None,
+            copy: english_copy(),
+        };
+        let jobs = LauncherJobs::with_update_url(
+            Arc::new(Mutex::new(controller)),
+            UiInvalidationHandle::new(),
+            Some(address),
+        );
+        let started = Instant::now();
+        assert!(jobs.dispatch(LauncherCommand::CheckUpdate));
+        assert!(jobs.is_busy());
+        // `localized_copy` (not `english_copy`): the worker reports in the
+        // same locale the jobs were created with.
+        let working = super::localized_copy().working;
+        let update_failed = super::localized_copy().update_failed;
+        assert_eq!(jobs.status_text(), working);
+        assert!(
+            !jobs.dispatch(LauncherCommand::Refresh),
+            "a second command must be rejected while a job runs"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "dispatch must return while the worker is still blocked"
+        );
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if jobs.status_text().contains(update_failed) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "worker never reported the failed update"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!jobs.is_busy());
+        fixture.join().expect("join slow update fixture");
+    }
+
+    #[test]
+    fn failed_start_is_reported_by_the_worker_without_blocking() {
+        let root = unique_test_root("worker-missing-host");
+        std::fs::create_dir_all(&root).expect("create worker test root");
+        let controller = ServiceController {
+            root: root.clone(),
+            executable: root.join("dsh-test-missing-host"),
+            child: None,
+            copy: english_copy(),
+        };
+        let jobs = LauncherJobs::new(
+            Arc::new(Mutex::new(controller)),
+            UiInvalidationHandle::new(),
+        );
+        let started = Instant::now();
+        assert!(jobs.dispatch(LauncherCommand::Start));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if jobs.status_text().contains(english_copy().missing_host) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "worker never reported the missing host"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!jobs.is_busy());
+        assert_ne!(jobs.ownership.get(), ServiceOwnership::ManagedRunning);
+        std::fs::remove_dir_all(root).expect("remove worker test root");
     }
 
     #[test]
