@@ -18,8 +18,11 @@ const REDIRECT: &str = ".dsh-home-redirect.json";
 const ACTIVE: &str = ".runtime-paths.json";
 const FAILURE: &str = ".runtime-migration-failed.json";
 
+#[path = "runtime_paths_links.rs"]
+mod links;
 #[path = "runtime_paths_migration.rs"]
 mod migration;
+use links::ManagedModuleLinks;
 
 #[derive(Default)]
 struct Admission {
@@ -143,7 +146,7 @@ fn hash(path: &Path) -> Result<Vec<u8>, String> {
     Ok(hash.finalize().to_vec())
 }
 
-fn copy_tree(source: &Path, target: &Path) -> Result<(), String> {
+fn copy_tree(source: &Path, target: &Path, links: &ManagedModuleLinks) -> Result<(), String> {
     fs::create_dir_all(target).map_err(|e| e.to_string())?;
     for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -157,10 +160,13 @@ fn copy_tree(source: &Path, target: &Path) -> Result<(), String> {
         let from = entry.path();
         let to = target.join(entry.file_name());
         if kind.is_symlink() {
+            if links.copy_link(&from, &to)? {
+                continue;
+            }
             return Err(format!("迁移目录含符号链接，请先处理：{}", from.display()));
         }
         if kind.is_dir() {
-            copy_tree(&from, &to)?;
+            copy_tree(&from, &to, links)?;
         } else if kind.is_file() {
             fs::copy(&from, &to).map_err(|e| e.to_string())?;
             OpenOptions::new()
@@ -199,7 +205,7 @@ fn copy_to_empty(source: &Path, target: &Path) -> Result<(), String> {
     let stage = parent.join(format!(".dsh-migration-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&stage).map_err(|e| e.to_string())?;
     if source.exists() {
-        copy_tree(source, &stage)?;
+        copy_tree(source, &stage, &ManagedModuleLinks::default())?;
     }
     if target.exists() {
         fs::remove_dir(target).map_err(|e| e.to_string())?;
@@ -234,6 +240,22 @@ pub fn validate(
 
 impl RuntimePaths {
     pub fn prepare(root: &Path) -> Result<Arc<Self>, String> {
+        let install_anchor = std::env::var_os("DSH_INSTALL_ANCHOR")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let executable = std::env::current_exe().ok()?;
+                executable
+                    .ancestors()
+                    .map(|path| path.join("package.json"))
+                    .find(|path| path.is_file())
+            });
+        Self::prepare_with_install_anchor(root, install_anchor.as_deref())
+    }
+
+    pub fn prepare_with_install_anchor(
+        root: &Path,
+        install_anchor: Option<&Path>,
+    ) -> Result<Arc<Self>, String> {
         let root = resolve_redirect(root)?;
         fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let mut lock = migration::acquire_lock(&root)?;
@@ -247,7 +269,8 @@ impl RuntimePaths {
         }
         let attempt =
             migration::desired_paths(&settings["storage-paths"], &active).and_then(|paths| {
-                migration::migrate(&active, &paths, &settings).map(|lock| (paths, lock))
+                let links = ManagedModuleLinks::resolve(&root, install_anchor)?;
+                migration::migrate(&active, &paths, &settings, &links).map(|lock| (paths, lock))
             });
         let (paths, mut migration_error) = match attempt {
             Ok((paths, new_lock)) => {

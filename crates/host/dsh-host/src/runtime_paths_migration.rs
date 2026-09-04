@@ -1,6 +1,6 @@
 //! Stage every requested copy before publishing paths; rollback published
 //! directories if any later step fails, and commit the home redirect last.
-use super::{ACTIVE, LOCK, REDIRECT, canonical_target, copy_tree, write_json};
+use super::{ACTIVE, LOCK, ManagedModuleLinks, REDIRECT, canonical_target, copy_tree, write_json};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -133,7 +133,7 @@ struct StagedCopy {
 }
 
 impl StagedCopy {
-    fn prepare(source: &Path, target: &Path) -> Result<Self, String> {
+    fn prepare(source: &Path, target: &Path, links: &ManagedModuleLinks) -> Result<Self, String> {
         ensure_empty(source, target)?;
         let parent = target.parent().ok_or("目标目录无父级")?;
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -147,7 +147,7 @@ impl StagedCopy {
             committed: false,
         };
         if source.exists() {
-            copy_tree(source, &copy.stage)?;
+            copy_tree(source, &copy.stage, links)?;
         }
         Ok(copy)
     }
@@ -191,6 +191,7 @@ pub(super) fn migrate(
     active: &BTreeMap<String, PathBuf>,
     paths: &BTreeMap<String, PathBuf>,
     settings: &Value,
+    links: &ManagedModuleLinks,
 ) -> Result<Option<Vec<File>>, String> {
     validate_targets(paths, active)?;
     let old_root = &active["dataDirectory"];
@@ -205,7 +206,7 @@ pub(super) fn migrate(
     };
     let mut copies = Vec::new();
     if moving_root {
-        copies.push(StagedCopy::prepare(old_root, root)?);
+        copies.push(StagedCopy::prepare(old_root, root, links)?);
     }
     for name in ["cacheDirectory", "environmentDirectory", "testDirectory"] {
         let source = &active[name];
@@ -231,12 +232,12 @@ pub(super) fn migrate(
                     return Err(format!("目标目录与已有数据重叠：{}", target.display()));
                 }
                 if source.exists() {
-                    copy_tree(source, &destination)?;
+                    copy_tree(source, &destination, links)?;
                 }
             }
             fs::create_dir_all(&destination).map_err(|e| e.to_string())?;
         } else {
-            copies.push(StagedCopy::prepare(source, target)?);
+            copies.push(StagedCopy::prepare(source, target, links)?);
         }
     }
     let mut saved = settings.clone();
@@ -276,18 +277,46 @@ mod tests {
         let source = base.join("source");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("data"), "keep").unwrap();
+        let installation = base.join("installation");
+        fs::create_dir_all(&installation).unwrap();
+        write_json(
+            &installation.join("package.json"),
+            &json!({"name":"managed-test-installation","version":"1.0.0"}),
+        )
+        .unwrap();
+        fs::write(
+            installation.join("host-bytes"),
+            "installation must survive rollback",
+        )
+        .unwrap();
+        dsh_app_boot::heal_profiles_module_fallback(&installation.join("package.json"), &source)
+            .unwrap();
+        let links =
+            ManagedModuleLinks::resolve(&source, Some(&installation.join("package.json"))).unwrap();
         let first_target = base.join("first");
         let second_target = base.join("second");
         {
-            let mut first = StagedCopy::prepare(&source, &first_target).unwrap();
-            let mut second = StagedCopy::prepare(&source, &second_target).unwrap();
+            let mut first = StagedCopy::prepare(&source, &first_target, &links).unwrap();
+            let mut second = StagedCopy::prepare(&source, &second_target, &links).unwrap();
             first.publish().unwrap();
+            assert!(
+                fs::symlink_metadata(
+                    first_target.join("profiles/node_modules/managed-test-installation")
+                )
+                .unwrap()
+                .file_type()
+                .is_symlink()
+            );
             fs::create_dir(&second_target).unwrap();
             fs::write(second_target.join("external"), "unrelated").unwrap();
             assert!(second.publish().is_err());
         }
         assert!(!first_target.exists());
         assert_eq!(fs::read_to_string(source.join("data")).unwrap(), "keep");
+        assert_eq!(
+            fs::read_to_string(installation.join("host-bytes")).unwrap(),
+            "installation must survive rollback"
+        );
         assert_eq!(
             fs::read_to_string(second_target.join("external")).unwrap(),
             "unrelated"

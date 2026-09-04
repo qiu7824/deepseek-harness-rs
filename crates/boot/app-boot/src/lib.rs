@@ -407,6 +407,21 @@ mod directory_link_tests {
 /// Heal `$DSH_HOME/profiles/node_modules` with the app's resolvable dependency
 /// and peer-dependency closure. Declared but absent packages are skipped.
 pub fn heal_profiles_module_fallback(install_anchor: &Path, home: &Path) -> Result<(), String> {
+    let links = profiles_module_fallback_targets(install_anchor)?;
+    let modules = home.join(PROFILES_DIR).join("node_modules");
+    std::fs::create_dir_all(&modules).map_err(|error| error.to_string())?;
+    for (name, target) in links {
+        ensure_directory_link(&modules.join(name), &target)?;
+    }
+    Ok(())
+}
+
+/// Resolve the same installation-owned module targets used by profile boot.
+/// Storage migration uses this frozen map to validate links without following
+/// their contents or treating arbitrary user-created links as trusted.
+pub fn profiles_module_fallback_targets(
+    install_anchor: &Path,
+) -> Result<IndexMap<String, PathBuf>, String> {
     let app_dir = install_anchor.parent().ok_or_else(|| {
         format!(
             "dsh: install anchor {} has no parent",
@@ -441,12 +456,13 @@ pub fn heal_profiles_module_fallback(install_anchor: &Path, home: &Path) -> Resu
             queue.push_back((dir.join("package.json"), child));
         }
     }
-    let modules = home.join(PROFILES_DIR).join("node_modules");
-    std::fs::create_dir_all(&modules).map_err(|error| error.to_string())?;
-    for (name, target) in links {
-        ensure_directory_link(&modules.join(name), &target)?;
-    }
-    Ok(())
+    Ok(links)
+}
+
+/// Recreate a link after the caller has validated its installation ownership.
+/// This never copies or traverses the target tree.
+pub fn recreate_profiles_module_fallback_link(link: &Path, target: &Path) -> Result<(), String> {
+    ensure_directory_link(link, target)
 }
 
 /// Parse a patch file into entry patches (absent file = empty).

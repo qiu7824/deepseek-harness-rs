@@ -94,7 +94,7 @@ jobs:
           STAGE="dist/${{ steps.release.outputs.prefix }}-core"
           HOST="$STAGE/deepseek-harness-rs"
           [[ "${{ matrix.platform }}" == "windows" ]] && HOST="$HOST.exe"
-          python tools/e2e_settings_model_preserves_data.py --binary "$HOST" --repo "$STAGE" --relocate
+          python tools/e2e_settings_model_preserves_data.py --binary "$HOST" --repo "$STAGE" --relocate --migrate-home
           python tools/e2e_session_resume.py --binary "$HOST" --repo "$STAGE"
           python tools/e2e_credentials_compat.py --binary "$HOST"
           python tools/e2e_all_interfaces.py --binary "$HOST"
