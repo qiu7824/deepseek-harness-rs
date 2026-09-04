@@ -7637,7 +7637,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				}
 			}
 			/** Reconnect rebuild (manager calls this on onConnected for instances that were opened):
-			*  reset the window and rerun open; pending waits for the baseline replay. Invalidates any
+			*  retain the current window while rerunning open; pending waits for the baseline replay. Invalidates any
 			*  in-flight open first — its history request rode the dead connection and must not settle
 			*  the fresh generation into 'error'. */
 			async resync() {
@@ -7646,13 +7646,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				this.openPromise = null;
 				this.openState = "cold";
 				this.openError = null;
-				this.events = [];
-				this.views = [];
-				this.baseSeq = 0;
-				this.hasMore = false;
-				this.hasMoreBefore = false;
-				this.hasMoreAfter = false;
-				this.historyPages = [];
+				// Keep the last valid bounded window until a replacement succeeds.
 				this.loadingOlder = false;
 				this.loadingNewer = false;
 				this.historyTargetSeq = null;

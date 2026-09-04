@@ -38,15 +38,16 @@ class HistoryWindowContractTests(unittest.TestCase):
         for required in (
             'this.scopedSession("loadAround").loadAround(seq)',
             "loadAround: (seq) => scoped.loadAround(seq)",
-            'useProjection("turnOutline")',
-            "mergeTurnOutline(timeline, turnOutline)",
-            "const TurnNavigator =",
-            'className: "dshAlpha3TurnRail"',
-            "loadAround(item.anchor.seq)",
-            '"chat.turnNavigation.jumpLoad"',
         ):
             self.assertIn(required, conversation)
-        self.assertNotIn("loadThrough(item.anchor.seq)", conversation)
+
+    def test_custom_context_navigation_is_the_only_turn_rail(self):
+        conversation = CONVERSATION.read_text(encoding="utf-8")
+        custom = (ROOT / "release/plugins/dsh-context-jump/lib/client.js").read_text(encoding="utf-8")
+        self.assertNotIn("TurnNavigator", conversation)
+        self.assertNotIn("dshAlpha3TurnRail", conversation)
+        self.assertIn('ctx.slots.inject("conversation.input.overlay"', custom)
+        self.assertIn("await session.loadAround(seq, true)", custom)
 
     def test_single_live_page_compacts_stream_deltas_without_cutting_its_prefix(self):
         source = RUNTIME.read_text(encoding="utf-8")

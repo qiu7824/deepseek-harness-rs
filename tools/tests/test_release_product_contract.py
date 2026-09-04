@@ -136,14 +136,14 @@ class ReleaseProductContractTests(unittest.TestCase):
 
         gate = workflow_step(workflow, "版本与产品门禁")
         self.assertIn("python tools/verify_free_model_catalog.py", gate)
-        self.assertIn("mimo-v2.5-free", gate)
+        self.assertIn("ling-3.0-flash-fin-free", gate)
 
     def test_free_model_catalog_verifier_uses_the_live_official_endpoint(self):
         verifier = (ROOT / "tools" / "verify_free_model_catalog.py").read_text(
             encoding="utf-8"
         )
         self.assertIn("https://opencode.ai/zen/v1/models", verifier)
-        self.assertIn("mimo-v2.5-free", verifier)
+        self.assertIn("ling-3.0-flash-fin-free", verifier)
         self.assertIn("urllib.request.urlopen", verifier)
 
     def test_release_verifier_enforces_physical_variant_and_version_boundaries(self):
@@ -200,7 +200,7 @@ class ReleaseProductContractTests(unittest.TestCase):
                 "core",
                 "skin",
                 "free",
-                "mimo-v2.5-free",
+                "ling-3.0-flash-fin-free",
                 "https://opencode.ai/zen/v1/models",
             ):
                 self.assertIn(marker, source)
@@ -280,7 +280,6 @@ class ReleaseProductContractTests(unittest.TestCase):
             "async loadThrough(seq)",
             "async loadAround(seq)",
             "async loadNewer()",
-            'useProjection("turnOutline")',
             "hasMoreBefore",
             "hasMoreAfter",
         ):
@@ -291,8 +290,6 @@ class ReleaseProductContractTests(unittest.TestCase):
             'addEventListener("scrollend"',
             "const ChatNodeList = (0, react.memo)",
             '(0, react_jsx_runtime.jsx)(ChatNodeList, {',
-            "function turnNavigatorWindow",
-            "items.slice(windowRange.start, windowRange.end)",
             "contain:size layout",
             "summaryText",
             "data-expanded",
@@ -300,13 +297,6 @@ class ReleaseProductContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, conversation)
 
-    def test_chat_turn_jump_uses_one_targeted_history_page(self):
-        conversation = (
-            ROOT / "web" / "dist" / "plugins" / "ui-conversation.js"
-        ).read_text(encoding="utf-8")
-        self.assertIn("Promise.resolve(loadAround(item.anchor.seq))", conversation)
-        self.assertIn("loadAround: (seq) => scoped.loadAround(seq)", conversation)
-        self.assertNotIn("loadThrough(item.anchor.seq)", conversation)
 
     def test_continuable_prompt_and_preflight_use_runtime_capabilities(self):
         source = (

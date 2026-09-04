@@ -353,6 +353,10 @@ pub struct LlmModelDiscoveryRequest {
 pub struct LlmDiscoveredModel {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_efforts: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<Vec<ModelModality>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
@@ -381,6 +385,9 @@ pub struct LlmModelInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmModelContext {
+    /// True when this is a runtime budget rather than a provider-disclosed limit.
+    #[serde(default)]
+    pub estimated: bool,
     pub context_window: u64,
 }
 

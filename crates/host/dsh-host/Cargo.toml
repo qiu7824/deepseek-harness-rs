@@ -10,6 +10,7 @@ name = "dsh-host"
 path = "src/main.rs"
 
 [dependencies]
+dsh-session-stats = { path = "../../session/session-stats" }
 cordis = { path = "../../vendor/cordis" }
 dsh-agent = { path = "../../core/agent" }
 dsh-fs-local = { path = "../../fs/fs-local" }
@@ -125,6 +126,7 @@ reqwest = { version = "=0.12.24", default-features = false, features = ["json", 
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+base64 = "0.22"
 tokio = { workspace = true }
 uuid = { workspace = true }
 http = { workspace = true }

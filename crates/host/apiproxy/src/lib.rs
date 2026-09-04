@@ -6,6 +6,7 @@
 
 pub mod agent_lookup;
 pub mod api;
+pub mod capabilities;
 pub mod fetch;
 mod interactions;
 pub mod native_path_opener;

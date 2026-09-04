@@ -2058,6 +2058,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "cordis",
  "dsh-agent",
  "dsh-agent-default-model",
@@ -2112,6 +2113,7 @@ dependencies = [
  "dsh-session-projection-cache",
  "dsh-session-query",
  "dsh-session-query-sqlite",
+ "dsh-session-stats",
  "dsh-session-title",
  "dsh-session-title-first-prompt-llm",
  "dsh-session-turn-outline",
@@ -2180,7 +2182,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-host-apiproxy"
-version = "0.1.0-rc.8"
+version = "0.1.3-alpha.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2201,6 +2203,7 @@ dependencies = [
  "dsh-host-directory-picker-browse",
  "dsh-host-plugin-inventory",
  "dsh-llm",
+ "dsh-mcp-client",
  "dsh-message-feedback",
  "dsh-native-command",
  "dsh-schemastery",
@@ -2214,6 +2217,7 @@ dependencies = [
  "dsh-session-title",
  "dsh-settings",
  "dsh-skill",
+ "dsh-skill-filesystem",
  "dsh-storage",
  "dsh-storage-domain",
  "dsh-storage-test-support",
@@ -2553,6 +2557,7 @@ dependencies = [
  "dsh-system-prompt",
  "dsh-tools",
  "parking_lot",
+ "reqwest",
  "serde_json",
  "sha2",
  "tokio",
@@ -2965,6 +2970,7 @@ dependencies = [
  "dsh-llm",
  "dsh-session",
  "dsh-session-projection",
+ "dsh-token-meter",
  "futures",
  "parking_lot",
  "serde",

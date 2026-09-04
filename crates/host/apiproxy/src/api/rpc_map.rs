@@ -16,6 +16,15 @@ pub const CLIENT_REQUEST_METHODS: &[&str] = &[
     "agentPreset.read",
     "agentPreset.remove",
     "agentPreset.select",
+    "capabilities.list",
+    "capabilities.serverRemove",
+    "capabilities.serverSave",
+    "capabilities.serverTest",
+    "capabilities.serverToggle",
+    "capabilities.skillRead",
+    "capabilities.skillRemove",
+    "capabilities.skillSave",
+    "capabilities.skillToggle",
     "commands.execute",
     "commands.list",
     "credentials.describe",
@@ -90,12 +99,14 @@ mod tests {
 
     #[test]
     fn request_methods_are_sorted_unique_and_include_todo_updates() {
-        assert_eq!(CLIENT_REQUEST_METHODS.len(), 66);
+        assert_eq!(CLIENT_REQUEST_METHODS.len(), 75);
         assert!(
             CLIENT_REQUEST_METHODS
                 .windows(2)
                 .all(|pair| pair[0] < pair[1])
         );
         assert!(is_client_request_method("session.updateTodos"));
+        assert!(is_client_request_method("capabilities.serverTest"));
+        assert!(is_client_request_method("capabilities.skillToggle"));
     }
 }

@@ -104,3 +104,26 @@ const revealedPage = workspaceApi.WorkspaceBrowser(workspaceProps);
 assert.equal(findElement(revealedPage, 'SearchResults'), undefined);
 assert.equal(findElement(revealedPage, 'SessionTree').props.revealSessionId, 'target-session');
 console.log('Rust workspace search: selection exits search and requests a targeted reveal');
+
+const runtime = fs.readFileSync(path.join(plugins, 'client-runtime.js'), 'utf8');
+const sessionStart = runtime.indexOf('var Session = class');
+const sessionEnd = runtime.indexOf('\n\t\tvar SessionManager = class', sessionStart);
+assert.notEqual(sessionStart, -1);
+assert.notEqual(sessionEnd, -1);
+const runtimeContext = {};
+vm.runInNewContext(runtime.slice(sessionStart, sessionEnd).replace('var Session = class', 'globalThis.Session = class'), runtimeContext);
+const retained = [{seq: 1}, {seq: 2}];
+const session = Object.create(runtimeContext.Session.prototype);
+Object.assign(session, {
+    openState: 'open', openGeneration: 0, openPromise: Promise.resolve(), openError: null,
+    events: retained, views: [{}, {}], baseSeq: 1, hasMore: true, hasMoreBefore: true,
+    hasMoreAfter: false, historyPages: [{}], loadingOlder: false, loadingNewer: false,
+    historyTargetSeq: null, pending: new Map(), pendingRev: 0, subscribedLastSeq: 2,
+    liveBuffer: [], notifier: {markDirty() {}}, open: async () => {},
+});
+(async () => {
+    await session.resync();
+    assert.equal(session.events, retained);
+    assert.equal(session.events.length, 2);
+    console.log('Rust session reconnect: last valid bounded history stays visible');
+})().catch(error => { console.error(error); process.exitCode = 1; });

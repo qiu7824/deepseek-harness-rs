@@ -38,7 +38,7 @@ impl Default for Config {
     fn default() -> Self {
         #[cfg(windows)]
         let (shell_path, shell_args) = (
-            "pwsh".to_string(),
+            windows_powershell(),
             vec![
                 "-NoLogo".to_string(),
                 "-NoProfile".to_string(),
@@ -80,6 +80,25 @@ impl Default for Config {
             dispose_grace_ms: 3_000,
         }
     }
+}
+
+#[cfg(windows)]
+fn windows_powershell() -> String {
+    let mut candidates = Vec::new();
+    if let Some(program_files) = std::env::var_os("ProgramFiles") {
+        candidates.push(std::path::PathBuf::from(program_files).join(r"PowerShell\7\pwsh.exe"));
+    }
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        candidates.push(
+            std::path::PathBuf::from(system_root)
+                .join(r"System32\WindowsPowerShell\v1.0\powershell.exe"),
+        );
+    }
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "powershell.exe".to_string())
 }
 
 pub struct ShellTerminalBackend {

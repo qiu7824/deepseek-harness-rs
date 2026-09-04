@@ -3,6 +3,7 @@
 //! `@deepseek-ai/dsh-session-stats`.
 
 pub mod index;
+pub mod insights;
 pub mod invariant;
 pub mod projection;
 pub mod types;

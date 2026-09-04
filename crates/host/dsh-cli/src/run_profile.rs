@@ -104,6 +104,13 @@ pub struct RunProfileHandle {
 }
 
 impl RunProfileHandle {
+    pub async fn wait_restart(&self) {
+        match &self.host {
+            Some(host) => host.runtime_paths.wait_restart().await,
+            None => std::future::pending::<()>().await,
+        }
+    }
+
     pub fn readiness_url(&self) -> Option<String> {
         if self.surface != ProfileSurface::Web {
             return None;
@@ -177,9 +184,10 @@ pub async fn run_profile(request: RunProfileRequest) -> Result<RunProfileHandle,
 }
 
 pub async fn run_profile_with_interrupt(
-    request: RunProfileRequest,
+    mut request: RunProfileRequest,
     interrupt: Option<ProfileInterrupt>,
 ) -> Result<RunProfileHandle, String> {
+    request.home = dsh_host::runtime_paths::resolve_redirect(&request.home)?;
     let composed = match request.install_anchor.as_deref() {
         Some(anchor) => crate::profile_boot::compose_profile_with_install_anchor(
             &request.profile,
@@ -209,6 +217,7 @@ pub async fn run_profile_with_interrupt(
             )?;
             let companions = dsh_host::mount_companions(&host);
             let (host, ()) = own_host_result(host, companions).await?;
+            host.runtime_paths.enable_restart();
             Ok(RunProfileHandle {
                 surface,
                 host: Some(host),

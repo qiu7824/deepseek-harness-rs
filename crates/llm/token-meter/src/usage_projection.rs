@@ -184,6 +184,13 @@ fn validate_pressure_schema(value: &Value) -> Result<Value, String> {
                     ));
                 }
             }
+            "contextWindowEstimated" => {
+                if !field.is_boolean() {
+                    return Err(
+                        "contextPressure contextWindowEstimated must be a boolean".to_string()
+                    );
+                }
+            }
             _ => return Err(format!("contextPressure view carries unexpected key {key}")),
         }
     }
@@ -212,6 +219,19 @@ pub fn context_pressure_projection_definition() -> ProjectionDefinition {
         let mut next = state.clone();
         if event.type_ == "request/context" {
             let window = event.data.get("contextWindow").and_then(|v| v.as_u64());
+            if window.is_some()
+                && event
+                    .data
+                    .get("contextWindowEstimated")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+            {
+                next["contextWindowEstimated"] = Value::Bool(true);
+            } else {
+                next.as_object_mut()
+                    .expect("object")
+                    .remove("contextWindowEstimated");
+            }
             if window != state.get("contextWindow").and_then(|v| v.as_u64()) {
                 match window {
                     Some(window) => {
@@ -269,6 +289,9 @@ pub fn context_pressure_projection_definition() -> ProjectionDefinition {
         let mut view = serde_json::Map::new();
         if let Some(window) = state.get("contextWindow").and_then(|v| v.as_u64()) {
             view.insert("contextWindow".to_string(), serde_json::json!(window));
+            if state.get("contextWindowEstimated").and_then(Value::as_bool) == Some(true) {
+                view.insert("contextWindowEstimated".to_string(), Value::Bool(true));
+            }
         }
         if let Some(pressure) = state.get("pressureTokens").and_then(|v| v.as_u64()) {
             view.insert("pressureTokens".to_string(), serde_json::json!(pressure));
@@ -297,7 +320,7 @@ pub fn context_pressure_projection_definition() -> ProjectionDefinition {
         init,
         apply,
         view,
-        state_version: 4,
+        state_version: 5,
     }
 }
 
@@ -308,5 +331,49 @@ fn token_usage_zero() -> TokenUsageProjection {
         output_tokens: 0,
         cache_read_tokens: 0,
         cache_write_tokens: 0,
+    }
+}
+
+#[cfg(test)]
+mod context_capacity_tests {
+    use super::*;
+
+    fn event(data: Value) -> SessionEvent {
+        serde_json::from_value(
+            serde_json::json!({"seq":0,"time":1,"type":"request/context","data":data}),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn fallback_capacity_is_labelled_and_actual_metadata_clears_the_label() {
+        let definition = context_pressure_projection_definition();
+        let initial = arc(serde_json::json!({"surfaceTokens":0}));
+        let estimated = (definition.apply)(
+            &initial,
+            &event(serde_json::json!({"contextWindow":131072,"contextWindowEstimated":true})),
+        );
+        let view = (definition.view)(&estimated);
+        let json = (definition.schema)(&view).unwrap();
+        assert_eq!(json["contextWindow"], 131072);
+        assert_eq!(json["contextWindowEstimated"], true);
+
+        let actual = (definition.apply)(
+            &estimated,
+            &event(serde_json::json!({"contextWindow":131072})),
+        );
+        let view = (definition.view)(&actual);
+        let json = (definition.schema)(&view).unwrap();
+        assert_eq!(json["contextWindow"], 131072);
+        assert!(json.get("contextWindowEstimated").is_none());
+
+        let absent = (definition.apply)(&estimated, &event(serde_json::json!({})));
+        let json = (definition.schema)(&(definition.view)(&absent)).unwrap();
+        assert!(json.get("contextWindow").is_none());
+        assert!(json.get("contextWindowEstimated").is_none());
+        assert!(
+            validate_pressure_schema(&serde_json::json!({"contextWindowEstimated":"true"}))
+                .is_err()
+        );
     }
 }

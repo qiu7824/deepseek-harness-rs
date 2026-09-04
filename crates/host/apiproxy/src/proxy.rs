@@ -36,6 +36,43 @@ use crate::fetch::handler::{
     AbortSignal, ApiProxyCarrier, Body, DownloadResponse, FrameRequest, SessionLogQuery,
 };
 
+const HISTORY_SCAN_EVENT_LIMIT: usize = 65_536;
+const HISTORY_SOURCE_BYTE_LIMIT: usize = 64 * 1024 * 1024;
+const HISTORY_TRANSPORT_EVENT_LIMIT: usize = 4_096;
+const HISTORY_TRANSPORT_BYTE_LIMIT: usize = 8 * 1024 * 1024;
+
+/// Keep unreadable histories distinct from genuinely absent sessions.
+fn history_read_error(session_id: &str, message: String) -> RpcError {
+    if message == format!("session \"{session_id}\" not found") {
+        RpcError::SessionNotFound(RpcErrorBody {
+            message,
+            details: crate::api::rpc::SessionIdDetails {
+                session_id: session_id.to_string(),
+            },
+        })
+    } else {
+        RpcError::Internal(RpcErrorBody {
+            message: format!("session.history: {message}"),
+            details: EmptyDetails {},
+        })
+    }
+}
+
+#[cfg(test)]
+mod history_error_tests {
+    #[test]
+    fn corrupt_or_oversized_history_is_not_reported_as_missing() {
+        let id = "agent-session-test";
+        assert!(matches!(
+            super::history_read_error(id, format!("session \"{id}\" not found")),
+            crate::api::rpc::RpcError::SessionNotFound(_)
+        ));
+        let error =
+            super::history_read_error(id, "one safe history group requires 7305 events".into());
+        assert!(matches!(error, crate::api::rpc::RpcError::Internal(_)));
+    }
+}
+
 type OpenPathFn =
     Arc<dyn Fn(String, AbortSignal) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 type GoalMutation = Arc<
@@ -77,7 +114,7 @@ fn subagent_attachment_error(
 
 /// The host app version reported by `host.describe` (the TS placeholder —
 /// reads apps/cli's package version once the CLI lands).
-pub const HOST_VERSION: &str = "0.0.1";
+pub const HOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Composition inputs supplied by the host app (TS `ApiProxyDefaults`).
 pub struct ApiProxyDefaults {
@@ -1824,6 +1861,8 @@ impl ApiProxyService {
                     .into_iter()
                     .map(|model| DiscoveredModelView {
                         id: model.id,
+                        reasoning_efforts: model.reasoning_efforts,
+                        input: model.input,
                         name: model.name,
                         context_window: model.context_window,
                         max_tokens: model.max_tokens,
@@ -3235,13 +3274,24 @@ impl ApiProxyService {
                 events,
                 before_seq,
                 messages,
-                MAX_HISTORY_EVENTS,
+                HISTORY_SCAN_EVENT_LIMIT,
             ) {
                 Ok(selection) => {
-                    return Ok((
-                        events[selection.start..selection.end].to_vec(),
-                        selection.has_more,
-                    ));
+                    let source = &events[selection.start..selection.end];
+                    if Self::compact_history_bytes(source) <= HISTORY_SOURCE_BYTE_LIMIT {
+                        let compact =
+                            crate::api::sessions::coalesce_history_transport_slice(source);
+                        if compact.len() <= MAX_HISTORY_EVENTS
+                            && Self::compact_history_bytes(&compact) <= HISTORY_TRANSPORT_BYTE_LIMIT
+                        {
+                            return Ok((compact, selection.has_more));
+                        }
+                    }
+                    if messages > 1 {
+                        messages = (messages / 2).max(1);
+                        continue;
+                    }
+                    return Err(selection.event_count());
                 }
                 Err(_) if messages > 1 => messages = (messages / 2).max(1),
                 Err(error) => return Err(error.selection.event_count()),
@@ -3256,7 +3306,7 @@ impl ApiProxyService {
         after_seq: i64,
         max_messages: u64,
     ) -> Result<(Vec<dsh_session::SessionEvent>, bool), usize> {
-        const MAX_HISTORY_EVENTS: usize = 4_096;
+        const MAX_HISTORY_EVENTS: usize = HISTORY_SCAN_EVENT_LIMIT;
         let after_seq = u64::try_from(after_seq).unwrap_or(0);
         let start = events.partition_point(|event| event.seq.get() < after_seq);
         let mut messages = 0_u64;
@@ -3276,7 +3326,17 @@ impl ApiProxyService {
         if required > MAX_HISTORY_EVENTS {
             end = start.saturating_add(MAX_HISTORY_EVENTS).min(events.len());
         }
-        Ok((events[start..end].to_vec(), end < events.len()))
+        let source = &events[start..end];
+        if Self::compact_history_bytes(source) > HISTORY_SOURCE_BYTE_LIMIT {
+            return Err(source.len());
+        }
+        let compact = crate::api::sessions::coalesce_history_transport_slice(source);
+        if compact.len() > HISTORY_TRANSPORT_EVENT_LIMIT
+            || Self::compact_history_bytes(&compact) > HISTORY_TRANSPORT_BYTE_LIMIT
+        {
+            return Err(source.len());
+        }
+        Ok((compact, end < events.len()))
     }
 
     fn compact_history_bytes(events: &[dsh_session::SessionEvent]) -> usize {
@@ -3299,7 +3359,6 @@ impl ApiProxyService {
         ),
         String,
     > {
-        const MAX_HISTORY_EVENTS: usize = 4_096;
         const MAX_COMPACT_BYTES: usize = 8 * 1024 * 1024;
         let window = persistence
             .read_forward_window(
@@ -3307,14 +3366,19 @@ impl ApiProxyService {
                 dsh_session_persistence::SessionReadForwardWindowRequest {
                     after_seq: from_seq,
                     max_messages,
-                    max_events: MAX_HISTORY_EVENTS,
+                    max_events: HISTORY_SCAN_EVENT_LIMIT,
                 },
             )
             .await?;
+        if Self::compact_history_bytes(&window.events) > HISTORY_SOURCE_BYTE_LIMIT {
+            return Err("history scan exceeds the 64 MiB source budget".into());
+        }
         let has_more = window.has_more;
         let meta = window.meta;
         let mut compact = crate::api::sessions::coalesce_history_transport_events(window.events);
-        if Self::compact_history_bytes(&compact) > MAX_COMPACT_BYTES {
+        if compact.len() > HISTORY_TRANSPORT_EVENT_LIMIT
+            || Self::compact_history_bytes(&compact) > MAX_COMPACT_BYTES
+        {
             return Err(format!(
                 "session.history: targeted compact window exceeds the {MAX_COMPACT_BYTES} byte budget"
             ));
@@ -3345,7 +3409,7 @@ impl ApiProxyService {
                 dsh_session_persistence::SessionReadWindowRequest {
                     before_seq: None,
                     max_messages,
-                    max_events: MAX_COMPACT_EVENTS,
+                    max_events: HISTORY_SCAN_EVENT_LIMIT,
                 },
             )
             .await?;
@@ -3354,8 +3418,13 @@ impl ApiProxyService {
                 "session.history: one safe tail group requires {required} events, above the {MAX_COMPACT_EVENTS} event budget"
             ));
         }
+        if Self::compact_history_bytes(&window.events) > HISTORY_SOURCE_BYTE_LIMIT {
+            return Err("history scan exceeds the 64 MiB source budget".into());
+        }
         let compact = crate::api::sessions::coalesce_history_transport_events(window.events);
-        if Self::compact_history_bytes(&compact) > MAX_COMPACT_BYTES {
+        if compact.len() > HISTORY_TRANSPORT_EVENT_LIMIT
+            || Self::compact_history_bytes(&compact) > MAX_COMPACT_BYTES
+        {
             return Err(format!(
                 "session.history: compact tail exceeds the {MAX_COMPACT_BYTES} byte budget"
             ));
@@ -3459,15 +3528,10 @@ impl ApiProxyService {
                     .await
                     {
                         Ok(compact) => compact,
-                        Err(_) => {
+                        Err(error) => {
                             return err(
                                 request.rpc_id,
-                                RpcError::SessionNotFound(RpcErrorBody {
-                                    message: format!("session \"{session_id}\" not found"),
-                                    details: crate::api::rpc::SessionIdDetails {
-                                        session_id: session_id.to_string(),
-                                    },
-                                }),
+                                history_read_error(session_id.as_str(), error),
                             );
                         }
                     };
@@ -3482,15 +3546,10 @@ impl ApiProxyService {
                     .await
                     {
                         Ok(compact) => compact,
-                        Err(_) => {
+                        Err(error) => {
                             return err(
                                 request.rpc_id,
-                                RpcError::SessionNotFound(RpcErrorBody {
-                                    message: format!("session \"{session_id}\" not found"),
-                                    details: crate::api::rpc::SessionIdDetails {
-                                        session_id: session_id.to_string(),
-                                    },
-                                }),
+                                history_read_error(session_id.as_str(), error),
                             );
                         }
                     };
@@ -3509,21 +3568,16 @@ impl ApiProxyService {
                                 dsh_session_persistence::SessionReadWindowRequest {
                                     before_seq,
                                     max_messages: messages,
-                                    max_events: MAX_HISTORY_EVENTS,
+                                    max_events: HISTORY_SCAN_EVENT_LIMIT,
                                 },
                             )
                             .await
                         {
                             Ok(window) => window,
-                            Err(_) => {
+                            Err(error) => {
                                 return err(
                                     request.rpc_id,
-                                    RpcError::SessionNotFound(RpcErrorBody {
-                                        message: format!("session \"{session_id}\" not found"),
-                                        details: crate::api::rpc::SessionIdDetails {
-                                            session_id: session_id.to_string(),
-                                        },
-                                    }),
+                                    history_read_error(session_id.as_str(), error),
                                 );
                             }
                         };
@@ -3567,17 +3621,42 @@ impl ApiProxyService {
             .ctx
             .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
             .map(|slot| slot.as_ref().clone());
-        let first_seq = page_events
-            .first()
-            .and_then(|event| i64::try_from(event.seq.get()).ok());
-        let last_seq = page_events
-            .last()
-            .and_then(|event| i64::try_from(event.seq.get()).ok());
+        let first_seq = page_events.first().and_then(|event| {
+            i64::try_from(
+                event
+                    .data
+                    .get("__historyStartSeq")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(event.seq.get()),
+            )
+            .ok()
+        });
+        let last_seq = page_events.last().and_then(|event| {
+            i64::try_from(
+                event
+                    .data
+                    .get("__historyEndSeq")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(event.seq.get()),
+            )
+            .ok()
+        });
         let page_events = if live_session.is_some() || request.payload.before_seq.is_some() {
             crate::api::sessions::coalesce_history_transport_events(page_events)
         } else {
             page_events
         };
+        if page_events.len() > HISTORY_TRANSPORT_EVENT_LIMIT
+            || Self::compact_history_bytes(&page_events) > HISTORY_TRANSPORT_BYTE_LIMIT
+        {
+            return err(
+                request.rpc_id,
+                history_read_error(
+                    session_id.as_str(),
+                    "history transport window exceeds its event or byte budget".into(),
+                ),
+            );
+        }
         let page: Vec<HistoryEntry> = page_events
             .into_iter()
             .map(|event| {
@@ -6313,6 +6392,41 @@ impl ApiProxyCarrier for ApiProxyService {
                     payload: request.payload,
                 })
                 .await
+            }
+            "capabilities.list"
+            | "capabilities.skillRead"
+            | "capabilities.skillSave"
+            | "capabilities.skillRemove"
+            | "capabilities.skillToggle"
+            | "capabilities.serverSave"
+            | "capabilities.serverToggle"
+            | "capabilities.serverRemove"
+            | "capabilities.serverTest" => {
+                let Some(manager) = self
+                    .ctx
+                    .get_typed::<Arc<crate::capabilities::CapabilityManager>>(
+                        "capabilityManager",
+                        false,
+                    )
+                else {
+                    return err(
+                        rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message: "capability manager unavailable".into(),
+                            details: EmptyDetails {},
+                        }),
+                    );
+                };
+                match manager.invoke(method, request.payload).await {
+                    Ok(value) => ok(rpc_id, value),
+                    Err(error) => err(
+                        rpc_id,
+                        RpcError::BadRequest(RpcErrorBody {
+                            message: error,
+                            details: crate::api::rpc::BadRequestDetails { issues: vec![] },
+                        }),
+                    ),
+                }
             }
             "memory.categories" | "memory.list" | "memory.upsert" | "memory.remove" => {
                 self.memory_rpc(rpc_id, method, request.payload).await

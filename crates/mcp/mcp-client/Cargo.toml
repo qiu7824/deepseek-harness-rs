@@ -12,6 +12,7 @@ dsh-llm = { path = "../../core/llm" }
 dsh-subprocess = { path = "../../subprocess/subprocess" }
 dsh-tools = { path = "../../core/tools" }
 parking_lot = { workspace = true }
+reqwest = { version = "=0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }

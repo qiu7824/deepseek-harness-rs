@@ -1,5 +1,7 @@
 //! DeepSeek official chat-completions adapter.
 
+mod anthropic;
+mod anthropic_transport;
 mod files_api;
 mod responses;
 mod serialize;
@@ -81,7 +83,7 @@ pub struct RequestDefaults {
     pub reasoning_effort: Option<DeepSeekReasoningEffort>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CatalogReasoningEffort {
     /// Stable effort id exposed to DSH callers.
     pub id: String,
@@ -91,9 +93,11 @@ pub struct CatalogReasoningEffort {
     pub wire: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeepSeekCatalogModel {
     pub id: String,
+    pub enabled: Option<bool>,
     pub name: Option<String>,
     pub description: Option<String>,
     pub context_window: Option<u64>,
@@ -107,6 +111,8 @@ pub struct DeepSeekCatalogModel {
 
 #[derive(Debug, Clone, Default)]
 pub struct DeepSeekConfig {
+    pub oauth: bool,
+    pub headers: Vec<(String, String)>,
     pub api: Option<String>,
     pub api_key_env: Option<String>,
     /// Send requests without an Authorization header for an explicitly
@@ -126,6 +132,8 @@ pub struct DeepSeekConfig {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedDeepSeekOptions {
+    pub oauth: bool,
+    pub headers: Vec<(String, String)>,
     pub api: String,
     pub api_key_env: String,
     pub keyless: bool,
@@ -148,6 +156,7 @@ pub fn resolve_adapter_options(
         vec![
             DeepSeekCatalogModel {
                 id: "deepseek-v4-flash".to_string(),
+                enabled: None,
                 name: Some("DeepSeek-V4-Flash".to_string()),
                 description: None,
                 context_window: Some(DEFAULT_CONTEXT_WINDOW),
@@ -157,6 +166,7 @@ pub fn resolve_adapter_options(
             },
             DeepSeekCatalogModel {
                 id: "deepseek-v4-pro".to_string(),
+                enabled: None,
                 name: Some("DeepSeek-V4-Pro".to_string()),
                 description: None,
                 context_window: Some(DEFAULT_CONTEXT_WINDOW),
@@ -166,6 +176,7 @@ pub fn resolve_adapter_options(
             },
             DeepSeekCatalogModel {
                 id: "deepseek-v4-flash-vision-exp".to_string(),
+                enabled: None,
                 name: Some("DeepSeek-V4-Flash-Vision-Exp".to_string()),
                 description: None,
                 context_window: Some(DEFAULT_CONTEXT_WINDOW),
@@ -183,7 +194,13 @@ pub fn resolve_adapter_options(
         .api
         .clone()
         .unwrap_or_else(|| "openai-completions".to_string());
-    if api != "openai-completions" && api != "openai-responses" {
+    if ![
+        "openai-completions",
+        "openai-responses",
+        "anthropic-messages",
+    ]
+    .contains(&api.as_str())
+    {
         return Err(LlmError::new(
             "unsupported llm-deepseek api protocol",
             "UNSUPPORTED_PROTOCOL",
@@ -191,6 +208,8 @@ pub fn resolve_adapter_options(
         ));
     }
     Ok(ResolvedDeepSeekOptions {
+        oauth: config.oauth,
+        headers: config.headers.clone(),
         api,
         api_key_env: config
             .api_key_env
@@ -223,6 +242,20 @@ pub fn resolve_adapter_options(
         files_index_path: config.files_index_path.clone(),
         retry_policy,
     })
+}
+
+fn request_headers(connection: &ResolvedDeepSeekOptions) -> Vec<(String, String)> {
+    let mut values: Vec<_> = connection
+        .headers
+        .iter()
+        .filter(|(name, _)| {
+            !["authorization", "host", "content-length", "content-type"]
+                .contains(&name.to_ascii_lowercase().as_str())
+        })
+        .cloned()
+        .collect();
+    values.extend(attribution_headers(&app_identity()));
+    values
 }
 
 fn endpoint_url(base_url: &str, api: &str) -> String {
@@ -1050,7 +1083,7 @@ async fn request_chunks(
     let mut options = project_estimated_request(&options);
     apply_model_max_tokens(&mut options, &connection);
     map_reasoning_effort_for_request(&mut options, &connection, reasoning_wire_format)?;
-    if connection.api == "openai-responses" {
+    if connection.api == "openai-responses" || connection.api == "anthropic-messages" {
         let (image_urls, image_meta) =
             resolve_image_urls(&options, attachment_store.as_ref()).await?;
         let exact_options = project_exact_request(
@@ -1066,12 +1099,23 @@ async fn request_chunks(
             None,
             Some(&image_meta),
         )?;
+        if connection.api == "anthropic-messages" {
+            return anthropic_transport::request(
+                &chat_body,
+                &exact_options,
+                &connection,
+                &api_key,
+                provider_name,
+                sender,
+            )
+            .await;
+        }
         return request_responses_chunks(
             &chat_body,
             &connection,
             &api_key,
             provider_name,
-            &attribution_headers(&app_identity()),
+            &request_headers(&connection),
             sender,
         )
         .await;
@@ -1129,7 +1173,7 @@ async fn request_chunks(
             &url,
             (!connection.keyless).then_some(api_key.as_str()),
             encoded,
-            &attribution_headers(&app_identity()),
+            &request_headers(&connection),
             cancelled.clone(),
         )
         .await
@@ -1200,7 +1244,7 @@ async fn request_chunks(
                 &connection,
                 &api_key,
                 provider_name,
-                &attribution_headers(&app_identity()),
+                &request_headers(&connection),
                 sender,
             )
             .await;
@@ -1314,7 +1358,7 @@ async fn request_responses_chunks(
     attribution: &[(String, String)],
     sender: &tokio::sync::mpsc::Sender<StreamChunk>,
 ) -> Result<(), LlmFailure> {
-    let body = responses::request_from_chat(chat_body)?;
+    let body = responses::request_for_endpoint(chat_body, &connection.base_url)?;
     let encoded = serde_json::to_vec(&body).map_err(|error| {
         failure(
             format!("Responses request encode failed: {error}"),
@@ -1545,6 +1589,7 @@ impl LlmAdapter for DeepSeekAdapter {
         options
             .models
             .into_iter()
+            .filter(|model| model.enabled != Some(false))
             .map(|model| {
                 let input_modalities = model_modalities(Some(&model));
                 LlmModelInfo {
@@ -1566,6 +1611,8 @@ impl LlmAdapter for DeepSeekAdapter {
     ) -> LlmResolvedModelInfo {
         let options = (self.config.options)().expect("validated DeepSeek options");
         let configured = options.models.iter().find(|entry| entry.id == model);
+        let estimated = self.config.reasoning_wire_format == ReasoningWireFormat::OpenAi
+            && configured.and_then(|entry| entry.context_window).is_none();
         if let Some(catalog) = configured.and_then(|entry| entry.reasoning_efforts.as_ref()) {
             let efforts = catalog
                 .iter()
@@ -1584,6 +1631,7 @@ impl LlmAdapter for DeepSeekAdapter {
                 description: configured.and_then(|entry| entry.description.clone()),
                 input_modalities: model_modalities(configured),
                 context: Some(LlmModelContext {
+                    estimated,
                     context_window: configured
                         .and_then(|entry| entry.context_window)
                         .unwrap_or(options.default_context_window),
@@ -1609,6 +1657,7 @@ impl LlmAdapter for DeepSeekAdapter {
                 description: configured.and_then(|entry| entry.description.clone()),
                 input_modalities: model_modalities(configured),
                 context: Some(LlmModelContext {
+                    estimated,
                     context_window: configured
                         .and_then(|entry| entry.context_window)
                         .unwrap_or(options.default_context_window),
@@ -1656,6 +1705,7 @@ impl LlmAdapter for DeepSeekAdapter {
             description: configured.and_then(|entry| entry.description.clone()),
             input_modalities: model_modalities(configured),
             context: Some(LlmModelContext {
+                estimated,
                 context_window: configured
                     .and_then(|entry| entry.context_window)
                     .unwrap_or(options.default_context_window),

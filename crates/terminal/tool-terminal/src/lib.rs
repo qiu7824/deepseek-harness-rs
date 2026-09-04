@@ -76,7 +76,7 @@ impl ToolTerminalService {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "type": { "type": "string" },
+                        "type": { "type": "string", "enum": terminals.list_backends() },
                         "name": { "type": "string" },
                         "cwd": { "type": "string" }
                     },

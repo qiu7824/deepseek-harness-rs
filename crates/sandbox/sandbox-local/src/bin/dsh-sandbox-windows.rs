@@ -339,7 +339,13 @@ if ($updateDirectFiles) {
 "#;
         let profile = std::env::var_os("USERPROFILE");
         let profile_root = is_user_profile_root(workspace, profile.as_deref());
-        let mut child = Command::new(r"C:\Program Files\PowerShell\7\pwsh.exe")
+        let shell = acl_powershell()?;
+        let modules = shell.parent().map(|parent| parent.join("Modules"));
+        let mut command = Command::new(shell);
+        if let Some(modules) = modules.filter(|path| path.is_dir()) {
+            command.env("PSModulePath", modules);
+        }
+        let mut child = command
             .args([
                 "-NoLogo",
                 "-NoProfile",
@@ -391,6 +397,31 @@ if ($updateDirectFiles) {
         } else {
             Err(format!("ACL updater exited with {status}"))
         }
+    }
+
+    fn acl_powershell() -> Result<PathBuf, String> {
+        if let Some(configured) = std::env::var_os("DSH_SANDBOX_ACL_POWERSHELL") {
+            let configured = PathBuf::from(configured);
+            return configured
+                .is_file()
+                .then_some(configured)
+                .ok_or_else(|| "configured ACL PowerShell does not exist".to_string());
+        }
+        let mut candidates = Vec::new();
+        if let Some(program_files) = std::env::var_os("ProgramFiles") {
+            candidates.push(PathBuf::from(program_files).join(r"PowerShell\7\pwsh.exe"));
+        }
+        if let Some(system_root) = std::env::var_os("SystemRoot") {
+            candidates.push(
+                PathBuf::from(system_root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe"),
+            );
+        }
+        candidates
+            .into_iter()
+            .find(|path| path.is_file())
+            .ok_or_else(|| {
+                "no trusted PowerShell executable is available for ACL updates".to_string()
+            })
     }
 
     pub fn run() -> Result<i32, String> {

@@ -40,7 +40,7 @@ The launcher is built with ZSUI at a fixed commit and requires no CMD, PowerShel
 
 For extension skins, download the separate `skin` package and run `deepseek-harness-rs-skin` (`.exe` on Windows). It installs only the skin payload into the adjacent `web/dist/skins`; the default `core` archive never bundles skin assets.
 
-The `free` package keeps the same production runtime and Web surface as `core`, but includes a package-default keyless OpenCode Zen preset for `mimo-v2.5-free`. Release preparation must confirm that exact ID against `https://opencode.ai/zen/v1/models`; the package contains no credential value and no skin payload.
+The `free` package includes a keyless OpenCode Zen preset for `ling-3.0-flash-fin-free`. Packaging checks the [official model catalog](https://opencode.ai/zen/v1/models) and requires anonymous inference, tool-call and tool-result checks completed within the last 24 hours, including `free-model-verification.json`. The package contains no credential values or skin payload.
 
 ## Data, profiles, and workspaces
 
@@ -50,7 +50,7 @@ The default Windows data root is:
 %LOCALAPPDATA%\DeepSeek Harness
 ```
 
-Use `DSH_HOME` to select an explicit data root. The session workspace is the only project-directory source; there is no duplicate “work directory” setting.
+Select a data root with `DSH_HOME` or Settings → Directories and runtime. Restarting applies a verified copy of the data and retains the source. A failed migration restores the previous active paths and reports the error. Session workspaces remain the project-directory source; application data relocation does not move project files.
 
 Profile plugins are stored under:
 
@@ -62,18 +62,22 @@ Sessions, attachments, caches, settings, and plugin inventory are user data and 
 
 ## Providers and protocols
 
-The project does not configure a provider, API key, default model, or account on the user's behalf.
+Configure an API key or connect an account in Settings → Models. Credentials remain on the local device, with token renewal and sign-out support. Each model has a visibility switch, and reasoning levels prefer provider-supplied metadata.
 
 | Protocol/API | Status |
 |---|---|
 | DeepSeek/OpenAI-compatible Chat Completions | Connected to the production Rust adapter |
 | OpenAI Responses | Explicit `api: openai-responses` route implemented; tool, reasoning, image, usage, and SSE fixtures pass; real-provider verification requires user configuration |
 | Azure OpenAI Responses | Production provider closure incomplete |
-| OpenAI Codex Responses | Production provider closure incomplete |
-| Anthropic Messages | Not implemented |
+| OpenAI Codex Responses | Device authorization, token renewal, and Responses routing; users complete account authorization in Settings |
+| Anthropic Messages | Native text, tool, image, thinking, and usage conversion using API keys; Claude subscriptions use the official Claude Code subagent |
 | Bedrock Converse Stream | Not implemented |
 
 See [`docs/protocol-matrix.md`](docs/protocol-matrix.md) for evidence and scope. A type name or crate alone is not proof of production support.
+
+## Skills, MCP, and memory
+
+Settings → Skills and MCP manages skill files and MCP servers, including enable/disable, editing, and connection tests. Memory settings support searching, toggling, and maintaining lessons from known errors. See the [capabilities guide](docs/learning-and-capabilities.zh.md).
 
 ## Web plugins
 
@@ -128,7 +132,7 @@ Bundled plugins:
 | Model discovery | Saved Profile headers can be resolved server-side without returning credentials to the browser; the model picker supports filtered search and visible-only selection |
 | Workflows | Engine remains available; the PTC/code preset deliberately omits the generic `workflow` tool while retaining `run_code` and Ralph |
 | Terminal | Persistent terminal lifecycle implemented |
-| MCP | Client library implemented; not composed into the production Host configuration |
+| MCP | Production settings, stdio/HTTP connections, tool registration, enable/disable, and connection tests |
 | LSP | Registry/tool libraries implemented; not composed into the production Host |
 | ACP | Protocol entry exists; real prompt/cancel regression is not closed |
 
@@ -165,7 +169,7 @@ See `PLUGIN_SECURITY.md` for the Web plugin trust boundary.
 ## Known limitations
 
 - The generic pi-ai provider catalog has not been fully ported.
-- MCP and LSP are library-level implementations, not production Host features yet.
+- LSP remains a library-level implementation without production Host composition.
 - ACP real prompt/cancel and Python SDK real-turn regressions remain open.
 - The first `dsh-context-jump` release navigates rendered stable nodes; a full Turn/Step directory requires a formal timeline slot.
 - Linux and macOS are considered published only after every GitHub Actions matrix asset succeeds.

@@ -1961,7 +1961,7 @@ mod tests {
             let (mut stream, _) = server.accept().expect("receive update request");
             let mut request = [0_u8; 4096];
             let _ = stream.read(&mut request).expect("read update request");
-            let body = r#"[{"tag_name":"v0.1.2-alpha.5","html_url":"https://example.invalid/release","draft":false}]"#;
+            let body = r#"[{"tag_name":"v999.0.0","html_url":"https://example.invalid/release","draft":false}]"#;
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -1973,7 +1973,7 @@ mod tests {
         let message = update_status_from(&address, english_copy()).expect("check update");
         worker.join().expect("join update fixture");
         assert!(message.contains("Update available"));
-        assert!(message.contains("v0.1.2-alpha.5"));
+        assert!(message.contains("v999.0.0"));
         assert!(message.contains("https://example.invalid/release"));
     }
 
@@ -2036,7 +2036,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_start_is_reported_by_the_worker_without_blocking() {
+    fn failed_start_is_reported_without_blocking_or_claiming_a_foreign_service() {
         let root = unique_test_root("worker-missing-host");
         std::fs::create_dir_all(&root).expect("create worker test root");
         let controller = ServiceController {
@@ -2054,12 +2054,19 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if jobs.status_text().contains(english_copy().missing_host) {
+            let status = jobs.status_text();
+            if [super::localized_copy(), english_copy()]
+                .iter()
+                .any(|copy| {
+                    status.contains(copy.missing_host) || status.contains(copy.foreign_port)
+                })
+            {
                 break;
             }
             assert!(
                 Instant::now() < deadline,
-                "worker never reported the missing host"
+                "worker never reported the missing host; status was {}",
+                jobs.status_text()
             );
             thread::sleep(Duration::from_millis(10));
         }

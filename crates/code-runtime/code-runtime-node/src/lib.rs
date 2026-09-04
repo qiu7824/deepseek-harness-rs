@@ -21,6 +21,7 @@ const RUNNER_SOURCE: &str = include_str!("../assets/runner.cjs");
 #[derive(Debug, Clone)]
 pub struct Config {
     pub node_command: String,
+    pub runner_directory: Option<std::path::PathBuf>,
     pub compute_ms: u64,
     pub max_wall_ms: u64,
     pub max_output_bytes: u64,
@@ -33,6 +34,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             node_command: "node".to_string(),
+            runner_directory: None,
             compute_ms: 60_000,
             max_wall_ms: 600_000,
             max_output_bytes: 67_108_864,
@@ -226,9 +228,14 @@ async fn run_one(
         .map_err(|error| format!("code-runtime-node: current directory: {error}"))?
         .to_string_lossy()
         .into_owned();
-    let runner_root = std::path::Path::new(RUNNER)
-        .parent()
-        .ok_or_else(|| "code-runtime-node: runner has no parent directory".to_string())?
+    let runner_root = config
+        .runner_directory
+        .as_deref()
+        .unwrap_or_else(|| {
+            std::path::Path::new(RUNNER)
+                .parent()
+                .expect("runner parent")
+        })
         .to_string_lossy()
         .into_owned();
     // Resolve once, then launch exact argv. Node's permission boundary denies

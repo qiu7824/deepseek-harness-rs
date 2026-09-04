@@ -21,9 +21,12 @@ pub fn apply(ctx: &Context) -> Result<(), String> {
     let registry: Arc<Arc<SessionProjectionRegistry>> = ctx
         .get_typed::<Arc<SessionProjectionRegistry>>("sessionProjections", false)
         .ok_or_else(|| "sessionProjections service is not configured".to_string())?;
-    registry
-        .register(ctx, session_stats_projection_definition())
-        .map(|_| ())
+    registry.register(ctx, session_stats_projection_definition())?;
+    registry.register(
+        ctx,
+        crate::insights::context_insights_projection_definition(),
+    )?;
+    Ok(())
 }
 
 /// Cordis plugin entrypoint carrying the function plugin's namespace

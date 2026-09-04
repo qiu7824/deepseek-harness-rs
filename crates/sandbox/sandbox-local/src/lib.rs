@@ -1,5 +1,36 @@
 use std::sync::Arc;
 
+#[cfg(windows)]
+static EMBEDDED_RUNNER: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Register the current host only when its entry point implements the sandbox subcommand.
+/// Executable relocation and renaming do not change this capability.
+#[cfg(windows)]
+pub fn register_embedded_windows_runner() -> Result<(), String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    if let Some(registered) = EMBEDDED_RUNNER.get() {
+        return if registered == &executable {
+            Ok(())
+        } else {
+            Err("embedded sandbox runner was already registered for a different executable".into())
+        };
+    }
+    EMBEDDED_RUNNER
+        .set(executable)
+        .map_err(|_| "embedded sandbox runner registration raced".to_string())
+}
+
+fn embedded_runner_path() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        EMBEDDED_RUNNER.get().cloned()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 use cordis::Context;
 use dsh_sandbox::{
     ConfinedArgv, ConfinedSandboxMode, RunnerFailureRule, SandboxEnforcement,
@@ -46,6 +77,7 @@ impl LocalSandboxProvider {
     pub fn capability(&self) -> SandboxCapability {
         match self.platform.as_str() {
             "linux" | "darwin" => SandboxCapability::Full,
+            "win32" if embedded_runner_path().is_some() => SandboxCapability::Full,
             _ => SandboxCapability::Unavailable,
         }
     }
@@ -215,12 +247,14 @@ fn windows_profile_args(policy: &SandboxPolicy) -> Result<Vec<String>, SandboxUn
             }
             configured
         }
-        None => current
-            .clone()
-            .filter(|candidate| {
-                candidate
-                    .file_stem()
-                    .is_some_and(|stem| stem.eq_ignore_ascii_case("dsh"))
+        None => embedded_runner_path()
+            .filter(|candidate| candidate.is_file())
+            .or_else(|| {
+                current.clone().filter(|candidate| {
+                    candidate
+                        .file_stem()
+                        .is_some_and(|stem| stem.eq_ignore_ascii_case("dsh"))
+                })
             })
             .or_else(|| {
                 current
@@ -246,9 +280,10 @@ fn windows_profile_args(policy: &SandboxPolicy) -> Result<Vec<String>, SandboxUn
                 )
             })?,
     };
-    let embedded = runner
-        .file_stem()
-        .is_some_and(|stem| stem.eq_ignore_ascii_case("dsh"));
+    let embedded = embedded_runner_path().as_ref() == Some(&runner)
+        || runner
+            .file_stem()
+            .is_some_and(|stem| stem.eq_ignore_ascii_case("dsh"));
     let mut args = vec![runner.to_string_lossy().into_owned()];
     if embedded {
         args.push("__dsh-sandbox-windows".to_string());

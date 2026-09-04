@@ -21,9 +21,26 @@ impl HistoryWindowSelection {
 }
 
 fn is_closed_failed_stream_tail(events: &[SessionEvent]) -> bool {
-    let Some(last) = events.last() else {
+    let Some(index) = events.iter().rposition(|event| event.type_ == "turn/end") else {
         return false;
     };
+    // Model selection and seed markers may follow a failed turn. They do not
+    // reopen its stream; later conversation activity does.
+    if events[index + 1..].iter().any(|event| {
+        matches!(
+            event.type_.as_str(),
+            "turn/start"
+                | "step/start"
+                | "assistant/chunk"
+                | "assistant/message"
+                | "user/message"
+                | "tool/call"
+                | "tool/result"
+        )
+    }) {
+        return false;
+    }
+    let last = &events[index];
     let failed_turn = last.data.get("turn").and_then(serde_json::Value::as_u64);
     last.type_ == "turn/end"
         && last
@@ -208,6 +225,27 @@ mod tests {
         assert_eq!(selection.event_count(), 4_096);
         assert!(selection.has_more);
         assert_eq!(events[selection.end - 1].type_, "turn/end");
+    }
+
+    #[test]
+    fn post_turn_seed_and_model_events_do_not_hide_an_oversized_failed_tail() {
+        let mut events = Vec::new();
+        for seq in 0..5_000 {
+            let mut chunk = event(seq, "assistant/chunk", false);
+            chunk.data = serde_json::json!({"turn": 4, "step": 2});
+            events.push(chunk);
+        }
+        let mut turn_end = event(5_000, "turn/end", false);
+        turn_end.data =
+            serde_json::json!({"turn":4,"reason":{"kind":"error","error":{"code":"TRANSPORT"}}});
+        events.push(turn_end);
+        events.push(event(5_001, "session/end-seed", false));
+        events.push(event(5_002, "model/selection", false));
+
+        let selection = select_history_window(&events, None, 1, 4_096).unwrap();
+        assert_eq!(selection.event_count(), 4_096);
+        assert!(selection.has_more);
+        assert_eq!(events[selection.end - 1].type_, "model/selection");
     }
 
     #[test]

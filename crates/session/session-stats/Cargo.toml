@@ -9,6 +9,7 @@ description = "Whole-log conversation counts and wall times projection (sessionS
 cordis = { path = "../../vendor/cordis" }
 dsh-session = { path = "../../core/session" }
 dsh-llm = { path = "../../core/llm" }
+dsh-token-meter = { path = "../../llm/token-meter" }
 dsh-session-projection = { path = "../session-projection" }
 dsh-invariants = { path = "../../util/invariants" }
 serde = { workspace = true }

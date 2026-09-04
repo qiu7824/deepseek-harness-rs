@@ -25,6 +25,8 @@ pub(crate) fn parse_model_listing(value: &Value) -> Result<Vec<LlmDiscoveredMode
     let entries: Vec<(Option<&str>, &Value)> =
         if let Some(data) = value.get("data").and_then(Value::as_array) {
             data.iter().map(|entry| (None, entry)).collect()
+        } else if let Some(models) = value.get("models").and_then(Value::as_array) {
+            models.iter().map(|entry| (None, entry)).collect()
         } else if let Some(models) = value.get("models").and_then(Value::as_object) {
             models
                 .iter()
@@ -39,7 +41,7 @@ pub(crate) fn parse_model_listing(value: &Value) -> Result<Vec<LlmDiscoveredMode
         if !entry.is_object() {
             continue;
         }
-        let Some(id) = label([entry.get("id")])
+        let Some(id) = label([entry.get("id"), entry.get("slug")])
             .or_else(|| key.filter(|id| !id.trim().is_empty()).map(str::to_string))
         else {
             continue;
@@ -49,6 +51,11 @@ pub(crate) fn parse_model_listing(value: &Value) -> Result<Vec<LlmDiscoveredMode
         }
         let limit = entry.get("limit");
         models.push(LlmDiscoveredModel {
+            reasoning_efforts: super::model_capabilities::discovered_efforts(entry),
+            input: entry
+                .get("input_modalities")
+                .or_else(|| entry.pointer("/architecture/input_modalities"))
+                .and_then(|input| serde_json::from_value(input.clone()).ok()),
             name: label([
                 entry.get("name"),
                 entry.get("display_name"),
@@ -105,6 +112,23 @@ mod tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].context_window, Some(32768));
         assert_eq!(models[0].max_tokens, Some(4096));
-        assert!(parse_model_listing(&json!({"models":[]})).is_err());
+        assert!(
+            parse_model_listing(&json!({"models":[]}))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn codex_catalog_preserves_exact_reasoning_and_context_metadata() {
+        let models = parse_model_listing(&json!({"models":[{"slug":"gpt-5.5","display_name":"GPT-5.5","context_window":272000,
+            "supported_reasoning_levels":[{"effort":"low"},{"effort":"high"},{"effort":"xhigh"}],"input_modalities":["text","image"]}]})).unwrap();
+        assert_eq!(models[0].id, "gpt-5.5");
+        assert_eq!(models[0].context_window, Some(272000));
+        assert_eq!(
+            models[0].reasoning_efforts.as_ref().unwrap()["max"],
+            "xhigh"
+        );
+        assert_eq!(models[0].input.as_ref().unwrap().len(), 2);
     }
 }

@@ -12,7 +12,51 @@ window.__ModuleLoader__.load({
    let rows=graph.symbols;if(tool==="references")rows=graph.references;if(tool==="callers")rows=graph.calls.filter(row=>!selected||row.target===selected);if(tool==="callees")rows=graph.calls.filter(row=>!selected||row.source===selected);if(tool==="chain")rows=graph.calls;if(tool==="deps")rows=graph.deps;if(tool==="blast"){const targets=new Set(graph.calls.filter(row=>!selected||row.source===selected||row.target===selected).flatMap(row=>[row.source,row.target]));rows=[...graph.symbols.filter(row=>targets.has(row.id)),...graph.calls.filter(row=>targets.has(row.source)||targets.has(row.target))]}const filtered=rows.filter(r=>!query||r.name.toLowerCase().includes(query.toLowerCase())||r.path.toLowerCase().includes(query.toLowerCase()));const shown=filtered;
    return jsx.jsxs("div",{className:"dshGraph",children:[jsx.jsxs("aside",{className:"dshGraphRail",children:[jsx.jsx("div",{className:"dshGraphTitle",children:"代码图谱"}),jsx.jsx("div",{className:"dshGraphHint",children:"工作区符号、引用、调用与依赖关系；扫描严格只读。先选择一个符号可限定调用者、被调用者和影响面。"}),tools.map(([id,label])=>jsx.jsx("button",{className:"dshGraphTool","data-active":tool===id||void 0,onClick:()=>setTool(id),children:label},id))]}),jsx.jsxs("main",{className:"dshGraphMain",children:[jsx.jsxs("div",{className:"dshGraphBar",children:[jsx.jsx("input",{value:query,placeholder:"搜索符号或文件",onChange:e=>setQuery(e.target.value)}),jsx.jsx("button",{onClick:scan,children:"扫描"})]}),jsx.jsx("div",{className:"dshGraphHint",children:selected?`${status} · 已选择 ${graph.symbols.find(row=>row.id===selected)?.name||selected}`:status}),shown.length?jsx.jsx("div",{className:"dshGraphCards",children:shown.slice(0,500).map((row,index)=>jsx.jsxs("article",{className:"dshGraphCard",onClick:()=>row.id&&setSelected(row.id),children:[jsx.jsx("strong",{children:row.name}),jsx.jsxs("div",{className:"dshGraphMeta",children:[row.kind," · ",row.path,":",row.line,jsx.jsxs("div",{children:["视图：",tools.find(x=>x[0]===tool)?.[1]]})]})]},(row.id||row.source+row.target||row.path)+index))}):jsx.jsx("div",{className:"dshGraphEmpty",children:graph.symbols.length?"当前条件没有关系结果":"尚未建立图谱"})]})]})
   }
-  function apply(ctx){installCss();ctx.slots.inject("conversation.view",()=>ctx.slots.register({name:"conversation.view",id:"code-graph",order:20,label:"代码图谱",inject:(sessionId)=>({sessionId})},CodeGraphView))}
+  const contextCss = `.dshContext{box-sizing:border-box;height:100%;overflow:auto;padding:24px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);font-size:14px;line-height:22px}.dshContextFields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px 36px;margin:0}.dshContextField{min-width:0}.dshContextField dt,.dshContextCaption{color:var(--dsw-alias-label-tertiary);font-weight:400;margin:0 0 4px}.dshContextField dd{margin:0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.dshContextReading{display:flex;align-items:center;gap:12px}.dshContextMeter{width:104px;height:6px;border-radius:4px;background:var(--dsw-alias-border-l2);overflow:hidden}.dshContextMeter span{height:100%;display:block;border-radius:inherit;background:var(--dsw-alias-state-business-primary)}.dshContextFigure{margin:38px 0 0}.dshContextBar{height:9px;display:flex;overflow:hidden;border-radius:5px;background:var(--dsw-alias-border-l2)}.dshContextSegment{height:100%;min-width:0}.dshContextLegend{display:flex;flex-wrap:wrap;gap:10px 18px;margin-top:9px;color:var(--dsw-alias-label-tertiary);font-size:12px}.dshContextLegendItem{display:inline-flex;align-items:center;gap:5px}.dshContextDot{width:8px;height:8px;border-radius:50%;flex:none}.dshContextNote{margin-top:10px;color:var(--dsw-alias-label-caption);font-size:12px;line-height:18px}.dshContextField dd[data-muted]{color:var(--dsw-alias-label-caption)}@media(max-width:480px){.dshContext{padding:18px}.dshContextFields{gap:20px}.dshContextReading{align-items:flex-start;flex-direction:column;gap:5px}}`;
+  const roleColors = {user:"var(--dsw-alias-state-success-primary, #26852c)",assistant:"var(--dsw-alias-state-warn-primary, #d36524)",tool:"#8a6118",other:"var(--dsw-alias-label-caption, #999)"};
+  const amount = value => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value.toLocaleString() : "未提供";
+  function contextFigures(usage, pressure, insights, breakdown) {
+   const reported = pressure?.projectedTokens ?? pressure?.pressureTokens;
+   const estimated = breakdown && ["systemTokens","toolsTokens","messageTokens"].every(key=>Number.isFinite(breakdown[key])&&breakdown[key]>=0) ? breakdown.systemTokens+breakdown.toolsTokens+breakdown.messageTokens : null;
+   const used = reported ?? estimated;
+   const capacity = pressure?.contextWindow;
+   const percent = Number.isFinite(used) && used >= 0 && Number.isFinite(capacity) && capacity > 0 ? Math.round(used / capacity * 1000) / 10 : null;
+   const total = usage && ["uncachedInputTokens","cacheReadTokens","cacheWriteTokens","outputTokens"].every(key=>Number.isFinite(usage[key])&&usage[key]>=0) ? usage.uncachedInputTokens + usage.cacheReadTokens + usage.cacheWriteTokens + usage.outputTokens : null;
+   const roles = [["user","用户"],["assistant","助手"],["tool","工具调用"],["other","其他"]].map(([id,label])=>({id,label,tokens:insights?.roleTokens?.[id]??0,color:roleColors[id]}));
+   const roleTotal = roles.reduce((sum,row)=>sum+row.tokens,0);
+   return {percent,total,estimated:pressure?.contextWindowEstimated===true||(reported==null&&estimated!==null),roles:roles.map(row=>({...row,percent:roleTotal>0?row.tokens/roleTotal*100:0})),roleTotal};
+  }
+  function ContextView({sessionId,useSessions,useProjection,directory,loadModels}) {
+   const session=useSessions(state=>state.byId[sessionId]);
+   const usage=useProjection("tokenUsage"), pressure=useProjection("contextPressure"), insights=useProjection("contextInsights"), projectedSelection=useProjection("modelSelection"), breakdown=useProjection("contextBreakdown");
+   const modelState=React.useSyncExternalStore(callback=>directory.subscribe(callback),()=>directory.getSnapshot());
+   React.useEffect(()=>{loadModels()},[directory]);
+   const selection=projectedSelection??modelState.current;
+   const provider=modelState.groups.find(group=>group.id===selection?.provider);
+   const model=provider?.models.find(row=>row.id===selection?.model);
+   const {percent,total,roles,roleTotal,estimated}=contextFigures(usage,pressure,insights,breakdown);
+   const usageReading=percent===null?"未提供":`${estimated?"≈":""}${percent}%`;
+   const note=(pressure?.contextWindowEstimated===true?"模型上下文容量未提供；使用率按运行预算估算。":"")+"上下文细分为当前模型可见内容的估算；总 token 为累计计费量，推理 token 包含在输出量中。未报告的用量与价格显示为“未提供”。";
+   const date=value=>typeof value==="number"&&value>=0?new Date(value).toLocaleString():"未提供";
+   const fields=[
+    ["会话",session?.displayTitle??session?.title??sessionId],
+    ["消息数",insights?amount(insights.userMessages+insights.assistantMessages):"未提供"],
+    ["提供商",provider?.name??selection?.provider??"未提供"],["模型",model?.name??selection?.model??"未提供"],
+    ["上下文限制",pressure?.contextWindowEstimated===true?`未提供（运行预算 ${amount(pressure.contextWindow)}）`:amount(pressure?.contextWindow)],["总 token",amount(total)],
+    ["使用率",percent===null?"未提供":jsx.jsxs("span",{className:"dshContextReading",children:[usageReading,jsx.jsx("span",{className:"dshContextMeter",role:"meter","aria-label":"上下文使用率","aria-valuemin":0,"aria-valuemax":100,"aria-valuenow":Math.min(100,percent),"aria-valuetext":usageReading,children:jsx.jsx("span",{style:{width:`${Math.min(100,percent)}%`}})})]})],
+    ["输入 token",amount(usage?.uncachedInputTokens)],["输出 token",amount(usage?.outputTokens)],["推理 token",amount(insights?.reasoningTokens)],
+    ["缓存 token（读/写）",usage?`${amount(usage.cacheReadTokens)} / ${amount(usage.cacheWriteTokens)}`:"未提供"],["用户消息",amount(insights?.userMessages)],
+    ["助手消息",amount(insights?.assistantMessages)],["总成本",typeof insights?.totalCost==="number"?new Intl.NumberFormat(undefined,{style:"currency",currency:"USD"}).format(insights.totalCost):"未提供"],
+    ["创建时间",date(insights?.createdAt)],["最后活动",date(session?.updatedAt)]
+   ];
+   return jsx.jsxs("section",{className:"dshContext","aria-label":"上下文",children:[jsx.jsx("dl",{className:"dshContextFields",children:fields.map(([label,value])=>jsx.jsxs("div",{className:"dshContextField",children:[jsx.jsx("dt",{children:label}),jsx.jsx("dd",{"data-muted":value==="未提供"||void 0,children:value})]},label))}),jsx.jsxs("figure",{className:"dshContextFigure",children:[jsx.jsx("figcaption",{className:"dshContextCaption",children:"上下文细分"}),jsx.jsx("div",{className:"dshContextBar",role:"img","aria-label":roleTotal>0?roles.map(row=>`${row.label} ${row.percent.toFixed(1)}%`).join("，"):"尚无上下文统计",children:roles.map(row=>jsx.jsx("span",{className:"dshContextSegment",style:{width:`${row.percent}%`,background:row.color},title:`${row.label} ${amount(row.tokens)} token`},row.id))}),jsx.jsx("div",{className:"dshContextLegend",children:roles.map(row=>jsx.jsxs("span",{className:"dshContextLegendItem",children:[jsx.jsx("span",{className:"dshContextDot",style:{background:row.color},"aria-hidden":true}),`${row.label} ${roleTotal>0?row.percent.toFixed(1)+"%":"—"}`]},row.id))}),jsx.jsx("div",{className:"dshContextNote",children:note})]})]});
+  }
+  function apply(ctx){
+   installCss();
+   if(!document.querySelector("style[data-dsh-context]")){const style=document.createElement("style");style.dataset.dshContext="";style.textContent=contextCss;document.head.appendChild(style)}
+   ctx.slots.inject("conversation.view",()=>ctx.slots.register({name:"conversation.view",id:"code-graph",order:20,label:"代码图谱",inject:(sessionId)=>({sessionId})},CodeGraphView));
+   ctx.inject(["modelDirectories"],scope=>scope.slots.inject("conversation.view",()=>scope.slots.register({name:"conversation.view",id:"context",order:21,label:"上下文",inject:(sessionId)=>{const models=scope.modelDirectories.directoryFor(sessionId);return{sessionId,directory:models.store,loadModels:()=>models.load().catch(()=>{})}}},ContextView)));
+  }
   return {apply,inject:["slots","sessions"]}
  }
 });

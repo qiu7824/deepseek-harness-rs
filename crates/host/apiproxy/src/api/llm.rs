@@ -66,6 +66,10 @@ pub struct LlmDiscoverModelsRequest {
 pub struct DiscoveredModelView {
     /// Model id the endpoint accepts.
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_efforts: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<Vec<dsh_llm::ModelModality>>,
     /// Human-readable name when the endpoint supplies one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

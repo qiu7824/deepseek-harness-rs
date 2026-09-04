@@ -1,6 +1,6 @@
 [package]
 name = "dsh-host-apiproxy"
-version = "0.1.0-rc.8"
+version.workspace = true
 edition = "2024"
 license = "MIT"
 description = "Host API gateway: four-quadrant RPC message model and the 62-method wire registry. Rust port of @deepseek-ai/dsh-host-apiproxy (contract layer first)"
@@ -32,6 +32,8 @@ dsh-session-projection-cache = { path = "../../session/session-projection-cache"
 dsh-session-title = { path = "../../session/session-title" }
 dsh-settings = { path = "../../settings/settings" }
 dsh-skill = { path = "../../skill/skill" }
+dsh-skill-filesystem = { path = "../../skill/skill-filesystem" }
+dsh-mcp-client = { path = "../../mcp/mcp-client" }
 dsh-storage-domain = { path = "../../storage/storage-domain" }
 dsh-subagent = { path = "../../subagent/subagent" }
 dsh-tools = { path = "../../core/tools" }

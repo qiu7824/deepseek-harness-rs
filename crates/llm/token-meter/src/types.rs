@@ -62,6 +62,10 @@ pub struct ContextPressureProjection {
     pub projected_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// True when the denominator is a conservative runtime budget rather
+    /// than provider-declared context capacity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_estimated: Option<bool>,
 }
 
 /// Heuristic composition of the next request's context.

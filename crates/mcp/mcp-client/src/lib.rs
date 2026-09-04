@@ -2,8 +2,10 @@
 //! serialized JSON-RPC correlation, model-tool registration, and bounded teardown.
 
 mod http;
+mod remote_http;
 
 pub use http::{StreamableHttpClient, StreamableHttpConfig};
+pub use remote_http::{RemoteHttpClient, RemoteHttpConfig};
 
 use std::fmt;
 use std::future::Future;
@@ -91,6 +93,16 @@ pub struct ReconnectingStdioClient {
 }
 
 impl StdioClient {
+    /// Inspect a server without making its tools visible to active agents.
+    pub async fn probe(ctx: &Context, config: StdioConfig) -> Result<usize, McpClientError> {
+        let (client, catalog) = Self::connect_generation(ctx, &config).await?;
+        let count = catalog
+            .get("tools")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        client.close().await?;
+        Ok(count)
+    }
     /// Spawn, initialize, discover, and register one server generation.
     pub async fn connect(ctx: &Context, config: StdioConfig) -> Result<Arc<Self>, McpClientError> {
         let (client, listed) = Self::connect_generation(ctx, &config).await?;
@@ -336,6 +348,12 @@ impl McpTransport for StdioClient {
 }
 
 impl ReconnectingStdioClient {
+    pub fn tool_count(&self) -> usize {
+        self.catalog
+            .get("tools")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    }
     pub async fn close(&self) -> Result<(), McpClientError> {
         let _lifecycle = self.reconnect_gate.lock().await;
         if self.closed.swap(true, Ordering::SeqCst) {

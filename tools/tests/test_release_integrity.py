@@ -21,6 +21,19 @@ def load_tool(name: str):
 
 
 class ReleaseIntegrityTests(unittest.TestCase):
+    def test_free_package_requires_recent_complete_inference_evidence(self):
+        from datetime import datetime, timezone, timedelta
+        package = load_tool("package_release")
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "verification.json"
+            report = {"url": "https://opencode.ai/zen/v1/models", "model": "ling-3.0-flash-fin-free", "pricingSource": "https://opencode.ai/docs/zen/", "binarySha256": "a" * 64, "verifiedAt": datetime.now(timezone.utc).isoformat(), **{key: True for key in ("available", "freePricingVerified", "harnessVerified", "inference", "streaming", "toolCall", "toolResult", "anonymous")}}
+            path.write_text(json.dumps(report), encoding="utf-8")
+            self.assertEqual(package.verified_free_model(path), report)
+            for invalid in ({**report, "toolResult": False}, {**report, "model": "different-free"}, {**report, "verifiedAt": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()}):
+                path.write_text(json.dumps(invalid), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    package.verified_free_model(path)
+
     def test_release_inputs_are_not_gitignored(self):
         import subprocess
 

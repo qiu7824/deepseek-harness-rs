@@ -33,12 +33,6 @@ class ClientPerformanceContractTests(unittest.TestCase):
         self.assertEqual(result["partialFullScans"], 0)
         self.assertGreater(result["settlementFullScans"], 0)
 
-    def test_turn_navigator_dom_window_is_bounded(self) -> None:
-        result = self.run_contract("test_turn_navigator_window.mjs")
-        for key in ("first", "middle", "last"):
-            window = result[key]
-            self.assertLessEqual(window["end"] - window["start"], 64)
-        self.assertEqual(result["small"], {"start": 0, "end": 20})
 
     def test_oversized_live_stream_compacts_without_cutting_its_prefix(self) -> None:
         result = self.run_contract("test_history_compaction.mjs")

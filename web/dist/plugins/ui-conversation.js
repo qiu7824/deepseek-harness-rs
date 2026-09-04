@@ -3042,7 +3042,8 @@ window.__ModuleLoader__.load({
 			return {
 				percent: Math.min(100, Math.round(usedTokens / pressure.contextWindow * 100)),
 				usedTokens,
-				contextWindow: pressure.contextWindow
+				contextWindow: pressure.contextWindow,
+				contextWindowEstimated: pressure.contextWindowEstimated === true
 			};
 		}
 		const StatsLine = (0, react.memo)(function StatsLine({ useSession, useProjection, t }) {
@@ -3270,7 +3271,7 @@ window.__ModuleLoader__.load({
 								}),
 								(0, react_jsx_runtime.jsx)("span", {
 									className: ContextMeter_module_css_default.figures,
-									children: `~${formatTokens(context.usedTokens)} / ${formatTokens(context.contextWindow)}`
+									children: `~${formatTokens(context.usedTokens)} / ${formatTokens(context.contextWindow)}${context.contextWindowEstimated ? ` (${t("context.runtimeBudget")})` : ""}`
 								})
 							]
 						}),
@@ -5603,121 +5604,6 @@ window.__ModuleLoader__.load({
 				...seatProps
 			}, nodeKey));
 		});
-		const EMPTY_TURN_OUTLINE = [];
-		const turnNavigatorStyleId = "dsh-alpha3-turn-navigator";
-		if (typeof document !== "undefined" && document.getElementById(turnNavigatorStyleId) === null) {
-			const style = document.createElement("style");
-			style.id = turnNavigatorStyleId;
-			style.textContent = ".dshAlpha3TurnRail{position:absolute;z-index:7;top:48px;right:8px;bottom:64px;width:28px;pointer-events:none}.dshAlpha3TurnRailFrame{position:sticky;top:48px;max-height:min(420px,calc(100dvh - 180px));overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;pointer-events:auto}.dshAlpha3TurnRailFrame::-webkit-scrollbar{display:none}.dshAlpha3TurnRailMarks{display:flex;min-height:100%;flex-direction:column;align-items:flex-end;justify-content:center;gap:8px;padding:6px 0}.dshAlpha3TurnMark{position:relative;width:20px;height:4px;padding:0;border:0;background:transparent;cursor:pointer}.dshAlpha3TurnMark:before{content:\"\";position:absolute;right:0;top:1px;width:12px;height:2px;border-radius:2px;background:var(--dsw-alias-border-l4);transition:width .14s ease,background-color .14s ease}.dshAlpha3TurnMark[data-unloaded]:before{width:8px;opacity:.6}.dshAlpha3TurnMark:hover:before,.dshAlpha3TurnMark:focus-visible:before{width:18px;background:var(--dsw-alias-label-tertiary)}.dshAlpha3TurnMark[data-active]:before{width:20px;background:var(--dsw-alias-label-primary)}.dshAlpha3TurnMark[data-busy]:before{animation:dshAlpha3TurnBusy 1s ease-in-out infinite}.dshAlpha3TurnMark:focus-visible{outline:1px solid var(--dsw-alias-state-business-primary);outline-offset:2px;border-radius:4px}.dshAlpha3TurnPreview{position:fixed;z-index:30;right:46px;width:min(300px,calc(100vw - 100px));max-height:100px;overflow:hidden;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-shadow-lv2);pointer-events:none}.dshAlpha3TurnPrompt{overflow:hidden;font:var(--dsw-font-xs-strong-13);white-space:nowrap;text-overflow:ellipsis}.dshAlpha3TurnResponse{display:-webkit-box;overflow:hidden;margin-top:4px;color:var(--dsw-alias-label-caption);font:var(--dsw-font-xxs-12);-webkit-box-orient:vertical;-webkit-line-clamp:3}@keyframes dshAlpha3TurnBusy{0%,100%{opacity:1}50%{opacity:.35}}@media(max-width:900px){.dshAlpha3TurnRail{display:none}}@media(prefers-reduced-motion:reduce){.dshAlpha3TurnMark:before{transition:none}.dshAlpha3TurnMark[data-busy]:before{animation:none}}";
-			document.head.appendChild(style);
-		}
-		function outlineEntries(value) {
-			if (!Array.isArray(value)) return EMPTY_TURN_OUTLINE;
-			return value.flatMap((entry) => {
-				if (typeof entry !== "object" || entry === null || !Number.isSafeInteger(entry.turn) || entry.turn < 0 || !Number.isSafeInteger(entry.seq) || entry.seq < 0) return [];
-				return [{ turn: entry.turn, seq: entry.seq, prompt: typeof entry.prompt === "string" ? entry.prompt : "", response: typeof entry.response === "string" ? entry.response : "" }];
-			});
-		}
-		function loadedTurnAnchors(timeline) {
-			const result = /* @__PURE__ */ new Map();
-			for (const turn of timeline.turns.values()) {
-				const key = turn.start?.key;
-				const seq = turn.start?.seq;
-				if (typeof key === "string" && Number.isSafeInteger(seq)) result.set(turn.turn, { key, seq });
-			}
-			return result;
-		}
-		function mergeTurnOutline(timeline, outline) {
-			const anchors = loadedTurnAnchors(timeline);
-			const merged = /* @__PURE__ */ new Map();
-			for (const entry of outlineEntries(outline)) merged.set(entry.turn, { ...entry, anchor: anchors.has(entry.turn) ? { kind: "loaded", key: anchors.get(entry.turn).key } : { kind: "unloaded", seq: entry.seq } });
-			for (const [turn, anchor] of anchors) if (!merged.has(turn)) merged.set(turn, { turn, seq: anchor.seq, prompt: "", response: "", anchor: { kind: "loaded", key: anchor.key } });
-			return [...merged.values()].sort((left, right) => left.turn - right.turn);
-		}
-		function turnNavigatorWindow(length, scrollTop, viewportHeight) {
-			if (length <= 56) return { start: 0, end: length };
-			const firstVisible = Math.max(0, Math.floor(scrollTop / 12));
-			const visibleRows = Math.max(1, Math.ceil(viewportHeight / 12));
-			let start = Math.max(0, firstVisible - 10);
-			let end = Math.min(length, firstVisible + visibleRows + 11);
-			if (end - start < 56) {
-				if (start === 0) end = Math.min(length, 56);
-				else if (end === length) start = Math.max(0, length - 56);
-			}
-			return { start, end };
-		}
-		function TurnNavigatorView({ items, activeTurn, busyTurn, onNavigate, t }) {
-			const [preview, setPreview] = (0, react.useState)(null);
-			const [scrollTop, setScrollTop] = (0, react.useState)(0);
-			const frameRef = (0, react.useRef)(null);
-			const scrollFrameRef = (0, react.useRef)(null);
-			const pendingScrollTopRef = (0, react.useRef)(0);
-			const viewportHeight = frameRef.current?.clientHeight ?? 420;
-			const windowRange = turnNavigatorWindow(items.length, scrollTop, viewportHeight);
-			const activeIndex = items.findIndex((item) => item.turn === activeTurn);
-			(0, react.useEffect)(() => {
-				const frame = frameRef.current;
-				if (frame === null || activeIndex < 0) return;
-				const top = activeIndex * 12;
-				const bottom = top + 4;
-				if (top >= frame.scrollTop && bottom <= frame.scrollTop + frame.clientHeight) return;
-				const next = Math.max(0, top - Math.max(0, frame.clientHeight - 4) / 2);
-				frame.scrollTop = next;
-				setScrollTop(next);
-			}, [activeIndex]);
-			(0, react.useEffect)(() => () => {
-				if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
-			}, []);
-			if (items.length < 2) return null;
-			const visible = items.slice(windowRange.start, windowRange.end);
-			const onScroll = (event) => {
-				pendingScrollTopRef.current = event.currentTarget.scrollTop;
-				setPreview(null);
-				if (scrollFrameRef.current !== null) return;
-				scrollFrameRef.current = requestAnimationFrame(() => {
-					scrollFrameRef.current = null;
-					setScrollTop(pendingScrollTopRef.current);
-				});
-			};
-			return (0, react_jsx_runtime.jsx)("div", {
-				className: "dshAlpha3TurnRail",
-				children: (0, react_jsx_runtime.jsxs)("nav", {
-					ref: frameRef,
-					className: "dshAlpha3TurnRailFrame",
-					"aria-label": t("chat.turnNavigation.label"),
-					onScroll,
-					children: [(0, react_jsx_runtime.jsx)("div", {
-						className: "dshAlpha3TurnRailMarks",
-						style: { position: "relative", display: "block", minHeight: `${items.length * 12}px` },
-						children: visible.map((item, offset) => {
-							const index = windowRange.start + offset;
-							return (0, react_jsx_runtime.jsx)("button", {
-								type: "button",
-								className: "dshAlpha3TurnMark",
-								style: { position: "absolute", top: `${index * 12}px`, right: 0 },
-								"data-active": item.turn === activeTurn || void 0,
-								"data-unloaded": item.anchor.kind === "unloaded" || void 0,
-								"data-busy": item.turn === busyTurn || void 0,
-								"aria-label": t(item.anchor.kind === "loaded" ? "chat.turnNavigation.jump" : "chat.turnNavigation.jumpLoad", { turn: item.turn }),
-								"aria-current": item.turn === activeTurn ? "true" : void 0,
-								"aria-busy": item.turn === busyTurn ? "true" : void 0,
-								onClick: () => onNavigate(item),
-								onMouseEnter: (event) => setPreview({ item, top: Math.max(8, Math.min(window.innerHeight - 108, event.currentTarget.getBoundingClientRect().top - 48)) }),
-								onMouseLeave: () => setPreview(null),
-								onFocus: (event) => setPreview({ item, top: Math.max(8, Math.min(window.innerHeight - 108, event.currentTarget.getBoundingClientRect().top - 48)) }),
-								onBlur: () => setPreview(null)
-							}, item.turn);
-						})
-					}), preview !== null && (0, react_jsx_runtime.jsxs)("div", {
-						role: "tooltip",
-						className: "dshAlpha3TurnPreview",
-						style: { top: preview.top },
-						children: [(0, react_jsx_runtime.jsx)("div", { className: "dshAlpha3TurnPrompt", children: preview.item.prompt || t("chat.turnNavigation.turn", { turn: preview.item.turn }) }), preview.item.response !== "" && (0, react_jsx_runtime.jsx)("div", { className: "dshAlpha3TurnResponse", children: preview.item.response })]
-					})]
-				})
-			});
-		}
-		const TurnNavigator = (0, react.memo)(TurnNavigatorView);
 		const turnPulseStyleId = "dsh-turn-status-pulse";
 		if (typeof document !== "undefined" && document.getElementById(turnPulseStyleId) === null) {
 			const style = document.createElement("style");
@@ -5767,7 +5653,6 @@ window.__ModuleLoader__.load({
 			const order = useSession((s) => s.chat.order);
 			const nodeStore = useSession((s) => s.chat.nodes);
 			const timeline = useSession((s) => s.chat.timeline);
-			const turnOutline = useProjection("turnOutline") ?? EMPTY_TURN_OUTLINE;
 			const inbox = useSession((s) => s.queue);
 			const cwd = useSessions((s) => s.byId[sessionId]?.cwd);
 			const running = useSession((s) => s.running);
@@ -5782,9 +5667,6 @@ window.__ModuleLoader__.load({
 			const loadingNewer = useSession((s) => s.loadingNewer);
 			const selectedCallId = useStore((s) => s.selection?.callId);
 			const pendingSteering = (0, react.useMemo)(() => inbox.filter((item) => item.placement === "steering"), [inbox]);
-			const turnItems = (0, react.useMemo)(() => mergeTurnOutline(timeline, turnOutline), [timeline, turnOutline]);
-			const activeTurn = [...timeline.turns.values()].findLast((turn) => turn.status === "open")?.turn ?? turnItems.at(-1)?.turn ?? null;
-			const [busyTurn, setBusyTurn] = (0, react.useState)(null);
 			const runningTurnStart = (0, react.useMemo)(() => runningTurnStartTime(timeline), [timeline]);
 			const runningPhase = (0, react.useMemo)(() => {
 				const active = [...nodeStore.values()].filter((node) => node.kind === "assistant" && node.status === "running").at(-1);
@@ -5831,33 +5713,6 @@ window.__ModuleLoader__.load({
 				atBottomRef.current = true;
 				setAtBottom(true);
 				chatScroll.save(null);
-			};
-			const navigateTurn = (item) => {
-				const local = listRef.current;
-				if (local === null) return;
-				const settle = () => {
-					let row = item.anchor.kind === "loaded" ? anchorElement(local, item.anchor.key) : null;
-					if (row === null) {
-						for (const candidate of local.querySelectorAll("[data-chat-anchor-key]")) {
-							const key = candidate.dataset.chatAnchorKey;
-							if (key !== void 0 && nodeStore.get(key)?.anchorSeq >= item.seq) {
-								row = candidate;
-								break;
-							}
-						}
-					}
-					if (row === null) return false;
-					row.scrollIntoView({ block: "center", behavior: typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
-					return true;
-				};
-				if (settle() || item.anchor.kind === "loaded") return;
-				setBusyTurn(item.turn);
-				Promise.resolve(loadAround(item.anchor.seq)).finally(() => {
-					requestAnimationFrame(() => {
-						settle();
-						setBusyTurn(null);
-					});
-				});
 			};
 			(0, react.useLayoutEffect)(() => {
 				if (scrollSamplePendingRef.current) return;
@@ -6076,12 +5931,6 @@ window.__ModuleLoader__.load({
 								t
 							}, item.id))
 						]
-					}), (0, react_jsx_runtime.jsx)(TurnNavigator, {
-						items: turnItems,
-						activeTurn,
-						busyTurn,
-						onNavigate: navigateTurn,
-						t
 					}), !atBottom && (0, react_jsx_runtime.jsx)("div", {
 						className: ChatView_module_css_default.toBottomSlot,
 						children: (0, react_jsx_runtime.jsx)("button", {
@@ -6132,13 +5981,17 @@ window.__ModuleLoader__.load({
 			get callId() {
 				return this.wait.payload.callId;
 			}
+			get rememberable() {
+				return this.wait.payload.rememberable === true;
+			}
 			/**
 			* Deliver the user's decision; a rejected carrier receipt throws. Panel
 			* removal stays frame-driven: the broadcast `approval/resolved` settles the
 			* wait and drops it from the pending list.
-			* @param outcome - the only two client-answerable outcomes.
+			* @param outcome - the client-answerable approval outcome.
 			*/
 			async answer(outcome) {
+				if (outcome === "allowed-always" && !this.rememberable) throw new Error("this approval cannot be remembered");
 				const receipt = await this.wait.respond({
 					ok: true,
 					value: {
@@ -6230,7 +6083,7 @@ window.__ModuleLoader__.load({
 			const approval = (0, react.useMemo)(() => new PendingApproval(props.matched), [props.matched]);
 			const command = props.useSession((snapshot) => {
 				if (approval.callId === void 0) return void 0;
-				const root = rootToolCall(snapshot, approval.callId);
+				const root = findToolCall(snapshot, approval.callId);
 				if (root === void 0) return void 0;
 				return root.callId === approval.callId && !("kind" in root) ? commandOf(root) : void 0;
 			});
@@ -6246,21 +6099,30 @@ window.__ModuleLoader__.load({
 		}
 		function ApprovalFlow({ pending, command, t }) {
 			const [answered, setAnswered] = (0, react.useState)(false);
+			const [error, setError] = (0, react.useState)(null);
+			const submitting = (0, react.useRef)(false);
 			const answer = (outcome) => {
+				if (submitting.current) return;
+				submitting.current = true;
+				setError(null);
 				setAnswered(true);
-				pending.answer(outcome).catch(() => {
+				pending.answer(outcome).catch((error) => {
+					submitting.current = false;
+					setError(error instanceof Error ? error.message : String(error));
 					setAnswered(false);
 				});
 			};
 			return (0, react_jsx_runtime.jsx)("div", {
 				className: ApprovalPanel_module_css_default.root,
 				"data-approval-key": pending.key,
+				"aria-busy": answered,
 				children: (0, react_jsx_runtime.jsxs)("div", {
 					className: ApprovalPanel_module_css_default.card,
 					children: [
 						(0, react_jsx_runtime.jsxs)("div", {
 							className: ApprovalPanel_module_css_default.strip,
-							children: [(0, react_jsx_runtime.jsx)("span", { className: ApprovalPanel_module_css_default.dot }), t("approval.waiting")]
+							role: "status",
+							children: [(0, react_jsx_runtime.jsx)("span", { className: ApprovalPanel_module_css_default.dot }), t(answered ? "approval.submitting" : "approval.waiting")]
 						}),
 						(0, react_jsx_runtime.jsxs)("div", {
 							className: ApprovalPanel_module_css_default.body,
@@ -6274,7 +6136,7 @@ window.__ModuleLoader__.load({
 							}), command !== void 0 && (0, react_jsx_runtime.jsx)("div", {
 								className: ApprovalPanel_module_css_default.command,
 								children: command
-							})]
+							}), error !== null && (0, react_jsx_runtime.jsx)("div", { role: "alert", style: { color: "var(--dsw-alias-state-error-primary)", fontSize: 13 }, children: t("approval.failed", { message: error }) })]
 						}),
 						(0, react_jsx_runtime.jsxs)("div", {
 							className: ApprovalPanel_module_css_default.actionRow,
@@ -6295,7 +6157,8 @@ window.__ModuleLoader__.load({
 								children: t("approval.allowOnce")
 							}), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 								variant: "primary",
-								disabled: answered || approval.data.rememberable === false,
+								disabled: answered || !pending.rememberable,
+								title: pending.rememberable ? t("approval.rememberScope") : t("approval.onceOnly"),
 								onClick: () => {
 									answer("allowed-always");
 								},
@@ -6361,6 +6224,7 @@ window.__ModuleLoader__.load({
 			"image.sendFailed": "图片发送失败（{reason}），请重新添加图片后再试",
 			"context.aria": "上下文已用 {percent}",
 			"context.used": "上下文已用",
+			"context.runtimeBudget": "运行预算，模型容量未提供",
 			"context.system": "系统提示词",
 			"context.tools": "工具",
 			"context.messages": "对话消息",
@@ -6401,17 +6265,14 @@ window.__ModuleLoader__.load({
 			"todo.save": "保存",
 			"todo.cancelEdit": "取消修改",
 			"todo.stopTurn": "停止当前运行",
-			"todo.updateFailed": "任务清单已变化，请重试。",
+			"todo.updateFailed": "未能保存任务，请重试。",
+			"todo.changed": "任务清单已更新，请重新选择需要编辑的任务。",
 			"todo.stopFailed": "停止运行失败，请重试。",
 			"todo.completed": "{done}/{total} 已完成",
 			"chat.loadingHistory": "载入历史…",
 			"chat.loadError": "历史加载失败：{message}（{code}）",
 			"chat.loadOlder": "加载更早",
 			"chat.toBottom": "回到底部",
-			"chat.turnNavigation.label": "会话轮次导航",
-			"chat.turnNavigation.turn": "第 {turn} 轮",
-			"chat.turnNavigation.jump": "跳到第 {turn} 轮",
-			"chat.turnNavigation.jumpLoad": "载入并跳到第 {turn} 轮",
 			"message.extraBlock": "附加内容块",
 			"message.contextInjection": "上下文注入",
 			"message.contextRecall": "跨会话召回",
@@ -6468,6 +6329,10 @@ window.__ModuleLoader__.load({
 			"command.done": "已完成",
 			"command.title": "命令",
 			"approval.waiting": "等待审批",
+			"approval.submitting": "正在提交审批决定…",
+			"approval.failed": "提交失败：{message}。请重试。",
+			"approval.rememberScope": "仅记住与本次请求匹配的授权范围",
+			"approval.onceOnly": "此请求只支持单次授权",
 			"approval.detail.aria": "审批详情",
 			"approval.escalation": "工具 {toolName} 请求越权执行",
 			"approval.reject": "拒绝",
@@ -6557,6 +6422,7 @@ window.__ModuleLoader__.load({
 			"image.sendFailed": "Sending images failed ({reason}); re-add them and try again",
 			"context.aria": "{percent} of context used",
 			"context.used": "of context used",
+			"context.runtimeBudget": "runtime budget; model capacity unavailable",
 			"context.system": "System prompt",
 			"context.tools": "Tools",
 			"context.messages": "Messages",
@@ -6597,17 +6463,14 @@ window.__ModuleLoader__.load({
 			"todo.save": "Save",
 			"todo.cancelEdit": "Cancel edit",
 			"todo.stopTurn": "Stop current run",
-			"todo.updateFailed": "The task list changed. Try again.",
+			"todo.updateFailed": "Could not save the task. Please retry.",
+			"todo.changed": "The task list was updated. Select the task again to edit it.",
 			"todo.stopFailed": "Failed to stop the current run. Try again.",
 			"todo.completed": "{done}/{total} completed",
 			"chat.loadingHistory": "Loading history…",
 			"chat.loadError": "Failed to load history: {message} ({code})",
 			"chat.loadOlder": "Load earlier",
 			"chat.toBottom": "Back to bottom",
-			"chat.turnNavigation.label": "Conversation turn navigation",
-			"chat.turnNavigation.turn": "Turn {turn}",
-			"chat.turnNavigation.jump": "Jump to turn {turn}",
-			"chat.turnNavigation.jumpLoad": "Load and jump to turn {turn}",
 			"message.extraBlock": "Extra content block",
 			"message.contextInjection": "Context injection",
 			"message.contextRecall": "Session recall",
@@ -6664,6 +6527,10 @@ window.__ModuleLoader__.load({
 			"command.done": "Completed",
 			"command.title": "Command",
 			"approval.waiting": "Waiting for approval",
+			"approval.submitting": "Submitting decision…",
+			"approval.failed": "Could not submit: {message}. Please retry.",
+			"approval.rememberScope": "Remember only the permission scope matching this request",
+			"approval.onceOnly": "This request only supports one-time approval",
 			"approval.detail.aria": "Approval details",
 			"approval.escalation": "Tool {toolName} requests privileged execution",
 			"approval.reject": "Reject",
@@ -6835,20 +6702,29 @@ window.__ModuleLoader__.load({
 			const [collapsed, setCollapsed] = (0, react.useState)(true);
 			const [editing, setEditing] = (0, react.useState)(null);
 			const [busy, setBusy] = (0, react.useState)(null);
+			const [error, setError] = (0, react.useState)(null);
+			const submitting = (0, react.useRef)(false);
 			const running = useSession((state) => state.running);
 			const mutable = useSession((state) => state.subagent === null);
 			(0, react.useEffect)(() => {
-				if (editing !== null && (!mutable || todos[editing.index]?.content !== editing.original)) setEditing(null);
+				if (editing !== null && (!mutable || todos[editing.index]?.content !== editing.original)) {
+					setEditing(null);
+					if (!submitting.current) setError(t("todo.changed"));
+				}
 			}, [editing, mutable, todos]);
 			if (todos.length === 0) return null;
 			const applyAction = async (index, action) => {
+				if (submitting.current || !mutable) return;
+				submitting.current = true;
+				setError(null);
 				setBusy(index);
 				try {
 					await updateTodos(todos, action);
 					setEditing(null);
-				} catch {
-					notify("error", t("todo.updateFailed"));
+				} catch (error) {
+					setError(`${t("todo.updateFailed")} ${error instanceof Error ? error.message : String(error)}`);
 				} finally {
+					submitting.current = false;
 					setBusy(null);
 				}
 			};
@@ -6860,6 +6736,7 @@ window.__ModuleLoader__.load({
 				className: TodoPanel_module_css_default.root,
 				"data-testid": "todo-panel",
 				"aria-label": t("todo.title"),
+				"aria-busy": busy !== null,
 				children: (0, react_jsx_runtime.jsxs)("div", {
 					className: TodoPanel_module_css_default.body,
 					children: [(0, react_jsx_runtime.jsxs)("button", {
@@ -6903,10 +6780,11 @@ window.__ModuleLoader__.load({
 								className: "dsh-todo-editor",
 								"aria-label": t("todo.edit"),
 								value: editing.value,
+								disabled: busy !== null,
 								onChange: (event) => setEditing({ ...editing, value: event.currentTarget.value }),
 								onKeyDown: (event) => {
-									if (event.key === "Escape") setEditing(null);
-									if (event.key === "Enter" && !event.nativeEvent.isComposing) saveEdit();
+									if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setEditing(null); }
+									if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); saveEdit(); }
 								}
 							}) : (0, react_jsx_runtime.jsx)("span", {
 								className: TodoPanel_module_css_default.content,
@@ -6932,13 +6810,15 @@ window.__ModuleLoader__.load({
 								})] })
 							})]
 						}, `${index}:${item.content}`))
-					}), running && (0, react_jsx_runtime.jsx)("button", {
+					}), error !== null && (0, react_jsx_runtime.jsx)("div", { role: "alert", style: { color: "var(--dsw-alias-state-error-primary)", fontSize: 12, lineHeight: "18px" }, children: error }), running && (0, react_jsx_runtime.jsx)("button", {
 						type: "button",
 						className: "dsh-todo-stop",
 						disabled: busy !== null || !mutable,
 						onClick: async () => {
+							if (submitting.current || !mutable) return;
+							submitting.current = true;
 							setBusy("turn");
-							try { await cancelTurn(); } catch { notify("error", t("todo.stopFailed")); } finally { setBusy(null); }
+							try { await cancelTurn(); } catch { notify("error", t("todo.stopFailed")); } finally { submitting.current = false; setBusy(null); }
 						},
 						children: t("todo.stopTurn")
 					})] })]

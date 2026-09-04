@@ -5900,6 +5900,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		/** DiscoveredModelView row of llm.discoverModels. */
 		const discoveredModelViewSchema = object({
 			id: string().min(1),
+			reasoningEfforts: unknown().optional(),
+			input: array(string()).optional(),
 			name: string().min(1).optional(),
 			contextWindow: number().int().positive().optional(),
 			maxTokens: number().int().positive().optional()

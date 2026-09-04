@@ -27,6 +27,7 @@ fn connection() -> crate::ResolvedDeepSeekOptions {
     resolve_adapter_options(&DeepSeekConfig {
         models: Some(vec![DeepSeekCatalogModel {
             id: "gpt-5.6-sol".to_string(),
+            enabled: None,
             name: None,
             description: None,
             context_window: None,

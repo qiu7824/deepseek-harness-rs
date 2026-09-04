@@ -97,12 +97,13 @@ impl MemoryStore {
     ) -> Result<MemoryEntry, String> {
         validate_entry(&entry)?;
         let mut document = self.document.lock().await;
-        if let Some(position) = document
+        let mut next = document.clone();
+        if let Some(position) = next
             .entries
             .iter()
             .position(|candidate| candidate.id == entry.id)
         {
-            let actual = document.entries[position].revision;
+            let actual = next.entries[position].revision;
             if expected_revision.is_some_and(|expected| expected != actual) {
                 return Err(format!(
                     "memory entry changed since it was read (expected revision {}, now {actual})",
@@ -110,7 +111,7 @@ impl MemoryStore {
                 ));
             }
             entry.revision = actual + 1;
-            document.entries[position] = entry.clone();
+            next.entries[position] = entry.clone();
         } else {
             if entry.id.trim().is_empty() {
                 entry.id = uuid::Uuid::new_v4().to_string();
@@ -119,10 +120,11 @@ impl MemoryStore {
                 return Err("memory entry does not exist".to_string());
             }
             entry.revision = 1;
-            document.entries.push(entry.clone());
+            next.entries.push(entry.clone());
         }
-        document.revision += 1;
-        persist_document(&self.root, &document).await?;
+        next.revision += 1;
+        persist_document(&self.root, &next).await?;
+        *document = next;
         Ok(entry)
     }
 
@@ -138,32 +140,17 @@ impl MemoryStore {
                 expected_revision.unwrap()
             ));
         }
-        document.entries.remove(position);
-        document.revision += 1;
-        persist_document(&self.root, &document).await?;
+        let mut next = document.clone();
+        next.entries.remove(position);
+        next.revision += 1;
+        persist_document(&self.root, &next).await?;
+        *document = next;
         Ok(true)
     }
 
     pub async fn render_enabled(&self, scope: &str, budget: usize) -> String {
         let document = self.document.lock().await;
-        let mut rendered = String::new();
-        for entry in document
-            .entries
-            .iter()
-            .filter(|entry| entry.enabled && (entry.scope == "default" || entry.scope == scope))
-        {
-            let label = BUILTIN_CATEGORIES
-                .iter()
-                .find(|(id, _)| *id == entry.category)
-                .map(|(_, label)| *label)
-                .unwrap_or(&entry.category);
-            let next = format!("\n- [{label}] {}: {}", entry.title, entry.content);
-            if rendered.chars().count() + next.chars().count() > budget {
-                break;
-            }
-            rendered.push_str(&next);
-        }
-        rendered
+        render_entries(&document, scope, budget)
     }
 }
 
@@ -182,6 +169,12 @@ fn validate_entry(entry: &MemoryEntry) -> Result<(), String> {
     }
     if entry.content.trim().is_empty() {
         return Err("memory content must be non-empty".to_string());
+    }
+    if entry.title.chars().count() > 200 || entry.content.chars().count() > 20_000 {
+        return Err(
+            "memory title must be at most 200 characters and content at most 20000 characters"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -209,28 +202,52 @@ pub fn render_enabled_file(root: &Path, scope: &str, budget: usize) -> String {
     let Ok(document) = serde_json::from_slice::<MemoryDocument>(&bytes) else {
         return String::new();
     };
-    let mut rendered = String::new();
-    for entry in document
+    let rendered = render_entries(&document, scope, budget);
+    if rendered.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "已保存的长期记忆：在执行相关操作前核对已知错误的触发条件，采用已验证的修正步骤，并执行其验证方法。记忆可能过时；以当前事实和用户指令为准。{rendered}"
+        )
+    }
+}
+
+fn render_entries(document: &MemoryDocument, scope: &str, budget: usize) -> String {
+    let mut entries: Vec<_> = document
         .entries
         .iter()
         .filter(|entry| entry.enabled && (entry.scope == "default" || entry.scope == scope))
-    {
+        .collect();
+    // Lessons and constraints must survive a tight budget; local scope precedes
+    // global notes and newer revisions break ties without changing stored order.
+    entries.sort_by_key(|entry| {
+        (
+            match entry.category.as_str() {
+                "known-error" => 0,
+                "operation-constraint" => 1,
+                _ => 2,
+            },
+            entry.scope == "default",
+            std::cmp::Reverse(entry.revision),
+        )
+    });
+    let mut rendered = String::new();
+    let mut used = 0;
+    for entry in entries {
         let label = BUILTIN_CATEGORIES
             .iter()
             .find(|(id, _)| *id == entry.category)
             .map(|(_, label)| *label)
             .unwrap_or(&entry.category);
         let next = format!("\n- [{label}] {}: {}", entry.title, entry.content);
-        if rendered.chars().count() + next.chars().count() > budget {
-            break;
+        let count = next.chars().count();
+        if used + count > budget {
+            continue;
         }
         rendered.push_str(&next);
+        used += count;
     }
-    if rendered.is_empty() {
-        String::new()
-    } else {
-        format!("Agent 长期记忆（用户可在设置中编辑）：{rendered}")
-    }
+    rendered
 }
 
 pub fn valid_name(name: &str) -> bool {
@@ -301,11 +318,12 @@ pub fn install(ctx: &Context, root: PathBuf) -> Result<(), String> {
         ctx,
         ToolDefinition {
             name: "memory".to_string(),
-            description: "Explicitly list, read, write, or remove auditable Markdown memories. Never infer a write: use write/remove only when the user asks to remember or forget durable information.".to_string(),
+            description: "List, search, read, write, or remove persistent memories shared across tasks and models. Search known-error lessons before repeating a failed approach. A useful lesson states its trigger, wrong approach, verified correction and verification step. Use write/remove only when the user asks to remember or forget durable information; never store credentials.".to_string(),
             parameters: serde_json::json!({
                 "type": "object", "additionalProperties": false,
                 "properties": {
-                    "action": { "type": "string", "enum": ["list", "read", "write", "remove"] },
+                    "action": { "type": "string", "enum": ["list", "search", "read", "write", "remove"] },
+                    "query": { "type": "string" },
                     "name": { "type": "string" },
                     "title": { "type": "string" },
                     "content": { "type": "string" },
@@ -325,7 +343,7 @@ pub fn install(ctx: &Context, root: PathBuf) -> Result<(), String> {
             },
             timeout_ms: Some(10_000),
             is_concurrency_safe: Some(Arc::new(|args| {
-                matches!(args.get("action").and_then(|v| v.as_str()), Some("list" | "read"))
+                matches!(args.get("action").and_then(|v| v.as_str()), Some("list" | "search" | "read"))
             })),
             execute: Arc::new(move |args, _run: &ToolRunContext| {
                 let root = root.clone();
@@ -334,7 +352,7 @@ pub fn install(ctx: &Context, root: PathBuf) -> Result<(), String> {
                 Box::pin(async move {
                     let action = args.get("action").and_then(|v| v.as_str()).unwrap_or_default();
                     match action {
-                        "list" => {
+                        "list" | "search" => {
                             let mut names = Vec::new();
                             let mut entries = tokio::fs::read_dir(&root).await.map_err(|e| ToolBodyError::plain(e.to_string()))?;
                             while let Some(entry) = entries.next_entry().await.map_err(|e| ToolBodyError::plain(e.to_string()))? {
@@ -344,14 +362,22 @@ pub fn install(ctx: &Context, root: PathBuf) -> Result<(), String> {
                                 }
                             }
                             names.sort();
-                            let entries = store.list(
+                            let mut entries = store.list(
                                 args.get("scope").and_then(|v| v.as_str()),
                                 args.get("category").and_then(|v| v.as_str()),
                             ).await;
+                            if action == "search" {
+                                let query = args.get("query").and_then(|v|v.as_str()).unwrap_or_default().to_lowercase();
+                                entries.retain(|entry| entry.enabled && format!("{} {}",entry.title,entry.content).to_lowercase().contains(&query));
+                                entries.sort_by_key(|entry| entry.category != "known-error");
+                            }
                             Ok(serde_json::json!({ "names": names, "entries": entries }))
                         }
                         "read" => {
                             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+                            if let Some(entry) = store.list(None,None).await.into_iter().find(|entry|entry.id == name) {
+                                return Ok(serde_json::json!({"name":name,"content":entry.content,"entry":entry}));
+                            }
                             let path = path_for(&root, name)?;
                             if !safe_existing_file(&path) {
                                 return Err(ToolBodyError::plain("memory file must be a regular non-link file"));
@@ -363,12 +389,7 @@ pub fn install(ctx: &Context, root: PathBuf) -> Result<(), String> {
                             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or_default();
                             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or_default();
                             if content.trim().is_empty() { return Err(ToolBodyError::plain("memory content must be non-empty")); }
-                            let path = path_for(&root, name)?;
-                            dsh_atomic_write::write_file_atomic(
-                                &path,
-                                content.as_bytes(),
-                                dsh_atomic_write::WriteFileAtomicOptions { mode: 0o600, dir_mode: Some(0o700) },
-                            ).await.map_err(|e| ToolBodyError::plain(e.to_string()))?;
+                            path_for(&root, name)?;
                             let saved = store.upsert(MemoryEntry {
                                 id: name.to_string(),
                                 scope: args.get("scope").and_then(|v| v.as_str()).unwrap_or("default").to_string(),
@@ -462,6 +483,54 @@ mod tests {
         store.upsert(disabled, Some(2)).await.unwrap();
         assert!(store.render_enabled("default", 2200).await.is_empty());
         assert!(render_enabled_file(&root, "default", 2200).is_empty());
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_persistence_does_not_change_live_memory() {
+        let root = std::env::temp_dir().join(format!("dsh-memory-{}", uuid::Uuid::new_v4()));
+        let store = MemoryStore::open(root.clone()).await.unwrap();
+        let saved = store
+            .upsert(entry("one", "known-error", "verified correction"), None)
+            .await
+            .unwrap();
+        tokio::fs::remove_file(root.join("entries.json"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir(root.join("entries.json"))
+            .await
+            .unwrap();
+        let mut changed = saved.clone();
+        changed.content = "uncommitted correction".into();
+        assert!(store.upsert(changed, Some(saved.revision)).await.is_err());
+        assert_eq!(store.list(None, None).await[0], saved);
+        assert!(store.remove("one", Some(saved.revision)).await.is_err());
+        assert_eq!(store.list(None, None).await[0], saved);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn tight_budget_keeps_lessons_and_skips_oversized_notes() {
+        let root = std::env::temp_dir().join(format!("dsh-memory-{}", uuid::Uuid::new_v4()));
+        let store = MemoryStore::open(root.clone()).await.unwrap();
+        store
+            .upsert(entry("large", "custom", &"x".repeat(3000)), None)
+            .await
+            .unwrap();
+        store
+            .upsert(
+                entry("lesson", "known-error", "verify the path before moving"),
+                None,
+            )
+            .await
+            .unwrap();
+        let rendered = store.render_enabled("default", 100).await;
+        assert!(rendered.contains("verify the path"));
+        assert!(rendered.chars().count() <= 100);
+        assert!(!rendered.contains("xxxx"));
+        let reopened = MemoryStore::open(root.clone()).await.unwrap();
+        assert_eq!(reopened.render_enabled("default", 100).await, rendered);
+        assert!(render_enabled_file(&root, "other-model", 100).contains("verify the path"));
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }

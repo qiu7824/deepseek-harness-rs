@@ -419,7 +419,7 @@ impl JsonlSessionPersistence {
                     "session{}",
                     log_suffix(self.opposite_compression())
                 ));
-                if self.exists(&incompatible).await {
+                if self.exists(&incompatible).await? {
                     return Err(self.encoding_mismatch(&incompatible));
                 }
             }
@@ -443,11 +443,14 @@ impl JsonlSessionPersistence {
         )
     }
 
-    async fn exists(&self, path: &Path) -> bool {
+    async fn exists(&self, path: &Path) -> Result<bool, String> {
         match tokio::fs::metadata(path).await {
-            Ok(_) => true,
-            Err(error) if is_not_found(&error) => false,
-            Err(_) => false,
+            Ok(_) => Ok(true),
+            Err(error) if is_not_found(&error) => Ok(false),
+            Err(error) => Err(format!(
+                "cannot access session artifact \"{}\": {error}",
+                path.to_string_lossy()
+            )),
         }
     }
 
@@ -499,10 +502,10 @@ impl JsonlSessionPersistence {
                 "session{}",
                 log_suffix(self.opposite_compression())
             ));
-            if self.exists(&opposite).await {
+            if self.exists(&opposite).await? {
                 return Err(self.encoding_mismatch(&opposite));
             }
-            if self.exists(&path).await {
+            if self.exists(&path).await? {
                 matches.push(path);
             }
         }
@@ -524,7 +527,7 @@ impl JsonlSessionPersistence {
             crate::format::encode_segment(id.as_str()).map_err(|error| error.to_string())?;
         for compression in [JsonlCompression::Zstd, JsonlCompression::None] {
             let path = project.join(format!("{encoded}{}", log_suffix(compression)));
-            if self.exists(&path).await {
+            if self.exists(&path).await? {
                 return Err(self.legacy_layout(&path));
             }
         }
@@ -628,26 +631,53 @@ impl JsonlSessionPersistence {
         let before_seq = request.before_seq.unwrap_or(u64::MAX);
         let capacity = request.max_events.saturating_add(1).max(2);
         let mut candidates = VecDeque::with_capacity(capacity);
+        let mut candidate_bytes = 0usize;
+        let mut candidate_messages = 0u64;
+        const MAX_WINDOW_BYTES: usize = 64 * 1024 * 1024;
         let mut dropped = false;
         for (frame_index, frame) in scan.frames[1..].iter().enumerate().rev() {
             let mut frame_tail = VecDeque::with_capacity(capacity);
             let mut frame_dropped = false;
+            let mut frame_bytes = 0usize;
             visit_zstd_frame_tail(&mapping[frame.start..frame.end], capacity, &mut |event| {
                 if event.seq.get() >= before_seq {
                     return Ok(true);
                 }
-                frame_tail.push_back(event);
+                let bytes = serde_json::to_vec(&event)
+                    .map_err(|error| error.to_string())?
+                    .len();
+                frame_bytes = frame_bytes.saturating_add(bytes);
+                frame_tail.push_back((event, bytes));
                 if frame_tail.len() > capacity {
-                    frame_tail.pop_front();
+                    if let Some((_, bytes)) = frame_tail.pop_front() {
+                        frame_bytes -= bytes;
+                    }
                     frame_dropped = true;
+                }
+                if frame_bytes > MAX_WINDOW_BYTES {
+                    return Err("history scan exceeds the 64 MiB source budget".into());
                 }
                 Ok(true)
             })?;
-            for event in frame_tail.into_iter().rev() {
-                candidates.push_front(event);
+            for (event, bytes) in frame_tail.into_iter().rev() {
+                let is_message =
+                    matches!(event.type_.as_str(), "user/message" | "assistant/message")
+                        && event.surface_op.as_ref().is_none_or(|op| op.is_append());
+                candidate_messages += u64::from(is_message);
+                candidate_bytes = candidate_bytes.saturating_add(bytes);
+                candidates.push_front((event, bytes));
                 if candidates.len() > capacity {
-                    candidates.pop_front();
+                    if let Some((event, bytes)) = candidates.pop_front() {
+                        candidate_bytes -= bytes;
+                        candidate_messages -= u64::from(
+                            matches!(event.type_.as_str(), "user/message" | "assistant/message")
+                                && event.surface_op.as_ref().is_none_or(|op| op.is_append()),
+                        );
+                    }
                     dropped = true;
+                }
+                if candidate_bytes > MAX_WINDOW_BYTES {
+                    return Err("history scan exceeds the 64 MiB source budget".into());
                 }
             }
             if frame_dropped {
@@ -657,12 +687,37 @@ impl JsonlSessionPersistence {
                 dropped |= frame_index > 0;
                 break;
             }
+            // Stop once the requested messages and their provenance fit.
+            // Raising the scan ceiling must not make ordinary pages scan it all.
+            if candidate_messages >= request.max_messages.max(1) {
+                let selected = candidates
+                    .iter()
+                    .rev()
+                    .filter(|(event, _)| {
+                        matches!(event.type_.as_str(), "user/message" | "assistant/message")
+                            && event.surface_op.as_ref().is_none_or(|op| op.is_append())
+                    })
+                    .nth(request.max_messages.max(1).saturating_sub(1) as usize);
+                if let (Some((event, _)), Some((first, _))) = (selected, candidates.front()) {
+                    let start = event
+                        .source_event_seqs
+                        .as_ref()
+                        .and_then(|seqs| seqs.iter().copied().min())
+                        .unwrap_or(event.seq.get())
+                        .min(event.seq.get());
+                    if start > first.seq.get() {
+                        dropped |= frame_index > 0;
+                        break;
+                    }
+                }
+            }
         }
         let after = file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
         if before != after {
             return Err("session artifact changed during history read".to_string());
         }
-        let candidates: Vec<SessionEvent> = candidates.into_iter().collect();
+        let candidates: Vec<SessionEvent> =
+            candidates.into_iter().map(|(event, _)| event).collect();
         let mut messages = request.max_messages.max(1);
         loop {
             match dsh_session_persistence::select_history_window(
@@ -835,7 +890,7 @@ impl JsonlSessionPersistence {
             &meta.id,
             self.opposite_compression(),
         );
-        if self.exists(&opposite).await {
+        if self.exists(&opposite).await? {
             return Err(self.encoding_mismatch(&opposite));
         }
         let content = self.encode_materialization(meta, inherited_event_count, events)?;
@@ -848,7 +903,7 @@ impl JsonlSessionPersistence {
         tokio::fs::create_dir_all(&dir)
             .await
             .map_err(|e| e.to_string())?;
-        if self.exists(&final_path).await {
+        if self.exists(&final_path).await? {
             if self
                 .existing_materialization_matches(&final_path, &content)
                 .await?
@@ -873,7 +928,7 @@ impl JsonlSessionPersistence {
             Ok(()) => {}
             Err(error) => {
                 let _ = tokio::fs::remove_file(&tmp).await;
-                if self.exists(&final_path).await
+                if self.exists(&final_path).await?
                     && self
                         .existing_materialization_matches(&final_path, &content)
                         .await?
@@ -1075,11 +1130,11 @@ impl JsonlSessionPersistence {
                     "session{}",
                     log_suffix(self.opposite_compression())
                 ));
-                if self.exists(&opposite).await {
+                if self.exists(&opposite).await? {
                     return Err(self.encoding_mismatch(&opposite));
                 }
                 let path = dir.join(format!("session{}", log_suffix(self.compression)));
-                if !self.exists(&path).await {
+                if !self.exists(&path).await? {
                     continue;
                 }
                 let first = if self.compression == JsonlCompression::Zstd {
@@ -1284,6 +1339,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let mut has_more = false;
         let mut message_boundary_reached = false;
         let mut expected = request.after_seq;
+        let mut source_bytes = 0usize;
         stream_zstd_events_from(&path, request.after_seq, |event| {
             if event.seq != expected {
                 return Err(format!(
@@ -1301,6 +1357,14 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             }
             let is_message = matches!(event.type_.as_str(), "user/message" | "assistant/message")
                 && event.surface_op.as_ref().is_none_or(|op| op.is_append());
+            source_bytes = source_bytes.saturating_add(
+                serde_json::to_vec(&event)
+                    .map_err(|error| error.to_string())?
+                    .len(),
+            );
+            if source_bytes > 64 * 1024 * 1024 {
+                return Err("history scan exceeds the 64 MiB source budget".into());
+            }
             expected += 1;
             events.push(event);
             if is_message {

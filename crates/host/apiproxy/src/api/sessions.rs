@@ -312,8 +312,20 @@ fn coalesce_history_transport_events_inner(
         ))
     }
 
-    let raw_start = events.first().map(|event| event.seq);
-    let raw_end = events.last().map(|event| event.seq);
+    let raw_start = events.first().map(|event| {
+        event
+            .data
+            .get("__historyStartSeq")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(event.seq.get())
+    });
+    let raw_end = events.last().map(|event| {
+        event
+            .data
+            .get("__historyEndSeq")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(event.seq.get())
+    });
     let completed_sources: std::collections::HashSet<u64> = events
         .iter()
         .filter(|event| event.type_ == "assistant/message")
@@ -353,17 +365,23 @@ fn coalesce_history_transport_events_inner(
             .unwrap_or_default();
         if let Some(serde_json::Value::String(existing)) = previous.data["chunk"].get_mut(field) {
             existing.push_str(delta);
-            previous.data["__historyEndSeq"] = serde_json::Value::from(event.seq.get());
+            previous.data["__historyEndSeq"] = serde_json::Value::from(
+                event
+                    .data
+                    .get("__historyEndSeq")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(event.seq.get()),
+            );
             previous.time = event.time;
         } else {
             compact.push(event);
         }
     }
     if let (Some(first), Some(raw_start)) = (compact.first_mut(), raw_start) {
-        first.data["__historyStartSeq"] = serde_json::Value::from(raw_start.get());
+        first.data["__historyStartSeq"] = serde_json::Value::from(raw_start);
     }
     if let (Some(last), Some(raw_end)) = (compact.last_mut(), raw_end) {
-        last.data["__historyEndSeq"] = serde_json::Value::from(raw_end.get());
+        last.data["__historyEndSeq"] = serde_json::Value::from(raw_end);
     }
     compact.shrink_to_fit();
     compact
@@ -371,6 +389,10 @@ fn coalesce_history_transport_events_inner(
 
 pub(crate) fn coalesce_history_transport_events(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
     coalesce_history_transport_events_inner(events, true)
+}
+
+pub(crate) fn coalesce_history_transport_slice(events: &[SessionEvent]) -> Vec<SessionEvent> {
+    coalesce_history_transport_events_inner(events.to_vec(), true)
 }
 
 #[cfg(test)]

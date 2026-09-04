@@ -466,6 +466,7 @@ pub struct SkillRegistry {
     /// its internal id, so the id map keys by value).
     scope_ids: parking_lot::Mutex<indexmap::IndexMap<ScopeKey, u64>>,
     next_scope_id: AtomicU64,
+    disabled: parking_lot::RwLock<HashSet<String>>,
 }
 
 impl cordis::Service for SkillRegistry {
@@ -508,6 +509,7 @@ impl SkillRegistry {
             next_provider_order: AtomicU64::new(0),
             scope_ids: parking_lot::Mutex::new(IndexMap::new()),
             next_scope_id: AtomicU64::new(1),
+            disabled: parking_lot::RwLock::new(HashSet::new()),
         });
         *slot.0.lock() = Some(Arc::downgrade(&registry));
         ctx.register_service(registry.clone());
@@ -643,6 +645,47 @@ impl SkillRegistry {
         Ok(self.snapshot(options).await?.skills)
     }
 
+    /// Full catalog for management surfaces, including disabled entries.
+    pub async fn management_catalog(
+        &self,
+        options: SkillViewOptions,
+    ) -> Result<Vec<SkillSummary>, String> {
+        let collected = self.collect(&options).await?;
+        let mut entries: Vec<_> = collected
+            .entries
+            .values()
+            .map(|entry| to_summary(&entry.candidate))
+            .collect();
+        entries.sort_by(|left, right| compare_code_points(&left.name, &right.name));
+        Ok(entries)
+    }
+
+    /// Enforce the persisted host-wide switch in discovery and invocation.
+    pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), String> {
+        if !is_skill_name(name) {
+            return Err("invalid skill name".to_string());
+        }
+        {
+            let mut disabled = self.disabled.write();
+            if enabled {
+                disabled.remove(name);
+            } else {
+                disabled.insert(name.to_string());
+            }
+        }
+        self.invalidate_cache();
+        Ok(())
+    }
+
+    pub fn is_enabled(&self, name: &str) -> bool {
+        !self.disabled.read().contains(name)
+    }
+
+    /// Refresh after a management surface changes a filesystem skill.
+    pub fn refresh(&self) {
+        self.invalidate_cache();
+    }
+
     /// Observe the current invocation-neutral catalog and whether discovery
     /// completed within a stable revision.
     pub async fn snapshot(
@@ -653,6 +696,7 @@ impl SkillRegistry {
         let mut skills: Vec<SkillSummary> = collected
             .entries
             .values()
+            .filter(|entry| self.is_enabled(&entry.candidate.name))
             .map(|entry| to_summary(&entry.candidate))
             .collect();
         skills.sort_by(|left, right| compare_code_points(&left.name, &right.name));
@@ -669,7 +713,7 @@ impl SkillRegistry {
         name: &str,
         options: SkillViewOptions,
     ) -> Result<Option<SkillDefinition>, String> {
-        if !is_skill_name(name) {
+        if !is_skill_name(name) || !self.is_enabled(name) {
             return Ok(None);
         }
         let collected = self.collect(&options).await?;
@@ -686,6 +730,9 @@ impl SkillRegistry {
             return Ok(None);
         };
         validate_definition(&definition)?;
+        if !self.is_enabled(name) {
+            return Ok(None);
+        }
         if definition.name != entry.candidate.name {
             self.invalidate_entry(entry);
             return Ok(None);

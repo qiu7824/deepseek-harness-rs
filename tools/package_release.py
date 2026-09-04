@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import re
@@ -9,6 +10,7 @@ import stat
 import sys
 import tarfile
 import zipfile
+from datetime import datetime, timezone
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from build_skin_payload import build_skin_payload
@@ -16,6 +18,25 @@ from verify_release_version import verify as verify_release_version
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SAFE_RELEASE_COMPONENT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
+
+
+def verified_free_model(path: pathlib.Path) -> dict:
+    report = json.loads(path.read_text(encoding="utf-8"))
+    if report.get("url") != "https://opencode.ai/zen/v1/models" or report.get("model") != "ling-3.0-flash-fin-free":
+        raise ValueError("free model verification does not match package defaults")
+    if report.get("pricingSource") != "https://opencode.ai/docs/zen/":
+        raise ValueError("free model verification requires official pricing evidence")
+    if not all(report.get(key) is True for key in ("available", "freePricingVerified", "harnessVerified", "inference", "streaming", "toolCall", "toolResult", "anonymous")):
+        raise ValueError("free model verification is incomplete")
+    if re.fullmatch(r"[a-f0-9]{64}", str(report.get("binarySha256", ""))) is None:
+        raise ValueError("free model verification must identify the tested runtime")
+    verified_at = datetime.fromisoformat(report["verifiedAt"])
+    if verified_at.tzinfo is None:
+        raise ValueError("free model verification timestamp requires a timezone")
+    age = (datetime.now(timezone.utc) - verified_at).total_seconds()
+    if age < -60 or age > 86400:
+        raise ValueError("free model verification must be from the last 24 hours")
+    return report
 
 
 def validated_release_component(field: str, value: str) -> str:
@@ -40,12 +61,16 @@ def main() -> None:
     parser.add_argument("--arch", required=True)
     parser.add_argument("--variant", choices=["core", "skin", "free"], default="core")
     parser.add_argument("--version", required=True)
+    parser.add_argument("--free-verification", type=pathlib.Path, default=ROOT / "target" / "free-model-verification.json")
     args = parser.parse_args()
     arch = validated_release_component("arch", args.arch)
     version = validated_release_component("version", args.version)
+    free_verification = verified_free_model(args.free_verification) if args.variant == "free" else None
 
     core_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh")
     verify_release_version(version, core_source)
+    if free_verification is not None and free_verification["binarySha256"] != hashlib.sha256(core_source.read_bytes()).hexdigest():
+        raise ValueError("free model verification belongs to a different runtime binary")
 
     suffix = f"deepseek-harness-rs-v{version}-{args.platform}-{arch}-{args.variant}"
     stage = ROOT / "dist" / suffix
@@ -78,12 +103,14 @@ def main() -> None:
     copy_tree(ROOT / "config" / "agent-presets", stage / "config" / "agent-presets")
     (stage / "docs").mkdir(exist_ok=True)
     shutil.copy2(ROOT / "docs" / "storage-compatibility.md", stage / "docs" / "storage-compatibility.md")
+    shutil.copy2(ROOT / "docs" / "learning-and-capabilities.zh.md", stage / "docs" / "learning-and-capabilities.zh.md")
     for name in ["README.md", "README.zh.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]:
         if (ROOT / name).exists():
             shutil.copy2(ROOT / name, stage / name)
     shutil.copy2(ROOT / "release" / "PLUGIN_SECURITY.md", stage / "PLUGIN_SECURITY.md")
 
     if args.variant == "free":
+        (stage / "free-model-verification.json").write_text(json.dumps(free_verification, ensure_ascii=False, indent=2), encoding="utf-8")
         (stage / "settings.json").write_text(
             json.dumps(
                 {
@@ -96,8 +123,10 @@ def main() -> None:
                                 "baseURL": "https://opencode.ai/zen/v1",
                                 "models": [
                                     {
-                                        "id": "mimo-v2.5-free",
-                                        "name": "MiMo V2.5 Free",
+                                        "id": "ling-3.0-flash-fin-free",
+                                        "name": "Ling 3.0 Flash Fin Free",
+                                        "contextWindow": 262144,
+                                        "maxTokens": 16384,
                                         "reasoningEfforts": False,
                                     }
                                 ],
@@ -106,7 +135,7 @@ def main() -> None:
                     },
                     "agent-default-model": {
                         "provider": "opencode-free",
-                        "model": "mimo-v2.5-free",
+                        "model": "ling-3.0-flash-fin-free",
                     },
                 },
                 ensure_ascii=False,

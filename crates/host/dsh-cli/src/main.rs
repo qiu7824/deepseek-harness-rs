@@ -36,6 +36,11 @@ fn configure_allocator() {
 fn main() {
     #[cfg(windows)]
     configure_allocator();
+    #[cfg(windows)]
+    if let Err(error) = dsh_sandbox_local::register_embedded_windows_runner() {
+        eprintln!("dsh: cannot register embedded sandbox runner: {error}");
+        std::process::exit(1);
+    }
     let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
     #[cfg(windows)]
     runtime_builder.on_thread_park(dsh_host::collect_allocator_on_park);
@@ -93,61 +98,81 @@ async fn async_main() {
     };
     match invocation {
         DshInvocation::Profile(invocation) => {
-            let home = dsh_home_paths::resolve_dsh_home(None, &|name| std::env::var(name).ok());
             let interrupt = ProfileInterruptLatch::new(Box::pin(async {
                 tokio::signal::ctrl_c()
                     .await
                     .map_err(|error| format!("failed to wait for Ctrl+C: {error}"))
             }));
-            let handle = match run_profile_with_interrupt(
-                RunProfileRequest {
-                    profile: invocation.profile,
-                    patches: invocation.patches,
-                    args: invocation.args,
-                    home,
-                    telemetry_env: std::env::var("DSH_TELEMETRY_DISABLED").ok(),
-                    install_anchor: std::env::var_os("DSH_INSTALL_ANCHOR")
-                        .map(std::path::PathBuf::from)
-                        .or_else(|| {
-                            let executable = std::env::current_exe().ok()?;
-                            executable
-                                .ancestors()
-                                .map(|dir| dir.join("package.json"))
-                                .find(|candidate| candidate.is_file())
-                        }),
-                },
-                Some(interrupt.waiter()),
-            )
-            .await
-            {
-                Ok(handle) => handle,
-                Err(error) => {
-                    eprintln!("{error}");
+            let mut runtime_args = invocation.args.clone();
+            loop {
+                let home = selected_home();
+                let handle = match run_profile_with_interrupt(
+                    RunProfileRequest {
+                        profile: invocation.profile.clone(),
+                        patches: invocation.patches.clone(),
+                        args: runtime_args.clone(),
+                        home,
+                        telemetry_env: std::env::var("DSH_TELEMETRY_DISABLED").ok(),
+                        install_anchor: std::env::var_os("DSH_INSTALL_ANCHOR")
+                            .map(std::path::PathBuf::from)
+                            .or_else(|| {
+                                let executable = std::env::current_exe().ok()?;
+                                executable
+                                    .ancestors()
+                                    .map(|dir| dir.join("package.json"))
+                                    .find(|candidate| candidate.is_file())
+                            }),
+                    },
+                    Some(interrupt.waiter()),
+                )
+                .await
+                {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+                };
+                let mut restart = false;
+                if let Some(url) = handle.readiness_url() {
+                    if let Some(index) = runtime_args.iter().position(|arg| arg == "--port")
+                        && runtime_args
+                            .get(index + 1)
+                            .is_some_and(|value| value == "0")
+                        && let Some(port) = url.rsplit(':').next()
+                    {
+                        runtime_args[index + 1] = port.to_string();
+                    }
+                    if handle.exposes_network() {
+                        eprintln!(
+                            "WARNING: dsh web is listening on all network interfaces without transport authentication. Any machine that can reach this port can control this Harness instance; use a trusted network and firewall."
+                        );
+                    }
+                    println!("dsh web: {url}");
+                    tokio::select! {
+                        result = interrupt.waiter() => {
+                            if let Err(error) = result {
+                                eprintln!("dsh: {error}");
+                                std::process::exit(1);
+                            }
+                        }
+                        _ = handle.wait_restart() => { restart = true; }
+                    }
+                }
+                if let Some(output) = handle.output() {
+                    println!("{output}");
+                }
+                if let Err(error) = handle.shutdown().await {
+                    eprintln!("dsh: shutdown failed: {error}");
                     std::process::exit(1);
                 }
-            };
-            if let Some(url) = handle.readiness_url() {
-                if handle.exposes_network() {
-                    eprintln!(
-                        "WARNING: dsh web is listening on all network interfaces without transport authentication. Any machine that can reach this port can control this Harness instance; use a trusted network and firewall."
-                    );
+                if !restart {
+                    break;
                 }
-                println!("dsh web: {url}");
-                if let Err(error) = interrupt.waiter().await {
-                    eprintln!("dsh: {error}");
-                    std::process::exit(1);
-                }
-            }
-            if let Some(output) = handle.output() {
-                println!("{output}");
-            }
-            if let Err(error) = handle.shutdown().await {
-                eprintln!("dsh: shutdown failed: {error}");
-                std::process::exit(1);
             }
         }
         DshInvocation::DumpConfig(invocation) => {
-            let home = dsh_home_paths::resolve_dsh_home(None, &|name| std::env::var(name).ok());
+            let home = selected_home();
             match dsh_host_cli::profile_boot::run_dump_config(
                 &invocation.profile,
                 invocation.default_only,
@@ -167,7 +192,7 @@ async fn async_main() {
             }
         }
         DshInvocation::Plugin(invocation) => {
-            let home = dsh_home_paths::resolve_dsh_home(None, &|name| std::env::var(name).ok());
+            let home = selected_home();
             match dsh_host_cli::run_plugin_command(&invocation, &home) {
                 Ok(()) => return,
                 Err(error) => {
@@ -195,4 +220,12 @@ async fn async_main() {
             }
         }
     }
+}
+
+fn selected_home() -> std::path::PathBuf {
+    let configured = dsh_home_paths::resolve_dsh_home(None, &|name| std::env::var(name).ok());
+    dsh_host::runtime_paths::resolve_redirect(&configured).unwrap_or_else(|error| {
+        eprintln!("dsh: {error}");
+        std::process::exit(1);
+    })
 }

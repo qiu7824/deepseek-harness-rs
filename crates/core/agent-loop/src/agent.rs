@@ -1117,6 +1117,10 @@ impl ReactLoopAgent {
         }
 
         let request_context = RequestContext {
+            context_window_estimated: prepared_call
+                .as_ref()
+                .and_then(|prepared| prepared.context.as_ref())
+                .and_then(|context| context.estimated.then_some(true)),
             provider: config.provider.clone(),
             model: config.model.clone(),
             context_window: prepared_call
@@ -1129,6 +1133,7 @@ impl ReactLoopAgent {
             previous.provider != request_context.provider
                 || previous.model != request_context.model
                 || previous.context_window != request_context.context_window
+                || previous.context_window_estimated != request_context.context_window_estimated
         });
         if changed {
             self.session

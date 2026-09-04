@@ -48,7 +48,7 @@ jobs:
           VERSION="$(python tools/verify_release_version.py --print-version)"
           python tools/verify_release_version.py --version "$VERSION"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then python tools/verify_release_version.py --version "${GITHUB_REF_NAME#v}"; fi
-          python tools/verify_free_model_catalog.py --model mimo-v2.5-free
+          python tools/verify_free_model_catalog.py --model ling-3.0-flash-fin-free --report target/free-model-verification.json
           python tools/verify_product_surface.py
           python -m unittest tools.tests.test_history_window_contract tools.tests.test_product_surface_contract tools.tests.test_rust_ui_contract tools.tests.test_rust_runtime_contract tools.tests.test_release_product_contract tools.tests.test_release_integrity tools.tests.test_launcher_release_contract tools.tests.test_client_performance -v
           node tools/tests/connection_controller_harness.js
@@ -64,6 +64,9 @@ jobs:
       - name: 固化正式 Web 产物
         shell: bash
         run: python tools/stage_release_web.py
+      - name: 验证免费模型完整运行链路
+        shell: bash
+        run: python tools/verify_free_model_catalog.py --model ling-3.0-flash-fin-free --binary target/release/${{ matrix.binary }} --report target/free-model-verification.json
       - name: 解析发布产物前缀
         id: release
         shell: bash

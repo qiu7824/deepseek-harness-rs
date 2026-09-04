@@ -302,6 +302,12 @@ pub struct EpochHeader {
 /// Registration-bound metadata for one resolved model route.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RequestContext {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "contextWindowEstimated"
+    )]
+    pub context_window_estimated: Option<bool>,
     /// Registered provider route the metadata belongs to.
     pub provider: String,
     /// Provider-owned model id the metadata belongs to.

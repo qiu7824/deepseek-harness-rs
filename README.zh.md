@@ -38,7 +38,7 @@ http://127.0.0.1:58080/
 
 需要扩展皮肤时，另行下载 `skin` 包并运行其中的 `deepseek-harness-rs-skin`（Windows 为 `.exe`）；它只把皮肤资产安装到同目录的 `web/dist/skins`，默认 `core` 包始终不携带皮肤资源。
 
-`free` 包与 `core` 使用同一套正式运行时和 Web 界面，但附带 OpenCode Zen 免密默认模型 `mimo-v2.5-free`；发布准备必须通过 `https://opencode.ai/zen/v1/models` 重新确认该精确 ID，其中不包含任何凭据，也不包含皮肤载荷。
+`free` 包与 `core` 使用同一套正式运行时和 Web 界面，附带 OpenCode Zen 免密模型 `ling-3.0-flash-fin-free`。打包检查[官方模型目录](https://opencode.ai/zen/v1/models)，并要求最近 24 小时内通过匿名推理、工具调用与工具结果续接验证，附带 `free-model-verification.json`；其中不包含任何凭据或皮肤载荷。
 
 ## 命令行入口
 
@@ -61,7 +61,7 @@ Windows: %LOCALAPPDATA%\DeepSeek Harness
 Linux/macOS: 由平台数据目录与DSH_HOME决定
 ```
 
-可通过`DSH_HOME`显式指定数据根。工作区是会话的唯一项目目录来源；产品不提供重复的“工作目录”设置。
+可通过 `DSH_HOME` 指定数据根，也可在“设置 → 目录与运行环境”中选择目录并重启应用。迁移会先复制并逐文件校验，成功后切换目录，保留原数据；失败时恢复原目录设置并显示原因。工作区仍是会话的项目目录来源，项目文件不会随应用数据迁移。
 
 Profile插件位于：
 
@@ -75,18 +75,22 @@ Profile插件位于：
 
 ## Provider与协议
 
-项目不会替用户配置Provider、API Key、默认模型或账户。认证信息必须由用户通过正式配置入口自行提供。
+在“设置 → 模型”中配置 API Key 或完成账号登录；凭据保存在本机，账号令牌支持续期和退出登录。模型条目提供显示开关，推理等级优先读取提供商元数据。
 
 | 协议/API | 状态 |
 |---|---|
 | DeepSeek/OpenAI-compatible Chat Completions | 已接入正式Rust适配器 |
 | OpenAI Responses | 已提供显式`api: openai-responses`入口；工具、推理、图片、usage和SSE已覆盖fixture，真实Provider仍需使用者配置后验收 |
 | Azure OpenAI Responses | 未完成正式Provider闭环 |
-| OpenAI Codex Responses | 未完成正式Provider闭环 |
-| Anthropic Messages | 未完成 |
+| OpenAI Codex Responses | 账号设备码登录、令牌续期与 Responses 路由；使用者在设置中完成账号授权 |
+| Anthropic Messages | 原生请求与流式文本、工具、图片、thinking、usage 转换，使用 API Key；Claude 订阅由官方 Claude Code 子智能体使用 |
 | Bedrock Converse Stream | 未完成 |
 
 完整证据见[`docs/protocol-matrix.md`](docs/protocol-matrix.md)。存在文件名或crate不代表生产能力已完成。
+
+## 技能、MCP 与记忆
+
+“设置 → 技能与 MCP”管理技能文件和 MCP 服务器，支持启停、编辑和连接测试。“记忆与上下文”支持检索、启停和维护已知错误经验。详见[技能、工具与经验记忆](docs/learning-and-capabilities.zh.md)。
 
 ## Web插件
 
@@ -146,7 +150,7 @@ Web插件与主应用同源运行，拥有页面级JavaScript能力。只安装�
 | 模型发现 | 服务端可安全复用 Profile headers 而不向浏览器返回凭据；模型候选支持搜索和仅对可见结果全选 |
 | 工作流 | 引擎继续保留；PTC/code 预设刻意不提供通用 `workflow` 工具，但保留 `run_code` 和 Ralph |
 | 终端 | 已实现持久终端、输入、关闭和回收 |
-| MCP | 底层客户端实现；正式Host尚未组合配置入口 |
+| MCP | 已接入正式设置页，支持 stdio/HTTP、工具注册、启停与连接测试 |
 | LSP | 底层registry/tool实现；正式Host尚未组合 |
 | ACP | 协议入口存在；真实prompt/cancel回归尚未封板 |
 
@@ -183,7 +187,7 @@ cargo test -p dsh-host-cli --lib -- --test-threads=1
 ## 已知限制
 
 - 通用pi-ai provider catalog尚未完整移植；
-- MCP和LSP只有库级能力，尚未接入正式Host配置；
+- LSP仍为库级能力，尚未接入正式Host配置；
 - ACP真实prompt/cancel与Python SDK真实turn仍有回归；
 - `dsh-context-jump`第一版基于已渲染稳定节点，Turn/Step完整目录需后续由正式slot暴露timeline；
 - Linux和macOS资产只有在GitHub Actions矩阵全部成功后才视为发布完成。

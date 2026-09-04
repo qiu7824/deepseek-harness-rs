@@ -20,6 +20,26 @@ mod tests {
         assert_eq!(request["reasoning"]["summary"], "auto");
         assert!(request.get("reasoning_effort").is_none());
     }
+
+    #[test]
+    fn codex_subscription_body_is_stateless_and_keeps_public_api_contract_separate() {
+        let chat = json!({"model":"gpt-test","messages":[],"max_tokens":8192});
+        let codex =
+            super::request_for_endpoint(&chat, "https://chatgpt.com/backend-api/codex/").unwrap();
+        assert_eq!(codex["store"], false);
+        assert_eq!(codex["instructions"], "");
+        assert!(codex.get("max_output_tokens").is_none());
+        assert_eq!(codex["stream"], true);
+        for endpoint in [
+            "https://api.openai.com/v1",
+            "https://chatgpt.com.attacker.invalid/backend-api/codex",
+            "https://chatgpt.com/v1",
+        ] {
+            let body = super::request_for_endpoint(&chat, endpoint).unwrap();
+            assert!(body.get("store").is_none());
+            assert_eq!(body["max_output_tokens"], 8192);
+        }
+    }
 }
 
 fn failure(message: impl Into<String>, code: &str) -> LlmFailure {
@@ -135,6 +155,25 @@ pub(crate) fn request_from_chat(chat: &Value) -> Result<Value, LlmFailure> {
         .or_else(|| chat.pointer("/thinking/effort").and_then(Value::as_str))
     {
         body["reasoning"] = json!({"effort":effort, "summary":"auto"});
+    }
+    Ok(body)
+}
+
+/// Codex subscription requests have a stricter contract than the public API.
+pub(crate) fn request_for_endpoint(chat: &Value, base_url: &str) -> Result<Value, LlmFailure> {
+    let mut body = request_from_chat(chat)?;
+    if reqwest::Url::parse(base_url).ok().is_some_and(|url| {
+        url.scheme() == "https"
+            && url.host_str() == Some("chatgpt.com")
+            && url.path().trim_end_matches('/') == "/backend-api/codex"
+    }) {
+        body["store"] = json!(false);
+        if body.get("instructions").is_none() {
+            body["instructions"] = json!("");
+        }
+        body.as_object_mut()
+            .expect("request object")
+            .remove("max_output_tokens");
     }
     Ok(body)
 }
