@@ -9,6 +9,7 @@ import os
 import pathlib
 import queue
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -181,13 +182,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
     parser.add_argument("--repo", default=str(pathlib.Path(__file__).resolve().parents[1]))
+    parser.add_argument("--relocate", action="store_true", help="Restart from a copied package against the same data directory")
     args = parser.parse_args()
     binary = pathlib.Path(args.binary).resolve()
     repo = pathlib.Path(args.repo).resolve()
     if not binary.is_file():
         raise SystemExit(f"binary not found: {binary}")
 
-    with tempfile.TemporaryDirectory(prefix="dsh-settings-data-e2e-") as temporary:
+    with contextlib.ExitStack() as stack:
+        temporary = stack.enter_context(tempfile.TemporaryDirectory(prefix="dsh-settings-data-e2e-"))
         home = pathlib.Path(temporary)
         sequence = 1
         fixtures: list[tuple[str, str]] = []
@@ -275,7 +278,12 @@ def main() -> int:
             for workspace_id, session_id in fixtures:
                 sequence = assert_visible(port, workspace_id, session_id, sequence)
 
-        with running_host(binary, repo, home) as restarted_port:
+        restart_binary, restart_repo = binary, repo
+        if args.relocate:
+            relocated = pathlib.Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="dsh-relocated-package-"))) / "package"
+            shutil.copytree(binary.parent, relocated)
+            restart_binary, restart_repo = relocated / binary.name, relocated
+        with running_host(restart_binary, restart_repo, home) as restarted_port:
             for workspace_id, session_id in fixtures:
                 sequence = assert_visible(restarted_port, workspace_id, session_id, sequence)
             if session_manifest(home / "sessions") != sessions_before:
@@ -302,6 +310,7 @@ def main() -> int:
                     "workspaces_verified": len({workspace_id for workspace_id, _ in fixtures}),
                     "session_files_preserved": True,
                     "workspace_files_preserved": True,
+                    "relocated_package_restart": args.relocate,
                 },
                 sort_keys=True,
             )

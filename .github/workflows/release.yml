@@ -33,6 +33,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with: { toolchain: 1.97.1, components: rustfmt }
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        with:
+          cache-on-failure: true
+      - name: Linux 原生图形依赖
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libglib2.0-dev libcairo2-dev libpango1.0-dev libfontconfig1-dev libgdk-pixbuf-2.0-dev libxkbcommon-dev libwayland-dev
       - name: 版本与产品门禁
         shell: bash
         run: |
@@ -79,7 +86,7 @@ jobs:
           STAGE="dist/${{ steps.release.outputs.prefix }}-core"
           HOST="$STAGE/deepseek-harness-rs"
           [[ "${{ matrix.platform }}" == "windows" ]] && HOST="$HOST.exe"
-          python tools/e2e_settings_model_preserves_data.py --binary "$HOST" --repo "$STAGE"
+          python tools/e2e_settings_model_preserves_data.py --binary "$HOST" --repo "$STAGE" --relocate
           python tools/e2e_session_resume.py --binary "$HOST" --repo "$STAGE"
           python tools/e2e_credentials_compat.py --binary "$HOST"
           python tools/e2e_all_interfaces.py --binary "$HOST"
@@ -93,19 +100,31 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $refName = "${env:GITHUB_REF_NAME}"
           $version = if ($refName.StartsWith('v')) { $refName.Substring(1) } else { '0.1.2-alpha.4' }
-          choco install innosetup --version 6.1.2 -y --no-progress
+          choco install innounp --version 0.50 -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'innounp installation failed' }
+          $compilerInstaller = Join-Path $env:RUNNER_TEMP 'innosetup-6.1.2.exe'
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_1_2/innosetup-6.1.2.exe' -OutFile $compilerInstaller
+          $expected = 'a3ce1c40ef9c71a92691aaff0f413f530c8c9e3c766be481bc63ca7cc74e35e7'
+          if ((Get-FileHash -LiteralPath $compilerInstaller -Algorithm SHA256).Hash -ne $expected) { throw 'Inno Setup checksum mismatch' }
+          $compilerRoot = Join-Path $env:RUNNER_TEMP 'inno-6.1.2'
+          & innounp -x "-d$compilerRoot" $compilerInstaller
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compiler extraction failed' }
+          $compilers = @(Get-ChildItem -LiteralPath $compilerRoot -Recurse -Filter ISCC.exe)
+          if ($compilers.Count -ne 1) { throw 'Pinned compiler path is ambiguous' }
+          $compiler = $compilers[0].FullName
           $language = "$env:GITHUB_WORKSPACE\packaging\windows\ChineseSimplified.isl"
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-core" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "/DIconFile=$env:GITHUB_WORKSPACE\packaging\windows\deepseek-black.ico" "/DChineseMessages=$language" "/DVariant=core" packaging\windows\deepseek-harness-rs.iss
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-skin" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "/DIconFile=$env:GITHUB_WORKSPACE\packaging\windows\deepseek-black.ico" "/DChineseMessages=$language" "/DVariant=skin" packaging\windows\deepseek-harness-rs.iss
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-free" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "/DIconFile=$env:GITHUB_WORKSPACE\packaging\windows\deepseek-black.ico" "/DChineseMessages=$language" "/DVariant=free" packaging\windows\deepseek-harness-rs.iss
+          foreach ($variant in @('core', 'skin', 'free')) {
+            & $compiler "/DMyAppVersion=$version" "/DSourceDir=$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-$variant" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "/DIconFile=$env:GITHUB_WORKSPACE\packaging\windows\deepseek-black.ico" "/DChineseMessages=$language" "/DVariant=$variant" packaging\windows\deepseek-harness-rs.iss
+            if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed: $variant" }
+          }
       - name: 核验 Windows 安装器内容
         if: matrix.platform == 'windows'
         shell: bash
         run: |
           VERSION="${{ steps.release.outputs.version }}"
-          choco install innounp --version 0.50 -y --no-progress
           for variant in core skin free; do
             python tools/verify_installer_package.py --platform windows --arch x86_64 --variant "$variant" --version "$VERSION"
           done

@@ -86,6 +86,7 @@ def main() -> int:
         )
         path = home / ".credentials.yaml"
         path.write_text(document, encoding="utf-8")
+        path.chmod(0o600)
         before = hashlib.sha256(path.read_bytes()).hexdigest()
         first = run_once(binary, home)
         middle = hashlib.sha256(path.read_bytes()).hexdigest()

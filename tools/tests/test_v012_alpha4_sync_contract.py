@@ -144,7 +144,10 @@ class V012Alpha4SyncContractTests(unittest.TestCase):
         ):
             self.assertIn(step_name, workflow)
         self.assertIn("tools/verify_installer_package.py", workflow)
-        self.assertIn("choco install innosetup --version 6.1.2", workflow)
+        self.assertIn("issrc/releases/download/is-6_1_2/innosetup-6.1.2.exe", workflow)
+        self.assertIn("a3ce1c40ef9c71a92691aaff0f413f530c8c9e3c766be481bc63ca7cc74e35e7", workflow)
+        self.assertIn('Get-FileHash -LiteralPath $compilerInstaller -Algorithm SHA256', workflow)
+        self.assertIn('& $compiler', workflow)
         self.assertIn("choco install innounp --version 0.50", workflow)
 
         gate = workflow_step(workflow, "版本与产品门禁")

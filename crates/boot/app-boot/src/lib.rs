@@ -279,7 +279,7 @@ fn link_matches(link: &Path, target: &Path) -> bool {
 fn managed_directory_link(link: &Path) -> bool {
     #[cfg(windows)]
     {
-        junction::exists(link).unwrap_or(false)
+        junction::get_target(link).is_ok()
     }
     #[cfg(unix)]
     {
@@ -315,7 +315,10 @@ fn ensure_directory_link(link: &Path, target: &Path) -> Result<(), String> {
                 return Ok(());
             }
             #[cfg(windows)]
-            let removed = junction::delete(link);
+            // Removing only the reparse data leaves an ordinary directory
+            // behind; junction::create then fails with ERROR_ALREADY_EXISTS.
+            // RemoveDirectory removes the link itself without its target.
+            let removed = std::fs::remove_dir(link);
             #[cfg(unix)]
             let removed = std::fs::remove_file(link);
             if let Err(error) = removed
@@ -349,6 +352,55 @@ fn ensure_directory_link(link: &Path, target: &Path) -> Result<(), String> {
             Err(error.to_string())
         }
         Err(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(all(test, windows))]
+mod directory_link_tests {
+    use super::*;
+
+    #[test]
+    fn relocation_replaces_junction_without_removing_target_data() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "dsh-module-relocation-{}-{nonce}",
+            std::process::id()
+        ));
+        let old = root.join("old");
+        let new = root.join("new");
+        let link = root.join("module");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("retained.txt"), "old installation").unwrap();
+        std::fs::write(new.join("retained.txt"), "new installation").unwrap();
+        ensure_directory_link(&link, &old).unwrap();
+        ensure_directory_link(&link, &new).unwrap();
+        ensure_directory_link(&link, &new).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(link.join("retained.txt")).unwrap(),
+            "new installation"
+        );
+        assert_eq!(
+            std::fs::read_to_string(old.join("retained.txt")).unwrap(),
+            "old installation"
+        );
+        std::fs::remove_dir(&link).unwrap();
+        ensure_directory_link(&link, &old).unwrap();
+        std::fs::remove_file(old.join("retained.txt")).unwrap();
+        std::fs::remove_dir(&old).unwrap();
+        ensure_directory_link(&link, &new).expect("broken managed junction can be retargeted");
+        std::fs::remove_dir(&link).unwrap();
+        std::fs::create_dir(&link).unwrap();
+        std::fs::write(link.join("user.txt"), "user data").unwrap();
+        assert!(ensure_directory_link(&link, &new).is_err());
+        assert_eq!(
+            std::fs::read_to_string(link.join("user.txt")).unwrap(),
+            "user data"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 
