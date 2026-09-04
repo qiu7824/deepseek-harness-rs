@@ -2877,6 +2877,7 @@ dependencies = [
  "dsh-session-title",
  "dsh-storage",
  "dsh-storage-domain",
+ "dsh-storage-json",
  "dsh-storage-test-support",
  "futures",
  "indexmap",
@@ -3238,6 +3239,7 @@ dependencies = [
  "async-trait",
  "cordis",
  "dsh-storage",
+ "dsh-storage-json",
  "dsh-storage-test-support",
  "futures",
  "indexmap",
@@ -3252,6 +3254,7 @@ name = "dsh-storage-json"
 version = "0.1.0-rc.8"
 dependencies = [
  "async-trait",
+ "chrono",
  "cordis",
  "dsh-invariants",
  "dsh-storage",

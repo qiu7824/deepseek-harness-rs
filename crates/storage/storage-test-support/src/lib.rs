@@ -118,6 +118,7 @@ impl KvUnit for MemoryKvUnit {
             );
         }
         Ok(KvUnitSnapshot {
+            invalid: Vec::new(),
             tables,
             global: medium.map(|m| m.global.clone()).unwrap_or(JsonValue::Null),
         })

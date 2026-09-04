@@ -3848,15 +3848,15 @@ impl ApiProxyService {
                     .any(|block| matches!(block, dsh_llm::ContentBlock::Image { .. }))
             });
         if pending_images {
-            let supports_images = runtime
+            let explicitly_rejects_images = runtime
                 .resolve_model_info(&selected.provider, &selected.model, None)
                 .await
                 .is_ok_and(|model| {
                     model.input_modalities.as_ref().is_some_and(|modalities| {
-                        modalities.contains(&dsh_llm::ModelModality::Image)
+                        !modalities.contains(&dsh_llm::ModelModality::Image)
                     })
                 });
-            if !supports_images {
+            if explicitly_rejects_images {
                 return err(
                     request.rpc_id,
                     RpcError::AttachmentError(RpcErrorBody {
@@ -4439,22 +4439,23 @@ impl ApiProxyService {
                     );
                 }
             };
-            let supports_images = if selection.provider.is_empty() || selection.model.is_empty() {
-                true
-            } else {
-                match self.llm_runtime() {
-                    Some(runtime) => runtime
-                        .resolve_model_info(&selection.provider, &selection.model, None)
-                        .await
-                        .is_ok_and(|model| {
-                            model.input_modalities.as_ref().is_some_and(|modalities| {
-                                modalities.contains(&dsh_llm::ModelModality::Image)
-                            })
-                        }),
-                    None => false,
-                }
-            };
-            if !supports_images {
+            let explicitly_rejects_images =
+                if selection.provider.is_empty() || selection.model.is_empty() {
+                    false
+                } else {
+                    match self.llm_runtime() {
+                        Some(runtime) => runtime
+                            .resolve_model_info(&selection.provider, &selection.model, None)
+                            .await
+                            .is_ok_and(|model| {
+                                model.input_modalities.as_ref().is_some_and(|modalities| {
+                                    !modalities.contains(&dsh_llm::ModelModality::Image)
+                                })
+                            }),
+                        None => false,
+                    }
+                };
+            if explicitly_rejects_images {
                 return err(
                     request.rpc_id,
                     RpcError::AttachmentError(RpcErrorBody {

@@ -1404,6 +1404,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
                 .unwrap_or(-1);
             dsh_session_persistence::SessionUserMessageEvents {
                 meta: whole.meta,
+                inherited_event_count: whole.inherited_event_count,
                 last_seq,
                 events: whole
                     .events
@@ -1427,9 +1428,10 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let header = scan.frames[0];
         let header_plaintext = decompress_zstd_frame(&mapping[header.start..header.end])?;
         let header_line = decode_zstd_header_line_single(&header_plaintext)?;
-        let meta = parse_header_meta(&header_line)
+        let storage = parse_header_storage(&header_line)
             .ok_or_else(|| "invalid Zstandard session header".to_string())?;
-        self.assert_stored_identity(&path, &meta, Some(id)).await?;
+        self.assert_stored_identity(&path, &storage.meta, Some(id))
+            .await?;
         let mut messages = Vec::new();
         let mut last_seq = -1_i64;
         for frame in &scan.frames[1..] {
@@ -1484,7 +1486,8 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             return Err("session artifact changed during user-message read".to_string());
         }
         Ok(dsh_session_persistence::SessionUserMessageEvents {
-            meta,
+            meta: storage.meta,
+            inherited_event_count: storage.inherited_event_count,
             last_seq,
             events: messages,
         })
@@ -1567,6 +1570,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
                     .map(|event| event.seq.get() as i64)
                     .unwrap_or(-1),
                 meta: whole.meta,
+                inherited_event_count: whole.inherited_event_count,
                 blank,
                 updated_at,
             });
@@ -1590,6 +1594,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
                     .map(|event| event.seq.get() as i64)
                     .unwrap_or(-1),
                 meta: whole.meta,
+                inherited_event_count: whole.inherited_event_count,
                 blank,
                 updated_at,
             });
@@ -1597,8 +1602,9 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let header = scan.frames[0];
         let header_plaintext = decompress_zstd_frame(&buffer[header.start..header.end])?;
         let header_line = decode_zstd_header_line_single(&header_plaintext)?;
-        let meta = parse_header_meta(&header_line)
+        let storage = parse_header_storage(&header_line)
             .ok_or_else(|| "invalid Zstandard session header".to_string())?;
+        let meta = storage.meta;
         self.assert_stored_identity(&path, &meta, Some(id)).await?;
         let mut blank = true;
         let mut updated_at = meta.created_at as i64;
@@ -1615,6 +1621,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         }
         Ok(dsh_session_persistence::SessionListMetadata {
             meta,
+            inherited_event_count: storage.inherited_event_count,
             last_seq,
             blank,
             updated_at,

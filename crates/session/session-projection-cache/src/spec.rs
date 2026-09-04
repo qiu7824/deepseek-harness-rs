@@ -11,7 +11,9 @@ use serde_json::Value as JsonValue;
 
 use dsh_session::SessionId;
 use dsh_session_projection::ProjectionCheckpoint;
-use dsh_storage_domain::{DomainSpec, define_domain, domain_table};
+use dsh_storage_domain::{
+    DomainSpec, InvalidRecordPolicy, KvLayout, define_domain_with_options, domain_table,
+};
 
 /// One persisted checkpoint row (TS `checkpointRow`): `ver` selects the
 /// unit's contract, `seq` is the fold watermark (-1 = empty log), `val` is
@@ -32,6 +34,10 @@ pub struct CheckpointIdentity {
     pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    #[serde(rename = "isSeeded", default)]
+    pub is_seeded: bool,
+    #[serde(rename = "inheritedEventCount", default)]
+    pub inherited_event_count: u64,
 }
 
 /// One session's stored record (TS `checkpointRecord`).
@@ -65,6 +71,31 @@ pub fn checkpoint_record_schema() -> dsh_storage_domain::RecordSchema {
         {
             return Err("checkpoint identity cwd must be a string".to_string());
         }
+        if let Some(is_seeded) = identity.get("isSeeded")
+            && !is_seeded.is_boolean()
+        {
+            return Err("checkpoint identity isSeeded must be a boolean".to_string());
+        }
+        if let Some(count) = identity.get("inheritedEventCount")
+            && count.as_u64().is_none()
+        {
+            return Err(
+                "checkpoint identity inheritedEventCount must be a non-negative integer"
+                    .to_string(),
+            );
+        }
+        if !identity
+            .get("isSeeded")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false)
+            && identity
+                .get("inheritedEventCount")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0)
+                != 0
+        {
+            return Err("unseeded checkpoint identity must not inherit events".to_string());
+        }
         let rows = object
             .get("rows")
             .and_then(|rows| rows.as_object())
@@ -78,7 +109,11 @@ pub fn checkpoint_record_schema() -> dsh_storage_domain::RecordSchema {
                     "checkpoint row '{key}' ver must be a non-negative integer"
                 ));
             }
-            if row.get("seq").and_then(|seq| seq.as_i64()).is_none() {
+            if row
+                .get("seq")
+                .and_then(|seq| seq.as_i64())
+                .is_none_or(|seq| seq < -1)
+            {
                 return Err(format!(
                     "checkpoint row '{key}' seq must be an integer >= -1"
                 ));
@@ -93,9 +128,12 @@ pub fn checkpoint_record_schema() -> dsh_storage_domain::RecordSchema {
 
 /// The session-projcache domain spec (TS `projectionCacheDomainSpec`).
 pub fn projection_cache_domain_spec() -> DomainSpec {
-    define_domain(
+    define_domain_with_options(
         "session_projcache",
-        3,
+        5,
+        KvLayout::PerRecord,
+        vec![3, 4],
+        InvalidRecordPolicy::BackupAndSkip,
         None,
         IndexMap::from([(
             "sessions".to_string(),
@@ -124,4 +162,56 @@ pub fn rows_of(record: Option<&CheckpointRecord>) -> ProjectionCheckpoint {
         }
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dsh_storage_domain::{InvalidRecordPolicy, KvLayout};
+
+    #[test]
+    fn projection_cache_uses_disposable_v5_per_record_domain() {
+        let spec = projection_cache_domain_spec();
+
+        assert_eq!(spec.version, 5);
+        assert_eq!(spec.layout, KvLayout::PerRecord);
+        assert_eq!(spec.compatible_versions, vec![3, 4]);
+        assert_eq!(spec.invalid_records, InvalidRecordPolicy::BackupAndSkip);
+    }
+
+    #[test]
+    fn checkpoint_schema_rejects_sequence_below_empty_log_sentinel() {
+        let schema = checkpoint_record_schema();
+        let record = serde_json::json!({
+            "identity": {"createdAt": 1},
+            "rows": {"title": {"ver": 1, "seq": -2, "val": null}}
+        });
+
+        let error = schema(&record).expect_err("sequence below -1 must reject");
+        assert!(error.contains("integer >= -1"));
+    }
+
+    #[test]
+    fn legacy_identity_normalizes_without_reusing_seeded_lineage() {
+        let value = serde_json::json!({"identity":{"createdAt":7,"cwd":"workspace"},"rows":{}});
+        checkpoint_record_schema()(&value).unwrap();
+        let legacy: CheckpointRecord = serde_json::from_value(value).unwrap();
+        assert!(!legacy.identity.is_seeded);
+        assert_eq!(legacy.identity.inherited_event_count, 0);
+        let seeded = CheckpointIdentity {
+            is_seeded: true,
+            inherited_event_count: 12,
+            ..legacy.identity.clone()
+        };
+        assert!(!crate::index::identity_matches(&legacy.identity, &seeded));
+        let encoded = serde_json::to_value(legacy).unwrap();
+        assert_eq!(encoded["identity"]["isSeeded"], false);
+        assert_eq!(encoded["identity"]["inheritedEventCount"], 0);
+    }
+
+    #[test]
+    fn impossible_unseeded_lineage_is_invalid() {
+        let value = serde_json::json!({"identity":{"createdAt":7,"isSeeded":false,"inheritedEventCount":12},"rows":{}});
+        assert!(checkpoint_record_schema()(&value).is_err());
+    }
 }

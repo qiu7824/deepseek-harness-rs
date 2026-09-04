@@ -7,8 +7,8 @@ pub mod invariant;
 pub mod registry;
 
 pub use backend::{
-    KvFacet, KvUnit, KvUnitDescriptor, KvUnitSnapshot, StorageBackend, closed_error,
-    unit_name_matches, version_mismatch_error,
+    KvFacet, KvInvalidEntry, KvLayout, KvUnit, KvUnitDescriptor, KvUnitSnapshot, StorageBackend,
+    closed_error, unit_name_matches, version_mismatch_error,
 };
 pub use error::{StorageError, StorageErrorCode};
 pub use index::{

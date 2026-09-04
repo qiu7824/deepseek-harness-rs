@@ -498,7 +498,10 @@ pub fn model_selection_projection_definition() -> ProjectionDefinition {
 }
 
 pub const SESSION_LIST_METADATA_KEY: &str = "sessionListMetadata";
-pub const SESSION_LIST_METADATA_STATE_VERSION: u64 = 1;
+// v1 used `lastPromptAt`; v2 stores the wire-ready `updatedAt` field. The
+// version bump makes old projection-cache rows miss and rebuild instead of
+// reaching `view_checkpoint` with an incompatible shape.
+pub const SESSION_LIST_METADATA_STATE_VERSION: u64 = 2;
 
 /// Fixed-size session-list state. The fold never retains event payloads.
 pub fn session_list_metadata_projection_definition() -> ProjectionDefinition {

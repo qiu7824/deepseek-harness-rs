@@ -48,7 +48,7 @@ pub fn write_atomic(path: &Path, data: &str) -> std::io::Result<()> {
 /// `fsyncDirectory`; Windows rejects directory opens, so this is
 /// POSIX-only).
 #[cfg(unix)]
-fn fsync_directory(path: &Path) -> std::io::Result<()> {
+pub(crate) fn fsync_directory(path: &Path) -> std::io::Result<()> {
     let handle = std::fs::File::open(path)?;
     handle.sync_all()
 }

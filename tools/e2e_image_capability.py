@@ -35,6 +35,31 @@ PNG_1X1 = (
     + png_chunk(b"IEND", b"")
 )
 
+IMAGE_FIXTURES = {
+    "static-png": ("image/png", PNG_1X1, "fixture.png"),
+    "animated-png": (
+        "image/png",
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAACGFjVEwAAAACAAAAAPONk3AAAAAaZmNUTAAAAAAAAAACAAAAAQAAAAAAAAAAAAEACgAA+Sm2eQAAABFJREFUeJxj/M/A8J+BgYEBAA0FAgDgB2sCAAAAGmZjVEwAAAABAAAAAgAAAAEAAAAAAAAAAAABAAoAAGJaXK0AAAAVZmRBVAAAAAJ4nGNkYPj/n4GBgQEACwcCAEgTs00AAAAASUVORK5CYII="
+        ),
+        "fixture.apng",
+    ),
+    "animated-gif": (
+        "image/gif",
+        base64.b64decode(
+            "R0lGODlhAgABAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAgABAAAIBQABAAgIACH5BAEKAAEALAAAAAACAAEAgQAA/wAAAAAAAAAAAAgFAAEACAgAOw=="
+        ),
+        "fixture.gif",
+    ),
+    "animated-webp": (
+        "image/webp",
+        base64.b64decode(
+            "UklGRoQAAABXRUJQVlA4WAoAAAACAAAAAQAAAAAAQU5JTQYAAAAAAAAAAABBTk1GKAAAAAAAAAAAAAEAAAAAAGQAAAJWUDhMDwAAAC8BAAAABxD9j/4HIqL/AQBBTk1GKAAAAAAAAAAAAAEAAAAAAGQAAABWUDhMDwAAAC8BAAAABxDR//4HIqL/AQA="
+        ),
+        "fixture.webp",
+    ),
+}
+
 
 class CaptureHandler(BaseHTTPRequestHandler):
     server_version = "DSHImageFixture/1"
@@ -110,14 +135,21 @@ def require_ok(response: dict[str, object], method: str) -> dict[str, object]:
     return value if isinstance(value, dict) else {}
 
 
-def contains_input_image(value: object) -> bool:
+def input_image_url(value: object) -> str | None:
     if isinstance(value, dict):
         if value.get("type") == "input_image" and isinstance(value.get("image_url"), str):
-            return value["image_url"].startswith("data:image/")
-        return any(contains_input_image(child) for child in value.values())
+            return value["image_url"] if value["image_url"].startswith("data:image/") else None
+        for child in value.values():
+            found = input_image_url(child)
+            if found is not None:
+                return found
     if isinstance(value, list):
-        return any(contains_input_image(child) for child in value)
-    return False
+        for child in value:
+            found = input_image_url(child)
+            if found is not None:
+                return found
+    return None
+
 
 
 def wire_shape(value: object, key: str | None = None) -> object:
@@ -138,11 +170,18 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
     parser.add_argument("--repo", default=str(pathlib.Path(__file__).resolve().parents[1]))
+    parser.add_argument(
+        "--model-capability",
+        choices=("explicit", "unknown", "text-only"),
+        default="explicit",
+    )
+    parser.add_argument("--image-kind", choices=tuple(IMAGE_FIXTURES), default="static-png")
     args = parser.parse_args()
     binary = pathlib.Path(args.binary).resolve()
     repo = pathlib.Path(args.repo).resolve()
     if not binary.is_file():
         raise SystemExit(f"binary not found: {binary}")
+    image_media_type, image_data, image_name = IMAGE_FIXTURES[args.image_kind]
 
     capture: queue.Queue[tuple[str, bytes]] = queue.Queue()
     provider = CaptureServer(("127.0.0.1", 0), CaptureHandler)
@@ -211,16 +250,16 @@ def main() -> int:
             raise AssertionError("dsh did not report loopback readiness")
 
         sequence = 1
+        model = {"id": "gpt-vision-fixture"}
+        if args.model_capability == "explicit":
+            model["input"] = ["text", "image"]
+        elif args.model_capability == "text-only":
+            model["input"] = ["text"]
         provider_value = {
             "keyless": True,
             "api": "openai-responses",
             "baseURL": f"http://127.0.0.1:{provider_port}/v1",
-            "models": [
-                {
-                    "id": "gpt-vision-fixture",
-                    "input": ["text", "image"],
-                }
-            ],
+            "models": [model],
         }
         require_ok(
             rpc(
@@ -273,34 +312,46 @@ def main() -> int:
         if last_selection is None:
             raise AssertionError("configured vision model did not become selectable")
 
-        prompt = require_ok(
-            rpc(
-                host_port,
-                "session.prompt",
-                {
-                    "sessionId": session_id,
-                    "mode": "queue",
-                    "content": [
-                        {
-                            "type": "image",
-                            "mediaType": "image/png",
-                            "data": base64.b64encode(PNG_1X1).decode("ascii"),
-                            "name": "fixture.png",
-                        },
-                        {"type": "text", "text": "describe this fixture"},
-                    ],
-                    "clientTimeZone": "UTC",
-                },
-                sequence,
-            ),
+        prompt_response = rpc(
+            host_port,
             "session.prompt",
+            {
+                "sessionId": session_id,
+                "mode": "queue",
+                "content": [
+                    {
+                        "type": "image",
+                        "mediaType": image_media_type,
+                        "data": base64.b64encode(image_data).decode("ascii"),
+                        "name": image_name,
+                    },
+                    {"type": "text", "text": "describe this fixture"},
+                ],
+                "clientTimeZone": "UTC",
+            },
+            sequence,
         )
         sequence += 1
+        if args.model_capability == "text-only":
+            result = prompt_response.get("result")
+            error = result.get("error") if isinstance(result, dict) else None
+            details = error.get("details") if isinstance(error, dict) else None
+            if (
+                not isinstance(result, dict)
+                or result.get("ok") is not False
+                or not isinstance(details, dict)
+                or details.get("reason") != "MODEL_DOES_NOT_SUPPORT_IMAGES"
+            ):
+                raise AssertionError(f"text-only model was not rejected locally: {prompt_response!r}")
+            print(json.dumps({"text_only_rejected": True}, sort_keys=True))
+            return 0
+        prompt = require_ok(prompt_response, "session.prompt")
         if prompt.get("accepted") is not True:
             raise AssertionError(f"session.prompt was not accepted: {prompt!r}")
 
         captured_requests = 0
         provider_request: dict[str, object] | None = None
+        provider_image_url = ""
         request_path = ""
         captured_shapes: list[object] = []
         deadline = time.monotonic() + 20
@@ -312,19 +363,45 @@ def main() -> int:
             captured_requests += 1
             candidate = json.loads(request_bytes)
             captured_shapes.append(wire_shape(candidate))
+            candidate_image_url = input_image_url(candidate)
             if (
                 candidate_path == "/v1/responses"
                 and candidate.get("model") == "gpt-vision-fixture"
-                and contains_input_image(candidate)
+                and candidate_image_url is not None
             ):
                 request_path = candidate_path
                 provider_request = candidate
+                provider_image_url = candidate_image_url
                 break
         if provider_request is None:
             raise AssertionError(
                 "no provider request contained Responses input_image data: "
                 + json.dumps(captured_shapes[-4:], sort_keys=True)
             )
+        expected_prefix = f"data:{image_media_type};base64,"
+        if args.image_kind == "static-png":
+            header, separator, encoded_image = provider_image_url.partition(",")
+            if not separator or header not in {
+                "data:image/png;base64", "data:image/jpeg;base64", "data:image/webp;base64"
+            }:
+                raise AssertionError("provider did not receive a supported static image")
+            image_bytes = base64.b64decode(encoded_image, validate=True)
+            if not image_bytes:
+                raise AssertionError("provider received an empty static image")
+            signatures = {
+                "data:image/png;base64": image_bytes.startswith(b"\x89PNG\r\n\x1a\n"),
+                "data:image/jpeg;base64": image_bytes.startswith(b"\xff\xd8"),
+                "data:image/webp;base64": image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP",
+            }
+            if not signatures[header]:
+                raise AssertionError("provider image bytes do not match the declared media type")
+        elif not provider_image_url.startswith(expected_prefix):
+            raise AssertionError(
+                f"provider image media type changed: expected {expected_prefix!r}, "
+                f"got {provider_image_url[:40]!r}"
+            )
+        elif base64.b64decode(provider_image_url[len(expected_prefix) :], validate=True) != image_data:
+            raise AssertionError("provider image bytes differ from the uploaded fixture")
 
         turn_completed = False
         deadline = time.monotonic() + 20
@@ -361,6 +438,9 @@ def main() -> int:
                     "provider_path": request_path,
                     "captured_provider_requests": captured_requests,
                     "wire_input_image": True,
+                    "image_kind": args.image_kind,
+                    "image_media_type": image_media_type,
+                    "image_bytes_preserved": True,
                     "turn_completed": True,
                 },
                 sort_keys=True,

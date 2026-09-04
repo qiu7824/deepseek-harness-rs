@@ -9720,7 +9720,7 @@ window.__ModuleLoader__.load({
 		* @returns the reasoning disclosure.
 		*/
 		function ReasoningRow({ text, running, t }) {
-			const [expanded, setExpanded] = (0, react.useState)(running);
+			const [expanded, setExpanded] = (0, react.useState)(true);
 			const summaryRef = (0, react.useRef)(null);
 			const summary = running ? latestLine(text) : firstLine(text);
 			const scheduleSummaryScroll = useThrottledVisualUpdate(() => {

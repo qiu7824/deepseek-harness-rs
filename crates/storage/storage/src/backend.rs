@@ -17,6 +17,15 @@ use serde_json::Value as JsonValue;
 
 use crate::error::{StorageError, StorageErrorCode};
 
+/// Physical layout of one KV unit. `Single` keeps the whole unit in one
+/// document; `PerRecord` keeps each record in its own versioned document.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum KvLayout {
+    #[default]
+    Single,
+    PerRecord,
+}
+
 /// Allowed format for unit and table names: safe as a file name and as a
 /// SQL identifier segment without escaping (TS `UNIT_NAME_RE`).
 pub fn unit_name_matches(name: &str) -> bool {
@@ -42,6 +51,11 @@ pub struct KvUnitDescriptor {
     pub tables: Vec<String>,
     /// Whether this unit carries the global singleton slot.
     pub has_global: bool,
+    /// Physical medium layout. Existing callers default to [`KvLayout::Single`].
+    pub layout: KvLayout,
+    /// Older record versions accepted by a per-record unit. Single-layout
+    /// units always require the exact current version.
+    pub compatible_versions: Vec<u64>,
 }
 
 /// The full current snapshot of one opened unit (TS `loadAll` result).
@@ -51,6 +65,21 @@ pub struct KvUnitSnapshot {
     pub tables: HashMap<String, HashMap<String, JsonValue>>,
     /// The global singleton (`Null` when never written or not declared).
     pub global: JsonValue,
+    /// Undecodable documents remain on disk until the owning domain either
+    /// rejects the snapshot or explicitly backs up disposable data.
+    pub invalid: Vec<KvInvalidEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum KvInvalidEntry {
+    Record {
+        table: String,
+        key: String,
+        error: StorageError,
+    },
+    LegacyUnit {
+        error: StorageError,
+    },
 }
 
 /// One opened unit (TS `KvUnit`). Any call after `close` rejects with
@@ -70,6 +99,22 @@ pub trait KvUnit: Send + Sync {
 
     /// Delete one record durably. Idempotent.
     async fn delete_record(&self, table: &str, key: &str) -> Result<(), StorageError>;
+
+    /// Move one record document outside the readable set while preserving
+    /// its bytes for diagnostics. Backends without per-record documents use
+    /// the default `None` result.
+    async fn backup_record(
+        &self,
+        _table: &str,
+        _key: &str,
+    ) -> Result<Option<String>, StorageError> {
+        Ok(None)
+    }
+
+    /// Preserve an unreadable legacy unit before rebuilding derived data.
+    async fn backup_legacy_unit(&self) -> Result<Option<String>, StorageError> {
+        Ok(None)
+    }
 
     /// Write the global singleton durably. Only valid when the descriptor
     /// declared `hasGlobal`.

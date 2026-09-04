@@ -47,7 +47,7 @@ pub fn request_image_variant_id(
 ) -> ImageVariantId {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(b"dsh-request-image-v1\0");
+    hasher.update(b"dsh-request-image-v2\0");
     hasher.update(attachment.attachment_id.as_str().as_bytes());
     hasher.update(b"\0");
     hasher.update(policy.max_pixels.to_le_bytes());

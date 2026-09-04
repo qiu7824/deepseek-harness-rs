@@ -76,6 +76,8 @@ def main() -> None:
     copy_tree(staged_web, stage / "web" / "dist")
     shutil.rmtree(stage / "web" / "dist" / "skins", ignore_errors=True)
     copy_tree(ROOT / "config" / "agent-presets", stage / "config" / "agent-presets")
+    (stage / "docs").mkdir(exist_ok=True)
+    shutil.copy2(ROOT / "docs" / "storage-compatibility.md", stage / "docs" / "storage-compatibility.md")
     for name in ["README.md", "README.zh.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]:
         if (ROOT / name).exists():
             shutil.copy2(ROOT / name, stage / name)

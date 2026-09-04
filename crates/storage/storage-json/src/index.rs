@@ -24,10 +24,11 @@ use parking_lot::Mutex;
 
 use cordis::{ArcValue, Context, InjectSpec, Plugin, PluginError, Service, arc, downcast};
 use dsh_storage::{
-    KvFacet, KvUnit, KvUnitDescriptor, Storage, StorageBackend, StorageError, StorageErrorCode,
-    closed_error, unit_name_matches,
+    KvFacet, KvLayout, KvUnit, KvUnitDescriptor, Storage, StorageBackend, StorageError,
+    StorageErrorCode, closed_error, unit_name_matches,
 };
 
+use crate::per_record_unit::open_per_record_unit;
 use crate::unit::open_json_unit;
 
 /// Cordis plugin name (TS `name`).
@@ -88,6 +89,17 @@ impl JsonStorageBackend {
 }
 
 fn validate_descriptor(descriptor: &KvUnitDescriptor) -> Result<(), StorageError> {
+    let mut versions = std::collections::HashSet::new();
+    if (descriptor.layout == KvLayout::Single && !descriptor.compatible_versions.is_empty())
+        || descriptor.compatible_versions.iter().any(|version| {
+            *version == 0 || *version >= descriptor.version || !versions.insert(*version)
+        })
+    {
+        return Err(StorageError::new(
+            StorageErrorCode::MalformedMedium,
+            "compatible versions require per-record layout and distinct positive older versions",
+        ));
+    }
     if !unit_name_matches(&descriptor.name) {
         return Err(StorageError::new(
             StorageErrorCode::MalformedMedium,
@@ -139,24 +151,30 @@ impl KvFacet for JsonKvFacet {
                 tokio::fs::set_permissions(&backend.root, std::fs::Permissions::from_mode(0o700))
                     .await;
         }
-        let path = backend.root.join(format!("{}.json", descriptor.name));
         let open_slots = Arc::clone(&backend.open);
         let descriptor_name = descriptor.name.clone();
-        let unit = open_json_unit(
-            descriptor.clone(),
-            path,
-            Arc::new(move || {
-                open_slots.lock().remove(&descriptor_name);
-            }),
-        )
-        .await?;
+        let on_close: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            open_slots.lock().remove(&descriptor_name);
+        });
+        let unit: Arc<dyn KvUnit> = match descriptor.layout {
+            KvLayout::Single => Arc::new(
+                open_json_unit(
+                    descriptor.clone(),
+                    backend.root.join(format!("{}.json", descriptor.name)),
+                    on_close,
+                )
+                .await?,
+            ),
+            KvLayout::PerRecord => {
+                Arc::new(open_per_record_unit(descriptor.clone(), &backend.root, on_close).await?)
+            }
+        };
         // The backend closed while this open was in flight: do not hand out
         // a live unit past close().
         if backend.closed.load(std::sync::atomic::Ordering::SeqCst) {
             let _ = unit.close().await;
             return Err(closed_error("json backend"));
         }
-        let unit: Arc<dyn KvUnit> = Arc::new(unit);
         backend
             .open
             .lock()

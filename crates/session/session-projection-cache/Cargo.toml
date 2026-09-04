@@ -25,3 +25,4 @@ indexmap = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 dsh-storage = { path = "../../storage/storage" }
 dsh-storage-test-support = { path = "../../storage/storage-test-support" }
+dsh-storage-json = { path = "../../storage/storage-json" }

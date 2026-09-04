@@ -151,7 +151,11 @@ impl KvUnit for SqliteKvUnit {
                 global = self.parse_value(&value, "global slot")?;
             }
         }
-        Ok(KvUnitSnapshot { tables, global })
+        Ok(KvUnitSnapshot {
+            tables,
+            global,
+            invalid: Vec::new(),
+        })
     }
 
     async fn put_record(

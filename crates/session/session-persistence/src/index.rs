@@ -115,6 +115,9 @@ pub struct SessionReadWindowResult {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionListMetadata {
     pub meta: SessionHeader,
+    /// Number of leading events inherited from a fork parent. Required to
+    /// bind projection caches to the exact seeded lineage.
+    pub inherited_event_count: SessionLogOffset,
     pub last_seq: i64,
     pub blank: bool,
     pub updated_at: i64,
@@ -124,6 +127,7 @@ pub struct SessionListMetadata {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionUserMessageEvents {
     pub meta: SessionHeader,
+    pub inherited_event_count: SessionLogOffset,
     pub last_seq: i64,
     pub events: Vec<SessionEvent>,
 }
@@ -338,6 +342,7 @@ pub trait SessionPersistenceApi: Send + Sync {
             .unwrap_or(-1);
         Ok(SessionUserMessageEvents {
             meta: whole.meta,
+            inherited_event_count: whole.inherited_event_count,
             last_seq,
             events: whole
                 .events
@@ -412,6 +417,7 @@ pub trait SessionPersistenceApi: Send + Sync {
                 .map(|event| event.seq.get() as i64)
                 .unwrap_or(-1),
             meta: whole.meta,
+            inherited_event_count: whole.inherited_event_count,
             blank,
             updated_at,
         })

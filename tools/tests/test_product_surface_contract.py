@@ -29,6 +29,17 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("cwd: humanWorkspacePath(g.cwd)", source)
         self.assertIn("copyText: row.cwd", source)
 
+    def test_reasoning_rows_default_open_and_remain_manually_collapsible(self):
+        conversation = CONVERSATION.read_text(encoding="utf-8")
+        start = conversation.index("function ReasoningRow({ text, running, t })")
+        end = conversation.index("//#endregion", start)
+        reasoning_row = conversation[start:end]
+        self.assertIn("react.useState)(true)", reasoning_row)
+        self.assertIn("open: expanded", reasoning_row)
+        self.assertIn("expandable: true", reasoning_row)
+        self.assertIn("setExpanded((value) => !value)", reasoning_row)
+        self.assertNotIn("react.useState)(running)", reasoning_row)
+
     def test_stop_control_is_non_submitting_and_reports_cancel_failures(self):
         conversation = CONVERSATION.read_text(encoding="utf-8")
         runtime = RUNTIME.read_text(encoding="utf-8")
@@ -365,7 +376,9 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn('subtitle: "本机服务与 Web 控制台"', launcher)
         self.assertNotIn('install_skins: "管理皮肤"', launcher)
         self.assertNotIn("InstallSkins", launcher)
-        self.assertIn(".size(680, 430)", launcher)
+        self.assertIn("const LAUNCHER_WINDOW_WIDTH: u32 = 680;", launcher)
+        self.assertIn("const LAUNCHER_WINDOW_HEIGHT: u32 = 520;", launcher)
+        self.assertIn(".size(LAUNCHER_WINDOW_WIDTH, LAUNCHER_WINDOW_HEIGHT)", launcher)
         self.assertIn("toggle(managed)", launcher)
         self.assertIn("primary_button(state.copy.open_web)", launcher)
         self.assertIn("ThemeColorToken::Surface", launcher)

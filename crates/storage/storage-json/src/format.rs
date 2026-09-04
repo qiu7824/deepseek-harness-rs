@@ -62,6 +62,57 @@ pub fn serialize(name: &str, state: &UnitState) -> String {
     )
 }
 
+/// Serialize one per-record document. Every write stamps the current domain
+/// version independently of the version from which a value was read.
+pub fn serialize_record(version: u64, value: &JsonValue) -> String {
+    let mut document = ordered();
+    document.insert("version".to_string(), JsonValue::from(version));
+    document.insert("record".to_string(), value.clone());
+    format!(
+        "{}\n",
+        serde_json::to_string_pretty(&JsonValue::Object(document))
+            .expect("record value serializes")
+    )
+}
+
+/// Parse one per-record document and accept only one of the vouched-for
+/// version stamps.
+pub fn parse_record(text: &str, accepted_versions: &[u64]) -> Result<JsonValue, StorageError> {
+    let document: JsonValue = serde_json::from_str(text).map_err(|error| {
+        StorageError::new(
+            StorageErrorCode::MalformedMedium,
+            format!("record document is not valid JSON: {error}"),
+        )
+    })?;
+    let object = document.as_object().ok_or_else(|| {
+        StorageError::new(
+            StorageErrorCode::MalformedMedium,
+            "record document is not a JSON object",
+        )
+    })?;
+    let version = object
+        .get("version")
+        .and_then(JsonValue::as_u64)
+        .ok_or_else(|| {
+            StorageError::new(
+                StorageErrorCode::MalformedMedium,
+                "record document lacks a non-negative integer version",
+            )
+        })?;
+    if !accepted_versions.contains(&version) {
+        return Err(StorageError::new(
+            StorageErrorCode::VersionMismatch,
+            format!("record document version {version} is not accepted"),
+        ));
+    }
+    object.get("record").cloned().ok_or_else(|| {
+        StorageError::new(
+            StorageErrorCode::MalformedMedium,
+            "record document lacks record",
+        )
+    })
+}
+
 /// Parse file content into unit state, validating shape and version (TS
 /// `parse`).
 pub fn parse(text: &str, descriptor: &KvUnitDescriptor) -> Result<UnitState, StorageError> {

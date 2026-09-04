@@ -17,11 +17,11 @@ pub use error::{DomainError, DomainErrorCode};
 pub use events::DomainChanged;
 pub use facility::{DomainFacility, DomainFacilityConfig};
 pub use spec::{
-    DomainGlobalSpec, DomainSpec, DomainTableSpec, RecordSchema, define_domain, descriptor_of,
-    domain_global, domain_table,
+    DomainGlobalSpec, DomainSpec, DomainTableSpec, InvalidRecordPolicy, RecordSchema,
+    define_domain, define_domain_with_options, descriptor_of, domain_global, domain_table,
 };
 
 // The backend contract's single home is the storage hub.
 pub use dsh_storage::{
-    KvFacet, KvUnit, KvUnitDescriptor, KvUnitSnapshot, StorageBackend, unit_name_matches,
+    KvFacet, KvLayout, KvUnit, KvUnitDescriptor, KvUnitSnapshot, StorageBackend, unit_name_matches,
 };

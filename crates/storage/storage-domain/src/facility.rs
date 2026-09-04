@@ -20,7 +20,7 @@ use cordis::{ArcValue, Context, Service, arc};
 use dsh_storage::Storage;
 
 use crate::domain::Domain;
-use crate::spec::{DomainSpec, descriptor_of};
+use crate::spec::{DomainSpec, InvalidRecordPolicy, descriptor_of};
 
 /// Plugin config (TS `Config`). Which backend serves which domain is
 /// decided here, not globally on the hub: `backend` is the default route
@@ -154,17 +154,67 @@ impl DomainFacility {
                 return Err(error.message);
             }
         };
+        for invalid in &snapshot.invalid {
+            let error = match invalid {
+                dsh_storage::KvInvalidEntry::Record { error, .. }
+                | dsh_storage::KvInvalidEntry::LegacyUnit { error } => error,
+            };
+            if spec.invalid_records != InvalidRecordPolicy::BackupAndSkip {
+                let _ = unit.close().await;
+                return Err(error.message.clone());
+            }
+            let backup = match invalid {
+                dsh_storage::KvInvalidEntry::Record { table, key, .. } => {
+                    unit.backup_record(table, key).await
+                }
+                dsh_storage::KvInvalidEntry::LegacyUnit { .. } => unit.backup_legacy_unit().await,
+            };
+            match backup {
+                Ok(Some(path)) => self
+                    .ctx
+                    .named_logger(Some("storage-domain"))
+                    .error(vec![arc(format!(
+                        "domain '{}': {}; preserved at '{path}'",
+                        spec.name, error.message
+                    ))]),
+                outcome => {
+                    let _ = unit.close().await;
+                    return Err(match outcome {
+                        Err(backup_error) => backup_error.message,
+                        _ => format!("domain '{}': cannot preserve unreadable data", spec.name),
+                    });
+                }
+            }
+        }
         let mut tables = HashMap::new();
         for (table_name, table_spec) in &spec.tables {
             let mut records = HashMap::new();
             let stored = snapshot.tables.get(table_name).cloned().unwrap_or_default();
             for (key, raw) in stored {
                 if let Err(error) = (table_spec.value_schema)(&raw) {
-                    let _ = unit.close().await;
-                    return Err(format!(
+                    let invalid = format!(
                         "domain '{}': stored record '{key}' in table '{table_name}' does not match its schema: {error}",
                         spec.name
-                    ));
+                    );
+                    if spec.invalid_records == InvalidRecordPolicy::BackupAndSkip {
+                        match unit.backup_record(table_name, &key).await {
+                            Ok(Some(moved)) => {
+                                self.ctx
+                                    .named_logger(Some("storage-domain"))
+                                    .error(vec![arc(format!(
+                                        "{invalid}; moved to '{moved}' and treated as absent"
+                                    ))]);
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(backup_error) => {
+                                let _ = unit.close().await;
+                                return Err(backup_error.message);
+                            }
+                        }
+                    }
+                    let _ = unit.close().await;
+                    return Err(invalid);
                 }
                 records.insert(key, raw);
             }

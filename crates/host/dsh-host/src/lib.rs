@@ -147,10 +147,10 @@ struct OpenAiCompatibleModelConfig {
     context_window: Option<u64>,
     #[serde(default)]
     max_tokens: Option<u64>,
-    /// Request modalities this exact model accepts. An empty or absent list is
-    /// deliberately text-only until a provider-level fallback is declared.
+    /// Request modalities this exact model accepts. Absence is unknown and
+    /// must fail open; an explicit list without image is a text-only claim.
     #[serde(default)]
-    input: Vec<OpenAiInputModality>,
+    input: Option<Vec<OpenAiInputModality>>,
     /// Hermes-style stable effort ids mapped to exact provider wire values.
     /// `off: null` means disabling reasoning is represented by omission.
     #[serde(default)]
@@ -215,13 +215,9 @@ struct OpenAiCompatibleProviderConfig {
     base_url: String,
     #[serde(default)]
     headers: indexmap::IndexMap<String, String>,
-    #[serde(default = "default_openai_input")]
-    default_input: Vec<OpenAiInputModality>,
+    #[serde(default)]
+    default_input: Option<Vec<OpenAiInputModality>>,
     models: Vec<OpenAiCompatibleModelConfig>,
-}
-
-fn default_openai_input() -> Vec<OpenAiInputModality> {
-    vec![OpenAiInputModality::Text]
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -295,9 +291,7 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
         Schema::array(Schema::union(vec![
             Schema::constant(Data::String("text".to_string())),
             Schema::constant(Data::String("image".to_string())),
-        ]))
-        .min(1.0)
-        .default(Data::Array(vec![Data::String("text".to_string())])),
+        ])),
     );
     profile.insert(
         "models".to_string(),
@@ -565,11 +559,6 @@ fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSett
                 "llm-pi-ai: provider \"{provider}\" must use openai-completions or openai-responses"
             ));
         }
-        if profile.default_input.is_empty() {
-            return Err(format!(
-                "llm-pi-ai: provider \"{provider}\" defaultInput must contain at least one modality"
-            ));
-        }
         if !(profile.base_url.starts_with("https://")
             || profile.base_url.starts_with("http://127.0.0.1")
             || profile.base_url.starts_with("http://localhost"))
@@ -696,14 +685,13 @@ impl OpenAiCompatibleAdapter {
                                     })
                                 }
                             },
-                            image_input: Some(
-                                (if model.input.is_empty() {
-                                    &profile.default_input
-                                } else {
-                                    &model.input
-                                })
-                                .contains(&OpenAiInputModality::Image),
-                            ),
+                            image_input: model
+                                .input
+                                .as_ref()
+                                .filter(|input| !input.is_empty())
+                                .or(profile.default_input.as_ref())
+                                .filter(|input| !input.is_empty())
+                                .map(|input| input.contains(&OpenAiInputModality::Image)),
                         })
                         .collect(),
                 ),
@@ -3741,7 +3729,7 @@ mod reasoning_tests {
             name: None,
             context_window: None,
             max_tokens: None,
-            input: Vec::new(),
+            input: None,
             reasoning_efforts: None,
         }
     }
@@ -3930,8 +3918,8 @@ mod image_capability_tests {
     }
 
     #[test]
-    fn empty_provider_default_input_is_rejected() {
-        let error = openai_profiles(&json_to_settings_data(&serde_json::json!({
+    fn empty_provider_default_input_preserves_unknown_capability() {
+        let settings = openai_profiles(&json_to_settings_data(&serde_json::json!({
             "providers": {
                 "acme": {
                     "apiKeyEnv": "ACME_API_KEY",
@@ -3942,8 +3930,8 @@ mod image_capability_tests {
                 }
             }
         })))
-        .expect_err("empty defaultInput must be rejected");
-        assert!(error.contains("defaultInput"));
+        .expect("empty defaultInput represents unknown capability");
+        assert_eq!(settings.providers["acme"].default_input, Some(Vec::new()));
     }
 }
 

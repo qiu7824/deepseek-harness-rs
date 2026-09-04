@@ -340,12 +340,22 @@ impl AgentResolver {
             }
         };
 
-        match shared.await {
+        let outcome = shared.clone().await;
+        // A shared future coordinates only the in-flight resume. Retaining a
+        // successful result would return a disposed Agent after its next idle
+        // retirement and silently drop subsequently accepted messages.
+        {
+            let mut resumes = self.resumes.lock();
+            if resumes
+                .get(session_id)
+                .is_some_and(|current| current.ptr_eq(&shared))
+            {
+                resumes.remove(session_id);
+            }
+        }
+        match outcome {
             Ok(agent) => ApiRemoteAgentResult::Agent(agent),
             Err(failure) => {
-                // Remove the settled entry so a failed resume retries next
-                // call (the TS finally-delete semantics).
-                self.resumes.lock().remove(session_id);
                 match failure {
                     ResumeFailure::SessionNotFound(message) => {
                         ApiRemoteAgentResult::Error(RpcError::SessionNotFound(RpcErrorBody {

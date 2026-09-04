@@ -6,6 +6,9 @@
 
 ## 0. `0.1.2-alpha.4` 同步说明
 
+- Session projection cache 使用 per-record v5，兼容 v3/v4；坏记录与未来版本显式上报，派生缓存先备份再重建，权威数据保持 fail-loud。继承身份包含 `isSeeded` 与 `inheritedEventCount`，删除后的记录不会在重启时从旧布局重新导入。
+- 图片能力未知时允许请求到达 Provider，明确不支持图片时本地拒绝；动画 PNG/GIF/WebP 在预算内保留媒体类型和完整字节，超预算返回明确错误。
+- 发布矩阵验证正式包的模型设置持久化、凭证格式、监听边界和图片请求链路。
 - Session 坐标已拆分为 `SessionSeq` 与 `SessionLogOffset`，事件身份和日志间隙不再混用；历史读取改为显式有界快照/窗口。
 - 逻辑 Session 头使用 `is_seeded`，继承事件数量独立携带；JSONL/Zstd v0 物理头仍兼容缺失、零和非零 `seedLength`。
 - continuable Agent 的模型消息统一为 `agent-message`，`send_message({ agent_id, message })` 只允许直接父子双向投递；旧 report 体系不再作为正式路径。

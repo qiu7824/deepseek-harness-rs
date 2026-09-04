@@ -555,12 +555,16 @@ fn deepseek_image_tokens(width: u64, height: u64) -> u64 {
     panic!("deepseek image tokens: resize did not converge for {width}x{height}")
 }
 
-fn model_modalities(model: Option<&DeepSeekCatalogModel>) -> Vec<ModelModality> {
-    if model.and_then(|model| model.image_input).unwrap_or(false) {
-        vec![ModelModality::Text, ModelModality::Image]
-    } else {
-        vec![ModelModality::Text]
-    }
+fn model_modalities(model: Option<&DeepSeekCatalogModel>) -> Option<Vec<ModelModality>> {
+    model.and_then(|model| {
+        model.image_input.map(|image_input| {
+            if image_input {
+                vec![ModelModality::Text, ModelModality::Image]
+            } else {
+                vec![ModelModality::Text]
+            }
+        })
+    })
 }
 
 #[cfg(test)]
@@ -623,6 +627,20 @@ mod image_pricing_tests {
             .expect("text pricing")(&[image]);
         assert_eq!(text[0].visual_tokens, 0);
         assert!(text[0].text.contains("text-only"));
+        let unknown = adapter
+            .image_request_pricing(PROVIDER, "future-model")
+            .expect("unknown model remains image-capable")(&[
+            dsh_llm::ImageAttachmentRef {
+                attachment_id: "sha256:unknown".to_string(),
+                media_type: Some("image/png".to_string()),
+                bytes: Some(2048),
+                width: Some(800),
+                height: Some(800),
+                name: None,
+            },
+        ]);
+        assert!(unknown[0].visual_tokens > 0);
+        assert!(!unknown[0].text.contains("text-only"));
     }
 
     #[tokio::test]
@@ -651,10 +669,7 @@ mod image_pricing_tests {
         );
 
         let uncatalogued = adapter.resolve_model(PROVIDER, "future-model", None).await;
-        assert_eq!(
-            uncatalogued.input_modalities,
-            Some(vec![ModelModality::Text])
-        );
+        assert_eq!(uncatalogued.input_modalities, None);
     }
 }
 
@@ -1488,7 +1503,7 @@ impl LlmAdapter for DeepSeekAdapter {
             .iter()
             .find(|entry| entry.id == model)
             .and_then(|entry| entry.image_input)
-            .unwrap_or(false);
+            .unwrap_or(true);
         let model = model.to_string();
         Some(Arc::new(move |images| {
             if !image_input {
@@ -1537,7 +1552,7 @@ impl LlmAdapter for DeepSeekAdapter {
                     name: model.name.clone().unwrap_or_else(|| model.id.clone()),
                     id: model.id,
                     description: model.description,
-                    input_modalities: Some(input_modalities),
+                    input_modalities,
                 }
             })
             .collect()
@@ -1567,7 +1582,7 @@ impl LlmAdapter for DeepSeekAdapter {
                     .and_then(|entry| entry.name.clone())
                     .unwrap_or_else(|| model.to_string()),
                 description: configured.and_then(|entry| entry.description.clone()),
-                input_modalities: Some(model_modalities(configured)),
+                input_modalities: model_modalities(configured),
                 context: Some(LlmModelContext {
                     context_window: configured
                         .and_then(|entry| entry.context_window)
@@ -1592,7 +1607,7 @@ impl LlmAdapter for DeepSeekAdapter {
                     .and_then(|entry| entry.name.clone())
                     .unwrap_or_else(|| model.to_string()),
                 description: configured.and_then(|entry| entry.description.clone()),
-                input_modalities: Some(model_modalities(configured)),
+                input_modalities: model_modalities(configured),
                 context: Some(LlmModelContext {
                     context_window: configured
                         .and_then(|entry| entry.context_window)
@@ -1639,7 +1654,7 @@ impl LlmAdapter for DeepSeekAdapter {
                 .and_then(|entry| entry.name.clone())
                 .unwrap_or_else(|| model.to_string()),
             description: configured.and_then(|entry| entry.description.clone()),
-            input_modalities: Some(model_modalities(configured)),
+            input_modalities: model_modalities(configured),
             context: Some(LlmModelContext {
                 context_window: configured
                     .and_then(|entry| entry.context_window)

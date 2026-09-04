@@ -250,9 +250,17 @@ impl SessionProjectionCache {
         }
     }
 
-    /// The zero-I/O listing read (TS `cachedSnapshot`).
+    /// The zero-I/O listing read (TS `cachedSnapshot`). Only unseeded
+    /// headers carry a complete identity without a persistence metadata read;
+    /// seeded sessions must use `cold_snapshot`, which resolves their cut.
     pub fn cached_snapshot(&self, meta: &SessionHeader) -> Option<ProjectionSnapshot> {
-        let record = self.record_for(&meta.id, &identity_of(meta))?;
+        if meta.is_seeded {
+            return None;
+        }
+        let record = self.record_for(
+            &meta.id,
+            &identity_of(meta, dsh_session::SessionLogOffset::ZERO),
+        )?;
         let rows = rows_of(Some(&record));
         let values = self.registry().view_checkpoint(&rows);
         if values.is_empty() {
@@ -302,8 +310,12 @@ impl SessionProjectionCache {
         {
             store.flush(session).await?;
         }
-        self.put(session.id(), &identity_of(session.header()), rows)
-            .await
+        self.put(
+            session.id(),
+            &identity_of(session.header(), session.inherited_event_count()),
+            rows,
+        )
+        .await
     }
 
     /// Cold-read one persisted session's projections with zero full-log
@@ -328,7 +340,10 @@ impl SessionProjectionCache {
         let list_metadata = Some(self.persistence.read_list_metadata(id).await?);
         if let Some(metadata) = list_metadata.as_ref() {
             if record.as_ref().is_some_and(|record| {
-                !identity_matches(&record.identity, &identity_of(&metadata.meta))
+                !identity_matches(
+                    &record.identity,
+                    &identity_of(&metadata.meta, metadata.inherited_event_count),
+                )
             }) {
                 cached.clear();
             }
@@ -361,7 +376,10 @@ impl SessionProjectionCache {
                 .as_ref()
                 .expect("rail seeding preloads fixed metadata");
             if record.as_ref().is_some_and(|record| {
-                !identity_matches(&record.identity, &identity_of(&metadata.meta))
+                !identity_matches(
+                    &record.identity,
+                    &identity_of(&metadata.meta, metadata.inherited_event_count),
+                )
             }) {
                 cached.clear();
                 cached.insert(
@@ -377,8 +395,10 @@ impl SessionProjectionCache {
                 );
             }
             let rail_input = self.persistence.read_user_message_events(id).await?;
-            if !identity_matches(&identity_of(&rail_input.meta), &identity_of(&metadata.meta))
-                || rail_input.last_seq != metadata.last_seq
+            if !identity_matches(
+                &identity_of(&rail_input.meta, rail_input.inherited_event_count),
+                &identity_of(&metadata.meta, metadata.inherited_event_count),
+            ) || rail_input.last_seq != metadata.last_seq
             {
                 return Err("session artifact changed during rail seed".to_string());
             }
@@ -419,7 +439,7 @@ impl SessionProjectionCache {
             };
             self.put_soft(
                 id,
-                &identity_of(&metadata.meta),
+                &identity_of(&metadata.meta, metadata.inherited_event_count),
                 &cached,
                 "cold-read metadata write-back",
             )
@@ -428,9 +448,12 @@ impl SessionProjectionCache {
         }
         let tail = self.persistence.read_from(id, floor as u64).await?;
         let related = rail_needs_seed
-            || record
-                .as_ref()
-                .is_none_or(|record| identity_matches(&record.identity, &identity_of(&tail.meta)));
+            || record.as_ref().is_none_or(|record| {
+                identity_matches(
+                    &record.identity,
+                    &identity_of(&tail.meta, tail.inherited_event_count),
+                )
+            });
         let restored = match (
             related,
             registry.restore(&tail.meta, &cached, &tail.events, floor),
@@ -448,7 +471,7 @@ impl SessionProjectionCache {
         let (snapshot, checkpoint) = restored;
         self.put_soft(
             id,
-            &identity_of(&tail.meta),
+            &identity_of(&tail.meta, tail.inherited_event_count),
             &checkpoint,
             "cold-read write-back",
         )
@@ -536,17 +559,29 @@ impl SessionProjectionCache {
 
 /// Project a header onto the identity fields a record is bound to (TS
 /// `identityOf`).
-pub fn identity_of(header: &SessionHeader) -> CheckpointIdentity {
+pub fn identity_of(
+    header: &SessionHeader,
+    inherited_event_count: dsh_session::SessionLogOffset,
+) -> CheckpointIdentity {
+    assert!(
+        header.is_seeded || inherited_event_count == dsh_session::SessionLogOffset::ZERO,
+        "unseeded projection-cache identity inherited event count must be 0"
+    );
     CheckpointIdentity {
         created_at: header.created_at,
         cwd: header.cwd.clone(),
+        is_seeded: header.is_seeded,
+        inherited_event_count: inherited_event_count.get(),
     }
 }
 
 /// Whether a stored record's bound identity names the caller's lifecycle
 /// (TS `identityMatches`).
 pub fn identity_matches(stored: &CheckpointIdentity, expected: &CheckpointIdentity) -> bool {
-    stored.created_at == expected.created_at && stored.cwd == expected.cwd
+    stored.created_at == expected.created_at
+        && stored.cwd == expected.cwd
+        && stored.is_seeded == expected.is_seeded
+        && stored.inherited_event_count == expected.inherited_event_count
 }
 
 /// The no-op companion installer (TS `invariant.ts`).
@@ -588,3 +623,46 @@ pub const INJECT: [&str; 4] = [
     "sessionPersistence",
     "sessions",
 ];
+
+#[cfg(test)]
+mod compatibility_tests {
+    use dsh_session::{SessionHeader, SessionLogOffset, session_id};
+
+    #[test]
+    fn legacy_session_list_metadata_row_is_version_mismatched() {
+        let row = dsh_session_projection::ProjectionCheckpointRow {
+            ver: 1,
+            seq: 7,
+            val: serde_json::json!({
+                "blank": false,
+                "lastPromptAt": 1234,
+            }),
+        };
+
+        assert_ne!(
+            row.ver,
+            dsh_session_title::SESSION_LIST_METADATA_STATE_VERSION,
+            "legacy lastPromptAt rows must miss the updatedAt projection contract"
+        );
+    }
+
+    #[test]
+    fn seeded_identity_requires_the_exact_inherited_event_count() {
+        let header = SessionHeader {
+            version: dsh_session::SESSION_FORMAT_VERSION,
+            id: session_id("seeded-identity"),
+            created_at: 7,
+            cwd: Some("D:/workspace".to_string()),
+            parent_session: Some(session_id("parent")),
+            is_seeded: true,
+            origin: None,
+            delegation_depth: None,
+            agent_preset: None,
+        };
+        let exact = super::identity_of(&header, SessionLogOffset::new(12).unwrap());
+        let different = super::identity_of(&header, SessionLogOffset::new(11).unwrap());
+
+        assert!(super::identity_matches(&exact, &exact));
+        assert!(!super::identity_matches(&exact, &different));
+    }
+}

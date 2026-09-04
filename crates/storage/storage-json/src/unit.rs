@@ -163,6 +163,7 @@ impl KvUnit for JsonKvUnit {
         self.assert_open()?;
         let state = self.state.lock();
         Ok(KvUnitSnapshot {
+            invalid: Vec::new(),
             tables: state
                 .tables
                 .iter()

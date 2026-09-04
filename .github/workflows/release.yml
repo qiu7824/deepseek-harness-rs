@@ -43,7 +43,7 @@ jobs:
           python -m unittest tools.tests.test_history_window_contract tools.tests.test_product_surface_contract tools.tests.test_v012_surface_contract tools.tests.test_v012_alpha2_sync_contract tools.tests.test_v012_alpha4_sync_contract tools.tests.test_release_integrity tools.tests.test_launcher_release_contract tools.tests.test_client_performance -v
           node tools/tests/connection_controller_harness.js
           node tools/tests/turn_usage_optional_harness.js
-          cargo test --locked -p dsh-launcher -p dsh-schedule -p dsh-host-plugin-inventory -p dsh-host-apiproxy -p dsh-typert-protocol -p dsh-web -p dsh-web-fetch-http -p dsh-web-search-deepseek -p dsh-tool-web
+          cargo test --locked -p dsh-launcher -p dsh-schedule -p dsh-host-plugin-inventory -p dsh-host-apiproxy -p dsh-typert-protocol -p dsh-web -p dsh-web-fetch-http -p dsh-web-search-deepseek -p dsh-tool-web -p dsh-storage-domain -p dsh-storage-json -p dsh-session-projection-cache -p dsh-attachment-local -p dsh-llm-deepseek
           for file in release/plugins/*/lib/client.js; do node --check "$file"; done
           for file in web/dist/plugins/*.js; do node --check "$file"; done
           cargo fmt --all -- --check
@@ -73,6 +73,22 @@ jobs:
           python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant core --version "$VERSION"
           python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant skin --version "$VERSION"
           python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant free --version "$VERSION"
+      - name: 正式包数据与图片回归
+        shell: bash
+        run: |
+          STAGE="dist/${{ steps.release.outputs.prefix }}-core"
+          HOST="$STAGE/deepseek-harness-rs"
+          [[ "${{ matrix.platform }}" == "windows" ]] && HOST="$HOST.exe"
+          python tools/e2e_settings_model_preserves_data.py --binary "$HOST" --repo "$STAGE"
+          python tools/e2e_session_resume.py --binary "$HOST" --repo "$STAGE"
+          python tools/e2e_credentials_compat.py --binary "$HOST"
+          python tools/e2e_all_interfaces.py --binary "$HOST"
+          for capability in explicit unknown text-only; do
+            python tools/e2e_image_capability.py --binary "$HOST" --repo "$STAGE" --model-capability "$capability"
+          done
+          for image in animated-png animated-gif animated-webp; do
+            python tools/e2e_image_capability.py --binary "$HOST" --repo "$STAGE" --image-kind "$image"
+          done
       - name: Windows 中文安装器
         if: matrix.platform == 'windows'
         shell: pwsh
