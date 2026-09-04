@@ -86,7 +86,12 @@ def launch(binary: pathlib.Path, home: pathlib.Path, host: str | None):
     deadline = time.monotonic() + 30
     port = None
     advertised = None
-    while time.monotonic() < deadline and port is None:
+    # stdout readiness and stderr warnings arrive on independent reader
+    # threads; neither pipe establishes ordering across the other one.
+    while time.monotonic() < deadline and (
+        port is None
+        or (host == "0.0.0.0" and not any("WARNING:" in line for line in observed))
+    ):
         try:
             line = lines.get(timeout=0.2)
         except queue.Empty:
