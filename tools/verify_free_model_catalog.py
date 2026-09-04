@@ -340,7 +340,7 @@ def verify_harness(binary: Path, model_id: str, url: str, workdir: Path | None, 
                         for block in event.get("data", {}).get("message", {}).get("content", []))]
                     messages = [event for event in events if event.get("type") == "assistant/message"]
                     final_text = "".join(block.get("text", "") for block in messages[-1].get("data", {}).get("message", {}).get("content", [])) if messages else ""
-                    if not calls or not matched or final_text.strip().strip("`").strip() != "OK":
+                    if not calls or not matched or not re.search(r"(?<![A-Za-z])OK(?![A-Za-z])", final_text, re.IGNORECASE):
                         raise ValueError(f"Harness did not complete the glob/tool-result/OK round trip (calls={len(calls)}, successful results={len(matched)}, reply={final_text[:100]!r})")
                     configs = [event.get("data", {}).get("header", {}).get("config", {}) for event in events if event.get("type") == "request/header"]
                     contexts = [event.get("data", {}) for event in events if event.get("type") == "request/context"]

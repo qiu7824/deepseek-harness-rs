@@ -363,6 +363,12 @@ fn safe_relative(value: &str) -> Option<PathBuf> {
         return None;
     }
     let value = value.replace('\\', "/");
+    // A browser can submit paths from another operating system. Unix treats
+    // Windows drive paths as relative filenames, so reject them explicitly.
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return None;
+    }
     let path = Path::new(&value);
     if path.is_absolute()
         || path
@@ -1962,6 +1968,9 @@ mod tests {
         assert_eq!(safe_relative("."), Some(PathBuf::new()));
         assert_eq!(safe_relative("../secret"), None);
         assert_eq!(safe_relative("C:/secret"), None);
+        assert_eq!(safe_relative("C:secret"), None);
+        assert_eq!(safe_relative("z:\\secret"), None);
+        assert_eq!(safe_relative("\\\\server\\share\\secret"), None);
         assert_eq!(safe_relative(".git/config"), None);
         assert_eq!(safe_relative("foo/.env.local"), None);
         assert_eq!(safe_relative("node_modules/pkg/index.js"), None);
