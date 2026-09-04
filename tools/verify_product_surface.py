@@ -8,7 +8,7 @@ for forbidden in ("任务面板", "AI画布", "workbench-tasks", "workbench-canv
 assert "@deepseek-ai/dsh-client-ui-goal" in manifest, "goal pause/resume strip is not composed"
 assert "@deepseek-ai/dsh-client-ui-code-graph" in manifest, "code graph tab is not composed"
 conversation = (root / "web" / "dist" / "plugins" / "ui-conversation.js").read_text(encoding="utf-8")
-assert "ctx.plugin(todoDockEntry)" in conversation, "official conversation task dock is not composed"
+assert "ctx.plugin(todoDockEntry)" in conversation, "conversation task dock is not composed"
 for required in (
     'method: "session.updateTodos"',
     '"todo.edit": "修改任务"',

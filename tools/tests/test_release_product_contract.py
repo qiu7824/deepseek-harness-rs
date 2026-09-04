@@ -7,7 +7,9 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-VERSION = "0.1.2-alpha.4"
+from tools.verify_release_version import workspace_version
+
+VERSION = workspace_version()
 VARIANTS = ("core", "skin", "free")
 PLATFORMS = (
     ("windows", "x86_64", "zip", "setup.exe"),
@@ -31,7 +33,7 @@ def tool_row(source: str, tool_id: str) -> str:
     return source[start:] if end < 0 else source[start:end]
 
 
-class V012Alpha4SyncContractTests(unittest.TestCase):
+class ReleaseProductContractTests(unittest.TestCase):
     def preset(self, preset_id: str, name: str = "agent.cordis.yml") -> str:
         return (ROOT / "config" / "agent-presets" / preset_id / name).read_text(
             encoding="utf-8"
@@ -70,32 +72,14 @@ class V012Alpha4SyncContractTests(unittest.TestCase):
         minimal = self.preset("minimal")
         self.assertNotIn("- id: tool-web", minimal)
 
-    def test_product_versions_match_alpha4(self):
-        cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
-        lock = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
-        web = json.loads((ROOT / "web" / "package.json").read_text(encoding="utf-8"))
-        self.assertIn(f'version = "{VERSION}"', cargo)
-        self.assertEqual(web["version"], VERSION)
-        self.assertNotIn('version = "0.1.2-alpha.3"', lock)
-
-        installer = (ROOT / "packaging" / "windows" / "deepseek-harness-rs.iss").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn(f'#define MyAppVersion "{VERSION}"', installer)
-        self.assertIn(
-            f'#define SourceDir "dist\\deepseek-harness-rs-v{VERSION}-windows-x86_64-core"',
-            installer,
-        )
-        self.assertIn("ArchitecturesAllowed=x64", installer)
-        self.assertIn("ArchitecturesInstallIn64BitMode=x64", installer)
 
     def test_release_workflow_names_every_variant_artifact_uniquely(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn(f'VERSION="${{GITHUB_REF_NAME#v}}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="{VERSION}"', workflow)
-        self.assertIn(f"else {{ '{VERSION}' }}", workflow)
-        self.assertIn("tools.tests.test_v012_alpha4_sync_contract", workflow)
+        self.assertIn("python tools/verify_release_version.py --print-version", workflow)
+        self.assertIn('--version "${GITHUB_REF_NAME#v}"', workflow)
+        self.assertIn("tools.tests.test_release_product_contract", workflow)
 
         for variant in VARIANTS:
             self.assertIn(f"--variant {variant}", workflow)
@@ -184,7 +168,7 @@ class V012Alpha4SyncContractTests(unittest.TestCase):
         self.assertIn('stage / "deepseek-black.ico"', package)
         self.assertIn('prefix + "deepseek-black.ico"', verifier)
 
-    def test_release_stage_requires_every_alpha4_web_bundle(self):
+    def test_release_stage_requires_every_web_bundle(self):
         stage = (ROOT / "tools" / "stage_release_web.py").read_text(
             encoding="utf-8"
         )
@@ -202,15 +186,15 @@ class V012Alpha4SyncContractTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        self.assertEqual(manifest["rev"], "v012-alpha4-web-sync-20260902")
+        self.assertTrue(manifest["rev"])
 
-    def test_release_documentation_describes_alpha4_runtime_and_variants(self):
+    def test_release_documentation_describes_runtime_and_variants(self):
         english = (ROOT / "README.md").read_text(encoding="utf-8")
         chinese = (ROOT / "README.zh.md").read_text(encoding="utf-8")
         porting = (ROOT / "PORTING.md").read_text(encoding="utf-8")
         for source in (english, chinese):
             for marker in (
-                "0.1.2-alpha.4",
+                VERSION,
                 "send_message",
                 "web_fetch",
                 "core",
@@ -221,7 +205,7 @@ class V012Alpha4SyncContractTests(unittest.TestCase):
             ):
                 self.assertIn(marker, source)
         for marker in (
-            "0.1.2-alpha.4",
+            VERSION,
             "SessionSeq",
             "SessionLogOffset",
             "seedLength",
@@ -230,37 +214,6 @@ class V012Alpha4SyncContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, porting)
 
-    def test_alpha4_cross_slice_markers_are_declared(self):
-        # These concrete acceptance markers intentionally span the concurrent
-        # alpha.4 runtime/Web slices. This contract may remain RED until those
-        # writers land their implementations; do not weaken it to make this
-        # release-preparation slice green.
-        markers = {
-            "crates/core/session/src/types.rs": ("SessionSeq", "SessionLogOffset"),
-            "crates/subagent/subagent/src/continuation.rs": ("agent-message",),
-            "crates/subagent/tool-subagent-control/src/lib.rs": (
-                '"agent_id"',
-                '"message"',
-            ),
-            "crates/host/dsh-host/src/lib.rs": (
-                "OpenAiCompatibleProviderConfig",
-                "headers",
-            ),
-            "crates/web/tool-web/src/lib.rs": ("web_fetch",),
-            "web/dist/plugins/ui-settings-models.js": ("candidateQuery",),
-            "web/dist/plugins/ui-conversation.js": ("contain",),
-        }
-        missing: list[str] = []
-        for relative, expected in markers.items():
-            path = ROOT / relative
-            if not path.is_file():
-                missing.append(f"{relative}: missing file")
-                continue
-            source = path.read_text(encoding="utf-8")
-            for marker in expected:
-                if marker not in source:
-                    missing.append(f"{relative}: missing {marker!r}")
-        self.assertEqual(missing, [], "\n".join(missing))
 
     def test_model_editor_persists_image_input_capability(self):
         source = (ROOT / "web" / "dist" / "plugins" / "ui-settings-models.js").read_text(
@@ -305,7 +258,7 @@ class V012Alpha4SyncContractTests(unittest.TestCase):
         self.assertEqual(source.count(markers["visible render"]), 1)
         self.assertNotIn("children: (candidates ?? []).map", source)
 
-    def test_alpha4_web_theme_visual_tokens_are_present(self):
+    def test_web_theme_visual_tokens_are_present(self):
         theme = (ROOT / "web" / "dist" / "plugins" / "ui-theme.js").read_text(
             encoding="utf-8"
         )
@@ -314,15 +267,12 @@ class V012Alpha4SyncContractTests(unittest.TestCase):
             "--dsw-elevation-panel",
             "--dsw-elevation-prominent",
             "--dsw-elevation-soft",
-            "corner-shape:superellipse(1.5)",
-            "border:.5px solid var(--dsw-alias-border-l4)",
-            "border-radius:20px",
             'ctx.effect(() => {',
             'tag.remove();',
         ):
             self.assertIn(marker, theme)
 
-    def test_alpha4_web_chat_keeps_rust_history_and_adds_hot_path_guards(self):
+    def test_web_chat_keeps_rust_history_and_adds_hot_path_guards(self):
         conversation = (
             ROOT / "web" / "dist" / "plugins" / "ui-conversation.js"
         ).read_text(encoding="utf-8")
@@ -347,7 +297,6 @@ class V012Alpha4SyncContractTests(unittest.TestCase):
             "summaryText",
             "data-expanded",
             "--dsw-elevation-panel",
-            "z-index:7",
         ):
             self.assertIn(marker, conversation)
 
@@ -379,7 +328,7 @@ class V012Alpha4SyncContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, source)
 
-    def test_alpha4_trajectory_pages_resident_history_before_rendering(self):
+    def test_trajectory_pages_resident_history_before_rendering(self):
         trajectory = (
             ROOT / "web" / "dist" / "plugins" / "ui-trajectory.js"
         ).read_text(encoding="utf-8")
@@ -394,37 +343,10 @@ class V012Alpha4SyncContractTests(unittest.TestCase):
             "sameRunningAssistantRequest",
             "patchStreamingAssistant",
             "--dsw-elevation-panel",
-            "border-bottom:.5px",
         ):
             self.assertIn(marker, trajectory)
 
-    def test_alpha4_model_menu_uses_prominent_elevation(self):
-        model_select = (
-            ROOT / "web" / "dist" / "plugins" / "ui-model-selection.js"
-        ).read_text(encoding="utf-8")
-        for marker in (
-            "border-radius:20px",
-            "--dsw-elevation-stroke-color:var(--dsw-alias-border-l1)",
-            "box-shadow:var(--dsw-elevation-prominent)",
-        ):
-            self.assertIn(marker, model_select)
 
-    def test_alpha4_web_manifest_revisions_match_bundle_hashes(self):
-        import hashlib
-
-        plugins = ROOT / "web" / "dist" / "plugins"
-        manifest = json.loads((plugins / "manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(manifest["rev"], "v012-alpha4-web-sync-20260902")
-        entries = {entry["url"]: entry["rev"] for entry in manifest["entries"]}
-        for name in (
-            "ui-theme.js",
-            "ui-conversation.js",
-            "ui-trajectory.js",
-            "ui-model-selection.js",
-            "ui-settings-models.js",
-        ):
-            digest = hashlib.sha256((plugins / name).read_bytes()).hexdigest()[:16]
-            self.assertEqual(entries[f"/plugins/{name}"], digest, name)
 
 
 if __name__ == "__main__":

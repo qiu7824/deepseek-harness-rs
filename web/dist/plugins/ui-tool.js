@@ -32,6 +32,7 @@ window.__ModuleLoader__.load({
 			bash: "bash",
 			pwsh: "bash",
 			read: "read",
+			read_image: "read",
 			web_fetch: "read",
 			web_search: "search",
 			grep: "search",
@@ -668,15 +669,16 @@ window.__ModuleLoader__.load({
 			}
 			return { added, removed };
 		}
-		function ToolRow({ t, variant, toolName, icon, title, summary, summarySuffix, body, output, errorSummary, terminal, diff, read, search, web, state, filePath, onOpenFile, inspect }) {
+		function ToolRow({ t, variant, toolName, icon, title, summary, summarySuffix, body, output, errorSummary, terminal, diff, read, search, web, image, state, filePath, onOpenFile, inspect }) {
 			const [expanded, setExpanded] = (0, react.useState)(false);
 			const terminalBody = terminal ?? null;
 			const diffBody = diff ?? null;
 			const readBody = read ?? null;
 			const searchBody = search ?? null;
 			const webBody = web ?? null;
+            const imageBody = image ?? null;
 			const outputText = output ?? null;
-			const expandable = body !== null || outputText !== null || (terminalBody ?? diffBody ?? readBody ?? searchBody ?? webBody) !== null;
+			const expandable = body !== null || outputText !== null || (terminalBody ?? diffBody ?? readBody ?? searchBody ?? webBody ?? imageBody) !== null;
 			const open = expanded && expandable;
 			const status = stateStatus$1(state, t);
 			const failureLine = state === "error" ? errorSummary ?? null : null;
@@ -741,7 +743,7 @@ window.__ModuleLoader__.load({
 					] }),
 					children: (0, react_jsx_runtime.jsxs)("div", {
 						className: ToolRow_module_css_default.bodyWrap,
-						children: [terminalBody !== null ? (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.TerminalBlock, {
+						children: [imageBody !== null ? (open ? imageBody : null) : terminalBody !== null ? (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.TerminalBlock, {
 							...terminalBody.card,
 							maxLines: Infinity,
 							labels: terminalBlockLabels(t),
@@ -824,8 +826,37 @@ window.__ModuleLoader__.load({
 			code: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCodeOutline16, { size: 14 }),
 			others: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconSparkle16, { size: 14 })
 		};
-		function GenericToolCard({ toolName, block, cwd, openFile, inspect, t }) {
+
+        function imageCardModel(toolName, block) {
+            if (toolName !== "read_image" || !("kind" in block) || block.isError || !Array.isArray(block.content)) return null;
+            const images = block.content.filter((item) => item?.type === "image" && typeof item.attachment?.attachmentId === "string" && item.attachment.attachmentId.length > 0).map((item) => item.attachment);
+            if (!images.length) return null;
+            return { images, text: block.content.filter((item) => item?.type === "text").map((item) => item.text).join("\n") };
+        }
+        function ToolImage({ attachment, loadImage, t }) {
+            const [image, setImage] = (0, react.useState)(null);
+            const [failed, setFailed] = (0, react.useState)(false);
+            (0, react.useEffect)(() => {
+                let active = true;
+                setImage(null);
+                setFailed(false);
+                Promise.resolve().then(() => loadImage(attachment)).then((url) => {
+                    if (active) setImage(url);
+                }, () => { if (active) setFailed(true); });
+                return () => { active = false; };
+            }, [attachment, loadImage]);
+            if (image === null) return failed ? (0, react_jsx_runtime.jsx)("span", { role: "status", children: t("image.serviceUnavailable") }) : null;
+            return (0, react_jsx_runtime.jsx)("a", { href: image, target: "_blank", rel: "noopener noreferrer", children: (0, react_jsx_runtime.jsx)("img", { src: image, alt: attachment.name ?? "Image", loading: "lazy", style: { maxWidth: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 8 } }) });
+        }
+        function ToolImages({ model, loadImage, t }) {
+            return (0, react_jsx_runtime.jsxs)("div", { "data-tool-images": true, children: [
+                typeof loadImage === "function" && model.images.map((attachment, index) => (0, react_jsx_runtime.jsx)(ToolImage, { attachment, loadImage, t }, attachment.attachmentId + ":" + index)),
+                model.text && (0, react_jsx_runtime.jsx)("div", { style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }, children: model.text })
+            ] });
+        }
+		function GenericToolCard({ toolName, block, cwd, openFile, inspect, loadImage, t }) {
 			const model = toolRowModel(toolName, block, cwd);
+            const imageModel = imageCardModel(toolName, block);
 			const terminal = terminalCardModel(block, cwd);
 			const read = readCardModel(block, cwd);
 			const diff = diffCardModel(block);
@@ -841,7 +872,8 @@ window.__ModuleLoader__.load({
 				title: model.title,
 				summary: terminal?.description ?? search?.title ?? model.summary,
 				body: singleFile ? null : model.body,
-				output: model.output,
+				output: imageModel === null ? model.output : null,
+                image: imageModel === null ? null : (0, react_jsx_runtime.jsx)(ToolImages, { model: imageModel, loadImage, t }),
 				errorSummary: model.errorSummary,
 				terminal,
 				diff,
@@ -877,12 +909,12 @@ window.__ModuleLoader__.load({
 			return "kind" in node ? node.call?.name ?? "" : node.name;
 		}
 		/** One atomic call dispatched through the Tool-owned keyed slot. */
-		const ToolCall = (0, react.memo)(function ToolCall({ renderSlot, callId, toolName, block, openFile, selected, cwd, inspectCall, t, children }) {
+		const ToolCall = (0, react.memo)(function ToolCall({ renderSlot, callId, toolName, block, openFile, loadImage, selected, cwd, inspectCall, t, children }) {
 			const owner = (0, react.useMemo)(() => ({
 				callId,
 				toolName,
 				block,
-				openFile,
+				openFile, loadImage,
 				cwd,
 				inspect: () => {
 					inspectCall(callId);
@@ -891,7 +923,7 @@ window.__ModuleLoader__.load({
 				callId,
 				toolName,
 				block,
-				openFile,
+				openFile, loadImage,
 				cwd,
 				inspectCall
 			]);
@@ -909,13 +941,13 @@ window.__ModuleLoader__.load({
 				}), children]
 			});
 		});
-		const ToolCallBranch = (0, react.memo)(function ToolCallBranch({ renderSlot, block, selectedCallId, cwd, openFile, inspectCall, t }) {
+		const ToolCallBranch = (0, react.memo)(function ToolCallBranch({ renderSlot, block, selectedCallId, cwd, openFile, loadImage, inspectCall, t }) {
 			return (0, react_jsx_runtime.jsx)(ToolCall, {
 				renderSlot,
 				callId: block.callId,
 				toolName: callName(block),
 				block,
-				openFile,
+				openFile, loadImage,
 				selected: block.callId === selectedCallId,
 				cwd,
 				inspectCall,
@@ -928,7 +960,7 @@ window.__ModuleLoader__.load({
 						block: child,
 						selectedCallId,
 						cwd,
-						openFile,
+						openFile, loadImage,
 						inspectCall,
 						t
 					}, child.callId))
@@ -941,14 +973,14 @@ window.__ModuleLoader__.load({
 		* @param props - whole-Tool owner data and the Tool-owned child-slot share.
 		* @returns the Tool call tree.
 		*/
-		function ToolCallTree({ renderSlot, node, selectedCallId, cwd, openFile, inspectCall, t }) {
+		function ToolCallTree({ renderSlot, node, selectedCallId, cwd, openFile, loadImage, inspectCall, t }) {
 			const block = node.data.root;
 			return (0, react_jsx_runtime.jsx)(ToolCallBranch, {
 				renderSlot,
 				block,
 				selectedCallId,
 				cwd,
-				openFile,
+				openFile, loadImage,
 				inspectCall,
 				t
 			});

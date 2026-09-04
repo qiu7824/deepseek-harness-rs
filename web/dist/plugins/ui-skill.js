@@ -8,6 +8,24 @@ window.__ModuleLoader__.load({
 		let react = require("react");
 		let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-skill\src\client\SkillRow.module.css.mjs
+		function rankSkillNames(skills, query) {
+            const needle = query.trim().toLocaleLowerCase();
+            if (!needle) return skills;
+            return skills.map((skill, order) => {
+                const name = skill.name.toLocaleLowerCase();
+                const exact = name.indexOf(needle);
+                if (exact >= 0) return { skill, order, score: exact === 0 ? 0 : 100 + exact };
+                let cursor = 0;
+                let gaps = 0;
+                for (const character of needle) {
+                    const index = name.indexOf(character, cursor);
+                    if (index < 0) return null;
+                    gaps += index - cursor;
+                    cursor = index + 1;
+                }
+                return { skill, order, score: 1000 + gaps };
+            }).filter(Boolean).sort((a, b) => a.score - b.score || a.order - b.order).map((item) => item.skill);
+        }
 		const css = "._CVIIG_card{flex-direction:column;display:flex}._CVIIG_row{align-items:center;min-width:0;height:24px;display:flex;position:relative;overflow:hidden}._CVIIG_row[data-expandable]{cursor:pointer}._CVIIG_card[data-state=running] ._CVIIG_row:after{content:\"\";background:linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent) 55%, transparent 100%);pointer-events:none;width:300px;animation:2.6s ease-out infinite _CVIIG_dsh-skill-row-sweep;position:absolute;inset:0 auto 0 0}@keyframes _CVIIG_dsh-skill-row-sweep{0%{left:-300px}90%,to{left:100%}}._CVIIG_leading{width:16px;height:16px;color:var(--dsw-alias-label-tertiary);flex:none;justify-content:center;align-items:center;margin-right:6px;display:inline-flex;position:relative}._CVIIG_chevron{color:var(--dsw-alias-label-secondary)}._CVIIG_iconIdle{opacity:1;transition:opacity .1s;display:inline-flex}._CVIIG_chevronHover{opacity:0;margin:auto;transition:opacity .1s;position:absolute;inset:0}._CVIIG_row:hover ._CVIIG_iconIdle{opacity:0}._CVIIG_row:hover ._CVIIG_chevronHover{opacity:1}._CVIIG_title{color:var(--dsw-alias-label-secondary);flex:none;font-size:14px;line-height:24px}._CVIIG_separator{background:var(--dsw-alias-label-caption);border-radius:1px;flex:none;width:2px;height:2px;margin:0 8px}._CVIIG_summary{text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--dsw-alias-label-tertiary);flex:auto;font-size:14px;line-height:24px;overflow:hidden}._CVIIG_errorSummary{color:var(--dsw-alias-state-error-primary)}._CVIIG_bodyWrap{flex-direction:column;display:flex}._CVIIG_instructionsCard{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-markdown-code-block);border-radius:12px;flex-direction:column;max-height:260px;margin:4px 0 4px 4px;display:flex;overflow:hidden}._CVIIG_instructionsHeader{border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-markdown-code-block-banner);color:var(--dsw-alias-label-caption);text-transform:uppercase;letter-spacing:.04em;flex:none;padding:8px 12px;font-size:11px;font-weight:500;line-height:16px}._CVIIG_instructions{white-space:pre-wrap;overflow-wrap:anywhere;min-height:0;font:var(--dsw-font-markdown-code-block-small);color:var(--dsw-alias-label-secondary);margin:0;padding:10px 12px 12px;overflow:auto}._CVIIG_instructions[data-error]{color:var(--dsw-alias-state-error-primary)}._CVIIG_instructions::-webkit-scrollbar-thumb{background-clip:padding-box;border:2px solid #0000;border-radius:6px}._CVIIG_instructions::-webkit-scrollbar-track{margin:6px 0}._CVIIG_inspectButton{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);cursor:pointer;opacity:0;border-radius:999px;align-self:flex-start;align-items:center;gap:4px;margin:4px 0 2px 4px;padding:2px 8px;font-size:11px;line-height:16px;transition:opacity .1s;display:inline-flex}._CVIIG_card:hover ._CVIIG_inspectButton,._CVIIG_inspectButton:focus-visible{opacity:1}._CVIIG_inspectButton:hover{background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}._CVIIG_visuallyHidden{clip:rect(0 0 0 0);white-space:nowrap;width:1px;height:1px;position:absolute;overflow:hidden}@media (prefers-reduced-motion:reduce){._CVIIG_card[data-state=running] ._CVIIG_row:after{animation:none;display:none}._CVIIG_iconIdle,._CVIIG_chevronHover,._CVIIG_inspectButton{transition:none}}";
 		const tagId = "@deepseek-ai/dsh-client-ui-skill/SkillRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
@@ -282,7 +300,7 @@ window.__ModuleLoader__.load({
 				async candidates(session, { query, signal }) {
 					const skills = await fetchCatalog(session.sessionId);
 					if (signal.aborted) return [];
-					return skills.filter((skill) => skill.name.startsWith(query)).map((skill) => ({
+					return rankSkillNames(skills, query).map((skill) => ({
 						name: skill.name,
 						description: skill.modelInvocable ? skill.description : `${t("menu.userOnly")} · ${skill.description}`
 					}));

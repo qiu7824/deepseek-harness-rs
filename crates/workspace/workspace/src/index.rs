@@ -1172,5 +1172,31 @@ fn parse_iso(timestamp: &str) -> u64 {
 }
 
 fn basename(path: &str) -> &str {
-    path.rsplit(['/', '\\']).next().unwrap_or(path)
+    let display = path.strip_prefix(r"\\?\").unwrap_or(path);
+    let trimmed = display.trim_end_matches(['/', '\\']);
+    if trimmed.is_empty()
+        || (trimmed.len() == 2
+            && trimmed.as_bytes()[0].is_ascii_alphabetic()
+            && trimmed.ends_with(':'))
+    {
+        return display;
+    }
+    trimmed.rsplit(['/', '\\']).next().unwrap_or(display)
+}
+
+#[cfg(test)]
+mod root_title_tests {
+    #[test]
+    fn roots_keep_a_nonempty_title_and_children_use_the_last_component() {
+        for (path, expected) in [
+            ("/", "/"),
+            ("C:\\", "C:\\"),
+            (r"\\?\C:\", "C:\\"),
+            ("C:/", "C:/"),
+            ("C:\\work\\", "work"),
+            ("/work/project/", "project"),
+        ] {
+            assert_eq!(super::basename(path), expected);
+        }
+    }
 }

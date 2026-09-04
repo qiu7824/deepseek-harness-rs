@@ -372,7 +372,13 @@ pub fn taskkill_process_tree(pid: i32) {
     // exit races, and a missing taskkill binary are as tolerable here as
     // ESRCH is for a POSIX group signal.
     use std::process::Stdio;
-    let _ = std::process::Command::new("taskkill")
+    let mut command = std::process::Command::new("taskkill");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let _ = command
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -799,6 +805,8 @@ pub fn spawn_subprocess(
     let env = child_env(spec.env.as_deref());
 
     let mut command = Command::new(program);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
     command
         .args(&spec.argv[1..])
         .current_dir(&spec.cwd)

@@ -7,6 +7,8 @@ permissions:
   contents: write
 jobs:
   build:
+    env:
+      CARGO_BUILD_JOBS: "2"
     strategy:
       fail-fast: false
       matrix:
@@ -43,14 +45,17 @@ jobs:
       - name: 版本与产品门禁
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.2-alpha.4"
+          VERSION="$(python tools/verify_release_version.py --print-version)"
           python tools/verify_release_version.py --version "$VERSION"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then python tools/verify_release_version.py --version "${GITHUB_REF_NAME#v}"; fi
           python tools/verify_free_model_catalog.py --model mimo-v2.5-free
           python tools/verify_product_surface.py
-          python -m unittest tools.tests.test_history_window_contract tools.tests.test_product_surface_contract tools.tests.test_v012_surface_contract tools.tests.test_v012_alpha2_sync_contract tools.tests.test_v012_alpha4_sync_contract tools.tests.test_release_integrity tools.tests.test_launcher_release_contract tools.tests.test_client_performance -v
+          python -m unittest tools.tests.test_history_window_contract tools.tests.test_product_surface_contract tools.tests.test_rust_ui_contract tools.tests.test_rust_runtime_contract tools.tests.test_release_product_contract tools.tests.test_release_integrity tools.tests.test_launcher_release_contract tools.tests.test_client_performance -v
           node tools/tests/connection_controller_harness.js
           node tools/tests/turn_usage_optional_harness.js
-          cargo test --locked -p dsh-launcher -p dsh-schedule -p dsh-host-plugin-inventory -p dsh-host-apiproxy -p dsh-typert-protocol -p dsh-web -p dsh-web-fetch-http -p dsh-web-search-deepseek -p dsh-tool-web -p dsh-storage-domain -p dsh-storage-json -p dsh-session-projection-cache -p dsh-attachment-local -p dsh-llm-deepseek
+          node tools/tests/rust_release_ui_harness.cjs
+          node tools/tests/test_history_compaction.mjs
+          cargo test --locked -p dsh-launcher -p dsh-schedule -p dsh-host-plugin-inventory -p dsh-host-apiproxy -p dsh-typert-protocol -p dsh-web -p dsh-web-fetch-http -p dsh-web-search-deepseek -p dsh-tool-web -p dsh-workspace -p dsh-tool-fs -p dsh-subprocess-local -p dsh-host -p dsh-storage-domain -p dsh-storage-json -p dsh-session-projection-cache -p dsh-attachment-local -p dsh-llm-deepseek -- --test-threads=1
           for file in release/plugins/*/lib/client.js; do node --check "$file"; done
           for file in web/dist/plugins/*.js; do node --check "$file"; done
           cargo fmt --all -- --check
@@ -63,7 +68,7 @@ jobs:
         id: release
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"; [[ "$VERSION" == "$GITHUB_REF_NAME" ]] && VERSION="0.1.2-alpha.4"
+          VERSION="$(python tools/verify_release_version.py --print-version)"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "prefix=deepseek-harness-rs-v${VERSION}-${{ matrix.platform }}-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
       - name: 生成便携包
@@ -101,8 +106,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $refName = "${env:GITHUB_REF_NAME}"
-          $version = if ($refName.StartsWith('v')) { $refName.Substring(1) } else { '0.1.2-alpha.4' }
+          $version = python tools/verify_release_version.py --print-version
+          if ($LASTEXITCODE -ne 0) { throw 'Release version could not be read' }
           choco install innounp --version 0.50 -y --no-progress
           if ($LASTEXITCODE -ne 0) { throw 'innounp installation failed' }
           $compilerInstaller = Join-Path $env:RUNNER_TEMP 'innosetup-6.1.2.exe'
@@ -211,6 +216,7 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with: { path: dist, merge-multiple: true }
       - name: 合并发布校验和
@@ -222,5 +228,6 @@ jobs:
       - uses: softprops/action-gh-release@e5ee6bc58a36b838b92fc1217f2e4b414b5abcc8
         with:
           prerelease: ${{ contains(github.ref_name, '-') }}
-          generate_release_notes: true
+          body_path: release/notes/${{ github.ref_name }}.md
+          generate_release_notes: false
           files: dist/*

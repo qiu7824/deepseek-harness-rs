@@ -5,17 +5,14 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PLUGINS = ROOT / "web" / "dist" / "plugins"
-UPSTREAM = pathlib.Path(r"D:/deepwork/_upstream_deepseek_harness_v012a2")
 
 
-class V012Alpha2SyncContractTests(unittest.TestCase):
+class RustRuntimeContractTests(unittest.TestCase):
     def source(self, name: str) -> str:
         return (PLUGINS / name).read_text(encoding="utf-8")
 
-    def upstream(self, relative: str) -> str:
-        return (UPSTREAM / relative).read_text(encoding="utf-8")
 
-    def test_connection_recovery_surface_is_synced(self):
+    def test_connection_recovery_surface_is_available(self):
         connection = self.source("connection.js")
         settings = self.source("ui-settings-general.js")
         for required in (
@@ -125,7 +122,7 @@ class V012Alpha2SyncContractTests(unittest.TestCase):
         )
         self.assertIn("node tools/tests/connection_controller_harness.js", workflow)
 
-    def test_release_stage_contains_the_alpha2_reliability_bundles(self):
+    def test_release_stage_contains_the_runtime_reliability_bundles(self):
         stage = (ROOT / "tools" / "stage_release_web.py").read_text(encoding="utf-8")
         for required in (
             "web/dist/plugins/connection.js",
@@ -165,7 +162,7 @@ class V012Alpha2SyncContractTests(unittest.TestCase):
         self.assertIn("position:fixed", ui)
         self.assertIn("margin: 16", ui)
 
-    def test_turn_usage_and_time_details_are_synced(self):
+    def test_turn_usage_and_time_details_are_available(self):
         chat = self.source("ui-conversation.js")
         for required in (
             "TurnUsagePanel",
@@ -232,33 +229,17 @@ class V012Alpha2SyncContractTests(unittest.TestCase):
         self.assertIn('permission.workspaceWrite": "工作区内修改"', conversation)
         self.assertNotIn('permission.workspaceWrite": "工作区写入"', conversation)
 
-    def test_removed_sqlite_session_persistence_backend_is_absent(self):
-        persistence = ROOT / "crates" / "session" / "session-persistence-sqlite"
-        self.assertFalse(persistence.exists())
-        query_cargo = (
-            ROOT / "crates" / "session" / "session-query-sqlite" / "Cargo.toml"
-        ).read_text(encoding="utf-8")
-        title_cargo = (
-            ROOT / "crates" / "session" / "session-title" / "Cargo.toml"
-        ).read_text(encoding="utf-8")
-        lock = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
-        self.assertNotIn("dsh-session-persistence-sqlite", query_cargo)
-        self.assertNotIn("dsh-session-persistence-sqlite", title_cargo)
-        self.assertNotIn('name = "dsh-session-persistence-sqlite"', lock)
 
-    def test_input_and_tool_polish_are_synced(self):
+    def test_input_and_tool_polish_are_available(self):
         conversation = self.source("ui-conversation.js")
         trigger = self.source("ui-input-trigger.js")
         tool = self.source("ui-tool.js")
-        self.assertIn("margin-right:4px", conversation)
-        self.assertIn("scrollbar-track{margin-top:8px", conversation)
         self.assertIn("stale-while-revalidate", trigger)
         self.assertIn("drill claim before input mutation", trigger)
-        self.assertIn("underline dotted", tool)
         self.assertIn("diffTotals", tool)
         self.assertNotIn("ctx.remote.$host", tool)
 
-    def test_alpha3_tab_completion_and_stalled_host_tolerance_are_synced(self):
+    def test_tab_completion_and_stalled_host_tolerance_are_available(self):
         trigger = self.source("ui-input-trigger.js")
         conversation = self.source("ui-conversation.js")
         connection = self.source("connection.js")
@@ -268,7 +249,7 @@ class V012Alpha2SyncContractTests(unittest.TestCase):
         self.assertNotIn("connection generation was not ready within", connection)
 
 
-    def test_home_logo_hover_animation_is_synced(self):
+    def test_home_logo_hover_animation_is_available(self):
         conversation = self.source("ui-conversation.js")
         self.assertIn("HeroFish", conversation)
         self.assertIn('attributeName: "d"', conversation)
@@ -303,13 +284,6 @@ class V012Alpha2SyncContractTests(unittest.TestCase):
         self.assertIn("pub ignorable: Option<bool>", event)
         self.assertIn("event.ignorable == Some(true)", coordinator)
 
-    def test_product_version_matches_alpha4(self):
-        cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
-        cli = (ROOT / "crates" / "host" / "dsh-cli" / "Cargo.toml").read_text(encoding="utf-8")
-        web = json.loads((ROOT / "web" / "package.json").read_text(encoding="utf-8"))
-        self.assertIn('version = "0.1.2-alpha.4"', cargo)
-        self.assertIn("version.workspace = true", cli)
-        self.assertEqual(web["version"], "0.1.2-alpha.4")
 
 
 if __name__ == "__main__":

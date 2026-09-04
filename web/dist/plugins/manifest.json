@@ -1,5 +1,5 @@
 {
-  "rev": "v012-alpha4-web-sync-20260902",
+  "rev": "rust-v0.1.3-alpha.1",
   "entries": [
     {
       "id": "@deepseek-ai/dsh-typert-registry",
@@ -179,7 +179,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-tool",
       "url": "/plugins/ui-tool.js",
-      "rev": "e3be50f62f02e3c4",
+      "rev": "35ce6cf76a9ee2f8",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-locale",
@@ -213,7 +213,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-workspace",
       "url": "/plugins/ui-workspace.js",
-      "rev": "9785b8a8360deb82",
+      "rev": "5ec0908265bb5f0b",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
@@ -249,7 +249,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-skill",
       "url": "/plugins/ui-skill.js",
-      "rev": "4523b44fb1f4d6d9",
+      "rev": "77c005a66b0181bf",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-locale",

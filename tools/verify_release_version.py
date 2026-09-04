@@ -31,6 +31,10 @@ def verify(version: str, binary: pathlib.Path | None = None) -> None:
         raise ValueError(f"release version {version} does not match workspace {expected}")
     if web_version() != expected:
         raise ValueError(f"web version {web_version()} does not match workspace {expected}")
+    installer = (ROOT / "packaging/windows/deepseek-harness-rs.iss").read_text(encoding="utf-8")
+    declared = re.search(r'^#define MyAppVersion "([^"]+)"', installer, re.MULTILINE)
+    if declared is None or declared.group(1) != expected:
+        raise ValueError("installer version does not match workspace")
     if binary is not None:
         if not binary.is_file():
             raise FileNotFoundError(f"missing release binary: {binary}")
@@ -42,9 +46,15 @@ def verify(version: str, binary: pathlib.Path | None = None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", required=True)
+    parser.add_argument("--version")
+    parser.add_argument("--print-version", action="store_true")
     parser.add_argument("--binary", type=pathlib.Path)
     args = parser.parse_args()
+    if args.print_version:
+        print(workspace_version())
+        return
+    if args.version is None:
+        parser.error("--version is required unless --print-version is used")
     verify(args.version, args.binary.resolve() if args.binary else None)
     print(args.version)
 

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use futures::FutureExt;
 
 mod client_plugins;
+mod model_discovery;
 mod web_preview;
 
 #[cfg(windows)]
@@ -503,41 +504,7 @@ async fn discover_openai_compatible_models(
     }
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("model discovery returned invalid JSON: {error}"))?;
-    let data = value
-        .get("data")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "model discovery response needs a data array".to_string())?;
-    let mut seen = std::collections::HashSet::new();
-    let mut models = Vec::new();
-    for item in data {
-        let Some(id) = item.get("id").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        if id.is_empty() || !seen.insert(id.to_string()) {
-            continue;
-        }
-        models.push(dsh_llm::LlmDiscoveredModel {
-            id: id.to_string(),
-            name: item
-                .get("name")
-                .or_else(|| item.get("display_name"))
-                .and_then(serde_json::Value::as_str)
-                .filter(|name| !name.is_empty())
-                .map(str::to_string),
-            context_window: item
-                .get("context_window")
-                .or_else(|| item.get("context_length"))
-                .and_then(serde_json::Value::as_u64)
-                .filter(|value| *value > 0),
-            max_tokens: item
-                .get("max_output_tokens")
-                .or_else(|| item.get("max_tokens"))
-                .and_then(serde_json::Value::as_u64)
-                .filter(|value| *value > 0)
-                .or_else(|| dsh_llm_deepseek::inferred_model_max_tokens(id)),
-        });
-    }
-    Ok(models)
+    model_discovery::parse_model_listing(&value)
 }
 
 fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSettings, String> {

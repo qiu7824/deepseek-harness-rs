@@ -1,8 +1,14 @@
-# DeepSeek Harness Host → Rust 全量 1:1 移植状态
+# DeepSeek Harness Rust 实现与兼容状态
 
 > 基线：`@deepseek-ai/dsh-root 0.1.0-rc.5`
 > 源码（只读）：`D:\HermesTemp\deepseek-harness`
 > Rust 项目：`D:\deepwork\deepseek-harness-rs`
+
+## 当前产品边界
+
+当前发布线为 `0.1.3-alpha.1`。Rust Host 使用独立的有界双向历史窗口、目标页跳转、TurnNavigator、context-jump、原生启动器与主题扩展。运行时接口、存储格式和视觉效果按 Rust 产品契约维护。
+
+Session 保持 JSONL/Zstd v0 格式和稳定事件坐标；投影缓存使用逐记录 v5。未声明对新版 Node Session v1/v2 工件的导入支持。支持的协议、入口及限制以 README 和协议矩阵为准。
 
 ## 0. `0.1.2-alpha.4` 同步说明
 

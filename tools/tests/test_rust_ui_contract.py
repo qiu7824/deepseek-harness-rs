@@ -11,7 +11,7 @@ SUBAGENT_TOOL = ROOT / "crates" / "subagent" / "tool-subagent" / "src" / "lib.rs
 CODEX = ROOT / "crates" / "subagent" / "subagent-codex" / "src" / "lib.rs"
 
 
-class V012SurfaceContractTests(unittest.TestCase):
+class RustUiContractTests(unittest.TestCase):
     def test_conversation_width_is_draggable_and_persisted(self):
         source = CONVERSATION.read_text(encoding="utf-8")
         for required in (

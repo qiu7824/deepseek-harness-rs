@@ -264,7 +264,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("@deepseek-ai/dsh-client-ui-goal", manifest)
         self.assertIn('goal.phase === "blocked"', source)
 
-    def test_skin_center_is_an_official_style_bundled_plugin(self):
+    def test_skin_center_preserves_catalog_and_theme_activation(self):
         theme = (ROOT / "web" / "dist" / "plugins" / "ui-theme.js").read_text(encoding="utf-8")
         host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(encoding="utf-8")
         skin = (ROOT / "release" / "plugins" / "dsh-skin-center" / "lib" / "client.js").read_text(encoding="utf-8")
@@ -345,10 +345,9 @@ class ProductSurfaceContractTests(unittest.TestCase):
         for required in ("运行概览", "存储目录", "工作区", "host.describe", "workspace.list", "正式数据根"):
             self.assertIn(required, source)
 
-    def test_manual_windows_release_uses_the_same_fallback_version_as_packaging(self):
+    def test_manual_windows_release_reads_the_workspace_version(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("$refName.StartsWith('v')", workflow)
-        self.assertIn("else { '0.1.2-alpha.4' }", workflow)
+        self.assertIn("$version = python tools/verify_release_version.py --print-version", workflow)
         self.assertNotIn("TrimStart('v')", workflow)
 
     def test_release_workflow_gates_and_verifies_core_skin_executables(self):
@@ -358,7 +357,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
         launcher = (ROOT / "crates" / "host" / "dsh-launcher" / "src" / "main.rs").read_text(encoding="utf-8")
         launcher_cargo = (ROOT / "crates" / "host" / "dsh-launcher" / "Cargo.toml").read_text(encoding="utf-8")
         skin_installer = (ROOT / "crates" / "host" / "dsh-skin-installer" / "src" / "main.rs").read_text(encoding="utf-8")
-        self.assertIn("tools.tests.test_v012_surface_contract", workflow)
+        self.assertIn("tools.tests.test_rust_ui_contract", workflow)
         self.assertIn("python tools/verify_release_package.py", workflow)
         self.assertIn("--variant core", workflow)
         self.assertIn("--variant skin", workflow)

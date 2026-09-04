@@ -36,6 +36,43 @@ fn body_error(error: FsError) -> ToolBodyError {
     }
 }
 
+fn mutation_body_error(error: FsError, path: &str) -> ToolBodyError {
+    if error.code != FsErrorCode::FsNotObserved {
+        return body_error(error);
+    }
+    ToolBodyError {
+        message: format!(
+            "cannot modify \"{path}\": file has not been read — read the file, then retry (cause: {error})"
+        ),
+        info: Some(dsh_tools::ToolErrorInfo {
+            name: "FsError".into(),
+            code: error.code.as_str().into(),
+        }),
+    }
+}
+
+#[cfg(test)]
+mod mutation_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn unread_mutations_keep_path_code_and_original_reason() {
+        for cause in ["edit requires observation", "write target already exists"] {
+            let error = mutation_body_error(
+                FsError::new(cause, FsErrorCode::FsNotObserved),
+                "/work/file.txt",
+            );
+            assert!(
+                error
+                    .message
+                    .starts_with("cannot modify \"/work/file.txt\": file has not been read")
+            );
+            assert!(error.message.contains(cause));
+            assert_eq!(error.info.unwrap().code, "FS_NOT_OBSERVED");
+        }
+    }
+}
+
 fn actor(exec: &ToolExecution) -> FsObservationActorHandle {
     FsObservationActorHandle {
         session_key: exec.agent.as_ref().map(|a| a.session().identity()),
@@ -112,7 +149,7 @@ async fn edit_intent(
     match std::panic::AssertUnwindSafe(future).catch_unwind().await {
         Ok(value) => Ok(downcast_arc::<FsEditGuard>(&value).map(|v| v.as_ref().clone())),
         Err(value) => match value.downcast::<FsError>() {
-            Ok(error) => Err(body_error(*error)),
+            Ok(error) => Err(mutation_body_error(*error, &target.display_path)),
             Err(_) => Err(ToolBodyError::plain(
                 "tool pipeline panicked while resolving the edit intent",
             )),
@@ -389,7 +426,7 @@ impl Service {
                     ])
                 },
                 serde_json::json!({"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"image":{"type":"object","additionalProperties":false,"properties":{"attachmentId":{"type":"string"},"mediaType":{"type":"string"},"bytes":{"type":"integer"},"width":{"type":"integer"},"height":{"type":"integer"},"name":{"type":"string"}},"required":["attachmentId","mediaType","bytes","width","height"]}},"required":["path","image"]}),
-                None,
+                Some(Arc::new(|_args, value| Ok(serde_json::json!({"path": value["path"]})))),
             ),
             timeout_ms: None,
             is_concurrency_safe: Some(Arc::new(|_| true)),
@@ -460,7 +497,7 @@ impl Service {
                     let o =
                         s.fs.write_text(&t, c, intent.as_ref(), Some(signal(&e)), None)
                             .await
-                            .map_err(body_error)?;
+                            .map_err(|error| mutation_body_error(error, &t.display_path))?;
                     emit_observed(
                         &s.ctx,
                         &t,
@@ -577,7 +614,7 @@ impl Service {
                             None,
                         )
                         .await
-                        .map_err(body_error)?;
+                        .map_err(|error| mutation_body_error(error, &t.display_path))?;
                     emit_observed(
                         &s.ctx,
                         &t,

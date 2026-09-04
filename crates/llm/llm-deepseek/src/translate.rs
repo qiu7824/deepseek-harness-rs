@@ -7,6 +7,41 @@ use serde::Deserialize;
 
 use crate::sse::DONE;
 
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn empty_and_null_continuations_preserve_interleaved_tool_identities() {
+        let mut translator = Translator::new();
+        for calls in [
+            json!([{"index":0,"id":"call-a","function":{"name":"read","arguments":"{"}}, {"index":1,"id":"call-b","function":{"name":"write","arguments":"{"}}]),
+            json!([{"index":1,"id":"","function":{"name":"","arguments":"}"}}, {"index":0,"id":null,"function":{"name":null,"arguments":"}"}}]),
+        ] {
+            translator
+                .consume(&json!({"choices":[{"delta":{"tool_calls":calls}}]}).to_string())
+                .unwrap();
+        }
+        let completed = translator.consume(DONE).unwrap();
+        let blocks: Vec<_> = completed
+            .iter()
+            .filter_map(|chunk| {
+                if let StreamChunk::BlockEnd { block, .. } = chunk {
+                    Some(serde_json::to_value(block).unwrap())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["id"], "call-a");
+        assert_eq!(blocks[0]["name"], "read");
+        assert_eq!(blocks[1]["id"], "call-b");
+        assert_eq!(blocks[1]["name"], "write");
+    }
+}
+
 fn failure(message: impl Into<String>, code: impl Into<String>) -> LlmFailure {
     LlmFailure {
         message: message.into(),
@@ -186,12 +221,12 @@ impl Translator {
                     self.tools.insert(call.index, block);
                 }
                 let block = self.tools.get_mut(&call.index).expect("tool block");
-                if let Some(id) = call.id {
+                if let Some(id) = call.id.filter(|value| !value.is_empty()) {
                     block.call_id = id;
                 }
                 let mut arguments = String::new();
                 if let Some(function) = call.function {
-                    if let Some(name) = function.name {
+                    if let Some(name) = function.name.filter(|value| !value.is_empty()) {
                         block.name = name;
                     }
                     arguments = function.arguments.unwrap_or_default();

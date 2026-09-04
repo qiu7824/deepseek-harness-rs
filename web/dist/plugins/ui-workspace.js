@@ -739,6 +739,7 @@ window.__ModuleLoader__.load({
 					className: clsx(Rows_module_css_default.sessionRow, selected && Rows_module_css_default.selected, menuOpen && Rows_module_css_default.menuOpen, flat && !showStatus && Rows_module_css_default.flatSessionRowWithoutStatus, drag?.marker === "before" && Rows_module_css_default.dropBefore, drag?.marker === "after" && Rows_module_css_default.dropAfter),
 					role: "treeitem",
 					"aria-selected": selected,
+                        "data-workspace-session-id": node.id,
 					onClick: () => {
 						onOpen(node.id);
 					},
@@ -1218,7 +1219,7 @@ window.__ModuleLoader__.load({
 			return e.clientY < rect.top + rect.height / 2 ? "before" : "after";
 		}
 		/** The scrolling session tree; unmounting drops the sessions subscription and expand-all state. */
-		function SessionTree({ useSessions, startSession, open, forkSession, workspaces, archivedSessionIds, onRenameRequest, onDeleteRequest, onSessionRename, onSessionArchive, insertWorkspaceBefore, insertSessionBefore, orderBy, groupExpansion, setGroupExpanded, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, t }) {
+		function SessionTree({ revealSessionId, useSessions, startSession, open, forkSession, workspaces, archivedSessionIds, onRenameRequest, onDeleteRequest, onSessionRename, onSessionArchive, insertWorkspaceBefore, insertSessionBefore, orderBy, groupExpansion, setGroupExpanded, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, t }) {
 			const list = useSessions((s) => s);
 			const current = list.current;
 			const [expandedSessionGroups, setExpandedSessionGroups] = (0, react.useState)([]);
@@ -1238,6 +1239,12 @@ window.__ModuleLoader__.load({
 				setGroupExpanded,
 				groupExpansion
 			]);
+            (0, react.useEffect)(() => {
+                if (!revealSessionId || !list.byId[revealSessionId]) return;
+                const key = workspaces.find((workspace) => workspace.sessionIds.includes(revealSessionId))?.workspaceId ?? "";
+                setGroupExpanded(key, true);
+                setExpandedSessionGroups((keys) => keys.includes(key) ? keys : [...keys, key]);
+            }, [revealSessionId, list.byId, workspaces, setGroupExpanded]);
 			const expandedGroups = (0, react.useMemo)(() => Object.entries(groupExpansion).filter(([, expanded]) => expanded).map(([key]) => key), [groupExpansion]);
 			const ungroupedSessionIds = (0, react.useMemo)(() => {
 				const accounted = new Set(workspaces.flatMap((workspace) => workspace.sessionIds));
@@ -1690,6 +1697,28 @@ window.__ModuleLoader__.load({
 			]);
 			const [query, setQuery] = (0, react.useState)("");
 			const [searchExpanded, setSearchExpanded] = (0, react.useState)(false);
+            const [revealSessionId, setRevealSessionId] = (0, react.useState)(null);
+            const browserRoot = (0, react.useRef)(null);
+            const openSearchResult = (sessionId) => {
+                setQuery("");
+                setSearchExpanded(false);
+                setRevealSessionId(sessionId);
+                open(sessionId);
+            };
+            (0, react.useEffect)(() => {
+                if (!revealSessionId || query.trim()) return;
+                const root = browserRoot.current;
+                if (!root) return;
+                let frame = 0;
+                let attempts = 0;
+                const reveal = () => {
+                    const row = Array.from(root.querySelectorAll("[data-workspace-session-id]")).find((node) => node.dataset.workspaceSessionId === revealSessionId);
+                    if (row) { row.scrollIntoView({ block: "nearest" }); setRevealSessionId(null); }
+                    else if (++attempts < 120) frame = requestAnimationFrame(reveal);
+                };
+                frame = requestAnimationFrame(reveal);
+                return () => cancelAnimationFrame(frame);
+            }, [revealSessionId, query, workspaces]);
 			const normalizedQuery = sanitizeSearchQuery(query).trim();
 			const [remoteSearch, setRemoteSearch] = (0, react.useState)({
 				query: "",
@@ -2004,9 +2033,10 @@ window.__ModuleLoader__.load({
 					}),
 					(0, react_jsx_runtime.jsx)("div", {
 						className: WorkspaceBrowser_module_css_default.listArea,
-						children: wide && (normalizedQuery !== "" ? (0, react_jsx_runtime.jsx)(SearchResults, {
+						ref: browserRoot,
+                        children: wide && (normalizedQuery !== "" ? (0, react_jsx_runtime.jsx)(SearchResults, {
 							useSessions,
-							open,
+							open: openSearchResult,
 							workspaces,
 							archivedSessionIds,
 							query: normalizedQuery,
@@ -2027,6 +2057,7 @@ window.__ModuleLoader__.load({
 							setSessionOrder: actions.setSessionOrder,
 							t
 						}) : (0, react_jsx_runtime.jsx)(SessionTree, {
+                            revealSessionId,
 							useSessions,
 							onSessionRename,
 							onSessionArchive,
