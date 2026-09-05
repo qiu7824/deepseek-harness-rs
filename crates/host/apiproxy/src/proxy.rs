@@ -1396,6 +1396,20 @@ impl ApiProxyService {
         request: RpcRequest<crate::api::credentials::CredentialsSetRequest>,
     ) -> RpcResponse<serde_json::Value> {
         use dsh_credentials::CredentialRef;
+        if request
+            .payload
+            .reference
+            .to_ascii_uppercase()
+            .starts_with("DSH_OAUTH_")
+        {
+            return err(
+                request.rpc_id,
+                RpcError::BadRequest(RpcErrorBody {
+                    message: "账号凭据请通过账号管理修改".into(),
+                    details: crate::api::rpc::BadRequestDetails { issues: vec![] },
+                }),
+            );
+        }
 
         let Some(provider) = self.credentials() else {
             return err(
@@ -1443,6 +1457,20 @@ impl ApiProxyService {
         request: RpcRequest<crate::api::credentials::CredentialsUnsetRequest>,
     ) -> RpcResponse<serde_json::Value> {
         use dsh_credentials::CredentialRef;
+        if request
+            .payload
+            .reference
+            .to_ascii_uppercase()
+            .starts_with("DSH_OAUTH_")
+        {
+            return err(
+                request.rpc_id,
+                RpcError::BadRequest(RpcErrorBody {
+                    message: "账号凭据请通过账号管理修改".into(),
+                    details: crate::api::rpc::BadRequestDetails { issues: vec![] },
+                }),
+            );
+        }
 
         let Some(provider) = self.credentials() else {
             return err(
@@ -1861,6 +1889,13 @@ impl ApiProxyService {
                     .into_iter()
                     .map(|model| DiscoveredModelView {
                         id: model.id,
+                        description: model.description,
+                        api: model.api,
+                        reasoning_default: model.reasoning_default,
+                        effort_descriptions: model.effort_descriptions,
+                        supports_reasoning_summaries: model.supports_reasoning_summaries,
+                        supported_parameters: model.supported_parameters,
+                        available: model.available,
                         reasoning_efforts: model.reasoning_efforts,
                         input: model.input,
                         name: model.name,

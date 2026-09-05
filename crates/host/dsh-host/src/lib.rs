@@ -17,9 +17,12 @@ mod client_plugins;
 #[cfg(test)]
 mod context_stats_test;
 mod deepseek_settings;
+mod free_catalog;
+mod free_probe;
 mod model_capabilities;
 mod model_discovery;
 mod provider_auth;
+mod provider_auth_catalog;
 pub mod runtime_paths;
 mod web_preview;
 
@@ -145,10 +148,28 @@ fn packaged_resource(relative: &str) -> std::path::PathBuf {
     })
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenAiCompatibleModelConfig {
     id: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    api: Option<String>,
+    #[serde(default)]
+    reasoning_default: Option<String>,
+    #[serde(default)]
+    effort_descriptions: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    supports_reasoning_summaries: Option<bool>,
+    #[serde(default)]
+    supported_parameters: Option<Vec<String>>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    account_scope: Option<String>,
+    #[serde(default)]
+    available: Option<bool>,
     #[serde(default)]
     enabled: Option<bool>,
     #[serde(default)]
@@ -167,14 +188,14 @@ struct OpenAiCompatibleModelConfig {
     reasoning_efforts: Option<ReasoningEffortsConfig>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 enum OpenAiInputModality {
     Text,
     Image,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
 enum ReasoningEffortsConfig {
     Disabled(bool),
@@ -198,7 +219,7 @@ fn resolved_reasoning_efforts(
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenAiCompatibleProviderConfig {
     #[serde(default)]
@@ -217,6 +238,14 @@ struct OpenAiCompatibleProviderConfig {
     #[serde(default)]
     default_input: Option<Vec<OpenAiInputModality>>,
     models: Vec<OpenAiCompatibleModelConfig>,
+    #[serde(default)]
+    model_preferences: serde_json::Value,
+    #[serde(default)]
+    legacy_model_scope: Option<String>,
+    #[serde(default)]
+    model_catalog_scope: Option<String>,
+    #[serde(default)]
+    catalog_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -239,6 +268,38 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
     model.insert("id".to_string(), Schema::string().required(true));
     model.insert("name".to_string(), Schema::string());
     model.insert("enabled".to_string(), Schema::boolean());
+    for field in [
+        "source",
+        "accountScope",
+        "description",
+        "api",
+        "reasoningDefault",
+    ] {
+        model.insert(field.into(), Schema::string());
+    }
+    model.insert(
+        "api".into(),
+        Schema::union(
+            [
+                "openai-completions",
+                "openai-responses",
+                "anthropic-messages",
+            ]
+            .into_iter()
+            .map(|api| Schema::constant(Data::String(api.into())))
+            .collect(),
+        ),
+    );
+    model.insert(
+        "effortDescriptions".into(),
+        Schema::dict(Schema::string(), None),
+    );
+    model.insert("supportsReasoningSummaries".into(), Schema::boolean());
+    model.insert(
+        "supportedParameters".into(),
+        Schema::array(Schema::string()),
+    );
+    model.insert("available".into(), Schema::boolean());
     model.insert(
         "contextWindow".to_string(),
         Schema::number().min(1.0).step(1.0),
@@ -263,6 +324,13 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
     );
 
     let mut profile = indexmap::IndexMap::new();
+    profile.insert(
+        "modelPreferences".into(),
+        provider_auth_catalog::preferences_schema(),
+    );
+    for field in ["legacyModelScope", "modelCatalogScope", "catalogRevision"] {
+        profile.insert(field.into(), Schema::string());
+    }
     profile.insert("authProvider".to_string(), Schema::string());
     profile.insert(
         "apiKeyEnv".to_string(),
@@ -600,15 +668,25 @@ fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSett
         {
             return Err("OAuth session references require an authProvider".to_string());
         }
-        if profile.models.is_empty() || profile.models.iter().any(|model| model.id.is_empty()) {
+        if profile.models.iter().any(|model| model.id.is_empty()) {
             return Err(format!(
                 "llm-pi-ai: provider \"{provider}\" needs at least one named model"
             ));
         }
-        const LEVELS: [&str; 8] = [
-            "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
-        ];
         for model in &profile.models {
+            if model.api.as_deref().is_some_and(|api| {
+                ![
+                    "openai-completions",
+                    "openai-responses",
+                    "anthropic-messages",
+                ]
+                .contains(&api)
+            }) {
+                return Err(format!(
+                    "llm-pi-ai: model {} uses an unsupported protocol",
+                    model.id
+                ));
+            }
             let Some(reasoning) = &model.reasoning_efforts else {
                 continue;
             };
@@ -629,7 +707,7 @@ fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSett
                 ));
             }
             for (level, wire) in efforts {
-                if !LEVELS.contains(&level.as_str()) {
+                if !model_capabilities::valid_level(level) {
                     return Err(format!(
                         "llm-pi-ai: provider \"{provider}\" model \"{}\" has unknown reasoning effort \"{level}\"",
                         model.id
@@ -673,6 +751,20 @@ impl OpenAiCompatibleAdapter {
             .get(provider)
             .cloned()
             .expect("registered OpenAI-compatible route has a profile");
+        let configured_models: Vec<OpenAiCompatibleModelConfig> = if let Some(auth) = &self.auth {
+            auth.effective_model_rows(
+                provider,
+                &serde_json::to_value(&profile).expect("provider JSON"),
+            )
+            .into_iter()
+            .filter_map(|mut model| {
+                model_capabilities::normalize_capacity_numbers(&mut model);
+                serde_json::from_value(model).ok()
+            })
+            .collect()
+        } else {
+            profile.models.clone()
+        };
         let resolved =
             dsh_llm_deepseek::resolve_adapter_options(&dsh_llm_deepseek::DeepSeekConfig {
                 api: Some(profile.api.clone()),
@@ -688,14 +780,17 @@ impl OpenAiCompatibleAdapter {
                 keyless: profile.keyless,
                 base_url: Some(profile.base_url.clone()),
                 models: Some(
-                    profile
-                        .models
+                    configured_models
                         .iter()
                         .map(|model| dsh_llm_deepseek::DeepSeekCatalogModel {
                             enabled: model.enabled,
                             id: model.id.clone(),
                             name: model.name.clone(),
-                            description: None,
+                            description: model.description.clone(),
+                            api: model.api.clone(),
+                            reasoning_default: model.reasoning_default.clone(),
+                            supports_reasoning_summaries: model.supports_reasoning_summaries,
+                            supported_parameters: model.supported_parameters.clone(),
                             context_window: model.context_window,
                             max_tokens: model.max_tokens,
                             reasoning_efforts: match model.reasoning_efforts.as_ref() {
@@ -724,6 +819,10 @@ impl OpenAiCompatibleAdapter {
                                                         _ => id.as_str(),
                                                     }
                                                     .to_string(),
+                                                    description: model
+                                                        .effort_descriptions
+                                                        .get(id)
+                                                        .cloned(),
                                                     wire: wire
                                                         .clone()
                                                         .unwrap_or_else(|| "off".to_string()),
@@ -756,15 +855,20 @@ impl OpenAiCompatibleAdapter {
                 let api_key_env = snapshot.api_key_env.clone();
                 let auth = auth.clone();
                 let auth_provider = auth_provider.clone();
+                let base_url = snapshot.base_url.clone();
+                let headers = snapshot.headers.clone();
                 Box::pin(async move {
                     if let (Some(auth), Some(provider)) = (auth, auth_provider) {
-                        return auth.resolve_token(&provider).await.map_err(|message| {
-                            dsh_llm::LlmError::new(
-                                &message,
-                                "AUTH_REQUIRED",
-                                dsh_llm::LlmErrorOptions::default(),
-                            )
-                        });
+                        return auth
+                            .resolve_request_token(&provider, &base_url, &headers)
+                            .await
+                            .map_err(|message| {
+                                dsh_llm::LlmError::new(
+                                    &message,
+                                    "AUTH_REQUIRED",
+                                    dsh_llm::LlmErrorOptions::default(),
+                                )
+                            });
                     }
                     let reference = dsh_credentials::credential_ref(&api_key_env);
                     Ok(credentials
@@ -803,21 +907,10 @@ impl dsh_llm::LlmAdapter for OpenAiCompatibleAdapter {
     }
 
     async fn list_models(&self, provider: &str) -> Vec<dsh_llm::LlmModelInfo> {
-        let hidden: std::collections::HashSet<String> = self
-            .profiles
-            .lock()
-            .get(provider)
-            .into_iter()
-            .flat_map(|profile| profile.models.iter())
-            .filter(|model| model.enabled == Some(false))
-            .map(|model| model.id.clone())
-            .collect();
-        self.delegate(provider)
-            .list_models(provider)
-            .await
-            .into_iter()
-            .filter(|model| !hidden.contains(&model.id))
-            .collect()
+        if let Some(auth) = &self.auth {
+            let _ = auth.ensure_catalog_scope(provider).await;
+        }
+        self.delegate(provider).list_models(provider).await
     }
 
     async fn resolve_model(
@@ -826,6 +919,9 @@ impl dsh_llm::LlmAdapter for OpenAiCompatibleAdapter {
         model: &str,
         signal: Option<&Arc<dyn Fn() -> bool + Send + Sync>>,
     ) -> dsh_llm::LlmResolvedModelInfo {
+        if let Some(auth) = &self.auth {
+            let _ = auth.ensure_catalog_scope(provider).await;
+        }
         self.delegate(provider)
             .resolve_model(provider, model, signal)
             .await
@@ -1451,6 +1547,7 @@ pub struct HostSpine {
     wallpaper_route: RouteDisposer,
     web_preview_route: RouteDisposer,
     provider_auth_route: RouteDisposer,
+    free_catalog_route: RouteDisposer,
     runtime_route: RouteDisposer,
     pub runtime_paths: Arc<runtime_paths::RuntimePaths>,
     data_root: std::path::PathBuf,
@@ -1522,6 +1619,7 @@ impl HostSpine {
                 self.web_server.shutdown().await;
                 (self.web_preview_route)();
                 (self.provider_auth_route)();
+                (self.free_catalog_route)();
                 (self.runtime_route)();
                 (self.wallpaper_route)();
                 (self.api_route)();
@@ -1575,6 +1673,7 @@ impl Drop for HostSpine {
             self.web_server.request_shutdown();
             (self.web_preview_route)();
             (self.provider_auth_route)();
+            (self.free_catalog_route)();
             (self.wallpaper_route)();
             (self.api_route)();
             eprintln!(
@@ -2440,6 +2539,9 @@ fn compose_host_in_fiber(
         )))
         .map_err(|error| format!("web-fetch-http: {error}"))?;
 
+    let account_auth = provider_auth::AccountAuth::new(credentials.clone(), settings.clone())?;
+    account_auth.set_catalog_root(runtime_paths.paths["cacheDirectory"].join("model-catalogs"));
+    let native_model_catalog = account_auth.clone();
     let deepseek_scope_for_options = deepseek_scope.clone();
     let deepseek_credentials = credentials.clone();
     let deepseek_attachment_ctx = ctx.clone();
@@ -2455,6 +2557,7 @@ fn compose_host_in_fiber(
                             dsh_llm::LlmErrorOptions::default(),
                         )
                     })?;
+                let value = native_model_catalog.effective_native_config(&value);
                 let config = deepseek_settings::config(&value).map_err(|message| {
                     dsh_llm::LlmError::new(&message, "INVALID_CONFIG", Default::default())
                 })?;
@@ -2510,11 +2613,11 @@ fn compose_host_in_fiber(
             },
         )
         .map_err(|error| format!("settings llm-pi-ai: {error}"))?;
-    let account_auth = provider_auth::AccountAuth::new(credentials.clone(), settings.clone())?;
     account_auth.set_claude_cli(claude_cli_auth::ClaudeCliAuth::new(
         subprocess.clone(),
         dsh_home.to_string_lossy().into_owned(),
     ));
+    futures::executor::block_on(account_auth.restore_catalog_bindings());
     let initial_pi = openai_profiles(&(pi_scope.get)())?;
     let pi_profiles = Arc::new(parking_lot::Mutex::new(initial_pi.providers));
     let pi_discovery_profiles = pi_profiles.clone();
@@ -2530,6 +2633,18 @@ fn compose_host_in_fiber(
                 .provider
                 .as_ref()
                 .and_then(|provider| profiles.lock().get(provider).cloned());
+            if let Some(profile) = &stored_profile
+                && profile.auth_provider.is_some()
+                && request.api_key.is_none()
+                && request
+                    .base_url
+                    .as_deref()
+                    .is_none_or(|base| same_discovery_endpoint(base, &profile.base_url))
+            {
+                return account_auth
+                    .discovered_catalog(request.provider.as_deref().expect("saved provider route"))
+                    .await;
+            }
             let stored_profile = stored_profile.filter(|profile| {
                 request
                     .base_url
@@ -3411,6 +3526,12 @@ fn compose_host_in_fiber(
         Vec::new()
     };
     let provider_auth_route = account_auth.register(&web_server);
+    let free_catalog_route = free_catalog::register(
+        &web_server,
+        &data_root,
+        &packaged_resource("free-model-verification.json"),
+        settings.clone(),
+    )?;
     let web_preview_route = web_preview::register(
         &web_server,
         workspace_registry.clone(),
@@ -3492,6 +3613,7 @@ fn compose_host_in_fiber(
     let runtime_route = runtime_paths.register(
         &web_server,
         agents.clone(),
+        subprocess.clone(),
         bind_host == BindHost::AllInterfaces,
     );
     let fetch_handler = Arc::new(to_fetch_handler(api_proxy.clone()));
@@ -3622,6 +3744,7 @@ fn compose_host_in_fiber(
         wallpaper_route,
         web_preview_route,
         provider_auth_route,
+        free_catalog_route,
         runtime_route,
         runtime_paths,
         data_root,
@@ -3856,6 +3979,7 @@ mod reasoning_tests {
             max_tokens: None,
             input: None,
             reasoning_efforts: None,
+            ..Default::default()
         }
     }
 

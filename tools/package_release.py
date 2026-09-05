@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from build_skin_payload import build_skin_payload
 from verify_release_version import verify as verify_release_version
+from free_model_evidence import package_defaults, validated_models
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SAFE_RELEASE_COMPONENT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
@@ -22,20 +23,7 @@ SAFE_RELEASE_COMPONENT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
 
 def verified_free_model(path: pathlib.Path) -> dict:
     report = json.loads(path.read_text(encoding="utf-8"))
-    if report.get("url") != "https://opencode.ai/zen/v1/models" or report.get("model") != "ling-3.0-flash-fin-free":
-        raise ValueError("free model verification does not match package defaults")
-    if report.get("pricingSource") != "https://opencode.ai/docs/zen/":
-        raise ValueError("free model verification requires official pricing evidence")
-    if not all(report.get(key) is True for key in ("available", "freePricingVerified", "harnessVerified", "inference", "streaming", "toolCall", "toolResult", "anonymous")):
-        raise ValueError("free model verification is incomplete")
-    if re.fullmatch(r"[a-f0-9]{64}", str(report.get("binarySha256", ""))) is None:
-        raise ValueError("free model verification must identify the tested runtime")
-    verified_at = datetime.fromisoformat(report["verifiedAt"])
-    if verified_at.tzinfo is None:
-        raise ValueError("free model verification timestamp requires a timezone")
-    age = (datetime.now(timezone.utc) - verified_at).total_seconds()
-    if age < -60 or age > 86400:
-        raise ValueError("free model verification must be from the last 24 hours")
+    validated_models(report)
     return report
 
 
@@ -112,35 +100,7 @@ def main() -> None:
     if args.variant == "free":
         (stage / "free-model-verification.json").write_text(json.dumps(free_verification, ensure_ascii=False, indent=2), encoding="utf-8")
         (stage / "settings.json").write_text(
-            json.dumps(
-                {
-                    "llm-pi-ai": {
-                        "providers": {
-                            "opencode-free": {
-                                "displayName": "OpenCode 免费模型",
-                                "keyless": True,
-                                "api": "openai-completions",
-                                "baseURL": "https://opencode.ai/zen/v1",
-                                "models": [
-                                    {
-                                        "id": "ling-3.0-flash-fin-free",
-                                        "name": "Ling 3.0 Flash Fin Free",
-                                        "contextWindow": 262144,
-                                        "maxTokens": 16384,
-                                        "reasoningEfforts": False,
-                                    }
-                                ],
-                            }
-                        }
-                    },
-                    "agent-default-model": {
-                        "provider": "opencode-free",
-                        "model": "ling-3.0-flash-fin-free",
-                    },
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps(package_defaults(free_verification, hashlib.sha256(core_source.read_bytes()).hexdigest()), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 

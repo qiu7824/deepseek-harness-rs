@@ -67,6 +67,20 @@ pub struct DiscoveredModelView {
     /// Model id the endpoint accepts.
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_default: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort_descriptions: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_reasoning_summaries: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supported_parameters: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_efforts: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<Vec<dsh_llm::ModelModality>>,

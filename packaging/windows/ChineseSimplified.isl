@@ -1,4 +1,4 @@
-; *** Inno Setup version 6.5.0+ Chinese Simplified messages ***
+﻿; *** Inno Setup version 6.1.2 Chinese Simplified messages ***
 ;
 ; To download user-contributed translations of this file, go to:
 ;   https://jrsoftware.org/files/istrans/
@@ -220,7 +220,6 @@ ReadyMemoGroup=开始菜单文件夹：
 ReadyMemoTasks=附加任务：
 
 ; *** TDownloadWizardPage wizard page and DownloadTemporaryFile
-DownloadingLabel2=正在下载文件...
 ButtonStopDownload=停止下载(&S)
 StopDownload=您确定要停止下载吗？
 ErrorDownloadAborted=下载已中止。
@@ -230,16 +229,8 @@ ErrorProgress=无效的进度：%1 / %2。
 ErrorFileSize=文件大小错误：预期 %1，实际 %2。
 
 ; *** TExtractionWizardPage wizard page and ExtractArchive
-ExtractingLabel=正在提取文件...
-ButtonStopExtraction=停止提取(&S)
-StopExtraction=您确定要停止提取吗？
-ErrorExtractionAborted=提取已中止。
-ErrorExtractionFailed=提取失败：%1
 
 ; *** Archive extraction failure details
-ArchiveIncorrectPassword=密码不正确。
-ArchiveIsCorrupted=压缩包已损坏。
-ArchiveUnsupportedFormat=不支持的压缩包格式。
 
 ; *** "Preparing to Install" wizard page
 WizardPreparing=正在准备安装
@@ -285,15 +276,11 @@ AbortRetryIgnoreSelectAction=选择操作
 AbortRetryIgnoreRetry=重试(&T)
 AbortRetryIgnoreIgnore=忽略错误并继续(&I)
 AbortRetryIgnoreCancel=取消安装
-RetryCancelSelectAction=选择操作
-RetryCancelRetry=重试(&T)
-RetryCancelCancel=取消
 
 ; *** Installation status messages
 StatusClosingApplications=正在关闭应用程序...
 StatusCreateDirs=正在创建目录...
 StatusExtractFiles=正在提取文件...
-StatusDownloadFiles=正在下载文件...
 StatusCreateIcons=正在创建快捷方式...
 StatusCreateIniEntries=正在创建 INI 条目...
 StatusCreateRegistryEntries=正在创建注册表条目...
@@ -323,14 +310,6 @@ FileAbortRetryIgnoreSkipNotRecommended=跳过此文件(&S)（不推荐）
 FileAbortRetryIgnoreIgnoreNotRecommended=忽略错误并继续(&I)（不推荐）
 SourceIsCorrupted=源文件已损坏。
 SourceDoesntExist=源文件“%1”不存在。
-SourceVerificationFailed=源文件验证失败：%1
-VerificationSignatureDoesntExist=签名文件“%1”不存在。
-VerificationSignatureInvalid=签名文件“%1”无效。
-VerificationKeyNotFound=签名文件“%1”使用了未知的密钥。
-VerificationFileNameIncorrect=文件名不正确。
-VerificationFileTagIncorrect=文件标签不正确。
-VerificationFileSizeIncorrect=文件大小不正确。
-VerificationFileHashIncorrect=文件哈希值不正确。
 ExistingFileReadOnly2=无法替换已存在的文件，它是只读的。
 ExistingFileReadOnlyRetry=移除只读属性并重试(&R)
 ExistingFileReadOnlyKeepExisting=保留已存在的文件(&K)
@@ -349,8 +328,6 @@ ErrorChangingAttr=尝试更改下列已存在的文件属性时出错：
 ErrorCreatingTemp=尝试在目标目录创建文件时出错：
 ErrorReadingSource=尝试读取下列源文件时出错：
 ErrorCopying=尝试复制下列文件时出错：
-ErrorDownloading=尝试下载文件时出错：
-ErrorExtracting=尝试提取压缩包时出错：
 ErrorReplacingExistingFile=尝试替换已存在的文件时出错：
 ErrorRestartReplace=重启并替换失败：
 ErrorRenamingTemp=尝试重命名下列目标目录中的一个文件时出错：
@@ -397,6 +374,9 @@ StatusUninstalling=正在卸载 %1...
 ; *** Shutdown block reasons
 ShutdownBlockReasonInstallingApp=正在安装 %1。
 ShutdownBlockReasonUninstallingApp=正在卸载 %1。
+DownloadingLabel=正在下载其他文件…
+ErrorFileHash1=文件哈希校验失败：%1
+ErrorFileHash2=文件哈希无效：应为 %1，实际为 %2
 
 ; The custom messages below aren't used by Setup itself, but if you make
 ; use of them in your scripts, you'll want to translate them.

@@ -117,8 +117,13 @@ def file_manifest(root: pathlib.Path) -> dict[str, tuple[int, str]]:
         return {}
     manifest: dict[str, tuple[int, str]] = {}
     for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
-        data = path.read_bytes()
-        manifest[path.relative_to(root).as_posix()] = (len(data), hashlib.sha256(data).hexdigest())
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                size += len(block)
+                digest.update(block)
+        manifest[path.relative_to(root).as_posix()] = (size, digest.hexdigest())
     return manifest
 
 
@@ -233,6 +238,28 @@ def managed_profile_links(home: pathlib.Path) -> list[str]:
     return sorted(links)
 
 
+def assert_no_installation_links(home: pathlib.Path, phase: str) -> None:
+    links = managed_profile_links(home)
+    if links:
+        raise AssertionError(f"Rust package created unnecessary installation module links during {phase}: {links!r}")
+
+
+def rust_package_manifest(binary: pathlib.Path) -> dict[str, object]:
+    """PACKAGE.json is a Rust distribution inventory, never a Node anchor."""
+    manifest_path = binary.parent / "PACKAGE.json"
+    if not manifest_path.is_file() or not (binary.parent / "web/dist").is_dir() or not (binary.parent / "config").is_dir():
+        raise AssertionError("--migrate-home requires a real Rust package with PACKAGE.json, web/dist and config")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    if not isinstance(manifest, dict) or manifest.get("host") != binary.name or manifest.get("variant") not in ("core", "skin", "free"):
+        raise AssertionError("Rust distribution manifest does not describe this packaged executable")
+    if any(key in manifest for key in ("dsh", "dependencies", "peerDependencies")):
+        raise AssertionError("migration fixture must use a Rust distribution, not a Node package manifest")
+    entry = manifest.get("entry")
+    if not isinstance(entry, str) or pathlib.Path(entry).name != entry or not (binary.parent / entry).is_file():
+        raise AssertionError("Rust package is missing its declared launcher")
+    return manifest
+
+
 def migrate_home(
     port: int, home: pathlib.Path, destination: pathlib.Path,
     fixtures: list[tuple[str, str]], sequence: int,
@@ -259,9 +286,7 @@ def migrate_home(
     environment_marker = environment / "migration-runtime-marker.txt"
     marker.write_bytes(b"persisted migration fixture\n")
     environment_marker.write_bytes(b"persisted runtime environment\n")
-    links = managed_profile_links(home)
-    if os.name == "nt" and not links:
-        raise AssertionError("--migrate-home requires a packaged binary that creates installer-managed profiles/node_modules links")
+    assert_no_installation_links(home, "fresh boot")
     described = require_ok(rpc(port, "settings.describe", {}, sequence), "settings.describe")
     sequence += 1
     section = next((view for view in described.get("namespaces", []) if view.get("ns") == "storage-paths"), None)
@@ -294,8 +319,8 @@ def migrate_home(
     if current is None:
         raise AssertionError("runtime restart never produced a different instanceId")
     assert_runtime_home(current, destination)
-    if not set(links).issubset(managed_profile_links(destination)):
-        raise AssertionError("migration did not recreate installer-managed package links in the new home")
+    assert_no_installation_links(home, "preserving the original home")
+    assert_no_installation_links(destination, "data migration")
     if session_manifest(home / "sessions") != sessions_before or workspace_manifest(home) != storages_before:
         raise AssertionError("migration changed the original session/workspace files")
     if session_manifest(destination / "sessions") != sessions_before or workspace_manifest(destination) != storages_before:
@@ -324,8 +349,8 @@ def migrate_home(
         raise AssertionError("post-migration writes still changed the original home")
     return sequence, {"runtime_instance_changed": True, "data_home_migrated": True,
                       "original_home_preserved": True, "runtime_environment_migrated": True,
-                      "new_home_writes_verified": True, "managed_profile_link_count": len(links),
-                      "managed_profile_link_paths": links}
+                      "new_home_writes_verified": True, "managed_profile_link_count": 0,
+                      "managed_profile_link_paths": [], "no_installation_module_links": True}
 
 
 def temporary_directory(stack: contextlib.ExitStack, prefix: str) -> pathlib.Path:
@@ -347,12 +372,8 @@ def main() -> int:
     repo = pathlib.Path(args.repo).resolve()
     if not binary.is_file():
         raise SystemExit(f"binary not found: {binary}")
-    if args.migrate_home and not (
-        (binary.parent / "PACKAGE.json").is_file()
-        and (binary.parent / "web" / "dist").is_dir()
-        and (binary.parent / "config").is_dir()
-    ):
-        raise SystemExit("--migrate-home requires a real portable package containing PACKAGE.json, web/dist, and config")
+    package_manifest = rust_package_manifest(binary) if args.migrate_home else None
+    installation_before = file_manifest(binary.parent) if args.migrate_home else None
 
     with contextlib.ExitStack() as stack:
         temporary = temporary_directory(stack, "dsh-settings-data-e2e-")
@@ -362,6 +383,8 @@ def main() -> int:
         sequence = 1
         fixtures: list[tuple[str, str]] = []
         with running_host(binary, repo, home) as port:
+            if args.migrate_home:
+                assert_no_installation_links(home, "initial package boot")
             workspace_root = home / "workspace-fixtures"
             for workspace_number in range(2):
                 cwd = workspace_root / f"workspace-{workspace_number + 1}"
@@ -463,21 +486,20 @@ def main() -> int:
             relocated = temporary_directory(stack, "dsh-relocated-package-") / "package"
             shutil.copytree(binary.parent, relocated)
             restart_binary, restart_repo = relocated / binary.name, relocated
+            if args.migrate_home and file_manifest(relocated) != installation_before:
+                raise AssertionError("relocated installation differs from the original package")
         with running_host(restart_binary, restart_repo, home) as restarted_port:
             if args.migrate_home:
                 assert_runtime_home(runtime_request(restarted_port), active_home)
                 migration_evidence["cold_restart_from_original_home"] = True
+                assert_no_installation_links(active_home, "cold restart from the old data entry")
+                assert_no_installation_links(home, "cold restart preserving old data")
                 if args.relocate:
-                    manifest_path = next((path for path in (restart_binary.parent / "package.json", restart_binary.parent / "PACKAGE.json") if path.is_file()), None)
-                    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig")) if manifest_path else {}
-                    package_name = manifest.get("name")
-                    if not isinstance(package_name, str) or not re.fullmatch(r"(?:@[a-z0-9._-]+/)?[a-z0-9._-]+", package_name, re.IGNORECASE):
-                        raise AssertionError("relocated package has no usable package name for its managed module link")
-                    package_link = active_home / "profiles" / "node_modules" / package_name
-                    if package_link.relative_to(active_home).as_posix() in migration_evidence["managed_profile_link_paths"]:
-                        if not package_link.exists() or not os.path.samefile(package_link, restart_binary.parent):
-                            raise AssertionError("cold restart did not retarget the migrated package link to the relocated installation")
-                        migration_evidence["relocated_package_link_retargeted"] = True
+                    if os.path.samefile(restart_binary.parent, binary.parent):
+                        raise AssertionError("relocation did not change the actual installation directory")
+                    if rust_package_manifest(restart_binary) != package_manifest:
+                        raise AssertionError("relocation changed the Rust distribution inventory")
+                    migration_evidence["installation_location_changed_without_module_links"] = True
             for workspace_id, session_id in fixtures:
                 sequence = assert_visible(restarted_port, workspace_id, session_id, sequence)
             if session_manifest(active_home / "sessions") != sessions_expected:
@@ -494,6 +516,11 @@ def main() -> int:
                 )
             if args.migrate_home and (session_manifest(home / "sessions") != sessions_before or workspace_manifest(home) != storages_before):
                 raise AssertionError("cold restart changed the preserved original home")
+
+        if args.migrate_home:
+            if file_manifest(binary.parent) != installation_before or file_manifest(restart_binary.parent) != installation_before:
+                raise AssertionError("data migration or cold restart modified installation-owned files")
+            migration_evidence["installation_files_preserved"] = True
 
         print(
             json.dumps(

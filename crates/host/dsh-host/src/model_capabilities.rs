@@ -50,7 +50,10 @@ pub(crate) fn inferred_efforts(model: &str) -> Option<IndexMap<String, Option<St
             id = &id[..id.len() - 11];
         }
     }
-    let levels: &[&str] = if ["claude-opus-4-6", "claude-sonnet-4-6"].contains(&id) {
+    let levels: &[&str] = if id == "gpt-6-astra" {
+        // https://developers.openai.com/api/docs/models/gpt-6-astra
+        &["low", "medium", "high", "xhigh", "max"]
+    } else if ["claude-opus-4-6", "claude-sonnet-4-6"].contains(&id) {
         &["off", "low", "medium", "high", "max"]
     } else if id == "gpt-5-pro" {
         &["high"]
@@ -86,7 +89,7 @@ pub(crate) fn inferred_efforts(model: &str) -> Option<IndexMap<String, Option<St
                 (
                     if *wire == "none" {
                         "off"
-                    } else if *wire == "xhigh" {
+                    } else if *wire == "xhigh" && !levels.contains(&"max") {
                         "max"
                     } else {
                         wire
@@ -158,11 +161,76 @@ pub(crate) fn discovered_efforts(entry: &Value) -> Option<Value> {
     (!map.is_empty()).then_some(Value::Object(map))
 }
 
-fn valid_level(id: &str) -> bool {
-    [
-        "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
-    ]
-    .contains(&id)
+pub(crate) fn valid_level(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'-' | b'_'))
+}
+
+pub(crate) fn reasoning_default(entry: &Value, efforts: Option<&Value>) -> Option<String> {
+    let raw = entry
+        .get("reasoningDefault")
+        .or_else(|| entry.get("default_reasoning_level"))
+        .or_else(|| entry.get("default_reasoning_effort"))
+        .or_else(|| entry.pointer("/reasoning/defaultEffort"))?
+        .as_str()?;
+    let map = efforts?.as_object()?;
+    map.iter()
+        .find(|(id, wire)| id.as_str() == raw || wire.as_str() == Some(raw))
+        .map(|(id, _)| id.clone())
+}
+
+pub(crate) fn effort_descriptions(
+    entry: &Value,
+    efforts: Option<&Value>,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    let map = efforts?.as_object()?;
+    let mut descriptions = std::collections::BTreeMap::new();
+    if let Some(values) = entry.get("effortDescriptions").and_then(Value::as_object) {
+        for (id, description) in values {
+            if map.contains_key(id)
+                && let Some(text) = description.as_str()
+            {
+                descriptions.insert(id.clone(), text.to_string());
+            }
+        }
+    }
+    for level in entry
+        .get("supported_reasoning_levels")
+        .or_else(|| entry.pointer("/reasoning/efforts"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let raw = level
+            .get("effort")
+            .or_else(|| level.get("id"))
+            .and_then(Value::as_str);
+        if let (Some(raw), Some(description)) =
+            (raw, level.get("description").and_then(Value::as_str))
+            && let Some((id, _)) = map
+                .iter()
+                .find(|(id, wire)| id.as_str() == raw || wire.as_str() == Some(raw))
+        {
+            descriptions.insert(id.clone(), description.to_string());
+        }
+    }
+    (!descriptions.is_empty()).then_some(descriptions)
+}
+
+pub(crate) fn documented_api(model: &str) -> Option<&'static str> {
+    // Exact documented model, never a guess based on an unknown family's name.
+    (model == "gpt-6-astra").then_some("openai-responses")
+}
+
+pub(crate) fn documented_capacities(model: &str) -> (Option<u64>, Option<u64>) {
+    if model == "gpt-6-astra" {
+        (Some(1_050_000), Some(128_000))
+    } else {
+        (None, None)
+    }
 }
 
 #[cfg(test)]

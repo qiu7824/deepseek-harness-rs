@@ -353,6 +353,20 @@ pub struct LlmModelDiscoveryRequest {
 pub struct LlmDiscoveredModel {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_default: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_descriptions: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_reasoning_summaries: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported_parameters: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_efforts: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<Vec<ModelModality>>,

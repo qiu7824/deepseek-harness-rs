@@ -10,6 +10,10 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from free_model_evidence import package_defaults
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -207,23 +211,16 @@ def main() -> None:
         if evidence_entry not in names:
             raise SystemExit("free archive is missing inference verification")
         evidence = json.loads(read_archive_file(archive, evidence_entry))
-        if evidence.get("model") != "ling-3.0-flash-fin-free" or evidence.get("pricingSource") != "https://opencode.ai/docs/zen/" or not all(evidence.get(key) is True for key in ("available", "freePricingVerified", "harnessVerified", "inference", "streaming", "toolCall", "toolResult", "anonymous")):
-            raise SystemExit("free archive has incomplete inference verification")
-        if evidence.get("binarySha256") != hashlib.sha256(read_archive_file(archive, prefix + manifest["host"])).hexdigest():
-            raise SystemExit("free archive runtime differs from the verified binary")
+        digest = hashlib.sha256(read_archive_file(archive, prefix + manifest["host"])).hexdigest()
+        try:
+            expected_defaults = package_defaults(evidence, digest)
+        except (ValueError, KeyError, TypeError) as error:
+            raise SystemExit(f"free archive has invalid inference verification: {error}") from error
         if settings_entry not in names:
             raise SystemExit("free archive is missing its package defaults")
         settings = json.loads(file_bytes[settings_entry])
-        provider = settings.get("llm-pi-ai", {}).get("providers", {}).get("opencode-free", {})
-        selected = settings.get("agent-default-model", {})
-        if provider.get("keyless") is not True or provider.get("baseURL") != "https://opencode.ai/zen/v1":
-            raise SystemExit("free archive has an invalid keyless provider contract")
-        if selected != {"provider": "opencode-free", "model": "ling-3.0-flash-fin-free"}:
-            raise SystemExit("free archive does not select the free model")
-        models = provider.get("models", [])
-        model = next((item for item in models if item.get("id") == selected["model"]), {})
-        if model.get("contextWindow") != 262144 or model.get("maxTokens") != 16384:
-            raise SystemExit("free archive is missing validated model capacity limits")
+        if settings != expected_defaults:
+            raise SystemExit("free archive model defaults differ from the individually verified routes")
     elif args.variant == "skin":
         if settings_entry not in names:
             raise SystemExit("skin archive is missing its default skin settings")

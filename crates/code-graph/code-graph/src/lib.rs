@@ -3,7 +3,9 @@
 //! The browser only renders graph snapshots. Parsing, call resolution, traversal,
 //! dependency analysis, and cache invalidation stay in the Rust Host.
 
+pub mod background;
 pub mod graph;
+mod imports;
 pub mod index;
 pub mod lang;
 pub mod symbols;
@@ -13,6 +15,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+pub use background::BackgroundIndex;
 pub use index::{CodeIndex, build_graph};
 
 const MAX_ROWS: usize = 50_000;
@@ -45,6 +48,7 @@ pub struct GraphReference {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphCall {
+    pub resolution: String,
     pub name: String,
     pub path: String,
     pub line: usize,
@@ -84,12 +88,7 @@ fn display_path(path: &Path, root: &Path) -> String {
 }
 
 fn symbol_id(node: &SymbolNode) -> String {
-    format!(
-        "{}:{}:{}",
-        node.file.to_string_lossy(),
-        node.start_line,
-        node.name
-    )
+    format!("{:016x}", node.id)
 }
 
 fn kind_name(kind: &SymbolKind) -> String {
@@ -162,6 +161,7 @@ impl GraphSnapshot {
                     EdgeKind::Implements => "implements",
                 };
                 calls.push(GraphCall {
+                    resolution: edge.resolution.clone(),
                     name: format!("{} → {}", source_node.name, target_node.name),
                     path: display_path(&source_node.file, &root),
                     line: edge.line,
@@ -173,7 +173,7 @@ impl GraphSnapshot {
                     name: target_node.name.clone(),
                     path: display_path(&source_node.file, &root),
                     line: edge.line,
-                    kind: "reference",
+                    kind: "call-reference",
                     target: target_id.clone(),
                 });
                 if source_node.file != target_node.file
@@ -185,15 +185,27 @@ impl GraphSnapshot {
                         name: format!("{source_path} → {target_path}"),
                         path: source_path.clone(),
                         line: edge.line,
-                        kind: "dependency",
+                        kind: "call-dependency",
                         source: source_path,
                         target: target_path,
                     });
                 }
             }
         }
+        for edge in &graph.imports {
+            let source = display_path(&edge.source, &root);
+            let target = display_path(&edge.target, &root);
+            deps.push(GraphDependency {
+                name: format!("{source} → {target}"),
+                path: source.clone(),
+                line: edge.line,
+                kind: "import",
+                source,
+                target,
+            });
+        }
         Self {
-            files: files.len(),
+            files: graph.file_mtimes.len().max(files.len()),
             symbols,
             references,
             calls,

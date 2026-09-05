@@ -10503,9 +10503,10 @@ window.__ModuleLoader__.load({
 							layout.openDetails();
 						},
 						fileMentions: (owner) => ctx.get("chatFileMentions")?.forClosing(owner),
-						openFile: (path) => {
+						openFile: (path, options = {}) => {
+							if (globalThis.__DSH_FILE_ACTIONS__) return globalThis.__DSH_FILE_ACTIONS__.open({ sessionId, path, ...options });
 							const cwd = sessions.list.getSnapshot().byId[sessionId]?.cwd;
-							workspaces.openPath((0, _deepseek_ai_dsh_client_runtime_client.resolveWorkspacePath)(cwd, path)).catch(() => {});
+							return workspaces.openPath((0, _deepseek_ai_dsh_client_runtime_client.resolveWorkspacePath)(cwd, path));
 						},
 						loadOlder: () => {
 							scoped.loadOlder();
@@ -10519,6 +10520,7 @@ window.__ModuleLoader__.load({
 						},
 						chatScroll: {
 							save: (position) => {
+                                sessions.binding(sessionId)?.session.rememberReadingPosition(position !== null);
 								if (position === null) chatScrollPositions.delete(sessionId);
 								else chatScrollPositions.set(sessionId, position);
 							},

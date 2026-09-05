@@ -5901,6 +5901,13 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		const discoveredModelViewSchema = object({
 			id: string().min(1),
 			reasoningEfforts: unknown().optional(),
+            reasoningDefault: string().optional(),
+            effortDescriptions: record(string(), string()).optional(),
+            description: string().optional(),
+            api: string().optional(),
+            supportsReasoningSummaries: boolean().optional(),
+            supportedParameters: array(string()).optional(),
+            available: boolean().optional(),
 			input: array(string()).optional(),
 			name: string().min(1).optional(),
 			contextWindow: number().int().positive().optional(),

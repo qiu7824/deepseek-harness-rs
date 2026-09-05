@@ -15,7 +15,19 @@ fn capacity<'a>(values: impl IntoIterator<Item = Option<&'a Value>>) -> Option<u
     values
         .into_iter()
         .flatten()
-        .filter_map(Value::as_u64)
+        .filter_map(|value| {
+            value.as_u64().or_else(|| {
+                value
+                    .as_f64()
+                    .filter(|n| {
+                        n.is_finite()
+                            && *n > 0.0
+                            && n.fract() == 0.0
+                            && *n <= 9_007_199_254_740_991.0
+                    })
+                    .map(|n| n as u64)
+            })
+        })
         .find(|value| *value > 0)
 }
 
@@ -50,8 +62,72 @@ pub(crate) fn parse_model_listing(value: &Value) -> Result<Vec<LlmDiscoveredMode
             continue;
         }
         let limit = entry.get("limit");
+        let reasoning_efforts = super::model_capabilities::discovered_efforts(entry);
+        let endpoints = entry.get("supported_endpoints").and_then(Value::as_array);
+        let api = label([entry.get("api")])
+            .filter(|api| {
+                [
+                    "openai-completions",
+                    "openai-responses",
+                    "anthropic-messages",
+                ]
+                .contains(&api.as_str())
+            })
+            .or_else(|| {
+                endpoints.and_then(|values| {
+                    if values
+                        .iter()
+                        .any(|v| v.as_str().is_some_and(|s| s.ends_with("/responses")))
+                    {
+                        Some("openai-responses".to_string())
+                    } else if values
+                        .iter()
+                        .any(|v| v.as_str().is_some_and(|s| s.ends_with("/chat/completions")))
+                    {
+                        Some("openai-completions".to_string())
+                    } else if values
+                        .iter()
+                        .any(|v| v.as_str().is_some_and(|s| s.ends_with("/messages")))
+                    {
+                        Some("anthropic-messages".to_string())
+                    } else {
+                        None
+                    }
+                })
+            });
         models.push(LlmDiscoveredModel {
-            reasoning_efforts: super::model_capabilities::discovered_efforts(entry),
+            description: label([entry.get("description")]),
+            api,
+            reasoning_default: super::model_capabilities::reasoning_default(
+                entry,
+                reasoning_efforts.as_ref(),
+            ),
+            effort_descriptions: super::model_capabilities::effort_descriptions(
+                entry,
+                reasoning_efforts.as_ref(),
+            ),
+            supports_reasoning_summaries: entry
+                .get("supports_reasoning_summaries")
+                .or_else(|| entry.get("supportsReasoningSummaries"))
+                .and_then(Value::as_bool),
+            supported_parameters: entry
+                .get("supported_parameters")
+                .or_else(|| entry.get("supportedParameters"))
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                }),
+            available: entry.get("available").and_then(Value::as_bool).or_else(|| {
+                entry
+                    .get("visibility")
+                    .and_then(Value::as_str)
+                    .map(|visibility| !matches!(visibility, "hide" | "hidden" | "none"))
+            }),
+            reasoning_efforts,
             input: entry
                 .get("input_modalities")
                 .or_else(|| entry.pointer("/architecture/input_modalities"))

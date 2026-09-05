@@ -1,5 +1,5 @@
-//! Preserve installation-owned profile module links without traversing them.
-//! Portable package upgrades can leave older or dangling fallback slots behind.
+//! Retain only already-existing installation links while moving user data.
+//! New Rust distributions no longer create these legacy fallback slots.
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -197,6 +197,39 @@ mod tests {
         fs::write(home.join("retained.txt"), "user data").unwrap();
     }
 
+    fn legacy_link(home: &Path, installation: &Path, name: &str) {
+        dsh_app_boot::recreate_profiles_module_fallback_link(
+            &home.join("profiles/node_modules").join(name),
+            installation,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rust_package_boot_does_not_mix_installation_inventory_with_node_modules() {
+        let root = base();
+        let home = root.join("home");
+        let (installation, _) = if let Some(path) = std::env::var_os("DSH_PACKAGED_FIXTURE") {
+            let path = PathBuf::from(path);
+            let value: Value =
+                serde_json::from_slice(&fs::read(path.join("PACKAGE.json")).unwrap()).unwrap();
+            (path, value["name"].as_str().unwrap().to_string())
+        } else {
+            package(&root, "0.1.3-alpha.3")
+        };
+        dsh_app_boot::heal_profiles_module_fallback(&installation.join("PACKAGE.json"), &home)
+            .unwrap();
+        assert!(!home.join("profiles/node_modules").exists());
+        assert!(
+            dsh_app_boot::profiles_module_fallback_targets(&installation.join("PACKAGE.json"))
+                .unwrap()
+                .is_empty()
+        );
+        if root.exists() {
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     #[test]
     fn packaged_upgrade_preserves_both_old_and_current_installation_links() {
         let root = base();
@@ -212,9 +245,10 @@ mod tests {
         } else {
             package(&root, "0.1.3-alpha.3")
         };
-        let current_anchor = current.join("package.json");
-        dsh_app_boot::heal_profiles_module_fallback(&old.join("package.json"), &home).unwrap();
-        dsh_app_boot::heal_profiles_module_fallback(&current_anchor, &home).unwrap();
+        let current_anchor = current.join("PACKAGE.json");
+        // Reproduce data produced by an earlier release, not new boot behavior.
+        legacy_link(&home, &old, &old_name);
+        legacy_link(&home, &current, &current_name);
         let host_name = if cfg!(windows) {
             "deepseek-harness-rs.exe"
         } else {
@@ -278,8 +312,8 @@ mod tests {
         let (old, old_name) = package(&root, "0.1.2-alpha.4");
         let (current, current_name) = package(&root, "0.1.3-alpha.3");
         let anchor = current.join("package.json");
-        dsh_app_boot::heal_profiles_module_fallback(&old.join("package.json"), &home).unwrap();
-        dsh_app_boot::heal_profiles_module_fallback(&anchor, &home).unwrap();
+        legacy_link(&home, &old, &old_name);
+        legacy_link(&home, &current, &current_name);
         fs::remove_dir_all(old).unwrap();
         write_json(
             &home.join("settings.json"),
@@ -332,7 +366,7 @@ mod tests {
         stage_home(&home);
         let (current, name) = package(&root, "0.1.3-alpha.3");
         let anchor = current.join("package.json");
-        dsh_app_boot::heal_profiles_module_fallback(&anchor, &home).unwrap();
+        legacy_link(&home, &current, &name);
         let outside = root.join("private");
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("secret.txt"), "must not be copied").unwrap();
@@ -351,7 +385,7 @@ mod tests {
             recovered
                 .migration_error
                 .as_deref()
-                .is_some_and(|error| error.contains("目标不匹配"))
+                .is_some_and(|error| error.contains("符号链接") || error.contains("目标不匹配"))
         );
         assert!(!target.exists());
         assert_eq!(

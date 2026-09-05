@@ -417,12 +417,7 @@ window.__ModuleLoader__.load({
 											update(index, "name", event.target.value === "" ? void 0 : event.target.value);
 										}
 									}),
-									(0, react_jsx_runtime.jsx)("input", {
-										type: "checkbox", role: "switch", checked: model.enabled !== false,
-										"aria-label": `显示模型 ${model.name || model.id || index + 1}`,
-										title: "在模型选择器中显示", disabled: props.disabled,
-										onChange: (event) => update(index, "enabled", event.target.checked)
-									}),
+									(0,react_jsx_runtime.jsx)(ModelVisibility,{checked:model.enabled!==false,disabled:props.disabled,label:`${props.t("modelVisible")} ${model.name||model.id||index+1}`,t:props.t,onChange:value=>update(index,"enabled",value)}),
 									(0, react_jsx_runtime.jsx)("button", {
 										type: "button",
 										className: ModelsSection_module_css_default["iconButton"],
@@ -532,6 +527,7 @@ window.__ModuleLoader__.load({
 				status: "idle",
 				error: null,
 				credentialError: null,
+				providerReadySeen: false,
 				writable: false,
 				rows: [],
 				namespaces: /* @__PURE__ */ new Map()
@@ -606,6 +602,7 @@ window.__ModuleLoader__.load({
 						...row.apiKeyEnv !== void 0 && credentials[row.apiKeyEnv] !== void 0 ? { credential: credentials[row.apiKeyEnv] } : {}
 					}));
 					s.namespaces = namespaces;
+                    if (s.rows.some(providerUsable)) s.providerReadySeen = true;
 				});
 			}
 		};
@@ -635,6 +632,7 @@ window.__ModuleLoader__.load({
 		* @returns the onboarding state without reading a parallel fact source.
 		*/
 		function onboardingReadiness(state) {
+            if (state.providerReadySeen || state.rows.some(providerUsable)) return {kind:"provider-ready"};
 			if ((state.status === "idle" || state.status === "loading") && state.rows.length === 0) return { kind: "loading" };
 			if (state.status === "error") return {
 				kind: "unavailable",
@@ -944,14 +942,7 @@ window.__ModuleLoader__.load({
 										patch(index, { name: event.target.value === "" ? void 0 : event.target.value });
 									}
 								}),
-                                (0, react_jsx_runtime.jsxs)("label", {
-                                    className: ModelsSection_module_css_default["fieldLabel"],
-                                    children: [(0, react_jsx_runtime.jsx)("input", {
-                                        type: "checkbox", role: "switch", checked: model.enabled !== false,
-                                        "aria-label": `${t("modelVisible")} ${textOf(model, "id")}`,
-                                        disabled, onChange: (event) => patch(index, { enabled: event.target.checked })
-                                    }), t("modelVisible")]
-                                }),
+                                (0,react_jsx_runtime.jsx)(ModelVisibility,{checked:model.enabled!==false,disabled,label:`${t("modelVisible")} ${textOf(model,"id")}`,t,onChange:value=>patch(index,{enabled:value})}),
 								(0, react_jsx_runtime.jsx)("button", {
 									type: "button",
 									className: ModelsSection_module_css_default["iconButton"],
@@ -1710,7 +1701,7 @@ window.__ModuleLoader__.load({
 									}, choice))]
 								})]
 							}) : null,
-							family === "deepseek" ? (0, react_jsx_runtime.jsx)(DeepSeekModelsEditor, {
+							props.modelsManagedSeparately ? null : family === "deepseek" ? (0, react_jsx_runtime.jsx)(DeepSeekModelsEditor, {
 								...catalogProps,
 								defaultContextWindow: typeof defaultContextWindow === "number" ? defaultContextWindow : void 0,
 								defaultMaxTokens: typeof defaultMaxTokens === "number" ? defaultMaxTokens : void 0
@@ -1783,13 +1774,16 @@ window.__ModuleLoader__.load({
 		*/
 		/** Render an editor for either the setup posture or an expanded provider row. */
 		function renderProviderEditor({ target, ...props }) {
-			return (0, react_jsx_runtime.jsx)(ProviderEditor, {
+            const profile=(0,_deepseek_ai_dsh_client_schema_form.getPath)(props.namespace.value,target.settingsPath);
+            if(typeof profile?.authProvider==="string")return (0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.advancedHint,children:props.t("accountConnectionManaged")});
+			return (0, react_jsx_runtime.jsx)(ModelEditorBoundary,{t:props.t,children:(0, react_jsx_runtime.jsx)(ProviderEditor, {
+				modelsManagedSeparately: true,
 				provider: target.provider,
 				displayName: target.displayName,
 				settingsPath: target.settingsPath,
 				...target.declared === true ? { declared: true } : {},
 				...props
-			});
+			})},target.provider);
 		}
 		/**
 		* Remove one user-added provider and its page-managed credential. Credential
@@ -1863,12 +1857,12 @@ window.__ModuleLoader__.load({
 		function ModelsSection(props) {
 			const { controller, useSnapshot, api, t } = props;
 			if (controller === void 0 || useSnapshot === void 0 || api === void 0 || t === void 0) return null;
-			return (0, react_jsx_runtime.jsx)(Loaded, { injected: {
+			return (0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0, react_jsx_runtime.jsx)(Loaded, { injected: {
 				controller,
 				useSnapshot,
 				api,
 				t
-			} });
+			} })});
 		}
         async function accountRequest(action, body = {}) {
             const response = await fetch(`/provider-auth/${action}`, {
@@ -1879,86 +1873,251 @@ window.__ModuleLoader__.load({
             if (!response.ok) throw new Error(value.error || `HTTP ${response.status}`);
             return value;
         }
-        function AccountConnections({ controller, t, disabled }) {
-            const [accounts, setAccounts] = (0, react.useState)([]);
-            const [attempt, setAttempt] = (0, react.useState)(null);
-            const [busy, setBusy] = (0, react.useState)(false);
-            const [failure, setFailure] = (0, react.useState)(null);
-            const attemptRef = (0, react.useRef)(null);
-            const refresh = () => accountRequest("providers").then((value) => setAccounts(value.providers));
-            (0, react.useEffect)(() => {
-                let live = true;
-                accountRequest("providers").then((value) => { if (live) setAccounts(value.providers); }, (error) => { if (live) setFailure(messageOf$1(error)); });
-                return () => { live = false; if (attemptRef.current) accountRequest("cancel", { attempt: attemptRef.current }).catch(() => {}); };
-            }, []);
-            (0, react.useEffect)(() => {
-                if (!attempt) return;
-                let stale = false;
-                let timer;
-                const poll = async () => {
-                    try {
-                        const value = await accountRequest("poll", { attempt: attempt.attempt });
-                        if (stale) return;
-                        if (value.status === "cancelled") { attemptRef.current = null; setAttempt(null); return; }
-                        if (value.status === "complete") {
-                            attemptRef.current = null; setAttempt(null);
-                            await Promise.all([refresh(), controller.load()]);
-                        } else timer = setTimeout(poll, Math.max(3, value.interval || attempt.interval) * 1000);
-                    } catch (error) { if (!stale) { setFailure(messageOf$1(error)); accountRequest("cancel", { attempt: attempt.attempt }).catch(() => {}); attemptRef.current = null; setAttempt(null); } }
-                };
-                timer = setTimeout(poll, attempt.interval * 1000);
-                return () => { stale = true; clearTimeout(timer); };
-            }, [attempt]);
-            const start = async (provider, signedIn = false) => {
-                setBusy(true); setFailure(null);
-                try {
-                    if (signedIn) {
-                        await accountRequest("connect", { provider }); await Promise.all([refresh(), controller.load()]); return;
-                    }
-                    const value = await accountRequest("start", { provider });
-                    attemptRef.current = value.attempt; setAttempt(value);
-                } catch (error) { setFailure(messageOf$1(error)); }
-                finally { setBusy(false); }
-            };
-            const logout = async (provider) => {
-                setBusy(true); setFailure(null);
-                try { await accountRequest("logout", { provider }); await Promise.all([refresh(), controller.load()]); }
-                catch (error) { setFailure(messageOf$1(error)); }
-                finally { setBusy(false); }
-            };
-            const cancel = async () => {
-                if (!attempt) return;
-                const id = attempt.attempt;
-                setBusy(true);
-                try { const result = await accountRequest("cancel", { attempt: id }); attemptRef.current = null; setAttempt(null); if (result.status === "complete") await Promise.all([refresh(), controller.load()]); }
-                catch (error) { setFailure(messageOf$1(error)); }
-                finally { setBusy(false); }
-            };
-            return (0, react_jsx_runtime.jsxs)("div", {
-                className: ModelsSection_module_css_default["rowCard"],
-                children: [
-                    (0, react_jsx_runtime.jsx)("div", { className: ModelsSection_module_css_default["rowName"], children: t("accountTitle") }),
-                    (0, react_jsx_runtime.jsx)("p", { className: ModelsSection_module_css_default["advancedHint"], children: t("accountHint") }),
-                    ...accounts.map((account) => (0, react_jsx_runtime.jsxs)("div", {
-                        className: ModelsSection_module_css_default["rowHead"],
-                        children: [(0, react_jsx_runtime.jsx)("span", { className: ModelsSection_module_css_default["rowName"], children: account.name }),
-                            (0, react_jsx_runtime.jsx)("span", { className: ModelsSection_module_css_default["rowTag"], children: `${t(account.signedIn ? "accountSignedIn" : "accountSignedOut")}${account.scope === "subagent" ? ` · ${t("accountSubagent")}` : ""}` }),
-                            (0, react_jsx_runtime.jsxs)("div", { className: ModelsSection_module_css_default["rowActions"], children: [
-                                account.installed === false ? (0, react_jsx_runtime.jsx)("a", { className: ModelsSection_module_css_default["secondaryButton"], href: account.installUrl, target: "_blank", rel: "noopener noreferrer", children: t("accountInstallCli") }) :
-                                (0, react_jsx_runtime.jsx)("button", { type: "button", className: ModelsSection_module_css_default["secondaryButton"], disabled: disabled || busy || !!attempt, onClick: () => start(account.id, account.signedIn), children: t(account.signedIn ? account.scope === "subagent" ? "accountRefresh" : "accountReconnect" : "accountLogin") }),
-                                account.signedIn && account.scope !== "subagent" ? (0, react_jsx_runtime.jsx)("button", { type: "button", className: ModelsSection_module_css_default["dangerButton"], disabled: disabled || busy || !!attempt, onClick: () => logout(account.id), children: t("accountLogout") }) : null
-                            ] })]
-                    }, account.id)),
-                    attempt ? (0, react_jsx_runtime.jsxs)("div", { className: ModelsSection_module_css_default["editor"], role: "status", children: [
-                        (0, react_jsx_runtime.jsx)("p", { className: ModelsSection_module_css_default["advancedHint"], children: t(attempt.mode === "cli" ? "accountCliVerify" : "accountVerify") }),
-                        attempt.userCode ? (0, react_jsx_runtime.jsx)("code", { children: attempt.userCode }) : null,
-                        attempt.verificationUri ? (0, react_jsx_runtime.jsx)("a", { className: ModelsSection_module_css_default["secondaryButton"], href: attempt.verificationUri, target: "_blank", rel: "noopener noreferrer", children: t("accountOpen") }) : null,
-                        (0, react_jsx_runtime.jsx)("button", { type: "button", className: ModelsSection_module_css_default["secondaryButton"], disabled: busy, onClick: cancel, children: t("cancel") })
-                    ] }) : null,
-                    failure ? (0, react_jsx_runtime.jsx)("p", { className: ModelsSection_module_css_default["error"], role: "alert", children: failure }) : null
-                ]
-            });
+        const managerCss = ".dshModelManager{border-top:1px solid var(--dsw-alias-border-l2);padding-top:10px;margin-top:10px;display:flex;flex-direction:column;gap:9px;min-width:0}.dshModelManagerHead,.dshModelToolbar,.dshModelFooter{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dshModelManagerHead strong{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);margin-right:auto}.dshModelToolbar input{flex:1;min-width:160px}.dshModelCount,.dshModelHint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}.dshModelRows{display:flex;flex-direction:column;gap:4px;max-height:360px;overflow:auto}.dshModelRow{display:flex;align-items:center;gap:10px;min-height:36px;padding:5px 7px;border-radius:7px;box-sizing:border-box}.dshModelRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.dshModelIdentity{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px}.dshModelName{font-size:13px;line-height:18px;overflow-wrap:anywhere}.dshModelId{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere;font-family:var(--ds-font-family-code)}.dshModelVisibility{position:relative;display:inline-flex;align-items:center;gap:6px;flex:none;cursor:pointer;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}.dshModelVisibility input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:inherit}.dshModelCheckBox{box-sizing:border-box;width:16px;height:16px;border:1px solid var(--dsw-alias-border-l3);border-radius:4px;display:inline-flex;align-items:center;justify-content:center;background:var(--dsw-alias-bg-base);pointer-events:none}.dshModelVisibility[data-checked=true] .dshModelCheckBox{background:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary-foreground)}.dshModelVisibility input:focus-visible+.dshModelCheckBox{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}.dshModelVisibility[data-disabled=true]{opacity:.45;cursor:default}.dshModelDetails{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 8px}.dshModelDetails summary{cursor:pointer;font-size:12px;color:var(--dsw-alias-label-secondary)}.dshModelFields{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:8px}.dshModelFields label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dsw-alias-label-tertiary)}.dshModelFooter{justify-content:flex-end}.dshModelFooter [role=status]{margin-right:auto;font-size:12px;color:var(--dsw-alias-label-tertiary)}.dshAccountEntry+.dshAccountEntry{border-top:1px solid var(--dsw-alias-border-l2);padding-top:12px;margin-top:4px}.dshModelEmpty{padding:8px 7px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}";
+        if (typeof document !== "undefined") {
+            let style=document.querySelector("style[data-dsh-model-manager]");
+            if(!style){style=document.createElement("style");style.dataset.dshModelManager="";style.dataset.plugin="@deepseek-ai/dsh-client-ui-settings-models";style.dataset.pluginCss="@deepseek-ai/dsh-client-ui-settings-models/ModelManager.css";document.head.appendChild(style)}
+            style.textContent=managerCss;
         }
+        function ModelVisibility({checked,disabled,onChange,label,t}) {
+            return (0,react_jsx_runtime.jsxs)("label",{className:"dshModelVisibility","data-checked":checked,"data-disabled":disabled||void 0,children:[
+                (0,react_jsx_runtime.jsx)("input",{type:"checkbox",checked,disabled,"aria-label":label,onChange:event=>onChange(event.target.checked)}),
+                (0,react_jsx_runtime.jsx)("span",{className:"dshModelCheckBox","aria-hidden":true,children:checked?(0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCheckOutline14,{size:12}):null}),
+                (0,react_jsx_runtime.jsx)("span",{children:t(checked?"modelShown":"modelHidden")})
+            ]});
+        }
+        function modelCatalog(value) {
+            if (!value || typeof value.accountScope!=="string" || typeof value.settingsNs!=="string" || !Array.isArray(value.preferencePath) || !value.preferencePath.every(part=>typeof part==="string") || !Array.isArray(value.models)) throw new Error("This host does not expose model preferences");
+            return {...value,models:value.models.filter(model=>model&&typeof model.id==="string"&&model.id.length>0),preferences:value.preferences??{},profileModels:Array.isArray(value.profileModels)?value.profileModels:[],namespaceRevision:value.namespaceRevision};
+        }
+        function draftModelRows(catalog,changes,manual) {
+            const known=catalog?.models??[],ids=new Set(known.map(model=>model.id));
+            const missing=Object.keys(changes).filter(id=>!ids.has(id)).map(id=>({id,availability:"missing"}));
+            return [...known,...missing].map(model=>({...model,...Object.fromEntries(Object.entries(changes[model.id]??{}).map(([key,edit])=>[key,edit.value]))})).concat(manual.map(model=>({...model,source:"manual",enabled:model.enabled!==false})));
+        }
+        function preferenceOps(catalog,changes,manual) {
+            const ops=[];
+            for (const [id,fields] of Object.entries(changes)) for (const [field,edit] of Object.entries(fields)) {
+                const current=catalog.preferences[id]?.[field];
+                if (JSON.stringify(current)!==JSON.stringify(edit.base) && JSON.stringify(current)!==JSON.stringify(edit.value) && !(edit.base===void 0 && JSON.stringify(current)===JSON.stringify(edit.effectiveBase))) throw new Error("modelPreferenceConflict");
+                if (JSON.stringify(current)===JSON.stringify(edit.value)) continue;
+                const path=[...catalog.preferencePath,id,field];
+                ops.push(edit.value===void 0?{op:"unset",path}:{op:"set",path,value:edit.value});
+            }
+            if (manual.length) {
+                const ids=new Set(catalog.models.map(model=>model.id));
+                for (const model of manual) {
+                    if (!String(model.id??"").trim() || ids.has(String(model.id??"").trim())) throw new Error("modelManualIdConflict");
+                    ids.add(String(model.id).trim());
+                }
+                ops.push({op:"set",path:[...(catalog.settingsPath??catalog.preferencePath.slice(0,-2)),"models"],value:[...catalog.profileModels,...manual.map(model=>{const {_draftId,...entry}=model;return{...entry,id:String(entry.id).trim(),source:"manual",accountScope:catalog.accountScope}})]});
+            }
+            return ops;
+        }
+        async function savePreferenceDraft({provider,accountScope,changes,manual,read,write}) {
+            for (let attempt=0;attempt<2;attempt++) {
+                const latest=modelCatalog(await read(provider));
+                if (latest.accountScope!==accountScope) throw new Error("modelAccountChanged");
+                if (!Number.isSafeInteger(latest.namespaceRevision)) throw new Error("This host does not expose a model-preference revision");
+                const ops=preferenceOps(latest,changes,manual);
+                if (!ops.length) return latest;
+                const response=await write({ns:latest.settingsNs,ops,expectedRevision:latest.namespaceRevision});
+                if (response.result.ok) return latest;
+                if (response.result.error.code!=="settings-conflict" || attempt===1) throw new Error(response.result.error.message);
+            }
+        }
+        class ModelEditorBoundary extends react.Component {
+            constructor(props){super(props);this.state={error:null};}
+            static getDerivedStateFromError(error){return{error:error instanceof Error?error.message:String(error)}}
+            render(){return this.state.error?(0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.error,role:"alert",children:[this.props.t("modelEditorFailed")," ",this.state.error,(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,onClick:()=>this.setState({error:null}),children:this.props.t("retry")})]}):this.props.children;}
+        }
+        function validCapacityDraft(text) { const parsed=parseCapacity(text);return text.trim()===""||Number.isSafeInteger(parsed)&&parsed>0; }
+        function ProviderModelManager({provider,api,t,disabled,revision,onSaved,initialModels=[]}) {
+            const [catalog,setCatalog]=(0,react.useState)(null),[changes,setChanges]=(0,react.useState)({}),[manual,setManual]=(0,react.useState)([]);
+            const [expanded,setExpanded]=(0,react.useState)(false),[query,setQuery]=(0,react.useState)(""),[loading,setLoading]=(0,react.useState)(false),[saving,setSaving]=(0,react.useState)(false),[error,setError]=(0,react.useState)(null),[saved,setSaved]=(0,react.useState)(false),[nextAccount,setNextAccount]=(0,react.useState)(null);
+            const [capacityText,setCapacityText]=(0,react.useState)({});
+            const manualSequence=(0,react.useRef)(0);
+            const capacityRef=(0,react.useRef)(capacityText);capacityRef.current=capacityText;
+            const mounted=(0,react.useRef)(true),generation=(0,react.useRef)(0),savingRef=(0,react.useRef)(false),catalogRef=(0,react.useRef)(catalog),changesRef=(0,react.useRef)(changes),manualRef=(0,react.useRef)(manual);
+            catalogRef.current=catalog;changesRef.current=changes;manualRef.current=manual;
+            const dirty=Object.keys(changes).length>0||manual.length>0||Object.keys(capacityText).length>0;
+            const invalidCapacity=Object.values(capacityText).some(text=>!validCapacityDraft(text));
+            const message=reason=>{const key=reason instanceof Error?reason.message:String(reason);return ["modelPreferenceConflict","modelManualIdConflict","modelAccountChanged"].includes(key)?t(key):key};
+            const load=(0,react.useCallback)(async(action="models")=>{
+                if(savingRef.current)return;
+                const version=++generation.current;setLoading(true);setError(null);
+                try{
+                    if(action==="refresh"&&(provider==="opencode-free"||provider==="opencode-free-responses")){await freeModelRequest("refresh",{});action="models";}
+                    const next=modelCatalog(await accountRequest(action,{provider}));
+                    if(!mounted.current||generation.current!==version)return;
+                    if(catalogRef.current&&next.accountScope!==catalogRef.current.accountScope&&(Object.keys(changesRef.current).length||manualRef.current.length||Object.keys(capacityRef.current).length)) {setNextAccount(next);setError(t("modelAccountChanged"));return;}
+                    setCatalog(next);setNextAccount(null);
+                }catch(reason){if(mounted.current&&generation.current===version)setError(message(reason));}
+                finally{if(mounted.current&&generation.current===version)setLoading(false);}
+            },[provider,t]);
+            (0,react.useEffect)(()=>{mounted.current=true;load();return()=>{mounted.current=false;++generation.current}},[load,revision]);
+            const edit=(id,field,value)=>{
+                setSaved(false);setError(null);
+                setChanges(current=>{
+                    const next={...current},fields={...(current[id]??{})},base=Object.prototype.hasOwnProperty.call(fields,field)?fields[field].base:catalogRef.current?.preferences[id]?.[field];
+                    const original=catalogRef.current?.models.find(model=>model.id===id);
+                    const effectiveBase=Object.prototype.hasOwnProperty.call(fields,field)?fields[field].effectiveBase:field==="enabled"?original?.enabled!==false:original?.[field];
+                    if(JSON.stringify(value)===JSON.stringify(effectiveBase))delete fields[field];else fields[field]={base,effectiveBase,value};
+                    if(Object.keys(fields).length)next[id]=fields;else delete next[id];return next;
+                });
+            };
+            const rows=draftModelRows(catalog??{models:initialModels},changes,manual);
+            const filter=query.trim().toLocaleLowerCase();
+            const visible=rows.filter(model=>!filter||(model.id+" "+(model.name??"")).toLocaleLowerCase().includes(filter));
+            const shown=expanded?visible:visible.slice(0,6);
+            const editable=!disabled&&!saving&&catalog!==null&&nextAccount===null;
+            const update=(model,field,value)=>{
+                const manualIndex=model._draftId?manual.findIndex(candidate=>candidate._draftId===model._draftId):-1;
+                if(manualIndex>=0){setManual(current=>current.map((row,index)=>index===manualIndex?{...row,[field]:value}:row));setSaved(false);return;}
+                edit(model.id,field,value);
+            };
+            const save=async()=>{
+                if(savingRef.current||!editable||!dirty||invalidCapacity)return;
+                savingRef.current=true;setSaving(true);setSaved(false);setError(null);++generation.current;
+                try{
+                    await savePreferenceDraft({provider,accountScope:catalog.accountScope,changes,manual,read:id=>accountRequest("models",{provider:id}),write:payload=>api.settings.mutate(payload)});
+                    if(!mounted.current)return;
+                    setChanges({});changesRef.current={};setManual([]);manualRef.current=[];setCapacityText({});setSaved(true);
+                    try{setCatalog(modelCatalog(await accountRequest("models",{provider})))}catch(reason){setError(message(reason))}
+                    if(onSaved)await onSaved();
+                }catch(reason){if(mounted.current)setError(message(reason));}
+                finally{savingRef.current=false;if(mounted.current)setSaving(false);}
+            };
+            const cancel=()=>{setChanges({});changesRef.current={};setManual([]);manualRef.current=[];setCapacityText({});setError(null);setSaved(false);if(nextAccount){setCatalog(nextAccount);setNextAccount(null)}else load();};
+            const button=(label,action,extra={})=>(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,onClick:action,disabled:disabled||saving,...extra,children:label});
+            return (0,react_jsx_runtime.jsxs)("section",{className:"dshModelManager","data-model-manager":provider,"aria-label":t("models"),children:[
+                (0,react_jsx_runtime.jsxs)("div",{className:"dshModelManagerHead",children:[(0,react_jsx_runtime.jsx)("strong",{children:`${t("models")} · ${rows.length}`}),button(t(expanded?"modelCollapse":"modelManage"),()=>setExpanded(value=>!value),{"aria-expanded":expanded}),button(t("modelRefresh"),()=>load("refresh"),{disabled:disabled||saving||loading})]}),
+                expanded&&(0,react_jsx_runtime.jsxs)("div",{className:"dshModelToolbar",children:[(0,react_jsx_runtime.jsx)("input",{type:"search",className:ModelsSection_module_css_default.input,value:query,"aria-label":t("modelSearch"),placeholder:t("modelSearch"),onChange:event=>setQuery(event.target.value)}),button(t("modelShowFiltered"),()=>visible.forEach(model=>update(model,"enabled",true)),{disabled:!editable||visible.length===0}),button(t("modelHideFiltered"),()=>visible.forEach(model=>update(model,"enabled",false)),{disabled:!editable||visible.length===0})]}),
+                loading&&(0,react_jsx_runtime.jsx)("div",{className:"dshModelHint",role:"status",children:t("loading")}),
+                (0,react_jsx_runtime.jsx)("div",{className:"dshModelRows",children:shown.map((model,index)=>(0,react_jsx_runtime.jsxs)("div",{"data-model-id":model.id,children:[(0,react_jsx_runtime.jsxs)("div",{className:"dshModelRow",children:[(0,react_jsx_runtime.jsxs)("div",{className:"dshModelIdentity",children:[(0,react_jsx_runtime.jsx)("span",{className:"dshModelName",children:model.name||model.id||t("modelManualNew")}), (0,react_jsx_runtime.jsx)("span",{className:"dshModelId",children:model.id||t("modelId")})]}),(0,react_jsx_runtime.jsx)(ModelVisibility,{checked:model.enabled!==false,disabled:!editable,label:`${t("modelVisible")} ${model.name||model.id}`,t,onChange:value=>update(model,"enabled",value)})]}),
+                    expanded&&(0,react_jsx_runtime.jsxs)("details",{className:"dshModelDetails",children:[(0,react_jsx_runtime.jsx)("summary",{children:t("modelAdvanced")}), (0,react_jsx_runtime.jsx)("div",{className:"dshModelFields",children:[...(model._draftId?["id"]:[]),"name","contextWindow","maxTokens"].map(field=>{
+                        const capacity=field==="contextWindow"||field==="maxTokens",key=`${model._draftId??model.id}:${field}`;
+                        const value=capacity?(capacityText[key]??(typeof model[field]==="number"?formatCapacity(model[field]):"")):model[field]??"";
+                        return (0,react_jsx_runtime.jsxs)("label",{children:[field==="id"?t("modelId"):field==="name"?t("modelName"):t(field==="contextWindow"?"modelContextWindow":"modelMaxTokens"),(0,react_jsx_runtime.jsx)("input",{className:ModelsSection_module_css_default.input,value,disabled:!editable,"aria-label":`${model.id||index+1} ${field}`,"aria-invalid":capacity&&!validCapacityDraft(value),onChange:event=>{const text=event.target.value;if(capacity){setCapacityText(current=>({...current,[key]:text}));const parsed=parseCapacity(text);if(validCapacityDraft(text))update(model,field,parsed)}else update(model,field,field==="id"?text:text||void 0)}})]},field)
+                    })})]})]},model._draftId??model.id??`new-${index}`))}),
+                !shown.length&&(0,react_jsx_runtime.jsx)("div",{className:"dshModelEmpty",children:t(catalog?"modelNoMatches":"modelCatalogUnavailable")}),
+                !expanded&&rows.length>shown.length&&(0,react_jsx_runtime.jsx)("div",{className:"dshModelCount",children:t("modelMoreCount").replace("{count}",String(rows.length-shown.length))}),
+                expanded&&button(t("modelManualAdd"),()=>{const id=`manual-${++manualSequence.current}`;setManual(current=>[...current,{_draftId:id,id:"",name:"",enabled:true}]);setSaved(false)},{disabled:!editable}),
+                (0,react_jsx_runtime.jsx)("div",{className:"dshModelHint",children:t("modelPreferencesHint")}),
+                error&&(0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.error,role:"alert",children:error}),
+                invalidCapacity&&(0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.error,role:"alert",children:t("modelCapacityDraftInvalid")}),
+                (dirty||saved)&&(0,react_jsx_runtime.jsxs)("div",{className:"dshModelFooter",children:[(0,react_jsx_runtime.jsx)("span",{role:"status",children:t(saved?"modelPreferencesSaved":"modelUnsaved")}),dirty&&button(t("cancel"),cancel),dirty&&(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.primaryButton,disabled:!editable||invalidCapacity,onClick:save,children:t(saving?"applying":"apply")})]})
+            ]});
+        }
+
+        async function freeModelRequest(action="models",body) {
+            const response=await fetch(`/__dsh-free/${action}`,{method:body===void 0?"GET":"POST",credentials:"same-origin",...(body===void 0?{}:{headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})});
+            const value=await response.json();if(!response.ok)throw new Error(value.error||`HTTP ${response.status}`);return value;
+        }
+        function FreeModelsSection({controller,t}) {
+            const [report,setReport]=(0,react.useState)(null),[error,setError]=(0,react.useState)(null),[busy,setBusy]=(0,react.useState)(false),[query,setQuery]=(0,react.useState)(""),[notice,setNotice]=(0,react.useState)(null);
+            const mounted=(0,react.useRef)(true),busyRef=(0,react.useRef)(false),generation=(0,react.useRef)(0);
+            const load=(0,react.useCallback)(async()=>{const version=++generation.current;try{const next=await freeModelRequest();if(mounted.current&&version===generation.current){setReport(next);setError(next.error||null)}}catch(reason){if(mounted.current&&version===generation.current)setError(messageOf$1(reason))}},[]);
+            (0,react.useEffect)(()=>{mounted.current=true;load();return()=>{mounted.current=false;++generation.current}},[load]);
+            (0,react.useEffect)(()=>{if(!report?.refreshing&&!report?.models?.some(row=>row.status==="testing"))return;const timer=setTimeout(load,1500);return()=>clearTimeout(timer)},[report,load]);
+            const act=async(action,body)=>{if(busyRef.current)return;busyRef.current=true;setBusy(true);setError(null);setNotice(null);try{await freeModelRequest(action,body);if(action==="enable"){await controller.load();if(mounted.current)setNotice(t("freeEnabled"))}await load()}catch(reason){if(mounted.current)setError(messageOf$1(reason))}finally{busyRef.current=false;if(mounted.current)setBusy(false)}};
+            const filter=query.trim().toLocaleLowerCase(),rows=(report?.models??[]).filter(row=>!filter||`${row.model} ${row.name||""} ${row.provider}`.toLocaleLowerCase().includes(filter));
+            const stamp=value=>{if(value===void 0||value===null)return t("freeNeverVerified");const date=new Date(value);return Number.isNaN(date.getTime())?t("freeNeverVerified"):date.toLocaleString()};
+            const status=row=>t(({available:"freeAvailable",testing:"freeTesting",pending:"freePending",unavailable:"freeUnavailable",rate_limited:"freeRateLimited",retired:"freeRetired"})[row.status]||"freePending");
+            return (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.section,"data-free-models":true,children:[
+                (0,react_jsx_runtime.jsx)("h2",{className:ModelsSection_module_css_default.title,children:t("freeTitle")}),
+                (0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.intro,children:t("freeIntro")}),
+                (0,react_jsx_runtime.jsxs)("div",{className:"dshModelToolbar",children:[(0,react_jsx_runtime.jsx)("input",{type:"search",className:ModelsSection_module_css_default.input,"aria-label":t("modelSearch"),placeholder:t("modelSearch"),value:query,onChange:event=>setQuery(event.target.value)}),(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||report?.refreshing,onClick:()=>act("refresh",{}),children:t(report?.refreshing?"freeRefreshing":"freeRefresh")})]}),
+                (0,react_jsx_runtime.jsx)("p",{className:"dshModelHint",children:t("freeTestHint")}),
+                !report&&(0,react_jsx_runtime.jsx)("p",{role:"status",className:"dshModelHint",children:t("freeReading")}),
+                rows.map(row=>(0,react_jsx_runtime.jsxs)("article",{className:ModelsSection_module_css_default.rowCard,"data-free-model":row.model,children:[
+                    (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowHead,children:[(0,react_jsx_runtime.jsx)("strong",{className:ModelsSection_module_css_default.rowName,children:row.name||row.model}),(0,react_jsx_runtime.jsx)("span",{className:ModelsSection_module_css_default.rowTag,children:status(row)})]}),
+                    (0,react_jsx_runtime.jsx)("div",{className:"dshModelId",children:`${row.provider||"OpenCode Zen"} / ${row.model} · ${row.api||t("freeProtocolPending")}`}),
+                    (0,react_jsx_runtime.jsxs)("div",{className:"dshModelHint",children:[`${t("freeVerifiedAt")}: ${stamp(row.verifiedAt)}`,row.reason?` · ${row.reason}`:""]}),
+                    (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowActions,children:[
+                        (0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||row.status==="testing"||row.status==="retired"||!row.freePricingVerified,onClick:()=>act("test",{model:row.model}),children:t(row.status==="testing"?"freeTesting":"freeTest")}),
+                        (0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.primaryButton,disabled:busy||row.status!=="available"||row.available!==true||row.freePricingVerified!==true,onClick:()=>act("enable",{model:row.model}),children:t("freeEnable")})
+                    ]})
+                ]},row.provider+"/"+row.model)),
+                report&&!rows.length&&(0,react_jsx_runtime.jsx)("p",{className:"dshModelHint",role:report.refreshing&&!report.models?.length?"status":void 0,children:t(report.refreshing&&!report.models?.length?"freeReading":"modelNoMatches")}),
+                notice&&(0,react_jsx_runtime.jsx)("p",{role:"status",className:ModelsSection_module_css_default.savedNotice,children:notice}),
+                error&&(0,react_jsx_runtime.jsx)("p",{role:"alert",className:ModelsSection_module_css_default.error,children:error})
+            ]});
+        }
+
+        function AccountConnections({controller,api,namespaces,t,disabled}) {
+            const [accounts,setAccounts]=(0,react.useState)([]),[attempt,setAttempt]=(0,react.useState)(null),[busy,setBusy]=(0,react.useState)(false),[failure,setFailure]=(0,react.useState)(null);
+            const attemptRef=(0,react.useRef)(null),busyRef=(0,react.useRef)(false),mounted=(0,react.useRef)(true),generation=(0,react.useRef)(0);
+            const refresh=(0,react.useCallback)(async()=>{
+                const version=++generation.current;
+                const value=await accountRequest("providers");
+                if(mounted.current&&version===generation.current)setAccounts(Array.isArray(value.providers)?value.providers:[]);
+            },[]);
+            (0,react.useEffect)(()=>{
+                mounted.current=true;refresh().catch(error=>{if(mounted.current)setFailure(messageOf$1(error))});
+                return()=>{mounted.current=false;++generation.current;const id=attemptRef.current;attemptRef.current=null;if(id)accountRequest("cancel",{attempt:id}).catch(()=>{})};
+            },[refresh]);
+            (0,react.useEffect)(()=>{
+                if(!attempt)return;
+                const id=attempt.attempt;let stale=false,timer;
+                const current=()=>!stale&&mounted.current&&attemptRef.current===id;
+                const poll=async()=>{
+                    try{
+                        const value=await accountRequest("poll",{attempt:id});
+                        if(!current())return;
+                        if(value.status==="cancelled"||value.status==="complete"){
+                            attemptRef.current=null;setAttempt(null);
+                            if(value.status==="complete")await Promise.all([refresh(),controller.load()]);
+                        }else timer=setTimeout(poll,Math.max(3,value.interval||attempt.interval||3)*1000);
+                    }catch(error){if(current()){setFailure(messageOf$1(error));attemptRef.current=null;setAttempt(null);accountRequest("cancel",{attempt:id}).catch(()=>{})}}
+                };
+                timer=setTimeout(poll,Math.max(3,attempt.interval||3)*1000);
+                return()=>{stale=true;clearTimeout(timer)};
+            },[attempt,refresh,controller]);
+            const run=async(action)=>{
+                if(busyRef.current||disabled)return;
+                busyRef.current=true;setBusy(true);setFailure(null);
+                try{await action()}catch(error){if(mounted.current)setFailure(messageOf$1(error))}
+                finally{busyRef.current=false;if(mounted.current)setBusy(false)}
+            };
+            const start=(provider,signedIn)=>run(async()=>{
+                if(attemptRef.current)return;
+                if(signedIn){await accountRequest("connect",{provider});await Promise.all([refresh(),controller.load()]);return}
+                const value=await accountRequest("start",{provider});
+                if(!mounted.current){if(value.attempt)await accountRequest("cancel",{attempt:value.attempt});return}
+                attemptRef.current=value.attempt;setAttempt(value);
+            });
+            const logout=provider=>run(async()=>{if(attemptRef.current)return;await accountRequest("logout",{provider});await Promise.all([refresh(),controller.load()])});
+            const cancel=()=>run(async()=>{
+                const pending=attempt,id=attemptRef.current;if(!id)return;
+                attemptRef.current=null;setAttempt(null);
+                try{const value=await accountRequest("cancel",{attempt:id});if(value.status==="complete")await Promise.all([refresh(),controller.load()])}
+                catch(error){if(mounted.current){attemptRef.current=id;setAttempt({...pending})}throw error}
+            });
+            return (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowCard,children:[
+                (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowHead,children:[(0,react_jsx_runtime.jsx)("div",{className:ModelsSection_module_css_default.rowName,children:t("accountTitle")}), (0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||!!attempt,onClick:()=>run(refresh),children:t("accountRefresh")})]}),
+                (0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.advancedHint,children:t("accountHint")}),
+                ...accounts.map(account=>(0,react_jsx_runtime.jsxs)("div",{className:"dshAccountEntry",children:[
+                    (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowHead,children:[
+                        (0,react_jsx_runtime.jsx)("span",{className:ModelsSection_module_css_default.rowName,children:account.name}),
+                        (0,react_jsx_runtime.jsx)("span",{className:ModelsSection_module_css_default.rowTag,children:`${t(account.signedIn?"accountSignedIn":"accountSignedOut")}${account.scope==="subagent"?` · ${t("accountSubagent")}`:""}`}),
+                        (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowActions,children:[
+                            account.installed===false?(0,react_jsx_runtime.jsx)("a",{className:ModelsSection_module_css_default.secondaryButton,href:account.installUrl,target:"_blank",rel:"noopener noreferrer",children:t("accountInstallCli")}):(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:disabled||busy||!!attempt,onClick:()=>start(account.id,account.signedIn),children:t(account.signedIn?account.scope==="subagent"?"accountRefresh":"accountReconnect":"accountLogin")}),
+                            account.signedIn&&account.scope!=="subagent"&&(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.dangerButton,disabled:disabled||busy||!!attempt,onClick:()=>logout(account.id),children:t("accountLogout")})
+                        ]})
+                    ]}),
+                    account.signedIn&&account.scope!=="subagent"&&(0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0,react_jsx_runtime.jsx)(ProviderModelManager,{provider:account.provider||account.id,api,t,disabled:disabled||busy||!!attempt,revision:namespaces?.get(account.settingsNs)?.revision??account.catalog?.updatedAt,onSaved:async()=>{await Promise.all([refresh(),controller.load()])}})})
+                ]},account.id)),
+                attempt&&(0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.editor,role:"status",children:[
+                    (0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.advancedHint,children:t(attempt.mode==="cli"?"accountCliVerify":"accountVerify")}),
+                    attempt.userCode&&(0,react_jsx_runtime.jsx)("code",{children:attempt.userCode}),
+                    attempt.verificationUri&&(0,react_jsx_runtime.jsx)("a",{className:ModelsSection_module_css_default.secondaryButton,href:attempt.verificationUri,target:"_blank",rel:"noopener noreferrer",children:t("accountOpen")}),
+                    (0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy,onClick:cancel,children:t("cancel")})
+                ]}),
+                failure&&(0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.error,role:"alert",children:failure})
+            ]});
+        }
+
 
 		function Loaded({ injected }) {
 			const { controller, api, t } = injected;
@@ -2014,7 +2173,7 @@ window.__ModuleLoader__.load({
 				});
 			};
 			if (state.status === "idle") controller.load();
-			if (state.status === "error") {
+			if (state.status === "error" && state.rows.length === 0) {
 				/* v8 ignore next -- an error status always carries text; the fallback satisfies the nullable type */
 				const errorText = state.error ?? "";
 				return (0, react_jsx_runtime.jsxs)("div", {
@@ -2058,7 +2217,8 @@ window.__ModuleLoader__.load({
 						className: ModelsSection_module_css_default["notice"],
 						children: t("readOnly")
 					}) : null,
-					(0, react_jsx_runtime.jsx)(AccountConnections, { controller, t, disabled: !state.writable }),
+					(0, react_jsx_runtime.jsx)(AccountConnections, { controller, api, namespaces:state.namespaces, t, disabled: !state.writable }),
+                    state.error&&(0,react_jsx_runtime.jsxs)("div",{role:"alert",className:ModelsSection_module_css_default.error,children:[state.error,(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,onClick:()=>controller.load(),children:t("retry")})]}),
 					savedIdentity === void 0 ? null : (0, react_jsx_runtime.jsx)("p", {
 						className: ModelsSection_module_css_default["savedNotice"],
 						role: "status",
@@ -2072,9 +2232,9 @@ window.__ModuleLoader__.load({
 							const namespace = state.namespaces.get(target.settingsNs);
 							/* v8 ignore next -- the join marks a row configured only when its namespace resolved */
 							if (namespace === void 0) return null;
-							if (needsSetup(row, anyUsable) && !dismissedSetup.has(row.entry.provider)) return (0, react_jsx_runtime.jsx)("li", {
+							if (needsSetup(row, anyUsable) && !dismissedSetup.has(row.entry.provider)) return (0, react_jsx_runtime.jsxs)("li", {
 								className: ModelsSection_module_css_default["setupCard"],
-								children: renderProviderEditor({
+								children: [renderProviderEditor({
 									target,
 									namespace,
 									api,
@@ -2083,9 +2243,12 @@ window.__ModuleLoader__.load({
 									onClose: (changed) => {
 										closeSetup(changed, target);
 									}
-								})
+                                }),(0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0,react_jsx_runtime.jsx)(ProviderModelManager,{provider:target.provider,api,t,disabled:!state.writable,revision:namespace.revision,initialModels:modelDrafts((0,_deepseek_ai_dsh_client_schema_form.getPath)(namespace.value,target.settingsPath)?.models),onSaved:()=>controller.load()})})]
 							}, row.entry.provider);
 							const open = !adding && editing?.provider === row.entry.provider;
+							const profile=(0,_deepseek_ai_dsh_client_schema_form.getPath)(namespace.value,target.settingsPath);
+                            const authManaged=typeof profile?.authProvider==="string";
+                            const initialModels=modelDrafts(profile?.models);
 							const credentialConfigured = row.credential?.configured === true;
 							const credentialMissing = !credentialConfigured && row.apiKeyEnv !== void 0 && row.credential?.configured === false;
 							return (0, react_jsx_runtime.jsxs)("li", {
@@ -2127,8 +2290,9 @@ window.__ModuleLoader__.load({
 												setAdding(false);
 												setEditing(open ? void 0 : target);
 											},
-											children: t("edit")
-										}), row.removable ? (0, react_jsx_runtime.jsx)("button", {
+											disabled:authManaged, title:authManaged?t("accountConnectionManaged"):void 0,
+                                                children: t("editConnection")
+										}), row.removable && !authManaged ? (0, react_jsx_runtime.jsx)("button", {
 											type: "button",
 											className: ModelsSection_module_css_default["dangerButton"],
 											"aria-label": providerCopy(t("removeProvider"), target),
@@ -2141,7 +2305,7 @@ window.__ModuleLoader__.load({
 											children: t("remove")
 										}) : null]
 									})]
-								}), open ? renderProviderEditor({
+								}), (0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0,react_jsx_runtime.jsx)(ProviderModelManager,{provider:target.provider,api,t,disabled:!state.writable,revision:namespace.revision,initialModels,onSaved:()=>controller.load()})},target.provider+"-models"), open ? renderProviderEditor({
 									target,
 									namespace,
 									api,
@@ -2636,6 +2800,33 @@ window.__ModuleLoader__.load({
 		/** Copy dictionaries for the Models settings section. */
 		/** English strings (the key-set source of truth for this pair). */
 		const en = {
+            freeTitle:"Free models",freeIntro:"Free model candidates from the official directory. Enable after price confirmation and successful connectivity and tool-call checks.",freeTestHint:"Refresh checks the directory. Test availability sends a real free request; status can change with service limits.",freeRefresh:"Refresh directory",freeRefreshing:"Refreshing…",freeReading:"Reading the directory…",freeProtocolPending:"Protocol pending confirmation",freeTest:"Test availability",freeTesting:"Testing…",freeEnable:"Enable in models",freeEnabled:"Model enabled. Its display preference can be managed under Models.",freeAvailable:"Available",freePending:"Not verified",freeUnavailable:"Unavailable",freeRateLimited:"Rate limited",freeRetired:"Retired",freeVerifiedAt:"Last verified",freeNeverVerified:"Not verified",
+
+            modelManage: "Manage models",
+            modelCollapse: "Collapse",
+            modelRefresh: "Refresh catalog",
+            modelSearch: "Search model name or ID",
+            modelShowFiltered: "Show filtered",
+            modelHideFiltered: "Hide filtered",
+            modelShown: "Shown",
+            modelHidden: "Hidden",
+            modelManualAdd: "Add manual model",
+            modelManualNew: "New model",
+            modelNoMatches: "No matching models",
+            modelCatalogUnavailable: "Model catalog is not loaded",
+            modelMoreCount: "{count} more models",
+            modelPreferencesHint: "Visibility controls the model picker after saving. Existing sessions and running tasks are preserved.",
+            modelPreferencesSaved: "Model preferences saved",
+            modelUnsaved: "Unsaved model changes",
+            modelPreferenceConflict: "Another window changed the same model preference. Your draft is retained; cancel and reload before editing.",
+            modelManualIdConflict: "A manual model ID must be non-empty and unique.",
+            modelAccountChanged: "The account changed. The previous account draft is retained; cancel it to load the current account.",
+            modelEditorFailed: "The model editor could not be opened. Your conversation is retained.",
+            modelCapacityDraftInvalid: "Enter a positive integer or a capacity such as 32K or 1.5M.",
+            accountConnectionManaged: "This connection is managed by account authorization. Reconnect or sign out from Accounts; do not replace it with an API key.",
+            editConnection: "Edit connection",
+            accountRefreshList: "Refresh accounts",
+
 			nav: "Models",
 			title: "Models",
 			intro: "Enter your API keys to use models from the following providers.",
@@ -2702,7 +2893,7 @@ window.__ModuleLoader__.load({
 			modelImageInput: "Accepts image input",
 			fetchModels: "Fetch available models",
             modelVisible: "Show", providerPreset: "Provider", providerKeyless: "Connect without an API key",
-            accountSubagent: "Subagent", accountInstallCli: "Install official client", accountRefresh: "Refresh status", accountCliVerify: "Complete sign-in in the official Claude Code client. Its credentials stay with that client and are used for subagents.",
+            accountSubagent: "Subagent", accountInstallCli: "Install official client", accountRefresh: "Refresh status", accountCliVerify: "Complete sign-in in the official Claude Code client. Its credentials remain with that client.",
             accountTitle: "Accounts", accountHint: "Sign in with a provider subscription. Credentials refresh automatically and stay on this device.",
             accountSignedIn: "Connected", accountSignedOut: "Disconnected", accountReconnect: "Reconnect", accountLogin: "Sign in", accountLogout: "Sign out",
             accountVerify: "Open the sign-in page, enter this code, and complete authorization. This page will update automatically.", accountOpen: "Open sign-in page",
@@ -2744,6 +2935,33 @@ window.__ModuleLoader__.load({
 		};
 		/** Chinese strings (same keys as {@link en}). */
 		const zh = {
+            freeTitle:"免费模型",freeIntro:"官方目录中的免费候选；确认价格并通过连通性与工具调用检测后可启用。",freeTestHint:"刷新只检查目录；检测可用性会发送真实免费请求，状态可能随服务限额变化。",freeRefresh:"刷新目录",freeRefreshing:"刷新中…",freeReading:"正在读取目录…",freeProtocolPending:"协议待确认",freeTest:"检测可用性",freeTesting:"检测中…",freeEnable:"添加到模型",freeEnabled:"模型已启用，可在模型管理中调整显示偏好。",freeAvailable:"可用",freePending:"尚未验证",freeUnavailable:"不可用",freeRateLimited:"暂时限流",freeRetired:"已下线",freeVerifiedAt:"最近验证",freeNeverVerified:"尚未验证",
+
+            modelManage: "管理模型",
+            modelCollapse: "收起",
+            modelRefresh: "刷新目录",
+            modelSearch: "搜索模型名称或 ID",
+            modelShowFiltered: "显示筛选结果",
+            modelHideFiltered: "隐藏筛选结果",
+            modelShown: "显示",
+            modelHidden: "隐藏",
+            modelManualAdd: "添加手动模型",
+            modelManualNew: "新模型",
+            modelNoMatches: "没有匹配的模型",
+            modelCatalogUnavailable: "模型目录尚未载入",
+            modelMoreCount: "另有 {count} 个模型",
+            modelPreferencesHint: "显示开关仅控制模型选择列表；保存后生效，不会删除会话或更改运行中的任务。",
+            modelPreferencesSaved: "模型偏好已保存",
+            modelUnsaved: "有未保存的模型更改",
+            modelPreferenceConflict: "其他窗口修改了同一模型偏好。草稿已保留，请取消并重载后再编辑。",
+            modelManualIdConflict: "手动模型 ID 不能为空或与现有模型重复。",
+            modelAccountChanged: "账号已变更，旧账号的模型草稿已保留。请取消草稿后载入当前账号。",
+            modelEditorFailed: "模型编辑器未能打开，会话内容仍保留。",
+            modelCapacityDraftInvalid: "容量请输入正整数或带 K/M 的数值，例如 32K、1.5M。",
+            accountConnectionManaged: "此连接由账号授权管理；请使用账号登录区续期或退出，不要在 API 密钥编辑器中修改。",
+            editConnection: "编辑连接",
+            accountRefreshList: "刷新账号",
+
 			nav: "模型",
 			title: "模型",
 			intro: "填入各提供方的 API 密钥即可使用其模型。",
@@ -2810,7 +3028,7 @@ window.__ModuleLoader__.load({
 			modelImageInput: "支持图片输入",
 			fetchModels: "获取可用模型",
             modelVisible: "显示", providerPreset: "供应商预设", providerKeyless: "无需 API 密钥",
-            accountSubagent: "子智能体", accountInstallCli: "安装官方客户端", accountRefresh: "刷新状态", accountCliVerify: "请在官方 Claude Code 客户端打开的页面完成登录；凭据由该客户端管理，仅用于子智能体。",
+            accountSubagent: "子智能体", accountInstallCli: "安装官方客户端", accountRefresh: "刷新状态", accountCliVerify: "请在官方 Claude Code 客户端打开的页面完成登录；凭据由该客户端管理。",
             accountTitle: "账号登录", accountHint: "使用供应商订阅登录，凭据保存在本机并自动续期。",
             accountSignedIn: "已连接", accountSignedOut: "未连接", accountReconnect: "重新连接", accountLogin: "登录", accountLogout: "退出登录",
             accountVerify: "打开登录页面，输入验证码并完成授权，此处会自动更新。", accountOpen: "打开登录页面",
@@ -2935,6 +3153,7 @@ window.__ModuleLoader__.load({
 				label: () => t("nav"),
 				inject: injected
 			}, ModelsSection));
+            ctx.slots.inject("settings.section", () => ctx.slots.register({name:"settings.section",id:"free-models",order:11,label:()=>t("freeTitle"),inject:()=>({controller,t})},FreeModelsSection));
 			ctx.slots.inject("settings.onboarding", () => ctx.slots.register({
 				name: "settings.onboarding",
 				id: "welcome-notice",

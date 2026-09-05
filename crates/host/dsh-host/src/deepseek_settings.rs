@@ -13,6 +13,8 @@ pub(crate) fn schema() -> Schema {
         ("contextWindow".into(), Schema::number().min(1.0).step(1.0)),
         ("maxTokens".into(), Schema::number().min(1.0).step(1.0)),
         ("imageInput".into(), Schema::boolean()),
+        ("source".into(), Schema::string()),
+        ("accountScope".into(), Schema::string()),
     ]));
     let models = defaults
         .models
@@ -27,6 +29,13 @@ pub(crate) fn schema() -> Schema {
         })
         .collect::<Vec<_>>();
     Schema::object(indexmap::IndexMap::from([
+        (
+            "modelPreferences".into(),
+            super::provider_auth_catalog::preferences_schema(),
+        ),
+        ("legacyModelScope".into(), Schema::string()),
+        ("modelCatalogScope".into(), Schema::string()),
+        ("catalogRevision".into(), Schema::string()),
         (
             "apiKeyEnv".into(),
             Schema::string()

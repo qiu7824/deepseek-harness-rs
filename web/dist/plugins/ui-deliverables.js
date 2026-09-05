@@ -266,7 +266,8 @@ window.__ModuleLoader__.load({
 						children: [shown.map((path) => (0, react_jsx_runtime.jsx)("button", {
 							type: "button",
 							className: ProducedFiles_module_css_default.file,
-							title: path,
+							title: globalThis.__DSH_FILE_ACTIONS__?.displayPath(path) ?? path,
+							onContextMenu: (event) => { event.preventDefault(); openFile(path, { intent: "menu", x: event.clientX, y: event.clientY }); },
 							"aria-label": t("produced.open", { name: path }),
 							onClick: () => {
 								openFile(path);
@@ -277,13 +278,13 @@ window.__ModuleLoader__.load({
 							children: moreLabel(t, hidden)
 						})]
 					}),
-					hidden > 0 && canOpenPath && (0, react_jsx_runtime.jsx)("button", {
+					canOpenPath && (0, react_jsx_runtime.jsx)("button", {
 						type: "button",
 						className: ProducedFiles_module_css_default.showFolder,
 						onClick: () => {
-							openFile(".");
+							openFile(paths[0], { intent: "menu" });
 						},
-						children: t("produced.showInFolder")
+						children: "文件操作"
 					}),
 					(0, react_jsx_runtime.jsxs)("div", {
 						className: ProducedFiles_module_css_default.measure,

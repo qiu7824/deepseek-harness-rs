@@ -1,5 +1,6 @@
 import json
 import pathlib
+import subprocess
 import unittest
 
 
@@ -8,6 +9,14 @@ PLUGINS = ROOT / "web" / "dist" / "plugins"
 
 
 class RustRuntimeContractTests(unittest.TestCase):
+    def test_runtime_environment_distinguishes_missing_and_failed_probes(self):
+        result = subprocess.run(
+            ["node", str(ROOT / "tools/tests/runtime_environment_harness.cjs")],
+            cwd=ROOT, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+
     def source(self, name: str) -> str:
         return (PLUGINS / name).read_text(encoding="utf-8")
 

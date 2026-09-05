@@ -164,9 +164,10 @@ impl ClaudeCliAuth {
         *slot = Some(attempt.clone());
         let worker = attempt.clone();
         let weak = Arc::downgrade(self);
-        let timeout = self.login_timeout;
+        // Queueing the worker must not extend the login's allowed lifetime.
+        let deadline = tokio::time::Instant::now() + self.login_timeout;
         tokio::spawn(async move {
-            let result = tokio::time::timeout(timeout, child.done()).await;
+            let result = tokio::time::timeout_at(deadline, child.done()).await;
             let next = match result {
                 Ok(Ok(outcome)) if outcome.exit_code == Some(0) => {
                     if let Some(owner) = weak.upgrade() {

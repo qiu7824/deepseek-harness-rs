@@ -1,6 +1,11 @@
 //! Account authorization and renewal. Tokens stay in the credential provider;
 //! the browser receives a user code, an opaque attempt id, and account status.
 #[cfg(test)]
+#[path = "provider_auth_models_tests.rs"]
+mod model_tests;
+#[path = "provider_auth_models.rs"]
+mod models;
+#[cfg(test)]
 #[path = "provider_auth_review_tests.rs"]
 mod review_tests;
 use dsh_credentials::CredentialProvider;
@@ -197,6 +202,8 @@ struct Session {
     invalid: bool,
     #[serde(default)]
     base_url: Option<String>,
+    #[serde(default)]
+    account_scope: String,
 }
 impl Session {
     fn from_tokens(value: &Value, previous: Option<&Session>) -> Result<Self, String> {
@@ -204,10 +211,26 @@ impl Session {
         let claims = jwt(&access_token);
         let account_id = claims
             .as_ref()
-            .and_then(|c| c.pointer("/https://api.openai.com/auth/chatgpt_account_id"))
+            .and_then(|c| c.get("https://api.openai.com/auth"))
+            .and_then(|c| c.get("chatgpt_account_id"))
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| previous.and_then(|p| p.account_id.clone()));
+        let identity = account_id.clone().or_else(|| {
+            claims
+                .as_ref()
+                .and_then(|c| c.get("sub"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+        let account_scope = identity
+            .map(|identity| format!("account-{}", crate::provider_auth_catalog::key(&identity)))
+            .or_else(|| {
+                previous
+                    .filter(|p| !p.account_scope.is_empty())
+                    .map(|p| p.account_scope.clone())
+            })
+            .unwrap_or_else(|| format!("account-{}", uuid::Uuid::new_v4().simple()));
         Ok(Self {
             expires_at: claims
                 .as_ref()
@@ -216,6 +239,7 @@ impl Session {
                 .unwrap_or_else(|| expiry(value)),
             access_token,
             account_id,
+            account_scope,
             invalid: false,
             base_url: previous.and_then(|p| p.base_url.clone()),
             refresh_token: value
@@ -243,6 +267,8 @@ pub(crate) struct AccountAuth {
     pending: parking_lot::Mutex<HashMap<String, (Provider, Arc<tokio::sync::Mutex<Pending>>)>>,
     refresh: tokio::sync::Mutex<()>,
     cli: parking_lot::RwLock<Option<Arc<super::claude_cli_auth::ClaudeCliAuth>>>,
+    catalogs: crate::provider_auth_catalog::CatalogStore,
+    catalog_transport: parking_lot::RwLock<Option<models::CatalogTransport>>,
 }
 impl AccountAuth {
     pub(crate) fn new(
@@ -261,6 +287,13 @@ impl AccountAuth {
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(Self {
             client,
+            catalogs: crate::provider_auth_catalog::CatalogStore::new(
+                std::path::Path::new(credentials.filename())
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("cache/model-catalogs"),
+            ),
+            catalog_transport: Default::default(),
             credentials,
             settings,
             pending: Default::default(),
@@ -276,8 +309,42 @@ impl AccountAuth {
             .resolve(&reference(id))
             .await
             .map(|value| {
-                serde_json::from_str(&value.value)
-                    .map_err(|_| "账号凭据无效，请重新登录".to_string())
+                let mut session: Session = serde_json::from_str(&value.value)
+                    .map_err(|_| "账号凭据无效，请重新登录".to_string())?;
+                let claims = jwt(&session.access_token);
+                let claim_account = claims
+                    .as_ref()
+                    .and_then(|v| v.get("https://api.openai.com/auth"))
+                    .and_then(|v| v.get("chatgpt_account_id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if let Some(account) = claim_account {
+                    if session.account_id.as_ref() != Some(&account) {
+                        session.account_scope.clear();
+                    }
+                    session.account_id = Some(account);
+                }
+                if session.account_scope.is_empty() {
+                    let identity = session
+                        .account_id
+                        .clone()
+                        .or_else(|| {
+                            claims
+                                .as_ref()
+                                .and_then(|v| v.get("sub"))
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        })
+                        .unwrap_or_else(|| {
+                            session
+                                .refresh_token
+                                .clone()
+                                .unwrap_or_else(|| session.access_token.clone())
+                        });
+                    session.account_scope =
+                        format!("account-{}", crate::provider_auth_catalog::key(&identity));
+                }
+                Ok(session)
             })
             .transpose()
     }
@@ -299,6 +366,7 @@ impl AccountAuth {
             return Err("账号授权已失效，请重新登录".to_string());
         }
         if session.expires_at > now() + 120 {
+            self.repair_profile(p, &session).await?;
             return Ok(Some(session.access_token));
         }
         let refresh = session
@@ -308,12 +376,7 @@ impl AccountAuth {
         if id == "copilot" {
             let renewed = self.exchange_copilot(refresh).await?;
             self.save(id, &renewed).await?;
-            if renewed.base_url != session.base_url {
-                let ns =
-                    dsh_settings::settings_namespace("llm-pi-ai").map_err(|e| e.to_string())?;
-                self.settings.update(&ns, json!({"providers":{"copilot":{"baseURL":renewed.base_url.as_deref().unwrap_or(p.base)}}}),None).await?;
-                return Err("GitHub Copilot 账号路由已更新，请重试当前请求".to_string());
-            }
+            self.repair_profile(p, &renewed).await?;
             return Ok(Some(renewed.access_token));
         }
         let request = self.client.post(p.token);
@@ -345,7 +408,52 @@ impl AccountAuth {
         }
         session = Session::from_tokens(&tokens, Some(&session))?;
         self.save(id, &session).await?;
+        self.repair_profile(p, &session).await?;
         Ok(Some(session.access_token))
+    }
+    async fn repair_profile(&self, p: Provider, session: &Session) -> Result<(), String> {
+        let current = self.profile_snapshot(p.id, true)?.0;
+        let account_header = current
+            .get("headers")
+            .and_then(Value::as_object)
+            .and_then(|headers| {
+                headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("chatgpt-account-id"))
+            })
+            .and_then(|(_, value)| value.as_str());
+        if current.get("baseURL").and_then(Value::as_str)
+            != Some(session.base_url.as_deref().unwrap_or(p.base))
+            || current.get("modelCatalogScope").and_then(Value::as_str)
+                != Some(session.account_scope.as_str())
+            || p.id == "openai-codex" && account_header != session.account_id.as_deref()
+        {
+            self.install_profile(p, session).await?;
+        }
+        Ok(())
+    }
+    pub(crate) async fn resolve_request_token(
+        &self,
+        id: &str,
+        base: &str,
+        headers: &[(String, String)],
+    ) -> Result<Option<String>, String> {
+        let token = self.resolve_token(id).await?;
+        let current = self.profile_snapshot(id, false)?.0;
+        let header_changed = current
+            .get("headers")
+            .and_then(Value::as_object)
+            .is_some_and(|current| {
+                current.iter().any(|(name, value)| {
+                    !headers.iter().any(|(old, old_value)| {
+                        old.eq_ignore_ascii_case(name) && value.as_str() == Some(old_value)
+                    })
+                })
+            });
+        if current.get("baseURL").and_then(Value::as_str) != Some(base) || header_changed {
+            return Err("账号请求配置已更新，请重试当前请求".into());
+        }
+        Ok(token)
     }
     async fn start(&self, id: &str) -> Result<Value, String> {
         let p = provider(id)?;
@@ -616,83 +724,74 @@ impl AccountAuth {
         Ok(json!({"status":"complete","provider":p.id}))
     }
     async fn commit(&self, attempt: &str, p: Provider, session: &Session) -> Result<(), String> {
-        let _guard = self.refresh.lock().await;
-        if !self.pending.lock().contains_key(attempt) {
-            return Err("登录已取消".to_string());
+        {
+            let _guard = self.refresh.lock().await;
+            if !self.pending.lock().contains_key(attempt) {
+                return Err("登录已取消".to_string());
+            }
+            self.save(p.id, session).await?;
+            self.pending.lock().remove(attempt);
+            self.install_profile(p, session).await?;
         }
-        self.save(p.id, session).await?;
-        self.pending.lock().remove(attempt);
-        self.install_profile(p, session).await
+        // Authentication and catalog sync are separate states. An authenticated
+        // account with a failing catalog retains an actionable sync error.
+        let _ = self.refresh_catalog(p.id).await;
+        Ok(())
     }
     async fn install_profile(&self, p: Provider, session: &Session) -> Result<(), String> {
-        let ns = dsh_settings::settings_namespace("llm-pi-ai").map_err(|e| e.to_string())?;
-        let current = self
-            .settings
-            .get(&ns)
-            .and_then(|v| v.to_json())
-            .unwrap_or(json!({}));
-        let existing = current.pointer(&format!("/providers/{}", p.id));
-        let models = if let Some(models) = existing
-            .and_then(|v| v.get("models"))
-            .filter(|v| v.as_array().is_some_and(|v| !v.is_empty()))
-        {
-            models.clone()
-        } else if p.id == "openai-codex" {
-            json!([{"id":"gpt-5.4","input":["text","image"]}])
-        } else if p.id == "qwen-oauth" {
-            json!([{"id":"coder-model"},{"id":"vision-model","input":["text","image"]}])
-        } else if p.id.starts_with("minimax") {
-            json!([{"id":"MiniMax-M2.5"}])
-        } else {
-            let mut request = self
-                .client
-                .get(format!(
-                    "{}/models",
-                    session.base_url.as_deref().unwrap_or(p.base)
-                ))
-                .bearer_auth(&session.access_token);
+        for attempt in 0..4 {
+            let (mut profile, revision) = self.profile_snapshot(p.id, true)?;
+            crate::provider_auth_catalog::migrate_legacy_preferences(
+                &mut profile,
+                &session.account_scope,
+            );
+            profile["authProvider"] = json!(p.id);
+            profile["api"] = json!(p.api);
+            profile["baseURL"] = json!(session.base_url.as_deref().unwrap_or(p.base));
+            if profile.get("displayName").is_none() {
+                profile["displayName"] = json!(p.name);
+            }
+            profile["apiKeyEnv"] = json!(reference(p.id).as_str());
+            profile["modelCatalogScope"] = json!(session.account_scope);
+            profile["catalogRevision"] = json!(uuid::Uuid::new_v4().to_string());
+            profile["keyless"] = json!(false);
+            let mut headers = profile
+                .get("headers")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            if p.id == "openai-codex" {
+                headers.retain(|name, _| !name.eq_ignore_ascii_case("chatgpt-account-id"));
+                if let Some(account) = &session.account_id {
+                    headers.insert("ChatGPT-Account-ID".into(), json!(account));
+                }
+            }
             if p.id == "copilot" {
-                request = request
-                    .header("Editor-Version", "vscode/1.104.1")
-                    .header("Copilot-Integration-Id", "vscode-chat");
+                for (name, value) in [
+                    ("Editor-Version", "vscode/1.104.1"),
+                    ("Copilot-Integration-Id", "vscode-chat"),
+                    ("Openai-Intent", "conversation-edits"),
+                    ("x-initiator", "agent"),
+                ] {
+                    headers.retain(|key, _| !key.eq_ignore_ascii_case(name));
+                    headers.insert(name.into(), json!(value));
+                }
             }
-            let response = request
-                .send()
-                .await
-                .map_err(|_| "登录成功，但模型目录暂时无法连接；请重新连接账号".to_string())?;
-            if !response.status().is_success() {
-                return Err(format!(
-                    "登录成功，但模型目录返回 HTTP {}；请检查订阅后重新连接",
-                    response.status().as_u16()
-                ));
+            profile["headers"] = Value::Object(headers);
+            self.catalogs.bind(p.id, &session.account_scope);
+            match self.write_model_profile(p.id, profile, revision).await {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if attempt < 3
+                        && (error.contains("revision")
+                            || error.to_lowercase().contains("conflict")) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
             }
-            let value = response
-                .json::<Value>()
-                .await
-                .map_err(|_| "模型目录返回无效数据".to_string())?;
-            let models = super::model_discovery::parse_model_listing(&value)?;
-            if models.is_empty() {
-                return Err("登录成功，但账号没有可用模型".to_string());
-            }
-            serde_json::to_value(models).map_err(|e| e.to_string())?
-        };
-        let mut profile = existing.cloned().unwrap_or(json!({}));
-        profile["authProvider"] = json!(p.id);
-        profile["api"] = json!(p.api);
-        profile["baseURL"] = json!(session.base_url.as_deref().unwrap_or(p.base));
-        profile["displayName"] = json!(p.name);
-        profile["apiKeyEnv"] = json!(reference(p.id).as_str());
-        profile["models"] = models;
-        profile["keyless"] = json!(false);
-        if let Some(account) = &session.account_id {
-            profile["headers"] = json!({"ChatGPT-Account-ID": account});
         }
-        if p.id == "copilot" {
-            profile["headers"] = json!({"Editor-Version":"vscode/1.104.1","Copilot-Integration-Id":"vscode-chat","Openai-Intent":"conversation-edits","x-initiator":"agent"});
-        }
-        self.settings
-            .update(&ns, json!({"providers":{p.id:profile}}), None)
-            .await
+        Err("模型设置持续变化，请稍后重试".into())
     }
     async fn exchange_copilot(&self, github_token: &str) -> Result<Session, String> {
         let response = self
@@ -732,6 +831,10 @@ impl AccountAuth {
             account_id: None,
             invalid: false,
             base_url,
+            account_scope: format!(
+                "account-{}",
+                crate::provider_auth_catalog::key(github_token)
+            ),
         })
     }
     async fn handle(&self, action: &str, body: &Value) -> Result<Value, String> {
@@ -761,13 +864,23 @@ impl AccountAuth {
                 let mut values = Vec::new();
                 for p in PROVIDERS {
                     let session = self.session(p.id).await.ok().flatten();
-                    values.push(json!({"id":p.id,"name":p.name,"signedIn":session.as_ref().is_some_and(|s| !s.invalid), "expiresAt":session.map(|s|s.expires_at)}));
+                    let scope = session
+                        .as_ref()
+                        .filter(|s| !s.invalid)
+                        .map(|s| s.account_scope.as_str())
+                        .unwrap_or("signed-out");
+                    let catalog = self.catalogs.get(p.id, scope);
+                    values.push(json!({"id":p.id,"name":p.name,"signedIn":session.as_ref().is_some_and(|s| !s.invalid),
+                        "expiresAt":session.as_ref().map(|s|s.expires_at),"settingsNs":"llm-pi-ai","settingsPath":["providers",p.id],
+                        "accountScope":scope,"catalog":catalog.status_value()}));
                 }
                 if let Some(cli) = cli {
                     values.push(cli.status().await);
                 }
                 Ok(json!({"providers":values}))
             }
+            "models" => self.model_view(&string(body, "provider")?).await,
+            "refresh" => self.refresh_catalog(&string(body, "provider")?).await,
             "start" => self.start(&string(body, "provider")?).await,
             "connect" => {
                 let id = string(body, "provider")?;
@@ -777,7 +890,7 @@ impl AccountAuth {
                     .await?
                     .ok_or_else(|| "账号尚未登录".to_string())?;
                 self.install_profile(provider(&id)?, &session).await?;
-                Ok(json!({"status":"complete","provider":id}))
+                self.refresh_catalog(&id).await
             }
             "poll" => self.poll(&string(body, "attempt")?).await,
             "cancel" => {
@@ -795,6 +908,7 @@ impl AccountAuth {
                 let _guard = self.refresh.lock().await;
                 self.pending.lock().retain(|_, (owner, _)| owner.id != id);
                 self.credentials.unset(&reference(&id)).await?;
+                self.catalogs.unbind(&id);
                 Ok(json!({"status":"signedOut"}))
             }
             _ => Err("未知账号操作".to_string()),

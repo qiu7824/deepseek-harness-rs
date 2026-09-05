@@ -4,8 +4,11 @@
 //! a neutral tool holds no shared index; the cross-file graph layer comes later).
 
 use crate::lang::Lang;
+use std::ops::ControlFlow;
 use std::path::Path;
-use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
+use tree_sitter::{
+    Node, ParseOptions, Parser, Query, QueryCursor, QueryCursorOptions, StreamingIterator, Tree,
+};
 
 /// Per-signature display cap in a skeleton — mirrors `read_file`'s line cap so the
 /// skeleton never shows MORE of a (pathologically long, minified) line than a full read.
@@ -15,7 +18,8 @@ const SIG_MAX: usize = 2000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Symbol {
     pub name: String,
-    /// The tree-sitter node kind of the definition (e.g. `function_item`, `struct_item`).
+    /// The definition's tree-sitter kind, unwrapping exports and using the initializer
+    /// kind for named function/class expressions (e.g. `arrow_function`).
     pub kind: String,
     /// 1-based inclusive line range of the definition.
     pub start_line: usize,
@@ -29,10 +33,43 @@ pub struct Symbol {
 /// methods, …) via the language's tree-sitter query. `None` only if parsing or query
 /// compilation fails; an empty `Vec` means a clean parse with no symbols.
 pub fn extract_symbols(source: &str, lang: Lang) -> Option<Vec<Symbol>> {
+    let stop = || false;
+    let tree = parse_tree(source, lang, &stop)?;
+    extract_symbols_from_tree(source, lang, &tree, &stop)
+}
+
+pub(crate) fn parse_tree(source: &str, lang: Lang, stop: &dyn Fn() -> bool) -> Option<Tree> {
+    if stop() {
+        return None;
+    }
     let grammar = lang.grammar();
     let mut parser = Parser::new();
     parser.set_language(&grammar).ok()?;
-    let tree = parser.parse(source, None)?;
+    let bytes = source.as_bytes();
+    let mut progress = |_: &tree_sitter::ParseState| {
+        if stop() {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    parser.parse_with_options(
+        &mut |offset, _| &bytes[offset..],
+        None,
+        Some(ParseOptions::new().progress_callback(&mut progress)),
+    )
+}
+
+pub(crate) fn extract_symbols_from_tree(
+    source: &str,
+    lang: Lang,
+    tree: &Tree,
+    stop: &dyn Fn() -> bool,
+) -> Option<Vec<Symbol>> {
+    if stop() {
+        return None;
+    }
+    let grammar = lang.grammar();
 
     let query = Query::new(&grammar, lang.symbols_query()).ok()?;
     let def_idx = query.capture_index_for_name("definition")?;
@@ -43,8 +80,23 @@ pub fn extract_symbols(source: &str, lang: Lang) -> Option<Vec<Symbol>> {
     // Dedup by byte range — a query may match the same definition via multiple patterns.
     let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
 
-    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    let mut progress = |_: &tree_sitter::QueryCursorState| {
+        if stop() {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    let mut matches = cursor.matches_with_options(
+        &query,
+        tree.root_node(),
+        source.as_bytes(),
+        QueryCursorOptions::new().progress_callback(&mut progress),
+    );
     loop {
+        if stop() {
+            return None;
+        }
         matches.advance();
         let m = match matches.get() {
             Some(m) => m,
@@ -52,36 +104,49 @@ pub fn extract_symbols(source: &str, lang: Lang) -> Option<Vec<Symbol>> {
         };
 
         let mut name = None;
-        let (mut ds, mut de, mut dsr, mut der) = (0usize, 0usize, 0usize, 0usize);
-        let mut kind = "";
-        let mut has_def = false;
+        let mut definition = None;
         for cap in m.captures {
             if cap.index == name_idx {
                 name = Some(source[cap.node.start_byte()..cap.node.end_byte()].to_string());
             }
             if cap.index == def_idx {
-                ds = cap.node.start_byte();
-                de = cap.node.end_byte();
-                dsr = cap.node.start_position().row;
-                der = cap.node.end_position().row;
-                kind = cap.node.kind();
-                has_def = true;
+                definition = Some(cap.node);
             }
         }
-        if let (Some(name), true) = (name, has_def)
-            && seen.insert((ds, de))
-        {
-            symbols.push(Symbol {
-                name,
-                kind: kind.to_string(),
-                start_line: dsr + 1,
-                end_line: der + 1,
-                start_byte: ds,
-                end_byte: de,
-            });
+        if let (Some(name), Some(definition)) = (name, definition) {
+            let (definition, kind) = normalize_definition(definition);
+            if seen.insert((definition.start_byte(), definition.end_byte())) {
+                symbols.push(Symbol {
+                    name,
+                    kind: kind.to_string(),
+                    start_line: definition.start_position().row + 1,
+                    end_line: definition.end_position().row + 1,
+                    start_byte: definition.start_byte(),
+                    end_byte: definition.end_byte(),
+                });
+            }
         }
     }
-    Some(symbols)
+    if stop() { None } else { Some(symbols) }
+}
+
+/// Exports and their inner declarations may both be captured. They describe one
+/// symbol. A variable binding retains its own range/name, while its initializer
+/// determines whether it is callable; sibling declarators never share a range.
+fn normalize_definition(mut node: Node<'_>) -> (Node<'_>, &'static str) {
+    if node.kind() == "export_statement"
+        && let Some(declaration) = node.child_by_field_name("declaration")
+    {
+        node = declaration;
+    }
+    let kind = if node.kind() == "variable_declarator" {
+        node.child_by_field_name("value")
+            .map(|value| value.kind())
+            .unwrap_or(node.kind())
+    } else {
+        node.kind()
+    };
+    (node, kind)
 }
 
 /// Extract the first symbol named `name` from `source`.
@@ -157,6 +222,53 @@ pub fn skeleton(path: &Path, source: &str, display_path: &str) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn javascript_family_bindings_keep_names_and_individual_byte_ranges() {
+        let source = "const first = () => helper(), second = function privateName() { helper(); }, plain = helper(); var third = () => second(); const Box = class Inner {};";
+        for lang in [Lang::JavaScript, Lang::TypeScript, Lang::Tsx] {
+            let symbols = extract_symbols(source, lang).unwrap();
+            assert_eq!(symbols.len(), 4, "{lang:?}: {symbols:?}");
+            let first = symbols.iter().find(|s| s.name == "first").unwrap();
+            let second = symbols.iter().find(|s| s.name == "second").unwrap();
+            assert_eq!(first.kind, "arrow_function");
+            assert_eq!(second.kind, "function_expression");
+            assert_eq!(
+                &source[first.start_byte..first.end_byte],
+                "first = () => helper()"
+            );
+            assert_eq!(
+                &source[second.start_byte..second.end_byte],
+                "second = function privateName() { helper(); }"
+            );
+            assert!(first.end_byte < second.start_byte);
+            assert!(symbols.iter().all(|s| s.start_line == 1 && s.end_line == 1));
+            assert!(
+                !symbols
+                    .iter()
+                    .any(|s| matches!(s.name.as_str(), "plain" | "privateName" | "Inner"))
+            );
+            assert_eq!(
+                symbols.iter().find(|s| s.name == "Box").unwrap().kind,
+                "class"
+            );
+        }
+    }
+
+    #[test]
+    fn export_captures_normalize_to_one_real_declaration() {
+        let source = "export function run() {} export class Box {}";
+        for lang in [Lang::JavaScript, Lang::TypeScript, Lang::Tsx] {
+            let symbols = extract_symbols(source, lang).unwrap();
+            assert_eq!(symbols.len(), 2, "{lang:?}: {symbols:?}");
+            let run = symbols.iter().find(|s| s.name == "run").unwrap();
+            let class = symbols.iter().find(|s| s.name == "Box").unwrap();
+            assert_eq!(run.kind, "function_declaration");
+            assert_eq!(class.kind, "class_declaration");
+            assert_eq!(&source[run.start_byte..run.end_byte], "function run() {}");
+            assert_eq!(&source[class.start_byte..class.end_byte], "class Box {}");
+        }
+    }
 
     #[test]
     fn extracts_rust_symbols() {

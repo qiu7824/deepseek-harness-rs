@@ -4,7 +4,7 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 > 当前版本仍是预发布版本。功能状态以本README的兼容矩阵和GitHub Release说明为准。
 
-当前发布线：`0.1.3-alpha.3`。
+当前发布线：`0.1.3-alpha.4`。
 
 Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启动器和主题效果。版本号标识 Rust 发布线，不表示与 Node 版本逐项或磁盘格式完全相同。
 
@@ -12,9 +12,9 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 
 从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases) 下载对应平台的完整包：
 
-- `deepseek-harness-rs-v0.1.3-alpha.3-windows-x86_64-{core,skin,free}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.3-linux-x86_64-{core,skin,free}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.3-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.4-windows-x86_64-{core,skin,free}-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.4-linux-x86_64-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.4-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
 - 对应的 Windows `setup.exe`、Linux `.deb` 与 macOS `.pkg` 安装包
 
 完整包包含二进制、`web/dist`、`config/agent-presets`、随附Web插件和安全说明。不要只复制二进制后再期待完整Web界面和随附插件可用。
@@ -34,11 +34,15 @@ Linux/macOS: ./dsh-launcher
 http://127.0.0.1:58080/
 ```
 
-启动器由固定 commit 的 ZSUI 构建，不依赖 CMD、PowerShell、WebView 或额外运行时；负责启动、停止、重启正式 `deepseek-harness-rs web` 进程以及打开网页、日志目录。Windows 安装器和启动器按系统 UI 语言自动显示简体中文或英文。
+启动器由固定 commit 的 ZSUI 构建，不依赖 CMD、PowerShell、WebView 或额外运行时；负责启动、停止、重启正式 `deepseek-harness-rs web` 进程以及打开网页、日志目录。Windows 安装器和启动器按系统 UI 语言自动显示简体中文或英文。 全新安装默认位于 `D:\Program Files (x86)\DeepSeek Harness-rs\<variant>`，升级沿用原安装位置；默认位置不可用时需选择其他目录。
 
 需要扩展皮肤时，另行下载 `skin` 包并运行其中的 `deepseek-harness-rs-skin`（Windows 为 `.exe`）；它只把皮肤资产安装到同目录的 `web/dist/skins`，默认 `core` 包始终不携带皮肤资源。
 
-`free` 包与 `core` 使用同一套正式运行时和 Web 界面，附带 OpenCode Zen 免密模型 `ling-3.0-flash-fin-free`。打包检查[官方模型目录](https://opencode.ai/zen/v1/models)，并要求最近 24 小时内通过匿名推理、工具调用与工具结果续接验证，附带 `free-model-verification.json`；其中不包含任何凭据或皮肤载荷。
+`free` 包与 `core` 使用同一套正式运行时和 Web 界面，只预置通过发布检查的 OpenCode Zen 免费模型。检查[官方模型目录](https://opencode.ai/zen/v1/models)中的精确 ID、官方输入／输出／缓存读取价格、匿名流式推理、工具调用与工具结果续接，并将最近 24 小时的验证证据绑定到包内运行时校验和。`free-model-verification.json` 列出各候选的实际结果；设置中的免费模型页可刷新目录、重新检测和添加已通过的模型。免费包不包含凭据或皮肤载荷。
+
+普通会话、原生工具和 Web 界面由 Rust 核心提供。JavaScript／TypeScript 代码模式及部分外部工具需要单独配置 Node；设置中的运行环境页显示实际路径、版本及能力检测结果。
+
+账号登录后自动同步可用模型和能力；模型管理中的显示开关保留跨刷新、重启的用户偏好，隐藏模型不会删除已有会话。代码图谱自动索引当前工作区，提供局部调用关系、文件依赖与源码定位；推断关系和未覆盖范围会明确标示。
 
 ## 命令行入口
 

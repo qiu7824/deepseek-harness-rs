@@ -294,7 +294,7 @@ async fn run_one(
             // startup environment. The runner clears process.env before it
             // creates the model Worker, after Node/AppContainer initialization
             // has consumed the Windows runtime coordinates it requires.
-            env: Some(Vec::new()),
+            env: Some(vec![("NODE_OPTIONS".to_string(), None)]),
         })?;
         let id = state.next_id;
         state.next_id = state.next_id.wrapping_add(1);

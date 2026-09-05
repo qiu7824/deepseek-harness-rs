@@ -22,6 +22,8 @@ const FAILURE: &str = ".runtime-migration-failed.json";
 mod links;
 #[path = "runtime_paths_migration.rs"]
 mod migration;
+#[path = "runtime_paths_node.rs"]
+mod node;
 use links::ManagedModuleLinks;
 
 #[derive(Default)]
@@ -58,6 +60,8 @@ pub struct RuntimePaths {
     restart_error: parking_lot::Mutex<Option<String>>,
     admission: parking_lot::Mutex<Admission>,
     requests_changed: tokio::sync::Notify,
+    selected_node_command: String,
+    node_cache: tokio::sync::Mutex<Option<(std::time::Instant, Value)>>,
 }
 
 fn read_json(path: &Path) -> Result<Value, String> {
@@ -313,6 +317,8 @@ impl RuntimePaths {
             }
         }
         Ok(Arc::new(Self {
+            selected_node_command: node::configured_command(&paths["environmentDirectory"]),
+            node_cache: tokio::sync::Mutex::new(None),
             paths,
             lock: parking_lot::Mutex::new(Some(lock)),
             restart: tokio::sync::Notify::new(),
@@ -375,32 +381,50 @@ impl RuntimePaths {
         self.restart.notified().await;
     }
     pub fn node_command(&self) -> String {
-        let name = if cfg!(windows) { "node.exe" } else { "node" };
-        [
-            self.paths["environmentDirectory"].join(name),
-            self.paths["environmentDirectory"].join("bin").join(name),
-        ]
-        .into_iter()
-        .find(|p| p.is_file())
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "node".into())
+        self.selected_node_command.clone()
+    }
+
+    async fn node_status(
+        &self,
+        subprocess: Arc<dyn dsh_subprocess::SubprocessRuntime>,
+        refresh: bool,
+    ) -> Value {
+        let mut cache = self.node_cache.lock().await;
+        if !refresh {
+            if let Some((checked, value)) = cache.as_ref() {
+                if checked.elapsed() < std::time::Duration::from_secs(30) {
+                    return value.clone();
+                }
+            }
+        }
+        let value = node::probe(
+            subprocess,
+            &self.selected_node_command,
+            &self.paths["environmentDirectory"],
+        )
+        .await;
+        *cache = Some((std::time::Instant::now(), value.clone()));
+        value
     }
 
     pub fn register(
         self: &Arc<Self>,
         server: &Arc<WebServer>,
         agents: Arc<dsh_agent::AgentRegistry>,
+        subprocess: Arc<dyn dsh_subprocess::SubprocessRuntime>,
         allow_remote: bool,
     ) -> RouteDisposer {
         let runtime = self.clone();
         server.register(WebRoute { kind: WebRouteKind::Exact, path: "/__dsh-runtime".into(), handler: Arc::new(move |request| {
-            let runtime = runtime.clone(); let agents = agents.clone();
+            let runtime = runtime.clone(); let agents = agents.clone(); let subprocess = subprocess.clone();
             Box::pin(async move {
                 let mut status = http::StatusCode::OK;
                 let payload = if !super::trusted_web_request(&request, allow_remote) {
                     status = http::StatusCode::FORBIDDEN; json!({"error":"禁止跨站访问"})
                 } else if request.method() == http::Method::GET {
-                    json!({"paths":runtime.paths,"nodeCommand":runtime.node_command(),"restartSupported":runtime.restart_supported.load(Ordering::Acquire),"instanceId":runtime.instance_id,"migrationError":runtime.migration_error,"restarting":runtime.admission.lock().restarting,"restartError":runtime.restart_error.lock().clone()})
+                    let refresh = request.uri().query().is_some_and(|query| query.split('&').any(|item| item == "refreshNode=1"));
+                    let node = runtime.node_status(subprocess, refresh).await;
+                    json!({"paths":runtime.paths,"nodeCommand":runtime.node_command(),"node":node,"restartSupported":runtime.restart_supported.load(Ordering::Acquire),"instanceId":runtime.instance_id,"migrationError":runtime.migration_error,"restarting":runtime.admission.lock().restarting,"restartError":runtime.restart_error.lock().clone()})
                 } else if request.method() == http::Method::POST && request.headers().get("content-type").and_then(|h| h.to_str().ok()).is_some_and(|s| s.starts_with("application/json")) {
                     let bytes = axum::body::to_bytes(axum::body::Body::new(request.into_body()), 4096).await.unwrap_or_default();
                     let action: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);

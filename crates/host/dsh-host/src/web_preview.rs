@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, to_bytes};
 use dsh_agent::AgentRegistry;
-use dsh_code_graph::{CodeIndex, GraphSnapshot};
+use dsh_code_graph::{BackgroundIndex, background::GraphQuery};
 use dsh_host_webserver::{
     RouteDisposer, WebHandlerError, WebRequest, WebResponse, WebRoute, WebRouteKind, WebServer,
 };
@@ -261,7 +261,7 @@ struct PreviewService {
     subprocess: Arc<dyn SubprocessRuntime>,
     sandbox: Arc<dyn SandboxProvider>,
     site_token: String,
-    code_index: CodeIndex,
+    code_index: BackgroundIndex,
     state: Mutex<PreviewState>,
 }
 
@@ -703,16 +703,7 @@ async fn authorized_path(
 }
 
 fn execution_path(path: &Path) -> String {
-    let rendered = path.to_string_lossy();
-    #[cfg(windows)]
-    {
-        return rendered
-            .strip_prefix(r"\\?\")
-            .unwrap_or(&rendered)
-            .to_string();
-    }
-    #[cfg(not(windows))]
-    rendered.into_owned()
+    dsh_host_apiproxy::native_path_opener::display_native_path(&path.to_string_lossy())
 }
 
 fn relative_display(root: &Path, path: &Path) -> String {
@@ -859,12 +850,63 @@ impl PreviewService {
             subprocess,
             sandbox,
             site_token: uuid::Uuid::new_v4().to_string(),
-            code_index: CodeIndex::new(),
+            code_index: BackgroundIndex::new(),
             state: Mutex::new(PreviewState {
                 challenges: HashMap::new(),
                 projects: HashMap::new(),
             }),
         })
+    }
+
+    async fn file_action(&self, request: WebRequest) -> WebResponse {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Action {
+            session_id: String,
+            path: String,
+            intent: String,
+        }
+        let action: Action = match Self::parse_json(request).await {
+            Ok(action) => action,
+            Err(response) => return response,
+        };
+        let session = session_id(action.session_id);
+        let (_, _, target) = match authorized_path(&self.registry, &session, &action.path).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        use dsh_host_apiproxy::native_path_opener::{self as native, PathOpenerInternals};
+        let path = target.to_string_lossy();
+        let internals = PathOpenerInternals::default();
+        let result = match action.intent.as_str() {
+            "reveal" => native::reveal_native_path(&path, None, &internals).await,
+            "editor" => native::open_native_text_file(&path, None, &internals).await,
+            "office" => native::open_native_office_file(&path, None, &internals).await,
+            "open" => native::open_native_path(&path, None, &internals).await,
+            _ => return error(StatusCode::BAD_REQUEST, "invalid-intent", "未知文件操作"),
+        };
+        match result {
+            Ok(()) => json_response(StatusCode::OK, &serde_json::json!({"opened":true})),
+            Err(failure) => error(
+                StatusCode::BAD_REQUEST,
+                "open-failed",
+                format!("无法打开文件：{}", failure.message),
+            ),
+        }
+    }
+
+    async fn cancel_graph(&self, request: WebRequest) -> WebResponse {
+        let control: ControlRequest = match Self::parse_json(request).await {
+            Ok(control) => control,
+            Err(response) => return response,
+        };
+        let session = session_id(control.session_id);
+        let (_, root) = match workspace_root(&self.registry, &session).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        self.code_index.cancel(&root);
+        json_response(StatusCode::OK, &serde_json::json!({"cancelled":true}))
     }
 
     async fn parse_json<T: DeserializeOwned>(request: WebRequest) -> Result<T, WebResponse> {
@@ -1714,6 +1756,8 @@ impl PreviewService {
                 },
                 "upload" => self.upload(request).await,
                 "file-save" => self.save_file(request).await,
+                "file-action" => self.file_action(request).await,
+                "code-graph-cancel" => self.cancel_graph(request).await,
                 "git-action" => self.git_action(request).await,
                 "terminal-action" => self.terminal_action(request).await,
                 _ => error(StatusCode::NOT_FOUND, "route-not-found", "未知预览操作"),
@@ -1741,11 +1785,49 @@ impl PreviewService {
             Ok(value) => value.unwrap_or_default(),
             Err(()) => return error(StatusCode::BAD_REQUEST, "invalid-query", "查询参数编码无效"),
         };
+        if operation == "file-resolve" {
+            let (_, root) = match workspace_root(&self.registry, &session).await {
+                Ok(value) => value,
+                Err(response) => return response,
+            };
+            let requested = PathBuf::from(&relative);
+            let local = if requested.is_absolute() {
+                let target = match tokio::fs::canonicalize(&requested).await {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return error(StatusCode::NOT_FOUND, "file-not-found", "文件或目录不存在");
+                    }
+                };
+                match target.strip_prefix(&root) {
+                    Ok(value) => value.to_string_lossy().into_owned(),
+                    Err(_) => {
+                        return error(StatusCode::FORBIDDEN, "path-escape", "文件不在当前工作区");
+                    }
+                }
+            } else {
+                relative.clone()
+            };
+            let (_, _, target) = match authorized_path(
+                &self.registry,
+                &session,
+                if local.is_empty() { "." } else { &local },
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(response) => return response,
+            };
+            return json_response(
+                StatusCode::OK,
+                &serde_json::json!({"path":relative_display(&root, &target), "absolutePath":execution_path(&target), "kind":if target.is_dir() {"directory"} else {"file"}, "size":target.metadata().map(|m|m.len()).unwrap_or(0)}),
+            );
+        }
         if operation == "meta" {
             let (workspace, root) = match workspace_root(&self.registry, &session).await {
                 Ok(value) => value,
                 Err(response) => return response,
             };
+            self.code_index.request(&root, false);
             return json_response(
                 StatusCode::OK,
                 &MetaBody {
@@ -1858,14 +1940,54 @@ impl PreviewService {
                 Ok((_, root)) => root,
                 Err(response) => return response,
             };
-            let graph = self.code_index.get(&root);
-            let snapshot = GraphSnapshot::from_graph(&graph, &root);
+            let value = |name| {
+                query_value(query, name)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(500)
+                    .collect::<String>()
+            };
+            let query_spec = GraphQuery {
+                search: value("q"),
+                selected: value("selected"),
+                mode: value("mode"),
+                path: value("scope"),
+                stats_only: value("statusOnly") == "1",
+            };
+            let snapshot = self
+                .code_index
+                .view(&root, &query_spec, value("resume") == "1");
             return json_response(StatusCode::OK, &snapshot);
         }
         let (_, root, target) = match authorized_path(&self.registry, &session, &relative).await {
             Ok(value) => value,
             Err(response) => return response,
         };
+        if operation == "source" {
+            if !target.is_file() {
+                return error(StatusCode::BAD_REQUEST, "not-file", "目标不是文件");
+            }
+            if target.metadata().map(|m| m.len()).unwrap_or(u64::MAX) > MAX_TEXT_BYTES {
+                return error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "file-too-large",
+                    "文本超过预览上限",
+                );
+            }
+            return match tokio::fs::read_to_string(&target).await {
+                Ok(text) => json_response(
+                    StatusCode::OK,
+                    &serde_json::json!({"path":relative_display(&root, &target), "text":text}),
+                ),
+                Err(_) => error(
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    "not-utf8",
+                    "该文件无法作为 UTF-8 文本预览，请使用本地应用打开",
+                ),
+            };
+        }
         if operation == "list" {
             if !target.is_dir() {
                 return error(StatusCode::BAD_REQUEST, "not-directory", "目标不是目录");

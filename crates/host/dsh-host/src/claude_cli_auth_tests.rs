@@ -187,13 +187,21 @@ async fn terminal_dependent_login_is_bounded_and_late_completion_is_reported() {
     let mut auth = manager(runtime.clone());
     Arc::get_mut(&mut auth).unwrap().login_timeout = Duration::from_millis(3);
     let result = auth.start().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert!(
-        auth.poll(result["attempt"].as_str().unwrap())
-            .await
-            .unwrap_err()
-            .contains("超时")
-    );
+    let error = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match auth.poll(result["attempt"].as_str().unwrap()).await {
+                Err(error) => break error,
+                Ok(value) => assert_eq!(
+                    value["status"], "pending",
+                    "a terminal-dependent login cannot claim success"
+                ),
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("login timeout must settle within the bounded scheduler allowance");
+    assert!(error.contains("超时"));
     assert!(runtime.terminated.load(Ordering::SeqCst));
     let runtime = Arc::new(Runtime::default());
     let auth = manager(runtime.clone());

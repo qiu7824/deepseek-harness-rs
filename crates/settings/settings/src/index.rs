@@ -269,7 +269,7 @@ impl SettingsProvider {
     }
 
     async fn initialize(&self) -> Result<(), String> {
-        self.await_init().await
+        self.ready().await
     }
 
     async fn await_init(&self) -> Result<(), String> {
@@ -1190,4 +1190,41 @@ fn is_unloading(ctx: &Context) -> bool {
         ctx.fiber.state(),
         cordis::FiberState::Unloading | cordis::FiberState::Disposed
     )
+}
+
+#[cfg(test)]
+mod initialization_tests {
+    use super::*;
+    struct CountingStorage(std::sync::atomic::AtomicUsize);
+    #[async_trait::async_trait]
+    impl SettingsStorage for CountingStorage {
+        fn writable(&self) -> bool {
+            true
+        }
+        async fn load(&self) -> Result<IndexMap<String, Data>, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            Ok(IndexMap::new())
+        }
+        async fn persist(&self, _: &SettingsNamespace, _: Data) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    #[tokio::test]
+    async fn spawned_and_explicit_readiness_share_one_initial_snapshot() {
+        let ctx = Context::root();
+        let storage = Arc::new(CountingStorage(std::sync::atomic::AtomicUsize::new(0)));
+        let provider = SettingsProvider::install(&ctx, storage.clone());
+        let (first, second) = tokio::join!(provider.ready(), provider.ready());
+        first.unwrap();
+        second.unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(
+            storage.0.load(Ordering::SeqCst),
+            1,
+            "late initialization must not republish a stale settings document"
+        );
+        provider.initialize().await.unwrap();
+        assert_eq!(storage.0.load(Ordering::SeqCst), 1);
+    }
 }

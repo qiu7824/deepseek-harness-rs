@@ -200,7 +200,7 @@ class ReleaseProductContractTests(unittest.TestCase):
                 "core",
                 "skin",
                 "free",
-                "ling-3.0-flash-fin-free",
+                "free-model-verification.json",
                 "https://opencode.ai/zen/v1/models",
             ):
                 self.assertIn(marker, source)

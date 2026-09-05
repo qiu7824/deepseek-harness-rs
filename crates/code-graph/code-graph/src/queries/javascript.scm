@@ -9,15 +9,9 @@
 (method_definition
   name: (property_identifier) @name) @definition
 
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (arrow_function))) @definition
-
-(variable_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (arrow_function))) @definition
+(variable_declarator
+  name: (identifier) @name
+  value: [(arrow_function) (function_expression) (class)]) @definition
 
 (export_statement
   declaration: (function_declaration

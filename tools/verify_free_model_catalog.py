@@ -7,6 +7,7 @@ import os
 import queue
 import re
 import signal
+import sys
 import subprocess
 import tempfile
 import threading
@@ -16,6 +17,8 @@ from pathlib import Path
 import urllib.request
 from datetime import datetime, timezone
 from html.parser import HTMLParser
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from free_model_evidence import provider_for
 
 
 DEFAULT_CATALOG_URL = "https://opencode.ai/zen/v1/models"
@@ -65,18 +68,35 @@ class PricingTables(HTMLParser):
             self.row = None
 
 
-def verify_free_pricing(model_id: str) -> dict:
+def pricing_catalog() -> dict:
     request = urllib.request.Request(PRICING_URL, headers={"User-Agent": "deepseek-harness-rs-release-verifier"})
     with open_with_retry(request, timeout=25) as response:
         html = response.read(4 * 1024 * 1024).decode("utf-8")
     parser = PricingTables()
     parser.feed(html)
-    label = next((row[0] for row in parser.rows if len(row) >= 2 and row[1] == model_id), None)
-    prices = next((row for row in parser.rows if len(row) >= 4 and row[0] == label and
-                   all(value.lower() == "free" for value in row[1:4])), None)
-    if not prices:
-        raise ValueError("the official pricing table does not currently confirm this model is free")
-    return {"freePricingVerified": True, "pricingSource": PRICING_URL, "pricingLabel": label}
+    return pricing_catalog_from_rows(parser.rows)
+
+
+def pricing_catalog_from_rows(rows: list) -> dict:
+    prices = {row[0]: row for row in rows if len(row) >= 4 and all(value.lower() == "free" for value in row[1:4])}
+    result = {}
+    for row in rows:
+        if len(row) < 3 or row[0] not in prices:
+            continue
+        api = {"https://opencode.ai/zen/v1/chat/completions": "openai-completions", "https://opencode.ai/zen/v1/responses": "openai-responses"}.get(row[2])
+        if api is None:
+            continue
+        result[row[1]] = {"name": row[0], "api": api, "provider": provider_for(api), "freePricingVerified": True,
+                          "pricingSource": PRICING_URL, "pricingLabel": row[0],
+                          "pricingEvidence": {"modelId": row[1], "label": row[0], "prices": ["Free", "Free", "Free"], "endpoint": row[2]}}
+    return result
+
+
+def verify_free_pricing(model_id: str) -> dict:
+    row = pricing_catalog().get(model_id)
+    if row is None:
+        raise ValueError("the official pricing table does not currently confirm this exact model is free")
+    return row
 
 
 def fetch_model_ids(url: str, timeout: float = 20.0) -> set[str]:
@@ -125,17 +145,21 @@ def streamed_completion(endpoint: str, body: dict, timeout: float) -> dict:
                 break
             payload = json.loads(data)
             if payload.get("error"):
-                raise ValueError("free inference stream returned an error")
-            for choice in payload.get("choices", []):
+                failure = payload["error"]
+                detail = str(failure.get("code") or failure.get("type") or failure.get("message") or "provider error") if isinstance(failure, dict) else str(failure)
+                raise ValueError("free inference stream error: " + detail[:300])
+            for choice in payload.get("choices") or []:
                 delta = choice.get("delta") or {}
                 if delta.get("content"):
                     message["content"] += delta["content"]
-                for call in delta.get("tool_calls", []):
+                for call in delta.get("tool_calls") or []:
                     target = calls.setdefault(call.get("index", 0), {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
                     if call.get("id"):
                         target["id"] = call["id"]
                     for key in ("name", "arguments"):
-                        target["function"][key] += call.get("function", {}).get(key, "")
+                        part = (call.get("function") or {}).get(key)
+                        if isinstance(part, str):
+                            target["function"][key] += part
                 if choice.get("finish_reason"):
                     finished = True
         if not finished:
@@ -145,7 +169,9 @@ def streamed_completion(endpoint: str, body: dict, timeout: float) -> dict:
         return message
 
 
-def inference_probe(model_id: str, url: str, timeout: float = 90.0) -> dict:
+def inference_probe(model_id: str, url: str, timeout: float = 90.0, api: str = "openai-completions") -> dict:
+    if api == "openai-responses":
+        return responses_probe(model_id, url, timeout)
     endpoint = url.rsplit("/", 1)[0] + "/chat/completions"
     body = {
         "model": model_id,
@@ -175,12 +201,72 @@ def inference_probe(model_id: str, url: str, timeout: float = 90.0) -> dict:
 
 
 def verify(model_id: str, url: str = DEFAULT_CATALOG_URL) -> dict:
+    if url != DEFAULT_CATALOG_URL:
+        raise ValueError("free verification is restricted to the official anonymous endpoint")
     ids = fetch_model_ids(url)
     if model_id not in ids:
         raise ValueError(f"free model {model_id!r} is absent from {url}")
     pricing = verify_free_pricing(model_id)
     return {"url": url, "model": model_id, "available": True,
-            "verifiedAt": datetime.now(timezone.utc).isoformat(), **pricing, **inference_probe(model_id, url)}
+            "verifiedAt": datetime.now(timezone.utc).isoformat(), **pricing, **inference_probe(model_id, url, api=pricing["api"])}
+
+
+def responses_completion(endpoint: str, body: dict, timeout: float) -> dict:
+    request = urllib.request.Request(endpoint, data=json.dumps(body).encode("utf-8"), headers={
+        "Accept": "text/event-stream", "Content-Type": "application/json", "User-Agent": "deepseek-harness-rs-release-verifier"})
+    text, calls, finished, received = "", {}, False, 0
+    with open_with_retry(request, timeout) as response:
+        for raw in response:
+            received += len(raw)
+            if received > 8 * 1024 * 1024:
+                raise ValueError("free Responses stream exceeded 8 MiB")
+            line = raw.decode("utf-8").strip()
+            if not line.startswith("data:"):
+                continue
+            value = line[5:].strip()
+            if value == "[DONE]":
+                continue
+            event = json.loads(value)
+            kind = event.get("type")
+            if kind in ("error", "response.failed", "response.incomplete"):
+                raise ValueError("free Responses stream returned a provider failure")
+            if kind == "response.output_text.delta":
+                text += event.get("delta", "")
+            elif kind == "response.output_item.added" and event.get("item", {}).get("type") == "function_call":
+                item = event["item"]
+                calls[item["id"]] = {"type": "function_call", "call_id": item["call_id"], "name": item["name"], "arguments": item.get("arguments", "")}
+            elif kind == "response.function_call_arguments.delta" and event.get("item_id") in calls:
+                calls[event["item_id"]]["arguments"] += event.get("delta", "")
+            elif kind == "response.completed":
+                for item in event.get("response", {}).get("output", []):
+                    if item.get("type") == "function_call":
+                        calls[item.get("id", item["call_id"])] = {key: item[key] for key in ("type", "call_id", "name", "arguments")}
+                    elif item.get("type") == "message" and not text:
+                        text += "".join(part.get("text", "") for part in item.get("content", []))
+                finished = True
+    if not finished:
+        raise ValueError("free Responses stream ended before response.completed")
+    return {"text": text, "calls": list(calls.values())}
+
+
+def responses_probe(model_id: str, url: str, timeout: float) -> dict:
+    endpoint = url.rsplit("/", 1)[0] + "/responses"
+    body = {"model": model_id, "instructions": "Follow the user's connectivity check exactly.",
+            "input": [{"role": "user", "content": "Call connectivity_check with status set to ok."}],
+            "tools": [{"type": "function", "name": "connectivity_check", "description": "Confirm connection", "parameters": {"type": "object", "properties": {"status": {"type": "string", "enum": ["ok"]}}, "required": ["status"]}}],
+            "stream": True, "max_output_tokens": 1024}
+    started = time.monotonic()
+    first = responses_completion(endpoint, body, timeout)
+    calls = first["calls"]
+    if not calls or any(call["name"] != "connectivity_check" or json.loads(call["arguments"]) != {"status": "ok"} for call in calls):
+        raise ValueError("free Responses model did not return the requested tool call")
+    body["input"] += calls + [{"type": "function_call_output", "call_id": call["call_id"], "output": "ok"} for call in calls]
+    body["input"].append({"role": "user", "content": "Reply with the single word OK."})
+    body.pop("tools")
+    if "OK" not in responses_completion(endpoint, body, timeout)["text"].upper():
+        raise ValueError("free Responses tool-result conversation did not complete")
+    return {"inference": True, "streaming": True, "toolCall": True, "toolResult": True, "anonymous": True,
+            "latencyMs": round((time.monotonic() - started) * 1000)}
 
 
 def binary_sha256(binary: Path) -> str:
@@ -239,12 +325,13 @@ def stop_verification_host(process: subprocess.Popen) -> None:
             stream.close()
 
 
-def verify_harness(binary: Path, model_id: str, url: str, workdir: Path | None, timeout: float) -> dict:
+def verify_harness(binary: Path, model_id: str, url: str, workdir: Path | None, timeout: float, api: str = "openai-completions") -> dict:
     binary = binary.resolve(strict=True)
     if not binary.is_file():
         raise ValueError("--binary must name the actual release executable")
-    if model_id != "ling-3.0-flash-fin-free" or url != DEFAULT_CATALOG_URL:
-        raise ValueError("binary verification currently requires the official Ling free route and its verified capacities")
+    if url != DEFAULT_CATALOG_URL:
+        raise ValueError("binary verification requires the official anonymous OpenCode route")
+    route = provider_for(api)
     digest = binary_sha256(binary)
     if workdir is not None:
         workdir = workdir.resolve()
@@ -260,12 +347,14 @@ def verify_harness(binary: Path, model_id: str, url: str, workdir: Path | None, 
             directory.mkdir()
         marker = workspace / "connectivity-check.txt"
         marker.write_text("DSH connectivity verification\n", encoding="utf-8")
-        profile = {"displayName": "OpenCode Free", "keyless": True, "api": "openai-completions",
-                   "baseURL": "https://opencode.ai/zen/v1", "models": [{"id": model_id,
-                   "contextWindow": 262144, "maxTokens": 16384, "reasoningEfforts": False}]}
+        model_config = {"id": model_id, "maxTokens": 16384}
+        if model_id == DEFAULT_MODEL_ID:
+            model_config.update(contextWindow=262144, reasoningEfforts=False)
+        profile = {"displayName": "OpenCode Free", "keyless": True, "api": api,
+                   "baseURL": "https://opencode.ai/zen/v1", "models": [model_config]}
         (home / "settings.json").write_text(json.dumps({
-            "llm-pi-ai": {"providers": {"opencode-free": profile}},
-            "agent-default-model": {"provider": "opencode-free", "model": model_id},
+            "llm-pi-ai": {"providers": {route: profile}},
+            "agent-default-model": {"provider": route, "model": model_id},
         }), encoding="utf-8")
         # Whitelist only process/runtime variables. API keys, release tokens,
         # proxy credentials, and the user's account stores are not inherited.
@@ -316,7 +405,7 @@ def verify_harness(binary: Path, model_id: str, url: str, workdir: Path | None, 
                 return harness_rpc(base, method, payload, min(15, remaining))
             workspace_id = rpc("workspace.create", {"path": str(workspace)})["workspace"]["workspaceId"]
             session_id = rpc("session.create", {"workspaceId": workspace_id})["sessionId"]
-            rpc("session.selectModel", {"sessionId": session_id, "provider": "opencode-free", "model": model_id})
+            rpc("session.selectModel", {"sessionId": session_id, "provider": route, "model": model_id})
             rpc("session.prompt", {"sessionId": session_id, "mode": "queue", "content": [{"type": "text", "text":
                 "只使用 glob 工具列出当前工作目录的 connectivity-check.txt，得到工具结果后严格只回复检测口令 OK。不要使用其它工具，不要创建或修改文件。"}]})
             while time.monotonic() < deadline:
@@ -326,7 +415,8 @@ def verify_harness(binary: Path, model_id: str, url: str, workdir: Path | None, 
                 events = [row["event"] for row in history.get("events", []) if isinstance(row.get("event"), dict)]
                 calls = [event for event in events if event.get("type") == "tool/call"]
                 if any(event.get("data", {}).get("name") != "glob" for event in calls):
-                    raise ValueError("free model selected an unexpected tool during read-only verification")
+                    names = [event.get("data", {}).get("name") for event in calls if event.get("data", {}).get("name") != "glob"]
+                    raise ValueError("free model selected unexpected tools during read-only verification: " + json.dumps(names[:5]))
                 ended = [event for event in events if event.get("type") == "turn/end"]
                 if ended:
                     reason = ended[-1].get("data", {}).get("reason", {})
@@ -346,7 +436,7 @@ def verify_harness(binary: Path, model_id: str, url: str, workdir: Path | None, 
                     contexts = [event.get("data", {}) for event in events if event.get("type") == "request/context"]
                     if not any(config.get("model") == model_id and config.get("maxTokens") == 16384 for config in configs):
                         raise ValueError("Harness used the wrong model or output budget")
-                    if not any(context.get("contextWindow") == 262144 and context.get("contextWindowEstimated") is not True for context in contexts):
+                    if model_id == DEFAULT_MODEL_ID and not any(context.get("contextWindow") == 262144 and context.get("contextWindowEstimated") is not True for context in contexts):
                         raise ValueError("Harness did not use the declared model context capacity")
                     if sorted(path.name for path in workspace.iterdir()) != [marker.name] or marker.read_text(encoding="utf-8") != "DSH connectivity verification\n":
                         raise ValueError("read-only verification modified its workspace")
@@ -368,13 +458,71 @@ def verify_harness(binary: Path, model_id: str, url: str, workdir: Path | None, 
             raise ValueError("the executable changed during verification")
     return {"harnessVerified": True, "binarySha256": digest, "harnessModel": model_id,
             "harnessTool": "glob", "harnessToolResult": True, "harnessCompleted": True,
-            "contextWindow": 262144, "maxTokens": 16384,
+            **({"contextWindow": 262144, "reasoningEfforts": False} if model_id == DEFAULT_MODEL_ID else {}), "maxTokens": 16384,
             "harnessLatencyMs": round((time.monotonic() - started) * 1000)}
+
+
+def save_report(path: Path | None, report: dict) -> None:
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+
+
+def verify_many(url: str = DEFAULT_CATALOG_URL, binary: Path | None = None, workdir: Path | None = None,
+                timeout: float = 180, report_path: Path | None = None, preferred: str = DEFAULT_MODEL_ID) -> dict:
+    if url != DEFAULT_CATALOG_URL:
+        raise ValueError("free verification is restricted to the official anonymous endpoint")
+    catalog = fetch_model_ids(url)
+    prices = pricing_catalog()
+    ids = sorted(set(prices) | {model for model in catalog if model.endswith("-free")}, key=lambda model: (model != preferred, model))
+    report = {"schemaVersion": 2, "url": url, "pricingSource": PRICING_URL,
+              "verifiedAt": datetime.now(timezone.utc).isoformat(), "binarySha256": binary_sha256(binary) if binary else None,
+              "models": [], "includedModels": [], "defaultModel": None}
+    for model in ids:
+        row = {"model": model, "name": model, "status": "pending-verification", "available": False,
+               "verifiedAt": datetime.now(timezone.utc).isoformat(), "catalogAvailable": model in catalog,
+               "freePricingVerified": False, **prices.get(model, {})}
+        report["models"].append(row)
+    save_report(report_path, report)
+    for row in report["models"]:
+        model = row["model"]
+        print(json.dumps({"model": model, "phase": "checking"}), flush=True)
+        if not row["catalogAvailable"]:
+            row.update(status="retired", reason="当前官方模型目录已移除此模型")
+        elif not row["freePricingVerified"]:
+            row.update(reason="当前官方价格表未确认此精确模型免费；未发送推理请求")
+        else:
+            try:
+                row.update(inference_probe(model, url, min(timeout, 90), row["api"]))
+                if binary:
+                    row.update(verify_harness(binary, model, url, workdir, timeout, row["api"]))
+                    row.update(status="available", available=True)
+                    report["includedModels"].append({"provider": row["provider"], "model": model})
+                    report["defaultModel"] = report["defaultModel"] or report["includedModels"][-1]
+                else:
+                    row.update(reason="匿名流式及工具往返已通过，等待正式二进制验证")
+            except urllib.error.HTTPError as error:
+                row.update(status="rate-limited" if error.code == 429 else "unavailable",
+                           httpStatus=error.code, reason=f"匿名端点返回 HTTP {error.code}")
+            except Exception as error:
+                message = str(error)
+                limited = "429" in message or "rate_limit" in message.lower() or "rate limit" in message.lower()
+                row.update(status="rate-limited" if limited else "unavailable", reason=message[:700])
+        row["verifiedAt"] = datetime.now(timezone.utc).isoformat()
+        save_report(report_path, report)
+        print(json.dumps({"model": model, "status": row["status"], "reason": row.get("reason")}, ensure_ascii=True), flush=True)
+    report["verifiedAt"] = datetime.now(timezone.utc).isoformat()
+    save_report(report_path, report)
+    return report
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default=DEFAULT_MODEL_ID)
+    parser.add_argument("--all", action="store_true", help="Check every live officially priced free candidate independently")
+    parser.add_argument("--prefer", default=DEFAULT_MODEL_ID, help="Preferred default if this model passes all checks")
     parser.add_argument("--url", default=DEFAULT_CATALOG_URL)
     parser.add_argument("--report", help="Write the successful release-gate evidence as JSON")
     parser.add_argument("--binary", type=Path, help="Verify a real release executable using an isolated Harness session")
@@ -388,9 +536,16 @@ def main() -> None:
     if args.report:
         # A failed rerun must not leave an older successful attestation behind.
         Path(args.report).unlink(missing_ok=True)
+    if args.all:
+        evidence = verify_many(args.url, args.binary, args.workdir, args.timeout, Path(args.report) if args.report else None, args.prefer)
+        passed = evidence["includedModels"] if args.binary else [row for row in evidence["models"] if row.get("inference") is True]
+        if not passed:
+            raise SystemExit("no candidate passed this verification stage; per-model evidence was retained")
+        print(json.dumps({"includedModels": evidence["includedModels"], "defaultModel": evidence["defaultModel"]}))
+        return
     evidence = verify(args.model, args.url)
     if args.binary:
-        evidence.update(verify_harness(args.binary, args.model, args.url, args.workdir, args.timeout))
+        evidence.update(verify_harness(args.binary, args.model, args.url, args.workdir, args.timeout, evidence["api"]))
     if args.report:
         Path(args.report).parent.mkdir(parents=True, exist_ok=True)
         with open(args.report, "w", encoding="utf-8") as stream:

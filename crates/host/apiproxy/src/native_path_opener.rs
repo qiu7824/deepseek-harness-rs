@@ -22,6 +22,8 @@ pub type PathOpenerRunner = Arc<
         + Send
         + Sync,
 >;
+pub type PathLaunchRunner =
+    Arc<dyn Fn(&str, Vec<String>) -> Result<(), NativeCommandFailure> + Send + Sync>;
 
 /// Injectable platform facts for deterministic adapter tests.
 #[derive(Clone, Default)]
@@ -33,6 +35,50 @@ pub struct PathOpenerInternals {
     /// convention.
     pub env: Option<std::collections::HashMap<String, String>>,
     pub run: Option<PathOpenerRunner>,
+    pub launch: Option<PathLaunchRunner>,
+}
+
+/// A desktop application's lifetime must not become the lifetime of the HTTP action.
+async fn launch_gui(
+    command: &str,
+    args: Vec<String>,
+    signal: Option<NativeCommandAbort>,
+    internals: &PathOpenerInternals,
+) -> Result<(), NativeCommandFailure> {
+    if signal.as_ref().is_some_and(|signal| signal()) {
+        return Err(NativeCommandFailure {
+            message: "打开操作已取消".into(),
+            code: Some("ABORT_ERR".into()),
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+    }
+    if let Some(launch) = &internals.launch {
+        return launch(command, args);
+    }
+    // Preserve the injectable command seam for deterministic callers without launching an OS app.
+    if let Some(run) = &internals.run {
+        return run(command, args, signal).await.map(|_| ());
+    }
+    let mut process = tokio::process::Command::new(command);
+    process
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    process.creation_flags(0x0800_0000);
+    let mut child = process.spawn().map_err(|error| NativeCommandFailure {
+        message: format!("无法启动本地应用：{error}"),
+        code: error.raw_os_error().map(|code| code.to_string()),
+        stdout: String::new(),
+        stderr: String::new(),
+    })?;
+    // Reap the process later; neither cancellation nor Host shutdown kills the user's editor.
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+    Ok(())
 }
 
 impl PathOpenerInternals {
@@ -192,9 +238,15 @@ async fn open_native_path_with_intent(
         .await
         .map(|_| ()),
         "win32" => match intent {
-            PathOpenIntent::TextEditor => run("notepad.exe", vec![path.to_string()], signal)
+            PathOpenIntent::TextEditor => {
+                launch_gui(
+                    "notepad.exe",
+                    vec![display_native_path(path)],
+                    signal,
+                    internals,
+                )
                 .await
-                .map(|_| ()),
+            }
             PathOpenIntent::Default => open_windows_path(path, &run, signal).await,
         },
         "linux" => {
@@ -221,6 +273,124 @@ async fn open_native_path_with_intent(
 pub enum PathOpenIntent {
     Default,
     TextEditor,
+}
+
+/// Present Windows verbatim paths without changing their filesystem identity.
+pub fn display_native_path(path: &str) -> String {
+    if let Some(tail) = path.get(8..).filter(|_| {
+        path.get(..8)
+            .is_some_and(|head| head.eq_ignore_ascii_case(r"\\?\UNC\"))
+    }) {
+        format!(r"\\{tail}")
+    } else if let Some(tail) = path.strip_prefix(r"\\?\") {
+        tail.to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+/// Reveal the selected file, using argv rather than a command-line interpolation.
+pub async fn reveal_native_path(
+    path: &str,
+    signal: Option<NativeCommandAbort>,
+    internals: &PathOpenerInternals,
+) -> Result<(), NativeCommandFailure> {
+    let run = internals.run.clone().unwrap_or_else(native_runner);
+    let mut path = display_native_path(path);
+    let mut platform = internals.platform();
+    if platform == "linux" && is_wsl(internals) {
+        path = run("wslpath", vec!["-w".into(), path], signal.clone())
+            .await?
+            .stdout
+            .trim_end_matches(['\r', '\n'])
+            .to_string();
+        platform = "win32";
+    }
+    let (command, args) = match platform {
+        "win32" => (
+            "explorer.exe",
+            if std::path::Path::new(&path).is_dir() {
+                vec![path]
+            } else {
+                vec![format!("/select,{path}")]
+            },
+        ),
+        "darwin" => ("open", vec!["-R".into(), path]),
+        "linux" => (
+            "xdg-open",
+            vec![
+                std::path::Path::new(&path)
+                    .parent()
+                    .unwrap_or(std::path::Path::new(&path))
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+        ),
+        _ => {
+            return Err(NativeCommandFailure {
+                message: "系统不支持定位文件".into(),
+                code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+            });
+        }
+    };
+    if platform == "win32" {
+        launch_gui(command, args, signal, internals).await
+    } else {
+        run(command, args, signal).await.map(|_| ())
+    }
+}
+
+/// Office artifacts are opened through WPS, independently from document associations.
+pub async fn open_native_office_file(
+    path: &str,
+    signal: Option<NativeCommandAbort>,
+    internals: &PathOpenerInternals,
+) -> Result<(), NativeCommandFailure> {
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|x| x.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let program = match extension.as_str() {
+        "xls" | "xlsx" | "xlsm" | "csv" => "et",
+        "ppt" | "pptx" | "pps" | "ppsx" => "wpp",
+        _ => "wps",
+    };
+    let run = internals.run.clone().unwrap_or_else(native_runner);
+    match internals.platform() {
+        "win32" => {
+            let executable = format!("{program}.exe");
+            let script = format!(
+                "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $p=(Get-Command '{executable}' -ErrorAction SilentlyContinue).Source; if (!$p) {{ foreach ($k in @('HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{executable}','HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{executable}','HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{executable}')) {{ if (Test-Path -LiteralPath $k) {{ $p=(Get-Item -LiteralPath $k).GetValue(''); if ($p) {{ break }} }} }} }}; if ($p) {{ [Console]::Out.Write($p) }} else {{ exit 2 }}"
+            );
+            let found = run(
+                "powershell.exe",
+                vec!["-NoProfile".into(), "-Command".into(), script],
+                signal.clone(),
+            )
+            .await?;
+            let command = found.stdout.trim().trim_matches('"');
+            if command.is_empty() {
+                return Err(NativeCommandFailure {
+                    message: "未找到 WPS Office，请安装或配置 WPS".into(),
+                    code: None,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                });
+            }
+            launch_gui(command, vec![display_native_path(path)], signal, internals).await
+        }
+        "darwin" => run(
+            "open",
+            vec!["-a".into(), "WPS Office".into(), path.into()],
+            signal,
+        )
+        .await
+        .map(|_| ()),
+        _ => launch_gui(program, vec![path.into()], signal, internals).await,
+    }
 }
 
 /// Open one browser-renderable document with the default browser. Returns
@@ -324,4 +494,80 @@ pub async fn open_native_text_file(
     internals: &PathOpenerInternals,
 ) -> Result<(), NativeCommandFailure> {
     open_native_path_with_intent(path, signal, PathOpenIntent::TextEditor, internals).await
+}
+
+#[cfg(test)]
+mod file_action_tests {
+    use super::*;
+    #[test]
+    fn display_keeps_unc_and_unicode_paths_readable() {
+        assert_eq!(
+            display_native_path(r"\\?\D:\资料\空 格\index.ts"),
+            r"D:\资料\空 格\index.ts"
+        );
+        assert_eq!(
+            display_native_path(r"\\?\UNC\server\share\文档.docx"),
+            r"\\server\share\文档.docx"
+        );
+        assert_eq!(
+            display_native_path(r"\\?\unc\server\share\file.txt"),
+            r"\\server\share\file.txt"
+        );
+        assert_eq!(
+            display_native_path("/home/project/index.ts"),
+            "/home/project/index.ts"
+        );
+    }
+    #[tokio::test]
+    async fn explorer_selection_preserves_filename_as_one_argument() {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = calls.clone();
+        let internals = PathOpenerInternals {
+            platform: Some("win32"),
+            run: Some(Arc::new(move |command, args, _| {
+                received.lock().unwrap().push((command.to_string(), args));
+                Box::pin(async {
+                    Ok(NativeCommandOutput {
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
+                })
+            })),
+            ..Default::default()
+        };
+        reveal_native_path(r"\\?\D:\资料\a & b.ts", None, &internals)
+            .await
+            .unwrap();
+        assert_eq!(
+            calls.lock().unwrap()[0],
+            (
+                "explorer.exe".into(),
+                vec![r"/select,D:\资料\a & b.ts".into()]
+            )
+        );
+    }
+    #[tokio::test]
+    async fn editor_launch_does_not_wait_for_the_gui_to_exit() {
+        let launched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let recorded = launched.clone();
+        let internals = PathOpenerInternals {
+            platform: Some("win32"),
+            run: Some(Arc::new(|_, _, _| Box::pin(std::future::pending()))),
+            launch: Some(Arc::new(move |command, args| {
+                assert_eq!(command, "notepad.exe");
+                assert_eq!(args, [r"D:\example.txt"]);
+                recorded.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            open_native_text_file(r"D:\example.txt", None, &internals),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(launched.load(std::sync::atomic::Ordering::SeqCst));
+    }
 }

@@ -89,6 +89,8 @@ pub struct CatalogReasoningEffort {
     pub id: String,
     /// Human-readable model-menu label.
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Exact provider wire value.
     pub wire: String,
 }
@@ -105,6 +107,14 @@ pub struct DeepSeekCatalogModel {
     /// Optional exact-model reasoning catalog. Absence keeps the DeepSeek
     /// adapter defaults; an explicit catalog is used by generic routes.
     pub reasoning_efforts: Option<Vec<CatalogReasoningEffort>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_default: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_reasoning_summaries: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported_parameters: Option<Vec<String>>,
     /// Whether this exact catalog route accepts image input.
     pub image_input: Option<bool>,
 }
@@ -155,6 +165,10 @@ pub fn resolve_adapter_options(
     let models = config.models.clone().unwrap_or_else(|| {
         vec![
             DeepSeekCatalogModel {
+                reasoning_default: None,
+                api: None,
+                supports_reasoning_summaries: None,
+                supported_parameters: None,
                 id: "deepseek-v4-flash".to_string(),
                 enabled: None,
                 name: Some("DeepSeek-V4-Flash".to_string()),
@@ -165,6 +179,10 @@ pub fn resolve_adapter_options(
                 image_input: Some(false),
             },
             DeepSeekCatalogModel {
+                reasoning_default: None,
+                api: None,
+                supports_reasoning_summaries: None,
+                supported_parameters: None,
                 id: "deepseek-v4-pro".to_string(),
                 enabled: None,
                 name: Some("DeepSeek-V4-Pro".to_string()),
@@ -175,6 +193,10 @@ pub fn resolve_adapter_options(
                 image_input: Some(false),
             },
             DeepSeekCatalogModel {
+                reasoning_default: None,
+                api: None,
+                supports_reasoning_summaries: None,
+                supported_parameters: None,
                 id: "deepseek-v4-flash-vision-exp".to_string(),
                 enabled: None,
                 name: Some("DeepSeek-V4-Flash-Vision-Exp".to_string()),
@@ -190,6 +212,22 @@ pub fn resolve_adapter_options(
         resolve_retry_policy(config.retry_policy.as_ref(), "llm-deepseek: retryPolicy").map_err(
             |message| LlmError::new(&message, "INVALID_CONFIG", LlmErrorOptions::default()),
         )?;
+    if models.iter().any(|model| {
+        model.api.as_deref().is_some_and(|api| {
+            ![
+                "openai-completions",
+                "openai-responses",
+                "anthropic-messages",
+            ]
+            .contains(&api)
+        })
+    }) {
+        return Err(LlmError::new(
+            "model declares an unsupported protocol",
+            "INVALID_CONFIG",
+            Default::default(),
+        ));
+    }
     let api = config
         .api
         .clone()
@@ -1072,7 +1110,7 @@ fn map_reasoning_effort_for_request(
 
 async fn request_chunks(
     options: GenerateOptions,
-    connection: ResolvedDeepSeekOptions,
+    mut connection: ResolvedDeepSeekOptions,
     api_key: String,
     provider_name: &str,
     reasoning_wire_format: ReasoningWireFormat,
@@ -1081,6 +1119,23 @@ async fn request_chunks(
     cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
 ) -> Result<(), LlmFailure> {
     let mut options = project_estimated_request(&options);
+    if let Some(model) = connection
+        .models
+        .iter()
+        .find(|model| model.id == options.model)
+    {
+        if let Some(api) = &model.api {
+            connection.api = api.clone();
+        }
+        if let Some(parameters) = &model.supported_parameters {
+            if !parameters.iter().any(|p| p == "temperature") {
+                options.temperature = None;
+            }
+            if !parameters.iter().any(|p| p == "stop") {
+                options.stop = None;
+            }
+        }
+    }
     apply_model_max_tokens(&mut options, &connection);
     map_reasoning_effort_for_request(&mut options, &connection, reasoning_wire_format)?;
     if connection.api == "openai-responses" || connection.api == "anthropic-messages" {
@@ -1358,7 +1413,19 @@ async fn request_responses_chunks(
     attribution: &[(String, String)],
     sender: &tokio::sync::mpsc::Sender<StreamChunk>,
 ) -> Result<(), LlmFailure> {
-    let body = responses::request_for_endpoint(chat_body, &connection.base_url)?;
+    let mut body = responses::request_for_endpoint(chat_body, &connection.base_url)?;
+    let model = chat_body.get("model").and_then(serde_json::Value::as_str);
+    if !connection
+        .models
+        .iter()
+        .find(|entry| Some(entry.id.as_str()) == model)
+        .is_some_and(|entry| entry.supports_reasoning_summaries == Some(true))
+        && let Some(reasoning) = body
+            .get_mut("reasoning")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        reasoning.remove("summary");
+    }
     let encoded = serde_json::to_vec(&body).map_err(|error| {
         failure(
             format!("Responses request encode failed: {error}"),
@@ -1611,15 +1678,14 @@ impl LlmAdapter for DeepSeekAdapter {
     ) -> LlmResolvedModelInfo {
         let options = (self.config.options)().expect("validated DeepSeek options");
         let configured = options.models.iter().find(|entry| entry.id == model);
-        let estimated = self.config.reasoning_wire_format == ReasoningWireFormat::OpenAi
-            && configured.and_then(|entry| entry.context_window).is_none();
+        let estimated = configured.and_then(|entry| entry.context_window).is_none();
         if let Some(catalog) = configured.and_then(|entry| entry.reasoning_efforts.as_ref()) {
             let efforts = catalog
                 .iter()
                 .map(|effort| LlmReasoningEffortInfo {
                     id: reasoning_effort_id(&effort.id),
                     name: effort.name.clone(),
-                    description: None,
+                    description: effort.description.clone(),
                 })
                 .collect::<Vec<_>>();
             return LlmResolvedModelInfo {
@@ -1643,7 +1709,10 @@ impl LlmAdapter for DeepSeekAdapter {
                     efforts,
                     // A declared catalog advertises choices but does not
                     // silently opt ordinary calls into paid reasoning.
-                    default_effort: None,
+                    default_effort: configured
+                        .and_then(|entry| entry.reasoning_default.as_deref())
+                        .filter(|id| catalog.iter().any(|effort| effort.id == *id))
+                        .map(reasoning_effort_id),
                 }),
             };
         }

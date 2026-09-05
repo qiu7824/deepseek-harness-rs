@@ -4,7 +4,7 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: `0.1.3-alpha.3`.
+Current release line: `0.1.3-alpha.4`.
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 
@@ -14,9 +14,9 @@ The Rust edition maintains its own bounded conversation history, targeted naviga
 
 Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases):
 
-- `deepseek-harness-rs-v0.1.3-alpha.3-windows-x86_64-{core,skin,free}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.3-linux-x86_64-{core,skin,free}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.3-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.4-windows-x86_64-{core,skin,free}-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.4-linux-x86_64-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.4-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
 - matching Windows `setup.exe`, Linux `.deb`, and macOS `.pkg` installers
 
 A complete package contains the binary, `web/dist`, `config/agent-presets`, bundled Web plugins, and security documentation. Copying only the binary does not provide a complete Web installation.
@@ -40,9 +40,13 @@ The launcher is built with ZSUI at a fixed commit and requires no CMD, PowerShel
 
 For extension skins, download the separate `skin` package and run `deepseek-harness-rs-skin` (`.exe` on Windows). It installs only the skin payload into the adjacent `web/dist/skins`; the default `core` archive never bundles skin assets.
 
-The `free` package includes a keyless OpenCode Zen preset for `ling-3.0-flash-fin-free`. Packaging checks the [official model catalog](https://opencode.ai/zen/v1/models) and requires anonymous inference, tool-call and tool-result checks completed within the last 24 hours, including `free-model-verification.json`. The package contains no credential values or skin payload.
+The `free` package uses the same Rust runtime and Web UI as `core`, with only the anonymous models that passed release verification. Exact IDs in the [official model directory](https://opencode.ai/zen/v1/models) and official input/output/cache-read prices are checked before streaming inference and a tool-result round trip. Evidence in `free-model-verification.json` is less than 24 hours old and tied to the packaged binary hash. Settings provide the current free catalog, verification results, and controls to test and add eligible models; no credentials or skin payload are bundled.
 
 ## Data, profiles, and workspaces
+
+The Rust core starts without Node. JavaScript/TypeScript Code Mode and some external tools require an optional Node installation; environment settings report the detected executable, version, and capabilities. Model catalogs synchronize account access and reasoning metadata while preserving display preferences. The code graph indexes the active workspace automatically and links local relationships to source locations.
+
+New Windows installations default to `D:\Program Files (x86)\DeepSeek Harness-rs\<variant>`; upgrades retain the previous installation directory. If the default location is unavailable, choose another directory in the installer.
 
 The default Windows data root is:
 

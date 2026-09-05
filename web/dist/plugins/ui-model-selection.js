@@ -19,6 +19,7 @@ window.__ModuleLoader__.load({
 			/** The shared snapshot both entries render from (uSES-safe store). */
 			store = (0, _deepseek_ai_dsh_client_runtime_client.createSnapshotStore)({
 				current: null,
+				currentName: null,
 				routable: null,
 				groups: [],
 				failures: [],
@@ -28,6 +29,10 @@ window.__ModuleLoader__.load({
 			/** Latest operation wins; an older response never overwrites a newer one. */
 			generation = 0;
 			disposed = false;
+			loadPromise = null;
+            loadGeneration = 0;
+			selectionPromise = null;
+			selectionTarget = null;
 			/**
 			* @param sessions - the session wire face (captured from the plugin's root connection).
 			* @param sessionId - the owning session.
@@ -44,100 +49,100 @@ window.__ModuleLoader__.load({
 			* Failure preserves the last good groups and current selection.
 			* @returns the fresh directory value.
 			*/
-			async load() {
-				this.assertAvailable();
-				const generation = ++this.generation;
-				this.store.update((s) => {
-					s.status = "loading";
-					s.error = null;
-				});
-				const { result } = await this.sessions.models({ sessionId: this.sessionId });
-				if (this.disposed || generation !== this.generation) {
-					if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
-					return result.value;
-				}
-				if (!result.ok) {
-					this.store.update((s) => {
-						s.status = "error";
-						s.error = `${result.error.code}: ${result.error.message}`;
-					});
-					throw new Error(`session.models failed: ${result.error.code}: ${result.error.message}`);
-				}
-				const { current, routable, groups, failures } = result.value;
-				this.store.update((s) => {
-					s.current = current;
-					s.routable = routable;
-					s.groups = groups;
-					s.failures = failures;
-					s.status = "ready";
-					s.error = null;
-				});
-				return result.value;
-			}
+			load() {
+                this.assertAvailable();
+                if (this.selectionPromise !== null) return this.selectionPromise.then(() => this.load(), () => this.load());
+                if (this.loadPromise !== null) return this.loadGeneration === this.generation ? this.loadPromise : this.loadPromise.then(() => this.load(), () => this.load());
+                const generation = ++this.generation;
+                this.loadGeneration = generation;
+                this.store.update((state) => { state.status = "loading"; state.error = null; });
+                this.loadPromise = (async () => {
+                    await Promise.resolve();
+                    try {
+                        const { result } = await this.sessions.models({ sessionId: this.sessionId });
+                        if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
+                        if (this.disposed || generation !== this.generation) return result.value;
+                        const { current, routable, groups, failures } = result.value;
+                        this.store.update((state) => {
+                            const known = groups.find(group => group.id === current?.provider)?.models.find(model => model.id === current?.model)?.name;
+                            state.currentName = known ?? (state.current?.provider === current?.provider && state.current?.model === current?.model ? state.currentName : null);
+                            state.current = current; state.routable = routable;
+                            state.groups = groups; state.failures = failures;
+                            state.status = "ready"; state.error = null;
+                        });
+                        return result.value;
+                    } catch (error) {
+                        if (!this.disposed && generation === this.generation) this.store.update((state) => {
+                            state.status = "error"; state.error = error instanceof Error ? error.message : String(error);
+                        });
+                        throw error;
+                    } finally { this.loadPromise = null; }
+                })();
+                return this.loadPromise;
+            }
+            refresh() {
+                if (this.disposed || !this.available()) return Promise.resolve(this.store.getSnapshot());
+                if (this.selectionPromise !== null) return this.selectionPromise.then(() => this.load(), () => this.load());
+                if (this.loadPromise !== null) {
+                    ++this.generation;
+                    return this.loadPromise.then(() => this.load(), () => this.load());
+                }
+                return this.load();
+            }
 			/**
 			* Select the complete provider/model/reasoning selection (both entries submit through here). Success
 			* updates the shared current; failure surfaces on the store and throws so
 			* each entry's own retry surface engages.
 			* @param selection - provider, provider-owned model id, and optional adapter-owned effort.
 			*/
-			async select(selection) {
-				this.assertAvailable();
-				const generation = ++this.generation;
-				this.store.update((s) => {
-					s.status = "selecting";
-					s.error = null;
-				});
-				const { result } = await this.sessions.selectModel({
-					sessionId: this.sessionId,
-					provider: selection.provider,
-					model: selection.model,
-					...selection.reasoningEffort === void 0 ? {} : { reasoningEffort: selection.reasoningEffort }
-				});
-				if (this.disposed || generation !== this.generation) {
-					if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
-					return;
-				}
-				if (!result.ok) {
-					this.store.update((s) => {
-						s.status = "error";
-						s.error = `${result.error.code}: ${result.error.message}`;
-					});
-					throw new Error(`session.selectModel failed: ${result.error.code}: ${result.error.message}`);
-				}
-				this.store.update((s) => {
-					s.current = result.value.selected;
-					s.routable = true;
-					s.status = "ready";
-					s.error = null;
-				});
-				try {
-					await this.saveDefault(result.value.selected);
-				} catch (error) {
-					this.store.update((s) => {
-						s.error = error instanceof Error ? error.message : String(error);
-					});
-					throw error;
-				}
-			}
+			select(selection) {
+                this.assertAvailable();
+                if (this.selectionPromise !== null) {
+                    if (JSON.stringify(selection) === this.selectionTarget) return this.selectionPromise;
+                    return Promise.reject(new Error("A model change is already in progress"));
+                }
+                const generation = ++this.generation;
+                this.selectionTarget = JSON.stringify(selection);
+                this.store.update((state) => { state.status = "selecting"; state.error = null; });
+                this.selectionPromise = (async () => {
+                    await Promise.resolve();
+                    try {
+                        const { result } = await this.sessions.selectModel({sessionId:this.sessionId,provider:selection.provider,model:selection.model,...selection.reasoningEffort===void 0?{}:{reasoningEffort:selection.reasoningEffort}});
+                        if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
+                        if (this.disposed || generation !== this.generation) return;
+                        this.store.update((state) => {
+                            const selected=result.value.selected;
+                            const known=state.groups.find(group=>group.id===selected.provider)?.models.find(model=>model.id===selected.model)?.name;
+                            state.currentName=known??(state.current?.provider===selected.provider&&state.current?.model===selected.model?state.currentName:null);
+                            state.current=selected;state.routable=true;state.status="ready";state.error=null;
+                        });
+                        try { await this.saveDefault(result.value.selected); }
+                        catch (error) {
+                            // The session selection already succeeded and is durable. A
+                            // failed global-default write must not report it as rolled back.
+                            if (!this.disposed && generation === this.generation) this.store.update((state) => {
+                                state.error="Model changed; the default could not be saved: "+(error instanceof Error?error.message:String(error));
+                            });
+                        }
+                    } catch (error) {
+                        if (!this.disposed && generation === this.generation) this.store.update((state) => {
+                            state.status="error";state.error=error instanceof Error?error.message:String(error);
+                        });
+                        throw error;
+                    } finally { this.selectionPromise=null;this.selectionTarget=null; }
+                })();
+                return this.selectionPromise;
+            }
 			/**
-			* Drop the previous Host generation's projection and repull it. Clearing
-			* first prevents an unconsumed process-local selection from being displayed
-			* while the restarted Host has restored the last logged model selection.
+			* Repull the restarted Host's projection while retaining the last visible
+			* directory. Routability remains unknown until the fresh read succeeds.
 			*/
 			resetConnected() {
-				if (this.disposed) return;
-				++this.generation;
-				this.store.update((s) => {
-					s.current = null;
-					s.routable = null;
-					s.groups = [];
-					s.failures = [];
-					s.status = "idle";
-					s.error = null;
-				});
-				if (!this.available()) return;
-				this.load().catch(() => {});
-			}
+                if (this.disposed) return;
+                ++this.generation;
+                this.store.update((state) => { state.routable=null;state.status="loading";state.error=null; });
+                this.refresh().catch(() => {});
+            }
 			/** Scope teardown: late settlements lose write access to the store. */
 			dispose() {
 				this.disposed = true;
@@ -183,7 +188,7 @@ window.__ModuleLoader__.load({
 					for (const directory of this.live.directories.values()) directory.resetConnected();
 				});
 				const refresh = () => {
-					for (const directory of this.live.directories.values()) directory.load().catch(() => void 0);
+					for (const directory of this.live.directories.values()) directory.refresh().catch(() => void 0);
 				};
 				ctx.remote.$on("llm/adapters-updated", refresh);
 				ctx.remote.$on("settings/document-updated", refresh);
@@ -436,9 +441,11 @@ window.__ModuleLoader__.load({
 				lastActionRef.current = "select";
 				select(selection).then(settleSelection);
 			};
-			const modelLabel = currentChoice?.model.name ?? t("trigger.fallback");
+			const currentName = currentChoice?.model.name ?? state.currentName ?? state.current?.model;
+			const currentStatus = state.current === null ? void 0 : state.routable === false ? "unavailable" : state.routable === true && currentChoice === void 0 && !state.failures.some(failure => failure.id === state.current.provider) ? "hidden" : void 0;
+			const modelLabel = currentName === void 0 ? t("trigger.fallback") : currentStatus === void 0 ? currentName : `${currentName} · ${t(`trigger.${currentStatus}`)}`;
 			const triggerLabel = effortLabel === void 0 ? modelLabel : `${modelLabel} · ${effortLabel}`;
-			const triggerAria = currentChoice === void 0 ? t("trigger.selectAria") : effortLabel === void 0 ? t("trigger.aria", { model: modelLabel }) : t("trigger.ariaEffort", {
+			const triggerAria = state.current === null ? t("trigger.selectAria") : effortLabel === void 0 ? t("trigger.aria", { model: modelLabel }) : t("trigger.ariaEffort", {
 				model: modelLabel,
 				effort: effortLabel
 			});
@@ -460,6 +467,7 @@ window.__ModuleLoader__.load({
 						ref: triggerRef,
 						type: "button",
 						className: ModelSelect_module_css_default.trigger,
+						"data-current-model-state": currentStatus,
 						"aria-label": triggerAria,
 						"aria-haspopup": "menu",
 						"aria-expanded": open,
@@ -669,6 +677,8 @@ window.__ModuleLoader__.load({
 			"command.description": "选择本会话使用的模型",
 			"option.loadError": "目录加载失败：{message}",
 			"trigger.fallback": "选择模型",
+			"trigger.hidden": "已隐藏",
+			"trigger.unavailable": "不可用",
 			"trigger.selectAria": "选择模型",
 			"trigger.aria": "选择模型，当前 {model}",
 			"trigger.ariaEffort": "选择模型，当前 {model}，推理等级 {effort}",
@@ -689,6 +699,8 @@ window.__ModuleLoader__.load({
 			"command.description": "Select the model for this conversation",
 			"option.loadError": "Catalog failed to load: {message}",
 			"trigger.fallback": "Select model",
+			"trigger.hidden": "Hidden",
+			"trigger.unavailable": "Unavailable",
 			"trigger.selectAria": "Select model",
 			"trigger.aria": "Select model, current {model}",
 			"trigger.ariaEffort": "Select model, current {model}, reasoning effort {effort}",

@@ -408,6 +408,9 @@ mod directory_link_tests {
 /// and peer-dependency closure. Declared but absent packages are skipped.
 pub fn heal_profiles_module_fallback(install_anchor: &Path, home: &Path) -> Result<(), String> {
     let links = profiles_module_fallback_targets(install_anchor)?;
+    if links.is_empty() {
+        return Ok(());
+    }
     let modules = home.join(PROFILES_DIR).join("node_modules");
     std::fs::create_dir_all(&modules).map_err(|error| error.to_string())?;
     for (name, target) in links {
@@ -422,6 +425,11 @@ pub fn heal_profiles_module_fallback(install_anchor: &Path, home: &Path) -> Resu
 pub fn profiles_module_fallback_targets(
     install_anchor: &Path,
 ) -> Result<IndexMap<String, PathBuf>, String> {
+    // On Windows, PACKAGE.json and package.json name the same file. A Rust
+    // distribution inventory is not a Node package and owns no module links.
+    if is_rust_distribution_anchor(install_anchor)? {
+        return Ok(IndexMap::new());
+    }
     let app_dir = install_anchor.parent().ok_or_else(|| {
         format!(
             "dsh: install anchor {} has no parent",
@@ -457,6 +465,31 @@ pub fn profiles_module_fallback_targets(
         }
     }
     Ok(links)
+}
+
+pub fn is_rust_distribution_anchor(anchor: &Path) -> Result<bool, String> {
+    let bytes = std::fs::read(anchor).map_err(|error| error.to_string())?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let suffix = if value.get("platform").and_then(Value::as_str) == Some("windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    Ok(value
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name.starts_with("deepseek-harness-rs-v"))
+        && value.get("entry").and_then(Value::as_str)
+            == Some(format!("dsh-launcher{suffix}").as_str())
+        && value.get("host").and_then(Value::as_str)
+            == Some(format!("deepseek-harness-rs{suffix}").as_str())
+        && value
+            .get("variant")
+            .and_then(Value::as_str)
+            .is_some_and(|variant| matches!(variant, "core" | "skin" | "free"))
+        && value.get("dsh").is_none()
+        && value.get("dependencies").is_none()
+        && value.get("peerDependencies").is_none())
 }
 
 /// Recreate a link after the caller has validated its installation ownership.

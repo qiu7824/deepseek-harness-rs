@@ -7167,6 +7167,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			loadingNewer = false;
 			/** Non-tail history window selected by the message rail. */
 			historyTargetSeq = null;
+			readingAwayFromTail = false;
 			pending = /* @__PURE__ */ new Map();
 			pendingRev = 0;
 			pendingCache = null;
@@ -7609,8 +7610,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			async loadAround(targetSeq, force = false) {
 				if (this.openState !== "open" || !Number.isSafeInteger(targetSeq) || targetSeq < 0) return false;
 				if (!force && this.events.some((event) => eventContainsSeq(event, targetSeq))) return true;
+				const generation = this.openGeneration;
 				try {
 					const { result } = await this.history({ afterSeq: targetSeq, maxMessages: HISTORY_PAGE_MESSAGES });
+					if (generation !== this.openGeneration) return false;
 					if (!result.ok || !result.value.events.some((entry) => eventContainsSeq(entry.event, targetSeq))) return false;
 					this.historyTargetSeq = result.value.hasMoreAfter ? targetSeq : null;
 					this.installWindow(result.value.events, result.value.hasMore, void 0, {
@@ -7626,22 +7629,27 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			/** Restore the normal live tail after browsing a historical window. */
 			async returnLatest() {
 				if (this.historyTargetSeq === null) return;
+				const generation = this.openGeneration;
 				this.stitching = true;
 				try {
 					const { result } = await this.history({ maxMessages: HISTORY_PAGE_MESSAGES });
+					if (generation !== this.openGeneration) return;
 					if (!result.ok) throw new Error(`conversation.returnLatest failed: ${result.error.code}: ${result.error.message}`);
 					this.historyTargetSeq = null;
 					this.installWindow(result.value.events, result.value.hasMore, result.value.projections);
 				} finally {
-					this.stitching = false;
+					if (generation === this.openGeneration) this.stitching = false;
 				}
 			}
+			/** Remember whether the reader is inspecting history without moving the live window. */
+			rememberReadingPosition(awayFromTail) { this.readingAwayFromTail = awayFromTail === true; }
 			/** Reconnect rebuild (manager calls this on onConnected for instances that were opened):
 			*  retain the current window while rerunning open; pending waits for the baseline replay. Invalidates any
 			*  in-flight open first — its history request rode the dead connection and must not settle
 			*  the fresh generation into 'error'. */
 			async resync() {
 				if (this.openState === "cold") return;
+				if (this.readingAwayFromTail && this.historyTargetSeq === null && this.events.length) this.historyTargetSeq = this.baseSeq;
 				this.openGeneration++;
 				this.openPromise = null;
 				this.openState = "cold";
@@ -7649,7 +7657,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				// Keep the last valid bounded window until a replacement succeeds.
 				this.loadingOlder = false;
 				this.loadingNewer = false;
-				this.historyTargetSeq = null;
+				this.stitching = false;
+				// Preserve an indexed historical reading anchor across reconnects.
 				this.pending.clear();
 				this.pendingRev++;
 				this.subscribedLastSeq = null;
@@ -7803,16 +7812,20 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				this.openError = null;
 				this.notifier.markDirty();
 				try {
-					let { result } = await this.history({ maxMessages: HISTORY_PAGE_MESSAGES });
-					if (generation !== this.openGeneration) return;
+					const historical = this.historyTargetSeq !== null;
+                    const anchor = historical ? Math.min(this.historyTargetSeq, this.baseSeq) : null;
+                    const request = historical ? {afterSeq:anchor,maxMessages:HISTORY_PAGE_MESSAGES*Math.max(1,Math.min(HISTORY_WINDOW_PAGES,this.historyPages.length))} : {maxMessages:HISTORY_PAGE_MESSAGES};
+                    let { result } = await this.history(request);
+                    if (generation !== this.openGeneration) return;
 					if (!result.ok) {
 						this.openState = "error";
 						this.openError = result.error;
 						return;
 					}
-					this.installWindow(result.value.events, result.value.hasMore, result.value.projections);
-					const tailSeq = this.windowTailSeq();
-					if (this.subscribedLastSeq !== null && tailSeq !== null && this.subscribedLastSeq > tailSeq) {
+					if (historical && !result.value.hasMoreAfter) this.historyTargetSeq = null;
+                    this.installWindow(result.value.events, result.value.hasMore, result.value.projections, historical ? {hasMoreBefore:result.value.hasMoreBefore,hasMoreAfter:result.value.hasMoreAfter} : {});
+                    const tailSeq = this.windowTailSeq();
+					if (!historical && this.subscribedLastSeq !== null && tailSeq !== null && this.subscribedLastSeq > tailSeq) {
 						result = (await this.history({ maxMessages: HISTORY_PAGE_MESSAGES })).result;
 						if (generation !== this.openGeneration) return;
 						if (result.ok) this.installWindow(result.value.events, result.value.hasMore, result.value.projections);
@@ -8495,7 +8508,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			}
 			/** Apply immediately and retain for replay when a list response is in flight. */
 			recordMutation(mutation) {
-				this.listMutations?.push(mutation);
+                if (mutation.kind === "remove") {
+                    this.entryCache.delete(mutation.sessionId);
+                    if (this.selected === mutation.sessionId) this.selected = void 0;
+                }
+                this.listMutations?.push(mutation);
 				this.summaries = applyMutation(this.summaries, mutation);
 				this.syncCompletedNotifications();
 				this.notifier.markDirty();
@@ -8810,7 +8827,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				for (const id of this.completedNotifications) if (!seen.has(id)) this.completedNotifications.delete(id);
 			}
 			buildListSnapshot() {
-				const merged = this.summaries.map((summary) => {
+                // A catalog refresh is not a deletion notification. Keep the selected
+                // resident entry until an explicit remove or a new selection arrives.
+                const retained = this.selected === void 0 ? void 0 : this.entryCache.get(this.selected);
+                const source = retained && !this.summaries.some(entry => entry.sessionId === this.selected) && !this.sessions.get(this.selected)?.removed ? [...this.summaries,retained] : this.summaries;
+                const merged = source.map((summary) => {
 					const projectionStore = this.projectionStores.get(summary.sessionId);
 					const title = projectionStore?.get("title");
 					const projectionValues = projectionStore?.values();
@@ -9529,7 +9550,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				}
 				const persisted = this.selection.getSnapshot().sessionId;
 				if (current === void 0) {
-					if (persisted !== void 0) this.selection.set({});
+					if (persisted !== void 0 && (this.manager.selected === void 0 || phase === "ready")) this.selection.set({});
 				} else if (byId[current] !== void 0 && (persisted !== current || this.selection.getSnapshot().subagentAddress?.childSessionId !== currentAddress?.childSessionId || this.selection.getSnapshot().subagentAddress?.parentSessionId !== currentAddress?.parentSessionId || this.selection.getSnapshot().subagentAddress?.mode !== currentAddress?.mode)) this.selection.set({
 					sessionId: current,
 					...currentAddress === void 0 ? {} : { subagentAddress: currentAddress }

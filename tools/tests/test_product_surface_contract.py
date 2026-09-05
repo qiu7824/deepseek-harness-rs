@@ -9,6 +9,20 @@ CONNECTION = ROOT / "web" / "dist" / "plugins" / "connection.js"
 
 
 class ProductSurfaceContractTests(unittest.TestCase):
+    def test_pinned_inno_compiler_receives_utf8_bom_and_correct_chinese_text(self):
+        for relative in ("packaging/windows/deepseek-harness-rs.iss", "packaging/windows/ChineseSimplified.isl"):
+            raw = (ROOT / relative).read_bytes()
+            self.assertTrue(raw.startswith(b"\xef\xbb\xbf"), f"Inno 6.1.2 requires a UTF-8 BOM: {relative}")
+            text = raw.decode("utf-8-sig", errors="strict")
+            self.assertNotIn("\ufffd", text)
+        language = (ROOT / "packaging/windows/ChineseSimplified.isl").read_text(encoding="utf-8-sig")
+        self.assertIn("LanguageName=简体中文", language)
+        self.assertIn("SetupAppTitle=安装", language)
+        installer = (ROOT / "packaging/windows/deepseek-harness-rs.iss").read_text(encoding="utf-8-sig")
+        for required in ("dsh-launcher.exe", "deepseek-harness-rs.exe", "PACKAGE.json"):
+            self.assertIn(f'#error The installer payload is missing {required}', installer)
+        self.assertIn('Check: InstalledRuntimeReady', installer)
+
     def test_glm_flash_model_limit_is_declared_in_model_settings(self):
         source = (ROOT / "web" / "dist" / "plugins" / "ui-settings-models.js").read_text(encoding="utf-8")
         self.assertIn('"glm-5.3-flash": 131072', source)
@@ -329,7 +343,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
         graph = (ROOT / "web" / "dist" / "plugins" / "ui-code-graph.js").read_text(encoding="utf-8")
         manifest = (ROOT / "web" / "dist" / "plugins" / "manifest.json").read_text(encoding="utf-8")
         sidebar = (ROOT / "release" / "plugins" / "dsh-better-sidebar" / "lib" / "client.js").read_text(encoding="utf-8")
-        for required in ("代码图谱", "符号列表", "查找引用", "调用者", "被调用者", "调用链", "文件依赖", "影响面"):
+        for required in ("代码图谱", "符号列表", "调用引用", "调用者", "被调用者", "调用链", "文件依赖", "影响面"):
             self.assertIn(required, graph)
         for required in ("/__dsh-preview/code-graph", "references", "calls", "deps"):
             self.assertIn(required, graph)
@@ -345,7 +359,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
 
     def test_environment_settings_expose_runtime_storage_and_workspaces(self):
         source = (ROOT / "web" / "dist" / "plugins" / "ui-workbench.js").read_text(encoding="utf-8")
-        for required in ("运行概览", "存储目录", "工作区", "host.describe", "workspace.list", "正式数据根"):
+        for required in ("Rust 核心", "可选代码执行环境", "nodeStatusText", "refreshNode=1", "存储目录", "工作区", "host.describe", "workspace.list", "正式数据根"):
             self.assertIn(required, source)
 
     def test_manual_windows_release_reads_the_workspace_version(self):
@@ -412,7 +426,10 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("ShowLanguageDialog=auto", installer)
         self.assertIn("LanguageDetectionMethod=uilanguage", installer)
         self.assertIn('#if Variant == "core"', installer)
-        self.assertIn('DefaultDirName={localappdata}\\Programs\\DeepSeek Harness-rs\\{#Variant}', installer)
+        self.assertIn(r'DefaultDirName=D:\Program Files (x86)\DeepSeek Harness-rs\{#Variant}', installer)
+        self.assertIn('UsePreviousAppDir=yes', installer)
+        self.assertIn('DisableDirPage=no', installer)
+        self.assertIn('PrepareToInstall', installer)
         self.assertIn('chinesesimp.DesktopShortcut=', installer)
         self.assertIn('chinesesimp.LauncherName=', installer)
         self.assertIn('english.DesktopShortcut=', installer)

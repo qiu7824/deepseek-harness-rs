@@ -62,6 +62,8 @@ pub enum EdgeKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Edge {
+    #[serde(default)]
+    pub resolution: String,
     pub to: SymbolId,
     pub kind: EdgeKind,
     pub line: usize,
@@ -69,6 +71,10 @@ pub struct Edge {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CodeGraph {
+    #[serde(default)]
+    pub imports: Vec<FileImport>,
+    #[serde(default)]
+    pub unresolved_calls: usize,
     pub nodes: HashMap<SymbolId, SymbolNode>,
     pub edges_out: HashMap<SymbolId, Vec<Edge>>,
     pub edges_in: HashMap<SymbolId, Vec<Edge>>,
@@ -79,6 +85,13 @@ pub struct CodeGraph {
     /// Lets `find_by_name` be O(candidates) instead of an O(nodes) scan.
     #[serde(skip)]
     pub by_name: HashMap<String, Vec<SymbolId>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FileImport {
+    pub source: PathBuf,
+    pub target: PathBuf,
+    pub line: usize,
 }
 
 impl CodeGraph {
@@ -95,6 +108,17 @@ impl CodeGraph {
         h.finish()
     }
 
+    /// Byte-based identity distinguishes same-named definitions on the same line.
+    /// Kept separate from `make_id` for callers that only have a line number.
+    pub fn make_id_at(file: &Path, name: &str, start_byte: usize) -> SymbolId {
+        let mut h = DefaultHasher::new();
+        "byte".hash(&mut h);
+        file.hash(&mut h);
+        name.hash(&mut h);
+        start_byte.hash(&mut h);
+        h.finish()
+    }
+
     pub fn add_symbol(&mut self, node: SymbolNode) {
         let id = node.id;
         let file = node.file.clone();
@@ -107,10 +131,12 @@ impl CodeGraph {
         let to = edge.to;
         let kind = edge.kind.clone();
         let line = edge.line;
+        let resolution = edge.resolution.clone();
         self.edges_out.entry(from).or_default().push(edge);
         // reverse map stores the SOURCE in `to` (production convention).
         self.edges_in.entry(to).or_default().push(Edge {
             to: from,
+            resolution,
             kind,
             line,
         });
@@ -269,6 +295,7 @@ mod tests {
         g.add_edge(
             1,
             Edge {
+                resolution: "lexical".into(),
                 to: 2,
                 kind: EdgeKind::Calls,
                 line: 1,
@@ -277,6 +304,7 @@ mod tests {
         g.add_edge(
             2,
             Edge {
+                resolution: "lexical".into(),
                 to: 3,
                 kind: EdgeKind::Calls,
                 line: 1,
