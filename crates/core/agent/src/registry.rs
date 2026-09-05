@@ -393,17 +393,35 @@ impl AgentRegistry {
     /// Create and publish a new agent through the registered factory
     /// (TS `AgentRegistry.create`).
     pub async fn create(&self, options: CreateAgentOptions) -> Result<AgentHandle, String> {
-        let owner_ctx = self.ctx.clone();
+        self.create_with_context(&self.ctx, options).await
+    }
+
+    /// Preserve the caller's creator identity when a child is constructed
+    /// through a shared registry service. Root `create` remains unowned.
+    pub async fn create_with_context(
+        &self,
+        owner_ctx: &Context,
+        options: CreateAgentOptions,
+    ) -> Result<AgentHandle, String> {
         let factory = self.require_factory()?;
-        factory.create_agent(&owner_ctx, options).await
+        factory.create_agent(owner_ctx, options).await
     }
 
     /// Load a persisted session and resume an agent on it through the
     /// registered factory (TS `AgentRegistry.resume`).
     pub async fn resume(&self, options: ResumeAgentOptions) -> Result<AgentHandle, String> {
-        let owner_ctx = self.ctx.clone();
+        self.resume_with_context(&self.ctx, options).await
+    }
+
+    /// Resume a child with the exact live creator context without changing
+    /// the durable session identity or its delegated permission policy.
+    pub async fn resume_with_context(
+        &self,
+        owner_ctx: &Context,
+        options: ResumeAgentOptions,
+    ) -> Result<AgentHandle, String> {
         let factory = self.require_factory()?;
-        factory.resume(&owner_ctx, options).await
+        factory.resume(owner_ctx, options).await
     }
 
     /// Register a live agent (TS `AgentRegistry.register`). The effect is

@@ -1,0 +1,124 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const modules = path.resolve(process.argv[2]);
+const workdir = path.resolve(process.argv[3]);
+const evidence = JSON.parse(fs.readFileSync(path.join(workdir, 'subagent-progress-evidence.json'), 'utf8'));
+const { JSDOM } = require(path.join(modules, 'jsdom'));
+const React = require(path.join(modules, 'react'));
+const jsx = require(path.join(modules, 'react/jsx-runtime'));
+const ReactDOM = require(path.join(modules, 'react-dom/client'));
+const dom = new JSDOM('<!doctype html><html><head></head><body><main id="root"></main></body></html>', { pretendToBeVisual: true, url: 'http://fixture.invalid' });
+Object.assign(global, { window: dom.window, document: dom.window.document, Node: dom.window.Node, IS_REACT_ACT_ENVIRONMENT: true });
+const plugins = {};
+const primitives = new Proxy({ StateDot: ({ state }) => React.createElement('span', { 'data-state': state, 'data-dot': true }) }, { get: (target, key) => target[key] || (() => React.createElement('svg', { 'aria-hidden': true })) });
+window.__ModuleLoader__ = { load: definition => {
+  plugins[definition.id] = definition.factory(id => id === 'react' ? React : id === 'react/jsx-runtime' ? jsx : id.endsWith('ui-primitives') ? primitives : { indexSubagentDescendants: summaries => {
+    const result = new Map();
+    for (const summary of Object.values(summaries)) {
+      if (!summary.parentId) continue;
+      const current = result.get(summary.parentId) || { count: 0, runningCount: 0 };
+      result.set(summary.parentId, { count: current.count + 1, runningCount: current.runningCount + (summary.running ? 1 : 0) });
+    }
+    return result;
+  } });
+} };
+const directory = path.resolve(__dirname, '../../web/dist/plugins');
+const source = fs.readFileSync(path.join(directory, 'ui-subagent.js'), 'utf8').replace('return module.exports;', 'exports.test = { childProgress, subagentToolModel, SubagentToolRow, SubagentCatalogAction, zh, en }; return module.exports;');
+vm.runInNewContext(source, { window, document, Node, console, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask });
+vm.runInNewContext(fs.readFileSync(path.join(directory, 'ui-skill.js'), 'utf8').replace('return module.exports;', 'exports.test = { SkillRow, zh }; return module.exports;'), { window, document, console });
+const plugin = plugins['@deepseek-ai/dsh-client-ui-subagent'];
+const skill = plugins['@deepseek-ai/dsh-client-ui-skill'];
+const { childProgress, subagentToolModel, SubagentToolRow, SubagentCatalogAction, zh, en } = plugin.test;
+assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort(), 'locales remain complete');
+const t = (key, values = {}) => (zh[key] || key).replace(/\{(\w+)\}/g, (_, name) => values[name]);
+const root = ReactDOM.createRoot(document.getElementById('root'));
+const success = evidence.phases.success;
+const failure = evidence.phases.failure;
+assert.equal(childProgress(success.runningHistory, 'running').state, 'running');
+assert.match(childProgress(success.runningHistory, 'running').preview, /正在检查独立模块/);
+assert.equal(childProgress(success.settledHistory, 'inactive').state, 'completed');
+assert.equal(childProgress(failure.settledHistory, 'inactive').state, 'failed');
+const hiddenReasoning = { events: [{ event: { type: 'assistant/chunk', data: { chunk: { type: 'reasoning-delta', text: 'PRIVATE_REASONING' } } } }] };
+assert.equal(childProgress(hiddenReasoning, 'running').preview, '', 'reasoning is never a public progress excerpt');
+
+function blockFor(row) {
+  const events = row.parentHistory.events.map(item => item.event);
+  const call = events.find(event => event.type === 'tool/call').data;
+  const result = events.find(event => event.type === 'tool/result').data.message.content[0];
+  return { kind: 'tool-result', callId: call.callId, call: { name: call.name, argsRaw: call.arguments }, content: result.content, isError: result.isError, subCalls: [] };
+}
+const parentId = success.sessionId;
+const childId = success.address.childSessionId;
+let snapshot = { byId: { [childId]: { id: childId, parentId, origin: 'subagent', running: true } }, subagentsByParent: { [parentId]: { ...success.runningCatalog, state: 'ready' } } };
+const listeners = new Set();
+const store = { getSnapshot: () => snapshot, subscribe: callback => { listeners.add(callback); return () => listeners.delete(callback); } };
+let history = success.runningHistory;
+let loads = 0;
+const addresses = [];
+const progressProps = { parentSessionId: parentId, sessionsStore: store, loadProgress: async address => { loads++; assert.equal(address.parentSessionId, parentId); return history; }, refresh: () => {}, openChild: address => addresses.push(address), inspect: () => {}, t };
+const settle = () => React.act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+
+(async () => {
+  await React.act(async () => root.render(React.createElement(SubagentToolRow, { ...progressProps, block: blockFor(success) })));
+  await settle();
+  assert.equal(document.querySelector('[data-tool=subagent]').dataset.state, 'running');
+  await React.act(async () => document.querySelector('.dsh-subagent-tool-trigger').click());
+  assert.match(document.body.textContent, /正在检查独立模块/);
+  await React.act(async () => [...document.querySelectorAll('button')].find(button => button.textContent === '打开子任务').click());
+  assert.deepEqual(JSON.parse(JSON.stringify(addresses[0])), success.address, 'navigation uses the exact returned child id');
+  history = success.settledHistory;
+  snapshot = { ...snapshot, byId: { [childId]: { ...snapshot.byId[childId], running: false } }, subagentsByParent: { [parentId]: { ...success.settledCatalog, state: 'ready' } } };
+  await React.act(async () => listeners.forEach(listener => listener()));
+  await settle();
+  assert.equal(document.querySelector('[data-tool=subagent]').dataset.state, 'completed');
+  assert.match(document.body.textContent, /已完成/);
+  assert.match(document.body.textContent, /独立模块验证完成/);
+  await React.act(async () => root.render(React.createElement(SubagentToolRow, { ...progressProps, key: 'failure', parentSessionId: failure.sessionId, sessionsStore: { ...store, getSnapshot: () => failedSnapshot }, loadProgress: async () => failure.settledHistory, block: blockFor(failure) })));
+  await settle();
+  assert.equal(document.querySelector('[data-tool=subagent]').dataset.state, 'failed');
+  assert.match(document.body.textContent, /执行失败/);
+  assert.ok(document.querySelector('[data-dot][data-state=error]'), 'failed tasks are never presented as completed');
+  const fake = { ...blockFor(success), content: [{ type: 'text', text: 'A task with the same description exists.' }] };
+  assert.equal(subagentToolModel(fake).childId, undefined, 'a matching description is not a navigation identity');
+
+  const registered = [];
+  const connection = { api: { subagents: { history: async payload => { assert.equal(payload.maxMessages, 8); return { result: { ok: true, value: success.settledHistory } }; } } } };
+  const sessions = { list: store, openSubagent: address => addresses.push(address), refreshSubagents: () => {}, setSubagentCatalogOpen: () => {} };
+  const context = { sessions, get: key => key === 'connection' ? connection : key === 'inputTriggers' ? { registerSource: () => () => {} } : undefined, effect: callback => callback(), locale: { register: () => () => {} }, slots: { register: (options, component) => { registered.push({ options, component }); return () => {}; }, inject: (_name, factory) => { const value = factory(); if (value && value[Symbol.iterator]) [...value]; } } };
+  plugin.apply(context);
+  const registration = registered.find(entry => entry.options.key === 'subagent');
+  assert.equal(registration.component, SubagentToolRow);
+  const injected = registration.options.inject(parentId);
+  assert.equal(injected.parentSessionId, parentId);
+  await injected.loadProgress(success.address);
+  assert.ok(registered.some(entry => entry.options.key === 'subagent_fork'));
+
+  const catalogProps = { sessionId: parentId, useSessions: selector => selector(snapshot), ...progressProps, setCatalogOpen: () => {} };
+  await React.act(async () => root.render(React.createElement(SubagentCatalogAction, catalogProps)));
+  const trigger = document.querySelector('[aria-haspopup=tree]');
+  trigger.getBoundingClientRect = () => ({ bottom: 96, left: 240, right: 308 });
+  await React.act(async () => trigger.click());
+  await settle();
+  assert.match(document.querySelector('[role=tree]').textContent, /已完成/);
+  assert.match(document.querySelector('[role=tree]').textContent, /独立模块验证完成/);
+  const media = [...document.styleSheets].flatMap(sheet => [...sheet.cssRules]).find(rule => rule.conditionText === '(max-width:520px)');
+  assert.ok(media, 'narrow screens use viewport bounded catalog positioning');
+  const mobile = media.cssRules[0].style;
+  assert.equal(mobile.position, 'fixed');
+  assert.equal(mobile.left, '16px');
+  assert.equal(mobile.right, '16px');
+  assert.equal(mobile.width, 'auto');
+  document.head.insertAdjacentHTML('beforeend', '<meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;font-family:Arial,sans-serif}#root{display:flex;justify-content:flex-end;margin:70px 12px 0}body{--dsw-alias-label-primary:#222;--dsw-alias-label-secondary:#555;--dsw-alias-label-tertiary:#777;--dsw-specific-menu:white;--dsw-alias-border-l2:#ddd;--dsw-shadow-lv3:0 3px 18px #0002}</style>');
+  fs.writeFileSync(path.join(workdir, 'subagent-progress-mobile.html'), '<!doctype html>' + document.documentElement.outerHTML);
+  await React.act(async () => root.render(React.createElement(skill.test.SkillRow, { block: blockFor(evidence.phases.skill), t: key => skill.test.zh[key] || key })));
+  const skillRow = document.querySelector('[data-tool=skill] [role=button]');
+  assert.ok(skillRow, 'existing skill card remains expandable');
+  await React.act(async () => skillRow.click());
+  assert.match(document.querySelector('[data-tool=skill] pre').textContent, /<skill_content/);
+  await React.act(async () => root.unmount());
+  assert.ok(loads >= 2);
+  console.log('PASS actual Host evidence rendered by shipped components: child running text, completion, failure, exact child navigation, lifecycle updates, no guessed links, plugin registration, viewport-bounded menu CSS, and existing skill disclosure.');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+const failedSnapshot = { byId: {}, subagentsByParent: { [failure.sessionId]: { ...failure.settledCatalog, state: 'ready' } } };

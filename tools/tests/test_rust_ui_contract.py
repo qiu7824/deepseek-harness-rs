@@ -24,19 +24,24 @@ class RustUiContractTests(unittest.TestCase):
         ):
             self.assertIn(required, source)
 
-    def test_content_font_size_is_persisted_and_applied(self):
+    def test_appearance_uses_original_general_row_and_typography(self):
         theme = THEME.read_text(encoding="utf-8")
         host = HOST.read_text(encoding="utf-8")
-        for required in (
+        for removed in (
             "function FontSizeRow",
             "setFontSize(px)",
             '"fontSize"',
             "FONT_SIZE_MIN",
             "FONT_SIZE_MAX",
-            "--dsh-content-font-size",
+            'setProperty("--dsh-content-font-size"',
         ):
-            self.assertIn(required, theme)
-        self.assertIn('"fontSize"', host)
+            self.assertNotIn(removed, theme)
+        namespace = host.split('settings_namespace("ui-theme")', 1)[1].split('settings ui-theme:', 1)[0]
+        self.assertNotIn('"fontSize"', namespace)
+        self.assertIn('ctx.slots.inject("settings.general.item"', theme)
+        self.assertIn('order: 10,', theme)
+        self.assertNotIn('restoreBingWallpaper', theme)
+        self.assertNotIn('/__dsh-bing-wallpaper', host)
 
     def test_cjk_latin_autospace_preserves_literal_surfaces(self):
         source = BASE_CSS.read_text(encoding="utf-8")

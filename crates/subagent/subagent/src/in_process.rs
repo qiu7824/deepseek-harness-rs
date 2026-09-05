@@ -88,22 +88,25 @@ pub async fn start_in_process_run(
         .transpose()
         .map_err(|error| SubagentError::new("CHILD_CREATE_FAILED", error))?;
     let handle = registry
-        .create(dsh_agent::CreateAgentOptions {
-            session_id: Some(child_id.clone()),
-            meta: Some(child_session_meta(
-                parent.as_ref(),
-                child_depth,
-                activation_boundary as u64,
-            )),
-            seed: options.seed,
-            inherited_event_count,
-            agent_options: Some(resolve_child_agent_options(
-                parent.as_ref(),
-                request.request.agent_options.as_ref(),
-                child_depth,
-            )),
-            setup: None,
-        })
+        .create_with_context(
+            parent.ctx(),
+            dsh_agent::CreateAgentOptions {
+                session_id: Some(child_id.clone()),
+                meta: Some(child_session_meta(
+                    parent.as_ref(),
+                    child_depth,
+                    activation_boundary as u64,
+                )),
+                seed: options.seed,
+                inherited_event_count,
+                agent_options: Some(resolve_child_agent_options(
+                    parent.as_ref(),
+                    request.request.agent_options.as_ref(),
+                    child_depth,
+                )),
+                setup: None,
+            },
+        )
         .await
         .map_err(|error| SubagentError::new("CHILD_CREATE_FAILED", error))?;
 

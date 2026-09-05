@@ -393,11 +393,18 @@ async fn retire_idle_agent(
     handles: &OwnedAgentHandles,
     sessions: Option<Arc<dsh_session::SessionStore>>,
     agents: Option<Arc<dsh_agent::AgentRegistry>>,
+    subagents: Option<Arc<dsh_subagent::SubagentRuntime>>,
     agent: Arc<dyn Agent>,
 ) {
     let session_id = agent.id().clone();
     let _retirement = resolver.begin_retirement(&session_id);
     if agent.status() != dsh_agent::AgentStatus::Idle || agent.inbox().has_pending() {
+        return;
+    }
+    if subagents
+        .as_ref()
+        .is_some_and(|runtime| runtime.has_pending_descendants(&agent))
+    {
         return;
     }
     let Some(agents) = agents else {
@@ -417,6 +424,14 @@ async fn retire_idle_agent(
         return;
     };
     if sessions.flush(agent.session()).await.is_err() {
+        return;
+    }
+    if agent.status() != dsh_agent::AgentStatus::Idle
+        || agent.inbox().has_pending()
+        || subagents
+            .as_ref()
+            .is_some_and(|runtime| runtime.has_pending_descendants(&agent))
+    {
         return;
     }
     let dispose = {
@@ -456,6 +471,8 @@ mod idle_retirement_tests {
         ctx: Context,
         scope_key: ScopeKey,
         running: AtomicBool,
+        idle_wait: Option<Arc<tokio::sync::Notify>>,
+        idle_observed: Option<Arc<AtomicBool>>,
     }
 
     impl Agent for StatusAgent {
@@ -494,7 +511,15 @@ mod idle_retirement_tests {
         fn cancel(&self, _cause: AgentCancelCause, _options: Option<&CancelOptions>) {}
 
         fn when_idle(&self) -> BoxFuture<'static, ()> {
-            Box::pin(async {})
+            if let Some(observed) = &self.idle_observed {
+                observed.store(true, Ordering::SeqCst);
+            }
+            let wait = self.idle_wait.clone();
+            Box::pin(async move {
+                if let Some(wait) = wait {
+                    wait.notified().await;
+                }
+            })
         }
 
         fn run_maintenance(
@@ -533,6 +558,8 @@ mod idle_retirement_tests {
             ctx: ctx.clone(),
             scope_key: ScopeKey::new(),
             running: AtomicBool::new(true),
+            idle_wait: None,
+            idle_observed: None,
         });
         let agent: Arc<dyn Agent> = concrete.clone();
         let detach = agents.enter(agent.clone(), None).expect("enter agent");
@@ -581,6 +608,8 @@ mod idle_retirement_tests {
             ctx: ctx.clone(),
             scope_key: ScopeKey::new(),
             running: AtomicBool::new(false),
+            idle_wait: None,
+            idle_observed: None,
         });
         let agent: Arc<dyn Agent> = concrete.clone();
         let detach = agents.enter(agent.clone(), None).expect("enter agent");
@@ -600,6 +629,66 @@ mod idle_retirement_tests {
         assert!(disposed.load(Ordering::SeqCst));
         assert!(!service.owned_agent_handles.lock().contains_key(agent.id()));
 
+        detach().await;
+    }
+
+    #[tokio::test]
+    async fn settlement_delivery_waits_for_parent_activity_before_retirement() {
+        let ctx = Context::root();
+        let sessions = dsh_session::SessionStore::install(&ctx);
+        let agents = dsh_agent::AgentRegistry::install(&ctx);
+        let service = ApiProxyService::install(&ctx, ApiProxyDefaults::default());
+        let id = session_id("settlement-idle-retirement");
+        let session = sessions.create(&ctx, Some(id.clone()), None).await.unwrap();
+        let idle = Arc::new(tokio::sync::Notify::new());
+        let observed = Arc::new(AtomicBool::new(false));
+        let concrete = Arc::new(StatusAgent {
+            id,
+            options: AgentOptions::default(),
+            inbox: Inbox::new(&session, InboxNotifications::default()).unwrap(),
+            session,
+            ctx: ctx.clone(),
+            scope_key: ScopeKey::new(),
+            running: AtomicBool::new(true),
+            idle_wait: Some(idle.clone()),
+            idle_observed: Some(observed.clone()),
+        });
+        let agent: Arc<dyn Agent> = concrete.clone();
+        let detach = agents.enter(agent.clone(), None).unwrap();
+        agents.announce(&agent).await.unwrap();
+        let disposed = Arc::new(AtomicBool::new(false));
+        let complete = disposed.clone();
+        service.retain_owned_handle(dsh_agent::AgentHandle {
+            agent: agent.clone(),
+            dispose: Box::pin(async move {
+                complete.store(true, Ordering::SeqCst);
+            }),
+        });
+        ctx.emit(
+            "internal/subagent-parent-notified",
+            vec![cordis::arc(agent.clone())],
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !observed.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !disposed.load(Ordering::SeqCst),
+            "a delivered notice is not evidence that the parent consumed it"
+        );
+        concrete.running.store(false, Ordering::SeqCst);
+        idle.notify_waiters();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !disposed.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!service.owned_agent_handles.lock().contains_key(agent.id()));
         detach().await;
     }
 }
@@ -706,6 +795,34 @@ impl ApiProxyService {
         });
         ctx.register_service(service.clone());
         interactions.activate(ctx);
+        let weak = Arc::downgrade(&service);
+        let listener: Arc<cordis::Listener> = Arc::new(move |_, args| {
+            let service = weak.upgrade();
+            let parent = args
+                .first()
+                .and_then(|value| cordis::downcast_arc::<Arc<dyn Agent>>(value))
+                .map(|slot| slot.as_ref().clone());
+            Box::pin(async move {
+                if let (Some(service), Some(parent)) = (service, parent) {
+                    let owned = service
+                        .owned_agent_handles
+                        .lock()
+                        .get(parent.id())
+                        .is_some_and(|handle| Arc::ptr_eq(&handle.agent, &parent));
+                    if owned {
+                        service.spawn_idle_retirement(parent);
+                    }
+                }
+                None
+            })
+        });
+        ctx.events.register(
+            ctx,
+            "api-proxy: retire after subagent result consumption",
+            "internal/subagent-parent-notified",
+            listener,
+            &cordis::EventOptions::default().global(true),
+        );
         service
     }
 
@@ -740,10 +857,11 @@ impl ApiProxyService {
         let handles = Arc::clone(&self.owned_agent_handles);
         let sessions = self.sessions();
         let agents = self.agents();
+        let subagents = self.subagents();
         tokio::spawn(async move {
             agent.when_idle().await;
             let _admission = admission.lock().await;
-            retire_idle_agent(&resolver, &handles, sessions, agents, agent).await;
+            retire_idle_agent(&resolver, &handles, sessions, agents, subagents, agent).await;
         });
     }
 
@@ -754,6 +872,7 @@ impl ApiProxyService {
             &self.owned_agent_handles,
             self.sessions(),
             self.agents(),
+            self.subagents(),
             agent,
         )
         .await;

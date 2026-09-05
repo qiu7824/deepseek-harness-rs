@@ -11,6 +11,7 @@ window.__ModuleLoader__.load({
 		* LG breakpoint); a manual toggle below it re-expands over the squeezed center
 		* (stores.ts narrowExpanded). */
 		const SIDEBAR_AUTO_COLLAPSE = 1024;
+		const MOBILE_BREAKPOINT = 768;
 		/**
 		* Clamp a panel width into its contract range.
 		* @param px - requested width.
@@ -62,6 +63,9 @@ window.__ModuleLoader__.load({
 			tag.textContent = css;
 			document.head.appendChild(tag);
 		}
+
+		const mobileLayoutCss = "body .j9qSJG_sidebarCol{grid-area:1/1}body .j9qSJG_centerCol{grid-area:1/2}body .j9qSJG_detailsCol{grid-area:1/3}\nbody .dshMobileSidebarBackdrop{position:absolute;inset:0;border:0;background:var(--dsw-alias-bg-mask-1);z-index:21;cursor:pointer}body .j9qSJG_frame[data-mobile-sidebar-open]>.j9qSJG_sidebarCol{grid-area:1/1/2/4;position:absolute;inset:0 auto 0 0;width:var(--dsh-mobile-sidebar-width);z-index:22;box-shadow:var(--dsw-shadow-lv3)}body .j9qSJG_frame[data-mobile-details-open]>.j9qSJG_detailsCol{grid-area:1/1/2/4;position:absolute;inset:0 0 0 56px;z-index:18;background:var(--dsw-alias-bg-base)}\n@media(max-width:768px){\nhtml,body,#root{height:100%;height:100dvh;max-width:100%}body .j9qSJG_frame{max-width:100%;min-height:0}body .j9qSJG_frame button ,body .j9qSJG_frame input ,body .j9qSJG_frame select ,body .j9qSJG_frame textarea{touch-action:manipulation}body .c9AePG_root{--dsh-composer-side-clearance:8px;--dsh-chat-content-width:100%;--dsh-composer-card-max-width:100%;--dsh-composer-text-max-height:30dvh}body .c9AePG_widthHandle{display:none}body .c9AePG_header{padding:8px 8px 0}body .c9AePG_titleRow{flex-wrap:wrap;row-gap:4px}body .c9AePG_headerUtilities{margin-left:auto;gap:4px}body .c9AePG_tabs{gap:24px;overflow:auto}body .c9AePG_tab{flex:none;min-height:36px}body .c9AePG_composerHero{padding-bottom:16px}body .c9AePG_composerSeat{padding-bottom:env(safe-area-inset-bottom,0px)}body ._7HN4pG_root{padding:0 8px}body ._7HN4pG_headline{font-size:22px;line-height:30px;grid-template-columns:28px minmax(0,auto);column-gap:8px}body ._7HN4pG_previewBadge{grid-area:2/2;justify-self:start;margin:4px 0 0}body ._7HN4pG_headlineText{overflow-wrap:anywhere}body .Uzx--a_row{flex-wrap:wrap;gap:4px;padding:2px 6px 6px}body .Uzx--a_tools{flex:1 1 100%;gap:6px;flex-wrap:wrap}body .Uzx--a_modes{flex-wrap:wrap;gap:4px}body .Uzx--a_trailing{margin-left:auto;gap:8px}body .Uzx--a_primary ,body .Uzx--a_add{min-width:36px;min-height:36px}body .Uzx--a_select{max-width:100%;height:36px}body .Uzx--a_notice{box-sizing:border-box;overflow-wrap:anywhere}body ._l4_0G_root{padding:8px 8px 12px}body ._l4_0G_card{box-sizing:border-box}body ._l4_0G_actionRow{flex-wrap:wrap;padding:10px;gap:6px}body ._l4_0G_actionRow button{min-height:40px}body ._l4_0G_body{padding:10px 12px 0}body .YysEUW_panel{width:min(264px,calc(100vw - 80px))}body .dshTurnStatDialog{position:fixed;inset:auto 12px 12px;min-width:0;max-width:none;max-height:70dvh;overflow:auto}\nbody .CYEYBq_inspectButton,body .DOBunG_inspectButton{opacity:1;min-height:36px;touch-action:manipulation}body .fnCloG_actions{height:auto;min-height:32px;flex-wrap:wrap;gap:6px}body .fnCloG_action{flex:none;min-width:32px;min-height:32px}body .dshTurnStatRoot{flex:none}body .dshTurnStatTrigger{white-space:nowrap;min-height:32px}\nbody .OwcNsq_root{height:auto;min-height:32px;flex:none}body .OwcNsq_inner{height:auto;min-height:32px;flex-wrap:wrap;padding:6px;gap:6px}body .OwcNsq_toggle,body .OwcNsq_control,body .OwcNsq_action{min-height:32px}body .OwcNsq_search{box-sizing:border-box;min-width:0;flex:1 1 100%;margin:0;height:32px}body .D_qALW_overview>div{grid-template-columns:80px minmax(0,1fr)}body .D_qALW_overview dd{white-space:normal;overflow-wrap:anywhere}body .D_qALW_timestampToggle{display:inline-block;max-width:100%;white-space:normal;overflow-wrap:anywhere}\n}";
+		if (typeof document !== "undefined" && !document.querySelector("style[data-plugin-css='mobileLayoutCss']")) { const style = document.createElement("style"); style.dataset.pluginCss = "mobileLayoutCss"; style.textContent = mobileLayoutCss; document.head.appendChild(style); }
 		var AppFrame_module_css_default = {
 			"detailsCol": "j9qSJG_detailsCol",
 			"sidebarCol": "j9qSJG_sidebarCol",
@@ -88,6 +92,7 @@ window.__ModuleLoader__.load({
 		function CenterColumn(props) {
 			return (0, react_jsx_runtime.jsx)("div", {
 				className: AppFrame_module_css_default.centerCol,
+				inert: props.inert || void 0,
 				children: props.children
 			});
 		}
@@ -188,11 +193,25 @@ window.__ModuleLoader__.load({
 				};
 			}, []);
 			const narrow = viewport < SIDEBAR_AUTO_COLLAPSE;
+			const mobile = viewport <= MOBILE_BREAKPOINT;
 			(0, react.useEffect)(() => {
 				actions.setNarrow(narrow);
 			}, [actions, narrow]);
 			const sidebarCollapsed = narrow ? !panels.narrowExpanded : panels.sidebar === 0;
-			const cols = computeColumns(viewport, sidebarCollapsed ? 0 : panels.sidebar === 0 ? 280 : panels.sidebar, detailsSession === void 0 ? 0 : panels.details);
+			const cols = computeColumns(viewport, mobile || sidebarCollapsed ? 0 : panels.sidebar === 0 ? 280 : panels.sidebar, detailsSession === void 0 || mobile ? 0 : panels.details);
+			const mobileSidebarOpen = mobile && !sidebarCollapsed;
+			const mobileDetailsOpen = mobile && detailsSession !== void 0 && panels.details > 0;
+			const sidebarWidth = mobileSidebarOpen ? Math.min(panels.sidebar || 280, Math.max(0, viewport - 44)) : cols.sidebar;
+			(0, react.useEffect)(() => {
+				if (!mobileSidebarOpen && !mobileDetailsOpen) return;
+				const onKeyDown = (event) => {
+					if (event.key !== "Escape" || event.defaultPrevented) return;
+					if (mobileSidebarOpen) actions.toggleSidebar();
+					else actions.closeDetails();
+				};
+				document.addEventListener("keydown", onKeyDown);
+				return () => document.removeEventListener("keydown", onKeyDown);
+			}, [actions, mobileSidebarOpen, mobileDetailsOpen]);
 			const colsRef = (0, react.useRef)(cols);
 			colsRef.current = cols;
 			const sidebarBase = (0, react.useRef)(0);
@@ -218,7 +237,10 @@ window.__ModuleLoader__.load({
 			return (0, react_jsx_runtime.jsxs)("div", {
 				ref: frameRef,
 				className: AppFrame_module_css_default.frame,
-				style: { gridTemplateColumns: `${cols.sidebar}px minmax(0, 1fr) ${cols.details}px` },
+				style: { gridTemplateColumns: `${cols.sidebar}px minmax(0, 1fr) ${cols.details}px`, "--dsh-mobile-sidebar-width": `${sidebarWidth}px` },
+				"data-mobile": mobile || void 0,
+				"data-mobile-sidebar-open": mobileSidebarOpen || void 0,
+				"data-mobile-details-open": mobileDetailsOpen || void 0,
 				"data-sidebar-collapsed": sidebarCollapsed || void 0,
 				"data-details-collapsed": cols.details === 0 || void 0,
 				"data-dragging": dragging || void 0,
@@ -227,23 +249,24 @@ window.__ModuleLoader__.load({
 						className: AppFrame_module_css_default.sidebarCol,
 						children: renderSlot("sidebar", {
 							collapsed: sidebarCollapsed,
-							width: cols.sidebar
+							width: sidebarWidth
 						})
 					}),
-					(0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(CenterColumn, { children: renderSlot("conversation", {}) }), (0, react_jsx_runtime.jsx)(DetailsColumn, { children: renderSlot("details", {}) })] }),
+					(0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(CenterColumn, { inert: mobileSidebarOpen || mobileDetailsOpen, children: renderSlot("conversation", {}) }), (0, react_jsx_runtime.jsx)(DetailsColumn, { children: renderSlot("details", {}) })] }),
+					mobileSidebarOpen && (0, react_jsx_runtime.jsx)("button", { type: "button", className: "dshMobileSidebarBackdrop", "aria-label": "收起侧边栏", onClick: () => actions.toggleSidebar() }),
 					(0, react_jsx_runtime.jsx)("div", {
 						className: AppFrame_module_css_default.overlayLayer,
 						"data-shell-overlay": true,
 						children: renderSlot("shell.overlay", {})
 					}),
-					!sidebarCollapsed && (0, react_jsx_runtime.jsx)(DragHandle, {
+					!mobile && !sidebarCollapsed && (0, react_jsx_runtime.jsx)(DragHandle, {
 						side: "sidebar",
 						left: cols.sidebar,
 						onStart: onSidebarStart,
 						onDrag: onSidebarDrag,
 						onEnd: onDragEnd
 					}),
-					cols.details > 0 && (0, react_jsx_runtime.jsx)(DragHandle, {
+					!mobile && cols.details > 0 && (0, react_jsx_runtime.jsx)(DragHandle, {
 						side: "details",
 						left: viewport - cols.details,
 						onStart: onDetailsStart,

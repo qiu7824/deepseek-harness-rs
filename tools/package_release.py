@@ -92,6 +92,8 @@ def main() -> None:
     (stage / "docs").mkdir(exist_ok=True)
     shutil.copy2(ROOT / "docs" / "storage-compatibility.md", stage / "docs" / "storage-compatibility.md")
     shutil.copy2(ROOT / "docs" / "learning-and-capabilities.zh.md", stage / "docs" / "learning-and-capabilities.zh.md")
+    shutil.copy2(ROOT / "docs" / "sidebar-capabilities.md", stage / "docs" / "sidebar-capabilities.md")
+    shutil.copy2(ROOT / "docs" / "browser-control-and-model-tools.zh.md", stage / "docs" / "browser-control-and-model-tools.zh.md")
     for name in ["README.md", "README.zh.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]:
         if (ROOT / name).exists():
             shutil.copy2(ROOT / name, stage / name)

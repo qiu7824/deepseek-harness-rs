@@ -396,6 +396,14 @@ impl SubagentRuntime {
         self.manager().drain_descendants(parents).await
     }
 
+    /// Whether a creator still owns child work or a pending result delivery.
+    pub fn has_pending_descendants(&self, parent: &Arc<dyn Agent>) -> bool {
+        self.continuations
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .is_some_and(|manager| manager.has_pending_descendants(parent))
+    }
+
     /// The continuable-subagent manager behind this runtime.
     fn manager(&self) -> Arc<crate::continuation::SubagentContinuationManager> {
         self.continuations

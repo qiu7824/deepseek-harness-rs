@@ -68,31 +68,8 @@ window.__ModuleLoader__.load({
 		* @param props - composed slot props.
 		* @returns the row element tree.
 		*/
-		function AppearanceRow({ t, setTheme, useStore, api }) {
+		function AppearanceRow({ t, setTheme, useStore }) {
 			const preference = useStore((s) => s.preference);
-			const [bingDaily, setBingDaily] = (0, react.useState)(false);
-			const [wallpaperStatus, setWallpaperStatus] = (0, react.useState)("");
-			(0, react.useEffect)(() => {
-				let live = true;
-				api.settings.describe({}).then((reply) => {
-					if (!live || !reply.result.ok) return;
-					const value = reply.result.value.namespaces.find((item) => item.ns === "ui-wallpaper")?.value;
-					setBingDaily(value?.bingDaily === true);
-				});
-				return () => { live = false; };
-			}, [api]);
-			(0, react.useEffect)(() => { applyBingWallpaper(bingDaily); }, [bingDaily]);
-			const toggleWallpaper = async () => {
-				const next = !bingDaily;
-				setWallpaperStatus(t("wallpaper.saving"));
-				const reply = await api.settings.update({ ns: "ui-wallpaper", patch: { bingDaily: next } });
-				if (!reply.result.ok) {
-					setWallpaperStatus(reply.result.error.message);
-					return;
-				}
-				setBingDaily(next);
-				setWallpaperStatus(next ? t("wallpaper.enabled") : t("wallpaper.disabled"));
-			};
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: AppearanceRow_module_css_default.group,
 				children: [(0, react_jsx_runtime.jsx)("div", {
@@ -109,7 +86,7 @@ window.__ModuleLoader__.load({
 						},
 						children: [Icon ? (0, react_jsx_runtime.jsx)(Icon, {}) : (0, react_jsx_runtime.jsx)("span", { style: { display: "flex", gap: "4px" }, children: colors.map((color) => (0, react_jsx_runtime.jsx)("i", { style: { width: "14px", height: "14px", borderRadius: "50%", background: color, border: "1px solid rgba(127,127,127,.25)" } }, color)) }), t(labelKey)]
 					}, id))
-				}), (0, react_jsx_runtime.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: "10px", paddingTop: "10px" }, children: [(0, react_jsx_runtime.jsx)("button", { type: "button", className: AppearanceRow_module_css_default.themeCube, "aria-pressed": bingDaily, onClick: toggleWallpaper, children: bingDaily ? t("wallpaper.on") : t("wallpaper.off") }), wallpaperStatus && (0, react_jsx_runtime.jsx)("span", { children: wallpaperStatus })] })]
+				})]
 			});
 		}
 		//#endregion
@@ -127,13 +104,11 @@ window.__ModuleLoader__.load({
 			return (0, _deepseek_ai_dsh_client_runtime_client.defineStore)({
 				init: () => ({
 					preference: "light",
-					fontSize: 14,
 					revision: -1
 				}),
-				actions: { sync: (d, preference, revision, fontSize) => {
+				actions: { sync: (d, preference, revision) => {
 					if (revision <= d.revision) return;
 					d.preference = preference;
-					d.fontSize = fontSize ?? 14;
 					d.revision = revision;
 				} }
 			});
@@ -145,23 +120,13 @@ window.__ModuleLoader__.load({
 		const zh = {
 			"appearance.title": "外观",
 			"appearance.light": "浅色",
-			"appearance.dark": "深色",
-			"wallpaper.on": "Bing 每日壁纸：开",
-			"wallpaper.off": "Bing 每日壁纸：关",
-			"wallpaper.saving": "正在保存…",
-			"wallpaper.enabled": "已开启每日壁纸",
-			"wallpaper.disabled": "已关闭每日壁纸"
+			"appearance.dark": "深色"
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
 			"appearance.title": "Appearance",
 			"appearance.light": "Light",
-			"appearance.dark": "Dark",
-			"wallpaper.on": "Bing daily wallpaper: on",
-			"wallpaper.off": "Bing daily wallpaper: off",
-			"wallpaper.saving": "Saving…",
-			"wallpaper.enabled": "Daily wallpaper enabled",
-			"wallpaper.disabled": "Daily wallpaper disabled"
+			"appearance.dark": "Dark"
 		};
 		//#endregion
 		//#region ../../../vendor/cosmokit/src/misc.ts
@@ -974,13 +939,9 @@ window.__ModuleLoader__.load({
 		const THEME_SETTINGS_NAMESPACE = "ui-theme";
 		/** Field carrying the selected built-in theme preference. */
 		const THEME_PREFERENCE_FIELD = "preference";
-		const FONT_SIZE_FIELD = "fontSize";
-		const FONT_SIZE_MIN = 12;
-		const FONT_SIZE_MAX = 17;
-		const DEFAULT_FONT_SIZE = 14;
 		/** Default preference when the user-settings document has no override. */
 		const DEFAULT_PREFERENCE = "light";
-		Schema.object({ [THEME_PREFERENCE_FIELD]: Schema.union([...THEME_PREFERENCES]).default(DEFAULT_PREFERENCE), [FONT_SIZE_FIELD]: Schema.number().step(1).min(FONT_SIZE_MIN).max(FONT_SIZE_MAX).default(DEFAULT_FONT_SIZE) });
+		Schema.object({ [THEME_PREFERENCE_FIELD]: Schema.union([...THEME_PREFERENCES]).default(DEFAULT_PREFERENCE) });
 		/**
 		* Narrow one wire or registry value to a persistable preference.
 		* @param value - value crossing the settings or registry boundary.
@@ -1003,7 +964,7 @@ window.__ModuleLoader__.load({
 		var scrollbar_css_default = "body{--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l1);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l1);--dsh-scrollbar-width:8px}@supports not selector(::-webkit-scrollbar){body,body *{scrollbar-width:thin;scrollbar-color:var(--dsh-scrollbar-thumb) transparent}}::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-track{background:0 0}::-webkit-scrollbar-thumb{background:var(--dsh-scrollbar-thumb);border-radius:4px}::-webkit-scrollbar-thumb:hover{background:var(--dsh-scrollbar-thumb-hover)}::-webkit-scrollbar-corner{background:0 0}";
 		//#endregion
 		//#region \0dsh-inline-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-theme/src/styles/gradient-shadow-text.css.mjs
-		var gradient_shadow_text_css_default = "body{--dsw-linear-gradient-think:linear-gradient(180deg, #fff 20.19%, #fff0 100%);--dsw-linear-think-select:linear-gradient(180deg, #f5f6f7 20.19%, #f5f6f700 100%);--dsw-shadow-lv1:0 2px 4px 0 #0000000d;--dsw-shadow-lv1-blur:0 4px 12px 0 #00000005;--dsw-shadow-lv2:0 4px 12px 0 #00000005, 0 2px 8px 0 #0000000a;--dsw-shadow-lv3:0 0 1px 0 #0003, 0 0 4px 0 #00000005, 0 12px 32px 0 #00000014;--dsw-elevation-stroke-color:var(--dsw-alias-border-l4);--dsw-mask-blur:blur(2px)}body,body *{--dsw-elevation-stroke:0 0 0 .5px var(--dsw-elevation-stroke-color);--dsw-elevation-panel:var(--dsw-elevation-stroke), 0 3px 8px 0 #00000008, 0 0 16px 0 #00000005;--dsw-elevation-prominent:var(--dsw-elevation-stroke), 0 3px 8px 0 #0000000a, 0 0 20px 0 #0000000d;--dsw-elevation-soft:var(--dsw-elevation-stroke), 0 4px 16px 0 #00000008, 0 0 24px 0 #00000008}body[data-ds-dark-theme]{--dsw-linear-gradient-think:linear-gradient(180deg, #151517 20.19%, #15151700 100%);--dsw-linear-think-select:linear-gradient(180deg, #232325 20.19%, #23232500 100%)}body{--dsh-content-font-delta:calc(var(--dsh-content-font-size,14px) - 14px);--dsh-content-font-size-secondary:min(calc(var(--dsh-content-font-size,14px) - 1px), max(13px, calc(var(--dsh-content-font-size,14px) - 2px)));--dsh-content-font-delta-secondary:calc(var(--dsh-content-font-size-secondary) - 13px);--dsw-font-markdown-h1:700 calc(21px + var(--dsh-content-font-delta)) / calc(30px + var(--dsh-content-font-delta)) var(--dsw-font-family);--dsw-font-markdown-h1-font-family:var(--dsw-font-family);--dsw-font-markdown-h1-font-weight:700;--dsw-font-markdown-h1-line-height:calc(30px + var(--dsh-content-font-delta));--dsw-font-markdown-h1-font-size:calc(21px + var(--dsh-content-font-delta));--dsw-font-markdown-h1-font-style:normal;--dsw-font-markdown-h2:700 calc(19px + var(--dsh-content-font-delta)) / calc(28px + var(--dsh-content-font-delta)) var(--dsw-font-family);--dsw-font-markdown-h2-font-family:var(--dsw-font-family);--dsw-font-markdown-h2-font-weight:700;--dsw-font-markdown-h2-line-height:calc(28px + var(--dsh-content-font-delta));--dsw-font-markdown-h2-font-size:calc(19px + var(--dsh-content-font-delta));--dsw-font-markdown-h2-font-style:normal;--dsw-font-markdown-h3:700 calc(18px + var(--dsh-content-font-delta)) / calc(26px + var(--dsh-content-font-delta)) var(--dsw-font-family);--dsw-font-markdown-h3-font-family:var(--dsw-font-family);--dsw-font-markdown-h3-font-weight:700;--dsw-font-markdown-h3-line-height:calc(26px + var(--dsh-content-font-delta));--dsw-font-markdown-h3-font-size:calc(18px + var(--dsh-content-font-delta));--dsw-font-markdown-h3-font-style:normal;--dsw-font-markdown-h4:600 var(--dsh-content-font-size,14px) / calc(24px + var(--dsh-content-font-delta)) var(--dsw-font-family);--dsw-font-markdown-h4-font-family:var(--dsw-font-family);--dsw-font-markdown-h4-font-weight:600;--dsw-font-markdown-h4-line-height:calc(24px + var(--dsh-content-font-delta));--dsw-font-markdown-h4-font-size:var(--dsh-content-font-size,14px);--dsw-font-markdown-h4-font-style:normal;--dsw-font-markdown-base:var(--dsh-content-font-size,14px) / calc(24px + var(--dsh-content-font-delta)) var(--dsw-font-family);--dsw-font-markdown-base-font-family:var(--dsw-font-family);--dsw-font-markdown-base-font-weight:400;--dsw-font-markdown-base-line-height:calc(24px + var(--dsh-content-font-delta));--dsw-font-markdown-base-font-size:var(--dsh-content-font-size,14px);--dsw-font-markdown-base-font-style:normal;--dsw-font-markdown-base-strong:600 var(--dsh-content-font-size,14px) / calc(24px + var(--dsh-content-font-delta)) var(--dsw-font-family);--dsw-font-markdown-base-strong-font-family:var(--dsw-font-family);--dsw-font-markdown-base-strong-font-weight:600;--dsw-font-markdown-base-strong-line-height:calc(24px + var(--dsh-content-font-delta));--dsw-font-markdown-base-strong-font-size:var(--dsh-content-font-size,14px);--dsw-font-markdown-base-strong-font-style:normal;--dsw-font-markdown-base-italic:italic var(--dsh-content-font-size,14px) / calc(24px + var(--dsh-content-font-delta)) var(--dsw-font-family);--dsw-font-markdown-base-italic-font-family:var(--dsw-font-family);--dsw-font-markdown-base-italic-font-weight:400;--dsw-font-markdown-base-italic-line-height:calc(24px + var(--dsh-content-font-delta));--dsw-font-markdown-base-italic-font-size:var(--dsh-content-font-size,14px);--dsw-font-markdown-base-italic-font-style:italic;--dsw-font-markdown-base-strong-italic:italic 600 var(--dsh-content-font-size,14px) / calc(24px + var(--dsh-content-font-delta)) var(--dsw-font-family);--dsw-font-markdown-base-strong-italic-font-family:var(--dsw-font-family);--dsw-font-markdown-base-strong-italic-font-weight:600;--dsw-font-markdown-base-strong-italic-line-height:calc(24px + var(--dsh-content-font-delta));--dsw-font-markdown-base-strong-italic-font-size:var(--dsh-content-font-size,14px);--dsw-font-markdown-base-strong-italic-font-style:italic;--dsw-font-markdown-table:var(--dsh-content-font-size-secondary,13px)/calc(22px + var(--dsh-content-font-delta-secondary,0px)) var(--dsw-font-family);--dsw-font-markdown-table-font-family:var(--dsw-font-family);--dsw-font-markdown-table-font-weight:400;--dsw-font-markdown-table-line-height:calc(22px + var(--dsh-content-font-delta-secondary,0px));--dsw-font-markdown-table-font-size:var(--dsh-content-font-size-secondary,13px);--dsw-font-markdown-table-font-style:normal;--dsw-font-markdown-table-head:500 var(--dsh-content-font-size-secondary,13px)/calc(22px + var(--dsh-content-font-delta-secondary,0px)) var(--dsw-font-family);--dsw-font-markdown-table-head-font-family:var(--dsw-font-family);--dsw-font-markdown-table-head-font-weight:500;--dsw-font-markdown-table-head-line-height:calc(22px + var(--dsh-content-font-delta-secondary,0px));--dsw-font-markdown-table-head-font-size:var(--dsh-content-font-size-secondary,13px);--dsw-font-markdown-table-head-font-style:normal;--dsw-font-markdown-small:12px/20px var(--dsw-font-family);--dsw-font-markdown-small-font-family:var(--dsw-font-family);--dsw-font-markdown-small-font-weight:400;--dsw-font-markdown-small-line-height:20px;--dsw-font-markdown-small-font-size:12px;--dsw-font-markdown-small-font-style:normal;--dsw-font-markdown-small-strong:600 12px/20px var(--dsw-font-family);--dsw-font-markdown-small-strong-font-family:var(--dsw-font-family);--dsw-font-markdown-small-strong-font-weight:600;--dsw-font-markdown-small-strong-line-height:20px;--dsw-font-markdown-small-strong-font-size:12px;--dsw-font-markdown-small-strong-font-style:normal;--dsw-font-markdown-small-italic:italic 12px/20px var(--dsw-font-family);--dsw-font-markdown-small-italic-font-family:var(--dsw-font-family);--dsw-font-markdown-small-italic-font-weight:400;--dsw-font-markdown-small-italic-line-height:20px;--dsw-font-markdown-small-italic-font-size:12px;--dsw-font-markdown-small-italic-font-style:italic;--dsw-font-markdown-small-strong-italic:italic 600 12px/20px var(--dsw-font-family);--dsw-font-markdown-small-strong-italic-font-family:var(--dsw-font-family);--dsw-font-markdown-small-strong-italic-font-weight:600;--dsw-font-markdown-small-strong-italic-line-height:20px;--dsw-font-markdown-small-strong-italic-font-size:12px;--dsw-font-markdown-small-strong-italic-font-style:italic;--dsw-font-markdown-code:12px/19px var(--ds-font-family-code);--dsw-font-markdown-code-font-family:var(--ds-font-family-code);--dsw-font-markdown-code-font-weight:400;--dsw-font-markdown-code-line-height:19px;--dsw-font-markdown-code-font-size:12px;--dsw-font-markdown-code-font-style:normal;--dsw-font-markdown-code-block:11px/19px var(--ds-font-family-code);--dsw-font-markdown-code-block-font-family:var(--ds-font-family-code);--dsw-font-markdown-code-block-font-weight:400;--dsw-font-markdown-code-block-line-height:19px;--dsw-font-markdown-code-block-font-size:11px;--dsw-font-markdown-code-block-font-style:normal;--dsw-font-markdown-code-block-small:11px/16px var(--ds-font-family-code);--dsw-font-markdown-code-block-small-font-family:var(--ds-font-family-code);--dsw-font-markdown-code-block-small-font-weight:400;--dsw-font-markdown-code-block-small-line-height:16px;--dsw-font-markdown-code-block-small-font-size:11px;--dsw-font-markdown-code-block-small-font-style:normal;--dsw-font-xl-24:600 24px/32px var(--dsw-font-family);--dsw-font-xl-24-font-family:var(--dsw-font-family);--dsw-font-xl-24-font-weight:600;--dsw-font-xl-24-line-height:32px;--dsw-font-xl-24-font-size:24px;--dsw-font-xl-24-font-style:normal;--dsw-font-l-20:500 20px/28px var(--dsw-font-family);--dsw-font-l-20-font-family:var(--dsw-font-family);--dsw-font-l-20-font-weight:500;--dsw-font-l-20-line-height:28px;--dsw-font-l-20-font-size:20px;--dsw-font-l-20-font-style:normal;--dsw-font-m-18:500 16px/28px var(--dsw-font-family);--dsw-font-m-18-font-family:var(--dsw-font-family);--dsw-font-m-18-font-weight:500;--dsw-font-m-18-line-height:28px;--dsw-font-m-18-font-size:16px;--dsw-font-m-18-font-style:normal;--dsw-font-base-16:16px/24px var(--dsw-font-family);--dsw-font-base-16-font-family:var(--dsw-font-family);--dsw-font-base-16-font-weight:400;--dsw-font-base-16-line-height:24px;--dsw-font-base-16-font-size:16px;--dsw-font-base-16-font-style:normal;--dsw-font-base-strong-16:500 16px/24px var(--dsw-font-family);--dsw-font-base-strong-16-font-family:var(--dsw-font-family);--dsw-font-base-strong-16-font-weight:500;--dsw-font-base-strong-16-line-height:24px;--dsw-font-base-strong-16-font-size:16px;--dsw-font-base-strong-16-font-style:normal;--dsw-font-s-14:14px/22px var(--dsw-font-family);--dsw-font-s-14-font-family:var(--dsw-font-family);--dsw-font-s-14-font-weight:400;--dsw-font-s-14-line-height:22px;--dsw-font-s-14-font-size:14px;--dsw-font-s-14-font-style:normal;--dsw-font-s-strong-14:500 14px/22px var(--dsw-font-family);--dsw-font-s-strong-14-font-family:var(--dsw-font-family);--dsw-font-s-strong-14-font-weight:500;--dsw-font-s-strong-14-line-height:22px;--dsw-font-s-strong-14-font-size:14px;--dsw-font-s-strong-14-font-style:normal;--dsw-font-xs-13:13px/20px var(--dsw-font-family);--dsw-font-xs-13-font-family:var(--dsw-font-family);--dsw-font-xs-13-font-weight:400;--dsw-font-xs-13-line-height:20px;--dsw-font-xs-13-font-size:13px;--dsw-font-xs-13-font-style:normal;--dsw-font-xs-strong-13:500 13px/20px var(--dsw-font-family);--dsw-font-xs-strong-13-font-family:var(--dsw-font-family);--dsw-font-xs-strong-13-font-weight:500;--dsw-font-xs-strong-13-line-height:20px;--dsw-font-xs-strong-13-font-size:13px;--dsw-font-xs-strong-13-font-style:normal;--dsw-font-xxs-12:12px/18px var(--dsw-font-family);--dsw-font-xxs-12-font-family:var(--dsw-font-family);--dsw-font-xxs-12-font-weight:400;--dsw-font-xxs-12-line-height:18px;--dsw-font-xxs-12-font-size:12px;--dsw-font-xxs-12-font-style:normal;--dsw-font-xxs-strong-12:500 12px/18px var(--dsw-font-family);--dsw-font-xxs-strong-12-font-family:var(--dsw-font-family);--dsw-font-xxs-strong-12-font-weight:500;--dsw-font-xxs-strong-12-line-height:18px;--dsw-font-xxs-strong-12-font-size:12px;--dsw-font-xxs-strong-12-font-style:normal;--dsw-font-xxxs-11:11px/14px var(--dsw-font-family);--dsw-font-xxxs-11-font-family:var(--dsw-font-family);--dsw-font-xxxs-11-font-weight:400;--dsw-font-xxxs-11-line-height:14px;--dsw-font-xxxs-11-font-size:11px;--dsw-font-xxxs-11-font-style:normal;--dsw-font-xxxs-strong-11:500 11px/14px var(--dsw-font-family);--dsw-font-xxxs-strong-11-font-family:var(--dsw-font-family);--dsw-font-xxxs-strong-11-font-weight:500;--dsw-font-xxxs-strong-11-line-height:14px;--dsw-font-xxxs-strong-11-font-size:11px;--dsw-font-xxxs-strong-11-font-style:normal}";
+		var gradient_shadow_text_css_default = "body{--dsw-linear-gradient-think:linear-gradient(180deg, #fff 20.19%, #fff0 100%);--dsw-linear-think-select:linear-gradient(180deg, #f5f6f7 20.19%, #f5f6f700 100%);--dsw-shadow-lv1:0 2px 4px 0 #0000000d;--dsw-shadow-lv1-blur:0 4px 12px 0 #00000005;--dsw-shadow-lv2:0 4px 12px 0 #00000005, 0 2px 8px 0 #0000000a;--dsw-shadow-lv3:0 0 1px 0 #0003, 0 0 4px 0 #00000005, 0 12px 32px 0 #00000014;--dsw-elevation-stroke-color:var(--dsw-alias-border-l4);--dsw-mask-blur:blur(2px)}body,body *{--dsw-elevation-stroke:0 0 0 .5px var(--dsw-elevation-stroke-color);--dsw-elevation-panel:var(--dsw-elevation-stroke), 0 3px 8px 0 #00000008, 0 0 16px 0 #00000005;--dsw-elevation-prominent:var(--dsw-elevation-stroke), 0 3px 8px 0 #0000000a, 0 0 20px 0 #0000000d;--dsw-elevation-soft:var(--dsw-elevation-stroke), 0 4px 16px 0 #00000008, 0 0 24px 0 #00000008}body[data-ds-dark-theme]{--dsw-linear-gradient-think:linear-gradient(180deg, #151517 20.19%, #15151700 100%);--dsw-linear-think-select:linear-gradient(180deg, #232325 20.19%, #23232500 100%)}body{--dsw-font-markdown-h1:700 calc(21px + 0px) / calc(30px + 0px) var(--dsw-font-family);--dsw-font-markdown-h1-font-family:var(--dsw-font-family);--dsw-font-markdown-h1-font-weight:700;--dsw-font-markdown-h1-line-height:calc(30px + 0px);--dsw-font-markdown-h1-font-size:calc(21px + 0px);--dsw-font-markdown-h1-font-style:normal;--dsw-font-markdown-h2:700 calc(19px + 0px) / calc(28px + 0px) var(--dsw-font-family);--dsw-font-markdown-h2-font-family:var(--dsw-font-family);--dsw-font-markdown-h2-font-weight:700;--dsw-font-markdown-h2-line-height:calc(28px + 0px);--dsw-font-markdown-h2-font-size:calc(19px + 0px);--dsw-font-markdown-h2-font-style:normal;--dsw-font-markdown-h3:700 calc(18px + 0px) / calc(26px + 0px) var(--dsw-font-family);--dsw-font-markdown-h3-font-family:var(--dsw-font-family);--dsw-font-markdown-h3-font-weight:700;--dsw-font-markdown-h3-line-height:calc(26px + 0px);--dsw-font-markdown-h3-font-size:calc(18px + 0px);--dsw-font-markdown-h3-font-style:normal;--dsw-font-markdown-h4:600 14px / calc(24px + 0px) var(--dsw-font-family);--dsw-font-markdown-h4-font-family:var(--dsw-font-family);--dsw-font-markdown-h4-font-weight:600;--dsw-font-markdown-h4-line-height:calc(24px + 0px);--dsw-font-markdown-h4-font-size:14px;--dsw-font-markdown-h4-font-style:normal;--dsw-font-markdown-base:14px / calc(24px + 0px) var(--dsw-font-family);--dsw-font-markdown-base-font-family:var(--dsw-font-family);--dsw-font-markdown-base-font-weight:400;--dsw-font-markdown-base-line-height:calc(24px + 0px);--dsw-font-markdown-base-font-size:14px;--dsw-font-markdown-base-font-style:normal;--dsw-font-markdown-base-strong:600 14px / calc(24px + 0px) var(--dsw-font-family);--dsw-font-markdown-base-strong-font-family:var(--dsw-font-family);--dsw-font-markdown-base-strong-font-weight:600;--dsw-font-markdown-base-strong-line-height:calc(24px + 0px);--dsw-font-markdown-base-strong-font-size:14px;--dsw-font-markdown-base-strong-font-style:normal;--dsw-font-markdown-base-italic:italic 14px / calc(24px + 0px) var(--dsw-font-family);--dsw-font-markdown-base-italic-font-family:var(--dsw-font-family);--dsw-font-markdown-base-italic-font-weight:400;--dsw-font-markdown-base-italic-line-height:calc(24px + 0px);--dsw-font-markdown-base-italic-font-size:14px;--dsw-font-markdown-base-italic-font-style:italic;--dsw-font-markdown-base-strong-italic:italic 600 14px / calc(24px + 0px) var(--dsw-font-family);--dsw-font-markdown-base-strong-italic-font-family:var(--dsw-font-family);--dsw-font-markdown-base-strong-italic-font-weight:600;--dsw-font-markdown-base-strong-italic-line-height:calc(24px + 0px);--dsw-font-markdown-base-strong-italic-font-size:14px;--dsw-font-markdown-base-strong-italic-font-style:italic;--dsw-font-markdown-table:13px/calc(22px + 0px) var(--dsw-font-family);--dsw-font-markdown-table-font-family:var(--dsw-font-family);--dsw-font-markdown-table-font-weight:400;--dsw-font-markdown-table-line-height:calc(22px + 0px);--dsw-font-markdown-table-font-size:13px;--dsw-font-markdown-table-font-style:normal;--dsw-font-markdown-table-head:500 13px/calc(22px + 0px) var(--dsw-font-family);--dsw-font-markdown-table-head-font-family:var(--dsw-font-family);--dsw-font-markdown-table-head-font-weight:500;--dsw-font-markdown-table-head-line-height:calc(22px + 0px);--dsw-font-markdown-table-head-font-size:13px;--dsw-font-markdown-table-head-font-style:normal;--dsw-font-markdown-small:12px/20px var(--dsw-font-family);--dsw-font-markdown-small-font-family:var(--dsw-font-family);--dsw-font-markdown-small-font-weight:400;--dsw-font-markdown-small-line-height:20px;--dsw-font-markdown-small-font-size:12px;--dsw-font-markdown-small-font-style:normal;--dsw-font-markdown-small-strong:600 12px/20px var(--dsw-font-family);--dsw-font-markdown-small-strong-font-family:var(--dsw-font-family);--dsw-font-markdown-small-strong-font-weight:600;--dsw-font-markdown-small-strong-line-height:20px;--dsw-font-markdown-small-strong-font-size:12px;--dsw-font-markdown-small-strong-font-style:normal;--dsw-font-markdown-small-italic:italic 12px/20px var(--dsw-font-family);--dsw-font-markdown-small-italic-font-family:var(--dsw-font-family);--dsw-font-markdown-small-italic-font-weight:400;--dsw-font-markdown-small-italic-line-height:20px;--dsw-font-markdown-small-italic-font-size:12px;--dsw-font-markdown-small-italic-font-style:italic;--dsw-font-markdown-small-strong-italic:italic 600 12px/20px var(--dsw-font-family);--dsw-font-markdown-small-strong-italic-font-family:var(--dsw-font-family);--dsw-font-markdown-small-strong-italic-font-weight:600;--dsw-font-markdown-small-strong-italic-line-height:20px;--dsw-font-markdown-small-strong-italic-font-size:12px;--dsw-font-markdown-small-strong-italic-font-style:italic;--dsw-font-markdown-code:12px/19px var(--ds-font-family-code);--dsw-font-markdown-code-font-family:var(--ds-font-family-code);--dsw-font-markdown-code-font-weight:400;--dsw-font-markdown-code-line-height:19px;--dsw-font-markdown-code-font-size:12px;--dsw-font-markdown-code-font-style:normal;--dsw-font-markdown-code-block:11px/19px var(--ds-font-family-code);--dsw-font-markdown-code-block-font-family:var(--ds-font-family-code);--dsw-font-markdown-code-block-font-weight:400;--dsw-font-markdown-code-block-line-height:19px;--dsw-font-markdown-code-block-font-size:11px;--dsw-font-markdown-code-block-font-style:normal;--dsw-font-markdown-code-block-small:11px/16px var(--ds-font-family-code);--dsw-font-markdown-code-block-small-font-family:var(--ds-font-family-code);--dsw-font-markdown-code-block-small-font-weight:400;--dsw-font-markdown-code-block-small-line-height:16px;--dsw-font-markdown-code-block-small-font-size:11px;--dsw-font-markdown-code-block-small-font-style:normal;--dsw-font-xl-24:600 24px/32px var(--dsw-font-family);--dsw-font-xl-24-font-family:var(--dsw-font-family);--dsw-font-xl-24-font-weight:600;--dsw-font-xl-24-line-height:32px;--dsw-font-xl-24-font-size:24px;--dsw-font-xl-24-font-style:normal;--dsw-font-l-20:500 20px/28px var(--dsw-font-family);--dsw-font-l-20-font-family:var(--dsw-font-family);--dsw-font-l-20-font-weight:500;--dsw-font-l-20-line-height:28px;--dsw-font-l-20-font-size:20px;--dsw-font-l-20-font-style:normal;--dsw-font-m-18:500 16px/28px var(--dsw-font-family);--dsw-font-m-18-font-family:var(--dsw-font-family);--dsw-font-m-18-font-weight:500;--dsw-font-m-18-line-height:28px;--dsw-font-m-18-font-size:16px;--dsw-font-m-18-font-style:normal;--dsw-font-base-16:16px/24px var(--dsw-font-family);--dsw-font-base-16-font-family:var(--dsw-font-family);--dsw-font-base-16-font-weight:400;--dsw-font-base-16-line-height:24px;--dsw-font-base-16-font-size:16px;--dsw-font-base-16-font-style:normal;--dsw-font-base-strong-16:500 16px/24px var(--dsw-font-family);--dsw-font-base-strong-16-font-family:var(--dsw-font-family);--dsw-font-base-strong-16-font-weight:500;--dsw-font-base-strong-16-line-height:24px;--dsw-font-base-strong-16-font-size:16px;--dsw-font-base-strong-16-font-style:normal;--dsw-font-s-14:14px/22px var(--dsw-font-family);--dsw-font-s-14-font-family:var(--dsw-font-family);--dsw-font-s-14-font-weight:400;--dsw-font-s-14-line-height:22px;--dsw-font-s-14-font-size:14px;--dsw-font-s-14-font-style:normal;--dsw-font-s-strong-14:500 14px/22px var(--dsw-font-family);--dsw-font-s-strong-14-font-family:var(--dsw-font-family);--dsw-font-s-strong-14-font-weight:500;--dsw-font-s-strong-14-line-height:22px;--dsw-font-s-strong-14-font-size:14px;--dsw-font-s-strong-14-font-style:normal;--dsw-font-xs-13:13px/20px var(--dsw-font-family);--dsw-font-xs-13-font-family:var(--dsw-font-family);--dsw-font-xs-13-font-weight:400;--dsw-font-xs-13-line-height:20px;--dsw-font-xs-13-font-size:13px;--dsw-font-xs-13-font-style:normal;--dsw-font-xs-strong-13:500 13px/20px var(--dsw-font-family);--dsw-font-xs-strong-13-font-family:var(--dsw-font-family);--dsw-font-xs-strong-13-font-weight:500;--dsw-font-xs-strong-13-line-height:20px;--dsw-font-xs-strong-13-font-size:13px;--dsw-font-xs-strong-13-font-style:normal;--dsw-font-xxs-12:12px/18px var(--dsw-font-family);--dsw-font-xxs-12-font-family:var(--dsw-font-family);--dsw-font-xxs-12-font-weight:400;--dsw-font-xxs-12-line-height:18px;--dsw-font-xxs-12-font-size:12px;--dsw-font-xxs-12-font-style:normal;--dsw-font-xxs-strong-12:500 12px/18px var(--dsw-font-family);--dsw-font-xxs-strong-12-font-family:var(--dsw-font-family);--dsw-font-xxs-strong-12-font-weight:500;--dsw-font-xxs-strong-12-line-height:18px;--dsw-font-xxs-strong-12-font-size:12px;--dsw-font-xxs-strong-12-font-style:normal;--dsw-font-xxxs-11:11px/14px var(--dsw-font-family);--dsw-font-xxxs-11-font-family:var(--dsw-font-family);--dsw-font-xxxs-11-font-weight:400;--dsw-font-xxxs-11-line-height:14px;--dsw-font-xxxs-11-font-size:11px;--dsw-font-xxxs-11-font-style:normal;--dsw-font-xxxs-strong-11:500 11px/14px var(--dsw-font-family);--dsw-font-xxxs-strong-11-font-family:var(--dsw-font-family);--dsw-font-xxxs-strong-11-font-weight:500;--dsw-font-xxxs-strong-11-line-height:14px;--dsw-font-xxxs-strong-11-font-size:11px;--dsw-font-xxxs-strong-11-font-style:normal}";
 		//#endregion
 		//#region \0dsh-inline-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-theme/src/styles/shiki.css.mjs
 		var shiki_css_default = ":root{--shiki-foreground:var(--dsw-alias-label-primary);--shiki-background:var(--dsw-alias-markdown-code-block);--shiki-token-constant:#1c7ed6;--shiki-token-string:#2f9e44;--shiki-token-comment:#868e96;--shiki-token-keyword:#d6336c;--shiki-token-parameter:#e8590c;--shiki-token-function:#6741d9;--shiki-token-string-expression:#2b8a3e;--shiki-token-punctuation:#495057;--shiki-token-link:#1971c2}body[data-ds-dark-theme]{--shiki-token-constant:#4dabf7;--shiki-token-string:#69db7c;--shiki-token-comment:#adb5bd;--shiki-token-keyword:#faa2c1;--shiki-token-parameter:#ffa94d;--shiki-token-function:#b197fc;--shiki-token-string-expression:#8ce99a;--shiki-token-punctuation:#ced4da;--shiki-token-link:#74c0fc}";
@@ -1192,12 +1153,6 @@ window.__ModuleLoader__.load({
 				}), "ui-theme: settings scope adoption");
 				this.adopt();
 			}
-			setFontSize(px) {
-				const fontSize = Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, Math.round(px)));
-				this.host.set(FONT_SIZE_FIELD, fontSize);
-				document.body.style.setProperty("--dsh-content-font-size", `${fontSize}px`);
-				this.publish();
-			}
 			/**
 			* Read the current immutable theme snapshot.
 			* @returns the current snapshot (stable reference until the next change).
@@ -1258,7 +1213,6 @@ window.__ModuleLoader__.load({
 			adopt() {
 				const section = this.host.getSnapshot().value;
 				if (section === void 0) return;
-				document.body.style.setProperty("--dsh-content-font-size", `${section.fontSize ?? DEFAULT_FONT_SIZE}px`);
 				const next = NO_SKIN && !["light", "dark"].includes(section.preference) ? DEFAULT_PREFERENCE : section.preference;
 				if (next !== "light" && next !== "dark") {
 					const mode = preferredSkinThemeMode();
@@ -1327,7 +1281,6 @@ window.__ModuleLoader__.load({
 				if (active === void 0) throw new Error(`theme registry lost "${resolvedId}"`);
 				return Object.freeze({
 					preference: this.preference,
-					fontSize: this.host.getSnapshot().value?.fontSize ?? DEFAULT_FONT_SIZE,
 					active: this.composeActive(active),
 					themes: Object.freeze([...this.themes]),
 					revision: this.revision
@@ -1511,41 +1464,6 @@ window.__ModuleLoader__.load({
 			}
 			await activateSkinAssets(id);
 		}
-		function applyBingWallpaper(enabled) {
-			const body = document.body;
-			let style = document.querySelector("style[data-dsh-wallpaper-css]");
-			if (style === null) {
-				style = document.createElement("style");
-				style.dataset.dshWallpaperCss = "";
-				style.textContent = "body[data-dsh-bing-wallpaper] #root>div{background:rgba(8,9,10,.28)!important}body[data-dsh-bing-wallpaper] [class*=_frame]{background:rgba(8,9,10,.22)!important}";
-				document.head.appendChild(style);
-			}
-			body.toggleAttribute("data-dsh-bing-wallpaper", enabled);
-			if (enabled) {
-				body.style.backgroundImage = "linear-gradient(rgba(8,9,10,.68),rgba(8,9,10,.82)),url('/__dsh-bing-wallpaper')";
-				body.style.backgroundSize = "cover";
-				body.style.backgroundPosition = "center";
-				body.style.backgroundAttachment = "fixed";
-			} else {
-				body.style.removeProperty("background-image");
-				body.style.removeProperty("background-size");
-				body.style.removeProperty("background-position");
-				body.style.removeProperty("background-attachment");
-			}
-		}
-		async function restoreBingWallpaper(api) {
-			const reply = await api.settings.describe({});
-			if (!reply.result.ok) return;
-			const value = reply.result.value.namespaces.find((item) => item.ns === "ui-wallpaper")?.value;
-			applyBingWallpaper(value?.bingDaily === true);
-		}
-		function BasicAppearanceSettings(props) {
-			return (0, react_jsx_runtime.jsxs)("section", { style: { maxWidth: "760px", padding: "4px 2px 32px" }, children: [(0, react_jsx_runtime.jsx)("h2", { children: "外观" }), (0, react_jsx_runtime.jsx)("p", { style: { color: "var(--dsw-alias-label-tertiary)" }, children: "no-skin 版本不内置扩展皮肤；仅保留默认浅色与默认深色。" }), (0, react_jsx_runtime.jsx)(AppearanceRow, props), (0, react_jsx_runtime.jsx)(FontSizeRow, props)] });
-		}
-		function FontSizeRow({ useStore, setFontSize }) {
-			const fontSize = useStore((state) => state.fontSize ?? DEFAULT_FONT_SIZE);
-			return (0, react_jsx_runtime.jsxs)("div", { className: "dshFontSizeRow", children: [(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("strong", { children: "内容字号" }), (0, react_jsx_runtime.jsx)("p", { children: "调整对话正文与输入区字号" })] }), (0, react_jsx_runtime.jsxs)("div", { className: "dshFontSizeStepper", children: [(0, react_jsx_runtime.jsx)("button", { type: "button", disabled: fontSize <= FONT_SIZE_MIN, onClick: () => setFontSize(fontSize - 1), children: "−" }), (0, react_jsx_runtime.jsx)("span", { children: `${fontSize}px` }), (0, react_jsx_runtime.jsx)("button", { type: "button", disabled: fontSize >= FONT_SIZE_MAX, onClick: () => setFontSize(fontSize + 1), children: "+" })] })] });
-		}
 		/**
 		* Required services: settings transport plus slots/locale for the Appearance
 		* row. `remote` carries the forwarded settings invalidation that
@@ -1565,14 +1483,15 @@ window.__ModuleLoader__.load({
 		* @param ctx - client cordis context.
 		*/
 		function apply(ctx) {
+			if (document.body.hasAttribute("data-dsh-bing-wallpaper")) {
+				document.body.removeAttribute("data-dsh-bing-wallpaper");
+				for (const property of ["background-image", "background-size", "background-position", "background-attachment"]) document.body.style.removeProperty(property);
+			}
+			document.querySelector("style[data-dsh-wallpaper-css]")?.remove();
+			document.body.style.removeProperty("--dsh-content-font-size");
 			installThemeStyles(ctx);
 			const theme = new ThemeRuntime(ctx, ctx.settingsScope.bind({ namespace: THEME_SETTINGS_NAMESPACE }));
 			ctx.provide("theme", theme);
-			const api = ctx.get("connection").api;
-			restoreBingWallpaper(api).catch(() => applyBingWallpaper(false));
-			ctx.effect(() => ctx.remote.$on("settings/document-updated", (namespace) => {
-				if (namespace === "ui-wallpaper") restoreBingWallpaper(api).catch(() => applyBingWallpaper(false));
-			}), "ui-theme: wallpaper settings sync");
 			ctx.effect(() => ctx.locale.register(SETTINGS_NS, {
 				zh,
 				en
@@ -1581,7 +1500,7 @@ window.__ModuleLoader__.load({
 			let bound;
 			let appliedPreference;
 			const sync = (snapshot) => {
-				bound?.sync(snapshot.preference, snapshot.revision, snapshot.fontSize);
+				bound?.sync(snapshot.preference, snapshot.revision);
 				if (snapshot.preference === appliedPreference) return;
 				appliedPreference = snapshot.preference;
 				restoreActiveSkinAssets(snapshot.preference).catch((error) => console.error("skin activation failed", error));
@@ -1590,17 +1509,16 @@ window.__ModuleLoader__.load({
 			const injected = (actions) => {
 				bound = actions;
 				sync(theme.getTheme());
-				return { api, setTheme: (id) => theme.applyTheme(id), setFontSize: (px) => theme.setFontSize(px) };
+				return { setTheme: (id) => theme.applyTheme(id) };
 			};
-			ctx.slots.inject("settings.section", () => ctx.slots.register({
-				name: "settings.section",
+			ctx.slots.inject("settings.general.item", () => ctx.slots.register({
+				name: "settings.general.item",
 				id: "appearance",
-				order: 5,
+				order: 10,
 				store,
 				locale: SETTINGS_NS,
-				label: "外观",
 				inject: injected
-			}, BasicAppearanceSettings));
+			}, AppearanceRow));
 			if (!NO_SKIN) ctx.effect(() => () => cancelActiveSkinAssets(), "ui-theme: active skin assets");
 		}
 		//#endregion

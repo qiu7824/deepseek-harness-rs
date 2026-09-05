@@ -1,5 +1,5 @@
 {
-  "rev": "rust-v0.1.3-alpha.4",
+  "rev": "rust-v0.1.3-alpha.6",
   "entries": [
     {
       "id": "@deepseek-ai/dsh-client-ui-file-actions",
@@ -67,7 +67,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-theme",
       "url": "/plugins/ui-theme.js",
-      "rev": "9ae0cb10b46fd9e0",
+      "rev": "e0dfef8324ffcdc6",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-runtime",
@@ -92,7 +92,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-layout",
       "url": "/plugins/ui-layout.js",
-      "rev": "4efbfb8caf04429b",
+      "rev": "f79416e371db0f4c",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-theme"
@@ -124,7 +124,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-general",
       "url": "/plugins/ui-settings-general.js",
-      "rev": "d33dd103e0d85f0a",
+      "rev": "9651b29821ef5911",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
@@ -271,7 +271,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-subagent",
       "url": "/plugins/ui-subagent.js",
-      "rev": "0f2bfd1d145f8462",
+      "rev": "d1c4aa1e5a0f60b4",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",

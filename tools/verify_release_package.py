@@ -231,7 +231,14 @@ def main() -> None:
         raise SystemExit("core archive unexpectedly carries package defaults")
     if manifest.get("default_skin") != ("deepseek-official" if args.variant == "skin" else None):
         raise SystemExit("package default skin does not match the release variant")
-    if "NO_SKIN" not in theme or "BasicAppearanceSettings" not in theme:
+    theme_boundaries = (
+        'NO_SKIN && !["light", "dark"].includes(section.preference)',
+        "if (NO_SKIN) {",
+        "cancelActiveSkinAssets();",
+        'name: "settings.general.item"',
+        "}, AppearanceRow)",
+    )
+    if any(marker not in theme for marker in theme_boundaries):
         raise SystemExit("theme bundle is missing the runtime no-skin boundary")
 
     forbidden_names = sorted(

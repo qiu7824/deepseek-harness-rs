@@ -137,6 +137,112 @@ window.__ModuleLoader__.load({
 			count: 0,
 			runningCount: 0
 		};
+		/** Read only public assistant text and terminal state from the child's own history. */
+		function childProgress(history, activity) {
+			let state = "inactive", preview = "", stream = "";
+			for (const item of history?.events ?? []) {
+				const event = item.event ?? item, data = event.data ?? {};
+				if (event.type === "subagent/descriptor") { preview = ""; stream = ""; state = "inactive"; }
+				if (event.type === "turn/start") state = "running";
+				if (event.type === "step/start") stream = "";
+				if (event.type === "assistant/chunk" && data.chunk?.type === "text-delta") {
+					stream += data.chunk.text ?? "";
+					preview = stream;
+				}
+				if (event.type === "chunkrow/text-chunks") {
+					for (const chunk of data.chunks ?? []) stream += typeof chunk === "string" ? chunk : chunk.text ?? "";
+					if (stream) preview = stream;
+				}
+				if (event.type === "assistant/message") {
+					const text = (data.message?.content ?? data.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("\n");
+					if (text) preview = text;
+				}
+				if (event.type === "turn/end") {
+					const reason = data.reason?.kind;
+					state = reason === "completed" ? "completed" : reason === "error" ? "failed" : reason === "blocked" ? "blocked" : ["aborted", "interrupted", "max-tokens"].includes(reason) ? "stopped" : "inactive";
+				}
+			}
+			return { state: activity === "running" ? "running" : state === "running" ? "inactive" : state, preview: preview.replace(/\s+/g, " ").trim().slice(0, 280) };
+		}
+		function progressDot(state) {
+			return state === "running" ? "ongoing" : state === "failed" ? "error" : ["stopped", "blocked", "unavailable"].includes(state) ? "warning" : state === "completed" ? "done" : void 0;
+		}
+		function useChildProgress(address, activity, loadProgress) {
+			const [value, setValue] = (0, react.useState)({ state: activity === "running" ? "running" : "inactive", preview: "" });
+			(0, react.useEffect)(() => {
+				if (!address) return;
+				let cancelled = false, timer;
+				const read = async () => {
+					try {
+						const history = await loadProgress(address);
+						if (!cancelled) setValue(childProgress(history, activity));
+					} catch {
+						if (!cancelled) setValue({ state: activity === "running" ? "running" : "unavailable", preview: "" });
+					} finally {
+						if (!cancelled && activity === "running") timer = setTimeout(read, 1500);
+					}
+				};
+				read();
+				return () => { cancelled = true; clearTimeout(timer); };
+			}, [address?.parentSessionId, address?.childSessionId, address?.mode, activity, loadProgress]);
+			return activity === "running" && value.state !== "running" ? { ...value, state: "running" } : value;
+		}
+		function ChildProgressContent({ parentSessionId, entry, label, mode, loadProgress, t }) {
+			const progress = useChildProgress({ parentSessionId, childSessionId: entry.id, mode: entry.mode }, entry.activity, loadProgress);
+			return (0, react_jsx_runtime.jsx)(ProgressContent, { progress, label, mode, t });
+		}
+		function ProgressContent({ progress, label, mode, t }) {
+			return (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+				(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.StateDot, { state: progressDot(progress.state) }),
+				(0, react_jsx_runtime.jsxs)("span", { className: SubagentCatalogAction_module_css_default.content, "data-subagent-state": progress.state, children: [
+					(0, react_jsx_runtime.jsx)("span", { className: SubagentCatalogAction_module_css_default.label, children: label }),
+					(0, react_jsx_runtime.jsx)("span", { className: SubagentCatalogAction_module_css_default.summary, children: `${mode} · ${t("progress." + progress.state)}` }),
+					progress.preview && (0, react_jsx_runtime.jsx)("span", { className: SubagentCatalogAction_module_css_default.summary, title: progress.preview, children: progress.preview })
+				] })
+			] });
+		}
+		/** A returned continuation id is an exact link; task descriptions never establish identity. */
+		function subagentToolModel(block) {
+			const settled = "kind" in block;
+			let args = {};
+			try { args = JSON.parse((settled ? block.call?.argsRaw : block.argsRaw) ?? "{}"); } catch {}
+			const output = settled ? (block.content ?? []).filter((item) => item.type === "text").map((item) => item.text).join("\n") : "";
+			const childId = /^started continuable subagent ([a-zA-Z0-9-]+)$/.exec(output.trim())?.[1];
+			return { label: typeof args.description === "string" ? args.description : "", prompt: typeof args.prompt === "string" ? args.prompt : "", output, childId, state: !settled ? "running" : block.error?.code === "interrupted" ? "stopped" : block.isError ? "failed" : childId ? "inactive" : "completed" };
+		}
+		function SubagentToolRow({ block, parentSessionId, sessionsStore, openChild, refresh, loadProgress, inspect, t }) {
+			const model = subagentToolModel(block);
+			const snapshot = (0, react.useSyncExternalStore)(sessionsStore.subscribe, sessionsStore.getSnapshot, sessionsStore.getSnapshot);
+			const entry = snapshot.subagentsByParent[parentSessionId]?.entries.find((item) => item.kind === "child" && item.id === model.childId);
+			const [open, setOpen] = (0, react.useState)(false);
+			(0, react.useEffect)(() => { if (model.childId) refresh(parentSessionId); }, [model.childId, parentSessionId, refresh]);
+			const address = model.childId ? { parentSessionId, childSessionId: model.childId, mode: "continuable" } : null;
+			const progress = useChildProgress(address, entry?.activity ?? (snapshot.byId[model.childId]?.running ? "running" : "inactive"), loadProgress);
+			const state = address ? progress.state : model.state;
+			return (0, react_jsx_runtime.jsxs)("div", { className: "dsh-subagent-tool", "data-tool": "subagent", "data-state": state, children: [
+				(0, react_jsx_runtime.jsxs)("button", { type: "button", className: "dsh-subagent-tool-trigger", "aria-expanded": open, onClick: () => setOpen(!open), children: [
+					(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.StateDot, { state: progressDot(state) }),
+					(0, react_jsx_runtime.jsx)("span", { children: t("tool.title") }),
+					(0, react_jsx_runtime.jsx)("span", { className: "dsh-subagent-tool-label", children: model.label }),
+					(0, react_jsx_runtime.jsx)("span", { children: t("progress." + state) }),
+					(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
+				] }),
+				open && (0, react_jsx_runtime.jsxs)("div", { className: "dsh-subagent-tool-body", children: [
+					address ? (0, react_jsx_runtime.jsx)("div", { className: "dsh-subagent-tool-progress", children: (0, react_jsx_runtime.jsx)(ProgressContent, { progress, label: model.label || model.childId, mode: t("mode.continuable"), t }) }) : (0, react_jsx_runtime.jsx)("p", { children: t("progress." + model.state) }),
+					model.prompt && (0, react_jsx_runtime.jsx)("p", { children: model.prompt }),
+					!address && model.output && (0, react_jsx_runtime.jsx)("pre", { children: model.output }),
+					address && (0, react_jsx_runtime.jsx)("button", { type: "button", onClick: () => openChild(address), children: t("tool.open") }),
+					inspect && (0, react_jsx_runtime.jsx)("button", { type: "button", onClick: inspect, children: t("tool.details") })
+				] })
+			] });
+		}
+		if (typeof document !== "undefined" && !document.querySelector("style[data-subagent-progress]")) {
+			const style = document.createElement("style");
+			style.dataset.subagentProgress = "true";
+			style.textContent = ".dsh-subagent-tool{margin:4px 0;color:var(--dsw-alias-label-secondary);font-size:13px}.dsh-subagent-tool-trigger{display:flex;align-items:center;gap:8px;width:100%;min-height:32px;border:0;background:none;color:inherit;text-align:left;cursor:pointer}.dsh-subagent-tool-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-subagent-tool-body{margin:4px 0 8px 18px;padding:8px 12px;border-left:1px solid var(--dsw-alias-border-l2);overflow-wrap:anywhere}.dsh-subagent-tool-body p{margin:6px 0}.dsh-subagent-tool-body pre{white-space:pre-wrap;max-height:220px;overflow:auto}.dsh-subagent-tool-body>button{background:none;color:var(--dsw-alias-label-link);border:0;padding:6px 12px 6px 0;cursor:pointer}.dsh-subagent-tool-progress{display:flex;gap:8px;align-items:flex-start}";
+			style.textContent += "@media(max-width:520px){.HfG9eW_menu{position:fixed;left:16px;right:16px;top:var(--dsh-subagent-menu-top,96px);width:auto;max-width:none;max-height:calc(100dvh - var(--dsh-subagent-menu-top,96px) - 16px)}}";
+			document.head.appendChild(style);
+		}
 		/** Render the known direct-child shape while its authoritative catalog hydrates. */
 		function CatalogLoadingRows({ parentSessionId, summaries, level, t }) {
 			const children = Object.values(summaries).filter((summary) => summary.origin === "subagent" && summary.parentId === parentSessionId);
@@ -154,7 +260,7 @@ window.__ModuleLoader__.load({
 					className: `${SubagentCatalogAction_module_css_default.row} ${SubagentCatalogAction_module_css_default.disabled} ${SubagentCatalogAction_module_css_default.loadingRow}`,
 					children: [
 						(0, react_jsx_runtime.jsx)("span", { className: SubagentCatalogAction_module_css_default.disclosureSpace }),
-						(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.StateDot, { state: summary.running ? "ongoing" : "done" }),
+						(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.StateDot, { state: summary.running ? "ongoing" : void 0 }),
 						(0, react_jsx_runtime.jsx)("span", {
 							className: SubagentCatalogAction_module_css_default.content,
 							children: (0, react_jsx_runtime.jsx)("span", {
@@ -167,7 +273,7 @@ window.__ModuleLoader__.load({
 			}, summary.id));
 		}
 		/** Render one catalog level and recurse only through explicitly expanded rows. */
-		function CatalogRows({ parentSessionId, catalog, catalogs, summaries, expanded, level, now, openChild, refresh, toggleBranch, closeCatalog, t }) {
+		function CatalogRows({ parentSessionId, catalog, catalogs, summaries, expanded, level, now, openChild, refresh, loadProgress, toggleBranch, closeCatalog, t }) {
 			const emptyLoading = catalog.state === "loading" && catalog.entries.length === 0;
 			const reserveDisclosure = catalog.entries.some((entry) => entry.kind === "child" && entry.hasChildren);
 			return (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
@@ -224,12 +330,6 @@ window.__ModuleLoader__.load({
 					const summary = summaries[entry.id];
 					const label = entry.label ?? entry.id;
 					const mode = entry.mode === "one-shot" ? t("mode.oneShot") : t("mode.continuable");
-					const activity = entry.activity === "running" ? t("activity.running") : t("activity.inactive");
-					const secondary = [
-						summary?.title,
-						mode,
-						activity
-					].filter((value) => value !== void 0).join(" · ");
 					const totalTokens = tokenTotal(summary?.projectionValues?.tokenUsage);
 					const durationMs = activityDuration(summary, entry.activity, now);
 					const tokenMetric = totalTokens === void 0 ? void 0 : `${formatTokens(totalTokens)} tok`;
@@ -268,11 +368,6 @@ window.__ModuleLoader__.load({
 							role: "treeitem",
 							tabIndex: 0,
 							"aria-level": level,
-							"aria-label": [
-								label,
-								secondary,
-								metrics
-							].filter((value) => value !== "").join(" "),
 							...knownLeaf ? {} : { "aria-expanded": isExpanded },
 							className: SubagentCatalogAction_module_css_default.row,
 							onClick: open,
@@ -287,17 +382,7 @@ window.__ModuleLoader__.load({
 							}), (0, react_jsx_runtime.jsxs)("div", {
 								className: SubagentCatalogAction_module_css_default.clickarea,
 								children: [
-									(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.StateDot, { state: entry.activity === "running" ? "ongoing" : "done" }),
-									(0, react_jsx_runtime.jsxs)("span", {
-										className: SubagentCatalogAction_module_css_default.content,
-										children: [(0, react_jsx_runtime.jsx)("span", {
-											className: SubagentCatalogAction_module_css_default.label,
-											children: label
-										}), (0, react_jsx_runtime.jsx)("span", {
-											className: SubagentCatalogAction_module_css_default.summary,
-											children: secondary
-										})]
-									}),
+									(0, react_jsx_runtime.jsx)(ChildProgressContent, { parentSessionId, entry, label, mode, loadProgress, t }),
 									metrics !== "" && (0, react_jsx_runtime.jsxs)("span", {
 										className: SubagentCatalogAction_module_css_default.metrics,
 										children: [tokenMetric !== void 0 && (0, react_jsx_runtime.jsx)("span", {
@@ -329,7 +414,8 @@ window.__ModuleLoader__.load({
 								level: level + 1,
 								now,
 								openChild,
-								refresh,
+									refresh,
+									loadProgress,
 								toggleBranch,
 								closeCatalog,
 								t
@@ -344,12 +430,13 @@ window.__ModuleLoader__.load({
 		* @param props - session standard props plus catalog navigation actions.
 		* @returns The action while the catalog is pending or summaries establish descendants.
 		*/
-		function SubagentCatalogAction({ sessionId, useSessions, openChild, refresh, setCatalogOpen, t }) {
+		function SubagentCatalogAction({ sessionId, useSessions, openChild, refresh, loadProgress, setCatalogOpen, t }) {
 			const catalogs = useSessions((state) => state.subagentsByParent);
 			const summaries = useSessions((state) => state.byId);
 			const catalog = catalogs[sessionId];
 			const [open, setOpen] = (0, react.useState)(false);
 			const [now, setNow] = (0, react.useState)(() => Date.now());
+			const [menuTop, setMenuTop] = (0, react.useState)(96);
 			const [expanded, setExpanded] = (0, react.useState)(() => /* @__PURE__ */ new Set());
 			const rootRef = (0, react.useRef)(null);
 			const triggerRef = (0, react.useRef)(null);
@@ -381,6 +468,7 @@ window.__ModuleLoader__.load({
 				setOpen(next);
 				if (next) {
 					setNow(Date.now());
+					setMenuTop(Math.max(16, Math.min(window.innerHeight - 96, (triggerRef.current?.getBoundingClientRect().bottom ?? 91) + 5)));
 					observeCatalog(sessionId, true);
 				} else closeAllCatalogs();
 				if (restoreFocus) queueMicrotask(() => {
@@ -464,6 +552,7 @@ window.__ModuleLoader__.load({
 			};
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: SubagentCatalogAction_module_css_default.root,
+				style: { "--dsh-subagent-menu-top": `${menuTop}px` },
 				ref: rootRef,
 				onKeyDown: navigate,
 				children: [(0, react_jsx_runtime.jsxs)("button", {
@@ -509,6 +598,7 @@ window.__ModuleLoader__.load({
 						now,
 						openChild,
 						refresh,
+						loadProgress,
 						toggleBranch,
 						closeCatalog: () => {
 							changeOpen(false);
@@ -574,6 +664,16 @@ window.__ModuleLoader__.load({
 			"mode.continuable": "可继续",
 			"activity.running": "正在运行",
 			"activity.inactive": "当前未运行",
+			"progress.running": "正在运行",
+			"progress.completed": "已完成",
+			"progress.failed": "执行失败",
+			"progress.stopped": "已停止",
+			"progress.blocked": "需要处理",
+			"progress.inactive": "当前未运行",
+			"progress.unavailable": "状态暂不可用",
+			"tool.title": "子任务",
+			"tool.open": "打开子任务",
+			"tool.details": "调用详情",
 			"branch.collapse": "收起 {label} 的下级子代理",
 			"branch.expand": "展开 {label} 的下级子代理",
 			"count.total.one": "{count} 个子代理",
@@ -610,6 +710,16 @@ window.__ModuleLoader__.load({
 			"mode.continuable": "continuable",
 			"activity.running": "running",
 			"activity.inactive": "not running",
+			"progress.running": "Running",
+			"progress.completed": "Completed",
+			"progress.failed": "Failed",
+			"progress.stopped": "Stopped",
+			"progress.blocked": "Needs attention",
+			"progress.inactive": "Not running",
+			"progress.unavailable": "Status unavailable",
+			"tool.title": "Subtask",
+			"tool.open": "Open subtask",
+			"tool.details": "Call details",
 			"branch.collapse": "Collapse {label} descendants",
 			"branch.expand": "Expand {label} descendants",
 			"count.total.one": "{count} subagent",
@@ -627,6 +737,7 @@ window.__ModuleLoader__.load({
 		/** Required services for references, conversation slots, and session navigation. */
 		const inject = [
 			"inputTriggers",
+			"connection",
 			"sessions",
 			"slots",
 			"locale"
@@ -675,7 +786,17 @@ window.__ModuleLoader__.load({
 			};
 			const inputTriggers = ctx.get("inputTriggers");
 			ctx.effect(() => inputTriggers.registerSource(source), "ui-subagent: @ source");
-			const catalogActions = (_parentSessionId) => ({
+			const connection = ctx.get("connection");
+			const loadProgress = async (address) => {
+				const payload = { ...address, maxMessages: 8 };
+				const response = connection.api?.subagents ? await connection.api.subagents.history(payload) : { result: await connection.rpc.call("/api", "subagent.history", payload) };
+				if (!response.result.ok) throw new Error(response.result.error?.message ?? "Subtask history unavailable");
+				return response.result.value;
+			};
+			const catalogActions = (parentSessionId) => ({
+				parentSessionId,
+				sessionsStore: sessions.list,
+				loadProgress,
 				openChild(address) {
 					sessions.openSubagent(address);
 				},
@@ -685,6 +806,9 @@ window.__ModuleLoader__.load({
 				setCatalogOpen(parentSessionId, open) {
 					sessions.setSubagentCatalogOpen(parentSessionId, open);
 				}
+			});
+			ctx.slots.inject("tool.call.toolview", function* () {
+				for (const key of ["subagent", "subagent_fork", "subagent_codex", "subagent_claude_code"]) yield ctx.slots.register({ name: "tool.call.toolview", key, locale: NS, inject: catalogActions }, SubagentToolRow);
 			});
 			ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
 				name: "conversation.session.header.actions",

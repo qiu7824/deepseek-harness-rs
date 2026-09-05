@@ -26,6 +26,7 @@ mod model_discovery;
 mod provider_auth;
 mod provider_auth_catalog;
 pub mod runtime_paths;
+mod sidebar_settings;
 mod web_preview;
 
 #[cfg(windows)]
@@ -1546,7 +1547,6 @@ pub struct HostSpine {
     pub api_proxy: Arc<ApiProxyService>,
     pub agent_presets: Arc<dsh_agent_presets::AgentPresets>,
     api_route: RouteDisposer,
-    wallpaper_route: RouteDisposer,
     web_preview_route: RouteDisposer,
     provider_auth_route: RouteDisposer,
     free_catalog_route: RouteDisposer,
@@ -1623,7 +1623,6 @@ impl HostSpine {
                 (self.provider_auth_route)();
                 (self.free_catalog_route)();
                 (self.runtime_route)();
-                (self.wallpaper_route)();
                 (self.api_route)();
 
                 let companion_fiber = self.companion_fiber.lock().clone();
@@ -1676,7 +1675,6 @@ impl Drop for HostSpine {
             (self.web_preview_route)();
             (self.provider_auth_route)();
             (self.free_catalog_route)();
-            (self.wallpaper_route)();
             (self.api_route)();
             eprintln!(
                 "dsh-host dropped without shutdown().await; stop requested and data root preserved at {}",
@@ -1978,6 +1976,7 @@ fn compose_host_in_fiber(
     });
     let settings = dsh_settings::SettingsProvider::install(ctx, settings_storage);
     futures::executor::block_on(settings.ready()).map_err(|error| format!("settings: {error}"))?;
+    sidebar_settings::register(ctx, &settings)?;
     let path_defaults = runtime_paths.paths.clone();
     let path_properties = path_defaults
         .into_iter()
@@ -2343,17 +2342,10 @@ fn compose_host_in_fiber(
             ctx,
             dsh_settings::settings_namespace("ui-theme")
                 .map_err(|error| format!("settings namespace: {error}"))?,
-            dsh_schemastery::Schema::object(indexmap::IndexMap::from([
-                ("preference".to_string(), theme_preference_schema),
-                (
-                    "fontSize".to_string(),
-                    dsh_schemastery::Schema::number()
-                        .min(12.0)
-                        .max(17.0)
-                        .step(1.0)
-                        .default(dsh_schemastery::Data::Number(14.0)),
-                ),
-            ])),
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([(
+                "preference".to_string(),
+                theme_preference_schema,
+            )])),
             dsh_settings::SettingsRegisterOptions::default(),
         )
         .map_err(|error| format!("settings ui-theme: {error}"))?;
@@ -2395,18 +2387,6 @@ fn compose_host_in_fiber(
             )
             .map_err(|error| format!("settings {namespace}: {error}"))?;
     }
-    settings
-        .register(
-            ctx,
-            dsh_settings::settings_namespace("ui-wallpaper")
-                .map_err(|error| format!("settings namespace: {error}"))?,
-            dsh_schemastery::Schema::object(indexmap::IndexMap::from([(
-                "bingDaily".to_string(),
-                dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(false)),
-            )])),
-            dsh_settings::SettingsRegisterOptions::default(),
-        )
-        .map_err(|error| format!("settings ui-wallpaper: {error}"))?;
     let llm = LlmRuntime::install(ctx);
     dsh_session_title_first_prompt_llm::apply(
         ctx,
@@ -3620,69 +3600,6 @@ fn compose_host_in_fiber(
         bind_host == BindHost::AllInterfaces,
     );
     let fetch_handler = Arc::new(to_fetch_handler(api_proxy.clone()));
-    let wallpaper_route = web_server.register(WebRoute {
-        kind: WebRouteKind::Exact,
-        path: "/__dsh-bing-wallpaper".to_string(),
-        handler: Arc::new(move |_request| {
-            Box::pin(async move {
-                const META_URL: &str =
-                    "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=zh-CN";
-                const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
-                let client = reqwest::Client::builder()
-                    .redirect(reqwest::redirect::Policy::limited(2))
-                    .build()
-                    .map_err(|error| WebHandlerError::new(error.to_string()))?;
-                let metadata: serde_json::Value = client
-                    .get(META_URL)
-                    .send()
-                    .await
-                    .map_err(|error| WebHandlerError::new(error.to_string()))?
-                    .error_for_status()
-                    .map_err(|error| WebHandlerError::new(error.to_string()))?
-                    .json()
-                    .await
-                    .map_err(|error| WebHandlerError::new(error.to_string()))?;
-                let relative = metadata
-                    .get("images")
-                    .and_then(serde_json::Value::as_array)
-                    .and_then(|images| images.first())
-                    .and_then(|image| image.get("url"))
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|url| url.starts_with('/'))
-                    .ok_or_else(|| {
-                        WebHandlerError::new("Bing wallpaper metadata omitted image URL")
-                    })?;
-                let response = client
-                    .get(format!("https://www.bing.com{relative}"))
-                    .send()
-                    .await
-                    .map_err(|error| WebHandlerError::new(error.to_string()))?
-                    .error_for_status()
-                    .map_err(|error| WebHandlerError::new(error.to_string()))?;
-                let content_type = response
-                    .headers()
-                    .get(http::header::CONTENT_TYPE)
-                    .and_then(|value| value.to_str().ok())
-                    .filter(|value| value.starts_with("image/"))
-                    .unwrap_or("image/jpeg")
-                    .to_string();
-                let bytes = response
-                    .bytes()
-                    .await
-                    .map_err(|error| WebHandlerError::new(error.to_string()))?;
-                if bytes.len() > MAX_IMAGE_BYTES {
-                    return Err(WebHandlerError::new("Bing wallpaper exceeds 16 MiB"));
-                }
-                http::Response::builder()
-                    .status(http::StatusCode::OK)
-                    .header(http::header::CONTENT_TYPE, content_type)
-                    .header(http::header::CACHE_CONTROL, "public, max-age=21600")
-                    .header(http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")
-                    .body(WebBody::from(bytes))
-                    .map_err(|error| WebHandlerError::new(error.to_string()))
-            })
-        }),
-    });
     let allow_remote_host = bind_host == BindHost::AllInterfaces;
     let runtime_for_api = runtime_paths.clone();
     let api_route = web_server.register(WebRoute {
@@ -3744,7 +3661,6 @@ fn compose_host_in_fiber(
         api_proxy,
         agent_presets,
         api_route,
-        wallpaper_route,
         web_preview_route,
         provider_auth_route,
         free_catalog_route,

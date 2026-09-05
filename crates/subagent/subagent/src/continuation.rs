@@ -373,6 +373,31 @@ impl SubagentContinuationManager {
             .expect("agents service")
     }
 
+    /// Keep the exact creator resident through child materialization and
+    /// teardown, including the gap after the child leaves the registry but
+    /// before its closing message has reached the parent's inbox.
+    pub fn has_pending_descendants(&self, parent: &Arc<dyn Agent>) -> bool {
+        let key = Arc::as_ptr(parent).cast::<()>() as usize;
+        if self
+            .materializations
+            .lock()
+            .values()
+            .any(|lineage| lineage.contains(&key))
+        {
+            return true;
+        }
+        let activations = self
+            .activations
+            .lock()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        activations.iter().any(|activation| {
+            let activation = activation.lock();
+            activation.child_id != *parent.id() && activation.ancestry.contains(&key)
+        })
+    }
+
     fn persistence(&self) -> Option<Arc<dyn SessionPersistenceApi>> {
         self.ctx
             .get_typed::<Arc<dyn SessionPersistenceApi>>("sessionPersistence", false)
@@ -991,32 +1016,38 @@ impl SubagentContinuationManager {
             );
             let handle = if let Some(seed) = seed {
                 registry
-                    .create(dsh_agent::CreateAgentOptions {
-                        session_id: Some(child_id.clone()),
-                        meta: Some(child_session_meta(
-                            parent.as_ref(),
-                            child_depth,
-                            lineage_seed_length as u64,
-                        )),
-                        seed: Some(seed.to_vec()),
-                        inherited_event_count: Some(
-                            dsh_session::SessionLogOffset::new(lineage_seed_length as u64)
-                                .map_err(|error| {
-                                    SubagentError::new("CHILD_CREATE_FAILED", error)
-                                })?,
-                        ),
-                        agent_options: Some(child_options),
-                        setup: None,
-                    })
+                    .create_with_context(
+                        parent.ctx(),
+                        dsh_agent::CreateAgentOptions {
+                            session_id: Some(child_id.clone()),
+                            meta: Some(child_session_meta(
+                                parent.as_ref(),
+                                child_depth,
+                                lineage_seed_length as u64,
+                            )),
+                            seed: Some(seed.to_vec()),
+                            inherited_event_count: Some(
+                                dsh_session::SessionLogOffset::new(lineage_seed_length as u64)
+                                    .map_err(|error| {
+                                        SubagentError::new("CHILD_CREATE_FAILED", error)
+                                    })?,
+                            ),
+                            agent_options: Some(child_options),
+                            setup: None,
+                        },
+                    )
                     .await
                     .map_err(|error| SubagentError::new("CHILD_CREATE_FAILED", error))?
             } else {
                 registry
-                    .resume(dsh_agent::ResumeAgentOptions {
-                        resume_session_id: Some(child_id.clone()),
-                        agent_options: Some(child_options),
-                        setup: None,
-                    })
+                    .resume_with_context(
+                        parent.ctx(),
+                        dsh_agent::ResumeAgentOptions {
+                            resume_session_id: Some(child_id.clone()),
+                            agent_options: Some(child_options),
+                            setup: None,
+                        },
+                    )
                     .await
                     .map_err(|error| SubagentError::new("CHILD_RESUME_FAILED", error))?
             };
@@ -1558,13 +1589,17 @@ impl SubagentContinuationManager {
         } else {
             Some(failures.join("; "))
         };
+        let notified_parent = self.notify_settlement(activation, terminal_failure.as_deref());
         self.activations.lock().remove(child_id.as_str());
-        self.notify_settlement(activation, terminal_failure.as_deref());
         self.release_ownership(&child_id);
-        activation
-            .lock()
-            .observer
-            .settle(terminal_failure.as_deref());
+        let observer = activation.lock().observer.clone();
+        observer.settle(terminal_failure.as_deref());
+        if let Some(parent) = notified_parent {
+            self.ctx.emit(
+                "internal/subagent-parent-notified",
+                vec![cordis::arc(parent)],
+            );
+        }
         match terminal_failure {
             Some(failure) => Err(failure),
             None => Ok(()),
@@ -1576,7 +1611,7 @@ impl SubagentContinuationManager {
         &self,
         activation: &Arc<parking_lot::Mutex<Activation>>,
         failure: Option<&str>,
-    ) {
+    ) -> Option<Arc<dyn Agent>> {
         let (announced, child_id, parent_session, terminal) = {
             let activation = activation.lock();
             (
@@ -1587,11 +1622,15 @@ impl SubagentContinuationManager {
             )
         };
         if !announced {
-            return;
+            return None;
         }
-        let Some(parent) = self.agents().get(&parent_session) else {
-            return;
-        };
+        let parent = self.agents().get(&parent_session)?;
+        let parent_key = Arc::as_ptr(&parent).cast::<()>() as usize;
+        if self.draining.load(std::sync::atomic::Ordering::SeqCst)
+            || self.closing_scopes.lock().contains_key(&parent_key)
+        {
+            return None;
+        }
         let summary = settlement_summary(&child_id, terminal.stop_reason);
         let mut content = vec![ContentBlock::Text {
             text: summary.clone(),
@@ -1620,6 +1659,7 @@ impl SubagentContinuationManager {
         } else {
             parent.steer(message);
         }
+        Some(parent)
     }
 
     fn assert_admitting(&self, agent: &dyn Agent) -> Result<(), SubagentError> {
