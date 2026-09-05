@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
    const roleTotal = roles.reduce((sum,row)=>sum+row.tokens,0);
    return {percent,total,estimated:pressure?.contextWindowEstimated===true||(reported==null&&estimated!==null),roles:roles.map(row=>({...row,percent:roleTotal>0?row.tokens/roleTotal*100:0})),roleTotal};
   }
-  function ContextView({sessionId,useSessions,useProjection,directory,loadModels}) {
+  function ContextView({sessionId,useSessions,useProjection,directory,loadModels,renderSlot}) {
    const session=useSessions(state=>state.byId[sessionId]);
    const usage=useProjection("tokenUsage"), pressure=useProjection("contextPressure"), insights=useProjection("contextInsights"), projectedSelection=useProjection("modelSelection"), breakdown=useProjection("contextBreakdown");
    const modelState=React.useSyncExternalStore(callback=>directory.subscribe(callback),()=>directory.getSnapshot());
@@ -81,14 +81,14 @@ window.__ModuleLoader__.load({
     ["助手消息",amount(insights?.assistantMessages)],["总成本",typeof insights?.totalCost==="number"?new Intl.NumberFormat(undefined,{style:"currency",currency:"USD"}).format(insights.totalCost):"未提供"],
     ["创建时间",date(insights?.createdAt)],["最后活动",date(session?.updatedAt)]
    ];
-   return jsx.jsxs("section",{className:"dshContext","aria-label":"上下文",children:[jsx.jsx("dl",{className:"dshContextFields",children:fields.map(([label,value])=>jsx.jsxs("div",{className:"dshContextField",children:[jsx.jsx("dt",{children:label}),jsx.jsx("dd",{"data-muted":value==="未提供"||void 0,children:value})]},label))}),jsx.jsxs("figure",{className:"dshContextFigure",children:[jsx.jsx("figcaption",{className:"dshContextCaption",children:"上下文细分"}),jsx.jsx("div",{className:"dshContextBar",role:"img","aria-label":roleTotal>0?roles.map(row=>`${row.label} ${row.percent.toFixed(1)}%`).join("，"):"尚无上下文统计",children:roles.map(row=>jsx.jsx("span",{className:"dshContextSegment",style:{width:`${row.percent}%`,background:row.color},title:`${row.label} ${amount(row.tokens)} token`},row.id))}),jsx.jsx("div",{className:"dshContextLegend",children:roles.map(row=>jsx.jsxs("span",{className:"dshContextLegendItem",children:[jsx.jsx("span",{className:"dshContextDot",style:{background:row.color},"aria-hidden":true}),`${row.label} ${roleTotal>0?row.percent.toFixed(1)+"%":"—"}`]},row.id))}),jsx.jsx("div",{className:"dshContextNote",children:note})]})]});
+   return jsx.jsxs("section",{className:"dshContext","aria-label":"上下文",children:[jsx.jsx("dl",{className:"dshContextFields",children:fields.map(([label,value])=>jsx.jsxs("div",{className:"dshContextField",children:[jsx.jsx("dt",{children:label}),jsx.jsx("dd",{"data-muted":value==="未提供"||void 0,children:value})]},label))}),jsx.jsxs("figure",{className:"dshContextFigure",children:[jsx.jsx("figcaption",{className:"dshContextCaption",children:"上下文细分"}),jsx.jsx("div",{className:"dshContextBar",role:"img","aria-label":roleTotal>0?roles.map(row=>`${row.label} ${row.percent.toFixed(1)}%`).join("，"):"尚无上下文统计",children:roles.map(row=>jsx.jsx("span",{className:"dshContextSegment",style:{width:`${row.percent}%`,background:row.color},title:`${row.label} ${amount(row.tokens)} token`},row.id))}),jsx.jsx("div",{className:"dshContextLegend",children:roles.map(row=>jsx.jsxs("span",{className:"dshContextLegendItem",children:[jsx.jsx("span",{className:"dshContextDot",style:{background:row.color},"aria-hidden":true}),`${row.label} ${roleTotal>0?row.percent.toFixed(1)+"%":"—"}`]},row.id))}),jsx.jsx("div",{className:"dshContextNote",children:note})]}),renderSlot?.("conversation.context.experience",{})]});
   }
   function apply(ctx){
    installCss();
    if(!document.querySelector("style[data-dsh-context]")){const style=document.createElement("style");style.dataset.dshContext="";style.textContent=contextCss;document.head.appendChild(style)}
    ctx.slots.inject("conversation.input.dock",()=>ctx.slots.register({name:"conversation.input.dock",id:"code-index-observer",order:1000,inject:(sessionId)=>({sessionId})},CodeGraphWatch));
    ctx.slots.inject("conversation.view",()=>ctx.slots.register({name:"conversation.view",id:"code-graph",order:20,label:"代码图谱",inject:(sessionId)=>({sessionId})},CodeGraphView));
-   ctx.inject(["modelDirectories"],scope=>scope.slots.inject("conversation.view",()=>scope.slots.register({name:"conversation.view",id:"context",order:21,label:"上下文",inject:(sessionId)=>{const models=scope.modelDirectories.directoryFor(sessionId);return{sessionId,directory:models.store,loadModels:()=>models.load().catch(()=>{})}}},ContextView)));
+   ctx.inject(["modelDirectories"],scope=>scope.slots.inject("conversation.view",()=>scope.slots.register({name:"conversation.view",id:"context",order:21,label:"上下文",children:{"conversation.context.experience":{kind:"single",scope:"session"}},inject:(sessionId)=>{const models=scope.modelDirectories.directoryFor(sessionId);return{sessionId,directory:models.store,loadModels:()=>models.load().catch(()=>{})}}},ContextView)));
   }
   return {apply,inject:["slots","sessions"]}
  }

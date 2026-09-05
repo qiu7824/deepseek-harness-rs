@@ -5677,6 +5677,15 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		object({ id: string().min(1), expectedRevision: number().optional() });
 		/** memory.remove response value. */
 		const memoryRemoveValueSchema = object({ removed: boolean() });
+        const memoryLearningEntrySchema = looseObject({
+            id:string(),workspaceKey:string(),workspaceLabel:string().optional(),tool:string(),category:string(),code:string(),source:string(),provider:string().nullable().optional(),
+            models:array(looseObject({provider:string(),model:string(),count:number()})),occurrences:number(),firstSeen:number(),lastSeen:number(),
+            lastRecovered:number().nullable().optional(),status:string(),verification:string().nullable().optional(),suggestion:string(),ruleId:string(),message:string(),enabled:boolean(),revision:number(),
+            applicationCount:number().optional(),lastApplied:number().nullable().optional(),lastApplicationOutcome:string().nullable().optional()
+        });
+        const memoryLearningListValueSchema=looseObject({enabled:boolean(),memoryEnabled:boolean(),effectiveEnabled:boolean(),revision:number(),lastError:string().nullable().optional(),items:array(memoryLearningEntrySchema),total:number()});
+        const memoryLearningMutationValueSchema=looseObject({});
+        const memoryLearningPreviewValueSchema=looseObject({mode:union([literal("next-request-preview"),literal("historical-context-preview")]),enabled:boolean(),workspaceKey:string(),items:array(looseObject({id:string()}))});
 		//#endregion
 		//#region ../../host/apiproxy/lib/types/api/agent-presets.schema.js
 		/**
@@ -6034,6 +6043,12 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			"memory.list": memoryListValueSchema,
 			"memory.upsert": memoryUpsertValueSchema,
 			"memory.remove": memoryRemoveValueSchema,
+            "memory.learningList":memoryLearningListValueSchema,
+            "memory.learningConfigure":memoryLearningMutationValueSchema,
+            "memory.learningToggle":memoryLearningMutationValueSchema,
+            "memory.learningRemove":memoryLearningMutationValueSchema,
+            "memory.learningConfirm":memoryLearningMutationValueSchema,
+            "memory.learningPreview":memoryLearningPreviewValueSchema,
 			"agentPreset.list": agentPresetListValueSchema,
 			"agentPreset.select": agentPresetSelectValueSchema,
 			"agentPreset.read": agentPresetReadValueSchema,
@@ -6290,7 +6305,13 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				categories: (payload = {}, signal) => this.callUnary("memory.categories", payload, signal),
 				list: (payload = {}, signal) => this.callUnary("memory.list", payload, signal),
 				upsert: (payload, signal) => this.callUnary("memory.upsert", payload, signal),
-				remove: (payload, signal) => this.callUnary("memory.remove", payload, signal)
+				remove: (payload, signal) => this.callUnary("memory.remove", payload, signal),
+                learningList:(payload={},signal)=>this.callUnary("memory.learningList",payload,signal),
+                learningConfigure:(payload,signal)=>this.callUnary("memory.learningConfigure",payload,signal),
+                learningToggle:(payload,signal)=>this.callUnary("memory.learningToggle",payload,signal),
+                learningRemove:(payload,signal)=>this.callUnary("memory.learningRemove",payload,signal),
+                learningConfirm:(payload,signal)=>this.callUnary("memory.learningConfirm",payload,signal),
+                learningPreview:(payload,signal)=>this.callUnary("memory.learningPreview",payload,signal)
 			};
 			agentPresets = {
 				list: (payload, signal) => this.callUnary("agentPreset.list", payload, signal),

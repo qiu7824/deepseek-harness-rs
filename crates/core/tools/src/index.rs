@@ -795,6 +795,18 @@ impl ToolRuntime {
         }
     }
 
+    /// Validate against the current visible tool schema, independently of
+    /// learned suggestions or extensible approval decisions.
+    pub fn input_violations(&self, execution: &ToolExecution) -> Vec<String> {
+        self.resolve_execution(
+            &execution.name,
+            execution.agent.as_ref(),
+            execution.parent.is_some(),
+        )
+        .map(|tool| validate_json_schema_value(&tool.parameters, &execution.arguments, "arguments"))
+        .unwrap_or_default()
+    }
+
     /// Execute through pre-policy, guards, around-dispatch, post-policy,
     /// definition-owned content finalization, and final notification.
     pub async fn execute(self: &Arc<Self>, input: ToolExecutionInput) -> Arc<ToolExecutionResult> {
@@ -936,7 +948,7 @@ impl ToolRuntime {
                 .await;
             let gate = downcast_arc::<PreToolDecision>(&gate)
                 .unwrap_or_else(|| panic!("tools/pre-execute listener returned no decision"));
-            let (decision, approval_cancelled) = match &*gate {
+            let (decision, approval_cancelled, approval_declined) = match &*gate {
                 PreToolDecision::Ask {
                     reason,
                     grant_key,
@@ -945,11 +957,12 @@ impl ToolRuntime {
                     self.service_ask(&run_ctx, reason.clone(), grant_key.clone(), *rememberable)
                         .await
                 }
-                PreToolDecision::Allow => (PreToolDecision::Allow, false),
+                PreToolDecision::Allow => (PreToolDecision::Allow, false, false),
                 PreToolDecision::Deny { reason } => (
                     PreToolDecision::Deny {
                         reason: reason.clone(),
                     },
+                    false,
                     false,
                 ),
             };
@@ -972,7 +985,17 @@ impl ToolRuntime {
                     is_error: true,
                     error: Some(ToolFailure {
                         message: reason,
-                        info: None,
+                        info: Some(ToolErrorInfo {
+                            name: "ToolPreflightError".to_string(),
+                            code: if approval_cancelled {
+                                "USER_APPROVAL_CANCELLED"
+                            } else if approval_declined {
+                                "USER_APPROVAL_DENIED"
+                            } else {
+                                "TOOL_PREFLIGHT_DENIED"
+                            }
+                            .to_string(),
+                        }),
                     }),
                     value: None,
                     meta: None,
@@ -989,6 +1012,21 @@ impl ToolRuntime {
                 return Preparation::PostResult {
                     run_ctx: Arc::clone(&run_ctx),
                     result: Arc::new(tool_aborted_before_dispatch_result(None)),
+                };
+            }
+            let violations = self.input_violations(&run_ctx.execution);
+            if !violations.is_empty() {
+                let message = format!("invalid tool arguments: {}", violations.join("; "));
+                let result = tool_error_result(
+                    &message,
+                    Some(&ToolErrorInfo {
+                        name: "ToolInputError".to_string(),
+                        code: "TOOL_INPUT_INVALID".to_string(),
+                    }),
+                );
+                return Preparation::PostResult {
+                    run_ctx: Arc::clone(&run_ctx),
+                    result: Arc::new(self.mark_canonical(run_ctx.token, result)),
                 };
             }
             Preparation::Dispatch {
@@ -1289,12 +1327,13 @@ impl ToolRuntime {
         reason: Option<String>,
         grant_key: Option<String>,
         rememberable: bool,
-    ) -> (PreToolDecision, bool) {
+    ) -> (PreToolDecision, bool, bool) {
         let Some(agent) = run_ctx.agent.clone() else {
             return (
                 PreToolDecision::Deny {
                     reason: "approval requires an agent-owned tool call".to_string(),
                 },
+                false,
                 false,
             );
         };
@@ -1307,6 +1346,7 @@ impl ToolRuntime {
                 PreToolDecision::Deny {
                     reason: "approval service is unavailable".to_string(),
                 },
+                false,
                 false,
             );
         };
@@ -1324,12 +1364,13 @@ impl ToolRuntime {
             Ok(
                 dsh_user_approval::ApprovalOutcome::AllowedOnce
                 | dsh_user_approval::ApprovalOutcome::AllowedAlways,
-            ) => (PreToolDecision::Allow, false),
+            ) => (PreToolDecision::Allow, false, false),
             Ok(dsh_user_approval::ApprovalOutcome::Cancelled) => (
                 PreToolDecision::Deny {
                     reason: "approval request was cancelled".to_string(),
                 },
                 true,
+                false,
             ),
             Ok(outcome) => (
                 PreToolDecision::Deny {
@@ -1338,8 +1379,9 @@ impl ToolRuntime {
                     }),
                 },
                 false,
+                true,
             ),
-            Err(error) => (PreToolDecision::Deny { reason: error }, false),
+            Err(error) => (PreToolDecision::Deny { reason: error }, false, false),
         }
     }
 
@@ -1764,6 +1806,10 @@ fn tool_error_from_panic(payload: Box<dyn std::any::Any + Send>) -> ToolBodyErro
 /// dsh-agent-loop milestone.
 #[allow(dead_code)]
 pub(crate) struct ToolRuntimeSchedulerMarker;
+
+#[cfg(test)]
+#[path = "input_preflight_tests.rs"]
+mod input_preflight_tests;
 
 #[cfg(test)]
 mod execution_lifetime_tests {

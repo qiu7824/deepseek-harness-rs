@@ -359,7 +359,9 @@ class ProductSurfaceContractTests(unittest.TestCase):
 
     def test_environment_settings_expose_runtime_storage_and_workspaces(self):
         source = (ROOT / "web" / "dist" / "plugins" / "ui-workbench.js").read_text(encoding="utf-8")
-        for required in ("Rust 核心", "可选代码执行环境", "nodeStatusText", "refreshNode=1", "存储目录", "工作区", "host.describe", "workspace.list", "正式数据根"):
+        for required in ("Rust 核心", "PTC 代码模式运行依赖 · Node.js", "nodeStatusText", "refreshNode=1", "存储目录", "工作区", "host.describe", "workspace.list", "正式数据根"):
+            self.assertIn(required, source)
+        for required in ("普通会话、原生工具与预构建的 Web 界面由 Rust Host 运行，无需 Node.js", "PTC 代码模式执行 JavaScript / TypeScript 工具编排，必须使用兼容的 Node.js", "标准模式可直接使用 Rust 原生工具"):
             self.assertIn(required, source)
 
     def test_manual_windows_release_reads_the_workspace_version(self):

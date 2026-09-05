@@ -58,10 +58,11 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/dsh-dom-tests" --ignore-scripts --no-audit --no-fund react@19.2.8 react-dom@19.2.8 react-test-renderer@19.2.8 jsdom@26.1.0
           node tools/tests/model_management_harness.cjs
           node tools/tests/model_management_react_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/learning_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/agent_preset_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/file_actions_graph_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/runtime_environment_harness.cjs
-          cargo test --locked -p dsh-settings -p dsh-code-graph -p dsh-app-boot -p dsh-code-runtime-node --lib
+          cargo test --locked -p dsh-settings -p dsh-code-graph -p dsh-app-boot -p dsh-code-runtime-node -p dsh-tools -p dsh-tool-memory-local -p dsh-message-feedback -p dsh-tool-skill -p dsh-skill-filesystem --lib
           cargo test --locked -p dsh-launcher -p dsh-schedule -p dsh-host-plugin-inventory -p dsh-host-apiproxy -p dsh-typert-protocol -p dsh-web -p dsh-web-fetch-http -p dsh-web-search-deepseek -p dsh-tool-web -p dsh-workspace -p dsh-tool-fs -p dsh-subprocess-local -p dsh-host -p dsh-storage-domain -p dsh-storage-json -p dsh-session-projection-cache -p dsh-attachment-local -p dsh-llm-deepseek -- --test-threads=1
           for file in release/plugins/*/lib/client.js; do node --check "$file"; done
           for file in web/dist/plugins/*.js; do node --check "$file"; done
@@ -103,6 +104,9 @@ jobs:
           [[ "${{ matrix.platform }}" == "windows" ]] && HOST="$HOST.exe"
           python tools/e2e_settings_model_preserves_data.py --binary "$HOST" --repo "$STAGE" --relocate --migrate-home
           python tools/e2e_model_management.py --binary "$HOST" --repo . --node-modules "$RUNNER_TEMP/dsh-dom-tests/node_modules" --workdir "$RUNNER_TEMP/dsh-model-management"
+          python tools/e2e_learning_loop.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-learning-loop"
+          python tools/e2e_approval_interactions.py --binary "$HOST" --repo . --node-modules "$RUNNER_TEMP/dsh-dom-tests/node_modules" --workdir "$RUNNER_TEMP/dsh-approval-interactions"
+          python tools/e2e_skill_injection.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-skill-injection"
           python tools/e2e_workspace_insights.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-insights"
           python tools/e2e_workspace_insights.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-insights-no-node" --without-node
           python tools/e2e_session_resume.py --binary "$HOST" --repo "$STAGE"

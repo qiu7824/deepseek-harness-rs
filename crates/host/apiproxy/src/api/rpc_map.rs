@@ -45,6 +45,12 @@ pub const CLIENT_REQUEST_METHODS: &[&str] = &[
     "llm.models",
     "llm.providers",
     "memory.categories",
+    "memory.learningConfigure",
+    "memory.learningConfirm",
+    "memory.learningList",
+    "memory.learningPreview",
+    "memory.learningRemove",
+    "memory.learningToggle",
     "memory.list",
     "memory.remove",
     "memory.upsert",
@@ -99,7 +105,17 @@ mod tests {
 
     #[test]
     fn request_methods_are_sorted_unique_and_include_todo_updates() {
-        assert_eq!(CLIENT_REQUEST_METHODS.len(), 75);
+        assert_eq!(CLIENT_REQUEST_METHODS.len(), 81);
+        for method in [
+            "memory.learningList",
+            "memory.learningConfigure",
+            "memory.learningToggle",
+            "memory.learningRemove",
+            "memory.learningConfirm",
+            "memory.learningPreview",
+        ] {
+            assert!(is_client_request_method(method));
+        }
         assert!(
             CLIENT_REQUEST_METHODS
                 .windows(2)

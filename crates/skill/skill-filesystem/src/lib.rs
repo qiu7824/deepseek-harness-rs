@@ -20,6 +20,7 @@
 
 pub mod invariant;
 
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,6 +33,46 @@ use dsh_skill::{
 };
 
 pub const NAME: &str = "skill-filesystem";
+const MAX_SKILL_FILE_BYTES: usize = 1024 * 1024;
+
+#[cfg(test)]
+mod bounded_read_tests {
+    use super::*;
+    #[tokio::test]
+    async fn host_skill_read_rejects_oversized_body_without_truncating_a_valid_file() {
+        let root = std::env::temp_dir().join(format!(
+            "skill-read-limit-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let path = root.join("SKILL.md");
+        let ctx = Context::root();
+        tokio::fs::write(&path, vec![b'x'; MAX_SKILL_FILE_BYTES])
+            .await
+            .unwrap();
+        assert_eq!(
+            read_skill_text(&ctx, &path.to_string_lossy(), None, true)
+                .await
+                .unwrap()
+                .unwrap()
+                .len(),
+            MAX_SKILL_FILE_BYTES
+        );
+        tokio::fs::write(&path, vec![b'x'; MAX_SKILL_FILE_BYTES + 1])
+            .await
+            .unwrap();
+        assert!(
+            read_skill_text(&ctx, &path.to_string_lossy(), None, true)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+}
 
 const PROJECT_DSH_RANK: i64 = 100;
 const PROJECT_AGENTS_RANK: i64 = 200;
@@ -734,13 +775,31 @@ async fn read_skill_text(
             return read_skill_text_from_fs(ctx, &fs, path, signal.clone()).await;
         }
     }
-    match tokio::fs::read_to_string(path).await {
+    let read = async {
+        use tokio::io::AsyncReadExt;
+        let file = tokio::fs::File::open(path).await?;
+        let mut bytes = Vec::new();
+        file.take(MAX_SKILL_FILE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .await?;
+        if bytes.len() > MAX_SKILL_FILE_BYTES {
+            return Err(std::io::Error::other("skill file exceeds 1 MiB"));
+        }
+        String::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    }
+    .await;
+    match read {
         Ok(text) => Ok(Some(text)),
         Err(error) => {
             if signal.as_ref().is_some_and(|signal| signal()) {
                 return Err(dsh_skill::SKILL_ABORTED_MESSAGE.to_string());
             }
             if error.kind() == std::io::ErrorKind::NotFound {
+                return Ok(None);
+            }
+            if error.to_string() == "skill file exceeds 1 MiB" {
+                warn_skill(ctx, path, "skill file exceeds 1 MiB");
                 return Ok(None);
             }
             Err(error.to_string())
@@ -793,7 +852,31 @@ async fn read_skill_text_from_fs(
     {
         return Ok(None);
     }
-    match fs.read_text(&target, signal.clone()).await {
+    if info
+        .as_ref()
+        .and_then(|info| info.size)
+        .is_some_and(|size| size > MAX_SKILL_FILE_BYTES as u64)
+    {
+        warn_skill(ctx, path, "skill file exceeds 1 MiB");
+        return Ok(None);
+    }
+    let read = async {
+        let mut stream = fs.stream_text(&target, signal.clone()).await?;
+        let mut text = String::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if text.len().saturating_add(chunk.len()) > MAX_SKILL_FILE_BYTES {
+                return Err(dsh_fs::FsError::new(
+                    "skill file exceeds 1 MiB",
+                    FsErrorCode::FsTooLarge,
+                ));
+            }
+            text.push_str(&chunk);
+        }
+        Ok(text)
+    }
+    .await;
+    match read {
         Ok(text) => Ok(Some(text)),
         Err(error) => {
             if signal.as_ref().is_some_and(|signal| signal()) {
@@ -803,6 +886,10 @@ async fn read_skill_text_from_fs(
                 error.code,
                 FsErrorCode::FsNotFound | FsErrorCode::FsNotDirectory
             ) {
+                return Ok(None);
+            }
+            if error.code == FsErrorCode::FsTooLarge {
+                warn_skill(ctx, path, "skill file exceeds 1 MiB");
                 return Ok(None);
             }
             if !matches!(error.code, FsErrorCode::FsNotText) {

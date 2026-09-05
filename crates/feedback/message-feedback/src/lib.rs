@@ -12,6 +12,8 @@
 //! - The per-session operation queue is a `tokio::sync::Mutex` tail chain.
 
 pub mod invariant;
+mod recorded;
+pub use recorded::NegativeFeedbackRecorded;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -431,6 +433,12 @@ impl MessageFeedbackService {
                 )
                 .await
                 .expect("message-feedback: table.put failed");
+            if let Some(observation) =
+                recorded::negative_observation(&durable, &item, existing.as_ref())
+            {
+                self.ctx
+                    .emit("message-feedback/recorded", vec![cordis::arc(observation)]);
+            }
             Ok(MessageFeedbackSuccess::of(item))
         })
         .await

@@ -148,6 +148,9 @@ def verify(port: int, workdir: pathlib.Path, workspace: pathlib.Path, original: 
     if without_node:
         assert node["status"] == "missing" and node["available"] is False, node
         assert node["path"] is None and node["version"] is None, node
+        code_preset = rpc(port, "session.create", {"workspaceId": created["workspaceId"], "agentPreset": "code"}, 3)
+        assert code_preset["result"]["ok"] is False, "code mode must reject an unavailable runtime before a model request"
+        assert "Node.js" in json.dumps(code_preset, ensure_ascii=False), code_preset
     return {"sessionId": session_id, "workspaceId": created["workspaceId"], "engine": initial["engine"], "initialStats": initial["stats"], "updatedStats": updated["stats"], "resumedStats": resumed["stats"], "importEdges": imports, "preciseCalls": calls, "cancelledReads": cancelled_reads, "resolvedFile": resolved, "pathDenials": denials, "unknownFileAction": failure, "node": node, "withoutNode": without_node, "requests": client.requests}
 
 

@@ -384,7 +384,7 @@ impl RuntimePaths {
         self.selected_node_command.clone()
     }
 
-    async fn node_status(
+    pub(crate) async fn node_status(
         &self,
         subprocess: Arc<dyn dsh_subprocess::SubprocessRuntime>,
         refresh: bool,

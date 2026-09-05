@@ -13,6 +13,7 @@
 //!   duck-typed malformed seeds are unrepresentable).
 
 pub mod invariant;
+mod loaded_state;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -191,6 +192,8 @@ pub async fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
     let tool_disposer = tools
         .register_arc(ctx, definition.clone())
         .map_err(|error| format!("tool-skill: {error}"))?;
+    let loaded_state_disposer =
+        loaded_state::install(ctx, skills.clone(), tools.clone(), definition.clone()).await;
 
     // User-explicit skill invocation. Registered FIRST so the waterfall
     // hands it the catalog-bearing list to extend: injected material must
@@ -414,11 +417,13 @@ pub async fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
         let tool_disposer = tool_disposer.clone();
         let invocation_disposer = invocation_disposer.clone();
         let catalog_disposer = catalog_disposer.clone();
+        let loaded_state_disposer = loaded_state_disposer.clone();
         Box::pin(async move {
             // Reverse teardown: guidance first, then the injection listener,
             // then the tool registration.
             catalog_disposer().await;
             invocation_disposer().await;
+            loaded_state_disposer().await;
             tool_disposer().await;
         })
     }))

@@ -98,14 +98,20 @@ fn normalized_path(path: &str, workspace: Option<&str>) -> PathBuf {
 }
 
 fn normalized_key(path: &Path) -> String {
-    path.to_string_lossy()
+    let key = path
+        .to_string_lossy()
         .replace('\\', "/")
         .trim_end_matches('/')
-        .to_ascii_lowercase()
+        .to_string();
+    if cfg!(windows) {
+        key.to_ascii_lowercase()
+    } else {
+        key
+    }
 }
 
 fn path_is_sensitive(path: &Path) -> bool {
-    let value = normalized_key(path);
+    let value = normalized_key(path).to_ascii_lowercase();
     SENSITIVE_COMPONENTS.iter().any(|needle| {
         let needle = needle.to_ascii_lowercase();
         value == needle
@@ -395,6 +401,28 @@ mod tests {
         classify_tool_security_with_config,
     };
     use serde_json::json;
+
+    #[test]
+    fn directory_grants_preserve_platform_case_boundaries() {
+        let root = std::env::temp_dir();
+        let first = root.join("ApprovalCase");
+        let second = root.join("approvalcase");
+        let decision = classify_tool_security(
+            "write",
+            &json!({"file_path": second.join("output.txt")}),
+            Some(first.to_str().unwrap()),
+        );
+        if cfg!(windows) {
+            assert_eq!(decision, SecurityDecision::Allow);
+        } else {
+            assert!(matches!(decision, SecurityDecision::Ask { .. }));
+            assert_ne!(
+                super::normalized_key(&first),
+                super::normalized_key(&second)
+            );
+        }
+        assert!(super::path_is_sensitive(&root.join(".ENV")));
+    }
 
     #[test]
     fn sensitive_read_requires_unremembered_approval() {

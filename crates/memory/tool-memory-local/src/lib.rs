@@ -1,6 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub mod experience_reuse;
+pub mod learning;
+pub mod learning_runtime;
+
 use cordis::{Context, EventOptions, Listener, NextFn, arc, downcast_arc};
 use dsh_tools::{
     PreToolDecision, ToolBodyError, ToolDefinition, ToolExecution, ToolOutputDefinition,
@@ -277,6 +281,12 @@ pub fn install(ctx: &Context, root: PathBuf) -> Result<(), String> {
         root.clone(),
     ))?);
     ctx.register_service(store.clone());
+    let learning = Arc::new(futures::executor::block_on(
+        learning::LearningStore::open_or_disabled(root.clone()),
+    ));
+    ctx.register_service(learning.clone());
+    learning_runtime::install(ctx, learning.clone())?;
+    experience_reuse::install(ctx, learning)?;
     let tools = ctx
         .get_typed::<Arc<ToolRuntime>>("tools", false)
         .map(|slot| slot.as_ref().clone())

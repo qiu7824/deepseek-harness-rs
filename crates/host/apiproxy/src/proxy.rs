@@ -630,6 +630,7 @@ pub struct ApiProxyService {
     /// decode/view/serialization lifetimes from overlapping when the browser
     /// concurrently opens, gap-repairs, and jumps through one conversation.
     history_gate: Arc<tokio::sync::Semaphore>,
+    learning_history: crate::learning_preview::HistoryCache,
 }
 
 impl cordis::Service for ApiProxyService {
@@ -701,6 +702,7 @@ impl ApiProxyService {
             preset_switch_counter: std::sync::atomic::AtomicU64::new(0),
             interactions: interactions.clone(),
             history_gate: Arc::new(tokio::sync::Semaphore::new(1)),
+            learning_history: crate::learning_preview::HistoryCache::default(),
         });
         ctx.register_service(service.clone());
         interactions.activate(ctx);
@@ -1923,6 +1925,183 @@ impl ApiProxyService {
 }
 
 impl ApiProxyService {
+    async fn learning_rpc(
+        &self,
+        rpc_id: RpcId,
+        method: &str,
+        payload: serde_json::Value,
+    ) -> RpcResponse<serde_json::Value> {
+        fn invalid(message: impl Into<String>) -> RpcError {
+            RpcError::BadRequest(RpcErrorBody {
+                message: message.into(),
+                details: crate::api::rpc::BadRequestDetails { issues: vec![] },
+            })
+        }
+        let Some(store) = self
+            .ctx
+            .get_typed::<Arc<dsh_tool_memory_local::learning::LearningStore>>(
+                "learningStore",
+                false,
+            )
+            .map(|slot| slot.as_ref().clone())
+        else {
+            return err(rpc_id, invalid("经验服务未就绪"));
+        };
+        if method == "memory.learningPreview" {
+            if let Err(error) = store.flush_pending().await {
+                return err(rpc_id, invalid(error));
+            }
+            let Some(id) = payload.get("sessionId").and_then(serde_json::Value::as_str) else {
+                return err(rpc_id, invalid("缺少 sessionId"));
+            };
+            let id = dsh_session::session_id(id);
+            let session = self.sessions().and_then(|sessions| sessions.get(&id));
+            let agent = self.agents().and_then(|agents| agents.get(&id));
+            let (basis, session_source) = if let Some(agent) = &agent {
+                let Some(cwd) = agent
+                    .session()
+                    .header()
+                    .cwd
+                    .as_deref()
+                    .filter(|cwd| !cwd.trim().is_empty())
+                else {
+                    return err(rpc_id, invalid("会话没有工作区"));
+                };
+                let selection = self.selection_for(agent).await.ok();
+                let tools = self
+                    .ctx
+                    .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
+                    .map(|slot| slot.as_ref().clone());
+                (
+                    crate::learning_preview::HistoryBasis {
+                        cwd: cwd.into(),
+                        provider: selection.as_ref().map(|value| value.provider.clone()),
+                        model: selection.map(|value| value.model),
+                        tools: tools
+                            .as_ref()
+                            .map(|tools| {
+                                tools
+                                    .schemas(Some(agent.scope_key()))
+                                    .into_iter()
+                                    .map(|tool| tool.name)
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        tool_source: if tools.is_some() {
+                            "current"
+                        } else {
+                            "unavailable"
+                        },
+                        model_source: "current-selection",
+                        limited: false,
+                    },
+                    "live",
+                )
+            } else if let Some(session) = session {
+                let Some(cwd) = session
+                    .header()
+                    .cwd
+                    .as_deref()
+                    .filter(|cwd| !cwd.trim().is_empty())
+                else {
+                    return err(rpc_id, invalid("会话没有工作区"));
+                };
+                let events = session.events();
+                let start = events.len().saturating_sub(4096);
+                (
+                    crate::learning_preview::from_events(cwd.into(), &events[start..], start != 0),
+                    "live",
+                )
+            } else {
+                let Some(persistence) = self
+                    .ctx
+                    .get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
+                        "sessionPersistence",
+                        false,
+                    )
+                    .map(|slot| slot.as_ref().clone())
+                else {
+                    return err(rpc_id, invalid("会话持久化服务未就绪"));
+                };
+                match self.learning_history.read(persistence, &id).await {
+                    Ok(basis) => (basis, "persisted"),
+                    Err(error) => return err(rpc_id, invalid(error)),
+                }
+            };
+            let notice = match basis.tool_source {
+                "last-request" => {
+                    "此预览基于上次请求的工具目录；下次执行会按实时目录重新计算，历史记录不表示工具当前已可用。"
+                }
+                "unavailable" => {
+                    "有界历史片段中没有可核实的工具目录；未知工具不计为可用，下次请求将按实时目录重新计算。"
+                }
+                _ => "预览按当前模型选择与工具目录计算；实际请求会再次核对。",
+            };
+            let context = dsh_tool_memory_local::experience_reuse::ReuseContext {
+                workspace: basis.cwd,
+                provider: basis.provider,
+                model: basis.model,
+                session_id: Some(id.to_string()),
+                tool_names: basis.tools,
+            };
+            let mut preview = dsh_tool_memory_local::experience_reuse::preview(
+                &store,
+                &context,
+                dsh_tool_memory_local::experience_reuse::CONTEXT_BUDGET,
+            );
+            preview["toolSource"] = serde_json::json!(basis.tool_source);
+            preview["modelSource"] = serde_json::json!(basis.model_source);
+            preview["sessionSource"] = serde_json::json!(session_source);
+            preview["historyLimited"] = serde_json::json!(basis.limited);
+            preview["notice"] = serde_json::json!(notice);
+            if basis.tool_source != "current" {
+                preview["mode"] = serde_json::json!("historical-context-preview");
+                preview["selectionRules"] = serde_json::json!([
+                    "verified-and-enabled",
+                    "same-workspace",
+                    "historical-tool-snapshot-or-provider-model",
+                    "fixed-template-or-user-confirmation",
+                    "bounded-context"
+                ]);
+            }
+            return ok(rpc_id, preview);
+        }
+        match store.invoke(method, payload).await {
+            Ok(mut value) => {
+                if let Some(items) = value
+                    .get_mut("items")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    let labels: std::collections::HashMap<_, _> = self
+                        .workspace_registry()
+                        .and_then(|registry| registry.list().ok())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|workspace| {
+                            let path = workspace.path();
+                            let title = workspace.title();
+                            (
+                                dsh_tool_memory_local::learning::workspace_key(&path),
+                                if title.trim().is_empty() { path } else { title },
+                            )
+                        })
+                        .collect();
+                    for item in items {
+                        if let Some(label) = item
+                            .get("workspaceKey")
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(|key| labels.get(key))
+                        {
+                            item["workspaceLabel"] = serde_json::Value::String(label.clone());
+                        }
+                    }
+                }
+                ok(rpc_id, value)
+            }
+            Err(error) => err(rpc_id, invalid(error)),
+        }
+    }
+
     fn memory_store(&self) -> Option<Arc<dsh_tool_memory_local::MemoryStore>> {
         self.ctx
             .get_typed::<Arc<dsh_tool_memory_local::MemoryStore>>("memoryStore", false)
@@ -6466,6 +6645,12 @@ impl ApiProxyCarrier for ApiProxyService {
             "memory.categories" | "memory.list" | "memory.upsert" | "memory.remove" => {
                 self.memory_rpc(rpc_id, method, request.payload).await
             }
+            "memory.learningList"
+            | "memory.learningConfigure"
+            | "memory.learningToggle"
+            | "memory.learningRemove"
+            | "memory.learningConfirm"
+            | "memory.learningPreview" => self.learning_rpc(rpc_id, method, request.payload).await,
             "settings.update" => {
                 let payload: crate::api::settings::SettingsUpdateRequest =
                     match serde_json::from_value(request.payload) {

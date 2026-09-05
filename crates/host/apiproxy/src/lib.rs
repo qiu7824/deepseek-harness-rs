@@ -9,6 +9,7 @@ pub mod api;
 pub mod capabilities;
 pub mod fetch;
 mod interactions;
+mod learning_preview;
 pub mod native_path_opener;
 pub mod proxy;
 pub mod session_export;

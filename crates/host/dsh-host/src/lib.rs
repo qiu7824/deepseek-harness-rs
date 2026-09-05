@@ -14,11 +14,13 @@ use futures::FutureExt;
 
 mod claude_cli_auth;
 mod client_plugins;
+mod code_mode_dependency;
 #[cfg(test)]
 mod context_stats_test;
 mod deepseek_settings;
 mod free_catalog;
 mod free_probe;
+mod learning_bridge;
 mod model_capabilities;
 mod model_discovery;
 mod provider_auth;
@@ -2896,6 +2898,8 @@ fn compose_host_in_fiber(
         let memory_root = data_root.join("memory");
         dsh_tool_memory_local::install(ctx, memory_root.clone())
             .map_err(|error| format!("memory: {error}"))?;
+        learning_bridge::install(ctx, &memory_scope)
+            .map_err(|error| format!("learning: {error}"))?;
         let sessions_for_memory = Arc::clone(&sessions);
         let memory_scope_for_context = memory_scope.clone();
         let _memory_context = system_prompt.context(
@@ -3255,10 +3259,9 @@ fn compose_host_in_fiber(
     );
     loader.core.register(
         "@deepseek-ai/dsh-agent-tool-presentation",
-        Arc::new(dsh_agent_tool_presentation::ToolPresentationPlugin {
-            config: dsh_agent_tool_presentation::Config {
-                mode: dsh_tools::ToolPresentationMode::Code,
-            },
+        Arc::new(code_mode_dependency::CodeModePresentation {
+            paths: runtime_paths.clone(),
+            subprocess: subprocess.clone(),
         }),
     );
     loader.core.register(

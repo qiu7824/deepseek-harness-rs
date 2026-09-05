@@ -5984,6 +5984,9 @@ window.__ModuleLoader__.load({
 			get rememberable() {
 				return this.wait.payload.rememberable === true;
 			}
+			get grantKey() {
+				return typeof this.wait.payload.grantKey === "string" ? this.wait.payload.grantKey : void 0;
+			}
 			/**
 			* Deliver the user's decision; a rejected carrier receipt throws. Panel
 			* removal stays frame-driven: the broadcast `approval/resolved` settles the
@@ -6062,12 +6065,14 @@ window.__ModuleLoader__.load({
 		};
 		//#endregion
 		//#region lib/types/client/skeleton/ApprovalPanel.js
-		/** Extract the shell command from an approval's paired running call (bash-family args carry `command`); undefined hides the line. */
+		/** Extract the command or file target from the paired call for review before approval. */
 		function commandOf(call) {
 			if (call === void 0) return void 0;
 			try {
 				const args = JSON.parse(call.argsRaw);
-				return typeof args.command === "string" ? args.command : void 0;
+                if (typeof args.command === "string") return args.command;
+                const target = [args.file_path, args.path].find(value => typeof value === "string" && value.trim());
+                return target === void 0 ? void 0 : target.replace(/^\\\\\?\\UNC\\/i,"\\\\").replace(/^\\\\\?\\/,"");
 			} catch {
 				return;
 			}
@@ -6136,7 +6141,10 @@ window.__ModuleLoader__.load({
 							}), command !== void 0 && (0, react_jsx_runtime.jsx)("div", {
 								className: ApprovalPanel_module_css_default.command,
 								children: command
-							}), error !== null && (0, react_jsx_runtime.jsx)("div", { role: "alert", style: { color: "var(--dsw-alias-state-error-primary)", fontSize: 13 }, children: t("approval.failed", { message: error }) })]
+                            }), (0, react_jsx_runtime.jsx)("div", {
+                                className: ApprovalPanel_module_css_default.command,
+                                children: t(!pending.rememberable ? "approval.onceOnly" : pending.grantKey?.startsWith("write-dir:") ? "approval.rememberDirectory" : pending.grantKey?.startsWith("shell:") ? "approval.rememberCommand" : "approval.rememberScope")
+                            }), error !== null && (0, react_jsx_runtime.jsx)("div", { role: "alert", style: { color: "var(--dsw-alias-state-error-primary)", fontSize: 13 }, children: t("approval.failed", { message: error }) })]
 						}),
 						(0, react_jsx_runtime.jsxs)("div", {
 							className: ApprovalPanel_module_css_default.actionRow,
@@ -6332,6 +6340,8 @@ window.__ModuleLoader__.load({
 			"approval.submitting": "正在提交审批决定…",
 			"approval.failed": "提交失败：{message}。请重试。",
 			"approval.rememberScope": "仅记住与本次请求匹配的授权范围",
+            "approval.rememberDirectory": "记忆只覆盖同一目录的写入；其他目录和子目录仍需审批。",
+            "approval.rememberCommand": "记忆只覆盖这条命令；其他命令仍需审批。",
 			"approval.onceOnly": "此请求只支持单次授权",
 			"approval.detail.aria": "审批详情",
 			"approval.escalation": "工具 {toolName} 请求越权执行",
@@ -6530,6 +6540,8 @@ window.__ModuleLoader__.load({
 			"approval.submitting": "Submitting decision…",
 			"approval.failed": "Could not submit: {message}. Please retry.",
 			"approval.rememberScope": "Remember only the permission scope matching this request",
+            "approval.rememberDirectory": "Remember writes in this exact directory; other and child directories still require approval.",
+            "approval.rememberCommand": "Remember this exact command; other commands still require approval.",
 			"approval.onceOnly": "This request only supports one-time approval",
 			"approval.detail.aria": "Approval details",
 			"approval.escalation": "Tool {toolName} requests privileged execution",

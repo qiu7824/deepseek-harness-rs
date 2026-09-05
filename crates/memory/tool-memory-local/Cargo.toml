@@ -10,9 +10,17 @@ cordis = { path = "../../vendor/cordis" }
 dsh-atomic-write = { path = "../../util/atomic-write" }
 dsh-llm = { path = "../../core/llm" }
 dsh-tools = { path = "../../core/tools" }
+dsh-agent = { path = "../../core/agent" }
+dsh-session = { path = "../../core/session" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
 futures = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+dsh-scope = { path = "../../core/scope" }
+parking_lot = { workspace = true }
