@@ -41,7 +41,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libglib2.0-dev libcairo2-dev libpango1.0-dev libfontconfig1-dev libgdk-pixbuf-2.0-dev libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y bubblewrap pkg-config libglib2.0-dev libcairo2-dev libpango1.0-dev libfontconfig1-dev libgdk-pixbuf-2.0-dev libxkbcommon-dev libwayland-dev
       - name: 版本与产品门禁
         shell: bash
         run: |
@@ -184,7 +184,7 @@ jobs:
             rm -rf "$PKG"
             mkdir -p "$PKG/DEBIAN" "$PKG/opt/deepseek-harness-rs/${variant}" "$PKG/usr/bin"
             cp -R "$STAGE"/. "$PKG/opt/deepseek-harness-rs/${variant}/"
-            printf 'Package: deepseek-harness-rs-%s\nVersion: %s\nSection: devel\nPriority: optional\nArchitecture: amd64\nMaintainer: DeepSeek Harness-rs\nDescription: Rust native DeepSeek Harness Web Agent (%s variant)\n' "$variant" "$VERSION" "$variant" > "$PKG/DEBIAN/control"
+            printf 'Package: deepseek-harness-rs-%s\nVersion: %s\nSection: devel\nPriority: optional\nArchitecture: amd64\nDepends: bubblewrap\nMaintainer: DeepSeek Harness-rs\nDescription: Rust native DeepSeek Harness Web Agent (%s variant)\n' "$variant" "$VERSION" "$variant" > "$PKG/DEBIAN/control"
             ln -s "/opt/deepseek-harness-rs/${variant}/dsh-launcher" "$PKG/usr/bin/deepseek-harness-rs-${variant}"
             dpkg-deb --root-owner-group --build "$PKG" "dist/deepseek-harness-rs-v${VERSION}-linux-x86_64-${variant}.deb"
           done

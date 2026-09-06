@@ -30,6 +30,8 @@ Windows: dsh-launcher.exe
 Linux/macOS: ./dsh-launcher
 ```
 
+Confined Shell commands and native terminals on Linux use the system `bubblewrap` sandbox. DEB packages declare this dependency; portable installations should install `bubblewrap` through the distribution's package manager. Confined execution fails explicitly when the sandbox is missing or unavailable.
+
 The default URL is:
 
 ```text

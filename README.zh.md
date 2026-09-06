@@ -28,6 +28,8 @@ Windows: dsh-launcher.exe
 Linux/macOS: ./dsh-launcher
 ```
 
+Linux 的受限 Shell 与原生终端使用系统 `bubblewrap` 沙箱；DEB 包声明该依赖，使用便携包时请通过发行版包管理器安装 `bubblewrap`。缺少沙箱或系统不允许创建沙箱时，受限执行会明确失败。
+
 默认地址：
 
 ```text

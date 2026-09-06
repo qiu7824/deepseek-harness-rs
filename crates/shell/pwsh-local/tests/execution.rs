@@ -5,6 +5,31 @@ use dsh_shell::{ShellExecRequest, ShellExecutor};
 use dsh_subprocess_local::LocalSubprocessRuntime;
 
 #[tokio::test]
+#[cfg(windows)]
+async fn selected_system_powershell_loads_its_own_builtin_modules() {
+    let ctx = Context::root();
+    let _processes = LocalSubprocessRuntime::install(&ctx);
+    let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let shell = LocalPwshExecutor::install(
+        &ctx,
+        Config {
+            pwsh_path: Some(system.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+    );
+    let result = shell
+        .run(shell.resolve(ShellExecRequest::new(
+            "Write-Output 'SYSTEM_CMDLET_OK'; Write-Output $PSVersionTable.PSVersion.Major",
+        )))
+        .await
+        .unwrap();
+    assert_eq!(result.exit_code, Some(0), "{}", result.stderr.text);
+    assert!(result.stdout.text.contains("SYSTEM_CMDLET_OK"));
+    assert!(result.stdout.text.lines().any(|line| line.trim() == "5"));
+}
+
+#[tokio::test]
 async fn request_workspace_precedes_host_cwd_and_explicit_workdir_wins() {
     let ctx = Context::root();
     let _processes = LocalSubprocessRuntime::install(&ctx);

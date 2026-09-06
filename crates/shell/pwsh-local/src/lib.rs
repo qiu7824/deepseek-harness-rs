@@ -115,6 +115,58 @@ fn pwsh_argv(config: &Config, spec: &ShellExecSpec) -> Vec<String> {
     ]
 }
 
+fn shell_environment(spec: &ShellExecSpec, executable: &str) -> Vec<(String, Option<String>)> {
+    let mut env = vec![
+        ("NO_COLOR".to_string(), Some("1".to_string())),
+        ("PAGER".to_string(), Some("cat".to_string())),
+        ("GIT_PAGER".to_string(), Some("cat".to_string())),
+    ];
+    #[cfg(windows)]
+    if let Some(parent) = std::path::Path::new(executable).parent() {
+        let modules = parent.join("Modules");
+        if modules.is_dir() {
+            // A Host started from PowerShell 7 can inherit its module path.
+            // Put the selected shell's own modules first so Windows PowerShell
+            // loads compatible built-in cmdlets inside its sandbox as well.
+            let mut paths = vec![modules.clone()];
+            if let Some(inherited) = std::env::var_os("PSModulePath") {
+                paths.extend(std::env::split_paths(&inherited));
+            }
+            let value = std::env::join_paths(paths).unwrap_or_else(|_| modules.into_os_string());
+            env.push((
+                "PSModulePath".into(),
+                Some(value.to_string_lossy().into_owned()),
+            ));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = executable;
+    if let Some(owner) = spec
+        .sandbox_policy
+        .as_ref()
+        .and_then(|policy| policy.session_id.as_ref())
+    {
+        env.push(("DSH_SESSION_ID".into(), Some(owner.as_str().into())));
+    }
+    if let Some(entries) = &spec.env {
+        env.extend(
+            entries
+                .iter()
+                .cloned()
+                .map(|(key, value)| (key, Some(value))),
+        );
+    }
+    if let Some(entries) = &spec.dsh_env {
+        env.extend(
+            entries
+                .iter()
+                .cloned()
+                .map(|(key, value)| (key, Some(value))),
+        );
+    }
+    env
+}
+
 fn default_powershell(spec: &ShellExecSpec) -> String {
     #[cfg(windows)]
     {
@@ -309,39 +361,9 @@ impl ShellExecutor for LocalPwshExecutor {
                     spill: spill.clone(),
                 })
             };
-            let mut env = vec![
-                ("NO_COLOR".to_string(), Some("1".to_string())),
-                ("PAGER".to_string(), Some("cat".to_string())),
-                ("GIT_PAGER".to_string(), Some("cat".to_string())),
-            ];
-            if let Some(owner) = spec
-                .sandbox_policy
-                .as_ref()
-                .and_then(|policy| policy.session_id.as_ref())
-            {
-                env.push(("DSH_SESSION_ID".into(), Some(owner.as_str().into())));
-            }
-            if let Some(entries) = &spec.env {
-                env.extend(
-                    entries
-                        .iter()
-                        .cloned()
-                        .map(|(key, value)| (key, Some(value))),
-                );
-            }
-            if let Some(entries) = &spec.dsh_env {
-                env.extend(
-                    entries
-                        .iter()
-                        .cloned()
-                        .map(|(key, value)| (key, Some(value))),
-                );
-            }
-            let argv = apply_sandbox(
-                sandbox.as_ref(),
-                pwsh_argv(&config, &spec),
-                spec.sandbox_policy.as_ref(),
-            )?;
+            let argv = pwsh_argv(&config, &spec);
+            let env = shell_environment(&spec, &argv[0]);
+            let argv = apply_sandbox(sandbox.as_ref(), argv, spec.sandbox_policy.as_ref())?;
             let handle = subprocess.spawn(SubprocessSpawnSpec {
                 argv,
                 cwd: spec.workdir.clone(),
@@ -412,39 +434,9 @@ impl ShellExecutor for LocalPwshExecutor {
                 }),
             })
         };
-        let mut env = vec![
-            ("NO_COLOR".to_string(), Some("1".to_string())),
-            ("PAGER".to_string(), Some("cat".to_string())),
-            ("GIT_PAGER".to_string(), Some("cat".to_string())),
-        ];
-        if let Some(owner) = spec
-            .sandbox_policy
-            .as_ref()
-            .and_then(|policy| policy.session_id.as_ref())
-        {
-            env.push(("DSH_SESSION_ID".into(), Some(owner.as_str().into())));
-        }
-        if let Some(entries) = &spec.env {
-            env.extend(
-                entries
-                    .iter()
-                    .cloned()
-                    .map(|(key, value)| (key, Some(value))),
-            );
-        }
-        if let Some(entries) = &spec.dsh_env {
-            env.extend(
-                entries
-                    .iter()
-                    .cloned()
-                    .map(|(key, value)| (key, Some(value))),
-            );
-        }
-        let argv = match apply_sandbox(
-            self.sandbox.as_ref(),
-            pwsh_argv(&self.config, &spec),
-            spec.sandbox_policy.as_ref(),
-        ) {
+        let argv = pwsh_argv(&self.config, &spec);
+        let env = shell_environment(&spec, &argv[0]);
+        let argv = match apply_sandbox(self.sandbox.as_ref(), argv, spec.sandbox_policy.as_ref()) {
             Ok(argv) => argv,
             Err(error) => return failed_process(error),
         };
