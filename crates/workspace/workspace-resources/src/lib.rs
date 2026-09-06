@@ -186,13 +186,33 @@ impl Drop for Lease {
     }
 }
 
-/// Refuse all links and Windows reparse points, including existing ancestors.
+#[cfg(target_os = "macos")]
+fn macos_system_alias(path: &Path, metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let expected = match path.to_str() {
+        Some("/var") => Path::new("/private/var"),
+        Some("/tmp") => Path::new("/private/tmp"),
+        Some("/etc") => Path::new("/private/etc"),
+        _ => return false,
+    };
+    metadata.uid() == 0
+        && fs::read_link(path).is_ok_and(|target| Path::new("/").join(target) == expected)
+}
+
+/// Refuse user links and reparse points, including existing ancestors.
 pub fn checked_path(path: &Path) -> Result<()> {
     let absolute = std::path::absolute(path).map_err(|e| e.to_string())?;
     for ancestor in absolute.ancestors() {
         match fs::symlink_metadata(ancestor) {
             Ok(meta) => {
                 let linked = meta.file_type().is_symlink();
+                // macOS exposes the system temporary directory through /var.
+                // Only its root-owned, exact system aliases are trusted; links
+                // within a managed directory still fail the same checks.
+                #[cfg(target_os = "macos")]
+                if linked && macos_system_alias(ancestor, &meta) {
+                    continue;
+                }
                 #[cfg(windows)]
                 let linked = {
                     use std::os::windows::fs::MetadataExt;

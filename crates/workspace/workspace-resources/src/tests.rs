@@ -1,5 +1,16 @@
 use super::*;
 #[test]
+#[cfg(target_os = "macos")]
+fn system_temp_alias_is_accepted_but_user_alias_is_not() {
+    checked_path(Path::new("/var/folders")).unwrap();
+    let fixture = Fixture::new();
+    fs::create_dir_all(&fixture.0).unwrap();
+    let link = fixture.0.join("var");
+    std::os::unix::fs::symlink("/private/var", &link).unwrap();
+    assert!(checked_path(&link).is_err());
+}
+
+#[test]
 fn settings_numbers_accept_integral_schema_values_without_discarding_preferences() {
     let policy=Policy::from_json(serde_json::json!({"keepDays":9.0,"failedDays":15.0,"softLimitGib":30.0,"location":"D:/managed"})).unwrap();
     assert_eq!(policy.keep_days, 9);
