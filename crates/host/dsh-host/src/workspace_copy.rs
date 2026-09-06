@@ -402,6 +402,20 @@ mod tests {
             .is_err()
         );
         store.retain(id, false, false).unwrap();
+        let admin_path = PathBuf::from(
+            store.get(id).unwrap().origin.unwrap()["gitAdmin"]
+                .as_str()
+                .unwrap(),
+        );
+        let pointer = admin_path.join("gitdir");
+        let original_pointer = std::fs::read(&pointer).unwrap();
+        std::fs::write(&pointer, display(&project.join("source.txt"))).unwrap();
+        assert!(
+            store.quarantine(id).is_err(),
+            "a different existing file is not the owned Git pointer"
+        );
+        assert!(copy.join("source.txt").is_file());
+        std::fs::write(&pointer, original_pointer).unwrap();
         store.quarantine(id).unwrap();
         let recovered = store.path(id, "worktree").unwrap();
         assert!(

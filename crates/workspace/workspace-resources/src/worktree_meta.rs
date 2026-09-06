@@ -1,19 +1,11 @@
 //! Only the Git administrative directory recorded at copy creation is managed.
 use super::*;
 
-fn native_key(path: &Path) -> String {
-    let value = path.to_string_lossy();
-    #[cfg(windows)]
-    {
-        return value
-            .trim_start_matches(r"\\?\")
-            .replace('\\', "/")
-            .to_ascii_lowercase();
-    }
-    #[cfg(not(windows))]
-    {
-        value.into_owned()
-    }
+fn native_key(path: &Path) -> Result<PathBuf> {
+    checked_path(path)?;
+    // Git may expand Windows 8.3 names and macOS system aliases. Compare
+    // existing physical paths only after refusing untrusted links.
+    fs::canonicalize(path).map_err(|e| format!("Git 副本路径不可核验，原数据保留：{e}"))
 }
 fn git_path(path: &Path) -> String {
     path.to_string_lossy()
@@ -62,7 +54,7 @@ fn admin(row: &Resource, payload: &Path) -> Result<Option<PathBuf>> {
         }
     }
     let pointer = fs::read_to_string(directory.join("gitdir")).map_err(|e| e.to_string())?;
-    if native_key(Path::new(pointer.trim())) != native_key(&payload.join("worktree/.git")) {
+    if native_key(Path::new(pointer.trim()))? != native_key(&payload.join("worktree/.git"))? {
         return Err("Git 副本关联已变化，原数据保留".into());
     }
     Ok(Some(directory))
