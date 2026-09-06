@@ -128,6 +128,10 @@ pub struct TerminalSessionService {
     sessions: Mutex<HashMap<TerminalSessionId, Arc<SessionRecord>>>,
     owners: Mutex<HashMap<usize, OwnerState>>,
     pending: Mutex<HashMap<usize, Vec<Arc<PendingSpawn>>>>,
+    /// Serializes the synchronous count-to-reservation handoff for all spawn
+    /// callers. Generic callers are not limited, but participate in the gate
+    /// so a limited GUI admission cannot race their pending publication.
+    spawn_admission: Mutex<()>,
     disposed: Mutex<HashSet<usize>>,
     next_id: AtomicU64,
     disposing: AtomicBool,
@@ -161,6 +165,7 @@ impl TerminalSessionService {
             sessions: Mutex::new(HashMap::new()),
             owners: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            spawn_admission: Mutex::new(()),
             disposed: Mutex::new(HashSet::new()),
             next_id: AtomicU64::new(0),
             disposing: AtomicBool::new(false),
@@ -317,9 +322,12 @@ impl TerminalSessionService {
     fn release_spawn(&self, pending: &Arc<PendingSpawn>, cleanup_failure: Option<TerminalFailure>) {
         if let Some(failure) = cleanup_failure {
             *pending.cleanup_failure.lock() = Some(failure);
-        } else {
-            self.remove_pending(pending);
         }
+        // Disposal that already snapshotted this reservation retains its Arc
+        // and will observe the cleanup failure after settlement. Keeping a
+        // settled failure in the live pending map would permanently pin the
+        // owner because there is no cleanup operation left to retry.
+        self.remove_pending(pending);
         pending.settled.store(true, SeqCst);
         pending.notify.notify_one();
     }
@@ -333,6 +341,18 @@ impl TerminalSessionService {
         if list.is_empty() {
             map.remove(&pending.owner_key);
         }
+    }
+
+    fn owner_spawn_count(&self, owner: &Arc<dyn Agent>) -> usize {
+        let key = owner_key(owner);
+        let published = self
+            .sessions
+            .lock()
+            .values()
+            .filter(|record| Arc::ptr_eq(&record.owner, owner))
+            .count();
+        let pending = self.pending.lock().get(&key).map(Vec::len).unwrap_or(0);
+        published.saturating_add(pending)
     }
 
     fn snapshot(&self, record: &Arc<SessionRecord>, motd: bool) -> TerminalSpawnResult {
@@ -445,6 +465,39 @@ impl TerminalSessionService {
         signal: Option<TerminalAbort>,
     ) -> Result<BoxFuture<'static, Result<TerminalSpawnResult, TerminalFailure>>, TerminalFailure>
     {
+        let admission = self.spawn_admission.lock();
+        self.spawn_unlocked(owner, request, signal, admission)
+    }
+
+    /// Create a PTY under an atomic exact-owner limit. The generic
+    /// [`Self::spawn`] surface remains unlimited; both paths share the same
+    /// count-to-pending gate so they cannot race the limited admission.
+    pub fn spawn_limited(
+        self: &Arc<Self>,
+        owner: Arc<dyn Agent>,
+        request: TerminalSpawnRequest,
+        signal: Option<TerminalAbort>,
+        max_per_owner: usize,
+    ) -> Result<BoxFuture<'static, Result<TerminalSpawnResult, TerminalFailure>>, TerminalFailure>
+    {
+        let admission = self.spawn_admission.lock();
+        if max_per_owner == 0 || self.owner_spawn_count(&owner) >= max_per_owner {
+            return Err(coded(
+                format!("PTY session limit reached for this owner (limit: {max_per_owner})"),
+                TerminalErrorCode::SessionLimit,
+            ));
+        }
+        self.spawn_unlocked(owner, request, signal, admission)
+    }
+
+    fn spawn_unlocked(
+        self: &Arc<Self>,
+        owner: Arc<dyn Agent>,
+        request: TerminalSpawnRequest,
+        signal: Option<TerminalAbort>,
+        admission: parking_lot::MutexGuard<'_, ()>,
+    ) -> Result<BoxFuture<'static, Result<TerminalSpawnResult, TerminalFailure>>, TerminalFailure>
+    {
         self.assert_active()?;
         if signal.as_ref().is_some_and(|signal| signal()) {
             return Err(TerminalFailure::Aborted);
@@ -458,6 +511,7 @@ impl TerminalSessionService {
         }
         let release_name = self.reserve_name(&owner, &request.name)?;
         let reservation = self.reserve_spawn(&owner);
+        drop(admission);
         let backend_signal: TerminalAbort = {
             let caller = signal.clone();
             let reservation = reservation.clone();
@@ -510,12 +564,15 @@ impl TerminalSessionService {
                     closing: Mutex::new(None),
                     close_generation: AtomicU64::new(0),
                 });
-                service
-                    .sessions
-                    .lock()
-                    .insert(session_id.clone(), record.clone());
+                {
+                    let _admission = service.spawn_admission.lock();
+                    service
+                        .sessions
+                        .lock()
+                        .insert(session_id.clone(), record.clone());
+                    service.release_spawn(&reservation, None);
+                }
                 let result = service.snapshot(&record, true);
-                service.release_spawn(&reservation, None);
                 if let Some(release_name) = release_name {
                     release_name.release();
                 }
@@ -523,7 +580,7 @@ impl TerminalSessionService {
             };
 
             // Roll back an unpublished session.
-            let mut rollback_failure: Option<TerminalFailure> = None;
+            let mut rollback_failure = cleanup_failure.clone();
             if let Some(created) = &session {
                 if !service.sessions.lock().contains_key(&session_id) {
                     if let Err(close_error) = created.close("PTY spawn rolled back").await {
@@ -558,6 +615,7 @@ impl TerminalSessionService {
             if let Some(release_name) = release_name {
                 release_name.release();
             }
+            service.notify_owner_idle(&owner);
             Err(failure)
         }))
     }
@@ -577,6 +635,16 @@ impl TerminalSessionService {
             .values()
             .any(|record| Arc::ptr_eq(&record.owner, owner));
         has_pending || has_session
+    }
+
+    fn notify_owner_idle(&self, owner: &Arc<dyn Agent>) {
+        if !self.disposing.load(SeqCst)
+            && !self.disposed.lock().contains(&owner_key(owner))
+            && !self.has_owner_activity(owner)
+        {
+            self.ctx
+                .emit("terminal/owner-idle", vec![cordis::arc(owner.clone())]);
+        }
     }
 
     /// Start one exclusive interactive send (TS `startSend`).
@@ -610,6 +678,47 @@ impl TerminalSessionService {
             *record.active.lock() = None;
         });
         Ok(operation)
+    }
+
+    /// Write raw interactive input to one owned session. Unlike
+    /// [`Self::start_send`], this does not wait for an inferred command
+    /// boundary and can therefore carry individual key sequences.
+    pub fn write_input(
+        &self,
+        owner: &Arc<dyn Agent>,
+        id: &TerminalSessionId,
+        data: &str,
+    ) -> Result<BoxFuture<'static, Result<(), TerminalFailure>>, TerminalFailure> {
+        let record = self.expect_owned(owner, id)?;
+        if record.closing.lock().is_some() {
+            return Err(TerminalFailure::Plain(format!(
+                "PTY session {id} is closing"
+            )));
+        }
+        let future = record.session.write_input(data);
+        Ok(Box::pin(async move {
+            future.await.map_err(TerminalFailure::Plain)
+        }))
+    }
+
+    /// Resize one owned native PTY.
+    pub fn resize(
+        &self,
+        owner: &Arc<dyn Agent>,
+        id: &TerminalSessionId,
+        rows: u16,
+        cols: u16,
+    ) -> Result<BoxFuture<'static, Result<(), TerminalFailure>>, TerminalFailure> {
+        let record = self.expect_owned(owner, id)?;
+        if record.closing.lock().is_some() {
+            return Err(TerminalFailure::Plain(format!(
+                "PTY session {id} is closing"
+            )));
+        }
+        let future = record.session.resize(rows, cols);
+        Ok(Box::pin(async move {
+            future.await.map_err(TerminalFailure::Plain)
+        }))
     }
 
     /// Read one bounded scrollback page from an owned session (TS `read`).
@@ -676,6 +785,7 @@ impl TerminalSessionService {
             match closing.await {
                 Ok(()) => {
                     service.sessions.lock().remove(&id);
+                    service.notify_owner_idle(&record.owner);
                     Ok(true)
                 }
                 Err(error) => {
@@ -964,5 +1074,324 @@ impl TerminalSessionService {
 impl Service for TerminalSessionService {
     fn service_name(&self) -> &'static str {
         "terminals"
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+    use cordis::Context;
+    use dsh_agent::{
+        Agent, AgentCancelCause, AgentOptions, AgentRegistry, AgentStatus, CancelOptions, Inbox,
+        InboxNotifications, InboxTarget,
+    };
+    use dsh_scope::ScopeKey;
+    use dsh_session::{Session, SessionStore, UserMessage, session_id};
+    use futures::future::BoxFuture;
+
+    use crate::types::{
+        TerminalBackend, TerminalBackendSession, TerminalBackendSpawnError,
+        TerminalBackendSpawnSpec, TerminalErrorCode, TerminalReadRequest, TerminalReadResult,
+        TerminalSendOperation, TerminalSendRequest, TerminalSessionStatus, TerminalSignal,
+        TerminalSignalResult, TerminalSpawnRequest,
+    };
+
+    use super::{TerminalSessionService, owner_key};
+
+    struct TestAgent {
+        id: dsh_session::SessionId,
+        options: AgentOptions,
+        session: Session,
+        inbox: Inbox,
+        ctx: Context,
+        scope_key: ScopeKey,
+    }
+
+    impl Agent for TestAgent {
+        fn id(&self) -> &dsh_session::SessionId {
+            &self.id
+        }
+        fn options(&self) -> &AgentOptions {
+            &self.options
+        }
+        fn session(&self) -> &Session {
+            &self.session
+        }
+        fn inbox(&self) -> &Inbox {
+            &self.inbox
+        }
+        fn status(&self) -> AgentStatus {
+            AgentStatus::Running
+        }
+        fn ctx(&self) -> &Context {
+            &self.ctx
+        }
+        fn scope_key(&self) -> &ScopeKey {
+            &self.scope_key
+        }
+        fn cancel(&self, _cause: AgentCancelCause, _options: Option<&CancelOptions>) {}
+        fn when_idle(&self) -> BoxFuture<'static, ()> {
+            Box::pin(async {})
+        }
+        fn run_maintenance(
+            &self,
+            _task: Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>,
+        ) -> BoxFuture<'static, ()> {
+            Box::pin(async {})
+        }
+        fn send(&self, _message: UserMessage, _target: InboxTarget, _wakeup: bool) {}
+        fn followup(&self, _message: UserMessage) {}
+        fn steer(&self, _message: UserMessage) {}
+        fn inject(&self, _message: UserMessage) {}
+    }
+
+    async fn agent(ctx: &Context) -> Arc<dyn Agent> {
+        let sessions = SessionStore::install(ctx);
+        let id = session_id("terminal-limit-owner");
+        let session = sessions
+            .create(ctx, Some(id.clone()), None)
+            .await
+            .expect("create owner session");
+        let inbox = Inbox::new(&session, InboxNotifications::default()).expect("create inbox");
+        Arc::new(TestAgent {
+            id,
+            options: AgentOptions::default(),
+            session,
+            inbox,
+            ctx: ctx.clone(),
+            scope_key: ScopeKey::new(),
+        })
+    }
+
+    struct FakeSession {
+        closed: Arc<AtomicUsize>,
+    }
+
+    impl TerminalBackendSession for FakeSession {
+        fn motd(&self) -> String {
+            String::new()
+        }
+        fn pid(&self) -> Option<u32> {
+            None
+        }
+        fn start_send(&self, _request: &TerminalSendRequest) -> Arc<dyn TerminalSendOperation> {
+            panic!("send is outside the admission fixture")
+        }
+        fn write_input(&self, _data: &str) -> BoxFuture<'static, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn resize(&self, _rows: u16, _cols: u16) -> BoxFuture<'static, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn read(&self, _request: &TerminalReadRequest) -> TerminalReadResult {
+            TerminalReadResult {
+                text: String::new(),
+                total_lines: 0,
+                line_begin: 0,
+                line_end: 0,
+                truncated: false,
+            }
+        }
+        fn signal(
+            &self,
+            _signal: TerminalSignal,
+        ) -> BoxFuture<'static, Result<TerminalSignalResult, String>> {
+            Box::pin(async {
+                Ok(TerminalSignalResult {
+                    delivered: true,
+                    target_pgid: 0,
+                })
+            })
+        }
+        fn status(&self) -> TerminalSessionStatus {
+            TerminalSessionStatus::Running
+        }
+        fn close(&self, _reason: &str) -> BoxFuture<'static, Result<(), String>> {
+            let closed = self.closed.clone();
+            Box::pin(async move {
+                closed.fetch_add(1, SeqCst);
+                Ok(())
+            })
+        }
+    }
+
+    struct FakeBackend {
+        spawned: Arc<AtomicUsize>,
+        closed: Arc<AtomicUsize>,
+    }
+
+    impl TerminalBackend for FakeBackend {
+        fn type_(&self) -> String {
+            "limit-fixture".to_string()
+        }
+        fn spawn(
+            &self,
+            _spec: TerminalBackendSpawnSpec,
+        ) -> BoxFuture<'static, Result<Arc<dyn TerminalBackendSession>, TerminalBackendSpawnError>>
+        {
+            let spawned = self.spawned.clone();
+            let closed = self.closed.clone();
+            Box::pin(async move {
+                spawned.fetch_add(1, SeqCst);
+                Ok(Arc::new(FakeSession { closed }) as Arc<dyn TerminalBackendSession>)
+            })
+        }
+    }
+
+    struct FailingBackend;
+
+    impl TerminalBackend for FailingBackend {
+        fn type_(&self) -> String {
+            "failure-fixture".to_string()
+        }
+        fn spawn(
+            &self,
+            _spec: TerminalBackendSpawnSpec,
+        ) -> BoxFuture<'static, Result<Arc<dyn TerminalBackendSession>, TerminalBackendSpawnError>>
+        {
+            Box::pin(async {
+                Err(TerminalBackendSpawnError::cleanup_failed(
+                    "fixture setup failed",
+                    "fixture cleanup failed",
+                ))
+            })
+        }
+    }
+
+    fn request() -> TerminalSpawnRequest {
+        TerminalSpawnRequest {
+            type_: "limit-fixture".to_string(),
+            name: None,
+            cwd: None,
+        }
+    }
+
+    fn failing_request() -> TerminalSpawnRequest {
+        TerminalSpawnRequest {
+            type_: "failure-fixture".to_string(),
+            name: None,
+            cwd: None,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn limited_spawn_atomically_counts_pending_without_limiting_generic_callers() {
+        let ctx = Context::root();
+        let agents = AgentRegistry::install(&ctx);
+        let owner = agent(&ctx).await;
+        let _owner_entry = agents.enter(owner.clone(), None).expect("register owner");
+        let service = TerminalSessionService::install(&ctx);
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let closed = Arc::new(AtomicUsize::new(0));
+        let _backend = service
+            .register_backend(Arc::new(FakeBackend {
+                spawned: spawned.clone(),
+                closed: closed.clone(),
+            }))
+            .expect("register fixture backend");
+        let _failing_backend = service
+            .register_backend(Arc::new(FailingBackend))
+            .expect("register failing backend");
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(9));
+        let mut calls = Vec::new();
+        for _ in 0..8 {
+            let service = service.clone();
+            let owner = owner.clone();
+            let barrier = barrier.clone();
+            calls.push(tokio::spawn(async move {
+                barrier.wait().await;
+                service.spawn_limited(owner, request(), None, 3)
+            }));
+        }
+        barrier.wait().await;
+        let mut accepted = Vec::new();
+        let mut rejected = 0;
+        for call in calls {
+            match call.await.expect("join admission caller") {
+                Ok(future) => accepted.push(future),
+                Err(failure) => {
+                    assert_eq!(failure.code(), Some(TerminalErrorCode::SessionLimit));
+                    rejected += 1;
+                }
+            }
+        }
+        assert_eq!(accepted.len(), 3);
+        assert_eq!(rejected, 5);
+        assert_eq!(
+            service.pending.lock().get(&owner_key(&owner)).map(Vec::len),
+            Some(3)
+        );
+
+        let generic = service
+            .spawn(owner.clone(), request(), None)
+            .expect("generic model-facing spawn remains unlimited");
+        accepted.push(generic);
+        for future in accepted {
+            future.await.expect("publish admitted session");
+        }
+        assert_eq!(spawned.load(SeqCst), 4);
+        assert_eq!(service.list(&owner).len(), 4);
+        assert!(!service.pending.lock().contains_key(&owner_key(&owner)));
+
+        service
+            .close_records(
+                service.session_records(),
+                "quota fixture cleanup".to_string(),
+            )
+            .await
+            .expect("close all fixture sessions");
+        assert!(service.list(&owner).is_empty());
+        assert!(!service.has_owner_activity(&owner));
+        assert_eq!(closed.load(SeqCst), 4);
+
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signal: crate::types::TerminalAbort = {
+            let cancelled = cancelled.clone();
+            Arc::new(move || cancelled.load(SeqCst))
+        };
+        let cancelled_spawn = service
+            .spawn_limited(owner.clone(), request(), Some(signal), 3)
+            .expect("reserve cancellable spawn");
+        cancelled.store(true, SeqCst);
+        let failure = cancelled_spawn
+            .await
+            .expect_err("post-setup cancellation rolls back publication");
+        assert!(matches!(failure, crate::types::TerminalFailure::Aborted));
+        assert!(service.list(&owner).is_empty());
+        assert!(!service.pending.lock().contains_key(&owner_key(&owner)));
+        assert!(!service.has_owner_activity(&owner));
+        assert_eq!(closed.load(SeqCst), 5);
+
+        let recovered = service
+            .spawn_limited(owner.clone(), request(), None, 3)
+            .expect("cancelled admission releases the quota")
+            .await
+            .expect("publish recovery session");
+        service
+            .kill(
+                &owner,
+                &recovered.session_id,
+                "fixture complete".to_string(),
+            )
+            .expect("begin recovery cleanup")
+            .await
+            .expect("finish recovery cleanup");
+        assert!(!service.has_owner_activity(&owner));
+        assert_eq!(closed.load(SeqCst), 6);
+
+        let failure = service
+            .spawn_limited(owner.clone(), failing_request(), None, 3)
+            .expect("failing backend still reserves synchronously")
+            .await
+            .expect_err("backend failure propagates");
+        assert!(matches!(
+            failure,
+            crate::types::TerminalFailure::Aggregate { .. }
+        ));
+        assert!(!service.pending.lock().contains_key(&owner_key(&owner)));
+        assert!(!service.has_owner_activity(&owner));
     }
 }

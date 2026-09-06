@@ -158,6 +158,8 @@ impl PortableTerminalHandle {
                 let result = (|| -> Result<(), String> {
                     let mut buffer = vec![0u8; 16 * 1024];
                     let mut dsr_tail = Vec::<u8>::new();
+                    #[cfg(windows)]
+                    let mut startup_dsr_seeded = true;
                     loop {
                         match reader.read(&mut buffer) {
                             Ok(0) => return Ok(()),
@@ -166,7 +168,9 @@ impl PortableTerminalHandle {
                                 {
                                     let mut probe = dsr_tail.clone();
                                     probe.extend_from_slice(&buffer[..count]);
-                                    if probe.windows(4).any(|window| window == b"\x1b[6n") {
+                                    if probe.windows(4).any(|window| window == b"\x1b[6n")
+                                        && !std::mem::replace(&mut startup_dsr_seeded, false)
+                                    {
                                         let mut locked = writer_for_reader.lock();
                                         let writer = locked.as_mut().ok_or_else(|| {
                                             "terminal process is closing during cursor query"
@@ -384,6 +388,30 @@ impl SubprocessTerminalHandle for PortableTerminalHandle {
                 .write_all(data.as_bytes())
                 .and_then(|()| writer.flush())
                 .map_err(|error| format!("terminal input write failed: {error}"))
+        })
+    }
+
+    fn resize(&self, rows: u16, cols: u16) -> BoxFuture<'static, Result<(), String>> {
+        let handle = self.self_arc();
+        Box::pin(async move {
+            if rows == 0 || cols == 0 {
+                return Err("terminal rows and cols must be positive".to_string());
+            }
+            if handle.exited.load(SeqCst) {
+                return Err("terminal process has exited".to_string());
+            }
+            let master = handle.master.lock();
+            let master = master
+                .as_ref()
+                .ok_or_else(|| "terminal process is closing".to_string())?;
+            master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|error| format!("terminal resize failed: {error:#}"))
         })
     }
 

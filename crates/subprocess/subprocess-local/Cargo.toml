@@ -8,6 +8,7 @@ description = "The local implementation of the subprocess capability seam: Rust 
 [dependencies]
 cordis = { path = "../../vendor/cordis" }
 dsh-subprocess = { path = "../subprocess" }
+dsh-workspace-resources = { path = "../../workspace/workspace-resources" }
 dsh-timeout = { path = "../../util/timeout" }
 dsh-invariants = { path = "../../util/invariants" }
 async-trait = { workspace = true }

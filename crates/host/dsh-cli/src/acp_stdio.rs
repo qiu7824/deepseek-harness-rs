@@ -267,6 +267,7 @@ async fn create_session(
                     ..Default::default()
                 }),
                 agent_options: Some(AgentOptions {
+                    execution_mode: Default::default(),
                     provider: Some(provider),
                     model: Some(model),
                     ..Default::default()

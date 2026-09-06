@@ -321,6 +321,7 @@ async fn run_headless(
                     ..Default::default()
                 }),
                 agent_options: Some(dsh_agent::AgentOptions {
+                    execution_mode: Default::default(),
                     provider: Some(dsh_llm_deepseek::PROVIDER.to_string()),
                     model: Some(model),
                     ..Default::default()

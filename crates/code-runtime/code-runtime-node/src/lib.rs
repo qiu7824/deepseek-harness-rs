@@ -257,6 +257,7 @@ async fn run_one(
             .confine(
                 &argv,
                 &SandboxPolicy {
+                    read_only_roots: Vec::new(),
                     mode: ConfinedSandboxMode::ReadOnly,
                     workspace_root: runner_root.clone(),
                     session_id: None,

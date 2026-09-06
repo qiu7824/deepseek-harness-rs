@@ -32,6 +32,9 @@ use crate::process_inspector::{ProcessIdentity, ProcessInspector, TerminalKillSi
 pub trait PtyTerminal: Send + Sync {
     fn pid(&self) -> u32;
     fn write(&self, data: &str) -> Result<(), String>;
+    fn resize(&self, _rows: u16, _cols: u16) -> Result<(), String> {
+        Err("terminal resize is not supported by this PTY".to_string())
+    }
     fn kill(&self, signal: &str) -> Result<(), String>;
     /// Register a data listener; the returned disposer removes it.
     fn on_data(&self, listener: Arc<dyn Fn(String) + Send + Sync>) -> Box<dyn Fn() + Send + Sync>;
@@ -355,6 +358,19 @@ impl SubprocessTerminalHandle for LocalTerminalHandle {
                 return Err("terminal process has exited".to_string());
             }
             handle.terminal.write(&data)
+        })
+    }
+
+    fn resize(&self, rows: u16, cols: u16) -> BoxFuture<'static, Result<(), String>> {
+        let handle = self_arc_of(self);
+        Box::pin(async move {
+            if rows == 0 || cols == 0 {
+                return Err("terminal rows and cols must be positive".to_string());
+            }
+            if handle.exited.load(SeqCst) {
+                return Err("terminal process has exited".to_string());
+            }
+            handle.terminal.resize(rows, cols)
         })
     }
 

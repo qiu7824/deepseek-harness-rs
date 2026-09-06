@@ -185,11 +185,14 @@ async fn timeout_terminates_probe_and_is_not_misreported_as_missing() {
 }
 
 #[test]
-fn managed_node_precedes_path_and_selection_is_explicit() {
+fn managed_node_precedes_system_discovery() {
     let directory =
         std::env::temp_dir().join(format!("dsh-node-selection-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(directory.join("bin")).unwrap();
-    assert_eq!(configured_command(&directory), "node");
+    let fallback = configured_command(&directory);
+    assert!(
+        fallback == "node" || Path::new(&fallback).is_absolute() && Path::new(&fallback).is_file()
+    );
     let name = if cfg!(windows) { "node.exe" } else { "node" };
     let binary = directory.join("bin").join(name);
     std::fs::write(&binary, "fixture").unwrap();

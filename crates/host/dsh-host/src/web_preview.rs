@@ -9,7 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, to_bytes};
 use dsh_agent::AgentRegistry;
@@ -17,6 +17,7 @@ use dsh_code_graph::{BackgroundIndex, background::GraphQuery};
 use dsh_host_webserver::{
     RouteDisposer, WebHandlerError, WebRequest, WebResponse, WebRoute, WebRouteKind, WebServer,
 };
+use dsh_jobs::{JobRegistry, JobSnapshot, KillOutcome, job_id};
 use dsh_sandbox::{ConfinedSandboxMode, SandboxEnforcement, SandboxPolicy, SandboxProvider};
 use dsh_session::{SessionId, session_id};
 use dsh_subprocess::{
@@ -24,8 +25,8 @@ use dsh_subprocess::{
     SubprocessSpawnSpec, SubprocessStdinMode, SubprocessStdio,
 };
 use dsh_terminal::{
-    TerminalReadRequest, TerminalSendRequest, TerminalSessionService, TerminalSpawnRequest,
-    terminal_session_id,
+    TerminalReadRequest, TerminalSendRequest, TerminalSessionService, TerminalSignal,
+    TerminalSpawnRequest, terminal_session_id,
 };
 use dsh_workspace::WorkspaceRegistry;
 use http::{Method, Response, StatusCode, header};
@@ -41,6 +42,11 @@ const MAX_CONTROL_BYTES: usize = 16 * 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 1_000;
 const MAX_LOG_LINES: usize = 400;
 const CHALLENGE_TTL_MS: u64 = 60_000;
+const GIT_STDOUT_LIMIT: usize = 8 * 1024 * 1024;
+const GIT_STDERR_LIMIT: usize = 1024 * 1024;
+const GIT_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const GIT_WRITE_TIMEOUT: Duration = Duration::from_secs(60);
+const GIT_NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
 
 const ANNOTATION_BRIDGE: &str = r#"<script data-dsh-preview-bridge>(function(){
 const SOURCE='dsh-web-preview-rs';let enabled=false,box=null,last=null;
@@ -95,6 +101,7 @@ impl From<ProjectSpec> for ProjectHint {
 struct MetaBody {
     session_id: String,
     workspace_title: String,
+    workspace_key: String,
     capabilities: [&'static str; 7],
     max_text_bytes: u64,
     max_media_bytes: u64,
@@ -133,6 +140,8 @@ struct GitStatusEntry {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GitStatusBody {
+    repository: String,
+    worktree: String,
     branch: String,
     upstream: Option<String>,
     ahead: u64,
@@ -153,6 +162,12 @@ struct GitActionRequest {
     message: Option<String>,
     #[serde(default)]
     branch: Option<String>,
+    #[serde(default)]
+    repository: Option<String>,
+    #[serde(default)]
+    worktree: Option<String>,
+    #[serde(default)]
+    revision: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -164,6 +179,14 @@ struct TerminalActionRequest {
     terminal_id: Option<String>,
     #[serde(default)]
     text: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    rows: Option<u16>,
+    #[serde(default)]
+    cols: Option<u16>,
+    #[serde(default)]
+    signal: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -172,6 +195,36 @@ struct GitDiffBody {
     path: String,
     diff: String,
     truncated: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitRepositoryEntry {
+    path: String,
+    label: String,
+    relative_path: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitWorktreeEntry {
+    path: String,
+    branch: String,
+    head: String,
+    current: bool,
+    locked: bool,
+    changes: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitLogEntry {
+    hash: String,
+    short_hash: String,
+    subject: String,
+    author: String,
+    date: String,
+    refs: String,
 }
 
 #[derive(Deserialize)]
@@ -258,6 +311,7 @@ struct PreviewService {
     registry: Arc<WorkspaceRegistry>,
     agents: Arc<AgentRegistry>,
     terminals: Arc<TerminalSessionService>,
+    jobs: Arc<dyn JobRegistry>,
     subprocess: Arc<dyn SubprocessRuntime>,
     sandbox: Arc<dyn SandboxProvider>,
     site_token: String,
@@ -310,6 +364,20 @@ fn error(status: StatusCode, code: &'static str, message: impl Into<String>) -> 
     )
 }
 
+fn public_job_snapshot(snapshot: &JobSnapshot) -> serde_json::Value {
+    serde_json::json!({
+        "id": snapshot.id.as_str(),
+        "kind": snapshot.kind,
+        "label": snapshot.label,
+        "status": snapshot.status.as_str(),
+        "detail": snapshot.detail,
+        "ownerSessionId": snapshot.owner_session.as_ref().map(|id| id.as_str()),
+        "startedAt": snapshot.started_at,
+        "finishedAt": snapshot.finished_at,
+        "reported": snapshot.reported
+    })
+}
+
 fn content_etag(bytes: &[u8]) -> String {
     format!("\"{:x}\"", Sha256::digest(bytes))
 }
@@ -358,8 +426,8 @@ fn denied_name(name: &str) -> bool {
         || name.to_ascii_lowercase().starts_with(".env.")
 }
 
-fn safe_relative(value: &str) -> Option<PathBuf> {
-    if value.as_bytes().contains(&0) {
+pub(super) fn safe_relative(value: &str) -> Option<PathBuf> {
+    if value.as_bytes().contains(&0) || value.contains(':') {
         return None;
     }
     let value = value.replace('\\', "/");
@@ -389,30 +457,359 @@ fn safe_relative(value: &str) -> Option<PathBuf> {
 }
 
 async fn git_output(root: &Path, args: &[&str]) -> Result<String, WebResponse> {
+    git_output_with_timeout(root, args, GIT_READ_TIMEOUT).await
+}
+
+async fn git_output_with_timeout(
+    root: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String, WebResponse> {
     let mut argv = vec!["-C".to_string(), root.to_string_lossy().into_owned()];
     argv.extend(args.iter().map(|value| (*value).to_string()));
-    dsh_native_command::run_native_command("git", &argv, None)
-        .await
-        .map(|output| output.stdout)
-        .map_err(|failure| {
+    dsh_native_command::run_native_command_bounded(
+        "git",
+        &argv,
+        None,
+        dsh_native_command::NativeCommandLimits {
+            timeout,
+            stdout_bytes: GIT_STDOUT_LIMIT,
+            stderr_bytes: GIT_STDERR_LIMIT,
+        },
+    )
+    .await
+    .map(|output| output.stdout)
+    .map_err(|failure| {
+        let (status, code, message) = git_failure(&failure);
+        error(status, code, message)
+    })
+}
+
+fn git_failure(
+    failure: &dsh_native_command::NativeCommandFailure,
+) -> (StatusCode, &'static str, String) {
+    match failure.code.as_deref() {
+        Some("TIMEOUT") => (
+            StatusCode::GATEWAY_TIMEOUT,
+            "git-timeout",
+            "Git 操作超过时间上限，进程已终止".to_string(),
+        ),
+        Some("OUTPUT_LIMIT") => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "git-output-limit",
+            "Git 输出超过安全上限，进程已终止".to_string(),
+        ),
+        _ => {
             let message = if failure.stderr.trim().is_empty() {
-                failure.message
+                failure.message.clone()
             } else {
                 failure.stderr.trim().to_string()
             };
-            error(StatusCode::BAD_REQUEST, "git-failed", message)
-        })
+            (StatusCode::BAD_REQUEST, "git-failed", message)
+        }
+    }
 }
 
-async fn git_status(root: &Path) -> Result<GitStatusBody, WebResponse> {
+async fn git_output_mutating(root: &Path, args: &[&str]) -> Result<String, WebResponse> {
+    git_output_with_timeout(root, args, GIT_WRITE_TIMEOUT).await
+}
+
+async fn git_output_network(root: &Path, args: &[&str]) -> Result<String, WebResponse> {
+    git_output_with_timeout(root, args, GIT_NETWORK_TIMEOUT).await
+}
+
+async fn git_output_owned(root: &Path, args: Vec<String>) -> Result<String, WebResponse> {
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    git_output(root, &refs).await
+}
+
+async fn git_output_owned_mutating(root: &Path, args: Vec<String>) -> Result<String, WebResponse> {
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    git_output_mutating(root, &refs).await
+}
+
+fn path_identity(path: &Path) -> String {
+    let value = execution_path(path).replace('\\', "/");
+    if cfg!(windows) {
+        value.to_ascii_lowercase()
+    } else {
+        value
+    }
+}
+
+fn repository_candidates(workspace: &Path) -> Vec<PathBuf> {
+    const MAX_DIRS: usize = 2_000;
+    const MAX_DEPTH: usize = 4;
+    let mut pending = VecDeque::from([(workspace.to_path_buf(), 0_usize)]);
+    let mut candidates = Vec::new();
+    let mut visited = 0_usize;
+    while let Some((directory, depth)) = pending.pop_front() {
+        if visited >= MAX_DIRS {
+            break;
+        }
+        visited += 1;
+        if directory.join(".git").exists() {
+            candidates.push(directory.clone());
+        }
+        if depth >= MAX_DEPTH {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if matches!(
+                name.as_str(),
+                ".git" | "node_modules" | "target" | ".cache" | ".next" | ".venv" | "vendor"
+            ) {
+                continue;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() && !kind.is_symlink() {
+                pending.push_back((entry.path(), depth + 1));
+            }
+        }
+    }
+    candidates
+}
+
+async fn git_repositories(workspace: &Path) -> Result<Vec<GitRepositoryEntry>, WebResponse> {
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|_| error(StatusCode::NOT_FOUND, "workspace-missing", "工作区不存在"))?;
+    let scan_root = workspace.clone();
+    let mut candidates = tokio::task::spawn_blocking(move || repository_candidates(&scan_root))
+        .await
+        .unwrap_or_default();
+    if candidates.is_empty() {
+        // A workspace can point inside a repository without containing its
+        // .git administrative entry.
+        candidates.push(workspace.clone());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut repositories = Vec::new();
+    for candidate in candidates {
+        let Ok(value) = git_output(&candidate, &["rev-parse", "--show-toplevel"]).await else {
+            continue;
+        };
+        let top = PathBuf::from(value.trim());
+        let Ok(top) = top.canonicalize() else {
+            continue;
+        };
+        let identity = path_identity(&top);
+        if !seen.insert(identity) {
+            continue;
+        }
+        let relative_path = top
+            .strip_prefix(&workspace)
+            .map(|value| {
+                if value.as_os_str().is_empty() {
+                    ".".to_string()
+                } else {
+                    value.to_string_lossy().replace('\\', "/")
+                }
+            })
+            .unwrap_or_else(|_| top.to_string_lossy().into_owned());
+        let label = top
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("repository")
+            .to_string();
+        repositories.push(GitRepositoryEntry {
+            path: execution_path(&top),
+            label,
+            relative_path,
+        });
+        if repositories.len() >= 64 {
+            break;
+        }
+    }
+    repositories.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(repositories)
+}
+
+async fn resolve_repository(
+    workspace: &Path,
+    requested: Option<&str>,
+) -> Result<(Vec<GitRepositoryEntry>, PathBuf), WebResponse> {
+    let repositories = git_repositories(workspace).await?;
+    if repositories.is_empty() {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "not-repository",
+            "当前工作区没有可用的 Git 仓库",
+        ));
+    }
+    let selected = if let Some(requested) = requested.filter(|value| !value.trim().is_empty()) {
+        let identity = path_identity(Path::new(requested));
+        repositories
+            .iter()
+            .find(|entry| path_identity(Path::new(&entry.path)) == identity)
+            .ok_or_else(|| {
+                error(
+                    StatusCode::FORBIDDEN,
+                    "unknown-repository",
+                    "选择的 Git 仓库不属于当前工作区",
+                )
+            })?
+    } else {
+        &repositories[0]
+    };
+    Ok((repositories.clone(), PathBuf::from(&selected.path)))
+}
+
+async fn git_worktrees(repository: &Path) -> Result<Vec<GitWorktreeEntry>, WebResponse> {
+    let output = match git_output(repository, &["worktree", "list", "--porcelain", "-z"]).await {
+        Ok(value) => value,
+        Err(_) => git_output(repository, &["worktree", "list", "--porcelain"]).await?,
+    };
+    let current = repository
+        .canonicalize()
+        .unwrap_or_else(|_| repository.to_path_buf());
+    let normalized = output.replace('\0', "\n");
+    let mut records = Vec::new();
+    let mut path: Option<PathBuf> = None;
+    let mut branch = "HEAD".to_string();
+    let mut head = String::new();
+    let mut locked = false;
+    let mut prunable = false;
+    let flush = |path: &mut Option<PathBuf>,
+                 branch: &mut String,
+                 head: &mut String,
+                 locked: &mut bool,
+                 prunable: &mut bool,
+                 records: &mut Vec<(PathBuf, String, String, bool, bool)>| {
+        if let Some(value) = path.take() {
+            records.push((value, branch.clone(), head.clone(), *locked, *prunable));
+        }
+        *branch = "HEAD".to_string();
+        head.clear();
+        *locked = false;
+        *prunable = false;
+    };
+    for line in normalized.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            flush(
+                &mut path,
+                &mut branch,
+                &mut head,
+                &mut locked,
+                &mut prunable,
+                &mut records,
+            );
+        } else if let Some(value) = line.strip_prefix("worktree ") {
+            if path.is_some() {
+                flush(
+                    &mut path,
+                    &mut branch,
+                    &mut head,
+                    &mut locked,
+                    &mut prunable,
+                    &mut records,
+                );
+            }
+            path = Some(PathBuf::from(value));
+        } else if let Some(value) = line.strip_prefix("branch refs/heads/") {
+            branch = value.to_string();
+        } else if let Some(value) = line.strip_prefix("HEAD ") {
+            head = value.to_string();
+        } else if line.starts_with("locked") {
+            locked = true;
+        } else if line.starts_with("prunable") {
+            prunable = true;
+        }
+    }
+    let mut entries = Vec::new();
+    for (candidate, branch, head, locked, prunable) in records {
+        if prunable || !candidate.is_dir() {
+            continue;
+        }
+        let canonical = candidate.canonicalize().unwrap_or(candidate);
+        let changes = git_output(
+            &canonical,
+            &["status", "--porcelain", "--untracked-files=normal"],
+        )
+        .await
+        .map(|value| value.lines().count())
+        .unwrap_or(0);
+        entries.push(GitWorktreeEntry {
+            current: path_identity(&canonical) == path_identity(&current),
+            path: execution_path(&canonical),
+            branch,
+            head,
+            locked,
+            changes,
+        });
+    }
+    entries.sort_by_key(|entry| (!entry.current, entry.path.clone()));
+    Ok(entries)
+}
+
+async fn resolve_worktree(
+    repository: &Path,
+    requested: Option<&str>,
+) -> Result<(Vec<GitWorktreeEntry>, PathBuf), WebResponse> {
+    let entries = git_worktrees(repository).await?;
+    let selected = if let Some(requested) = requested.filter(|value| !value.trim().is_empty()) {
+        let identity = path_identity(Path::new(requested));
+        entries
+            .iter()
+            .find(|entry| path_identity(Path::new(&entry.path)) == identity)
+            .ok_or_else(|| {
+                error(
+                    StatusCode::FORBIDDEN,
+                    "unknown-worktree",
+                    "选择的工作树不在仓库的受信任列表中",
+                )
+            })?
+    } else {
+        entries
+            .iter()
+            .find(|entry| entry.current)
+            .or_else(|| entries.first())
+            .ok_or_else(|| {
+                error(
+                    StatusCode::BAD_REQUEST,
+                    "no-worktree",
+                    "Git 仓库没有可用工作树",
+                )
+            })?
+    };
+    Ok((entries.clone(), PathBuf::from(&selected.path)))
+}
+
+async fn git_target(
+    workspace: &Path,
+    repository: Option<&str>,
+    worktree: Option<&str>,
+) -> Result<
+    (
+        Vec<GitRepositoryEntry>,
+        Vec<GitWorktreeEntry>,
+        PathBuf,
+        PathBuf,
+    ),
+    WebResponse,
+> {
+    let (repositories, repository) = resolve_repository(workspace, repository).await?;
+    let (worktrees, worktree) = resolve_worktree(&repository, worktree).await?;
+    Ok((repositories, worktrees, repository, worktree))
+}
+
+async fn git_status(repository: &Path, worktree: &Path) -> Result<GitStatusBody, WebResponse> {
     const MAX_GIT_ENTRIES: usize = 2_000;
     let output = git_output(
-        root,
+        worktree,
         &[
             "status",
             "--porcelain=v1",
             "--branch",
             "--untracked-files=normal",
+            "-z",
         ],
     )
     .await?;
@@ -422,7 +819,8 @@ async fn git_status(root: &Path) -> Result<GitStatusBody, WebResponse> {
     let mut behind = 0_u64;
     let mut entries = Vec::new();
     let mut truncated = false;
-    for line in output.lines() {
+    let mut records = output.split('\0');
+    while let Some(line) = records.next() {
         if let Some(head) = line.strip_prefix("## ") {
             let tracking = head.split_once("...");
             branch = tracking
@@ -461,19 +859,23 @@ async fn git_status(root: &Path) -> Result<GitStatusBody, WebResponse> {
         } else {
             "unstaged"
         };
+        let renamed = matches!(index_status.as_str(), "R" | "C")
+            || matches!(worktree_status.as_str(), "R" | "C");
         entries.push(GitStatusEntry {
             status: line[..2].to_string(),
             index_status,
             worktree_status,
             group,
-            path: line[3..]
-                .split(" -> ")
-                .last()
-                .unwrap_or_default()
-                .to_string(),
+            // With -z, Git emits the destination path first and an extra
+            // source-path record for rename/copy entries. The destination is
+            // the path every action must target.
+            path: line[3..].to_string(),
         });
+        if renamed {
+            let _ = records.next();
+        }
     }
-    let branch_output = git_output(root, &["branch", "--format=%(refname:short)"]).await?;
+    let branch_output = git_output(worktree, &["branch", "--format=%(refname:short)"]).await?;
     let branches = branch_output
         .lines()
         .map(str::trim)
@@ -482,6 +884,8 @@ async fn git_status(root: &Path) -> Result<GitStatusBody, WebResponse> {
         .map(str::to_string)
         .collect();
     Ok(GitStatusBody {
+        repository: execution_path(repository),
+        worktree: execution_path(worktree),
         branch,
         upstream,
         ahead,
@@ -492,7 +896,11 @@ async fn git_status(root: &Path) -> Result<GitStatusBody, WebResponse> {
     })
 }
 
-async fn git_diff(root: &Path, relative: &str) -> Result<GitDiffBody, WebResponse> {
+async fn git_diff(
+    worktree: &Path,
+    relative: &str,
+    staged: bool,
+) -> Result<GitDiffBody, WebResponse> {
     const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
     let path = safe_relative(relative)
         .ok_or_else(|| error(StatusCode::BAD_REQUEST, "unsafe-path", "Git 路径不安全"))?;
@@ -504,9 +912,50 @@ async fn git_diff(root: &Path, relative: &str) -> Result<GitDiffBody, WebRespons
         ));
     }
     let display = path.to_string_lossy().replace('\\', "/");
-    let mut output = git_output(root, &["diff", "--no-ext-diff", "--", &display]).await?;
-    if output.is_empty() {
-        output = git_output(root, &["diff", "--cached", "--no-ext-diff", "--", &display]).await?;
+    let mut args = vec!["diff", "--no-ext-diff", "--no-color", "-U4"];
+    if staged {
+        args.push("--cached");
+    }
+    args.extend(["--", &display]);
+    let mut output = git_output(worktree, &args).await?;
+    if output.is_empty() && !staged {
+        let untracked = git_output(
+            worktree,
+            &["ls-files", "--others", "--exclude-standard", "--", &display],
+        )
+        .await
+        .unwrap_or_default()
+        .lines()
+        .any(|line| line == display);
+        let target = worktree.join(&path);
+        if untracked
+            && target.is_file()
+            && target
+                .canonicalize()
+                .ok()
+                .is_some_and(|canonical| canonical.starts_with(worktree))
+        {
+            let bytes = std::fs::read(&target).unwrap_or_default();
+            output = if bytes.contains(&0) {
+                format!(
+                    "diff --git a/{display} b/{display}\nnew file mode 100644\nBinary files /dev/null and b/{display} differ\n"
+                )
+            } else {
+                let text = String::from_utf8_lossy(&bytes);
+                let added = if text.is_empty() {
+                    "+".to_string()
+                } else {
+                    text.split_inclusive('\n')
+                        .map(|line| format!("+{}", line.trim_end_matches('\n')))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                let line_count = text.lines().count().max(1);
+                format!(
+                    "diff --git a/{display} b/{display}\nnew file mode 100644\n--- /dev/null\n+++ b/{display}\n@@ -0,0 +1,{line_count} @@\n{added}\n"
+                )
+            };
+        }
     }
     let truncated = output.len() > MAX_DIFF_BYTES;
     if truncated {
@@ -514,6 +963,86 @@ async fn git_diff(root: &Path, relative: &str) -> Result<GitDiffBody, WebRespons
     }
     Ok(GitDiffBody {
         path: display,
+        diff: output,
+        truncated,
+    })
+}
+
+fn valid_revision(value: &str) -> bool {
+    (7..=64).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_commit_message(value: &str) -> bool {
+    !value.trim().is_empty() && value.chars().count() <= 500
+}
+
+async fn git_history(
+    worktree: &Path,
+    skip: usize,
+    count: usize,
+) -> Result<(Vec<GitLogEntry>, bool), WebResponse> {
+    let count = count.clamp(1, 100);
+    let requested = count + 1;
+    let output = git_output_owned(
+        worktree,
+        vec![
+            "log".to_string(),
+            "--no-color".to_string(),
+            format!("--skip={skip}"),
+            format!("-n{requested}"),
+            "--decorate=short".to_string(),
+            "--date=iso-strict".to_string(),
+            "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ad%x1f%D%x1e".to_string(),
+        ],
+    )
+    .await?;
+    let mut entries = output
+        .split('\u{1e}')
+        .filter_map(|record| {
+            let fields = record.trim().split('\u{1f}').collect::<Vec<_>>();
+            (fields.len() == 6).then(|| GitLogEntry {
+                hash: fields[0].to_string(),
+                short_hash: fields[1].to_string(),
+                subject: fields[2].to_string(),
+                author: fields[3].to_string(),
+                date: fields[4].to_string(),
+                refs: fields[5].to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let has_more = entries.len() > count;
+    entries.truncate(count);
+    Ok((entries, has_more))
+}
+
+async fn git_commit_diff(worktree: &Path, revision: &str) -> Result<GitDiffBody, WebResponse> {
+    if !valid_revision(revision) {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "invalid-revision",
+            "提交标识无效",
+        ));
+    }
+    const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
+    let mut output = git_output_owned(
+        worktree,
+        vec![
+            "show".to_string(),
+            "--no-ext-diff".to_string(),
+            "--no-color".to_string(),
+            "--format=".to_string(),
+            "-m".to_string(),
+            "--first-parent".to_string(),
+            revision.to_string(),
+        ],
+    )
+    .await?;
+    let truncated = output.len() > MAX_DIFF_BYTES;
+    if truncated {
+        output.truncate(MAX_DIFF_BYTES);
+    }
+    Ok(GitDiffBody {
+        path: revision.to_string(),
         diff: output,
         truncated,
     })
@@ -645,7 +1174,7 @@ fn workspace_for_session(
     }))
 }
 
-async fn workspace_root(
+pub(super) async fn workspace_root(
     registry: &WorkspaceRegistry,
     session: &SessionId,
 ) -> Result<(dsh_workspace::Workspace, PathBuf), WebResponse> {
@@ -676,7 +1205,7 @@ async fn workspace_root(
     Ok((workspace, root))
 }
 
-async fn authorized_path(
+pub(super) async fn authorized_path(
     registry: &WorkspaceRegistry,
     session: &SessionId,
     relative: &str,
@@ -840,6 +1369,7 @@ impl PreviewService {
         registry: Arc<WorkspaceRegistry>,
         agents: Arc<AgentRegistry>,
         terminals: Arc<TerminalSessionService>,
+        jobs: Arc<dyn JobRegistry>,
         subprocess: Arc<dyn SubprocessRuntime>,
         sandbox: Arc<dyn SandboxProvider>,
     ) -> Arc<Self> {
@@ -847,6 +1377,7 @@ impl PreviewService {
             registry,
             agents,
             terminals,
+            jobs,
             subprocess,
             sandbox,
             site_token: uuid::Uuid::new_v4().to_string(),
@@ -1034,13 +1565,23 @@ impl PreviewService {
             Err(response) => return response,
         };
         let session = session_id(action.session_id);
-        let (_, root) = match workspace_root(&self.registry, &session).await {
+        let (_, workspace) = match workspace_root(&self.registry, &session).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        let (_, _, _, root) = match git_target(
+            &workspace,
+            action.repository.as_deref(),
+            action.worktree.as_deref(),
+        )
+        .await
+        {
             Ok(value) => value,
             Err(response) => return response,
         };
         let result = match action.action.as_str() {
-            "stage-all" => git_output(&root, &["add", "-A"]).await,
-            "unstage-all" => git_output(&root, &["restore", "--staged", "."]).await,
+            "stage-all" => git_output_mutating(&root, &["add", "-A"]).await,
+            "unstage-all" => git_output_mutating(&root, &["restore", "--staged", "."]).await,
             "stage" | "unstage" => {
                 let Some(relative) = action.path.as_deref().and_then(safe_relative) else {
                     return error(StatusCode::BAD_REQUEST, "unsafe-path", "Git 路径不安全");
@@ -1054,21 +1595,21 @@ impl PreviewService {
                 }
                 let display = relative.to_string_lossy().replace('\\', "/");
                 if action.action == "stage" {
-                    git_output(&root, &["add", "--", &display]).await
+                    git_output_mutating(&root, &["add", "--", &display]).await
                 } else {
-                    git_output(&root, &["restore", "--staged", "--", &display]).await
+                    git_output_mutating(&root, &["restore", "--staged", "--", &display]).await
                 }
             }
             "commit" | "commit-push" => {
                 let message = action.message.as_deref().map(str::trim).unwrap_or_default();
-                if message.is_empty() || message.len() > 500 {
+                if !valid_commit_message(message) {
                     return error(
                         StatusCode::BAD_REQUEST,
                         "invalid-message",
                         "提交说明不能为空且不能超过500字",
                     );
                 }
-                match git_output(&root, &["commit", "-m", message]).await {
+                match git_output_mutating(&root, &["commit", "-m", message]).await {
                     Ok(output) if action.action == "commit-push" => match git_output(
                         &root,
                         &[
@@ -1080,9 +1621,11 @@ impl PreviewService {
                     )
                     .await
                     {
-                        Ok(value) if !value.trim().is_empty() => git_output(&root, &["push"])
-                            .await
-                            .map(|pushed| format!("{output}\n{pushed}")),
+                        Ok(value) if !value.trim().is_empty() => {
+                            git_output_network(&root, &["push"])
+                                .await
+                                .map(|pushed| format!("{output}\n{pushed}"))
+                        }
                         Ok(_) | Err(_) => {
                             return error(
                                 StatusCode::BAD_REQUEST,
@@ -1106,7 +1649,9 @@ impl PreviewService {
                 )
                 .await;
                 match upstream {
-                    Ok(value) if !value.trim().is_empty() => git_output(&root, &["push"]).await,
+                    Ok(value) if !value.trim().is_empty() => {
+                        git_output_network(&root, &["push"]).await
+                    }
                     Ok(_) => {
                         return error(
                             StatusCode::BAD_REQUEST,
@@ -1129,7 +1674,7 @@ impl PreviewService {
                     .await
                     .map(|value| value.lines().any(|line| line.trim() == branch));
                 match known {
-                    Ok(true) => git_output(&root, &["checkout", "--", branch]).await,
+                    Ok(true) => git_output_mutating(&root, &["checkout", branch]).await,
                     Ok(false) => {
                         return error(
                             StatusCode::BAD_REQUEST,
@@ -1138,6 +1683,47 @@ impl PreviewService {
                         );
                     }
                     Err(response) => return response,
+                }
+            }
+            "discard" => {
+                let Some(relative) = action.path.as_deref().and_then(safe_relative) else {
+                    return error(StatusCode::BAD_REQUEST, "unsafe-path", "Git 路径不安全");
+                };
+                if relative.as_os_str().is_empty() {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "path-required",
+                        "缺少 Git 文件路径",
+                    );
+                }
+                let display = relative.to_string_lossy().replace('\\', "/");
+                git_output_mutating(&root, &["restore", "--worktree", "--", &display]).await
+            }
+            "revert" | "cherry-pick" => {
+                let revision = action
+                    .revision
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or_default();
+                if !valid_revision(revision) {
+                    return error(StatusCode::BAD_REQUEST, "invalid-revision", "提交标识无效");
+                }
+                if action.action == "revert" {
+                    git_output_owned_mutating(
+                        &root,
+                        vec![
+                            "revert".to_string(),
+                            "--no-edit".to_string(),
+                            revision.to_string(),
+                        ],
+                    )
+                    .await
+                } else {
+                    git_output_owned_mutating(
+                        &root,
+                        vec!["cherry-pick".to_string(), revision.to_string()],
+                    )
+                    .await
                 }
             }
             _ => return error(StatusCode::BAD_REQUEST, "unknown-action", "未知 Git 操作"),
@@ -1189,14 +1775,30 @@ impl PreviewService {
                         Ok(value) => value,
                         Err(response) => return response,
                     };
-                let future = match self.terminals.spawn(
+                let name = action
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                if name.as_ref().is_some_and(|value| {
+                    value.chars().count() > 80 || value.chars().any(char::is_control)
+                }) {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid-terminal-name",
+                        "终端名称不能为空、包含控制字符或超过80字",
+                    );
+                }
+                let future = match self.terminals.spawn_limited(
                     owner,
                     TerminalSpawnRequest {
                         type_: "shell".to_string(),
-                        name: None,
+                        name,
                         cwd: Some(root.to_string_lossy().into_owned()),
                     },
                     None,
+                    3,
                 ) {
                     Ok(future) => future,
                     Err(failure) => {
@@ -1212,6 +1814,9 @@ impl PreviewService {
                         StatusCode::OK,
                         &serde_json::json!({
                             "id": result.session_id.as_str(),
+                            "name": result.name,
+                            "type": result.type_,
+                            "pid": result.pid,
                             "motd": result.motd,
                             "status": "running"
                         }),
@@ -1219,6 +1824,129 @@ impl PreviewService {
                     Err(failure) => error(
                         StatusCode::BAD_REQUEST,
                         "terminal-open-failed",
+                        failure.to_string(),
+                    ),
+                }
+            }
+            "input" => {
+                let Some(id) = action.terminal_id.as_deref() else {
+                    return error(StatusCode::BAD_REQUEST, "terminal-required", "缺少终端ID");
+                };
+                let text = action.text.unwrap_or_default();
+                if text.is_empty() || text.len() > 8 * 1024 {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid-terminal-input",
+                        "终端输入不能为空且单次不能超过8KiB",
+                    );
+                }
+                let future =
+                    match self
+                        .terminals
+                        .write_input(&owner, &terminal_session_id(id), &text)
+                    {
+                        Ok(future) => future,
+                        Err(failure) => {
+                            return error(
+                                StatusCode::BAD_REQUEST,
+                                "terminal-input-failed",
+                                failure.to_string(),
+                            );
+                        }
+                    };
+                match future.await {
+                    Ok(()) => {
+                        json_response(StatusCode::OK, &serde_json::json!({ "written": true }))
+                    }
+                    Err(failure) => error(
+                        StatusCode::BAD_REQUEST,
+                        "terminal-input-failed",
+                        failure.to_string(),
+                    ),
+                }
+            }
+            "resize" => {
+                let Some(id) = action.terminal_id.as_deref() else {
+                    return error(StatusCode::BAD_REQUEST, "terminal-required", "缺少终端ID");
+                };
+                let (Some(rows), Some(cols)) = (action.rows, action.cols) else {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "terminal-size-required",
+                        "缺少终端行列数",
+                    );
+                };
+                if !(2..=500).contains(&rows) || !(10..=500).contains(&cols) {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid-terminal-size",
+                        "终端行数必须为2–500，列数必须为10–500",
+                    );
+                }
+                let future =
+                    match self
+                        .terminals
+                        .resize(&owner, &terminal_session_id(id), rows, cols)
+                    {
+                        Ok(future) => future,
+                        Err(failure) => {
+                            return error(
+                                StatusCode::BAD_REQUEST,
+                                "terminal-resize-failed",
+                                failure.to_string(),
+                            );
+                        }
+                    };
+                match future.await {
+                    Ok(()) => json_response(
+                        StatusCode::OK,
+                        &serde_json::json!({ "resized": true, "rows": rows, "cols": cols }),
+                    ),
+                    Err(failure) => error(
+                        StatusCode::BAD_REQUEST,
+                        "terminal-resize-failed",
+                        failure.to_string(),
+                    ),
+                }
+            }
+            "signal" => {
+                let Some(id) = action.terminal_id.as_deref() else {
+                    return error(StatusCode::BAD_REQUEST, "terminal-required", "缺少终端ID");
+                };
+                let signal = match action.signal.as_deref().unwrap_or("SIGINT") {
+                    "SIGINT" => TerminalSignal::SigInt,
+                    "SIGTERM" => TerminalSignal::SigTerm,
+                    "SIGTSTP" => TerminalSignal::SigTstp,
+                    "SIGHUP" => TerminalSignal::SigHup,
+                    _ => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid-terminal-signal",
+                            "该终端信号不受支持",
+                        );
+                    }
+                };
+                let future = match self
+                    .terminals
+                    .signal(&owner, &terminal_session_id(id), signal)
+                {
+                    Ok(future) => future,
+                    Err(failure) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "terminal-signal-failed",
+                            failure.to_string(),
+                        );
+                    }
+                };
+                match future.await {
+                    Ok(result) => json_response(
+                        StatusCode::OK,
+                        &serde_json::json!({ "delivered": result.delivered, "targetPgid": result.target_pgid }),
+                    ),
+                    Err(failure) => error(
+                        StatusCode::BAD_REQUEST,
+                        "terminal-signal-failed",
                         failure.to_string(),
                     ),
                 }
@@ -1285,6 +2013,62 @@ impl PreviewService {
             }
             _ => error(StatusCode::BAD_REQUEST, "unknown-action", "未知终端操作"),
         }
+    }
+
+    async fn job_action(&self, request: WebRequest) -> WebResponse {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Action {
+            session_id: String,
+            action: String,
+            job_id: String,
+        }
+        let action: Action = match Self::parse_json(request).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        if action.action != "kill" {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "unknown-action",
+                "未知后台任务操作",
+            );
+        }
+        if action.job_id.is_empty()
+            || action.job_id.len() > 200
+            || action.job_id.chars().any(char::is_control)
+        {
+            return error(StatusCode::BAD_REQUEST, "invalid-job-id", "后台任务ID无效");
+        }
+        let owner = match self.terminal_owner(&action.session_id) {
+            Ok(owner) => owner,
+            Err(response) => return response,
+        };
+        let id = job_id(action.job_id);
+        let outcome = match self.jobs.kill(
+            &id,
+            Some(&owner),
+            Some("sidebar background task stopped".to_string()),
+        ) {
+            Ok(value) => value,
+            Err(failure) => {
+                return error(StatusCode::FORBIDDEN, "job-kill-failed", failure);
+            }
+        };
+        let snapshot = match self.jobs.get(&id, Some(&owner)) {
+            Ok(value) => value,
+            Err(failure) => return error(StatusCode::FORBIDDEN, "job-read-failed", failure),
+        };
+        json_response(
+            StatusCode::OK,
+            &serde_json::json!({
+                "outcome": match outcome {
+                    KillOutcome::Requested => "cancellation-requested",
+                    KillOutcome::AlreadyFinished => "already-finished",
+                },
+                "snapshot": public_job_snapshot(&snapshot)
+            }),
+        )
     }
 
     async fn prepare_project(&self, control: ControlRequest) -> WebResponse {
@@ -1394,6 +2178,7 @@ impl PreviewService {
         let confined = match self.sandbox.confine(
             &argv,
             &SandboxPolicy {
+                read_only_roots: Vec::new(),
                 mode: ConfinedSandboxMode::WorkspaceWrite,
                 workspace_root: process_root.clone(),
                 session_id: Some(session.clone()),
@@ -1760,6 +2545,7 @@ impl PreviewService {
                 "code-graph-cancel" => self.cancel_graph(request).await,
                 "git-action" => self.git_action(request).await,
                 "terminal-action" => self.terminal_action(request).await,
+                "job-action" => self.job_action(request).await,
                 _ => error(StatusCode::NOT_FOUND, "route-not-found", "未知预览操作"),
             };
         }
@@ -1785,6 +2571,59 @@ impl PreviewService {
             Ok(value) => value.unwrap_or_default(),
             Err(()) => return error(StatusCode::BAD_REQUEST, "invalid-query", "查询参数编码无效"),
         };
+        if operation == "job-list" {
+            let jobs = self
+                .jobs
+                .list_for_session(&session)
+                .iter()
+                .map(public_job_snapshot)
+                .collect::<Vec<_>>();
+            return json_response(StatusCode::OK, &serde_json::json!({ "entries": jobs }));
+        }
+        if operation == "job-read" {
+            let id = match query_value(query, "jobId") {
+                Ok(Some(value))
+                    if !value.is_empty()
+                        && value.len() <= 200
+                        && !value.chars().any(char::is_control) =>
+                {
+                    job_id(value)
+                }
+                _ => return error(StatusCode::BAD_REQUEST, "invalid-job-id", "后台任务ID无效"),
+            };
+            let cursor = match query_value(query, "cursor") {
+                Ok(Some(value)) => match value.parse::<u64>() {
+                    Ok(value) => Some(value),
+                    Err(_) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid-job-cursor",
+                            "后台任务游标无效",
+                        );
+                    }
+                },
+                Ok(None) => None,
+                Err(()) => {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid-job-cursor",
+                        "后台任务游标编码无效",
+                    );
+                }
+            };
+            return match self.jobs.read_view_for_session(&id, &session, cursor) {
+                Ok(read) => json_response(
+                    StatusCode::OK,
+                    &serde_json::json!({
+                        "text": read.text,
+                        "cursor": read.cursor,
+                        "truncated": read.truncated,
+                        "snapshot": public_job_snapshot(&read.snapshot)
+                    }),
+                ),
+                Err(failure) => error(StatusCode::FORBIDDEN, "job-read-failed", failure),
+            };
+        }
         if operation == "file-resolve" {
             let (_, root) = match workspace_root(&self.registry, &session).await {
                 Ok(value) => value,
@@ -1833,6 +2672,10 @@ impl PreviewService {
                 &MetaBody {
                     session_id: session.as_str().to_string(),
                     workspace_title: workspace.title(),
+                    workspace_key: format!(
+                        "{:x}",
+                        Sha256::digest(execution_path(&root).as_bytes())
+                    ),
                     capabilities: [
                         "list",
                         "file",
@@ -1864,22 +2707,133 @@ impl PreviewService {
                 .cloned();
             return json_response(StatusCode::OK, &project_status(project.as_ref()));
         }
-        if operation == "git-status" {
+        if operation == "git-repositories" {
             let root = match workspace_root(&self.registry, &session).await {
                 Ok((_, root)) => root,
                 Err(response) => return response,
             };
-            return match git_status(&root).await {
-                Ok(status) => json_response(StatusCode::OK, &status),
+            return match git_repositories(&root).await {
+                Ok(repositories) => json_response(
+                    StatusCode::OK,
+                    &serde_json::json!({ "repositories": repositories }),
+                ),
                 Err(response) => response,
             };
         }
-        if operation == "git-diff" {
-            let root = match workspace_root(&self.registry, &session).await {
+        if matches!(
+            operation,
+            "git-worktrees" | "git-status" | "git-diff" | "git-log" | "git-commit-diff"
+        ) {
+            let workspace = match workspace_root(&self.registry, &session).await {
                 Ok((_, root)) => root,
                 Err(response) => return response,
             };
-            return match git_diff(&root, &relative).await {
+            let repository_query = match query_value(query, "repository") {
+                Ok(value) => value,
+                Err(()) => {
+                    return error(StatusCode::BAD_REQUEST, "invalid-query", "仓库参数编码无效");
+                }
+            };
+            if operation == "git-worktrees" {
+                let (_, repository) =
+                    match resolve_repository(&workspace, repository_query.as_deref()).await {
+                        Ok(value) => value,
+                        Err(response) => return response,
+                    };
+                return match git_worktrees(&repository).await {
+                    Ok(entries) => json_response(
+                        StatusCode::OK,
+                        &serde_json::json!({
+                            "repository": execution_path(&repository),
+                            "entries": entries
+                        }),
+                    ),
+                    Err(response) => response,
+                };
+            }
+            let worktree_query = match query_value(query, "worktree") {
+                Ok(value) => value,
+                Err(()) => {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid-query",
+                        "工作树参数编码无效",
+                    );
+                }
+            };
+            let (repositories, worktrees, repository, worktree) = match git_target(
+                &workspace,
+                repository_query.as_deref(),
+                worktree_query.as_deref(),
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(response) => return response,
+            };
+            if operation == "git-status" {
+                return match git_status(&repository, &worktree).await {
+                    Ok(status) => {
+                        let mut value =
+                            serde_json::to_value(status).unwrap_or_else(|_| serde_json::json!({}));
+                        if let Some(object) = value.as_object_mut() {
+                            object.insert(
+                                "repositories".to_string(),
+                                serde_json::to_value(repositories).unwrap_or_default(),
+                            );
+                            object.insert(
+                                "worktrees".to_string(),
+                                serde_json::to_value(worktrees).unwrap_or_default(),
+                            );
+                        }
+                        json_response(StatusCode::OK, &value)
+                    }
+                    Err(response) => response,
+                };
+            }
+            if operation == "git-diff" {
+                let staged = query_value(query, "staged")
+                    .ok()
+                    .flatten()
+                    .is_some_and(|value| value == "1" || value == "true");
+                return match git_diff(&worktree, &relative, staged).await {
+                    Ok(diff) => json_response(StatusCode::OK, &diff),
+                    Err(response) => response,
+                };
+            }
+            if operation == "git-log" {
+                let skip = query_value(query, "skip")
+                    .ok()
+                    .flatten()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0)
+                    .min(10_000);
+                let count = query_value(query, "count")
+                    .ok()
+                    .flatten()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(30)
+                    .clamp(1, 100);
+                return match git_history(&worktree, skip, count).await {
+                    Ok((entries, has_more)) => json_response(
+                        StatusCode::OK,
+                        &serde_json::json!({
+                            "repository": execution_path(&repository),
+                            "worktree": execution_path(&worktree),
+                            "entries": entries,
+                            "hasMore": has_more
+                        }),
+                    ),
+                    Err(response) => response,
+                };
+            }
+            let revision = match query_value(query, "revision") {
+                Ok(Some(value)) => value,
+                _ => {
+                    return error(StatusCode::BAD_REQUEST, "revision-required", "缺少提交标识");
+                }
+            };
+            return match git_commit_diff(&worktree, &revision).await {
                 Ok(diff) => json_response(StatusCode::OK, &diff),
                 Err(response) => response,
             };
@@ -1894,10 +2848,20 @@ impl PreviewService {
                 .list(&owner)
                 .into_iter()
                 .map(|entry| {
+                    let (status, exit_code, signal) = match entry.status {
+                        dsh_terminal::TerminalSessionStatus::Running => ("running", None, None),
+                        dsh_terminal::TerminalSessionStatus::Exited { exit_code, signal } => {
+                            ("exited", exit_code, signal)
+                        }
+                    };
                     serde_json::json!({
                         "id": entry.session_id.as_str(),
                         "name": entry.name,
-                        "pid": entry.pid
+                        "type": entry.type_,
+                        "pid": entry.pid,
+                        "status": status,
+                        "exitCode": exit_code,
+                        "signal": signal
                     })
                 })
                 .collect();
@@ -1916,8 +2880,18 @@ impl PreviewService {
                 &owner,
                 &id,
                 TerminalReadRequest {
-                    offset: None,
-                    count: Some(500),
+                    offset: query_value(query, "offset")
+                        .ok()
+                        .flatten()
+                        .and_then(|value| value.parse::<u64>().ok()),
+                    count: Some(
+                        query_value(query, "count")
+                            .ok()
+                            .flatten()
+                            .and_then(|value| value.parse::<u64>().ok())
+                            .unwrap_or(1_000)
+                            .clamp(1, 2_000),
+                    ),
                 },
             ) {
                 Ok(result) => json_response(
@@ -1925,6 +2899,8 @@ impl PreviewService {
                     &serde_json::json!({
                         "text": result.text,
                         "totalLines": result.total_lines,
+                        "lineBegin": result.line_begin,
+                        "lineEnd": result.line_end,
                         "truncated": result.truncated
                     }),
                 ),
@@ -2060,11 +3036,12 @@ pub fn register(
     registry: Arc<WorkspaceRegistry>,
     agents: Arc<AgentRegistry>,
     terminals: Arc<TerminalSessionService>,
+    jobs: Arc<dyn JobRegistry>,
     subprocess: Arc<dyn SubprocessRuntime>,
     sandbox: Arc<dyn SandboxProvider>,
     allow_remote_host: bool,
 ) -> RouteDisposer {
-    let service = PreviewService::new(registry, agents, terminals, subprocess, sandbox);
+    let service = PreviewService::new(registry, agents, terminals, jobs, subprocess, sandbox);
     web_server.register(WebRoute {
         kind: WebRouteKind::Prefix,
         path: ROUTE.to_string(),
@@ -2080,6 +3057,28 @@ pub fn register(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_git(root: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args([
+                "-c",
+                "user.name=DSH Test",
+                "-c",
+                "user.email=test@dsh.invalid",
+            ])
+            .args(args)
+            .output()
+            .expect("run fixture git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
 
     #[test]
     fn relative_paths_fail_closed() {
@@ -2154,5 +3153,149 @@ mod tests {
         if cfg!(windows) {
             assert_eq!(rendered, r"D:\workspace");
         }
+    }
+
+    #[tokio::test]
+    async fn git_inventory_fences_repositories_and_linked_worktrees() {
+        let fixture =
+            std::env::temp_dir().join(format!("dsh-preview-git-{}", uuid::Uuid::new_v4()));
+        let workspace = fixture.join("workspace");
+        let main = workspace.join("main repository");
+        let nested = workspace.join("packages").join("nested repository");
+        let linked = fixture.join("linked worktree");
+        std::fs::create_dir_all(&main).expect("create main fixture");
+        std::fs::create_dir_all(&nested).expect("create nested fixture");
+        fixture_git(&main, &["init", "-q"]);
+        fixture_git(&main, &["checkout", "-q", "-b", "main"]);
+        std::fs::write(main.join("tracked.txt"), "base\n").expect("write main file");
+        fixture_git(&main, &["add", "-A"]);
+        fixture_git(&main, &["commit", "-q", "-m", "base"]);
+        fixture_git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature/sidebar",
+                linked.to_string_lossy().as_ref(),
+            ],
+        );
+        std::fs::write(linked.join("tracked.txt"), "changed\n").expect("write linked file");
+
+        fixture_git(&nested, &["init", "-q"]);
+        std::fs::write(nested.join("nested.txt"), "nested\n").expect("write nested file");
+
+        let repositories = git_repositories(&workspace)
+            .await
+            .unwrap_or_else(|_| panic!("discover repository fixtures"));
+        assert_eq!(repositories.len(), 2);
+        assert!(
+            repositories
+                .iter()
+                .any(|entry| entry.relative_path == "main repository")
+        );
+        assert!(
+            repositories
+                .iter()
+                .any(|entry| entry.relative_path == "packages/nested repository")
+        );
+
+        let main_path = main.canonicalize().expect("canonical main");
+        let (_, selected) =
+            resolve_repository(&workspace, Some(main_path.to_string_lossy().as_ref()))
+                .await
+                .unwrap_or_else(|_| panic!("select discovered repository"));
+        let worktrees = git_worktrees(&selected)
+            .await
+            .unwrap_or_else(|_| panic!("list linked worktrees"));
+        assert_eq!(worktrees.len(), 2);
+        let linked_entry = worktrees
+            .iter()
+            .find(|entry| entry.branch == "feature/sidebar")
+            .expect("linked entry");
+        assert_eq!(linked_entry.changes, 1);
+        let (_, selected_linked) = resolve_worktree(&selected, Some(&linked_entry.path))
+            .await
+            .unwrap_or_else(|_| panic!("select linked worktree"));
+        let status = git_status(&selected, &selected_linked)
+            .await
+            .unwrap_or_else(|_| panic!("read linked status"));
+        assert_eq!(status.branch, "feature/sidebar");
+        assert_eq!(status.entries.len(), 1);
+        let diff = git_diff(&selected_linked, "tracked.txt", false)
+            .await
+            .unwrap_or_else(|_| panic!("read linked diff"));
+        assert!(diff.diff.contains("changed"));
+        let (history, _) = git_history(&selected_linked, 0, 30)
+            .await
+            .unwrap_or_else(|_| panic!("read history"));
+        assert_eq!(history[0].subject, "base");
+        assert!(
+            resolve_worktree(&selected, Some(fixture.to_string_lossy().as_ref()))
+                .await
+                .is_err()
+        );
+
+        fixture_git(
+            &main,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                linked.to_string_lossy().as_ref(),
+            ],
+        );
+        std::fs::remove_dir_all(&fixture).expect("remove git fixture");
+    }
+
+    #[test]
+    fn git_revision_validation_is_hash_only() {
+        assert!(valid_revision("abcdef1"));
+        assert!(valid_revision(&"a".repeat(64)));
+        assert!(!valid_revision("HEAD~1"));
+        assert!(!valid_revision("abc123"));
+        assert!(!valid_revision("abcdefg"));
+    }
+
+    #[test]
+    fn git_commit_message_limit_counts_unicode_characters() {
+        assert!(valid_commit_message(&"修".repeat(500)));
+        assert!(!valid_commit_message(&"修".repeat(501)));
+        assert!(!valid_commit_message("  \n\t"));
+    }
+
+    #[test]
+    fn git_resource_failures_have_stable_public_codes() {
+        let failure = dsh_native_command::NativeCommandFailure {
+            message: "timeout".to_string(),
+            code: Some("TIMEOUT".to_string()),
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+        assert_eq!(git_failure(&failure).0, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(git_failure(&failure).1, "git-timeout");
+        let failure = dsh_native_command::NativeCommandFailure {
+            message: "limit".to_string(),
+            code: Some("OUTPUT_LIMIT".to_string()),
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+        assert_eq!(git_failure(&failure).0, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(git_failure(&failure).1, "git-output-limit");
+        let failure = dsh_native_command::NativeCommandFailure {
+            message: "exit 1".to_string(),
+            code: Some("1".to_string()),
+            stdout: String::new(),
+            stderr: "specific git failure\n".to_string(),
+        };
+        assert_eq!(
+            git_failure(&failure),
+            (
+                StatusCode::BAD_REQUEST,
+                "git-failed",
+                "specific git failure".to_string()
+            )
+        );
     }
 }

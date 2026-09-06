@@ -261,10 +261,31 @@ pub struct ToolSchema {
     pub parameters: JsonValue,
 }
 
+/// Agent execution policy; never serialized into a provider request body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExecutionMode {
+    #[default]
+    Standard,
+    Ultra,
+}
+impl ExecutionMode {
+    pub fn is_standard(&self) -> bool {
+        *self == Self::Standard
+    }
+}
+
 /// Provider, model, reasoning effort, and sampling scalars of one
 /// conversation's requests (TS `LlmCallConfig`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LlmCallConfig {
+    #[serde(
+        default,
+        skip_serializing_if = "ExecutionMode::is_standard",
+        rename = "executionMode"
+    )]
+    pub execution_mode: ExecutionMode,
+
     pub provider: String,
     pub model: String,
     #[serde(
@@ -432,6 +453,9 @@ pub struct LlmModelReasoningInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmResolvedModelInfo {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_modes: Vec<ExecutionMode>,
+
     pub provider: String,
     pub id: String,
     pub name: String,

@@ -4,6 +4,13 @@
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
 web/dist/plugins/*.js binary
+# Runtime plugin sources are copied verbatim into the hashed distribution.
+web/src/runtime-plugins/*.js -text whitespace=cr-at-eol
+# Generated third-party strings and license text retain vendor formatting.
+release/plugins/dsh-sidebar-workbench-suite/lib/editor.js -whitespace
+release/plugins/dsh-sidebar-workbench-suite/lib/markdown.js -whitespace
+release/plugins/dsh-sidebar-workbench-suite/lib/mermaid.js -whitespace
+release/plugins/dsh-sidebar-workbench-suite/THIRD_PARTY_NOTICES.md -whitespace
 
 *.png binary
 *.jpg binary

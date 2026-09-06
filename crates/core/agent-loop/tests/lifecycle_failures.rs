@@ -4,5 +4,7 @@ mod cancellation;
 mod parallel_cancellation;
 #[path = "lifecycle_failures/provider_stream.rs"]
 mod provider_stream;
+#[path = "lifecycle_failures/steering.rs"]
+mod steering;
 #[path = "lifecycle_failures/support.rs"]
 mod support;

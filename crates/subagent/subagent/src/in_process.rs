@@ -119,6 +119,10 @@ pub async fn start_in_process_run(
         return Err(SubagentError::new("CHILD_COMPOSE_FAILED", error));
     }
 
+    if let Err(error) = crate::ultra::mark_child(parent.as_ref(), handle.agent.as_ref()) {
+        handle.dispose.await;
+        return Err(SubagentError::new("CHILD_COMPOSE_FAILED", error));
+    }
     let structured = if let Some(schema) = request.request.output_schema.clone() {
         match crate::structured::attach_structured_runtime(handle.agent.ctx(), schema).await {
             Ok(attachment) => Some(attachment),

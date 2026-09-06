@@ -38,24 +38,8 @@ impl Default for Config {
     fn default() -> Self {
         #[cfg(windows)]
         let (shell_path, shell_args) = (
-            windows_powershell(),
-            vec![
-                "-NoLogo".to_string(),
-                "-NoProfile".to_string(),
-                "-NonInteractive".to_string(),
-                "-Command".to_string(),
-                concat!(
-                    "$ErrorActionPreference='Continue'; ",
-                    "[Console]::Out.Write('dsh> '); ",
-                    "while (($line=[Console]::In.ReadLine()) -ne $null) { ",
-                    "try { $value=Invoke-Expression $line 2>&1; ",
-                    "if ($null -ne $value) { ",
-                    "$value | Out-String -Width 4096 | ForEach-Object { [Console]::Out.Write($_) } ",
-                    "} } catch { [Console]::Out.WriteLine($_.ToString()) }; ",
-                    "[Console]::Out.Write('dsh> ') }"
-                )
-                .to_string(),
-            ],
+            windows_command_shell(),
+            vec!["/D".to_string(), "/Q".to_string()],
         );
         #[cfg(not(windows))]
         let (shell_path, shell_args) = (
@@ -83,22 +67,19 @@ impl Default for Config {
 }
 
 #[cfg(windows)]
-fn windows_powershell() -> String {
-    let mut candidates = Vec::new();
-    if let Some(program_files) = std::env::var_os("ProgramFiles") {
-        candidates.push(std::path::PathBuf::from(program_files).join(r"PowerShell\7\pwsh.exe"));
-    }
+fn windows_command_shell() -> String {
+    let mut candidates = std::env::var_os("ComSpec")
+        .map(std::path::PathBuf::from)
+        .into_iter()
+        .collect::<Vec<_>>();
     if let Some(system_root) = std::env::var_os("SystemRoot") {
-        candidates.push(
-            std::path::PathBuf::from(system_root)
-                .join(r"System32\WindowsPowerShell\v1.0\powershell.exe"),
-        );
+        candidates.push(std::path::PathBuf::from(system_root).join(r"System32\cmd.exe"));
     }
     candidates
         .into_iter()
         .find(|path| path.is_file())
         .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "powershell.exe".to_string())
+        .unwrap_or_else(|| "cmd.exe".to_string())
 }
 
 pub struct ShellTerminalBackend {
@@ -179,6 +160,7 @@ fn terminal_argv(
         .confine(
             &argv,
             &SandboxPolicy {
+                read_only_roots: policy.read_only_roots.clone(),
                 mode,
                 workspace_root: policy.workspace_root.clone(),
                 session_id: policy.session_id.clone(),
@@ -186,6 +168,18 @@ fn terminal_argv(
         )
         .map(|confined| confined.argv)
         .map_err(|error| error.to_string())
+}
+
+fn terminal_cwd(value: String) -> String {
+    if cfg!(windows) {
+        if let Some(network) = value.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{network}");
+        }
+        if let Some(local) = value.strip_prefix(r"\\?\") {
+            return local.to_string();
+        }
+    }
+    value
 }
 
 impl TerminalBackend for ShellTerminalBackend {
@@ -210,12 +204,13 @@ impl TerminalBackend for ShellTerminalBackend {
                 return Err(TerminalBackendSpawnError::spawn("terminal spawn aborted"));
             }
             let argv = argv.map_err(TerminalBackendSpawnError::spawn)?;
+            let cwd = terminal_cwd(spec.cwd.unwrap_or(policy.workspace_root));
             let terminal = subprocess
                 .spawn_terminal(SubprocessTerminalSpawnSpec {
                     argv,
-                    cwd: spec.cwd.unwrap_or(policy.workspace_root),
+                    cwd,
                     env: Some(vec![
-                        ("TERM".to_string(), "dumb".to_string()),
+                        ("TERM".to_string(), "xterm-256color".to_string()),
                         ("PAGER".to_string(), "cat".to_string()),
                         ("GIT_PAGER".to_string(), "cat".to_string()),
                         ("PS1".to_string(), "dsh> ".to_string()),
@@ -300,6 +295,40 @@ impl BoundedText {
     }
 }
 
+fn drain_utf8(buffer: &mut Vec<u8>, final_chunk: bool) -> String {
+    let mut output = String::new();
+    loop {
+        match std::str::from_utf8(buffer) {
+            Ok(text) => {
+                output.push_str(text);
+                buffer.clear();
+                break;
+            }
+            Err(failure) => {
+                let valid = failure.valid_up_to();
+                if valid > 0 {
+                    output.push_str(
+                        std::str::from_utf8(&buffer[..valid])
+                            .expect("valid_up_to always delimits valid UTF-8"),
+                    );
+                    buffer.drain(..valid);
+                }
+                if let Some(length) = failure.error_len() {
+                    output.push('\u{fffd}');
+                    buffer.drain(..length.min(buffer.len()));
+                    continue;
+                }
+                if final_chunk {
+                    output.push_str(&String::from_utf8_lossy(buffer));
+                    buffer.clear();
+                }
+                break;
+            }
+        }
+    }
+    output
+}
+
 struct SendState {
     output: Mutex<BoundedText>,
     settled: AtomicBool,
@@ -353,16 +382,26 @@ impl LocalPtySession {
         let max_lines = config.scrollback_lines;
         let max_read = config.max_read_bytes;
         tokio::spawn(async move {
+            let mut undecoded = Vec::new();
             while let Some(chunk) = stream.next().await {
-                let text = String::from_utf8_lossy(&chunk)
-                    .replace("\r\n", "\n")
-                    .replace('\r', "\n");
+                // Retain CR and ANSI/VT sequences. Interactive Web terminals
+                // need the original byte order to update cursor position,
+                // colours and progress lines correctly.
+                undecoded.extend_from_slice(&chunk);
+                let text = drain_utf8(&mut undecoded, false);
                 output_task.lock().append(&text, max_bytes, Some(max_lines));
                 if let Some(active) = active_task.lock().clone() {
                     active.output.lock().append(&text, max_read, None);
                 }
                 *last_output_task.lock() = Instant::now();
                 notify_task.notify_waiters();
+            }
+            let tail = drain_utf8(&mut undecoded, true);
+            if !tail.is_empty() {
+                output_task.lock().append(&tail, max_bytes, Some(max_lines));
+                if let Some(active) = active_task.lock().clone() {
+                    active.output.lock().append(&tail, max_read, None);
+                }
             }
             notify_task.notify_waiters();
         });
@@ -396,7 +435,7 @@ impl LocalPtySession {
     }
 
     async fn initialize(&self) -> Result<(), String> {
-        let deadline = Instant::now() + Duration::from_millis(self.config.timeout_ms.min(5_000));
+        let deadline = Instant::now() + Duration::from_millis(self.config.timeout_ms.min(20_000));
         let silence = Duration::from_millis(self.config.idle_silence_ms);
         loop {
             if matches!(self.status(), TerminalSessionStatus::Exited { .. }) {
@@ -405,7 +444,7 @@ impl LocalPtySession {
             let output = self.output.lock().snapshot().0;
             let quiet = self.last_output.lock().elapsed() >= silence;
             #[cfg(windows)]
-            if !output.is_empty() && quiet {
+            if visible_terminal_text(&output).contains('>') && quiet {
                 return Ok(());
             }
             #[cfg(not(windows))]
@@ -423,6 +462,50 @@ impl LocalPtySession {
             }
         }
     }
+}
+
+#[cfg(windows)]
+fn visible_terminal_text(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut output = String::new();
+    let mut index = 0_usize;
+    while index < bytes.len() {
+        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'[') {
+            index += 2;
+            while index < bytes.len() {
+                let byte = bytes[index];
+                index += 1;
+                if (0x40..=0x7e).contains(&byte) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b']') {
+            index += 2;
+            while index < bytes.len() {
+                if bytes[index] == 0x07 {
+                    index += 1;
+                    break;
+                }
+                if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
+                    index += 2;
+                    break;
+                }
+                index += 1;
+            }
+            continue;
+        }
+        let tail = &value[index..];
+        let Some(ch) = tail.chars().next() else {
+            break;
+        };
+        if !ch.is_control() {
+            output.push(ch);
+        }
+        index += ch.len_utf8();
+    }
+    output
 }
 
 impl TerminalBackendSession for LocalPtySession {
@@ -515,6 +598,12 @@ impl TerminalBackendSession for LocalPtySession {
         .shared();
         Arc::new(LocalSendOperation { state, done })
     }
+    fn write_input(&self, data: &str) -> BoxFuture<'static, Result<(), String>> {
+        self.terminal.write(data)
+    }
+    fn resize(&self, rows: u16, cols: u16) -> BoxFuture<'static, Result<(), String>> {
+        self.terminal.resize(rows, cols)
+    }
     fn read(&self, request: &TerminalReadRequest) -> TerminalReadResult {
         let (text, inherited_truncation) = self.output.lock().snapshot();
         let lines: Vec<&str> = if text.is_empty() {
@@ -574,6 +663,50 @@ impl TerminalBackendSession for LocalPtySession {
     fn close(&self, _reason: &str) -> BoxFuture<'static, Result<(), String>> {
         self.closing.store(true, SeqCst);
         self.terminal.terminate()
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::{terminal_cwd, visible_terminal_text};
+
+    #[test]
+    fn startup_probe_ignores_device_queries_and_waits_for_prompt() {
+        assert_eq!(
+            visible_terminal_text("\u{1b}[6n\u{1b}]0;PowerShell\u{7}\u{1b}[?25h"),
+            ""
+        );
+        assert!(visible_terminal_text("\u{1b}[32mPS C:\\repo>\u{1b}[0m ").contains('>'));
+    }
+
+    #[test]
+    fn cmd_cwd_drops_the_windows_verbatim_prefix() {
+        assert_eq!(
+            terminal_cwd(r"\\?\D:\workspace".to_string()),
+            r"D:\workspace"
+        );
+        assert_eq!(
+            terminal_cwd(r"\\?\UNC\server\share".to_string()),
+            r"\\server\share"
+        );
+    }
+}
+
+#[cfg(test)]
+mod utf8_tests {
+    use super::drain_utf8;
+
+    #[test]
+    fn terminal_output_keeps_codepoints_split_across_pty_chunks() {
+        let encoded = "你".as_bytes();
+        let mut pending = encoded[..2].to_vec();
+        assert_eq!(drain_utf8(&mut pending, false), "");
+        pending.extend_from_slice(&encoded[2..]);
+        assert_eq!(drain_utf8(&mut pending, false), "你");
+        assert!(pending.is_empty());
+
+        let mut invalid = b"a\xffb".to_vec();
+        assert_eq!(drain_utf8(&mut invalid, true), "a\u{fffd}b");
     }
 }
 

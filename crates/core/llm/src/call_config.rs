@@ -7,7 +7,8 @@ use crate::types::{GenerateOptions, LlmCallConfig, LlmCallConfigAdapterDefaults}
 /// runs to decide whether a proposed configuration is a real change (worth a
 /// logged header snapshot) or the held one restated.
 pub fn call_config_equals(a: &LlmCallConfig, b: &LlmCallConfig) -> bool {
-    if a.provider != b.provider
+    if a.execution_mode != b.execution_mode
+        || a.provider != b.provider
         || a.model != b.model
         || a.reasoning_effort != b.reasoning_effort
         || a.temperature != b.temperature

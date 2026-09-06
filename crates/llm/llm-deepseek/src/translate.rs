@@ -13,6 +13,24 @@ mod identity_tests {
     use serde_json::json;
 
     #[test]
+    fn nullable_stream_collections_preserve_text_and_tool_results() {
+        let mut translator = Translator::new();
+        translator
+            .consume(r#"{"choices":null,"usage":null}"#)
+            .unwrap();
+        translator
+            .consume(r#"{"choices":[{"delta":{"content":"OK","tool_calls":null}}]}"#)
+            .unwrap();
+        let completed = translator.consume(DONE).unwrap();
+        assert!(completed.iter().any(|chunk| matches!(chunk, StreamChunk::BlockEnd {block: ContentBlock::Text {text, ..}, ..} if text == "OK")));
+        assert!(
+            Translator::new()
+                .consume(r#"{"choices":[{"delta":{"tool_calls":"invalid"}}]}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn empty_and_null_continuations_preserve_interleaved_tool_identities() {
         let mut translator = Translator::new();
         for calls in [
@@ -54,7 +72,7 @@ fn failure(message: impl Into<String>, code: impl Into<String>) -> LlmFailure {
 
 #[derive(Deserialize)]
 struct WireChunk {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_vec")]
     choices: Vec<WireChoice>,
     usage: Option<WireUsage>,
 }
@@ -69,8 +87,16 @@ struct WireChoice {
 struct WireDelta {
     content: Option<String>,
     reasoning_content: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_vec")]
     tool_calls: Vec<WireToolCallDelta>,
+}
+
+fn nullable_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Deserialize)]
@@ -167,10 +193,10 @@ impl Translator {
         if payload == DONE {
             return Ok(self.close());
         }
-        let wire: WireChunk = serde_json::from_str(payload).map_err(|_| {
+        let wire: WireChunk = serde_json::from_str(payload).map_err(|error| {
             failure(
                 format!(
-                    "malformed SSE payload: {}",
+                    "malformed SSE payload ({error}): {}",
                     payload.chars().take(120).collect::<String>()
                 ),
                 "MALFORMED_RESPONSE",

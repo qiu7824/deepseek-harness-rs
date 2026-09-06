@@ -1,0 +1,25 @@
+{
+  "name": "dsh-sidebar-workbench-suite",
+  "version": "0.1.0",
+  "description": "Rich Markdown, data, side-conversation, job, and subagent views for the Rust sidebar extension API.",
+  "license": "MIT",
+  "exports": { "./client": "./lib/client.js" },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "dsh-better-sidebar",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-subagent",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ],
+      "assets": {
+        "editor.js": "./lib/editor.js",
+        "markdown.js": "./lib/markdown.js",
+        "mermaid.js": "./lib/mermaid.js"
+      }
+    }
+  }
+}

@@ -140,7 +140,8 @@ async fn login_connect_refresh_use_live_account_catalog_and_preserve_field_prefe
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     let view = auth.model_view(p.id).await.unwrap();
     assert_eq!(view["catalog"]["count"], 2);
-    assert_eq!(view["models"][0]["reasoning"]["defaultEffort"], "ultra");
+    assert!(view["models"][0]["reasoning"]["defaultEffort"].is_null());
+    assert_eq!(view["models"][0]["executionModes"], json!(["ultra"]));
     let ns = dsh_settings::settings_namespace("llm-pi-ai").unwrap();
     auth.settings.update(&ns,json!({"providers":{"openai-codex":{"modelPreferences":{session.account_scope.clone():{"gpt-6-account-model":{"enabled":false,"name":"My alias"}}}}}}),None).await.unwrap();
     auth.handle("connect", &json!({"provider":"openai-codex"}))
@@ -150,19 +151,19 @@ async fn login_connect_refresh_use_live_account_catalog_and_preserve_field_prefe
     assert_eq!(view["models"][0]["contextWindow"], 200000);
     assert_eq!(view["models"][0]["name"], "My alias");
     assert_eq!(view["models"][0]["enabled"], false);
-    assert_eq!(view["models"][0]["effortDescriptions"]["ultra"], "Thorough");
+    assert!(view["models"][0]["effortDescriptions"]["ultra"].is_null());
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     let parsed = crate::openai_profiles(&auth.settings.get(&ns).unwrap()).unwrap();
     assert!(
         parsed.providers[p.id].models.is_empty(),
         "remote directory must not be copied into the user's manual model list"
     );
-    let adapter = crate::OpenAiCompatibleAdapter {
+    let adapter = Arc::new(crate::OpenAiCompatibleAdapter {
         auth: Some(auth.clone()),
         profiles: Arc::new(parking_lot::Mutex::new(parsed.providers)),
         credentials: auth.credentials.clone(),
-        attachment_ctx: ctx,
-    };
+        attachment_ctx: ctx.clone(),
+    });
     let listed = adapter.list_models(p.id).await;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, "second-model");
@@ -170,11 +171,43 @@ async fn login_connect_refresh_use_live_account_catalog_and_preserve_field_prefe
         .resolve_model(p.id, "gpt-6-account-model", None)
         .await;
     let reasoning = resolved.reasoning.unwrap();
-    assert_eq!(reasoning.default_effort.unwrap().as_str(), "ultra");
-    assert_eq!(
-        reasoning.efforts[1].description.as_deref(),
-        Some("Thorough")
+    assert!(reasoning.default_effort.is_none());
+    assert!(
+        reasoning
+            .efforts
+            .iter()
+            .all(|effort| effort.id.as_str() != "ultra")
     );
+    assert!(
+        resolved
+            .execution_modes
+            .contains(&dsh_llm::ExecutionMode::Ultra)
+    );
+    let runtime = dsh_llm::LlmRuntime::install(&ctx);
+    runtime
+        .register_adapter(&ctx, vec![p.id.into()], adapter.clone())
+        .unwrap();
+    for legacy in [false, true] {
+        let resolved = runtime
+            .resolve_call_config(
+                &dsh_llm::LlmCallConfig {
+                    provider: p.id.into(),
+                    model: "gpt-6-account-model".into(),
+                    execution_mode: if legacy {
+                        dsh_llm::ExecutionMode::Standard
+                    } else {
+                        dsh_llm::ExecutionMode::Ultra
+                    },
+                    reasoning_effort: legacy.then(|| dsh_llm::reasoning_effort_id("ultra")),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(resolved.execution_mode, dsh_llm::ExecutionMode::Ultra);
+        assert_eq!(resolved.reasoning_effort.unwrap().as_str(), "high");
+    }
     assert_eq!(resolved.context.unwrap().context_window, 200000);
     drop(adapter);
     clean(auth, root).await;

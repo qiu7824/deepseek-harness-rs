@@ -1,13 +1,17 @@
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use dsh_host_webserver::{WebHandlerError, WebResponse, WebRoute, WebRouteKind, WebServer};
 use http::{Method, Response, StatusCode};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const MAX_CLIENT_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_CLIENT_ASSET_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_CLIENT_ASSETS: usize = 16;
+const MAX_CLIENT_ASSET_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 const RETIRED_BUNDLED_PLUGINS: [&str; 1] = ["dsh-task-manager"];
 
 fn remove_retired_bundled(profile: &Path) -> Result<(), String> {
@@ -130,10 +134,20 @@ pub fn materialize_bundled(profile: &Path) -> Result<(), String> {
         .ok()
         .and_then(|path| path.parent().map(|parent| parent.join("plugins")))
         .filter(|path| path.is_dir())
+        .or_else(|| {
+            let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../release/plugins");
+            (cfg!(debug_assertions) && checkout.is_dir()).then_some(checkout)
+        })
     else {
         return Ok(());
     };
     let package_path = profile.join("package.json");
+    if !package_path.exists() {
+        dsh_workspace_resources::persist_json(
+            &package_path,
+            &json!({"name":"dsh-client-profile","private":true,"dependencies":{}}),
+        )?;
+    }
     let mut profile_manifest: Value = serde_json::from_slice(
         &std::fs::read(&package_path)
             .map_err(|error| format!("read {}: {error}", package_path.display()))?,
@@ -215,6 +229,16 @@ pub struct ClientPlugin {
     pub rev: String,
     pub inject: Vec<String>,
     pub source: PathBuf,
+    pub bytes: Bytes,
+    pub assets: Vec<ClientPluginAsset>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClientPluginAsset {
+    pub name: String,
+    pub route: String,
+    pub source: PathBuf,
+    pub bytes: Bytes,
 }
 
 fn valid_package_segment(segment: &str, allow_scope: bool) -> bool {
@@ -258,6 +282,19 @@ fn client_export(value: &Value) -> Option<&str> {
     }
 }
 
+fn safe_asset_name(name: &str) -> bool {
+    !matches!(name, "" | "." | "..")
+        && !name.contains('/')
+        && !name.contains('\\')
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        && matches!(
+            Path::new(name).extension().and_then(|part| part.to_str()),
+            Some("js")
+        )
+}
+
 fn inside_package(package: &Path, relative: &str) -> Option<PathBuf> {
     let relative = relative.strip_prefix("./").unwrap_or(relative);
     let path = Path::new(relative);
@@ -275,6 +312,40 @@ fn inside_package(package: &Path, relative: &str) -> Option<PathBuf> {
     let root = package.canonicalize().ok()?;
     let target = package.join(path).canonicalize().ok()?;
     target.starts_with(&root).then_some(target)
+}
+
+fn read_bounded(path: &Path, max_bytes: u64) -> Result<Option<Vec<u8>>, String> {
+    let file =
+        std::fs::File::open(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    Ok(((bytes.len() as u64) <= max_bytes).then_some(bytes))
+}
+
+fn javascript_response(method: &Method, bytes: Bytes) -> WebResponse {
+    if !matches!(*method, Method::GET | Method::HEAD) {
+        return Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .header(http::header::ALLOW, "GET, HEAD")
+            .header(http::header::CACHE_CONTROL, "no-store")
+            .header(http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+            .body(Body::empty())
+            .expect("plugin method response");
+    }
+    let body = if method == Method::HEAD {
+        Body::empty()
+    } else {
+        Body::from(bytes)
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")
+        .header(http::header::CACHE_CONTROL, "no-store")
+        .header(http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .body(body)
+        .expect("plugin JavaScript response")
 }
 
 pub fn discover(profile: &Path) -> Result<Vec<ClientPlugin>, String> {
@@ -329,15 +400,82 @@ pub fn discover(profile: &Path) -> Result<Vec<ClientPlugin>, String> {
             eprintln!("dsh: skipping client plugin {name:?}: unsafe or missing client export");
             continue;
         };
-        let metadata = std::fs::metadata(&source)
-            .map_err(|error| format!("stat {}: {error}", source.display()))?;
-        if metadata.len() > MAX_CLIENT_BYTES {
+        let Some(bytes) = read_bounded(&source, MAX_CLIENT_BYTES)? else {
             eprintln!("dsh: skipping client plugin {name:?}: client bundle exceeds 2 MiB");
             continue;
+        };
+        let identity_digest = format!("{:x}", Sha256::digest(name.as_bytes()));
+        let declared_assets = client
+            .and_then(|client| client.get("assets"))
+            .and_then(Value::as_object);
+        if declared_assets.is_some_and(|declared| declared.len() > MAX_CLIENT_ASSETS) {
+            eprintln!(
+                "dsh: skipping client plugin {name:?}: more than {MAX_CLIENT_ASSETS} client assets were declared"
+            );
+            continue;
         }
-        let bytes = std::fs::read(&source)
-            .map_err(|error| format!("read {}: {error}", source.display()))?;
-        let digest = format!("{:x}", Sha256::digest(&bytes));
+        let mut staged_assets = Vec::new();
+        let mut asset_total_bytes = 0_u64;
+        let mut asset_budget_exceeded = false;
+        if let Some(declared) = declared_assets {
+            for (asset_name, relative) in declared {
+                let Some(relative) = relative.as_str() else {
+                    eprintln!("dsh: skipping non-string client asset {name:?}/{asset_name:?}");
+                    continue;
+                };
+                if !safe_asset_name(asset_name) {
+                    eprintln!("dsh: skipping unsafe client asset name {name:?}/{asset_name:?}");
+                    continue;
+                }
+                let Some(asset_source) = inside_package(&package, relative) else {
+                    eprintln!(
+                        "dsh: skipping unsafe or missing client asset {name:?}/{asset_name:?}"
+                    );
+                    continue;
+                };
+                let Some(asset_bytes) = read_bounded(&asset_source, MAX_CLIENT_ASSET_BYTES)? else {
+                    eprintln!("dsh: skipping oversized client asset {name:?}/{asset_name:?}");
+                    continue;
+                };
+                asset_total_bytes = asset_total_bytes.saturating_add(asset_bytes.len() as u64);
+                if asset_total_bytes > MAX_CLIENT_ASSET_TOTAL_BYTES {
+                    asset_budget_exceeded = true;
+                    break;
+                }
+                staged_assets.push((asset_name.clone(), asset_source, Bytes::from(asset_bytes)));
+            }
+        }
+        if asset_budget_exceeded {
+            eprintln!(
+                "dsh: skipping client plugin {name:?}: client assets exceed the {} MiB total limit",
+                MAX_CLIENT_ASSET_TOTAL_BYTES / (1024 * 1024)
+            );
+            continue;
+        }
+        staged_assets.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut revision = Sha256::new();
+        revision.update(b"dsh-client-plugin-v2\0");
+        revision.update((name.len() as u64).to_le_bytes());
+        revision.update(name.as_bytes());
+        revision.update((bytes.len() as u64).to_le_bytes());
+        revision.update(&bytes);
+        for (asset_name, _, asset_bytes) in &staged_assets {
+            revision.update((asset_name.len() as u64).to_le_bytes());
+            revision.update(asset_name.as_bytes());
+            revision.update((asset_bytes.len() as u64).to_le_bytes());
+            revision.update(asset_bytes.as_ref());
+        }
+        let digest = format!("{:x}", revision.finalize());
+        let route_stem = format!("{}-{}", &digest[..16], &identity_digest[..16]);
+        let assets = staged_assets
+            .into_iter()
+            .map(|(asset_name, source, bytes)| ClientPluginAsset {
+                route: format!("/plugins/external/{route_stem}/{asset_name}"),
+                name: asset_name,
+                source,
+                bytes,
+            })
+            .collect();
         let inject = client
             .and_then(|client| client.get("inject"))
             .and_then(Value::as_array)
@@ -351,10 +489,12 @@ pub fn discover(profile: &Path) -> Result<Vec<ClientPlugin>, String> {
             .unwrap_or_default();
         plugins.push(ClientPlugin {
             id: name.clone(),
-            route: format!("/plugins/external/{}.js", &digest[..16]),
+            route: format!("/plugins/external/{route_stem}.js"),
             rev: digest[..16].to_string(),
             inject,
             source,
+            bytes: Bytes::from(bytes),
+            assets,
         });
     }
     plugins.sort_by(|left, right| left.id.cmp(&right.id));
@@ -374,6 +514,50 @@ pub(crate) fn disabled_plugins(profile: &Path) -> std::collections::HashSet<Stri
         .collect()
 }
 
+pub(crate) fn apply_enabled_graph(
+    payload: &mut Value,
+    disabled: &std::collections::HashSet<String>,
+) {
+    let Some(entries) = payload.get("entries").and_then(Value::as_array).cloned() else {
+        return;
+    };
+    let mut unavailable = disabled.clone();
+    loop {
+        let before = unavailable.len();
+        for entry in &entries {
+            if entry
+                .get("inject")
+                .and_then(Value::as_array)
+                .is_some_and(|deps| {
+                    deps.iter()
+                        .filter_map(Value::as_str)
+                        .any(|id| unavailable.contains(id))
+                })
+            {
+                if let Some(id) = entry.get("id").and_then(Value::as_str) {
+                    unavailable.insert(id.to_string());
+                }
+            }
+        }
+        if unavailable.len() == before {
+            break;
+        }
+    }
+    // Keep the trusted bundle catalog available for live re-enablement.
+    payload["availableEntries"] = Value::Array(entries.clone());
+    payload["entries"] = Value::Array(
+        entries
+            .into_iter()
+            .filter(|entry| {
+                entry
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_none_or(|id| !unavailable.contains(id))
+            })
+            .collect(),
+    );
+}
+
 pub fn compose(
     web_server: &Arc<WebServer>,
     boot_payload: &mut Value,
@@ -386,33 +570,28 @@ pub fn compose(
         .ok_or_else(|| "web plugin manifest entries are absent".to_string())?;
     let mut disposers = Vec::new();
     for plugin in plugins {
-        let bytes = Arc::new(
-            std::fs::read(&plugin.source)
-                .map_err(|error| format!("read {}: {error}", plugin.source.display()))?,
-        );
+        for asset in &plugin.assets {
+            let bytes = asset.bytes.clone();
+            let route = asset.route.clone();
+            let handler = Arc::new(move |request: dsh_host_webserver::WebRequest| {
+                let bytes = bytes.clone();
+                Box::pin(async move {
+                    Ok::<WebResponse, WebHandlerError>(javascript_response(request.method(), bytes))
+                })
+                    as futures::future::BoxFuture<'static, Result<WebResponse, WebHandlerError>>
+            });
+            disposers.push(web_server.register(WebRoute {
+                kind: WebRouteKind::Exact,
+                path: route,
+                handler,
+            }));
+        }
+        let bytes = plugin.bytes.clone();
         let route = plugin.route.clone();
         let handler = Arc::new(move |request: dsh_host_webserver::WebRequest| {
             let bytes = bytes.clone();
             Box::pin(async move {
-                if !matches!(*request.method(), Method::GET | Method::HEAD) {
-                    return Ok(Response::builder()
-                        .status(StatusCode::METHOD_NOT_ALLOWED)
-                        .body(Body::empty())
-                        .expect("plugin method response"));
-                }
-                let body = if request.method() == Method::HEAD {
-                    Body::empty()
-                } else {
-                    Body::from(bytes.as_ref().clone())
-                };
-                Ok::<WebResponse, WebHandlerError>(
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header(http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")
-                        .header(http::header::CACHE_CONTROL, "no-store")
-                        .body(body)
-                        .expect("plugin response"),
-                )
+                Ok::<WebResponse, WebHandlerError>(javascript_response(request.method(), bytes))
             })
                 as futures::future::BoxFuture<'static, Result<WebResponse, WebHandlerError>>
         });
@@ -426,7 +605,8 @@ pub fn compose(
             "url": route,
             "rev": plugin.rev,
             "inject": plugin.inject,
-            "immediately": false
+            "immediately": false,
+            "manageable": true
         }));
     }
     Ok(disposers)
@@ -499,5 +679,157 @@ mod tests {
             b"new"
         );
         std::fs::remove_dir_all(profile).expect("remove fixture");
+    }
+
+    #[test]
+    fn client_plugin_assets_are_bounded_and_routed_beside_the_entry() {
+        let profile =
+            std::env::temp_dir().join(format!("dsh-client-assets-{}", uuid::Uuid::new_v4()));
+        let package = profile.join("node_modules").join("asset-plugin");
+        std::fs::create_dir_all(package.join("lib")).expect("create asset package");
+        std::fs::write(
+            profile.join("package.json"),
+            br#"{"dependencies":{"asset-plugin":"1.0.0"}}"#,
+        )
+        .expect("write profile manifest");
+        std::fs::write(
+            package.join("package.json"),
+            br#"{"name":"asset-plugin","exports":{"./client":"./lib/client.js"},"dsh":{"client":{"platform":"web","assets":{"editor.js":"./lib/editor.js","../escape.js":"./lib/editor.js","missing.js":"./lib/missing.js"}}}}"#,
+        )
+        .expect("write package manifest");
+        std::fs::write(package.join("lib/client.js"), b"client").expect("write client");
+        std::fs::write(package.join("lib/editor.js"), b"editor").expect("write asset");
+
+        let plugins = discover(&profile).expect("discover plugin with asset");
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].assets.len(), 1);
+        assert_eq!(plugins[0].assets[0].name, "editor.js");
+        assert_eq!(
+            plugins[0].assets[0].route,
+            format!("{}/editor.js", plugins[0].route.trim_end_matches(".js"))
+        );
+        assert_eq!(
+            plugins[0].assets[0].source,
+            package
+                .join("lib/editor.js")
+                .canonicalize()
+                .expect("asset path")
+        );
+        let original_route = plugins[0].route.clone();
+        let original_rev = plugins[0].rev.clone();
+        std::fs::write(package.join("lib/editor.js"), b"editor changed")
+            .expect("change asset without changing client entry");
+        let changed = discover(&profile).expect("rediscover changed asset");
+        assert_ne!(changed[0].route, original_route);
+        assert_ne!(changed[0].rev, original_rev);
+        assert_ne!(changed[0].assets[0].route, plugins[0].assets[0].route);
+        std::fs::remove_dir_all(profile).expect("remove fixture");
+    }
+
+    #[test]
+    fn client_plugin_asset_count_limit_rejects_the_plugin() {
+        let profile =
+            std::env::temp_dir().join(format!("dsh-client-asset-count-{}", uuid::Uuid::new_v4()));
+        let package = profile.join("node_modules").join("asset-count-plugin");
+        std::fs::create_dir_all(package.join("lib")).expect("create asset package");
+        std::fs::write(
+            profile.join("package.json"),
+            br#"{"dependencies":{"asset-count-plugin":"1.0.0"}}"#,
+        )
+        .expect("write profile manifest");
+        std::fs::write(package.join("lib/client.js"), b"client").expect("write client");
+        std::fs::write(package.join("lib/shared.js"), b"asset").expect("write asset");
+        let assets = (0..=MAX_CLIENT_ASSETS)
+            .map(|index| (format!("asset-{index}.js"), json!("./lib/shared.js")))
+            .collect::<serde_json::Map<_, _>>();
+        std::fs::write(
+            package.join("package.json"),
+            serde_json::to_vec(&json!({
+                "name": "asset-count-plugin",
+                "exports": {"./client": "./lib/client.js"},
+                "dsh": {"client": {"platform": "web", "assets": assets}}
+            }))
+            .unwrap(),
+        )
+        .expect("write package manifest");
+        assert!(discover(&profile).expect("discover plugins").is_empty());
+        std::fs::remove_dir_all(profile).expect("remove fixture");
+    }
+
+    #[test]
+    fn client_plugin_asset_total_limit_rejects_the_plugin() {
+        let profile =
+            std::env::temp_dir().join(format!("dsh-client-asset-total-{}", uuid::Uuid::new_v4()));
+        let package = profile.join("node_modules").join("asset-total-plugin");
+        std::fs::create_dir_all(package.join("lib")).expect("create asset package");
+        std::fs::write(
+            profile.join("package.json"),
+            br#"{"dependencies":{"asset-total-plugin":"1.0.0"}}"#,
+        )
+        .expect("write profile manifest");
+        std::fs::write(package.join("lib/client.js"), b"client").expect("write client");
+        std::fs::write(package.join("lib/shared.js"), vec![b'x'; 7 * 1024 * 1024])
+            .expect("write shared large asset");
+        let assets = (0..5)
+            .map(|index| (format!("asset-{index}.js"), json!("./lib/shared.js")))
+            .collect::<serde_json::Map<_, _>>();
+        std::fs::write(
+            package.join("package.json"),
+            serde_json::to_vec(&json!({
+                "name": "asset-total-plugin",
+                "exports": {"./client": "./lib/client.js"},
+                "dsh": {"client": {"platform": "web", "assets": assets}}
+            }))
+            .unwrap(),
+        )
+        .expect("write package manifest");
+        assert!(discover(&profile).expect("discover plugins").is_empty());
+        std::fs::remove_dir_all(profile).expect("remove fixture");
+    }
+
+    #[tokio::test]
+    async fn javascript_responses_share_get_head_method_and_security_contract() {
+        let get = javascript_response(&Method::GET, Bytes::from_static(b"plugin"));
+        assert_eq!(get.status(), StatusCode::OK);
+        assert_eq!(
+            get.headers().get(http::header::CONTENT_TYPE).unwrap(),
+            "text/javascript; charset=utf-8"
+        );
+        assert_eq!(
+            get.headers().get(http::header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert_eq!(
+            get.headers()
+                .get(http::header::X_CONTENT_TYPE_OPTIONS)
+                .unwrap(),
+            "nosniff"
+        );
+        assert_eq!(
+            axum::body::to_bytes(get.into_body(), 32).await.unwrap(),
+            Bytes::from_static(b"plugin")
+        );
+
+        let head = javascript_response(&Method::HEAD, Bytes::from_static(b"plugin"));
+        assert_eq!(head.status(), StatusCode::OK);
+        assert!(
+            axum::body::to_bytes(head.into_body(), 32)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let post = javascript_response(&Method::POST, Bytes::from_static(b"plugin"));
+        assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            post.headers().get(http::header::ALLOW).unwrap(),
+            "GET, HEAD"
+        );
+        assert_eq!(
+            post.headers()
+                .get(http::header::X_CONTENT_TYPE_OPTIONS)
+                .unwrap(),
+            "nosniff"
+        );
     }
 }

@@ -11,6 +11,7 @@ dsh-agent = { path = "../../core/agent" }
 dsh-invariants = { path = "../../util/invariants" }
 dsh-jobs = { path = "../jobs" }
 dsh-scope = { path = "../../core/scope" }
+dsh-session = { path = "../../core/session" }
 dsh-timeout = { path = "../../util/timeout" }
 async-trait = { workspace = true }
 futures = { workspace = true }
@@ -19,7 +20,6 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 dsh-scope = { path = "../../core/scope" }
-dsh-session = { path = "../../core/session" }
 async-trait = { workspace = true }
 futures = { workspace = true }
 parking_lot = { workspace = true }

@@ -73,7 +73,7 @@ class HistoryWindowContractTests(unittest.TestCase):
         self.assertIn("readerForwardIntentRef", source)
         self.assertIn("!historyBrowsing || readerForwardIntentRef.current", source)
         self.assertIn("if (historyBrowsing || !hasMoreAfter", source)
-        self.assertIn("!historyBrowsing && (appendedUser", source)
+        self.assertTrue("!historyBrowsing && atBottomRef.current && (appendedUser" in source, "streaming must respect reader follow state")
         self.assertIn("Promise.resolve(loadNewer())", source)
         self.assertIn("newerRequestRef.current", source)
         self.assertIn("[historyBrowsing, hasMoreAfter, loadingNewer, loadNewer]", source)

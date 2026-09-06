@@ -31,6 +31,9 @@ use crate::types::{SaveTextSpill, SpillRef};
 ///   policy treats a rejection as best-effort and keeps the inline result).
 #[async_trait::async_trait]
 pub trait SpillStore: Send + Sync + 'static {
+    fn enabled(&self) -> bool {
+        true
+    }
     /// Persist `input.content` to a session-scoped spill artifact.
     /// Returns the saved artifact's [`SpillRef`]; rejects on a storage
     /// failure.

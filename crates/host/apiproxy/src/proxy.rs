@@ -144,6 +144,7 @@ impl Default for ApiProxyDefaults {
     fn default() -> Self {
         Self {
             default_model_selection: Arc::new(|| ModelSelection {
+                execution_mode: Default::default(),
                 provider: String::new(),
                 model: String::new(),
                 reasoning_effort: None,
@@ -177,6 +178,7 @@ type SelectionMap =
 
 fn core_selection(selection: crate::api::sessions::ModelSelection) -> dsh_agent::ModelSelection {
     dsh_agent::ModelSelection {
+        execution_mode: selection.execution_mode,
         provider: selection.provider,
         model: selection.model,
         reasoning_effort: selection
@@ -187,6 +189,7 @@ fn core_selection(selection: crate::api::sessions::ModelSelection) -> dsh_agent:
 
 fn wire_selection(selection: dsh_agent::ModelSelection) -> crate::api::sessions::ModelSelection {
     crate::api::sessions::ModelSelection {
+        execution_mode: selection.execution_mode,
         provider: selection.provider,
         model: selection.model,
         reasoning_effort: selection.reasoning_effort.map(|effort| effort.to_string()),
@@ -211,11 +214,21 @@ fn model_selection_from_events(
             return None;
         }
         let config = event.data.get("header")?.get("config")?;
+        let default_effort = event
+            .data
+            .pointer("/header/adapterDefaults/reasoningEffort")
+            == Some(&serde_json::Value::Bool(true));
         Some(dsh_agent::ModelSelection {
+            execution_mode: config
+                .get("executionMode")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
             provider: config.get("provider")?.as_str()?.to_string(),
             model: config.get("model")?.as_str()?.to_string(),
             reasoning_effort: config
                 .get("reasoningEffort")
+                .filter(|_| !default_effort)
                 .and_then(serde_json::Value::as_str)
                 .map(dsh_llm::ReasoningEffortId::new),
         })
@@ -281,6 +294,7 @@ fn model_selection_setup(defaults: Arc<ApiProxyDefaults>, selections: SelectionM
                                     }
                                     if let Some(header) = session.request_header() {
                                         return Some(dsh_agent::ModelSelection {
+                                            execution_mode: header.config.execution_mode,
                                             provider: header.config.provider,
                                             model: header.config.model,
                                             reasoning_effort: header.config.reasoning_effort,
@@ -306,6 +320,7 @@ fn model_selection_setup(defaults: Arc<ApiProxyDefaults>, selections: SelectionM
                                 }
                                 if let Some(header) = session.request_header() {
                                     return Some(dsh_agent::ModelSelection {
+                                        execution_mode: header.config.execution_mode,
                                         provider: header.config.provider,
                                         model: header.config.model,
                                         reasoning_effort: header.config.reasoning_effort,
@@ -394,6 +409,9 @@ async fn retire_idle_agent(
     sessions: Option<Arc<dsh_session::SessionStore>>,
     agents: Option<Arc<dsh_agent::AgentRegistry>>,
     subagents: Option<Arc<dsh_subagent::SubagentRuntime>>,
+    terminals: Option<Arc<dsh_terminal::TerminalSessionService>>,
+    jobs: Option<Arc<dyn dsh_jobs::JobRegistry>>,
+    computer_use: Option<Arc<dsh_tool_computer_use_command::ComputerUseRuntime>>,
     agent: Arc<dyn Agent>,
 ) {
     let session_id = agent.id().clone();
@@ -404,6 +422,18 @@ async fn retire_idle_agent(
     if subagents
         .as_ref()
         .is_some_and(|runtime| runtime.has_pending_descendants(&agent))
+    {
+        return;
+    }
+    if terminals
+        .as_ref()
+        .is_some_and(|runtime| runtime.has_owner_activity(&agent))
+        || jobs
+            .as_ref()
+            .is_some_and(|runtime| runtime.has_owner_activity(&agent))
+        || computer_use
+            .as_ref()
+            .is_some_and(|runtime| runtime.has_owner_activity(&agent))
     {
         return;
     }
@@ -431,6 +461,15 @@ async fn retire_idle_agent(
         || subagents
             .as_ref()
             .is_some_and(|runtime| runtime.has_pending_descendants(&agent))
+        || terminals
+            .as_ref()
+            .is_some_and(|runtime| runtime.has_owner_activity(&agent))
+        || jobs
+            .as_ref()
+            .is_some_and(|runtime| runtime.has_owner_activity(&agent))
+        || computer_use
+            .as_ref()
+            .is_some_and(|runtime| runtime.has_owner_activity(&agent))
     {
         return;
     }
@@ -460,8 +499,17 @@ mod idle_retirement_tests {
         AgentCancelCause, AgentOptions, AgentStatus, CancelOptions, Inbox, InboxNotifications,
         InboxTarget,
     };
+    use dsh_jobs::{JobHooks, JobOutcome, JobOutcomeStatus, JobRegistry, JobStart};
+    use dsh_jobs_local::{Config as JobConfig, LocalJobRegistry};
     use dsh_scope::ScopeKey;
     use dsh_session::{Session, SessionId, UserMessage, session_id};
+    use dsh_terminal::{
+        TerminalBackend, TerminalBackendSession, TerminalBackendSpawnError,
+        TerminalBackendSpawnSpec, TerminalReadRequest, TerminalReadResult, TerminalSendOperation,
+        TerminalSendRead, TerminalSendRequest, TerminalSendResult, TerminalSessionService,
+        TerminalSessionStatus, TerminalSignal, TerminalSignalResult, TerminalSpawnRequest,
+        TerminalWaitReason,
+    };
 
     struct StatusAgent {
         id: SessionId,
@@ -536,6 +584,129 @@ mod idle_retirement_tests {
         fn steer(&self, _message: UserMessage) {}
 
         fn inject(&self, _message: UserMessage) {}
+    }
+
+    struct IdleSend;
+
+    impl TerminalSendOperation for IdleSend {
+        fn done(&self) -> BoxFuture<'static, TerminalSendResult> {
+            Box::pin(async {
+                TerminalSendResult {
+                    viewport: String::new(),
+                    wait_reason: TerminalWaitReason::InferredIdle,
+                    session_status: TerminalSessionStatus::Running,
+                    truncated: false,
+                }
+            })
+        }
+        fn read_output(&self) -> TerminalSendRead {
+            TerminalSendRead {
+                delta: String::new(),
+                truncated: false,
+            }
+        }
+        fn cancel(&self) -> bool {
+            false
+        }
+    }
+
+    struct RetainedTerminal {
+        closed: Arc<AtomicBool>,
+    }
+
+    impl TerminalBackendSession for RetainedTerminal {
+        fn motd(&self) -> String {
+            "ready".to_string()
+        }
+        fn pid(&self) -> Option<u32> {
+            Some(42)
+        }
+        fn start_send(&self, _request: &TerminalSendRequest) -> Arc<dyn TerminalSendOperation> {
+            Arc::new(IdleSend)
+        }
+        fn write_input(&self, _data: &str) -> BoxFuture<'static, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn resize(&self, _rows: u16, _cols: u16) -> BoxFuture<'static, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn read(&self, _request: &TerminalReadRequest) -> TerminalReadResult {
+            TerminalReadResult {
+                text: "retained".to_string(),
+                total_lines: 1,
+                line_begin: 0,
+                line_end: 1,
+                truncated: false,
+            }
+        }
+        fn signal(
+            &self,
+            _signal: TerminalSignal,
+        ) -> BoxFuture<'static, Result<TerminalSignalResult, String>> {
+            Box::pin(async {
+                Ok(TerminalSignalResult {
+                    delivered: true,
+                    target_pgid: 42,
+                })
+            })
+        }
+        fn status(&self) -> TerminalSessionStatus {
+            if self.closed.load(Ordering::SeqCst) {
+                TerminalSessionStatus::Exited {
+                    exit_code: Some(0),
+                    signal: None,
+                }
+            } else {
+                TerminalSessionStatus::Running
+            }
+        }
+        fn close(&self, _reason: &str) -> BoxFuture<'static, Result<(), String>> {
+            let closed = self.closed.clone();
+            Box::pin(async move {
+                closed.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+
+    struct RetainedBackend {
+        session: Arc<RetainedTerminal>,
+    }
+
+    struct RetainedJobHooks {
+        done: Arc<tokio::sync::Notify>,
+    }
+
+    impl JobHooks for RetainedJobHooks {
+        fn cancel(&self, _reason: Option<String>) {}
+        fn done(&self) -> BoxFuture<'static, JobOutcome> {
+            let done = self.done.clone();
+            Box::pin(async move {
+                done.notified().await;
+                JobOutcome {
+                    status: JobOutcomeStatus::Completed,
+                    detail: None,
+                    output: None,
+                }
+            })
+        }
+        fn read_output(&self) -> Option<String> {
+            Some(String::new())
+        }
+    }
+
+    impl TerminalBackend for RetainedBackend {
+        fn type_(&self) -> String {
+            "retirement-test".to_string()
+        }
+        fn spawn(
+            &self,
+            _spec: TerminalBackendSpawnSpec,
+        ) -> BoxFuture<'static, Result<Arc<dyn TerminalBackendSession>, TerminalBackendSpawnError>>
+        {
+            let session: Arc<dyn TerminalBackendSession> = self.session.clone();
+            Box::pin(async move { Ok(session) })
+        }
     }
 
     #[tokio::test]
@@ -629,6 +800,147 @@ mod idle_retirement_tests {
         assert!(disposed.load(Ordering::SeqCst));
         assert!(!service.owned_agent_handles.lock().contains_key(agent.id()));
 
+        detach().await;
+    }
+
+    #[tokio::test]
+    async fn live_terminal_defers_retirement_and_last_close_retries_it() {
+        let ctx = Context::root();
+        let sessions = dsh_session::SessionStore::install(&ctx);
+        let agents = dsh_agent::AgentRegistry::install(&ctx);
+        let terminals = TerminalSessionService::install(&ctx);
+        let closed = Arc::new(AtomicBool::new(false));
+        let _backend = terminals
+            .register_backend(Arc::new(RetainedBackend {
+                session: Arc::new(RetainedTerminal {
+                    closed: closed.clone(),
+                }),
+            }))
+            .expect("register terminal backend");
+        let service = ApiProxyService::install(&ctx, ApiProxyDefaults::default());
+        let id = session_id("terminal-retirement");
+        let session = sessions.create(&ctx, Some(id.clone()), None).await.unwrap();
+        let concrete = Arc::new(StatusAgent {
+            id,
+            options: AgentOptions::default(),
+            inbox: Inbox::new(&session, InboxNotifications::default()).unwrap(),
+            session,
+            ctx: ctx.clone(),
+            scope_key: ScopeKey::new(),
+            running: AtomicBool::new(false),
+            idle_wait: None,
+            idle_observed: None,
+        });
+        let agent: Arc<dyn Agent> = concrete;
+        let detach = agents.enter(agent.clone(), None).unwrap();
+        agents.announce(&agent).await.unwrap();
+        let disposed = Arc::new(AtomicBool::new(false));
+        let complete = disposed.clone();
+        service.retain_owned_handle(dsh_agent::AgentHandle {
+            agent: agent.clone(),
+            dispose: Box::pin(async move { complete.store(true, Ordering::SeqCst) }),
+        });
+        let terminal = terminals
+            .spawn(
+                agent.clone(),
+                TerminalSpawnRequest {
+                    type_: "retirement-test".to_string(),
+                    name: Some("pinned".to_string()),
+                    cwd: None,
+                },
+                None,
+            )
+            .unwrap()
+            .await
+            .unwrap();
+
+        service.retire_idle_agent_for_test(agent.clone()).await;
+        assert!(!disposed.load(Ordering::SeqCst));
+        assert!(terminals.has_owner_activity(&agent));
+        assert_eq!(
+            terminals
+                .read(&agent, &terminal.session_id, TerminalReadRequest::default())
+                .unwrap()
+                .text,
+            "retained"
+        );
+
+        terminals
+            .kill(
+                &agent,
+                &terminal.session_id,
+                "UI terminal closed".to_string(),
+            )
+            .unwrap()
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !disposed.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("terminal owner retires after final close");
+        assert!(closed.load(Ordering::SeqCst));
+        assert!(!terminals.has_owner_activity(&agent));
+        assert!(!service.owned_agent_handles.lock().contains_key(agent.id()));
+        detach().await;
+    }
+
+    #[tokio::test]
+    async fn live_background_job_defers_retirement_until_settlement() {
+        let ctx = Context::root();
+        let sessions = dsh_session::SessionStore::install(&ctx);
+        let agents = dsh_agent::AgentRegistry::install(&ctx);
+        let jobs = LocalJobRegistry::install(&ctx, JobConfig::default());
+        let _controller = jobs.attach_controller(&ctx, "retirement-test");
+        let service = ApiProxyService::install(&ctx, ApiProxyDefaults::default());
+        let id = session_id("job-retirement");
+        let session = sessions.create(&ctx, Some(id.clone()), None).await.unwrap();
+        let concrete = Arc::new(StatusAgent {
+            id,
+            options: AgentOptions::default(),
+            inbox: Inbox::new(&session, InboxNotifications::default()).unwrap(),
+            session,
+            ctx: ctx.clone(),
+            scope_key: ScopeKey::new(),
+            running: AtomicBool::new(false),
+            idle_wait: None,
+            idle_observed: None,
+        });
+        let agent: Arc<dyn Agent> = concrete;
+        let detach = agents.enter(agent.clone(), None).unwrap();
+        agents.announce(&agent).await.unwrap();
+        let disposed = Arc::new(AtomicBool::new(false));
+        let complete = disposed.clone();
+        service.retain_owned_handle(dsh_agent::AgentHandle {
+            agent: agent.clone(),
+            dispose: Box::pin(async move { complete.store(true, Ordering::SeqCst) }),
+        });
+        let done = Arc::new(tokio::sync::Notify::new());
+        let hooks = Arc::new(RetainedJobHooks { done: done.clone() });
+        jobs.start(JobStart {
+            kind: "fixture".to_string(),
+            label: "background retention".to_string(),
+            output_limit_bytes: Some(1024),
+            owner: Some(agent.clone()),
+            run: Arc::new(move || hooks.clone()),
+        })
+        .unwrap();
+
+        service.retire_idle_agent_for_test(agent.clone()).await;
+        assert!(!disposed.load(Ordering::SeqCst));
+        assert!(jobs.has_owner_activity(&agent));
+        done.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !disposed.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("job owner retires after settlement");
+        assert!(!jobs.has_owner_activity(&agent));
+        assert!(!service.owned_agent_handles.lock().contains_key(agent.id()));
         detach().await;
     }
 
@@ -738,6 +1050,7 @@ impl ApiProxyService {
             Arc::new(move || {
                 let selection = (selection_defaults.default_model_selection)();
                 dsh_agent::AgentOptions {
+                    execution_mode: Default::default(),
                     provider: Some(selection.provider),
                     model: Some(selection.model),
                     ..Default::default()
@@ -795,34 +1108,50 @@ impl ApiProxyService {
         });
         ctx.register_service(service.clone());
         interactions.activate(ctx);
-        let weak = Arc::downgrade(&service);
-        let listener: Arc<cordis::Listener> = Arc::new(move |_, args| {
-            let service = weak.upgrade();
-            let parent = args
-                .first()
-                .and_then(|value| cordis::downcast_arc::<Arc<dyn Agent>>(value))
-                .map(|slot| slot.as_ref().clone());
-            Box::pin(async move {
-                if let (Some(service), Some(parent)) = (service, parent) {
-                    let owned = service
-                        .owned_agent_handles
-                        .lock()
-                        .get(parent.id())
-                        .is_some_and(|handle| Arc::ptr_eq(&handle.agent, &parent));
-                    if owned {
-                        service.spawn_idle_retirement(parent);
+        for (label, event) in [
+            (
+                "api-proxy: retire after subagent result consumption",
+                "internal/subagent-parent-notified",
+            ),
+            (
+                "api-proxy: retire after terminal activity",
+                "terminal/owner-idle",
+            ),
+            ("api-proxy: retire after background job", "jobs/owner-idle"),
+            (
+                "api-proxy: retire after computer-use activity",
+                "computer-use/owner-idle",
+            ),
+        ] {
+            let weak = Arc::downgrade(&service);
+            let listener: Arc<cordis::Listener> = Arc::new(move |_, args| {
+                let service = weak.upgrade();
+                let parent = args
+                    .first()
+                    .and_then(|value| cordis::downcast_arc::<Arc<dyn Agent>>(value))
+                    .map(|slot| slot.as_ref().clone());
+                Box::pin(async move {
+                    if let (Some(service), Some(parent)) = (service, parent) {
+                        let owned = service
+                            .owned_agent_handles
+                            .lock()
+                            .get(parent.id())
+                            .is_some_and(|handle| Arc::ptr_eq(&handle.agent, &parent));
+                        if owned {
+                            service.spawn_idle_retirement(parent);
+                        }
                     }
-                }
-                None
-            })
-        });
-        ctx.events.register(
-            ctx,
-            "api-proxy: retire after subagent result consumption",
-            "internal/subagent-parent-notified",
-            listener,
-            &cordis::EventOptions::default().global(true),
-        );
+                    None
+                })
+            });
+            ctx.events.register(
+                ctx,
+                label,
+                event,
+                listener,
+                &cordis::EventOptions::default().global(true),
+            );
+        }
         service
     }
 
@@ -858,10 +1187,24 @@ impl ApiProxyService {
         let sessions = self.sessions();
         let agents = self.agents();
         let subagents = self.subagents();
+        let terminals = self.terminals();
+        let jobs = self.jobs();
+        let computer_use = self.computer_use();
         tokio::spawn(async move {
             agent.when_idle().await;
             let _admission = admission.lock().await;
-            retire_idle_agent(&resolver, &handles, sessions, agents, subagents, agent).await;
+            retire_idle_agent(
+                &resolver,
+                &handles,
+                sessions,
+                agents,
+                subagents,
+                terminals,
+                jobs,
+                computer_use,
+                agent,
+            )
+            .await;
         });
     }
 
@@ -873,6 +1216,9 @@ impl ApiProxyService {
             self.sessions(),
             self.agents(),
             self.subagents(),
+            self.terminals(),
+            self.jobs(),
+            self.computer_use(),
             agent,
         )
         .await;
@@ -881,6 +1227,27 @@ impl ApiProxyService {
     fn sessions(&self) -> Option<Arc<dsh_session::SessionStore>> {
         self.ctx
             .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
+            .map(|slot| slot.as_ref().clone())
+    }
+
+    fn terminals(&self) -> Option<Arc<dsh_terminal::TerminalSessionService>> {
+        self.ctx
+            .get_typed::<Arc<dsh_terminal::TerminalSessionService>>("terminals", false)
+            .map(|slot| slot.as_ref().clone())
+    }
+
+    fn jobs(&self) -> Option<Arc<dyn dsh_jobs::JobRegistry>> {
+        self.ctx
+            .get_typed::<Arc<dyn dsh_jobs::JobRegistry>>("jobs", false)
+            .map(|slot| slot.as_ref().clone())
+    }
+
+    fn computer_use(&self) -> Option<Arc<dsh_tool_computer_use_command::ComputerUseRuntime>> {
+        self.ctx
+            .get_typed::<Arc<dsh_tool_computer_use_command::ComputerUseRuntime>>(
+                "computerUse",
+                false,
+            )
             .map(|slot| slot.as_ref().clone())
     }
 
@@ -1921,6 +2288,7 @@ impl ApiProxyService {
                                             .map(|id| id.to_string()),
                                     });
                                 entries.push(ModelCatalogModel {
+                                    execution_modes: resolved.execution_modes,
                                     id: model.id,
                                     name: model.name,
                                     description: model.description,
@@ -3415,6 +3783,7 @@ impl ApiProxyService {
         let agent_options = {
             let selection = (self.defaults.default_model_selection)();
             dsh_agent::AgentOptions {
+                execution_mode: Default::default(),
                 provider: Some(selection.provider),
                 model: Some(selection.model),
                 ..Default::default()
@@ -3569,6 +3938,22 @@ impl ApiProxyService {
             dsh_session::AgentCancelCause::User,
             Some(&dsh_agent::CancelOptions { keep_inbox: true }),
         );
+        if dsh_subagent::ultra::enabled(agent.as_ref()) {
+            if let Some(runtime) = self
+                .ctx
+                .get_typed::<Arc<dsh_subagent::SubagentRuntime>>("subagents", false)
+            {
+                if let Err(error) = runtime.stop_ultra(&agent).await {
+                    return err(
+                        request.rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message: error.message,
+                            details: EmptyDetails {},
+                        }),
+                    );
+                }
+            }
+        }
         if tokio::time::timeout(std::time::Duration::from_secs(10), agent.when_idle())
             .await
             .is_err()
@@ -4217,6 +4602,7 @@ impl ApiProxyService {
         let resolved_config = runtime
             .resolve_call_config(
                 &dsh_llm::LlmCallConfig {
+                    execution_mode: request.payload.execution_mode,
                     provider: request.payload.provider.clone(),
                     model: request.payload.model.clone(),
                     reasoning_effort: request
@@ -4231,6 +4617,7 @@ impl ApiProxyService {
             .await;
         let selected = match resolved_config {
             Ok(config) => crate::api::sessions::ModelSelection {
+                execution_mode: config.execution_mode,
                 provider: config.provider,
                 model: config.model,
                 reasoning_effort: config.reasoning_effort.map(|id| id.to_string()),
@@ -4436,6 +4823,7 @@ impl ApiProxyService {
         let agent_options = {
             let selection = (self.defaults.default_model_selection)();
             dsh_agent::AgentOptions {
+                execution_mode: Default::default(),
                 provider: Some(selection.provider),
                 model: Some(selection.model),
                 ..Default::default()
@@ -4552,7 +4940,7 @@ impl ApiProxyService {
             );
         }
         let mut replacement = request.payload.expected.clone();
-        let (was_active, notice) = match &request.payload.action {
+        let (_was_active, notice) = match &request.payload.action {
             crate::api::sessions::TodoAction::Edit { index, content } => {
                 let Some(todo) = replacement.get_mut(*index) else {
                     return err(
@@ -4614,7 +5002,12 @@ impl ApiProxyService {
         ) {
             Ok(_) => {
                 let message = dsh_llm::create_user_message(
-                    vec![dsh_llm::ContentBlock::Text { text: notice }],
+                    vec![dsh_llm::ContentBlock::Text {
+                        text: format!(
+                            "{notice}\nCurrent task list: {}\nApply this change before taking further task actions. Replan any affected remaining work.",
+                            serde_json::to_string(&replacement).expect("task list"),
+                        ),
+                    }],
                     dsh_llm::MessageSource::Plugin {
                         plugin: "@deepseek-ai/dsh-client-ui-conversation".to_string(),
                         form: Some(dsh_llm::ContextForm::Notice),
@@ -4624,7 +5017,7 @@ impl ApiProxyService {
                         source_command_id: None,
                     },
                 );
-                if was_active && agent.status() == dsh_agent::AgentStatus::Running {
+                if agent.status() == dsh_agent::AgentStatus::Running {
                     agent.steer(message);
                 } else {
                     agent.inject(message);
@@ -6302,6 +6695,11 @@ impl ApiProxyCarrier for ApiProxyService {
         signal: AbortSignal,
     ) -> RpcResponse<serde_json::Value> {
         let rpc_id = request.rpc_id.clone();
+        let mut request = request;
+        request.payload = match crate::remote_payload::normalize(method, request.payload) {
+            Ok(payload) => payload,
+            Err(error) => return err(rpc_id, bad_request(method, error)),
+        };
         match method {
             "host.describe" => {
                 self.host_describe(RpcRequest {
@@ -7114,10 +7512,7 @@ impl ApiProxyCarrier for ApiProxyService {
     }
 
     /// The mux event channel: a subscribed baseline per attached session,
-    /// then live `session/event` frames. Approval/question/jobs/projection
-    /// baselines arrive with their owning milestones (deviation: the TS
-    /// stream also replays pending approvals/questions and queue/jobs
-    /// snapshots on open).
+    /// then live session events and authoritative pending-input snapshots.
     fn events_mux(
         &self,
         request: FrameRequest,
@@ -7151,11 +7546,16 @@ impl ApiProxyCarrier for ApiProxyService {
             .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
             .map(|slot| slot.as_ref().clone());
         let agents_for_listener = self.agents();
+        let queues = Arc::new(parking_lot::Mutex::new(
+            crate::queue_projection::QueueProjection::default(),
+        ));
+        let queues_for_listener = Arc::clone(&queues);
         let listener: Arc<cordis::Listener> = Arc::new(
             move |_dispatch_ctx: &Context, args: Vec<cordis::ArcValue>| {
                 let tx = tx_for_listener.clone();
                 let tools = tools_for_listener.clone();
                 let agents = agents_for_listener.clone();
+                let queues = Arc::clone(&queues_for_listener);
                 Box::pin(async move {
                     let session = args
                         .first()
@@ -7166,6 +7566,16 @@ impl ApiProxyCarrier for ApiProxyService {
                         .and_then(|value| cordis::downcast::<dsh_session::SessionEvent>(value))
                         .cloned();
                     if let (Some(session), Some(event)) = (session, event) {
+                        if event.type_ == "agent/inbox/spliced" {
+                            // Keep projection and publication under one lock so
+                            // reconnect cannot publish an older baseline last.
+                            let mut queues = queues.lock();
+                            let _ = tx.send(FrameRequest {
+                                rpc_id: crate::api::rpc::rpc_id(Self::fresh_id()),
+                                payload: serde_json::to_value(queues.snapshot(&session))
+                                    .expect("session/queue mux frame serialization"),
+                            });
+                        }
                         let view = if event.type_ == "tool/call" {
                             let name = event.data.get("name").and_then(serde_json::Value::as_str);
                             let arguments = event
@@ -7215,6 +7625,20 @@ impl ApiProxyCarrier for ApiProxyService {
         // belongs to one connection, so transfer sole ownership to the stream.
         self.ctx.fiber.disposables.delete(&listener_disposer);
         let mut listener_disposers = vec![listener_disposer];
+        // Register live observation before reading durable queue baselines.
+        // The incremental cursor also absorbs events committed during setup.
+        for session in self
+            .sessions()
+            .map(|store| store.list())
+            .unwrap_or_default()
+        {
+            let mut queues = queues.lock();
+            let _ = tx.send(FrameRequest {
+                rpc_id: crate::api::rpc::rpc_id(Self::fresh_id()),
+                payload: serde_json::to_value(queues.snapshot(&session))
+                    .expect("session/queue baseline serialization"),
+            });
+        }
         if let Some(projections) = self
             .ctx
             .get_typed::<Arc<dsh_session_projection::SessionProjectionRegistry>>(

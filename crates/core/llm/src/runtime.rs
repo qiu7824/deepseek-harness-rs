@@ -222,6 +222,7 @@ pub trait LlmAdapter: Send + Sync {
         _signal: Option<&AbortSignal>,
     ) -> LlmResolvedModelInfo {
         LlmResolvedModelInfo {
+            execution_modes: Default::default(),
             provider: provider.to_string(),
             id: model.to_string(),
             name: model.to_string(),
@@ -854,6 +855,40 @@ impl LlmRuntime {
         {
             resolved.max_tokens = Some(default);
         }
+        if resolved
+            .reasoning_effort
+            .as_ref()
+            .is_some_and(|e| e.as_str() == "ultra")
+            && info.execution_modes.contains(&crate::ExecutionMode::Ultra)
+        {
+            resolved.execution_mode = crate::ExecutionMode::Ultra;
+        }
+        if resolved.execution_mode == crate::ExecutionMode::Ultra {
+            if !info.execution_modes.contains(&crate::ExecutionMode::Ultra) {
+                return Err(LlmError::new(
+                    "This model does not support Ultra execution mode",
+                    "UNSUPPORTED_EXECUTION_MODE",
+                    LlmErrorOptions::default(),
+                ));
+            }
+            let highest = ["max", "xhigh", "high", "medium", "low"]
+                .into_iter()
+                .find_map(|id| {
+                    info.reasoning
+                        .as_ref()?
+                        .efforts
+                        .iter()
+                        .find(|e| e.id.as_str() == id)
+                        .map(|e| e.id.clone())
+                });
+            resolved.reasoning_effort = Some(highest.ok_or_else(|| {
+                LlmError::new(
+                    "Ultra requires a supported reasoning effort",
+                    "UNSUPPORTED_EXECUTION_MODE",
+                    LlmErrorOptions::default(),
+                )
+            })?);
+        }
         let requested = resolved.reasoning_effort.clone();
         match &info.reasoning {
             None => {
@@ -1217,6 +1252,7 @@ fn adapter_failure_chunk(failure: LlmFailure, signal: Option<&AbortSignal>) -> S
 /// `callConfigEquals(options, config)` comparison).
 fn config_of(options: &GenerateOptions) -> LlmCallConfig {
     LlmCallConfig {
+        execution_mode: Default::default(),
         provider: options.provider.clone(),
         model: options.model.clone(),
         reasoning_effort: options.reasoning_effort.clone(),
@@ -1229,7 +1265,10 @@ fn config_of(options: &GenerateOptions) -> LlmCallConfig {
 /// Whether a request's call-config fields match a prepared config (TS
 /// `callConfigEquals(options, config)`).
 pub fn generate_options_config_equals(options: &GenerateOptions, config: &LlmCallConfig) -> bool {
-    call_config_equals(&config_of(options), config)
+    let mut wire_config = config_of(options);
+    // Execution policy is frozen on the prepared call, not part of provider options.
+    wire_config.execution_mode = config.execution_mode;
+    call_config_equals(&wire_config, config)
 }
 
 /// Spread a resolved call config over a request whose proposed fields the

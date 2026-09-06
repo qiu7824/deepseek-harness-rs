@@ -9,12 +9,62 @@ use std::{path::Path, sync::Arc, time::Duration};
 const PROBE: &str = r#"const {Worker}=require('node:worker_threads');const {stripTypeScriptTypes}=require('node:module');const typed=typeof stripTypeScriptTypes==='function'&&stripTypeScriptTypes('const value: number = 1',{mode:'strip'}).includes('value');const worker=new Worker('require("node:worker_threads").parentPort.postMessage(true)',{eval:true});worker.once('message',ok=>process.stdout.write(JSON.stringify({permission:!!process.permission,typescriptStrip:typed,worker:ok===true})));worker.once('error',()=>process.exit(2));"#;
 
 pub(super) fn configured_command(directory: &Path) -> String {
+    if let Some(command) = std::env::var("DSH_NODE_COMMAND")
+        .ok()
+        .filter(|command| !command.trim().is_empty())
+    {
+        return command;
+    }
     let name = if cfg!(windows) { "node.exe" } else { "node" };
     [directory.join(name), directory.join("bin").join(name)]
         .into_iter()
         .find(|p| p.is_file())
+        .or_else(|| {
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|path| path.join(name))
+                .find(|path| path.is_file())
+        })
+        .or_else(installed_node)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "node".into())
+}
+
+#[cfg(not(windows))]
+fn installed_node() -> Option<std::path::PathBuf> {
+    None
+}
+
+#[cfg(windows)]
+fn installed_node() -> Option<std::path::PathBuf> {
+    use windows_sys::Win32::System::Registry::{
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW,
+    };
+    let key = "SOFTWARE\\Node.js\0".encode_utf16().collect::<Vec<_>>();
+    let name = "InstallPath\0".encode_utf16().collect::<Vec<_>>();
+    for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        let mut data = vec![0u16; 4096];
+        let mut bytes = (data.len() * 2) as u32;
+        let result = unsafe {
+            RegGetValueW(
+                hive,
+                key.as_ptr(),
+                name.as_ptr(),
+                RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+                std::ptr::null_mut(),
+                data.as_mut_ptr().cast(),
+                &mut bytes,
+            )
+        };
+        if result == 0 {
+            let length = data.iter().position(|ch| *ch == 0).unwrap_or(data.len());
+            let path = std::path::PathBuf::from(String::from_utf16_lossy(&data[..length]))
+                .join("node.exe");
+            if path.is_absolute() && path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 struct Guard(Arc<dyn SubprocessHandle>);

@@ -598,6 +598,7 @@ mod route_image_pricing_tests {
         let neutral = meter.measure(&session, None);
         let header = EpochHeader {
             config: dsh_llm::LlmCallConfig {
+                execution_mode: Default::default(),
                 provider: "priced".to_string(),
                 model: "model".to_string(),
                 reasoning_effort: Some(reasoning_effort_id("high")),

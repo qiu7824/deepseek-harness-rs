@@ -1,5 +1,7 @@
 import pathlib
 import unittest
+import json
+import hashlib
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -358,6 +360,53 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("overflow:auto", sidebar)
         self.assertIn("numberedCode", sidebar)
         self.assertIn("dbs-code-line", sidebar)
+
+    def test_sidebar_companion_uses_real_extension_api_and_local_assets(self):
+        package = json.loads(
+            (ROOT / "release/plugins/dsh-sidebar-workbench-suite/package.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        client = (
+            ROOT / "release/plugins/dsh-sidebar-workbench-suite/lib/client.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("dsh-better-sidebar", package["dsh"]["client"]["inject"])
+        self.assertEqual(
+            set(package["dsh"]["client"]["assets"]),
+            {"editor.js", "markdown.js", "mermaid.js"},
+        )
+        for marker in (
+            "registerTab",
+            "registerFileViewer",
+            "suite:markdown",
+            "suite:side-conversation",
+            "suite:jobs",
+            "job-list",
+            "suite:subagents",
+            "suite:controlled-browser",
+            "CodeMirror 编辑器",
+            "__DSH_SIDEBAR_MARKDOWN__",
+            "__DSH_SIDEBAR_MERMAID__",
+        ):
+            self.assertIn(marker, client)
+        for name in ("editor.js", "markdown.js", "mermaid.js"):
+            asset = ROOT / "release/plugins/dsh-sidebar-workbench-suite/lib" / name
+            self.assertTrue(asset.is_file())
+            self.assertGreater(asset.stat().st_size, 50_000)
+        lock = json.loads(
+            (ROOT / "release/plugins/dsh-sidebar-workbench-suite/vendor-lock.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        for relative, expected in lock["outputs"].items():
+            actual = hashlib.sha256(
+                (ROOT / "release/plugins/dsh-sidebar-workbench-suite" / relative).read_bytes()
+            ).hexdigest()
+            self.assertEqual("sha256:" + actual, expected)
+        self.assertIn(
+            "dsh-sidebar-workbench-suite",
+            (ROOT / "tools/stage_release_plugins.py").read_text(encoding="utf-8"),
+        )
 
     def test_environment_settings_expose_runtime_storage_and_workspaces(self):
         source = (ROOT / "web" / "dist" / "plugins" / "ui-workbench.js").read_text(encoding="utf-8")

@@ -10,6 +10,9 @@ name = "dsh-host"
 path = "src/main.rs"
 
 [dependencies]
+dsh-workspace-resources = { path = "../../workspace/workspace-resources" }
+dsh-spill = { path = "../../spill/spill" }
+dsh-spill-policy = { path = "../../spill/spill-policy" }
 dsh-session-stats = { path = "../../session/session-stats" }
 cordis = { path = "../../vendor/cordis" }
 dsh-agent = { path = "../../core/agent" }
@@ -137,6 +140,7 @@ mime_guess = { workspace = true }
 tokio-tungstenite = "0.29"
 
 [target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
 libmimalloc-sys = { version = "0.1.49", features = ["extended", "v2"] }
 mimalloc = { version = "0.1.52", features = ["v2"] }
 

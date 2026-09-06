@@ -31,9 +31,14 @@ fn main() {
                 .unwrap_or(0);
             exit(code);
         }
-        "sleep-forever" => loop {
-            sleep(Duration::from_millis(100));
-        },
+        "sleep-forever" => {
+            if let Some(path) = args.get(1) {
+                let _ = std::fs::write(path, std::process::id().to_string());
+            }
+            loop {
+                sleep(Duration::from_millis(100));
+            }
+        }
         _ => exit(2),
     }
 }

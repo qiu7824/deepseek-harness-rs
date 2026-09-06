@@ -81,6 +81,7 @@ async fn assembly_context_exposes_agent_provider_and_model() {
     let agent: Arc<dyn Agent> = Arc::new(TestAgent {
         id,
         options: AgentOptions {
+            execution_mode: Default::default(),
             provider: Some("custom-provider".to_string()),
             model: Some("gpt-5.6-sol".to_string()),
             ..Default::default()

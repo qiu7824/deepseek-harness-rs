@@ -1,0 +1,27 @@
+{
+  "builder": "esbuild@0.25.10",
+  "target": "es2022",
+  "format": "iife",
+  "dependencies": {
+    "@codemirror/commands": "6.8.1",
+    "@codemirror/lang-css": "6.3.1",
+    "@codemirror/lang-html": "6.4.10",
+    "@codemirror/lang-javascript": "6.2.4",
+    "@codemirror/lang-json": "6.0.2",
+    "@codemirror/lang-markdown": "6.3.4",
+    "@codemirror/lang-python": "6.2.1",
+    "@codemirror/lang-rust": "6.0.2",
+    "@codemirror/search": "6.5.11",
+    "@codemirror/state": "6.5.2",
+    "@codemirror/view": "6.38.2",
+    "codemirror": "6.0.2",
+    "dompurify": "3.4.14",
+    "marked": "16.3.0",
+    "mermaid": "11.16.1"
+  },
+  "outputs": {
+    "lib/editor.js": "sha256:b4c99b4f3661bdee9bebe3610b3ab8c32dc1d6e3d9a6cf6d5c3a1eb5058be670",
+    "lib/markdown.js": "sha256:329c23964f24e62967aed9d7a414e8625ea5f582c972f10f1ea4c7abc5103651",
+    "lib/mermaid.js": "sha256:c2e9bfb2af758128ad383f7aea2d6bec40c38762c684cfc6efddbf4ab122c847"
+  }
+}

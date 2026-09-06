@@ -240,6 +240,7 @@ pub(crate) async fn harness() -> Harness {
         &ctx,
         session.id().clone(),
         dsh_agent::AgentOptions {
+            execution_mode: Default::default(),
             provider: Some("test".to_string()),
             model: Some("model".to_string()),
             ..Default::default()

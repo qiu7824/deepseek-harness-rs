@@ -7,6 +7,23 @@ use serde_json::{Value, json};
 mod tests {
     use super::request_from_chat;
     use serde_json::json;
+    #[test]
+    fn codex_rejects_unresolved_ultra_without_changing_custom_endpoints() {
+        let request = json!({"model":"gpt-6-astra","messages":[],"reasoning_effort":"ultra"});
+        assert!(
+            super::request_for_endpoint(&request, "https://chatgpt.com/backend-api/codex").is_err()
+        );
+        assert_eq!(
+            super::request_for_endpoint(&request, "https://custom.example/v1").unwrap()["reasoning"]
+                ["effort"],
+            "ultra"
+        );
+        let request = json!({"model":"gpt-6-astra","messages":[],"reasoning_effort":"max"});
+        let body =
+            super::request_for_endpoint(&request, "https://chatgpt.com/backend-api/codex").unwrap();
+        assert_eq!(body["reasoning"]["effort"], "max");
+        assert!(body.get("executionMode").is_none());
+    }
 
     #[test]
     fn maps_openai_reasoning_effort_to_responses_shape() {
@@ -167,6 +184,14 @@ pub(crate) fn request_for_endpoint(chat: &Value, base_url: &str) -> Result<Value
             && url.host_str() == Some("chatgpt.com")
             && url.path().trim_end_matches('/') == "/backend-api/codex"
     }) {
+        if let Some(effort) = body.pointer("/reasoning/effort").and_then(Value::as_str) {
+            if !["none", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&effort) {
+                return Err(failure(
+                    "Codex execution modes must be resolved before sending a reasoning effort",
+                    "UNSUPPORTED_REASONING_EFFORT",
+                ));
+            }
+        }
         body["store"] = json!(false);
         if body.get("instructions").is_none() {
             body["instructions"] = json!("");

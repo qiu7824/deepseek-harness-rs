@@ -44,7 +44,12 @@ pub struct LocalSubprocessRuntime {
     terminals: Arc<Mutex<Vec<Arc<PortableTerminalHandle>>>>,
     /// Test hook: spill and platform knobs forwarded to `spawn_subprocess`.
     internals: Mutex<SpawnInternals>,
+    resources: Mutex<Option<ResourceProvider>>,
+    path_prefixes: Mutex<Vec<std::path::PathBuf>>,
 }
+
+pub type ResourceProvider =
+    Arc<dyn Fn() -> Result<Option<Arc<dsh_workspace_resources::Store>>, String> + Send + Sync>;
 
 impl Drop for LocalSubprocessRuntime {
     fn drop(&mut self) {
@@ -66,6 +71,8 @@ impl LocalSubprocessRuntime {
             live: Arc::new(Mutex::new(Vec::new())),
             terminals: Arc::new(Mutex::new(Vec::new())),
             internals: Mutex::new(SpawnInternals::default()),
+            resources: Mutex::new(None),
+            path_prefixes: Mutex::new(Vec::new()),
         })
     }
 
@@ -94,6 +101,28 @@ impl LocalSubprocessRuntime {
     /// the TS public `internals` test hook.
     pub fn set_internals(&self, internals: SpawnInternals) {
         *self.internals.lock() = internals;
+    }
+
+    pub fn set_resource_provider(&self, provider: ResourceProvider) {
+        *self.resources.lock() = Some(provider);
+    }
+    pub fn set_path_prefixes(&self, paths: Vec<std::path::PathBuf>) {
+        *self.path_prefixes.lock() = paths;
+    }
+    fn execution_path(&self) -> Option<String> {
+        let prefixes = self.path_prefixes.lock();
+        if prefixes.is_empty() {
+            return None;
+        }
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        std::env::join_paths(
+            prefixes
+                .iter()
+                .cloned()
+                .chain(std::env::split_paths(&inherited)),
+        )
+        .ok()
+        .map(|value| value.to_string_lossy().into_owned())
     }
 
     /// Synchronous final termination of every live tree without starting
@@ -279,13 +308,57 @@ impl SubprocessRuntime for LocalSubprocessRuntime {
         })
     }
 
-    fn spawn(&self, spec: SubprocessSpawnSpec) -> Result<Arc<dyn SubprocessHandle>, String> {
+    fn spawn(&self, mut spec: SubprocessSpawnSpec) -> Result<Arc<dyn SubprocessHandle>, String> {
+        if !spec
+            .env
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        {
+            if let Some(path) = self.execution_path() {
+                spec.env
+                    .get_or_insert_default()
+                    .push(("PATH".into(), Some(path)));
+            }
+        }
         let closing = self.closing.lock();
         if *closing {
             return Err("subprocess-local: runtime is closing".to_string());
         }
-        let internals = self.internals.lock().clone();
+        let mut internals = self.internals.lock().clone();
+        let mut resources = self
+            .resources
+            .lock()
+            .clone()
+            .map(|provider| provider())
+            .transpose()?
+            .flatten()
+            .map(|store| {
+                store.prepare_execution(
+                    &spec.cwd,
+                    &spec.argv,
+                    spec.env.as_deref().unwrap_or_default(),
+                )
+            })
+            .transpose()?;
+        if let Some(resources) = resources.as_ref() {
+            spec.env.get_or_insert_default().extend(
+                resources
+                    .environment
+                    .iter()
+                    .cloned()
+                    .map(|(name, value)| (name, Some(value))),
+            );
+            internals.spill_dir = Some(resources.spill_directory());
+        }
         let handle = Arc::new(spawn_subprocess(spec, internals)?);
+        let resource_error = resources
+            .as_mut()
+            .and_then(|resources| resources.attach_process(handle.pid() as u32).err());
+        if resource_error.is_some() {
+            handle.terminate();
+        }
         self.live.lock().push(handle.clone());
         drop(closing);
         // Release ownership only once the whole TREE is gone, not at
@@ -296,24 +369,69 @@ impl SubprocessRuntime for LocalSubprocessRuntime {
         let live = self.live.clone();
         let owned = handle.clone();
         tokio::spawn(async move {
-            let _ = owned.done().await;
-            let _ = owned.wait_for_exit(None).await;
+            let outcome = owned.done().await;
+            let exited = owned.wait_for_exit(None).await;
+            if let Some(resources) = resources.as_mut() {
+                if exited {
+                    resources.finish(outcome.is_ok_and(|outcome| {
+                        outcome.exit_code == Some(0) && outcome.signal.is_none()
+                    }));
+                } else {
+                    resources.protect();
+                }
+            }
             live.lock()
                 .retain(|candidate| !Arc::ptr_eq(candidate, &owned));
         });
+        if let Some(error) = resource_error {
+            return Err(format!(
+                "cannot register process resource ownership: {error}"
+            ));
+        }
         Ok(handle)
     }
 
     fn spawn_terminal(
         &self,
-        spec: SubprocessTerminalSpawnSpec,
+        mut spec: SubprocessTerminalSpawnSpec,
     ) -> BoxFuture<'static, Result<Arc<dyn SubprocessTerminalHandle>, String>> {
         let closing = self.closing.clone();
         let terminals = self.terminals.clone();
+        let resource_provider = self.resources.lock().clone();
+        if !spec
+            .env
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        {
+            if let Some(path) = self.execution_path() {
+                spec.env.get_or_insert_default().push(("PATH".into(), path));
+            }
+        }
         Box::pin(async move {
             let signal = spec.signal.clone();
             if signal.as_ref().is_some_and(|signal| signal()) {
                 return Err("subprocess-local: terminal allocation aborted".to_string());
+            }
+            let extra = spec
+                .env
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .cloned()
+                .map(|(name, value)| (name, Some(value)))
+                .collect::<Vec<_>>();
+            let mut resources = resource_provider
+                .map(|provider| provider())
+                .transpose()?
+                .flatten()
+                .map(|store| store.prepare_execution(&spec.cwd, &spec.argv, &extra))
+                .transpose()?;
+            if let Some(resources) = resources.as_ref() {
+                spec.env
+                    .get_or_insert_default()
+                    .extend(resources.environment.clone());
             }
             let terminal = {
                 let closing = closing.lock();
@@ -330,16 +448,32 @@ impl SubprocessRuntime for LocalSubprocessRuntime {
             };
             let owned = terminal.clone();
             let live = terminals.clone();
+            let resource_error = resources
+                .as_mut()
+                .and_then(|resources| resources.attach_process(terminal.pid()).err());
             tokio::spawn(async move {
-                let _ = owned.done().await;
+                let outcome = owned.done().await;
                 if owned.terminate().await.is_ok() {
+                    if let Some(resources) = resources.as_mut() {
+                        resources.finish(outcome.is_ok_and(|outcome| {
+                            outcome.exit_code == Some(0) && outcome.signal.is_none()
+                        }));
+                    }
                     live.lock()
                         .retain(|candidate| !Arc::ptr_eq(candidate, &owned));
+                } else if let Some(resources) = resources.as_mut() {
+                    resources.protect();
                 }
             });
             if signal.as_ref().is_some_and(|signal| signal()) {
                 terminal.terminate().await?;
                 return Err("subprocess-local: terminal allocation aborted".to_string());
+            }
+            if let Some(error) = resource_error {
+                terminal.terminate().await?;
+                return Err(format!(
+                    "cannot register terminal resource ownership: {error}"
+                ));
             }
             Ok(terminal as Arc<dyn SubprocessTerminalHandle>)
         })

@@ -74,6 +74,9 @@ pub enum PromptContentPart {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelSelection {
+    #[serde(default)]
+    pub execution_mode: dsh_llm::ExecutionMode,
+
     /// Registered provider route.
     pub provider: String,
     /// Provider-owned model id.
@@ -111,6 +114,9 @@ pub struct ModelReasoning {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelCatalogModel {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_modes: Vec<dsh_llm::ExecutionMode>,
+
     /// Provider-owned model id.
     pub id: String,
     /// Provider-supplied display name.
@@ -445,6 +451,9 @@ pub struct SessionRefRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSelectModelRequest {
+    #[serde(default)]
+    pub execution_mode: dsh_llm::ExecutionMode,
+
     pub session_id: SessionId,
     pub provider: String,
     pub model: String,

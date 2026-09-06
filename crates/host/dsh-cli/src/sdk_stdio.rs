@@ -168,6 +168,7 @@ async fn prompt(
                         ..Default::default()
                     }),
                     agent_options: Some(AgentOptions {
+                        execution_mode: Default::default(),
                         provider: Some(config.provider.clone()),
                         model: Some(config.model.clone()),
                         max_tokens: config.max_tokens,

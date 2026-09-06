@@ -16,11 +16,12 @@ use std::sync::Arc;
 
 use cordis::{Context, Disposer, Service};
 use dsh_agent::Agent;
+use dsh_session::SessionId;
 use futures::future::BoxFuture;
 
 pub use crate::types::{
     JobAbort, JobDoneListener, JobHooks, JobId, JobOutcome, JobOutcomeStatus, JobRead, JobSnapshot,
-    JobStart, JobStatus, JobsChangedListener, job_id,
+    JobStart, JobStatus, JobViewRead, JobsChangedListener, job_id,
 };
 
 /// The outcome of a kill request (TS `'requested' | 'already-finished'`).
@@ -61,6 +62,15 @@ pub trait JobRegistry: Send + Sync + 'static {
     /// exposing another session's labels.
     fn list(&self, caller: Option<&Arc<dyn Agent>>) -> Vec<JobSnapshot>;
 
+    /// List caller-owned, archived, and unowned jobs using a durable session
+    /// id, without requiring an active Agent runtime.
+    fn list_for_session(&self, caller: &SessionId) -> Vec<JobSnapshot>;
+
+    /// Whether this exact owner still has running or stopping work. Hosts
+    /// use this to keep the owning Agent alive while background execution is
+    /// expected to continue.
+    fn has_owner_activity(&self, owner: &Arc<dyn Agent>) -> bool;
+
     /// Return a non-consuming snapshot without changing its read cursor or
     /// notice state.
     fn get(&self, id: &JobId, caller: Option<&Arc<dyn Agent>>) -> Result<JobSnapshot, String>;
@@ -68,6 +78,26 @@ pub trait JobRegistry: Send + Sync + 'static {
     /// Read the next stream delta, or the idempotent final output after
     /// settlement. A terminal read marks the job reported.
     fn read(&self, id: &JobId, caller: Option<&Arc<dyn Agent>>) -> Result<JobRead, String>;
+
+    /// Read a bounded human-view transcript without advancing the model's
+    /// consuming [`Self::read`] cursor. A caller should feed the returned
+    /// cursor into its next view read for incremental output.
+    fn read_view(
+        &self,
+        id: &JobId,
+        caller: Option<&Arc<dyn Agent>>,
+        cursor: Option<u64>,
+    ) -> Result<JobViewRead, String>;
+
+    /// Read a human-view transcript using only its durable session owner.
+    /// This remains available after an idle Agent runtime has retired, while
+    /// preserving the same session-id authorization fence as live reads.
+    fn read_view_for_session(
+        &self,
+        id: &JobId,
+        caller: &SessionId,
+        cursor: Option<u64>,
+    ) -> Result<JobViewRead, String>;
 
     /// Request cancellation, then mark the job stopping and reported. A
     /// producer throw propagates without changing job state.

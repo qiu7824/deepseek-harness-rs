@@ -166,6 +166,17 @@ pub struct JobRead {
     pub snapshot: JobSnapshot,
 }
 
+/// Non-consuming output projection for human-facing views. `cursor` is an
+/// opaque monotonically increasing byte position in the registry-owned
+/// bounded transcript; pass it back to receive only newer output.
+#[derive(Debug, Clone)]
+pub struct JobViewRead {
+    pub text: String,
+    pub cursor: u64,
+    pub truncated: bool,
+    pub snapshot: JobSnapshot,
+}
+
 /// Completion callback with the exact owner supplied at start, or `None` for
 /// an unowned job. Returned work is observed but not awaited (TS
 /// `JobDoneListener`; the TS promise return collapses to a plain callback).

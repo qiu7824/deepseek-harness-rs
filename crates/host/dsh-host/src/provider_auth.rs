@@ -261,6 +261,7 @@ struct Pending {
     verifier: Option<String>,
 }
 pub(crate) struct AccountAuth {
+    account_usage: crate::codex_account::CodexAccountService,
     client: reqwest::Client,
     credentials: Arc<dsh_credentials_local::LocalCredentialProvider>,
     settings: Arc<dsh_settings::SettingsProvider>,
@@ -271,6 +272,26 @@ pub(crate) struct AccountAuth {
     catalog_transport: parking_lot::RwLock<Option<models::CatalogTransport>>,
 }
 impl AccountAuth {
+    pub(crate) fn register_usage_tool(
+        self: &Arc<Self>,
+        ctx: &cordis::Context,
+    ) -> Result<(), String> {
+        use dsh_tools::{ToolBodyError, ToolDefinition, ToolOutputDefinition, ToolRuntime};
+        let tools = ctx
+            .get_typed::<Arc<ToolRuntime>>("tools", false)
+            .map(|s| s.as_ref().clone())
+            .ok_or("账户用量工具缺少工具运行时")?;
+        let auth = self.clone();
+        tools.register(ctx,ToolDefinition{
+            name:"codex_usage".into(),
+            description:"Read the verified Codex account's shared usage limits, reset times, and available reset-card count. This tool is read-only and never redeems a card. Unknown metrics remain null; account usage is distinct from this task's token usage.".into(),
+            parameters:json!({"type":"object","properties":{"refresh":{"type":"boolean"}},"additionalProperties":false}),
+            output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text{text:value.to_string()}])),presentation_meta:None},
+            timeout_ms:Some(45000),is_concurrency_safe:None,
+            finalize_content:None,present_call:None,present_result:None,
+            execute:Arc::new(move |args,_|{let auth=auth.clone();let refresh=args.get("refresh").and_then(Value::as_bool).unwrap_or(false);Box::pin(async move{auth.handle("usage",&json!({"provider":"openai-codex","refresh":refresh})).await.map_err(ToolBodyError::plain)})}),
+        }).map(|_|())
+    }
     pub(crate) fn new(
         credentials: Arc<dsh_credentials_local::LocalCredentialProvider>,
         settings: Arc<dsh_settings::SettingsProvider>,
@@ -286,6 +307,12 @@ impl AccountAuth {
             .build()
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(Self {
+            account_usage: crate::codex_account::CodexAccountService::new(
+                std::path::Path::new(credentials.filename())
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("environments/codex-account"),
+            ),
             client,
             catalogs: crate::provider_auth_catalog::CatalogStore::new(
                 std::path::Path::new(credentials.filename())
@@ -838,6 +865,34 @@ impl AccountAuth {
         })
     }
     async fn handle(&self, action: &str, body: &Value) -> Result<Value, String> {
+        if matches!(
+            action,
+            "usage"
+                | "usage-history"
+                | "usage-login"
+                | "reset-prepare"
+                | "reset-consume"
+                | "reset-status"
+        ) {
+            if string(body, "provider")? != "openai-codex" {
+                return Err("此功能仅适用于 Codex 账号".into());
+            }
+            // Keep account changes and the whole operation serialized, including reset settlement.
+            let _guard = self.refresh.lock().await;
+            let session = self
+                .session("openai-codex")
+                .await?
+                .filter(|s| !s.invalid)
+                .ok_or("请先登录 Codex 模型账号")?;
+            let account_id = session
+                .account_id
+                .as_deref()
+                .ok_or("Codex 账号缺少可核验身份，请重新登录")?;
+            return self
+                .account_usage
+                .handle(&session.account_scope, account_id, action, body)
+                .await;
+        }
         let cli = self.cli.read().clone();
         if let Some(cli) = &cli {
             if body.get("provider").and_then(Value::as_str) == Some("claude-code") {
@@ -906,6 +961,9 @@ impl AccountAuth {
                 let id = string(body, "provider")?;
                 provider(&id)?;
                 let _guard = self.refresh.lock().await;
+                if id == "openai-codex" {
+                    self.account_usage.disconnect().await;
+                }
                 self.pending.lock().retain(|_, (owner, _)| owner.id != id);
                 self.credentials.unset(&reference(&id)).await?;
                 self.catalogs.unbind(&id);

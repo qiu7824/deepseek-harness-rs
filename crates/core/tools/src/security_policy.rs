@@ -104,7 +104,12 @@ fn normalized_key(path: &Path) -> String {
         .trim_end_matches('/')
         .to_string();
     if cfg!(windows) {
-        key.to_ascii_lowercase()
+        let key = key.to_ascii_lowercase();
+        if let Some(network) = key.strip_prefix("//?/unc/") {
+            format!("//{network}")
+        } else {
+            key.strip_prefix("//?/").unwrap_or(&key).to_string()
+        }
     } else {
         key
     }
@@ -241,6 +246,25 @@ fn classify_tool_security_with_config(
     config: &SecurityPolicyConfig,
 ) -> SecurityDecision {
     match tool {
+        "workspace_scratch"
+            if matches!(
+                arguments.get("action").and_then(JsonValue::as_str),
+                Some("promote" | "inspect")
+            ) =>
+        {
+            let operation = if arguments["action"] == "promote" {
+                "write"
+            } else {
+                "read"
+            };
+            classify_tool_security_with_config(
+                operation,
+                &serde_json::json!({"path":arguments.get("target")}),
+                workspace,
+                is_subagent,
+                config,
+            )
+        }
         "read" | "read_file" | "read_image" => {
             let Some(path) = target_path(arguments, workspace) else {
                 return SecurityDecision::Ask {
@@ -289,7 +313,11 @@ fn classify_tool_security_with_config(
                     rememberable: false,
                 };
             }
-            if path_is_in_workspace(&path, workspace) {
+            if path_is_in_workspace(&path, workspace)
+                || dsh_sandbox::roots::managed_temp_roots()
+                    .iter()
+                    .any(|root| path_is_in_workspace(&path, Some(root)))
+            {
                 return SecurityDecision::Allow;
             }
             if config.outside_write_policy == OutsideWritePolicy::Deny {
@@ -483,6 +511,40 @@ mod tests {
             Some("D:/workspace"),
         );
         assert_eq!(decision, SecurityDecision::Allow);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn verbatim_workspace_and_normal_tool_paths_have_the_same_boundary() {
+        for (root, target) in [
+            (r"\\?\E:\project\3d钢琴", r"E:\project\3d钢琴\package.json"),
+            (r"E:\project\3d钢琴", r"\\?\E:\project\3d钢琴\package.json"),
+            (
+                r"\\?\UNC\server\share\project",
+                r"\\server\share\project\src\main.rs",
+            ),
+        ] {
+            assert_eq!(
+                classify_tool_security("write", &json!({"file_path": target}), Some(root)),
+                SecurityDecision::Allow
+            );
+        }
+        assert!(matches!(
+            classify_tool_security(
+                "write",
+                &json!({"file_path": r"E:\project\3d钢琴-other\file.txt"}),
+                Some(r"\\?\E:\project\3d钢琴")
+            ),
+            SecurityDecision::Ask { .. }
+        ));
+        assert!(matches!(
+            classify_tool_security(
+                "write",
+                &json!({"file_path": r"E:\project\3d钢琴\..\outside\file.txt"}),
+                Some(r"\\?\E:\project\3d钢琴")
+            ),
+            SecurityDecision::Ask { .. }
+        ));
     }
 
     #[test]

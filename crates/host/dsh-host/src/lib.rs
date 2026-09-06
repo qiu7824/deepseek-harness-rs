@@ -12,9 +12,12 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 
+mod artifacts;
 mod claude_cli_auth;
 mod client_plugins;
 mod code_mode_dependency;
+mod codex_account;
+mod computer_use_http;
 #[cfg(test)]
 mod context_stats_test;
 mod deepseek_settings;
@@ -27,7 +30,11 @@ mod provider_auth;
 mod provider_auth_catalog;
 pub mod runtime_paths;
 mod sidebar_settings;
+#[cfg(test)]
+mod ultra_control_tests;
 mod web_preview;
+mod workspace_copy;
+mod workspace_resources;
 
 #[cfg(windows)]
 static ALLOCATOR_COLLECT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -786,12 +793,26 @@ impl OpenAiCompatibleAdapter {
                     configured_models
                         .iter()
                         .map(|model| dsh_llm_deepseek::DeepSeekCatalogModel {
+                            execution_modes: if profile.auth_provider.as_deref()
+                                == Some("openai-codex")
+                                && resolved_reasoning_efforts(model).is_some_and(|levels| {
+                                    levels
+                                        .keys()
+                                        .any(|id| ["max", "xhigh", "high"].contains(&id.as_str()))
+                                }) {
+                                vec![dsh_llm::ExecutionMode::Ultra]
+                            } else {
+                                Vec::new()
+                            },
                             enabled: model.enabled,
                             id: model.id.clone(),
                             name: model.name.clone(),
                             description: model.description.clone(),
                             api: model.api.clone(),
-                            reasoning_default: model.reasoning_default.clone(),
+                            reasoning_default: model.reasoning_default.clone().filter(|v| {
+                                profile.auth_provider.as_deref() != Some("openai-codex")
+                                    || v != "ultra"
+                            }),
                             supports_reasoning_summaries: model.supports_reasoning_summaries,
                             supported_parameters: model.supported_parameters.clone(),
                             context_window: model.context_window,
@@ -803,6 +824,11 @@ impl OpenAiCompatibleAdapter {
                                     resolved_reasoning_efforts(model).map(|efforts| {
                                         efforts
                                             .iter()
+                                            .filter(|(id, _)| {
+                                                profile.auth_provider.as_deref()
+                                                    != Some("openai-codex")
+                                                    || id.as_str() != "ultra"
+                                            })
                                             .map(|(id, wire)| {
                                                 dsh_llm_deepseek::CatalogReasoningEffort {
                                                     id: id.clone(),
@@ -1547,6 +1573,7 @@ pub struct HostSpine {
     pub api_proxy: Arc<ApiProxyService>,
     pub agent_presets: Arc<dsh_agent_presets::AgentPresets>,
     api_route: RouteDisposer,
+    computer_use_route: RouteDisposer,
     web_preview_route: RouteDisposer,
     provider_auth_route: RouteDisposer,
     free_catalog_route: RouteDisposer,
@@ -1619,6 +1646,7 @@ impl HostSpine {
         self.shutdown_result
             .get_or_init(|| async {
                 self.web_server.shutdown().await;
+                (self.computer_use_route)();
                 (self.web_preview_route)();
                 (self.provider_auth_route)();
                 (self.free_catalog_route)();
@@ -1672,6 +1700,7 @@ impl Drop for HostSpine {
             .load(std::sync::atomic::Ordering::SeqCst)
         {
             self.web_server.request_shutdown();
+            (self.computer_use_route)();
             (self.web_preview_route)();
             (self.provider_auth_route)();
             (self.free_catalog_route)();
@@ -1933,6 +1962,13 @@ fn compose_host_in_fiber(
     // subprocess provider drains any remaining trees. The model-code runtime
     // is installed only after its fail-closed OS sandbox is available.
     let subprocess = LocalSubprocessRuntime::install(ctx);
+    let node_command = runtime_paths.node_command();
+    let node_path = std::path::Path::new(&node_command);
+    if node_path.is_absolute() && node_path.is_file() {
+        if let Some(directory) = node_path.parent() {
+            subprocess.set_path_prefixes(vec![directory.to_path_buf()]);
+        }
+    }
     let sandbox = LocalSandboxProvider::install(ctx, Default::default());
     let _sandbox_policy = SandboxPolicyService::install(
         ctx,
@@ -1951,12 +1987,12 @@ fn compose_host_in_fiber(
         },
     )
     .map_err(|error| format!("code-runtime-node: {error}"))?;
-    let _jobs = LocalJobRegistry::install(ctx, Default::default());
+    let jobs = LocalJobRegistry::install(ctx, Default::default());
     let terminals = TerminalSessionService::install(ctx);
     let _terminal_shell = dsh_terminal_bash::ShellTerminalBackend::install(ctx, Default::default())
         .map_err(|error| format!("terminal-bash: {error}"))?;
     #[cfg(windows)]
-    let native_terminal_type = "pwsh";
+    let native_terminal_type = "cmd";
     #[cfg(not(windows))]
     let native_terminal_type = "bash";
     let _terminal_native = dsh_terminal_bash::ShellTerminalBackend::install(
@@ -1977,6 +2013,13 @@ fn compose_host_in_fiber(
     let settings = dsh_settings::SettingsProvider::install(ctx, settings_storage);
     futures::executor::block_on(settings.ready()).map_err(|error| format!("settings: {error}"))?;
     sidebar_settings::register(ctx, &settings)?;
+    let resources = workspace_resources::Resources::install(
+        ctx,
+        settings.clone(),
+        &data_root,
+        &subprocess,
+        agents.clone(),
+    )?;
     let path_defaults = runtime_paths.paths.clone();
     let path_properties = path_defaults
         .into_iter()
@@ -2016,9 +2059,41 @@ fn compose_host_in_fiber(
                     dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(false)),
                 ),
                 (
+                    "adapter".to_string(),
+                    dsh_schemastery::Schema::union(vec![
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "auto".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "native-browser".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "command".to_string(),
+                        )),
+                    ])
+                    .default(dsh_schemastery::Data::String("auto".to_string())),
+                ),
+                (
                     "command".to_string(),
                     dsh_schemastery::Schema::string()
                         .default(dsh_schemastery::Data::String(String::new())),
+                ),
+                (
+                    "browserExecutable".to_string(),
+                    dsh_schemastery::Schema::string()
+                        .default(dsh_schemastery::Data::String(String::new())),
+                ),
+                (
+                    "browserHeadless".to_string(),
+                    dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(true)),
+                ),
+                (
+                    "maxBrowserSessions".to_string(),
+                    dsh_schemastery::Schema::number()
+                        .min(1.0)
+                        .max(16.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(4.0)),
                 ),
                 (
                     "timeoutSeconds".to_string(),
@@ -2029,7 +2104,10 @@ fn compose_host_in_fiber(
                         .default(dsh_schemastery::Data::Number(60.0)),
                 ),
             ])),
-            dsh_settings::SettingsRegisterOptions::default(),
+            dsh_settings::SettingsRegisterOptions {
+                applies: dsh_settings::SettingsApplies::Restart,
+                ..Default::default()
+            },
         )
         .map_err(|error| format!("settings computer-use: {error}"))?;
     let voice_scope = settings
@@ -2852,6 +2930,9 @@ fn compose_host_in_fiber(
     )
     .map_err(|error| format!("tools: {error}"))?;
     dsh_tools::install_security_policy(ctx, security_policy_state);
+    resources.install_tools(ctx, &tools, &system_prompt)?;
+    let artifacts = artifacts::Artifacts::new(&data_root);
+    artifacts.install_tracking(ctx)?;
     let install_timeout_policy = dsh_timeout_policy::apply(ctx);
     futures::executor::block_on(install_timeout_policy());
     let _fs = dsh_fs_local::LocalFileSystem::install(
@@ -2936,28 +3017,57 @@ fn compose_host_in_fiber(
         )
         .map_err(|error| format!("voice: {error}"))?;
     }
+    let mut computer_use_runtime = None;
     if let dsh_schemastery::Data::Object(object) = (computer_use_scope.get)()
         && matches!(
             object.get("enabled"),
             Some(dsh_schemastery::Data::Bool(true))
         )
     {
+        let adapter = match object.get("adapter") {
+            Some(dsh_schemastery::Data::String(value)) => {
+                dsh_tool_computer_use_command::AdapterMode::parse(value)
+                    .map_err(|error| format!("computer-use: {error}"))?
+            }
+            _ => dsh_tool_computer_use_command::AdapterMode::Auto,
+        };
         let command = match object.get("command") {
             Some(dsh_schemastery::Data::String(value)) => value.trim().to_string(),
             _ => String::new(),
+        };
+        let browser_executable = match object.get("browserExecutable") {
+            Some(dsh_schemastery::Data::String(value)) if !value.trim().is_empty() => {
+                Some(std::path::PathBuf::from(value.trim()))
+            }
+            _ => None,
+        };
+        let browser_headless = !matches!(
+            object.get("browserHeadless"),
+            Some(dsh_schemastery::Data::Bool(false))
+        );
+        let max_browser_sessions = match object.get("maxBrowserSessions") {
+            Some(dsh_schemastery::Data::Number(value)) => *value as usize,
+            _ => 4,
         };
         let timeout_ms = match object.get("timeoutSeconds") {
             Some(dsh_schemastery::Data::Number(value)) => (*value as u64) * 1_000,
             _ => 60_000,
         };
-        dsh_tool_computer_use_command::install(
-            ctx,
-            dsh_tool_computer_use_command::Config {
-                command,
-                timeout_ms,
-            },
-        )
-        .map_err(|error| format!("computer-use: {error}"))?;
+        computer_use_runtime = Some(
+            dsh_tool_computer_use_command::install(
+                ctx,
+                dsh_tool_computer_use_command::Config {
+                    adapter,
+                    command,
+                    timeout_ms,
+                    browser_executable,
+                    browser_data_root: runtime_paths.paths["cacheDirectory"].join("computer-use"),
+                    browser_headless,
+                    max_browser_sessions,
+                },
+            )
+            .map_err(|error| format!("computer-use: {error}"))?,
+        );
     }
     dsh_tool_terminal::ToolTerminalService::install(ctx)
         .map_err(|error| format!("tool-terminal: {error}"))?;
@@ -3478,6 +3588,15 @@ fn compose_host_in_fiber(
             complete: None,
         },
     );
+    artifacts::register(
+        ctx,
+        &web_server,
+        resources.clone(),
+        artifacts,
+        workspace_registry.clone(),
+        sessions.clone(),
+        bind_host == BindHost::AllInterfaces,
+    );
     // The SPA dist server claims the fallback seat.
     let dist_index = packaged_resource("web/dist/index.html")
         .to_string_lossy()
@@ -3509,6 +3628,7 @@ fn compose_host_in_fiber(
         Vec::new()
     };
     let provider_auth_route = account_auth.register(&web_server);
+    account_auth.register_usage_tool(ctx)?;
     let free_catalog_route = free_catalog::register(
         &web_server,
         &data_root,
@@ -3520,6 +3640,7 @@ fn compose_host_in_fiber(
         workspace_registry.clone(),
         agents.clone(),
         terminals.clone(),
+        jobs.clone(),
         subprocess.clone(),
         sandbox.clone(),
         bind_host == BindHost::AllInterfaces,
@@ -3529,17 +3650,7 @@ fn compose_host_in_fiber(
         let mut payload = boot_payload.clone();
         if let Some(profile) = boot_profile.as_ref() {
             let disabled = client_plugins::disabled_plugins(profile);
-            if let Some(entries) = payload
-                .get_mut("entries")
-                .and_then(serde_json::Value::as_array_mut)
-            {
-                entries.retain(|entry| {
-                    entry
-                        .get("id")
-                        .and_then(serde_json::Value::as_str)
-                        .is_none_or(|id| !disabled.contains(id))
-                });
-            }
+            client_plugins::apply_enabled_graph(&mut payload, &disabled);
         }
         let boot_script = format!(
             "<script>window.__DSH_BOOT__={};</script>",
@@ -3562,6 +3673,7 @@ fn compose_host_in_fiber(
                 move || {
                     let selection = default_model.current_selection();
                     dsh_host_apiproxy::ModelSelection {
+                        execution_mode: selection.execution_mode,
                         provider: selection.provider,
                         model: selection.model,
                         reasoning_effort: selection
@@ -3601,6 +3713,12 @@ fn compose_host_in_fiber(
     );
     let fetch_handler = Arc::new(to_fetch_handler(api_proxy.clone()));
     let allow_remote_host = bind_host == BindHost::AllInterfaces;
+    let computer_use_route = computer_use_http::register(
+        &web_server,
+        agents.clone(),
+        computer_use_runtime,
+        allow_remote_host,
+    );
     let runtime_for_api = runtime_paths.clone();
     let api_route = web_server.register(WebRoute {
         kind: WebRouteKind::Prefix,
@@ -3661,6 +3779,7 @@ fn compose_host_in_fiber(
         api_proxy,
         agent_presets,
         api_route,
+        computer_use_route,
         web_preview_route,
         provider_auth_route,
         free_catalog_route,

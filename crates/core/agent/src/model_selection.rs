@@ -12,6 +12,8 @@ use parking_lot::Mutex;
 /// live Agent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelSelection {
+    pub execution_mode: dsh_llm::ExecutionMode,
+
     /// Registered provider route.
     pub provider: String,
     /// Provider-owned model id.
@@ -62,6 +64,17 @@ impl ModelSelectionRef {
         self.current
             .clone()
             .or_else(|| self.resolver.as_ref().and_then(|resolve| resolve()))
+            .map(|mut selected| {
+                if selected.provider == "openai-codex"
+                    && selected
+                        .reasoning_effort
+                        .as_ref()
+                        .is_some_and(|e| e.as_str() == "ultra")
+                {
+                    selected.execution_mode = dsh_llm::ExecutionMode::Ultra;
+                }
+                selected
+            })
     }
 }
 
@@ -77,11 +90,40 @@ pub async fn install_model_selection(
         Some(arc(Arc::clone(&selection))),
     );
     let selection_for_assembly = Arc::clone(&selection);
+    let model_runtime = agent_ctx
+        .get_typed::<Arc<dsh_llm::LlmRuntime>>("llm", false)
+        .map(|s| s.as_ref().clone());
     let assembly_listener: Arc<Listener> = Arc::new(move |_ctx, args| {
         let selection = Arc::clone(&selection_for_assembly);
+        let model_runtime = model_runtime.clone();
         Box::pin(async move {
             let next = downcast::<NextFn>(&args[2]).expect("assemble next continuation");
-            let selected = selection.lock().resolved_current();
+            let mut selected = selection.lock().resolved_current();
+            if let (Some(runtime), Some(value)) = (&model_runtime, &mut selected) {
+                if value.execution_mode == dsh_llm::ExecutionMode::Ultra
+                    || value
+                        .reasoning_effort
+                        .as_ref()
+                        .is_some_and(|e| e.as_str() == "ultra")
+                {
+                    if let Ok(config) = runtime
+                        .resolve_call_config(
+                            &LlmCallConfig {
+                                provider: value.provider.clone(),
+                                model: value.model.clone(),
+                                reasoning_effort: value.reasoning_effort.clone(),
+                                execution_mode: value.execution_mode,
+                                ..Default::default()
+                            },
+                            None,
+                        )
+                        .await
+                    {
+                        value.execution_mode = config.execution_mode;
+                        value.reasoning_effort = config.reasoning_effort;
+                    }
+                }
+            }
             let value = next.call().await;
             let assembled = downcast::<SharedAssembly>(&value)
                 .expect("system-prompt/assemble must resolve an assembly")
@@ -94,6 +136,12 @@ pub async fn install_model_selection(
                 return Some(value);
             };
             let mut merged = assembled;
+            if selected.execution_mode == dsh_llm::ExecutionMode::Ultra {
+                merged.sections.push(dsh_system_prompt::AssembledSection {
+                    name: "execution:ultra".into(),
+                    text: "For the root task, use proactive delegation when independent subtasks improve speed or quality. Give each child a bounded task and expected result; continue useful work yourself. Use at most three active children. If you are a delegated child, complete your assigned work directly and never delegate further. For a simple task, work directly. Collect required results, resolve failures, verify the combined work, and stop all remaining children before finishing. Existing user instructions and permissions remain in force.".into(),
+                });
+            }
             merged
                 .variables
                 .insert("provider".to_string(), Some(selected.provider.clone()));
@@ -118,6 +166,7 @@ pub async fn install_model_selection(
                 return Some(value);
             };
             let replaced = LlmCallConfig {
+                execution_mode: selected.execution_mode,
                 provider: selected.provider,
                 model: selected.model,
                 // An absent selected effort clears any inherited effort,

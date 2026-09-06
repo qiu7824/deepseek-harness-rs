@@ -93,6 +93,7 @@ impl LocalSandboxProvider {
         self.confine(
             argv,
             &SandboxPolicy {
+                read_only_roots: Vec::new(),
                 mode,
                 workspace_root: policy.workspace_root.clone(),
                 session_id: policy.session_id.clone(),
@@ -194,6 +195,9 @@ fn bwrap_profile_args(policy: &SandboxPolicy) -> Vec<String> {
             policy.workspace_root.clone(),
             policy.workspace_root.clone(),
         ]);
+        for root in dsh_sandbox::roots::managed_temp_roots() {
+            args.extend(["--bind".into(), root.clone(), root]);
+        }
     }
     args
 }
@@ -210,6 +214,7 @@ fn seatbelt_profile_args(policy: &SandboxPolicy) -> Vec<String> {
         format!("(allow file-write* (literal {}))", sbpl_string("/dev/null")),
     ];
     let roots = writable_roots(&SandboxExecutionPolicy {
+        read_only_roots: policy.read_only_roots.clone(),
         mode: match policy.mode {
             ConfinedSandboxMode::ReadOnly => SandboxMode::ReadOnly,
             ConfinedSandboxMode::WorkspaceWrite => SandboxMode::WorkspaceWrite,
@@ -294,6 +299,14 @@ fn windows_profile_args(policy: &SandboxPolicy) -> Result<Vec<String>, SandboxUn
         "--workspace".to_string(),
         policy.workspace_root.clone(),
     ]);
+    if policy.mode == ConfinedSandboxMode::WorkspaceWrite {
+        for root in dsh_sandbox::roots::managed_temp_roots() {
+            args.extend(["--temp-root".to_string(), root]);
+        }
+    }
+    for root in &policy.read_only_roots {
+        args.extend(["--read-root".into(), root.clone()]);
+    }
     Ok(args)
 }
 

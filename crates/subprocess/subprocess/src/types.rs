@@ -265,6 +265,9 @@ pub trait SubprocessTerminalHandle: Send + Sync {
     fn done(&self) -> BoxFuture<'static, Result<SubprocessOutcome, String>>;
     /// Write text to the terminal input.
     fn write(&self, data: &str) -> BoxFuture<'static, Result<(), String>>;
+    /// Resize the live pseudo terminal. Backends must reject zero dimensions
+    /// and keep the previous size when the native resize fails.
+    fn resize(&self, rows: u16, cols: u16) -> BoxFuture<'static, Result<(), String>>;
     /// Inspect the current foreground process group.
     fn inspect_foreground(
         &self,

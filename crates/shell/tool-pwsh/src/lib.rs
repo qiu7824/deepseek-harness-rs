@@ -25,7 +25,10 @@ impl JobHooks for PwshJobHooks {
         Box::pin(async move {
             process.done().await;
             let status = match process.status() {
-                ShellProcessStatus::Completed => JobOutcomeStatus::Completed,
+                ShellProcessStatus::Completed if process.exit_code() == Some(0) => {
+                    JobOutcomeStatus::Completed
+                }
+                ShellProcessStatus::Completed => JobOutcomeStatus::Failed,
                 ShellProcessStatus::Killed => JobOutcomeStatus::Killed,
                 ShellProcessStatus::Running => JobOutcomeStatus::Failed,
             };
@@ -51,6 +54,46 @@ impl JobHooks for PwshJobHooks {
 }
 
 pub struct ToolPwshService;
+
+fn execution_directory(
+    request: &mut ShellExecRequest,
+    args: &serde_json::Value,
+    owner: Option<&Arc<dyn dsh_agent::Agent>>,
+    workspaces: Option<&Arc<dyn dsh_workspace_resources::ManagedWorkspaces>>,
+) -> Result<(), ToolBodyError> {
+    let Some(policy) = request.sandbox_policy.as_mut() else {
+        return Ok(());
+    };
+    let project = policy.workspace_root.clone();
+    request.dsh_env = Some(vec![("DSH_PROJECT_ROOT".into(), project.clone())]);
+    if let Some(path) = args.get("workdir").and_then(serde_json::Value::as_str) {
+        let path = std::path::PathBuf::from(path);
+        let path = if path.is_absolute() {
+            path
+        } else {
+            std::path::Path::new(&project).join(path)
+        };
+        let path = std::fs::canonicalize(&path)
+            .map_err(|error| ToolBodyError::plain(format!("执行目录不存在或不可访问：{error}")))?;
+        let path = path.to_string_lossy().into_owned();
+        if let (Some(owner), Some(workspaces)) = (owner, workspaces) {
+            if let Some(copy) = workspaces
+                .resolve(owner.id().as_str(), &path)
+                .map_err(ToolBodyError::plain)?
+            {
+                policy.workspace_root = copy.root;
+                policy.read_only_roots = copy.read_only_roots;
+                request
+                    .dsh_env
+                    .as_mut()
+                    .unwrap()
+                    .push(("GIT_OPTIONAL_LOCKS".into(), "0".into()));
+            }
+        }
+        request.workdir = Some(path);
+    }
+    Ok(())
+}
 
 pub fn removes_directory(command: &str) -> bool {
     let normalized = command.to_ascii_lowercase();
@@ -127,6 +170,12 @@ impl ToolPwshService {
         let execute_shell = shell.clone();
         let execute_jobs = jobs.clone();
         let execute_policy = sandbox_policy.clone();
+        let execute_workspaces = ctx
+            .get_typed::<Arc<dyn dsh_workspace_resources::ManagedWorkspaces>>(
+                "managedWorkspaces",
+                false,
+            )
+            .map(|slot| slot.as_ref().clone());
         tools.register(
             ctx,
             ToolDefinition {
@@ -139,6 +188,7 @@ impl ToolPwshService {
                     "additionalProperties": false,
                     "properties": {
                         "command": { "type": "string" },
+                        "workdir": { "type": "string", "description": "Working directory; managed execution copies preserve the source project as read-only." },
                         "description": { "type": "string" },
                         "run_in_background": { "type": "boolean" }
                     },
@@ -175,6 +225,7 @@ impl ToolPwshService {
                     let shell = execute_shell.clone();
                     let jobs = execute_jobs.clone();
                     let sandbox_policy = execute_policy.clone();
+                    let workspaces=execute_workspaces.clone();
                     let args = args.clone();
                     let signal = run.execution.signal.lock().clone();
                     let owner = run.execution.agent.clone();
@@ -213,6 +264,7 @@ impl ToolPwshService {
                                     });
                                 request.sandbox_policy = Some(policy);
                             }
+                            execution_directory(&mut request,&args,owner.as_ref(),workspaces.as_ref())?;
                             let spec = shell.resolve(request);
                             let process_shell = shell.clone();
                             let id = jobs
@@ -249,14 +301,24 @@ impl ToolPwshService {
                                 });
                             request.sandbox_policy = Some(policy);
                         }
+                        execution_directory(&mut request,&args,owner.as_ref(),workspaces.as_ref())?;
                         let result = shell
                             .run(shell.resolve(request))
                             .await
                             .map_err(ToolBodyError::plain)?;
+                        let output = if result.stderr.text.is_empty() { result.stdout.text.clone() } else {
+                            format!("{}\n[stderr]\n{}", result.stdout.text, result.stderr.text)
+                        };
+                        if result.timed_out {
+                            return Err(ToolBodyError::coded(format!("PowerShell command timed out after {} ms\n{output}", result.timeout_ms), "ShellError", "SHELL_TIMEOUT"));
+                        }
+                        if result.exit_code.is_some_and(|code| code != 0) || result.signal.is_some() {
+                            return Err(ToolBodyError::coded(format!("PowerShell command failed (exit: {:?}, signal: {:?})\n{output}", result.exit_code, result.signal), "ShellError", "SHELL_FAILED"));
+                        }
                         Ok(serde_json::json!({
                             "kind": "foreground",
                             "exitCode": result.exit_code,
-                            "stdout": result.stdout.text,
+                            "stdout": output,
                         }))
                     })
                 }),

@@ -170,6 +170,7 @@ def main() -> int:
     original = write_workspace(workspace)
     env = isolated_environment(workdir, workdir / "ui-home")
     if args.without_node:
+        env["DSH_NODE_COMMAND"] = str(workdir / "node-not-installed.exe")
         for key in list(env):
             if key.upper() == "PATH":
                 env[key] = ""

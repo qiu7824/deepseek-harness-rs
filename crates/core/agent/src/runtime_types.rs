@@ -89,6 +89,8 @@ impl CancellationSignal {
 /// sections.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentOptions {
+    pub execution_mode: dsh_llm::ExecutionMode,
+
     /// Provider route (must have a registered adapter at call time).
     pub provider: Option<String>,
     /// Model id interpreted by the selected provider adapter.

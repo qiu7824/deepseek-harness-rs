@@ -18,7 +18,7 @@ use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
 use parking_lot::Mutex;
 
-pub const ENCODING_PREAMBLE: &str = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); ";
+pub const ENCODING_PREAMBLE: &str = "$ErrorActionPreference = 'Stop'; $OutputEncoding = [System.Text.Encoding]::UTF8; if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') { [Console]::OutputEncoding = $OutputEncoding }; $PSNativeCommandUseErrorActionPreference = $true; $global:LASTEXITCODE = 0; ";
 
 #[derive(Debug, Clone, Default)]
 pub struct Config {
@@ -59,11 +59,11 @@ struct FailedPwshProcess {
 
 impl ShellProcess for FailedPwshProcess {
     fn status(&self) -> ShellProcessStatus {
-        ShellProcessStatus::Killed
+        ShellProcessStatus::Completed
     }
 
     fn exit_code(&self) -> Option<i32> {
-        None
+        Some(127)
     }
 
     fn signal(&self) -> Option<String> {
@@ -103,13 +103,54 @@ fn pwsh_argv(config: &Config, spec: &ShellExecSpec) -> Vec<String> {
         config
             .pwsh_path
             .clone()
-            .unwrap_or_else(|| "pwsh".to_string()),
+            .unwrap_or_else(|| default_powershell(spec)),
         "-NoLogo".to_string(),
         "-NoProfile".to_string(),
         "-NonInteractive".to_string(),
         "-Command".to_string(),
-        format!("{ENCODING_PREAMBLE}{}", spec.command),
+        format!(
+            "{ENCODING_PREAMBLE}{}\nif ($global:LASTEXITCODE -ne 0) {{ exit $global:LASTEXITCODE }}",
+            spec.command
+        ),
     ]
+}
+
+fn default_powershell(spec: &ShellExecSpec) -> String {
+    #[cfg(windows)]
+    {
+        if spec
+            .sandbox_policy
+            .as_ref()
+            .is_some_and(|policy| policy.mode != SandboxMode::DangerFullAccess)
+        {
+            if let Some(windows) = std::env::var_os("SystemRoot") {
+                let system = std::path::PathBuf::from(windows)
+                    .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+                if system.is_file() {
+                    return system.to_string_lossy().into_owned();
+                }
+            }
+        }
+        for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+            let candidate = directory.join("pwsh.exe");
+            if candidate.is_file() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+        if let Some(windows) = std::env::var_os("SystemRoot") {
+            let candidate = std::path::PathBuf::from(windows)
+                .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+            if candidate.is_file() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+        return "powershell.exe".into();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = spec;
+        "pwsh".into()
+    }
 }
 
 fn apply_sandbox(
@@ -133,6 +174,7 @@ fn apply_sandbox(
         .confine(
             &argv,
             &SandboxPolicy {
+                read_only_roots: execution.read_only_roots.clone(),
                 mode,
                 workspace_root: execution.workspace_root.clone(),
                 session_id: execution.session_id.clone(),
@@ -224,6 +266,12 @@ impl ShellExecutor for LocalPwshExecutor {
             command: request.command,
             workdir: request
                 .workdir
+                .or_else(|| {
+                    request
+                        .sandbox_policy
+                        .as_ref()
+                        .map(|policy| policy.workspace_root.clone())
+                })
                 .or_else(|| self.config.cwd.clone())
                 .unwrap_or_else(|| {
                     std::env::current_dir()
@@ -233,7 +281,8 @@ impl ShellExecutor for LocalPwshExecutor {
                 }),
             timeout_ms: request
                 .timeout_ms
-                .unwrap_or(self.config.timeout_ms.unwrap_or(120_000)),
+                .unwrap_or(self.config.timeout_ms.unwrap_or(120_000))
+                .clamp(1, self.config.max_timeout_ms.unwrap_or(600_000).max(1)),
             stdout_max_bytes: request
                 .stdout_max_bytes
                 .unwrap_or(self.config.max_output_bytes.unwrap_or(64_000)),
@@ -265,6 +314,13 @@ impl ShellExecutor for LocalPwshExecutor {
                 ("PAGER".to_string(), Some("cat".to_string())),
                 ("GIT_PAGER".to_string(), Some("cat".to_string())),
             ];
+            if let Some(owner) = spec
+                .sandbox_policy
+                .as_ref()
+                .and_then(|policy| policy.session_id.as_ref())
+            {
+                env.push(("DSH_SESSION_ID".into(), Some(owner.as_str().into())));
+            }
             if let Some(entries) = &spec.env {
                 env.extend(
                     entries
@@ -302,7 +358,20 @@ impl ShellExecutor for LocalPwshExecutor {
                 signal: spec.signal.clone(),
                 env: Some(env),
             })?;
-            let outcome = handle.done().await?;
+            let (outcome, timed_out) = match tokio::time::timeout(
+                std::time::Duration::from_millis(spec.timeout_ms),
+                handle.done(),
+            )
+            .await
+            {
+                Ok(outcome) => (outcome?, false),
+                Err(_) => {
+                    handle.terminate();
+                    let outcome = handle.done().await?;
+                    let _ = handle.wait_for_exit(None).await;
+                    (outcome, true)
+                }
+            };
             let collected = handle.collected();
             let output = |reader: Arc<dyn dsh_subprocess::SubprocessOutputReader>| {
                 let read = reader.read_from(0);
@@ -315,7 +384,7 @@ impl ShellExecutor for LocalPwshExecutor {
             Ok(ShellRunResult {
                 exit_code: outcome.exit_code,
                 signal: outcome.signal,
-                timed_out: false,
+                timed_out,
                 aborted: false,
                 timeout_ms: spec.timeout_ms,
                 stdout: output(
@@ -348,6 +417,13 @@ impl ShellExecutor for LocalPwshExecutor {
             ("PAGER".to_string(), Some("cat".to_string())),
             ("GIT_PAGER".to_string(), Some("cat".to_string())),
         ];
+        if let Some(owner) = spec
+            .sandbox_policy
+            .as_ref()
+            .and_then(|policy| policy.session_id.as_ref())
+        {
+            env.push(("DSH_SESSION_ID".into(), Some(owner.as_str().into())));
+        }
         if let Some(entries) = &spec.env {
             env.extend(
                 entries

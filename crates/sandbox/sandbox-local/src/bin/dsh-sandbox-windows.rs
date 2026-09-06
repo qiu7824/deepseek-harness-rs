@@ -20,8 +20,9 @@ pub mod windows_runner {
     use std::ffi::{OsStr, c_void};
     use std::mem::{size_of, zeroed};
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::process::CommandExt;
     use std::path::{Path, PathBuf};
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use std::ptr::{null, null_mut};
 
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_OBJECT_0};
@@ -41,11 +42,11 @@ pub mod windows_runner {
         GetProcessHeap, HEAP_ZERO_MEMORY, HeapAlloc, HeapFree,
     };
     use windows_sys::Win32::System::Threading::{
-        CREATE_SUSPENDED, CreateMutexW, CreateProcessW, DeleteProcThreadAttributeList,
-        EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
-        PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ReleaseMutex,
-        ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, UpdateProcThreadAttribute,
-        WaitForSingleObject,
+        CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateMutexW, CreateProcessW,
+        DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
+        InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+        PROCESS_INFORMATION, ReleaseMutex, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+        UpdateProcThreadAttribute, WaitForSingleObject,
     };
 
     const INFINITE: u32 = 0xffff_ffff;
@@ -93,6 +94,7 @@ pub mod windows_runner {
     struct AppContainerProfile {
         name: Vec<u16>,
         sid: Sid,
+        preserve: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
     impl AppContainerProfile {
         fn create() -> Result<Self, String> {
@@ -127,13 +129,89 @@ pub mod windows_runner {
             Ok(Self {
                 name,
                 sid: Sid(sid),
+                preserve: Default::default(),
             })
         }
     }
     impl Drop for AppContainerProfile {
         fn drop(&mut self) {
+            if self.preserve.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
             unsafe {
                 DeleteAppContainerProfile(self.name.as_ptr());
+            }
+        }
+    }
+
+    struct ManagedTempRedirect {
+        link: PathBuf,
+        target: PathBuf,
+        preserve: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl ManagedTempRedirect {
+        fn install(
+            profile: &AppContainerProfile,
+            roots: &[PathBuf],
+        ) -> Result<Option<Self>, String> {
+            let Some(target) = std::env::var_os("DSH_SCRATCH_DIR").map(PathBuf::from) else {
+                return Ok(None);
+            };
+            let target = std::fs::canonicalize(target)
+                .map_err(|e| format!("managed temporary directory: {e}"))?;
+            if !roots
+                .iter()
+                .any(|root| std::fs::canonicalize(root).is_ok_and(|root| target.starts_with(root)))
+            {
+                return Err("managed temporary directory is outside the declared roots".into());
+            }
+            let base = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is missing")?;
+            let name = String::from_utf16_lossy(&profile.name[..profile.name.len() - 1])
+                .to_ascii_lowercase();
+            let link = PathBuf::from(base)
+                .join("Packages")
+                .join(name)
+                .join("AC/Temp");
+            if link.exists() {
+                let meta = std::fs::symlink_metadata(&link).map_err(|e| e.to_string())?;
+                use std::os::windows::fs::MetadataExt;
+                if meta.file_attributes() & 0x400 != 0
+                    || std::fs::read_dir(&link)
+                        .map_err(|e| e.to_string())?
+                        .next()
+                        .is_some()
+                {
+                    profile
+                        .preserve
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    return Err(
+                        "AppContainer temporary directory already contains unowned data".into(),
+                    );
+                }
+                std::fs::remove_dir(&link).map_err(|e| e.to_string())?;
+            }
+            std::fs::create_dir_all(link.parent().unwrap()).map_err(|e| e.to_string())?;
+            junction::create(&target, &link).map_err(|e| {
+                profile
+                    .preserve
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                format!("cannot connect AppContainer temporary storage: {e}")
+            })?;
+            Ok(Some(Self {
+                link,
+                target,
+                preserve: profile.preserve.clone(),
+            }))
+        }
+    }
+    impl Drop for ManagedTempRedirect {
+        fn drop(&mut self) {
+            if std::fs::canonicalize(&self.link).ok().as_ref() != Some(&self.target)
+                || std::fs::remove_dir(&self.link).is_err()
+            {
+                // Never let profile deletion follow a changed or busy link.
+                self.preserve
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
             }
         }
     }
@@ -229,15 +307,60 @@ pub mod windows_runner {
     }
 
     fn lock_acl_updates() -> Result<MutexGuard, String> {
-        let name = wide("Global\\DSH-Sandbox-Acl-Updates");
+        lock_named_acl_updates("Global\\DSH-Sandbox-Acl-Updates")
+    }
+    fn lock_named_acl_updates(name: &str) -> Result<MutexGuard, String> {
+        let name = wide(name);
         let handle = Handle::new(
             unsafe { CreateMutexW(null(), 0, name.as_ptr()) },
             "CreateMutexW",
         )?;
-        if unsafe { WaitForSingleObject(handle.0, INFINITE) } != WAIT_OBJECT_0 {
+        let result = unsafe { WaitForSingleObject(handle.0, INFINITE) };
+        // WAIT_ABANDONED grants ownership too. A cancelled runner must not
+        // poison every later permission preparation using this mutex.
+        if result != WAIT_OBJECT_0 && result != 0x80 {
             return Err(last_error("WaitForSingleObject(ACL mutex)"));
         }
         Ok(MutexGuard(handle))
+    }
+
+    #[test]
+    fn abandoned_acl_mutex_remains_acquirable() {
+        let name = format!(
+            "Local\\DSH-Acl-Test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let wide_name = wide(&name);
+        let keep = Handle::new(
+            unsafe { CreateMutexW(null(), 0, wide_name.as_ptr()) },
+            "CreateMutexW",
+        )
+        .unwrap();
+        let worker_name = name.clone();
+        std::thread::spawn(move || {
+            let name = wide(&worker_name);
+            let handle = Handle::new(
+                unsafe { CreateMutexW(null(), 0, name.as_ptr()) },
+                "CreateMutexW",
+            )
+            .unwrap();
+            assert_eq!(
+                unsafe { WaitForSingleObject(handle.0, INFINITE) },
+                WAIT_OBJECT_0
+            );
+            // Closing this handle and exiting the owning thread abandons the
+            // still-existing object retained by the parent handle.
+            drop(handle);
+        })
+        .join()
+        .unwrap();
+        let recovered = lock_named_acl_updates(&name).unwrap();
+        drop(recovered);
+        drop(keep);
     }
 
     struct AclGrant {
@@ -245,9 +368,187 @@ pub mod windows_runner {
         sid: String,
         armed: bool,
     }
+
+    // Windows PowerShell resolves every component of its startup directory.
+    // Give the ephemeral SID metadata/traverse access to ancestors only, with
+    // no listing, file reads, writes or inherited permission. Updating the
+    // handle's security descriptor avoids walking an entire drive's children.
+    struct AncestorAccess {
+        handles: Vec<Handle>,
+        sid: PSID,
+    }
+    impl AncestorAccess {
+        fn grant(roots: &[&Path], sid: PSID) -> Result<Self, String> {
+            use windows_sys::Win32::Storage::FileSystem::*;
+            let mut result = Self {
+                handles: Vec::new(),
+                sid,
+            };
+            let mut seen = std::collections::BTreeSet::new();
+            for root in roots {
+                for parent in root.ancestors().skip(1) {
+                    if parent.as_os_str().is_empty() || !seen.insert(parent.to_path_buf()) {
+                        continue;
+                    }
+                    let name = wide(parent.as_os_str());
+                    let mut handle = unsafe {
+                        CreateFileW(
+                            name.as_ptr(),
+                            0x02000000, // MAXIMUM_ALLOWED: SetSecurityInfo must not recurse
+                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            null(),
+                            OPEN_EXISTING,
+                            FILE_FLAG_BACKUP_SEMANTICS,
+                            null_mut(),
+                        )
+                    };
+                    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+                        && unsafe { GetLastError() } == 32
+                    {
+                        // A process's current-directory handle can deny DELETE
+                        // sharing, which MAXIMUM_ALLOWED also requests. ACL-only
+                        // access remains compatible with that live directory.
+                        handle = unsafe {
+                            CreateFileW(
+                                name.as_ptr(),
+                                0x00060000,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                null(),
+                                OPEN_EXISTING,
+                                FILE_FLAG_BACKUP_SEMANTICS,
+                                null_mut(),
+                            )
+                        };
+                    }
+                    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                        return Err(format!(
+                            "{}: {}",
+                            parent.display(),
+                            last_error("open sandbox ancestor permissions")
+                        ));
+                    }
+                    let handle = Handle::new(handle, "open sandbox ancestor")?;
+                    update_ancestor_access(handle.0, sid, true)?;
+                    result.handles.push(handle);
+                }
+            }
+            Ok(result)
+        }
+    }
+    impl Drop for AncestorAccess {
+        fn drop(&mut self) {
+            for handle in self.handles.iter().rev() {
+                let _ = update_ancestor_access(handle.0, self.sid, false);
+            }
+        }
+    }
+    fn update_ancestor_access(handle: HANDLE, sid: PSID, grant: bool) -> Result<(), String> {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::*;
+        use windows_sys::Win32::Security::*;
+        let _lock = lock_acl_updates()?;
+        unsafe {
+            let mut descriptor = null_mut();
+            let mut old_acl = null_mut();
+            let status = GetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                &mut old_acl,
+                null_mut(),
+                &mut descriptor,
+            );
+            if status != 0 {
+                return Err(format!("read ancestor permissions: Windows error {status}"));
+            }
+            let entry = EXPLICIT_ACCESS_W {
+                grfAccessPermissions: 0x001200a0, // attributes, traverse, read ACL, synchronize
+                grfAccessMode: if grant { GRANT_ACCESS } else { REVOKE_ACCESS },
+                grfInheritance: 0,
+                Trustee: TRUSTEE_W {
+                    pMultipleTrustee: null_mut(),
+                    MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                    TrusteeForm: TRUSTEE_IS_SID,
+                    TrusteeType: TRUSTEE_IS_UNKNOWN,
+                    ptstrName: sid.cast(),
+                },
+            };
+            let mut acl = null_mut();
+            let status = SetEntriesInAclW(1, &entry, old_acl, &mut acl);
+            if status != 0 {
+                LocalFree(descriptor);
+                return Err(format!(
+                    "prepare ancestor permissions: Windows error {status}"
+                ));
+            }
+            // SetEntriesInAcl can insert an explicit allow after an inherited
+            // deny. Keep inherited order, but place all explicit ACEs first so
+            // subsequent .NET ACL updates can still modify the directory.
+            let mut ordered = vec![0u8; (*acl).AclSize as usize];
+            let ordered_acl = ordered.as_mut_ptr().cast::<ACL>();
+            let mut entries = Vec::new();
+            for index in 0..(*acl).AceCount as u32 {
+                let mut ace = null_mut();
+                if GetAce(acl, index, &mut ace) == 0 {
+                    LocalFree(acl.cast());
+                    LocalFree(descriptor);
+                    return Err(last_error("read ancestor ACE"));
+                }
+                let header = &*ace.cast::<ACE_HEADER>();
+                let group = if header.AceFlags & 0x10 != 0 {
+                    2
+                } else if matches!(header.AceType, 1 | 6 | 10 | 12) {
+                    0
+                } else {
+                    1
+                };
+                entries.push((group, ace, header.AceSize));
+            }
+            entries.sort_by_key(|entry| entry.0);
+            let mut canonical =
+                InitializeAcl(ordered_acl, ordered.len() as u32, (*acl).AclRevision as u32) != 0;
+            for (_, ace, size) in entries {
+                canonical &= AddAce(
+                    ordered_acl,
+                    (*acl).AclRevision as u32,
+                    u32::MAX,
+                    ace,
+                    size as u32,
+                ) != 0;
+            }
+            let status = if canonical {
+                SetSecurityInfo(
+                    handle,
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    ordered_acl,
+                    null(),
+                )
+            } else {
+                1336
+            };
+            let error = if status == 0 {
+                None
+            } else {
+                Some(format!(
+                    "update ancestor permissions: Windows error {status}"
+                ))
+            };
+            LocalFree(acl.cast());
+            LocalFree(descriptor);
+            error.map_or(Ok(()), Err)
+        }
+    }
     impl AclGrant {
         fn grant(workspace: &Path, sid: &str, writable: bool) -> Result<Self, String> {
-            update_workspace_acl(workspace, sid, true, writable)?;
+            if let Err(error) = update_workspace_acl(workspace, sid, true, writable) {
+                let _ = update_workspace_acl(workspace, sid, false, false);
+                return Err(error);
+            }
             Ok(Self {
                 workspace: workspace.to_path_buf(),
                 sid: sid.to_string(),
@@ -372,8 +673,31 @@ if ($updateDirectFiles) {
                 "DSH_SANDBOX_ACL_PROFILE_ROOT",
                 if profile_root { "1" } else { "0" },
             )
+            // ACL preparation is runner-internal setup. Letting this helper
+            // inherit the user's PTY leaks its title/mode escape sequences
+            // into the terminal and can consume keystrokes before the real
+            // sandboxed shell starts.
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .creation_flags(0x08000000)
             .spawn()
             .map_err(|error| format!("launch ACL updater: {error}"))?;
+        let stderr = child.stderr.take().map(|mut pipe| {
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let mut kept = Vec::new();
+                let mut buffer = [0u8; 4096];
+                while let Ok(count) = pipe.read(&mut buffer) {
+                    if count == 0 {
+                        break;
+                    }
+                    let take = count.min(16384usize.saturating_sub(kept.len()));
+                    kept.extend_from_slice(&buffer[..take]);
+                }
+                String::from_utf8_lossy(&kept).into_owned()
+            })
+        });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         let status = loop {
             if let Some(status) = child
@@ -392,10 +716,16 @@ if ($updateDirectFiles) {
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         };
+        let diagnostic = stderr
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default();
         if status.success() {
             Ok(())
         } else {
-            Err(format!("ACL updater exited with {status}"))
+            Err(format!(
+                "ACL updater for {} exited with {status}: {diagnostic}. This is a Windows filesystem permission failure; repeating an application approval cannot grant Windows ACL rights.",
+                workspace.display()
+            ))
         }
     }
 
@@ -429,7 +759,7 @@ if ($updateDirectFiles) {
     }
 
     pub fn run_args(args: impl Iterator<Item = String>) -> Result<i32, String> {
-        let (mode, workspace, argv) = parse_args(args)?;
+        let (mode, workspace, temp_roots, read_roots, argv) = parse_args(args)?;
         if is_user_profile_root(&workspace, std::env::var_os("USERPROFILE").as_deref()) {
             return Err(
                 "the sandbox cannot use the whole user profile as a workspace; select a specific project directory"
@@ -437,15 +767,50 @@ if ($updateDirectFiles) {
             );
         }
         let profile = AppContainerProfile::create()?;
+        let _temporary_redirect = if mode == "workspace-write" {
+            ManagedTempRedirect::install(&profile, &temp_roots)?
+        } else {
+            None
+        };
         let sid_text = sid_string(profile.sid.0)?;
+        let mut ancestor_roots = vec![workspace.as_path()];
+        ancestor_roots.extend(temp_roots.iter().map(PathBuf::as_path));
+        ancestor_roots.extend(read_roots.iter().map(PathBuf::as_path));
+        if let Some(redirect) = _temporary_redirect.as_ref() {
+            ancestor_roots.push(&redirect.link);
+        }
+        let _ancestor_access = AncestorAccess::grant(&ancestor_roots, profile.sid.0)?;
         let _acl = AclGrant::grant(&workspace, &sid_text, mode == "workspace-write")?;
-        let exit = spawn_appcontainer(profile.sid.0, &workspace, &argv)?;
+        let mut temporary_grants = Vec::new();
+        for root in temp_roots {
+            if mode != "workspace-write" || !root.is_absolute() || !root.is_dir() {
+                return Err("invalid managed temporary root".into());
+            }
+            temporary_grants.push(AclGrant::grant(&root, &sid_text, true)?);
+        }
+        if let Some(redirect) = _temporary_redirect.as_ref() {
+            if let Some(package) = redirect.link.parent().and_then(Path::parent) {
+                temporary_grants.push(AclGrant::grant(package, &sid_text, true)?);
+            }
+            temporary_grants.push(AclGrant::grant(&redirect.target, &sid_text, true)?);
+        }
+        let mut read_grants = Vec::new();
+        for root in read_roots {
+            if !root.is_absolute() || !root.is_dir() {
+                return Err("invalid read-only source root".into());
+            }
+            read_grants.push(AclGrant::grant(&root, &sid_text, false)?);
+        }
+        // The policy root is an authorization boundary, not a cwd override.
+        let cwd =
+            std::env::current_dir().map_err(|e| format!("execution working directory: {e}"))?;
+        let exit = spawn_appcontainer(profile.sid.0, &cwd, &argv)?;
         Ok(exit as i32)
     }
 
     fn parse_args(
         mut args: impl Iterator<Item = String>,
-    ) -> Result<(String, PathBuf, Vec<String>), String> {
+    ) -> Result<(String, PathBuf, Vec<PathBuf>, Vec<PathBuf>, Vec<String>), String> {
         if args.next().as_deref() != Some("--mode") {
             return Err("expected --mode".to_string());
         }
@@ -457,14 +822,29 @@ if ($updateDirectFiles) {
             return Err("expected --workspace".to_string());
         }
         let workspace = PathBuf::from(args.next().ok_or_else(|| "missing workspace".to_string())?);
-        if args.next().as_deref() != Some("--") {
+        let mut temp_roots = Vec::new();
+        let mut read_roots = Vec::new();
+        let mut separator = args.next();
+        while matches!(separator.as_deref(), Some("--temp-root" | "--read-root")) {
+            if temp_roots.len() + read_roots.len() >= 32 {
+                return Err("too many sandbox roots".into());
+            }
+            let path = PathBuf::from(args.next().ok_or("missing sandbox root")?);
+            if separator.as_deref() == Some("--temp-root") {
+                temp_roots.push(path)
+            } else {
+                read_roots.push(path)
+            }
+            separator = args.next();
+        }
+        if separator.as_deref() != Some("--") {
             return Err("expected -- before command".to_string());
         }
         let argv: Vec<String> = args.collect();
         if argv.is_empty() {
             return Err("missing command".to_string());
         }
-        Ok((mode, workspace, argv))
+        Ok((mode, workspace, temp_roots, read_roots, argv))
     }
 
     fn spawn_appcontainer(sid: PSID, cwd: &Path, argv: &[String]) -> Result<u32, String> {
@@ -485,7 +865,33 @@ if ($updateDirectFiles) {
         startup.lpAttributeList = attributes.ptr;
         let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
         let mut command_line = wide(windows_command_line(argv));
-        let cwd = wide(cwd.as_os_str());
+        // CreateProcess accepts the verbatim path, but cmd.exe treats the
+        // inherited `\\?\D:\...` spelling as a UNC current directory and
+        // silently falls back to C:\Windows. Hand the child the ordinary
+        // drive spelling after all authorization/canonical checks are done.
+        let cwd_text = cwd.to_string_lossy();
+        let cwd_text = if let Some(network) = cwd_text.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{network}")
+        } else {
+            cwd_text
+                .strip_prefix(r"\\?\")
+                .unwrap_or(cwd_text.as_ref())
+                .to_string()
+        };
+        let cwd = wide(std::ffi::OsStr::new(&cwd_text));
+        // A null environment lets AppContainer replace TEMP/TMP with its own
+        // package directory, bypassing the Host's registered resource lease.
+        // Preserve the scrubbed, per-execution environment explicitly.
+        let mut variables = std::env::vars_os().collect::<Vec<_>>();
+        variables.sort_by_key(|(name, _)| name.to_string_lossy().to_uppercase());
+        let mut environment = Vec::<u16>::new();
+        for (name, value) in variables {
+            environment.extend(name.encode_wide());
+            environment.push(b'=' as u16);
+            environment.extend(value.encode_wide());
+            environment.push(0);
+        }
+        environment.push(0);
         let ok = unsafe {
             CreateProcessW(
                 null(),
@@ -493,8 +899,8 @@ if ($updateDirectFiles) {
                 null(),
                 null(),
                 1,
-                CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
-                null(),
+                CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                environment.as_ptr().cast(),
                 cwd.as_ptr(),
                 &startup.StartupInfo,
                 &mut process,

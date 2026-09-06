@@ -78,6 +78,7 @@ impl crate::continuation::ContinuationHost for RuntimeContinuationHost {
 impl SubagentRuntime {
     /// Register the `subagents` service.
     pub fn install(ctx: &Context) -> Arc<Self> {
+        crate::ultra::UltraControl::install(ctx);
         let runtime = Arc::new(Self {
             ctx: ctx.clone(),
             providers: Arc::new(parking_lot::Mutex::new(HashMap::new())),
@@ -298,12 +299,26 @@ impl SubagentRuntime {
             label: request.label.clone(),
         })
         .map_err(|message| SubagentError::new("INVALID_DESCRIPTOR", message))?;
+        let permit = if let Some(control) = crate::ultra::UltraControl::get(&self.ctx) {
+            control
+                .admit_wait(
+                    &request.parent,
+                    &uuid::Uuid::new_v4().to_string(),
+                    &request.signal,
+                )
+                .await?
+        } else {
+            None
+        };
         let parent = request.parent.clone();
         let resolved = ResolvedSubagentStartRequest {
             request,
             descriptor,
         };
         let run = provider.start(resolved).await?;
+        if let Some(permit) = permit {
+            permit.watch_run(run.clone());
+        }
         Ok(observe_run(&self.ctx, name, parent, run))
     }
 
@@ -394,6 +409,13 @@ impl SubagentRuntime {
         parents: &[Arc<dyn Agent>],
     ) -> Result<(), SubagentError> {
         self.manager().drain_descendants(parents).await
+    }
+
+    pub async fn stop_ultra(&self, parent: &Arc<dyn Agent>) -> Result<(), SubagentError> {
+        if let Some(control) = crate::ultra::UltraControl::get(&self.ctx) {
+            control.close(parent).await;
+        }
+        self.manager().drain_descendants(&[parent.clone()]).await
     }
 
     /// Whether a creator still owns child work or a pending result delivery.

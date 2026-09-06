@@ -247,6 +247,7 @@ fn agent(ctx: &Context, workspace: &str, id: &str) -> Arc<dyn dsh_agent::Agent> 
         ctx: scope.ctx,
         scope: key,
         options: dsh_agent::AgentOptions {
+            execution_mode: Default::default(),
             provider: Some("provider-a".into()),
             model: Some("model-a".into()),
             ..Default::default()
@@ -320,6 +321,7 @@ async fn recorded_failure_recovery_new_model_context_and_live_preflight_form_a_r
     // The resolver is set through the official model-selection service so
     // the test deliberately retains stale AgentOptions from model A.
     selection.lock().current = Some(dsh_agent::ModelSelection {
+        execution_mode: Default::default(),
         provider: "provider-b".into(),
         model: "model-b".into(),
         reasoning_effort: None,
@@ -444,6 +446,7 @@ async fn selected_provider_experience_is_injected_and_counted_for_the_final_requ
         Arc::new(Default::default());
     dsh_agent::install_model_selection(b.ctx(), Arc::clone(&selection)).await;
     selection.lock().current = Some(dsh_agent::ModelSelection {
+        execution_mode: Default::default(),
         provider: "provider-b".into(),
         model: "model-b".into(),
         reasoning_effort: None,
@@ -473,6 +476,7 @@ async fn selected_provider_experience_is_injected_and_counted_for_the_final_requ
             })],
             Box::pin(async {
                 arc(dsh_llm::LlmCallConfig {
+                    execution_mode: Default::default(),
                     provider: "provider-a".into(),
                     model: "model-a".into(),
                     ..Default::default()

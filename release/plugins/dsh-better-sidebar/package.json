@@ -1,12 +1,21 @@
 {
   "name": "dsh-better-sidebar",
   "version": "0.15.2-rs.2",
-  "description": "Rust-hosted sidebar workbench with app fullscreen, durable width preferences and declarative built-in settings.",
+  "description": "Rust-hosted sidebar workbench with a lifecycle-safe third-party tab and file-viewer API, declarative settings and durable layouts.",
   "license": "MIT",
-  "exports": { "./client": "./lib/client.js" },
+  "exports": {
+    "./client": {
+      "types": "./lib/client.d.ts",
+      "default": "./lib/client.js"
+    }
+  },
   "dsh": {
     "client": {
       "platform": "web",
+      "assets": {
+        "git-terminal.js": "./lib/git-terminal.js",
+        "xterm.js": "./lib/xterm.js"
+      },
       "inject": ["@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-client-ui-settings", "@deepseek-ai/dsh-client-ui-settings-plugins", "@deepseek-ai/dsh-client-connection"]
     }
   }

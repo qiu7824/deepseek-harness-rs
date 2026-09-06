@@ -223,6 +223,27 @@ impl Inbox {
 
     /// Apply standard splice semantics and durably record the normalized
     /// result.
+    pub fn move_to_next_step(&self, message_id: &MessageId) -> Result<bool, String> {
+        let _mutation = self.begin_mutation()?;
+        let Some(location) = self.locate(message_id) else {
+            return Ok(false);
+        };
+        if location.target != InboxTarget::NextTurn {
+            return Ok(false);
+        }
+        let removed = self.mutate_locked(
+            InboxTarget::NextTurn,
+            location.index as f64,
+            1.0,
+            Vec::new(),
+            false,
+        )?;
+        self.mutate_locked(InboxTarget::NextStep, f64::INFINITY, 0.0, removed, false)?;
+        Ok(true)
+    }
+
+    /// Apply standard splice semantics and durably record the normalized
+    /// result.
     pub fn splice(
         &self,
         target: InboxTarget,

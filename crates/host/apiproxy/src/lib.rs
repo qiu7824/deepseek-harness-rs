@@ -12,6 +12,8 @@ mod interactions;
 mod learning_preview;
 pub mod native_path_opener;
 pub mod proxy;
+mod queue_projection;
+mod remote_payload;
 pub mod session_export;
 
 pub use agent_lookup::{

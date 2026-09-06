@@ -8,6 +8,43 @@
 //! cannot write /tmp but bash can" asymmetries cannot arise between them.
 
 use crate::index::SandboxExecutionPolicy;
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
+type TempProvider = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+static MANAGED_TEMP: OnceLock<Mutex<Vec<(u64, TempProvider)>>> = OnceLock::new();
+static NEXT_PROVIDER: AtomicU64 = AtomicU64::new(1);
+pub struct ManagedTempRegistration(u64);
+impl Drop for ManagedTempRegistration {
+    fn drop(&mut self) {
+        if let Some(providers) = MANAGED_TEMP.get() {
+            providers.lock().unwrap().retain(|(id, _)| *id != self.0);
+        }
+    }
+}
+/// Host-owned resource providers extend the normal temporary-write boundary.
+/// The callback must return only registered private storage roots.
+pub fn register_managed_temp(provider: TempProvider) -> ManagedTempRegistration {
+    let id = NEXT_PROVIDER.fetch_add(1, Ordering::Relaxed);
+    MANAGED_TEMP
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .push((id, provider));
+    ManagedTempRegistration(id)
+}
+pub fn managed_temp_roots() -> Vec<String> {
+    let providers = MANAGED_TEMP
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .clone();
+    providers
+        .into_iter()
+        .flat_map(|(_, provider)| provider())
+        .collect()
+}
 
 /// Resolve a granted root to the path the enforcement layer actually
 /// compares: canonical (symlinks resolved), because both Seatbelt filters
@@ -36,7 +73,9 @@ pub fn writable_roots(policy: &SandboxExecutionPolicy) -> Vec<String> {
         policy.workspace_root.clone(),
         "/tmp".to_string(),
         std::env::temp_dir().to_string_lossy().into_owned(),
-    ];
+    ]
+    .into_iter()
+    .chain(managed_temp_roots());
     let mut roots: Vec<String> = Vec::new();
     for candidate in candidates {
         let canonical = canonical_path(&candidate);

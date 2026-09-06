@@ -162,6 +162,7 @@ struct MaterializeRequest<'a> {
 
 /// One residency epoch for a reconstructed continuable child Agent.
 struct Activation {
+    ultra_permit: Option<crate::ultra::UltraPermit>,
     child_id: SessionId,
     parent_session: SessionId,
     handle: AgentHandle,
@@ -792,6 +793,7 @@ impl SubagentContinuationManager {
             parent: parent.clone(),
             signal: options.signal.clone(),
             agent_options: Some(dsh_agent::AgentOptions {
+                execution_mode: Default::default(),
                 provider: agent_provider,
                 model: agent_model,
                 reasoning_effort: agent_reasoning_effort.map(dsh_llm::reasoning_effort_id),
@@ -992,6 +994,13 @@ impl SubagentContinuationManager {
             signal,
         } = input;
         let _materialization = self.begin_materialization(&parent)?;
+        let mut ultra_permit = if let Some(control) = crate::ultra::UltraControl::get(&self.ctx) {
+            control
+                .admit_wait(&parent, child_id.as_str(), signal)
+                .await?
+        } else {
+            None
+        };
         if (signal)() {
             return Err(SubagentError::new(
                 "CANCELLED",
@@ -1062,6 +1071,13 @@ impl SubagentContinuationManager {
             handle
         };
         let lineage = self.live_lineage(&parent);
+        if let Err(error) = crate::ultra::mark_child(parent.as_ref(), handle.agent.as_ref()) {
+            handle.dispose.await;
+            return Err(SubagentError::new("CHILD_COMPOSE_FAILED", error));
+        }
+        if let Some(permit) = &mut ultra_permit {
+            permit.bind(&handle.agent);
+        }
         let mut ancestry: HashSet<usize> = lineage
             .iter()
             .map(|agent| Arc::as_ptr(agent).cast::<()>() as usize)
@@ -1069,6 +1085,7 @@ impl SubagentContinuationManager {
         ancestry.insert(Arc::as_ptr(&handle.agent).cast::<()>() as usize);
         let observer = self.host.observe_activation(provider, child_id, &parent);
         let activation = Arc::new(parking_lot::Mutex::new(Activation {
+            ultra_permit,
             child_id: child_id.clone(),
             parent_session: parent.id().clone(),
             handle,
@@ -1584,6 +1601,7 @@ impl SubagentContinuationManager {
             )
         };
         handle.dispose.await;
+        activation.lock().ultra_permit.take();
         let terminal_failure = if failures.is_empty() {
             None
         } else {

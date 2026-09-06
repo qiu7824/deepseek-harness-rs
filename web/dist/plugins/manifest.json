@@ -40,7 +40,7 @@
     {
       "id": "@deepseek-ai/dsh-client-connection",
       "url": "/plugins/connection.js",
-      "rev": "cd711c0f6e07434e",
+      "rev": "11b6a19842e7297d",
       "inject": [],
       "immediately": true
     },
@@ -138,7 +138,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-models",
       "url": "/plugins/ui-settings-models.js",
-      "rev": "dae51e4f338a40fb",
+      "rev": "1c78701d6305ed41",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
@@ -150,7 +150,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-plugin-inventory",
       "url": "/plugins/ui-settings-plugin-inventory.js",
-      "rev": "0a726f09906a9103",
+      "rev": "c4d45de546795603",
       "inject": [
         "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-runtime",
@@ -162,7 +162,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-conversation",
       "url": "/plugins/ui-conversation.js",
-      "rev": "cd77510e437807f1",
+      "rev": "cdacb304de94ee88",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -209,7 +209,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-deliverables",
       "url": "/plugins/ui-deliverables.js",
-      "rev": "a4356a980346dd40",
+      "rev": "50d4957ebb1adb31",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -296,7 +296,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-message-feedback",
       "url": "/plugins/ui-message-feedback.js",
-      "rev": "9f6956e7382b6669",
+      "rev": "b10911cbb690e71c",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-api-remotes",
@@ -308,7 +308,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-model-selection",
       "url": "/plugins/ui-model-selection.js",
-      "rev": "fff4ef003a5dbc8f",
+      "rev": "bfd42be53a1830a5",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",

@@ -178,6 +178,7 @@ fn resolve_child_options(
         .unwrap_or((None, None, None, None));
 
     let mut resolved = AgentOptions {
+        execution_mode: Default::default(),
         provider: current_selection
             .as_ref()
             .map(|selection| selection.provider.clone())
@@ -209,6 +210,27 @@ fn resolve_child_options(
             resolved.reasoning_effort = requested.reasoning_effort.clone();
         }
     }
+    let parent_mode = current_selection
+        .map(|selection| selection.execution_mode)
+        .unwrap_or(parent_options.execution_mode);
+    let parent_provider = current_selection
+        .map(|selection| selection.provider.as_str())
+        .or(parent_options.provider.as_deref());
+    let parent_model = current_selection
+        .map(|selection| selection.model.as_str())
+        .or(parent_options.model.as_deref());
+    if parent_mode == dsh_llm::ExecutionMode::Ultra
+        && resolved.reasoning_effort.is_none()
+        && resolved.provider.as_deref() == parent_provider
+        && resolved.model.as_deref() == parent_model
+    {
+        resolved.reasoning_effort = current_selection
+            .and_then(|selection| selection.reasoning_effort.clone())
+            .or_else(|| parent_options.reasoning_effort.clone());
+        if resolved.reasoning_effort.is_none() {
+            resolved.execution_mode = dsh_llm::ExecutionMode::Ultra;
+        }
+    }
     resolved
 }
 
@@ -225,7 +247,10 @@ pub fn resolve_child_agent_options(
     let current_selection = parent
         .ctx()
         .get_typed::<Arc<parking_lot::Mutex<dsh_agent::ModelSelectionRef>>>(&selection_name, false)
-        .and_then(|selection| selection.lock().resolved_current());
+        .and_then(|selection| {
+            let state = selection.lock();
+            state.assembled.clone().or_else(|| state.resolved_current())
+        });
     let defaults = ctx_defaults(parent.ctx());
     resolve_child_options(
         parent_options,
@@ -251,6 +276,7 @@ mod tests {
 
     fn parent() -> AgentOptions {
         AgentOptions {
+            execution_mode: Default::default(),
             provider: Some("gpt".to_string()),
             model: Some("gpt-5.6-sol".to_string()),
             max_tokens: Some(4096),
@@ -269,8 +295,25 @@ mod tests {
     }
 
     #[test]
+    fn ultra_uses_the_current_route_effort_without_overriding_an_explicit_child_route() {
+        let mut parent = parent();
+        parent.execution_mode = dsh_llm::ExecutionMode::Ultra;
+        let same = resolve_child_options(&parent, None, None, 1, None);
+        assert_eq!(same.reasoning_effort.unwrap().as_str(), "max");
+        let requested = AgentOptions {
+            provider: Some("other".into()),
+            model: Some("fast".into()),
+            ..Default::default()
+        };
+        let other = resolve_child_options(&parent, None, Some(&requested), 1, None);
+        assert_eq!(other.execution_mode, dsh_llm::ExecutionMode::Standard);
+        assert!(other.reasoning_effort.is_none());
+    }
+
+    #[test]
     fn call_effort_overrides_for_this_child() {
         let requested = AgentOptions {
+            execution_mode: Default::default(),
             reasoning_effort: Some(reasoning_effort_id("max")),
             ..AgentOptions::default()
         };
@@ -285,6 +328,7 @@ mod tests {
     #[test]
     fn current_model_selection_still_wins_for_route_only() {
         let selection = ModelSelection {
+            execution_mode: Default::default(),
             provider: "other".to_string(),
             model: "model".to_string(),
             reasoning_effort: Some(reasoning_effort_id("high")),

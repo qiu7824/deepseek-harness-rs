@@ -1,0 +1,18 @@
+[package]
+name = "dsh-workspace-resources"
+version = "0.1.0-rc.8"
+edition = "2024"
+license = "MIT"
+description = "Owned execution resources, reference protection and recoverable collection"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
+parking_lot = { workspace = true }
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }

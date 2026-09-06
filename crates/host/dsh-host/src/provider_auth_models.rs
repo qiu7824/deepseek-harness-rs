@@ -1,6 +1,49 @@
 use super::*;
 use crate::provider_auth_catalog::{Catalog, merge_models, migrate_legacy_preferences};
 
+fn mode_rows(profile: &Value, mut rows: Vec<Value>) -> Vec<Value> {
+    if profile.get("authProvider").and_then(Value::as_str) != Some("openai-codex") {
+        return rows;
+    }
+    for row in &mut rows {
+        if let Some(levels) = row
+            .get_mut("reasoningEfforts")
+            .and_then(Value::as_object_mut)
+        {
+            levels.retain(|id, wire| {
+                id != "ultra"
+                    && wire.as_str().is_some_and(|v| {
+                        ["none", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&v)
+                    })
+            });
+            if ["max", "xhigh", "high"]
+                .iter()
+                .any(|id| levels.contains_key(*id))
+            {
+                row["executionModes"] = json!(["ultra"]);
+            }
+        }
+        if row.get("reasoningDefault").and_then(Value::as_str) == Some("ultra") {
+            row.as_object_mut().unwrap().remove("reasoningDefault");
+        }
+        if let Some(reasoning) = row.get_mut("reasoning").and_then(Value::as_object_mut) {
+            if let Some(efforts) = reasoning.get_mut("efforts").and_then(Value::as_array_mut) {
+                efforts.retain(|level| level["id"] != "ultra");
+            }
+            if reasoning.get("defaultEffort").and_then(Value::as_str) == Some("ultra") {
+                reasoning.remove("defaultEffort");
+            }
+        }
+        if let Some(descriptions) = row
+            .get_mut("effortDescriptions")
+            .and_then(Value::as_object_mut)
+        {
+            descriptions.remove("ultra");
+        }
+    }
+    rows
+}
+
 pub(crate) struct CatalogRequest {
     pub url: reqwest::Url,
     pub headers: reqwest::header::HeaderMap,
@@ -216,10 +259,13 @@ impl AccountAuth {
         let profile = self
             .model_profile(route)
             .unwrap_or_else(|_| profile.clone());
-        merge_models(
+        mode_rows(
             &profile,
-            &self.catalogs.get(route, &scope),
-            route == "deepseek-official",
+            merge_models(
+                &profile,
+                &self.catalogs.get(route, &scope),
+                route == "deepseek-official",
+            ),
         )
     }
     pub(crate) fn effective_native_config(&self, value: &Value) -> Value {
@@ -243,7 +289,10 @@ impl AccountAuth {
         let (ns, path) = Self::profile_address(route);
         let mut preference_path = path.clone();
         preference_path.extend(["modelPreferences".into(), scope.clone()]);
-        let models = merge_models(&profile, &catalog, route == "deepseek-official");
+        let models = mode_rows(
+            &profile,
+            merge_models(&profile, &catalog, route == "deepseek-official"),
+        );
         Ok(
             json!({"provider":route,"settingsNs":ns,"settingsPath":path,"preferencePath":preference_path,
             "accountScope":scope,"models":models,"catalog":catalog.status_value(),

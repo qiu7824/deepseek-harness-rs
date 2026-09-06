@@ -65,7 +65,7 @@ pub use runtime::{
     StreamFactory, assert_usable_api_key, generate_options_config_equals,
 };
 pub use types::{
-    ContentBlock, FinishReason, GenerateOptions, ImageAttachmentRef, LlmCallConfig,
+    ContentBlock, ExecutionMode, FinishReason, GenerateOptions, ImageAttachmentRef, LlmCallConfig,
     LlmCallConfigAdapterDefaults, LlmConfigurableProvider, LlmDiscoveredModel, LlmFailure,
     LlmModelContext, LlmModelDiscoveryRequest, LlmModelInfo, LlmModelReasoningInfo,
     LlmProviderInfo, LlmReasoningEffortInfo, LlmResolvedModelInfo, ModelModality, StreamChunk,

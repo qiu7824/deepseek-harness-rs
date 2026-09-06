@@ -984,7 +984,9 @@ impl ReactLoopAgent {
             if concluded {
                 return Ok(Some(TurnEndReason::Completed));
             }
-            // Not concluded: keep stepping within the turn.
+            // Re-enter pre_step before the next model request so steering,
+            // deferred tool context, and runtime changes are admitted.
+            return Ok(None);
         }
     }
 
@@ -1032,6 +1034,7 @@ impl ReactLoopAgent {
             request_proposal(persisted_header.as_ref().expect("logged header"))
         } else {
             LlmCallConfig {
+                execution_mode: self.options.execution_mode,
                 provider,
                 model,
                 reasoning_effort,

@@ -5,5 +5,6 @@ pub mod index;
 pub mod invariant;
 
 pub use index::{
-    NativeCommandAbort, NativeCommandFailure, NativeCommandOutput, run_native_command,
+    NativeCommandAbort, NativeCommandFailure, NativeCommandLimits, NativeCommandOutput,
+    run_native_command, run_native_command_bounded,
 };

@@ -144,6 +144,9 @@ async fn spill_replacement(
         suggested_name: format!("{tool_name}.txt"),
         content: text.to_string(),
     };
+    if !spill_store.enabled() {
+        return None;
+    }
     let reference = match spill_store.save_text(&save).await {
         Ok(reference) => reference,
         Err(error) => {
@@ -226,7 +229,7 @@ pub fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
             else {
                 return Some(arc(decision));
             };
-            if exec.parent.is_some() || exec.name == "read" {
+            if exec.parent.is_some() || exec.name == "read" || exec.name == "workspace_scratch" {
                 return Some(arc(decision));
             }
 

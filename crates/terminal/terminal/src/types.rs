@@ -289,6 +289,12 @@ pub trait TerminalBackendSession: Send + Sync + 'static {
     fn pid(&self) -> Option<u32>;
     /// Start one exclusive send operation.
     fn start_send(&self, request: &TerminalSendRequest) -> Arc<dyn TerminalSendOperation>;
+    /// Write raw input without creating an exclusive command wait operation.
+    /// This is the path used by an interactive terminal emulator for keys,
+    /// paste and control sequences.
+    fn write_input(&self, data: &str) -> BoxFuture<'static, Result<(), String>>;
+    /// Resize the native PTY backing the terminal emulator.
+    fn resize(&self, rows: u16, cols: u16) -> BoxFuture<'static, Result<(), String>>;
     /// Read one bounded page from retained scrollback.
     fn read(&self, request: &TerminalReadRequest) -> TerminalReadResult;
     /// Signal the verified foreground process group.
@@ -326,6 +332,7 @@ pub enum TerminalErrorCode {
     NoBackend,
     NoSession,
     OwnerNotLive,
+    SessionLimit,
     SendActive,
     ServiceDisposing,
 }
@@ -339,6 +346,7 @@ impl TerminalErrorCode {
             TerminalErrorCode::NoBackend => "NO_BACKEND",
             TerminalErrorCode::NoSession => "NO_SESSION",
             TerminalErrorCode::OwnerNotLive => "OWNER_NOT_LIVE",
+            TerminalErrorCode::SessionLimit => "SESSION_LIMIT",
             TerminalErrorCode::SendActive => "SEND_ACTIVE",
             TerminalErrorCode::ServiceDisposing => "SERVICE_DISPOSING",
         }

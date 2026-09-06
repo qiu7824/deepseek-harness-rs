@@ -61,6 +61,7 @@ impl ConfinedSandboxMode {
 /// enforcement path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SandboxExecutionPolicy {
+    pub read_only_roots: Vec<String>,
     /// The file-effect mode this execution runs under.
     pub mode: SandboxMode,
     /// Absolute root directory `workspace-write` may write under.
@@ -76,6 +77,7 @@ pub struct SandboxExecutionPolicy {
 /// policy as fully specified.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SandboxPolicy {
+    pub read_only_roots: Vec<String>,
     /// The file-effect mode this execution runs under.
     pub mode: ConfinedSandboxMode,
     /// Absolute root directory `workspace-write` may write under.

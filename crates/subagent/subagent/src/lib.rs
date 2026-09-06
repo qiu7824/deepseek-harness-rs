@@ -29,6 +29,7 @@ pub mod projection;
 pub mod run_settlement;
 pub mod structured;
 pub mod types;
+pub mod ultra;
 
 pub use crate::assistant_output::{AssistantOutputFold, final_assistant_output};
 pub use crate::child_agent::{

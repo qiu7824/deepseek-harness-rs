@@ -8,6 +8,7 @@ description = "Tool schema DSL, enforced JSON Schema subset, registry, and execu
 [dependencies]
 dsh-llm = { path = "../llm" }
 dsh-agent = { path = "../agent" }
+dsh-sandbox = { path = "../../sandbox/sandbox" }
 dsh-scope = { path = "../scope" }
 dsh-system-prompt = { path = "../system-prompt" }
 dsh-user-approval = { path = "../../interaction/user-approval" }

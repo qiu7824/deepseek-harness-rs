@@ -94,6 +94,10 @@ def main() -> None:
     shutil.copy2(ROOT / "docs" / "learning-and-capabilities.zh.md", stage / "docs" / "learning-and-capabilities.zh.md")
     shutil.copy2(ROOT / "docs" / "sidebar-capabilities.md", stage / "docs" / "sidebar-capabilities.md")
     shutil.copy2(ROOT / "docs" / "browser-control-and-model-tools.zh.md", stage / "docs" / "browser-control-and-model-tools.zh.md")
+    shutil.copy2(ROOT / "docs" / "sidebar-extension-api.md", stage / "docs" / "sidebar-extension-api.md")
+    shutil.copy2(ROOT / "docs" / "sidebar-workbench-suite.md", stage / "docs" / "sidebar-workbench-suite.md")
+    for name in ["workspace-scratch-policy-design.zh.md", "workspace-scratch-open-source-study.zh.md", "ultra-codex-usage-reset-plan.zh.md"]:
+        shutil.copy2(ROOT / "docs" / name, stage / "docs" / name)
     for name in ["README.md", "README.zh.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]:
         if (ROOT / name).exists():
             shutil.copy2(ROOT / name, stage / name)

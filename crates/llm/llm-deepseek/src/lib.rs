@@ -98,6 +98,9 @@ pub struct CatalogReasoningEffort {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeepSeekCatalogModel {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_modes: Vec<dsh_llm::ExecutionMode>,
+
     pub id: String,
     pub enabled: Option<bool>,
     pub name: Option<String>,
@@ -165,6 +168,7 @@ pub fn resolve_adapter_options(
     let models = config.models.clone().unwrap_or_else(|| {
         vec![
             DeepSeekCatalogModel {
+                execution_modes: Default::default(),
                 reasoning_default: None,
                 api: None,
                 supports_reasoning_summaries: None,
@@ -179,6 +183,7 @@ pub fn resolve_adapter_options(
                 image_input: Some(false),
             },
             DeepSeekCatalogModel {
+                execution_modes: Default::default(),
                 reasoning_default: None,
                 api: None,
                 supports_reasoning_summaries: None,
@@ -193,6 +198,7 @@ pub fn resolve_adapter_options(
                 image_input: Some(false),
             },
             DeepSeekCatalogModel {
+                execution_modes: Default::default(),
                 reasoning_default: None,
                 api: None,
                 supports_reasoning_summaries: None,
@@ -1689,6 +1695,9 @@ impl LlmAdapter for DeepSeekAdapter {
                 })
                 .collect::<Vec<_>>();
             return LlmResolvedModelInfo {
+                execution_modes: configured
+                    .map(|m| m.execution_modes.clone())
+                    .unwrap_or_default(),
                 provider: provider.to_string(),
                 id: model.to_string(),
                 name: configured
@@ -1718,6 +1727,9 @@ impl LlmAdapter for DeepSeekAdapter {
         }
         if self.config.reasoning_wire_format == ReasoningWireFormat::OpenAi {
             return LlmResolvedModelInfo {
+                execution_modes: configured
+                    .map(|m| m.execution_modes.clone())
+                    .unwrap_or_default(),
                 provider: provider.to_string(),
                 id: model.to_string(),
                 name: configured
@@ -1766,6 +1778,9 @@ impl LlmAdapter for DeepSeekAdapter {
                 .collect()
         };
         LlmResolvedModelInfo {
+            execution_modes: configured
+                .map(|m| m.execution_modes.clone())
+                .unwrap_or_default(),
             provider: provider.to_string(),
             id: model.to_string(),
             name: configured

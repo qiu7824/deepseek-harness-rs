@@ -99,6 +99,7 @@ impl SandboxPolicyService {
                 .unwrap_or(&self.workspace_root),
         );
         SandboxExecutionPolicy {
+            read_only_roots: Vec::new(),
             mode,
             workspace_root,
             session_id: session.map(|session| session.header().id.clone()),

@@ -6,6 +6,8 @@ license = "MIT"
 description = "Model-facing PowerShell tool with real background jobs"
 
 [dependencies]
+dsh-workspace-resources = { path = "../../workspace/workspace-resources" }
+dsh-agent = { path = "../../core/agent" }
 cordis = { path = "../../vendor/cordis" }
 dsh-jobs = { path = "../../jobs/jobs" }
 dsh-llm = { path = "../../core/llm" }

@@ -20,6 +20,8 @@ pub fn agent_default_model_settings_namespace() -> SettingsNamespace {
 /// Stored and composed default model selection.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentDefaultModelSettings {
+    pub execution_mode: dsh_llm::ExecutionMode,
+
     /// Registered provider route.
     pub provider: String,
     /// Provider-owned model id.
@@ -46,7 +48,15 @@ impl AgentDefaultModelSettings {
             Some(Data::String(value)) => Some(value.clone()),
             _ => None,
         };
+        let execution_mode = match object.get("executionMode") {
+            Some(Data::String(value)) if value == "ultra" => dsh_llm::ExecutionMode::Ultra,
+            _ if provider == "openai-codex" && reasoning_effort.as_deref() == Some("ultra") => {
+                dsh_llm::ExecutionMode::Ultra
+            }
+            _ => dsh_llm::ExecutionMode::Standard,
+        };
         Some(Self {
+            execution_mode,
             provider,
             model,
             reasoning_effort,
@@ -55,6 +65,10 @@ impl AgentDefaultModelSettings {
 
     fn to_json(&self) -> serde_json::Value {
         let mut object = serde_json::Map::new();
+        object.insert(
+            "executionMode".into(),
+            serde_json::json!(self.execution_mode),
+        );
         object.insert("provider".to_string(), serde_json::json!(self.provider));
         object.insert("model".to_string(), serde_json::json!(self.model));
         if let Some(effort) = &self.reasoning_effort {
@@ -77,12 +91,20 @@ pub fn agent_default_model_settings_schema() -> Schema {
     properties.insert("provider".to_string(), Schema::string().required(true));
     properties.insert("model".to_string(), Schema::string().required(true));
     properties.insert("reasoningEffort".to_string(), Schema::string());
+    properties.insert(
+        "executionMode".into(),
+        Schema::union(vec![
+            Schema::constant(Data::String("standard".into())),
+            Schema::constant(Data::String("ultra".into())),
+        ]),
+    );
     Schema::object(properties)
 }
 
 /// Project stored settings onto the Agent-facing selection type.
 fn selection(settings: &AgentDefaultModelSettings) -> ModelSelection {
     ModelSelection {
+        execution_mode: settings.execution_mode,
         provider: settings.provider.clone(),
         model: settings.model.clone(),
         reasoning_effort: settings
@@ -114,6 +136,7 @@ impl AgentDefaultModelConfigService {
     /// the optional settings section (TS constructor).
     pub fn install(ctx: &Context, config: AgentDefaultModelConfig) -> Arc<Self> {
         let entry = AgentDefaultModelSettings {
+            execution_mode: Default::default(),
             provider: config.provider,
             model: config.model,
             reasoning_effort: None,
@@ -178,6 +201,10 @@ impl AgentDefaultModelConfigService {
             return Ok(());
         };
         let mut section = serde_json::Map::new();
+        section.insert(
+            "executionMode".into(),
+            serde_json::json!(next.execution_mode),
+        );
         section.insert("provider".to_string(), serde_json::json!(next.provider));
         section.insert("model".to_string(), serde_json::json!(next.model));
         if let Some(effort) = &next.reasoning_effort {

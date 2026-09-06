@@ -1403,7 +1403,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "dsh-acp"
-version = "0.1.3-alpha.6"
+version = "0.1.3-alpha.7"
 dependencies = [
  "dsh-jsonrpc-runtime",
  "parking_lot",
@@ -1634,7 +1634,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-code-graph"
-version = "0.1.3-alpha.6"
+version = "0.1.3-alpha.7"
 dependencies = [
  "ignore",
  "regex",
@@ -1777,7 +1777,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-compaction-tool-result-pruner"
-version = "0.1.3-alpha.6"
+version = "0.1.3-alpha.7"
 dependencies = [
  "async-trait",
  "cordis",
@@ -2125,6 +2125,8 @@ dependencies = [
  "dsh-skill",
  "dsh-skill-badge",
  "dsh-skill-filesystem",
+ "dsh-spill",
+ "dsh-spill-policy",
  "dsh-storage",
  "dsh-storage-domain",
  "dsh-storage-json",
@@ -2167,6 +2169,7 @@ dependencies = [
  "dsh-workflow",
  "dsh-workflow-node",
  "dsh-workspace",
+ "dsh-workspace-resources",
  "futures",
  "http",
  "indexmap",
@@ -2182,11 +2185,12 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "dsh-host-apiproxy"
-version = "0.1.3-alpha.6"
+version = "0.1.3-alpha.7"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2206,6 +2210,8 @@ dependencies = [
  "dsh-host-directory-picker",
  "dsh-host-directory-picker-browse",
  "dsh-host-plugin-inventory",
+ "dsh-jobs",
+ "dsh-jobs-local",
  "dsh-llm",
  "dsh-mcp-client",
  "dsh-message-feedback",
@@ -2226,8 +2232,10 @@ dependencies = [
  "dsh-storage-domain",
  "dsh-storage-test-support",
  "dsh-subagent",
+ "dsh-terminal",
  "dsh-time-context",
  "dsh-token-meter",
+ "dsh-tool-computer-use-command",
  "dsh-tool-memory-local",
  "dsh-tool-todo",
  "dsh-tools",
@@ -2247,7 +2255,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-host-cli"
-version = "0.1.3-alpha.6"
+version = "0.1.3-alpha.7"
 dependencies = [
  "cordis",
  "dsh-acp",
@@ -2427,7 +2435,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-jsonrpc-runtime"
-version = "0.1.3-alpha.6"
+version = "0.1.3-alpha.7"
 dependencies = [
  "serde_json",
 ]
@@ -2444,7 +2452,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-launcher"
-version = "0.1.3-alpha.6"
+version = "0.1.3-alpha.7"
 dependencies = [
  "dsh-home-paths",
  "libc",
@@ -2715,6 +2723,7 @@ version = "0.1.0-rc.8"
 dependencies = [
  "cordis",
  "dsh-sandbox",
+ "junction",
  "tokio",
  "windows-sys 0.61.2",
 ]
@@ -3076,7 +3085,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-session-turn-outline"
-version = "0.1.3-alpha.6"
+version = "0.1.3-alpha.7"
 dependencies = [
  "cordis",
  "dsh-llm",
@@ -3172,7 +3181,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-skin-installer"
-version = "0.1.3-alpha.6"
+version = "0.1.3-alpha.7"
 dependencies = [
  "winresource",
  "zip",
@@ -3438,6 +3447,7 @@ dependencies = [
  "dsh-invariants",
  "dsh-subprocess",
  "dsh-timeout",
+ "dsh-workspace-resources",
  "futures",
  "libc",
  "parking_lot",
@@ -3577,13 +3587,24 @@ dependencies = [
 name = "dsh-tool-computer-use-command"
 version = "0.1.0-rc.8"
 dependencies = [
+ "async-trait",
+ "base64 0.22.1",
  "cordis",
+ "dsh-agent",
+ "dsh-attachment",
  "dsh-llm",
  "dsh-native-command",
+ "dsh-session",
+ "dsh-system-prompt",
  "dsh-tools",
  "futures",
+ "parking_lot",
+ "reqwest",
  "serde_json",
+ "sha2",
  "tokio",
+ "tokio-tungstenite",
+ "uuid",
 ]
 
 [[package]]
@@ -3723,6 +3744,7 @@ name = "dsh-tool-pwsh"
 version = "0.1.0-rc.8"
 dependencies = [
  "cordis",
+ "dsh-agent",
  "dsh-jobs",
  "dsh-jobs-local",
  "dsh-llm",
@@ -3733,6 +3755,7 @@ dependencies = [
  "dsh-system-prompt",
  "dsh-tool-jobs",
  "dsh-tools",
+ "dsh-workspace-resources",
  "futures",
  "serde_json",
  "tokio",
@@ -3900,7 +3923,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-tool-web"
-version = "0.1.3-alpha.6"
+version = "0.1.3-alpha.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3945,6 +3968,7 @@ dependencies = [
  "dsh-agent",
  "dsh-code-runtime",
  "dsh-llm",
+ "dsh-sandbox",
  "dsh-scope",
  "dsh-system-prompt",
  "dsh-user-approval",
@@ -4005,7 +4029,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-web"
-version = "0.1.3-alpha.6"
+version = "0.1.3-alpha.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4018,7 +4042,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-web-fetch-http"
-version = "0.1.3-alpha.6"
+version = "0.1.3-alpha.7"
 dependencies = [
  "async-trait",
  "axum",
@@ -4034,7 +4058,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-web-search-deepseek"
-version = "0.1.3-alpha.6"
+version = "0.1.3-alpha.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4108,6 +4132,20 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "dsh-workspace-resources"
+version = "0.1.0-rc.8"
+dependencies = [
+ "cordis",
+ "libc",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

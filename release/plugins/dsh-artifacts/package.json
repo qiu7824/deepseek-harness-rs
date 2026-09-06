@@ -1,0 +1,8 @@
+{
+  "name": "dsh-artifacts",
+  "version": "0.1.0",
+  "description": "Session artifacts and managed scratch resources",
+  "license": "MIT",
+  "exports": { "./client": "./lib/client.js" },
+  "dsh": { "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-client-ui-settings", "@deepseek-ai/dsh-client-connection"] } }
+}
