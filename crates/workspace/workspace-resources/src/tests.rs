@@ -8,6 +8,30 @@ fn system_temp_alias_is_accepted_but_user_alias_is_not() {
     let link = fixture.0.join("var");
     std::os::unix::fs::symlink("/private/var", &link).unwrap();
     assert!(checked_path(&link).is_err());
+    let store = Store::open(fixture.0.join("managed")).unwrap();
+    assert_eq!(
+        store.root(),
+        fs::canonicalize(fixture.0.join("managed")).unwrap()
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn refusing_an_unknown_directory_preserves_its_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    fs::create_dir_all(&fixture.0).unwrap();
+    fs::write(fixture.0.join("input.txt"), "original").unwrap();
+    fs::set_permissions(&fixture.0, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(Store::open(&fixture.0).is_err());
+    assert_eq!(
+        fs::metadata(&fixture.0).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("input.txt")).unwrap(),
+        "original"
+    );
 }
 
 #[test]

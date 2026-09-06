@@ -358,7 +358,29 @@ fn tree_bytes(path: &Path) -> Result<u64> {
 impl Store {
     pub fn open(root: impl AsRef<Path>) -> Result<Arc<Self>> {
         let root = std::path::absolute(root.as_ref()).map_err(|e| e.to_string())?;
+        // Refusing an unowned directory must not chmod it first.
+        #[cfg(unix)]
+        if root.exists() {
+            checked_path(&root)?;
+            let marker = root.join(".dsh-resources");
+            checked_path(&marker)?;
+            if marker.exists() {
+                if fs::read_to_string(&marker).map_err(|e| e.to_string())? != FORMAT {
+                    return Err("存储位置已有未知归属记录".into());
+                }
+            } else if fs::read_dir(&root)
+                .map_err(|e| e.to_string())?
+                .next()
+                .is_some()
+            {
+                return Err("垃圾槽必须使用新的空目录或已有受管目录".into());
+            }
+        }
         private_dir(&root)?;
+        // Git resolves /var to /private/var when writing worktree pointers.
+        // Keep the owned payload path in the same physical spelling.
+        #[cfg(target_os = "macos")]
+        let root = fs::canonicalize(&root).map_err(|e| e.to_string())?;
         let marker = root.join(".dsh-resources");
         checked_path(&marker)?;
         if marker.exists() {
