@@ -93,7 +93,7 @@ impl PortableTerminalHandle {
             return Err("subprocess-local: terminal child did not publish a pid".to_string());
         };
         let killer = child.clone_killer();
-        let foreground_id = foreground_id(pair.master.as_ref(), pid);
+        let foreground_id = foreground_id_for(pair.master.as_ref(), pid);
         let mut reader = match pair.master.try_clone_reader() {
             Ok(reader) => reader,
             Err(error) => {
@@ -344,15 +344,16 @@ impl PortableTerminalHandle {
 }
 
 #[cfg(unix)]
-fn foreground_id(master: &dyn MasterPty, pid: u32) -> u32 {
+fn foreground_id_for(master: &dyn MasterPty, pid: u32) -> u32 {
     master
         .process_group_leader()
+        .filter(|pid| *pid > 0)
         .map(|pid| pid as u32)
         .unwrap_or(pid)
 }
 
 #[cfg(windows)]
-fn foreground_id(_master: &dyn MasterPty, pid: u32) -> u32 {
+fn foreground_id_for(_master: &dyn MasterPty, pid: u32) -> u32 {
     pid
 }
 
@@ -419,6 +420,13 @@ impl SubprocessTerminalHandle for PortableTerminalHandle {
         &self,
     ) -> BoxFuture<'static, Result<Option<SubprocessTerminalForeground>, String>> {
         let foreground_id = self.foreground_id;
+        #[cfg(unix)]
+        let foreground_id = self
+            .master
+            .lock()
+            .as_ref()
+            .map(|master| foreground_id_for(master.as_ref(), self.pid))
+            .unwrap_or(foreground_id);
         let exited = self.exited.load(SeqCst);
         Box::pin(async move {
             Ok((!exited).then_some(SubprocessTerminalForeground {
@@ -434,6 +442,9 @@ impl SubprocessTerminalHandle for PortableTerminalHandle {
     ) -> BoxFuture<'static, Result<u32, String>> {
         let handle = self.self_arc();
         Box::pin(async move {
+            if handle.exited.load(SeqCst) {
+                return Err("terminal process has exited".to_string());
+            }
             #[cfg(windows)]
             {
                 match signal {
@@ -460,6 +471,14 @@ impl SubprocessTerminalHandle for PortableTerminalHandle {
             }
             #[cfg(unix)]
             {
+                // Interactive shells put external jobs in a new foreground
+                // group. Query the PTY at signal time, not its startup group.
+                let foreground_id = handle
+                    .master
+                    .lock()
+                    .as_ref()
+                    .map(|master| foreground_id_for(master.as_ref(), handle.pid))
+                    .unwrap_or(handle.foreground_id);
                 let number = match signal {
                     SubprocessTerminalSignal::SigInt => libc::SIGINT,
                     SubprocessTerminalSignal::SigTerm => libc::SIGTERM,
@@ -467,21 +486,22 @@ impl SubprocessTerminalHandle for PortableTerminalHandle {
                     SubprocessTerminalSignal::SigTstp => libc::SIGTSTP,
                     SubprocessTerminalSignal::SigHup => libc::SIGHUP,
                 };
-                if signal == SubprocessTerminalSignal::SigKill && handle.foreground_id == handle.pid
-                {
+                if signal == SubprocessTerminalSignal::SigKill && foreground_id == handle.pid {
                     return Err(
                         "refusing to SIGKILL the terminal shell; terminate the terminal session instead"
                             .to_string(),
                     );
                 }
-                let result = unsafe { libc::kill(-(handle.foreground_id as i32), number) };
+                let result = unsafe { libc::kill(-(foreground_id as i32), number) };
                 if result != 0 {
                     return Err(format!(
                         "terminal signal failed: {}",
                         std::io::Error::last_os_error()
                     ));
                 }
+                return Ok(foreground_id);
             }
+            #[cfg(not(unix))]
             Ok(handle.foreground_id)
         })
     }

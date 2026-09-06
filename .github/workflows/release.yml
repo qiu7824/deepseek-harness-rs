@@ -5,6 +5,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     env:
@@ -257,6 +260,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: 核对发布标签仍对应当前源码
+        shell: bash
+        run: |
+          REMOTE="$(git ls-remote origin "$GITHUB_REF" "${GITHUB_REF}^{}")"
+          ACTUAL="$(printf '%s\n' "$REMOTE" | awk '/\^\{\}$/ {print $1; found=1; exit} END {if (!found) exit 1}')" || ACTUAL="$(printf '%s\n' "$REMOTE" | awk 'NR==1 {print $1}')"
+          test "$ACTUAL" = "$GITHUB_SHA"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with: { path: dist, merge-multiple: true }
       - name: 合并发布校验和

@@ -160,7 +160,7 @@ def main() -> int:
         assert viewer != session_id
         pinned_read = request(port, "terminal-read", query={"sessionId": session_id, "terminalId": terminal_id, "count": 2000})
         assert expected in pinned_read["text"], pinned_read
-        long_command = "ping -t 127.0.0.1 >nul\r" if sys.platform == "win32" else "while true; do sleep 1; done\r"
+        long_command = "ping -t 127.0.0.1 >nul\r" if sys.platform == "win32" else "sleep 60\r"
         request(port, "terminal-action", body={"sessionId": session_id, "action": "input", "terminalId": terminal_id, "text": long_command})
         time.sleep(0.4)
         interrupted = request(port, "terminal-action", body={"sessionId": session_id, "action": "signal", "terminalId": terminal_id, "signal": "SIGINT"})
