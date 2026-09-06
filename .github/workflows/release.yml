@@ -45,7 +45,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap pkg-config libglib2.0-dev libcairo2-dev libpango1.0-dev libfontconfig1-dev libgdk-pixbuf-2.0-dev libxkbcommon-dev libwayland-dev
-          bwrap --ro-bind / / --dev /dev --proc /proc --die-with-parent -- /bin/true
+          python -B tools/verify_linux_sandbox.py --workdir "$RUNNER_TEMP/dsh-sandbox-preflight" --prepare-ci-profile
       - name: 版本与产品门禁
         shell: bash
         run: |

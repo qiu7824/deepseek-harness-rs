@@ -31,6 +31,7 @@ Linux/macOS: ./dsh-launcher
 ```
 
 Confined Shell commands and native terminals on Linux use the system `bubblewrap` sandbox. DEB packages declare this dependency; portable installations should install `bubblewrap` through the distribution's package manager. Confined execution fails explicitly when the sandbox is missing or unavailable.
+Ubuntu systems that restrict user namespaces may need an administrator to configure the distribution's recommended [bwrap AppArmor profile](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007). The application does not change system protection policies automatically.
 
 The default URL is:
 

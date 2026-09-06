@@ -29,6 +29,7 @@ Linux/macOS: ./dsh-launcher
 ```
 
 Linux 的受限 Shell 与原生终端使用系统 `bubblewrap` 沙箱；DEB 包声明该依赖，使用便携包时请通过发行版包管理器安装 `bubblewrap`。缺少沙箱或系统不允许创建沙箱时，受限执行会明确失败。
+启用用户命名空间限制的 Ubuntu 系统可能需要管理员配置发行版推荐的 [bwrap AppArmor 规则](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007)，程序不会自动修改系统防护策略。
 
 默认地址：
 
