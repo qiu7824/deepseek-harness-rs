@@ -439,6 +439,24 @@ impl LocalPtySession {
         let silence = Duration::from_millis(self.config.idle_silence_ms);
         loop {
             if matches!(self.status(), TerminalSessionStatus::Exited { .. }) {
+                #[cfg(target_os = "linux")]
+                {
+                    let output = self.output.lock().snapshot().0;
+                    let tail = output
+                        .chars()
+                        .rev()
+                        .take(2048)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<String>();
+                    return Err(format!(
+                        "PTY shell exited during startup ({:?}): {}",
+                        self.status(),
+                        tail.trim()
+                    ));
+                }
+                #[cfg(not(target_os = "linux"))]
                 return Err("PTY shell exited during startup".to_string());
             }
             let output = self.output.lock().snapshot().0;
