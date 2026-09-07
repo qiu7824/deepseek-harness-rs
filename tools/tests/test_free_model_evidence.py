@@ -26,6 +26,51 @@ def report(rows):
             "models":rows,"includedModels":included,"defaultModel":included[0] if included else None}
 
 class FreeEvidenceTests(unittest.TestCase):
+    def test_client_restriction_is_explicit_and_never_enters_package_evidence(self):
+        payload = {"error": {"type": "MissingSessionID", "message": "OpenCode's free tier can only be used in OpenCode"}}
+        def denied(*_args):
+            raise urllib.error.HTTPError(evidence.BASE_URL, 400, "Bad Request", {}, io.BytesIO(json.dumps(payload).encode()))
+        proof = {"blocked-free": {"name": "Blocked", "api": "openai-completions", "provider": "opencode-free", "freePricingVerified": True}}
+        with patch.object(verifier, "fetch_model_ids", return_value={"blocked-free"}), patch.object(verifier, "pricing_catalog", return_value=proof), patch.object(verifier, "inference_probe", side_effect=denied), patch.object(verifier, "binary_sha256", return_value="a" * 64), patch.object(verifier, "verify_harness") as harness:
+            result = verifier.verify_many(binary=pathlib.Path("fixture"))
+        harness.assert_not_called()
+        self.assertEqual(result["models"][0]["reason"], verifier.CLIENT_RESTRICTION_REASON)
+        self.assertEqual(result["models"][0]["failureCode"], "PROVIDER_CLIENT_RESTRICTED")
+        self.assertFalse(result["models"][0]["available"])
+        self.assertEqual(result["includedModels"], [])
+        with self.assertRaises(ValueError): evidence.validated_models(result)
+
+    def test_anonymous_request_keeps_its_real_client_identity(self):
+        captured=[]
+        def response(request, timeout):
+            captured.append(request)
+            return io.BytesIO(b'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+        with patch.object(verifier, "open_with_retry", side_effect=response):
+            verifier.streamed_completion(evidence.BASE_URL + "/chat/completions", {"model": "fixture"}, 2)
+        headers={key.lower():value for key,value in captured[0].header_items()}
+        self.assertEqual(headers["user-agent"], "deepseek-harness-rs-release-verifier")
+        self.assertFalse(any("session" in key or "client" in key or "authorization" in key for key in headers))
+
+    def test_catalog_failure_keeps_a_structured_failure_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=pathlib.Path(directory)/"failed.json"
+            with patch.object(verifier,"fetch_model_ids",side_effect=ValueError("catalog unavailable")):
+                with self.assertRaises(ValueError): verifier.verify_many(report_path=path)
+            failed=json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(failed["includedModels"],[])
+            self.assertEqual(failed["verificationError"]["reason"],"catalog unavailable")
+
+    def test_single_model_cli_keeps_strict_failure_and_diagnostic_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=pathlib.Path(directory)/"failure.json"
+            error=urllib.error.HTTPError(evidence.BASE_URL,400,"Bad Request",{},io.BytesIO(json.dumps({"type":"MissingSessionID","message":"OpenCode's free tier can only be used in OpenCode"}).encode()))
+            with patch.object(verifier,"verify",side_effect=error), patch.object(sys,"argv",["verify","--report",str(path)]):
+                with self.assertRaisesRegex(SystemExit,verifier.CLIENT_RESTRICTION_REASON):verifier.main()
+            failed=json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(failed["models"][0]["failureCode"],verifier.CLIENT_RESTRICTION_CODE)
+            self.assertEqual(failed["includedModels"],[])
+            with self.assertRaises(ValueError):evidence.validated_models(failed)
+
     def test_price_proof_joins_exact_id_to_all_three_free_price_columns(self):
         rows=[["Good","opaque-id",evidence.BASE_URL+"/chat/completions"],["Good","Free","Free","Free","-"],
               ["Paid","looks-free",evidence.BASE_URL+"/chat/completions"],["Paid","Free","$1","Free","-"],

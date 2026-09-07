@@ -69,6 +69,8 @@ pub enum SubagentListEntry {
 #[serde(rename_all = "camelCase")]
 pub struct SubagentPromptReceipt {
     pub message_id: MessageId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// Uniform acknowledgement that one interrupt request was admitted.
@@ -135,7 +137,19 @@ pub struct SubagentPromptRequest {
     pub mode: SubagentMode,
     pub content: Vec<crate::api::sessions::PromptContentPart>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub delivery: SubagentPromptDelivery,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_time_zone: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SubagentPromptDelivery {
+    #[default]
+    Queue,
+    Steer,
 }
 
 /// `subagent.interrupt` request payload (continuable address only).

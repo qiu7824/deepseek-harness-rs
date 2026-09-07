@@ -18,16 +18,20 @@ mod client_plugins;
 mod code_mode_dependency;
 mod codex_account;
 mod computer_use_http;
+mod computer_use_stream;
 #[cfg(test)]
 mod context_stats_test;
 mod deepseek_settings;
+mod feedback_delivery;
 mod free_catalog;
 mod free_probe;
 mod learning_bridge;
 mod model_capabilities;
 mod model_discovery;
+mod open_in_app;
 mod provider_auth;
 mod provider_auth_catalog;
+mod provider_compatibility;
 pub mod runtime_paths;
 mod sidebar_settings;
 #[cfg(test)]
@@ -166,6 +170,8 @@ fn packaged_resource(relative: &str) -> std::path::PathBuf {
 #[serde(rename_all = "camelCase")]
 struct OpenAiCompatibleModelConfig {
     id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compat: Option<dsh_llm_deepseek::ProviderCompatibility>,
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
@@ -236,6 +242,8 @@ fn resolved_reasoning_efforts(
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenAiCompatibleProviderConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compat: Option<dsh_llm_deepseek::ProviderCompatibility>,
     #[serde(default)]
     auth_provider: Option<String>,
     #[serde(default)]
@@ -280,6 +288,7 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
 
     let mut model = indexmap::IndexMap::new();
     model.insert("id".to_string(), Schema::string().required(true));
+    model.insert("compat".into(), provider_compatibility::schema());
     model.insert("name".to_string(), Schema::string());
     model.insert("enabled".to_string(), Schema::boolean());
     for field in [
@@ -338,6 +347,7 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
     );
 
     let mut profile = indexmap::IndexMap::new();
+    profile.insert("compat".into(), provider_compatibility::schema());
     profile.insert(
         "modelPreferences".into(),
         provider_auth_catalog::preferences_schema(),
@@ -671,6 +681,8 @@ fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSett
             ));
         }
         validated_discovery_headers(provider, &profile.headers)?;
+        let provider_compat = profile.compat.clone().unwrap_or_default();
+        provider_compat.validate_endpoint(&profile.api, &profile.base_url)?;
         if let Some(auth) = profile.auth_provider.as_deref() {
             if !provider_auth::valid_profile(auth, &profile.base_url, &profile.api) {
                 return Err("OAuth provider credentials may only be used with the provider's official endpoint and protocol".to_string());
@@ -688,6 +700,12 @@ fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSett
             ));
         }
         for model in &profile.models {
+            provider_compat
+                .merged(model.compat.as_ref())
+                .validate_endpoint(
+                    model.api.as_deref().unwrap_or(&profile.api),
+                    &profile.base_url,
+                )?;
             if model.api.as_deref().is_some_and(|api| {
                 ![
                     "openai-completions",
@@ -781,6 +799,7 @@ impl OpenAiCompatibleAdapter {
         };
         let resolved =
             dsh_llm_deepseek::resolve_adapter_options(&dsh_llm_deepseek::DeepSeekConfig {
+                compat: profile.compat.clone(),
                 api: Some(profile.api.clone()),
                 oauth: profile.auth_provider.is_some(),
                 max_tokens: Some(16_384),
@@ -797,6 +816,7 @@ impl OpenAiCompatibleAdapter {
                     configured_models
                         .iter()
                         .map(|model| dsh_llm_deepseek::DeepSeekCatalogModel {
+                            compat: model.compat.clone(),
                             execution_modes: if profile.auth_provider.as_deref()
                                 == Some("openai-codex")
                                 && resolved_reasoning_efforts(model).is_some_and(|levels| {
@@ -2018,6 +2038,33 @@ fn compose_host_in_fiber(
         document: parking_lot::Mutex::new(indexmap::IndexMap::new()),
     });
     let settings = dsh_settings::SettingsProvider::install(ctx, settings_storage);
+    let mut feedback_properties = indexmap::IndexMap::new();
+    feedback_properties.insert(
+        "enabled".into(),
+        dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(false)),
+    );
+    feedback_properties.insert(
+        "endpoint".into(),
+        dsh_schemastery::Schema::string()
+            .default(dsh_schemastery::Data::String(String::new()))
+            .role("secret", None),
+    );
+    settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("feedback-delivery")
+                .map_err(|error| error.to_string())?,
+            dsh_schemastery::Schema::object(feedback_properties),
+            dsh_settings::SettingsRegisterOptions {
+                validate: Some(Arc::new(|value| {
+                    feedback_delivery::validate_config(
+                        &value.to_json().unwrap_or_else(|| serde_json::json!({})),
+                    )
+                })),
+                ..Default::default()
+            },
+        )
+        .map_err(|error| format!("feedback delivery settings: {error}"))?;
     futures::executor::block_on(settings.ready()).map_err(|error| format!("settings: {error}"))?;
     sidebar_settings::register(ctx, &settings)?;
     let resources = workspace_resources::Resources::install(
@@ -2073,6 +2120,12 @@ fn compose_host_in_fiber(
                         )),
                         dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
                             "native-browser".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "native-desktop".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "uu-desktop".to_string(),
                         )),
                         dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
                             "command".to_string(),
@@ -2473,6 +2526,15 @@ fn compose_host_in_fiber(
             .map_err(|error| format!("settings {namespace}: {error}"))?;
     }
     let llm = LlmRuntime::install(ctx);
+    let retry_dispose = dsh_llm_retry::apply(
+        ctx,
+        &serde_json::json!({}),
+        dsh_llm_retry::RetryInternals::default(),
+    )?;
+    let _ = ctx.effect(
+        "model request recovery",
+        Box::pin(async move { Some(retry_dispose) }),
+    );
     dsh_session_title_first_prompt_llm::apply(
         ctx,
         dsh_session_title_first_prompt_llm::Config {
@@ -2807,20 +2869,50 @@ fn compose_host_in_fiber(
         }
         Box::pin(async {})
     }));
-    let system_prompt = SystemPrompt::install(ctx, dsh_system_prompt::Config::default())
+    let prompt_settings = settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("system-prompt").map_err(|e| e.to_string())?,
+            dsh_system_prompt::config_schema(),
+            dsh_settings::SettingsRegisterOptions {
+                applies: dsh_settings::SettingsApplies::Restart,
+                validate: Some(Arc::new(|value| {
+                    dsh_system_prompt::parse_config(
+                        &value.to_json().unwrap_or_else(|| serde_json::json!({})),
+                    )
+                    .map(|_| ())
+                })),
+                ..Default::default()
+            },
+        )
+        .map_err(|e| format!("system-prompt settings: {e}"))?;
+    let prompt_config = dsh_system_prompt::parse_config(
+        &(prompt_settings.get)()
+            .to_json()
+            .unwrap_or_else(|| serde_json::json!({})),
+    )?;
+    let system_prompt = SystemPrompt::install(ctx, prompt_config)
         .map_err(|error| format!("systemPrompt: {error}"))?;
-    let _harness_source = system_prompt.section(
+    let source_root = std::env::var_os("DSH_SOURCE_ROOT")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .nth(3)
+                .map(std::path::Path::to_path_buf)
+        });
+    let _harness_source = source_root.and_then(|root|std::fs::canonicalize(root).ok()).filter(|root|root.join("crates/host/dsh-host/Cargo.toml").is_file()).map(|root|system_prompt.section(
         ctx,
         PromptSection {
             name: "harness:source".to_string(),
             order: -99.0,
             text: PromptText::Static(format!(
                 "The DeepSeek Harness implementation checkout is at {}. The checkout location and current working directory are separate values and may differ; never infer the working directory from this path. Use pwd to determine the current working directory. Use this checkout only to inspect or extend DSH itself.",
-                env!("CARGO_MANIFEST_DIR"),
+                root.display(),
             )),
             complete: None,
         },
-    );
+    ));
     let _zh_visible_output = system_prompt.section(
         ctx,
         PromptSection {
@@ -2938,6 +3030,12 @@ fn compose_host_in_fiber(
     .map_err(|error| format!("tools: {error}"))?;
     dsh_tools::install_security_policy(ctx, security_policy_state);
     resources.install_tools(ctx, &tools, &system_prompt)?;
+    dsh_session_reference::SessionReferenceResolver::install(
+        ctx,
+        query.clone(),
+        &Default::default(),
+    )
+    .map_err(|error| format!("session references: {}", error.message))?;
     let artifacts = artifacts::Artifacts::new(&data_root);
     artifacts.install_tracking(ctx)?;
     let install_timeout_policy = dsh_timeout_policy::apply(ctx);
@@ -3061,19 +3159,105 @@ fn compose_host_in_fiber(
             _ => 60_000,
         };
         computer_use_runtime = Some(
-            dsh_tool_computer_use_command::install(
-                ctx,
-                dsh_tool_computer_use_command::Config {
-                    adapter,
-                    command,
+            if adapter == dsh_tool_computer_use_command::AdapterMode::UuDesktop {
+                let settings_for_uu = settings.clone();
+                let binding = Arc::new(move || {
+                    use dsh_tool_computer_use_command::{AdapterError, DesktopBinding};
+                    let value = settings_for_uu
+                        .get(&dsh_settings::settings_namespace("uu-remote").unwrap())
+                        .and_then(|v| v.to_json())
+                        .unwrap_or_default();
+                    let cli = uu_devices::installed_cli(value["cliPath"].as_str().unwrap_or(""))
+                        .ok_or_else(|| {
+                            AdapterError::new(
+                                "COMPUTER_USE_UNAVAILABLE",
+                                "请先安装 UU 远程并登录账号",
+                            )
+                        })?;
+                    let device_id = value["deviceId"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| {
+                            AdapterError::new(
+                                "COMPUTER_USE_UNAVAILABLE",
+                                "请先在设置中绑定 UU 设备",
+                            )
+                        })?
+                        .to_string();
+                    let account = value["account"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| {
+                            AdapterError::new(
+                                "COMPUTER_USE_UNAVAILABLE",
+                                "请重新绑定当前 UU 账号下的设备",
+                            )
+                        })?
+                        .to_string();
+                    Ok(DesktopBinding {
+                        device_id,
+                        account: Some(account),
+                        install_dir: cli.parent().map(|p| p.to_path_buf()),
+                    })
+                });
+                let worker = std::env::current_exe()
+                    .map_err(|e| e.to_string())?
+                    .with_file_name(if cfg!(windows) {
+                        "dsh-uu-controller.exe"
+                    } else {
+                        "dsh-uu-controller"
+                    });
+                dsh_tool_computer_use_command::install_adapter(
+                    ctx,
                     timeout_ms,
-                    browser_executable,
-                    browser_data_root: runtime_paths.paths["cacheDirectory"].join("computer-use"),
-                    browser_headless,
-                    max_browser_sessions,
-                },
-            )
-            .map_err(|error| format!("computer-use: {error}"))?,
+                    Arc::new(dsh_tool_computer_use_command::DesktopAdapter::for_uu(
+                        worker,
+                        runtime_paths.paths["cacheDirectory"].join("computer-use/uu"),
+                        binding,
+                    )),
+                )
+                .map_err(|e| format!("computer-use: {e}"))?
+            } else if adapter == dsh_tool_computer_use_command::AdapterMode::NativeDesktop {
+                let binding = Arc::new(|| {
+                    Ok(dsh_tool_computer_use_command::DesktopBinding {
+                        device_id: "local".into(),
+                        install_dir: None,
+                        account: None,
+                    })
+                });
+                let worker = std::env::current_exe()
+                    .map_err(|e| e.to_string())?
+                    .with_file_name(if cfg!(windows) {
+                        "dsh-desktop-controller.exe"
+                    } else {
+                        "dsh-desktop-controller"
+                    });
+                dsh_tool_computer_use_command::install_adapter(
+                    ctx,
+                    timeout_ms,
+                    Arc::new(dsh_tool_computer_use_command::DesktopAdapter::new(
+                        worker,
+                        runtime_paths.paths["cacheDirectory"].join("computer-use/desktop"),
+                        binding,
+                    )),
+                )
+                .map_err(|error| format!("computer-use: {error}"))?
+            } else {
+                dsh_tool_computer_use_command::install(
+                    ctx,
+                    dsh_tool_computer_use_command::Config {
+                        adapter,
+                        command,
+                        timeout_ms,
+                        browser_executable,
+                        browser_data_root: runtime_paths.paths["cacheDirectory"]
+                            .join("computer-use"),
+                        browser_headless,
+                        max_browser_sessions,
+                    },
+                )
+                .map_err(|error| format!("computer-use: {error}"))?
+            },
         );
     }
     dsh_tool_terminal::ToolTerminalService::install(ctx)
@@ -3246,32 +3430,38 @@ fn compose_host_in_fiber(
     }
     #[async_trait::async_trait]
     impl cordis::Plugin for PresetBuiltinPlugin {
+        fn validate(&self, config: ArcValue) -> Result<ArcValue, cordis::ValidationError> {
+            if matches!(self, Self::Persona) {
+                let value = config.downcast_ref::<serde_json::Value>().ok_or_else(|| {
+                    cordis::ValidationError::new(
+                        ["persona requires an object configuration".into()],
+                    )
+                })?;
+                dsh_system_prompt::parse_persona_config(value)
+                    .map_err(|error| cordis::ValidationError::new([error]))?;
+            }
+            Ok(config)
+        }
         async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
             match self {
                 Self::Persona => {
-                    let text = config
-                        .downcast_ref::<serde_json::Value>()
-                        .and_then(|value| value.get("text"))
-                        .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| {
-                            PluginError::new(arc("persona requires config.text".to_string()))
-                        })?;
+                    let value = config.downcast_ref::<serde_json::Value>().ok_or_else(|| {
+                        PluginError::new(
+                            arc("persona requires an object configuration".to_string()),
+                        )
+                    })?;
                     let prompt = ctx
                         .get_typed::<Arc<dsh_system_prompt::SystemPrompt>>("systemPrompt", false)
                         .map(|slot| slot.as_ref().clone())
                         .ok_or_else(|| {
                             PluginError::new(arc("persona requires systemPrompt".to_string()))
                         })?;
-                    let disposer = prompt.section(
-                        ctx,
-                        PromptSection {
-                            name: dsh_system_prompt::PERSONA_SECTION.to_string(),
-                            order: dsh_system_prompt::PERSONA_ORDER,
-                            text: PromptText::Static(text.to_string()),
-                            complete: None,
-                        },
-                    );
-                    let _ = ctx.effect("persona", Box::pin(async move { Some(disposer) }));
+                    for disposer in prompt
+                        .install_persona(ctx, value)
+                        .map_err(|error| PluginError::new(arc(error)))?
+                    {
+                        let _ = ctx.effect("persona", Box::pin(async move { Some(disposer) }));
+                    }
                 }
                 Self::AgentInstructions { dsh_home } => {
                     let max_bytes = config
@@ -3738,10 +3928,19 @@ fn compose_host_in_fiber(
     );
     let fetch_handler = Arc::new(to_fetch_handler(api_proxy.clone()));
     let allow_remote_host = bind_host == BindHost::AllInterfaces;
+    open_in_app::register(&web_server, ctx, allow_remote_host);
+    feedback_delivery::register(
+        &web_server,
+        ctx,
+        &data_root,
+        settings.clone(),
+        allow_remote_host,
+    );
     let computer_use_route = computer_use_http::register(
         &web_server,
         agents.clone(),
         computer_use_runtime,
+        Some(persistence.clone()),
         allow_remote_host,
     );
     let runtime_for_api = runtime_paths.clone();

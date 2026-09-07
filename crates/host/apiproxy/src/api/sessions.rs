@@ -33,6 +33,7 @@ pub struct SessionListMetadata {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
+    #[serde(serialize_with = "crate::public_event::serialize")]
     pub event: SessionEvent,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub view: Option<ToolEventView>,
@@ -421,7 +422,8 @@ impl std::io::Write for CountingWriter {
 
 pub(crate) fn serialized_event_len(event: &SessionEvent) -> usize {
     let mut writer = CountingWriter(0);
-    serde_json::to_writer(&mut writer, event).map_or(0, |_| writer.0)
+    serde_json::to_writer(&mut writer, &crate::public_event::PublicEvent(event))
+        .map_or(0, |_| writer.0)
 }
 
 /// `session.history` response value.
@@ -516,6 +518,8 @@ pub struct SessionPromptRequest {
     pub mode: PromptMode,
     pub content: Vec<PromptContentPart>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_time_zone: Option<String>,
 }
 
@@ -564,6 +568,10 @@ pub struct SessionAttachmentResult {
 #[serde(rename_all = "camelCase")]
 pub struct SessionUpdateQueueRequest {
     pub session_id: SessionId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<SessionId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<crate::api::subagents::SubagentMode>,
     pub item_id: MessageId,
     pub action: QueueAction,
 }

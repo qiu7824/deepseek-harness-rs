@@ -830,6 +830,90 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         self.serialize(id, self.append_core(id_owned, batch)).await
     }
 
+    /// Append feedback without acquiring or waking an Agent runtime.
+    pub async fn append_annotation(
+        self: &Arc<Self>,
+        expected: &SessionHeader,
+        event_type: &str,
+        data: JsonValue,
+    ) -> Result<SessionEvent, String> {
+        if !matches!(
+            event_type,
+            "feedback/message-put" | "feedback/message-delete"
+        ) {
+            return Err("unsupported session annotation".into());
+        }
+        let matches = |header: &SessionHeader| {
+            header.id == expected.id
+                && header.created_at == expected.created_at
+                && header.cwd == expected.cwd
+        };
+        loop {
+            self.wait_for_retirement(&expected.id).await?;
+            if let Some(live) = self.sessions()?.get(&expected.id) {
+                if !matches(live.header()) {
+                    return Err("session lifecycle changed before feedback was recorded".into());
+                }
+                let event = live.append(event_type, data.clone(), None)?;
+                self.flush(&live).await?;
+                return Ok(event);
+            }
+            let coordinator = self.clone();
+            let expected = expected.clone();
+            let id = expected.id.clone();
+            let kind = event_type.to_string();
+            let data = data.clone();
+            let event = self
+                .serialize(
+                    &id,
+                    Box::pin(async move {
+                        if coordinator.sessions()?.get(&expected.id).is_some() {
+                            return Ok(None);
+                        }
+                        coordinator.preparations.assert_writable(&expected.id)?;
+                        let existing =
+                            { coordinator.states.lock().get(expected.id.as_str()).cloned() };
+                        let state = match existing {
+                            Some(state) => state,
+                            None => coordinator.adopt(&expected.id).await?,
+                        };
+                        if state.meta.created_at != expected.created_at
+                            || state.meta.cwd != expected.cwd
+                        {
+                            return Err(
+                                "session lifecycle changed before feedback was recorded".into()
+                            );
+                        }
+                        let time = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_err(|error| error.to_string())?
+                            .as_millis();
+                        let time = i64::try_from(time).map_err(|_| {
+                            "annotation timestamp exceeds the event clock".to_string()
+                        })?;
+                        let event = SessionEvent {
+                            type_: kind,
+                            seq: serde_json::from_value(serde_json::json!(state.cursor))
+                                .map_err(|error| error.to_string())?,
+                            time,
+                            data,
+                            ignorable: None,
+                            surface_op: None,
+                            source_event_seqs: None,
+                        };
+                        coordinator
+                            .append_core(expected.id, vec![event.clone()])
+                            .await?;
+                        Ok(Some(event))
+                    }),
+                )
+                .await?;
+            if let Some(event) = event {
+                return Ok(event);
+            }
+        }
+    }
+
     /// Permanently delete one detached session after its retirement drained.
     pub async fn delete(self: &Arc<Self>, id: &SessionId) -> Result<bool, String> {
         if self.sessions()?.get(id).is_some() {

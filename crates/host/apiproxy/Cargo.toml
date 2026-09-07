@@ -27,6 +27,7 @@ dsh-llm = { path = "../../core/llm" }
 dsh-message-feedback = { path = "../../feedback/message-feedback" }
 dsh-native-command = { path = "../../util/native-command" }
 dsh-session = { path = "../../core/session" }
+dsh-session-reference = { path = "../../context/session-reference" }
 dsh-session-persistence = { path = "../../session/session-persistence" }
 dsh-session-query = { path = "../../session/session-query" }
 dsh-session-projection = { path = "../../session/session-projection" }

@@ -4,6 +4,8 @@
 mod adapter;
 mod browser;
 mod command;
+mod control;
+mod desktop;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -22,10 +24,11 @@ use serde_json::{Value, json};
 
 pub use adapter::{
     AbortPredicate, AdapterError, AdapterOutput, AdapterRequest, AdapterScreenshot,
-    ComputerUseAdapter,
+    ComputerUseAdapter, ControlOrigin,
 };
 pub use browser::{NativeBrowserAdapter, NativeBrowserConfig, discover_browser_executable};
 pub use command::CommandAdapter;
+pub use desktop::{DesktopAdapter, DesktopBinding};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterMode {
@@ -34,6 +37,8 @@ pub enum AdapterMode {
     Auto,
     Command,
     NativeBrowser,
+    NativeDesktop,
+    UuDesktop,
 }
 
 impl AdapterMode {
@@ -42,8 +47,10 @@ impl AdapterMode {
             "" | "auto" => Ok(Self::Auto),
             "command" => Ok(Self::Command),
             "native-browser" => Ok(Self::NativeBrowser),
+            "native-desktop" => Ok(Self::NativeDesktop),
+            "uu-desktop" => Ok(Self::UuDesktop),
             other => Err(format!(
-                "unsupported computer-use adapter {other:?}; expected auto, command or native-browser"
+                "unsupported computer-use adapter {other:?}; expected auto, command, native-browser, native-desktop or uu-desktop"
             )),
         }
     }
@@ -92,8 +99,14 @@ impl ComputerUseRuntime {
         arguments: &Value,
         signal: AbortPredicate,
     ) -> Result<AdapterOutput, AdapterError> {
-        self.execute_inner(owner_id.into(), None, arguments, signal)
-            .await
+        self.execute_inner(
+            owner_id.into(),
+            None,
+            arguments,
+            signal,
+            ControlOrigin::Agent,
+        )
+        .await
     }
 
     pub async fn execute_for_agent(
@@ -110,8 +123,38 @@ impl ComputerUseRuntime {
             Some(owner),
             arguments,
             signal,
+            ControlOrigin::Agent,
         )
         .await
+    }
+
+    pub async fn execute_for_human(
+        &self,
+        owner: Arc<dyn dsh_agent::Agent>,
+        arguments: &Value,
+        signal: AbortPredicate,
+    ) -> Result<AdapterOutput, AdapterError> {
+        self.owner_agents
+            .lock()
+            .insert(owner.id().as_str().to_string(), Arc::downgrade(&owner));
+        self.execute_inner(
+            owner.id().as_str().to_string(),
+            Some(owner),
+            arguments,
+            signal,
+            ControlOrigin::Human,
+        )
+        .await
+    }
+
+    pub async fn execute_for_human_session(
+        &self,
+        owner_id: String,
+        arguments: &Value,
+        signal: AbortPredicate,
+    ) -> Result<AdapterOutput, AdapterError> {
+        self.execute_inner(owner_id, None, arguments, signal, ControlOrigin::Human)
+            .await
     }
 
     async fn execute_inner(
@@ -120,9 +163,12 @@ impl ComputerUseRuntime {
         owner: Option<Arc<dyn dsh_agent::Agent>>,
         arguments: &Value,
         signal: AbortPredicate,
+        origin: ControlOrigin,
     ) -> Result<AdapterOutput, AdapterError> {
         let was_active = self.adapter.has_owner_activity(&owner_id);
-        let request = AdapterRequest::from_arguments(arguments)?.with_owner_id(owner_id.clone());
+        let request = AdapterRequest::from_arguments(arguments)?
+            .with_owner_id(owner_id.clone())
+            .with_origin(origin);
         let result = tokio::select! {
             result = self.adapter.execute(request, Arc::clone(&signal)) => result,
             _ = wait_for_cancel(Arc::clone(&signal)) => Err(AdapterError::cancelled()),
@@ -175,6 +221,9 @@ impl ComputerUseRuntime {
     pub fn has_owner_activity(&self, owner: &Arc<dyn dsh_agent::Agent>) -> bool {
         self.adapter.has_owner_activity(owner.id().as_str())
     }
+    pub fn has_session_activity(&self, owner: &str) -> bool {
+        self.adapter.has_owner_activity(owner)
+    }
 
     async fn reap_inactive(&self) {
         for owner_id in self.adapter.reap_inactive().await {
@@ -195,6 +244,7 @@ impl ComputerUseRuntime {
 }
 
 const READ_ONLY_ACTIONS: &[&str] = &[
+    "video_frame",
     "capture",
     "status",
     "cua_browser_state",
@@ -234,6 +284,9 @@ pub fn install(ctx: &Context, config: Config) -> Result<Arc<ComputerUseRuntime>,
             .map_err(|error| error.message)?,
         ),
         AdapterMode::Auto => unreachable!("auto mode is resolved above"),
+        AdapterMode::UuDesktop | AdapterMode::NativeDesktop => {
+            return Err("Native desktop requires a Host worker path".into());
+        }
     };
     install_adapter(ctx, config.timeout_ms, adapter)
 }
@@ -292,6 +345,7 @@ pub fn install_adapter(
         EventOptions::default().global(true),
     ));
 
+    let adapter: Arc<dyn ComputerUseAdapter> = Arc::new(control::ControlledAdapter::new(adapter));
     let runtime = Arc::new(ComputerUseRuntime {
         ctx: ctx.clone(),
         adapter,
@@ -411,7 +465,7 @@ pub fn install_adapter(
                 "properties": {
                     "action": {
                         "type": "string",
-                        "description": "Built-in browser actions: start, status, capture, navigate, click, double_click, type, scroll, list_sessions, close. Command adapters may add actions."
+                        "description": "Actions: start, status, capture, click, double_click, type, key, drag, scroll, list_sessions, close. Browser additionally supports navigate. Native desktop controls this computer; UU desktop controls the device bound in settings. Each physical desktop is owned by one conversation at a time. If control.mode is manual, stop observing and sending input until the user returns control; only the GUI may resume."
                     },
                     "sessionId": {
                         "type": "string",
@@ -424,6 +478,9 @@ pub fn install_adapter(
                     "text": { "type": "string", "description": "Text inserted into the focused element; type may also include x and y to focus first." },
                     "deltaX": { "type": "number" },
                     "deltaY": { "type": "number" },
+                    "keys": { "type":"array", "items":{"type":"string"}, "description":"One to five names: optional modifiers followed by one key, e.g. [Control,a] or [Enter]." },
+                    "endX": { "type":"number", "description":"Drag end x coordinate in the returned viewport." },
+                    "endY": { "type":"number", "description":"Drag end y coordinate in the returned viewport." },
                     "waitMs": { "type": "integer", "description": "Optional settle delay from 0 through 10000 milliseconds." },
                     "includeScreenshot": { "type": "boolean" }
                 },

@@ -4,7 +4,7 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 > 当前版本仍是预发布版本。功能状态以本README的兼容矩阵和GitHub Release说明为准。
 
-当前发布线：`0.1.3-alpha.8`。
+当前发布线：`0.1.3-alpha.9`。
 
 Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启动器和主题效果。版本号标识 Rust 发布线，不表示与 Node 版本逐项或磁盘格式完全相同。
 
@@ -12,9 +12,9 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 
 从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases) 下载对应平台的完整包：
 
-- `deepseek-harness-rs-v0.1.3-alpha.8-windows-x86_64-{core,skin,free}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.8-linux-x86_64-{core,skin,free}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.8-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.9-windows-x86_64-{core,skin}-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.9-linux-x86_64-{core,skin}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.9-macos-{x86_64,aarch64}-{core,skin}-portable.tar.gz`
 - 对应的 Windows `setup.exe`、Linux `.deb` 与 macOS `.pkg` 安装包
 
 完整包包含二进制、`web/dist`、`config/agent-presets`、随附Web插件和安全说明。不要只复制二进制后再期待完整Web界面和随附插件可用。
@@ -42,6 +42,8 @@ http://127.0.0.1:58080/
 需要扩展皮肤时，另行下载 `skin` 包并运行其中的 `deepseek-harness-rs-skin`（Windows 为 `.exe`）；它只把皮肤资产安装到同目录的 `web/dist/skins`，默认 `core` 包始终不携带皮肤资源。
 
 `free` 包与 `core` 使用同一套正式运行时和 Web 界面，只预置通过发布检查的 OpenCode Zen 免费模型。检查[官方模型目录](https://opencode.ai/zen/v1/models)中的精确 ID、官方输入／输出／缓存读取价格、匿名流式推理、工具调用与工具结果续接，并将最近 24 小时的验证证据绑定到包内运行时校验和。`free-model-verification.json` 列出各候选的实际结果；设置中的免费模型页可刷新目录、重新检测和添加已通过的模型。免费包不包含凭据或皮肤载荷。
+
+可选的 `free` 版仅在当前构建通过匿名验收后发布。OpenCode 当前将免费端点限制为自有客户端使用，因此在出现通过检查的受支持匿名通道前，不提供 `free` 包；`core` 和 `skin` 独立验收。
 
 普通会话、原生工具和 Web 界面由 Rust 核心提供。JavaScript／TypeScript 代码模式及部分外部工具需要单独配置 Node；设置中的运行环境页显示实际路径、版本及能力检测结果。
 
@@ -142,9 +144,9 @@ Web插件与主应用同源运行，拥有页面级JavaScript能力。只安装�
 随附插件：
 
 - `dsh-voice-input`：浏览器语音输入；
-- `dsh-composer-expand`：输入框展开/收起；
-- `dsh-context-jump`：参考 Codex 的左侧细轨道显示对话翻页节点；悬停显示标题，点击定位，顶部/底部按钮与 `Alt+↑/↓` 可快速导航，且不占用原生会话顶部菜单；
-- `dsh-web-preview-rs`：Rust Host 原生工作区预览，提供会话隔离的文件树、Markdown/源码、图片、音视频、PDF、隔离HTML站点、元素/文本批注回填及拖放落盘。文件访问固定在当前Session关联的工作区内，拒绝目录穿越、符号链接逃逸、敏感目录和超大文件；站点预览使用启动期随机令牌与独立Origin。项目运行只接受Host探测出的固定命令，通过一次性60秒challenge二次确认，并强制采用完整WorkspaceWrite OS沙箱、凭据清洗、受管进程树和有界日志。
+- `dsh-context-jump`：按完整用户消息索引定位，按需加载目标附近的有界历史，支持悬停预览和键盘导航；
+- `dsh-better-sidebar`：可调宽度的工作台、工作区文件、终端与网页预览，融入原生对话界面；
+- `dsh-sidebar-workbench-suite`：Markdown、源码、结构化数据查看器、后台任务及共用的浏览器／桌面控制面板。
 
 ## 能力状态
 
@@ -199,7 +201,7 @@ cargo test -p dsh-host-cli --lib -- --test-threads=1
 - 通用pi-ai provider catalog尚未完整移植；
 - LSP仍为库级能力，尚未接入正式Host配置；
 - ACP真实prompt/cancel与Python SDK真实turn仍有回归；
-- `dsh-context-jump`第一版基于已渲染稳定节点，Turn/Step完整目录需后续由正式slot暴露timeline；
+- 对话导航使用用户消息索引和定点历史页，完整会话数据保留在 Host；
 - Linux和macOS资产只有在GitHub Actions矩阵全部成功后才视为发布完成。
 
 ## 许可证

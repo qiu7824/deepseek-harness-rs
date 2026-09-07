@@ -37,7 +37,11 @@ fn json_response(status: StatusCode, value: &impl Serialize) -> WebResponse {
         .expect("computer-use response")
 }
 
-fn error(status: StatusCode, code: impl Into<String>, message: impl Into<String>) -> WebResponse {
+pub(super) fn error(
+    status: StatusCode,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> WebResponse {
     json_response(
         status,
         &ErrorBody {
@@ -47,7 +51,16 @@ fn error(status: StatusCode, code: impl Into<String>, message: impl Into<String>
     )
 }
 
-fn valid_owner(registry: &AgentRegistry, value: &Value) -> Result<Arc<dyn Agent>, WebResponse> {
+pub(super) struct ControlOwner {
+    pub(super) id: String,
+    agent: Option<Arc<dyn Agent>>,
+}
+pub(super) async fn valid_owner(
+    registry: &AgentRegistry,
+    persistence: &Option<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>,
+    runtime: &Option<Arc<ComputerUseRuntime>>,
+    value: &Value,
+) -> Result<ControlOwner, WebResponse> {
     let owner = value
         .get("ownerSessionId")
         .and_then(Value::as_str)
@@ -61,12 +74,32 @@ fn valid_owner(registry: &AgentRegistry, value: &Value) -> Result<Arc<dyn Agent>
                 "缺少有效的 ownerSessionId",
             )
         })?;
-    registry.get(&session_id(owner)).ok_or_else(|| {
-        error(
-            StatusCode::FORBIDDEN,
-            "session-not-active",
-            "会话未运行，不能访问其受控浏览器",
-        )
+
+    let agent = registry.get(&session_id(owner));
+    if agent.is_none()
+        && !runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.has_session_activity(owner))
+    {
+        let exists = match persistence {
+            Some(p) => p
+                .list()
+                .await
+                .map(|rows| rows.iter().any(|row| row.id.as_str() == owner))
+                .unwrap_or(false),
+            None => false,
+        };
+        if !exists {
+            return Err(error(
+                StatusCode::FORBIDDEN,
+                "session-not-found",
+                "会话不存在，无法绑定控制环境",
+            ));
+        }
+    }
+    Ok(ControlOwner {
+        id: owner.to_string(),
+        agent,
     })
 }
 
@@ -119,6 +152,7 @@ async fn handle(
     request: WebRequest,
     agents: Arc<AgentRegistry>,
     runtime: Option<Arc<ComputerUseRuntime>>,
+    persistence: Option<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>,
     allow_remote_host: bool,
 ) -> WebResponse {
     let allowed_host = request
@@ -151,7 +185,7 @@ async fn handle(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let owner = match valid_owner(&agents, &body) {
+    let owner = match valid_owner(&agents, &persistence, &runtime, &body).await {
         Ok(value) => value,
         Err(response) => return response,
     };
@@ -171,9 +205,9 @@ async fn handle(
                 "available": available,
                 "error": availability_error,
                 "adapter": runtime.as_ref().map(|runtime| runtime.adapter_id()),
-                "ownerSessionId": owner.id().as_str(),
+                "ownerSessionId": owner.id,
                 "defaultBrowserSessionId": DEFAULT_BROWSER_SESSION_ID,
-                "actions": ["start","status","capture","navigate","click","double_click","type","scroll","list_sessions","close"]
+                "actions": ["start","status","capture","navigate","click","double_click","type","scroll","list_sessions","close","key","keypress","drag","takeover","resume_agent"]
             }),
         );
     }
@@ -196,7 +230,14 @@ async fn handle(
         Err(response) => return response,
     };
     let signal: AbortPredicate = Arc::new(|| false);
-    match runtime.execute_for_agent(owner, &arguments, signal).await {
+    let result = if let Some(agent) = owner.agent {
+        runtime.execute_for_human(agent, &arguments, signal).await
+    } else {
+        runtime
+            .execute_for_human_session(owner.id, &arguments, signal)
+            .await
+    };
+    match result {
         Ok(mut output) => {
             let object = output
                 .value
@@ -218,7 +259,9 @@ async fn handle(
             let status = match failure.code.as_str() {
                 "COMPUTER_USE_ABORTED" | "COMPUTER_USE_TIMEOUT" => StatusCode::REQUEST_TIMEOUT,
                 "COMPUTER_USE_SESSION_NOT_FOUND" => StatusCode::NOT_FOUND,
-                "COMPUTER_USE_SESSION_LIMIT" => StatusCode::CONFLICT,
+                "COMPUTER_USE_SESSION_LIMIT"
+                | "COMPUTER_USE_MANUAL_CONTROL"
+                | "COMPUTER_USE_DEVICE_BUSY" => StatusCode::CONFLICT,
                 _ => StatusCode::BAD_REQUEST,
             };
             error(status, failure.code, failure.message)
@@ -230,18 +273,52 @@ pub fn register(
     web_server: &Arc<WebServer>,
     agents: Arc<AgentRegistry>,
     runtime: Option<Arc<ComputerUseRuntime>>,
+    persistence: Option<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>,
     allow_remote_host: bool,
 ) -> RouteDisposer {
-    web_server.register(WebRoute {
+    let streams = Arc::new(super::computer_use_stream::Streams::default());
+    let video_agents = agents.clone();
+    let video_runtime = runtime.clone();
+    let video_persistence = persistence.clone();
+    let video = web_server.register_upgrade(dsh_host_webserver::WebUpgradeRoute {
+        path: format!("{ROUTE}/stream"),
+        handler: Arc::new(move |request, socket| {
+            let agents = video_agents.clone();
+            let runtime = video_runtime.clone();
+            let persistence = video_persistence.clone();
+            let streams = streams.clone();
+            Box::pin(async move {
+                super::computer_use_stream::upgrade(
+                    request,
+                    socket,
+                    agents,
+                    runtime,
+                    persistence,
+                    streams,
+                    allow_remote_host,
+                )
+                .await;
+                Ok(())
+            })
+        }),
+    });
+    let http = web_server.register(WebRoute {
         kind: WebRouteKind::Prefix,
         path: ROUTE.to_string(),
         handler: Arc::new(move |request| {
             let agents = Arc::clone(&agents);
             let runtime = runtime.clone();
+            let persistence = persistence.clone();
             Box::pin(async move {
-                Ok::<_, WebHandlerError>(handle(request, agents, runtime, allow_remote_host).await)
+                Ok::<_, WebHandlerError>(
+                    handle(request, agents, runtime, persistence, allow_remote_host).await,
+                )
             })
         }),
+    });
+    Arc::new(move || {
+        video();
+        http();
     })
 }
 

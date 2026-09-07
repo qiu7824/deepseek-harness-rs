@@ -154,11 +154,15 @@ impl LocalSubprocessRuntime {
             handle.terminate();
             let handle = handle.clone();
             async move {
-                // Spawn-failure rejections already settled and left the live
-                // set.
-                handle.done().await?;
-                let _ = handle.wait_for_exit(None).await;
-                Ok::<(), String>(())
+                // Failure to observe the root must not release descendants.
+                let cleanup = async {
+                    let outcome = handle.done().await;
+                    let exited = handle.wait_for_exit(None).await;
+                    if !exited { return Err("managed process cleanup was interrupted".into()); }
+                    outcome.map(|_| ())
+                };
+                tokio::time::timeout(std::time::Duration::from_secs(30), cleanup).await
+                    .unwrap_or_else(|_| Err("managed process cleanup could not prove whole-tree exit; ownership retained".into()))
             }
         });
         let results = futures::future::join_all(pending).await;
@@ -172,8 +176,11 @@ impl LocalSubprocessRuntime {
         if !failures.is_empty() {
             self.terminate_for_host_exit();
         }
-        self.live.lock().clear();
-        self.terminals.lock().clear();
+        // Successful process observers remove their own entries; failed
+        // observations remain owned so a subsequent dispose can retry.
+        if failures.is_empty() {
+            self.terminals.lock().clear();
+        }
         match failures.len() {
             0 => Ok(()),
             1 => Err(failures[0].clone()),
@@ -369,7 +376,7 @@ impl SubprocessRuntime for LocalSubprocessRuntime {
         let handle = Arc::new(spawn_subprocess(spec, internals)?);
         let resource_error = resources
             .as_mut()
-            .and_then(|resources| resources.attach_process(handle.pid() as u32).err());
+            .and_then(|resources| resources.attach_process(handle.process_id()).err());
         if resource_error.is_some() {
             handle.terminate();
         }

@@ -133,12 +133,13 @@ impl SessionProjectionRegistry {
         let event_registry = Arc::clone(&registry);
         let event_listener: Arc<Listener> = Arc::new(move |_ctx, args| {
             let session = downcast::<Session>(&args[0]).expect("session arg").clone();
-            let event = downcast::<SessionEvent>(&args[1])
-                .expect("event arg")
-                .clone();
+            let event = args[1].clone();
             let registry = Arc::clone(&event_registry);
             Box::pin(async move {
-                registry.drive(&session, &event);
+                registry.drive(
+                    &session,
+                    downcast::<SessionEvent>(&event).expect("event arg"),
+                );
                 None
             })
         });
@@ -270,10 +271,27 @@ impl SessionProjectionRegistry {
     /// State-level checkpoint of every registered unit (TS `checkpoint`).
     /// Every `val` is a DETACHED deep clone of the cell state.
     pub fn checkpoint(&self, session: &Session) -> ProjectionCheckpoint {
+        self.checkpoint_with_retention(session, true)
+    }
+
+    /// Capture the final detached state without reviving the strong cell
+    /// entries already removed by a session/disposed observer.
+    pub fn checkpoint_detached(&self, session: &Session) -> ProjectionCheckpoint {
+        self.checkpoint_with_retention(session, false)
+    }
+
+    fn checkpoint_with_retention(&self, session: &Session, retain: bool) -> ProjectionCheckpoint {
         let mut rows = ProjectionCheckpoint::new();
         let registrations = self.registrations.lock();
         for registration in registrations.values() {
-            let cell = cell_for(registration, session);
+            let cell = if retain {
+                cell_for(registration, session)
+            } else {
+                let existing = registration.cells.lock().remove(&session.identity());
+                existing.unwrap_or_else(|| {
+                    build_cell(&registration.def, session.header(), &session.events())
+                })
+            };
             let value: Arc<ProjectionValue> = cordis::downcast_arc(&cell.state)
                 .expect("session projection state must be plain JSON");
             rows.insert(
@@ -528,6 +546,57 @@ impl Default for ProjectionSnapshot {
         Self {
             as_of_seq: -1,
             values: serde_json::Map::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn final_checkpoint_cannot_repopulate_retired_session_cells() {
+        let ctx = Context::root();
+        let registry = SessionProjectionRegistry::install(&ctx);
+        let _registration = registry
+            .register(
+                &ctx,
+                ProjectionDefinition {
+                    key: "retirement-fixture".into(),
+                    state_version: 1,
+                    init: Arc::new(|_| arc(serde_json::json!({"payload":"x".repeat(16 * 1024)}))),
+                    apply: Arc::new(|state, _| state.clone()),
+                    view: Arc::new(|state| state.clone()),
+                    schema: Arc::new(|value| {
+                        Ok(downcast::<serde_json::Value>(value).unwrap().clone())
+                    }),
+                },
+            )
+            .unwrap();
+        for index in 0..100 {
+            let session = Session::create(
+                dsh_session::session_id(format!("retired-{index}")),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            registry.snapshot(&session);
+            registry.forget_session(&session);
+            let checkpoint = registry.checkpoint_detached(&session);
+            assert_eq!(
+                checkpoint["retirement-fixture"].val["payload"]
+                    .as_str()
+                    .unwrap()
+                    .len(),
+                16 * 1024
+            );
+            assert!(
+                registry.registrations.lock()["retirement-fixture"]
+                    .cells
+                    .lock()
+                    .is_empty()
+            );
         }
     }
 }

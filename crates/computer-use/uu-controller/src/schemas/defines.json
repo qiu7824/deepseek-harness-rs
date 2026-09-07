@@ -1,0 +1,452 @@
+{
+  "name": "defines.proto",
+  "package": "gv_pb",
+  "messageType": [
+    {
+      "name": "ScreenResolution",
+      "field": [
+        {
+          "name": "width",
+          "number": 1,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        },
+        {
+          "name": "height",
+          "number": 2,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        }
+      ]
+    }
+  ],
+  "enumType": [
+    {
+      "name": "FPS",
+      "value": [
+        {
+          "name": "FPS_UNKNOWN",
+          "number": 0
+        },
+        {
+          "name": "FPS_30",
+          "number": 1
+        },
+        {
+          "name": "FPS_60",
+          "number": 2
+        },
+        {
+          "name": "FPS_90",
+          "number": 3
+        },
+        {
+          "name": "FPS_144",
+          "number": 4
+        }
+      ]
+    },
+    {
+      "name": "ClientType",
+      "value": [
+        {
+          "name": "Client_UNSPECIFIED",
+          "number": 0
+        },
+        {
+          "name": "Client_IOS",
+          "number": 1
+        },
+        {
+          "name": "Client_ANDROID",
+          "number": 2
+        },
+        {
+          "name": "Client_WINDOWS",
+          "number": 3
+        },
+        {
+          "name": "Client_MAC",
+          "number": 4
+        }
+      ]
+    },
+    {
+      "name": "VideoQuality",
+      "value": [
+        {
+          "name": "VideoQuality_UNKNOWN",
+          "number": 0
+        },
+        {
+          "name": "VideoQuality_Fast",
+          "number": 1
+        },
+        {
+          "name": "VideoQuality_General",
+          "number": 2
+        },
+        {
+          "name": "VideoQuality_HD",
+          "number": 3
+        },
+        {
+          "name": "VideoQuality_Bluray",
+          "number": 4
+        },
+        {
+          "name": "VideoQuality_Auto",
+          "number": 5
+        },
+        {
+          "name": "VideoQuality_Custom",
+          "number": 6
+        }
+      ]
+    },
+    {
+      "name": "CodecType",
+      "value": [
+        {
+          "name": "CodecType_UNKNOWN",
+          "number": 0
+        },
+        {
+          "name": "CodecType_H264",
+          "number": 1
+        },
+        {
+          "name": "CodecType_H265",
+          "number": 2
+        }
+      ]
+    },
+    {
+      "name": "CaptureMode",
+      "value": [
+        {
+          "name": "CaptureMode_UNKNOWN",
+          "number": 0
+        },
+        {
+          "name": "CaptureMode_DESKTOP",
+          "number": 1
+        },
+        {
+          "name": "CaptureMode_WINDOW",
+          "number": 2
+        },
+        {
+          "name": "CaptureMode_MUMU",
+          "number": 3
+        },
+        {
+          "name": "CaptureMode_HOOK",
+          "number": 4
+        },
+        {
+          "name": "CaptureMode_GLOBAL",
+          "number": 5
+        }
+      ]
+    },
+    {
+      "name": "ScreenType",
+      "value": [
+        {
+          "name": "ScreenType_Physics",
+          "number": 0
+        },
+        {
+          "name": "ScreenType_Virtual",
+          "number": 1
+        },
+        {
+          "name": "ScreenType_Super",
+          "number": 2
+        }
+      ]
+    },
+    {
+      "name": "ChooseResolutionType",
+      "value": [
+        {
+          "name": "ChooseType_UNKNOWN",
+          "number": 0
+        },
+        {
+          "name": "ChooseType_DEFAULT",
+          "number": 1
+        },
+        {
+          "name": "ChooseType_FOLLOW_LOCAL",
+          "number": 2
+        },
+        {
+          "name": "ChooseType_FOLLOW_REMOTE",
+          "number": 3
+        },
+        {
+          "name": "ChooseType_RESOLUTION",
+          "number": 4
+        }
+      ]
+    },
+    {
+      "name": "ChromaFormat",
+      "value": [
+        {
+          "name": "ChromaFormat_UNKNOWN",
+          "number": 0
+        },
+        {
+          "name": "ChromaFormat_420",
+          "number": 1
+        },
+        {
+          "name": "ChromaFormat_422",
+          "number": 2
+        },
+        {
+          "name": "ChromaFormat_444",
+          "number": 3
+        },
+        {
+          "name": "ChromaFormat_400",
+          "number": 4
+        }
+      ]
+    },
+    {
+      "name": "ControlConnectType",
+      "value": [
+        {
+          "name": "ControlConnectType_UNKNOWN",
+          "number": 0
+        },
+        {
+          "name": "ControlConnectType_Normal",
+          "number": 1
+        },
+        {
+          "name": "ControlConnectType_Assistance",
+          "number": 2
+        }
+      ]
+    },
+    {
+      "name": "FileType",
+      "value": [
+        {
+          "name": "FT_Dir",
+          "number": 0
+        },
+        {
+          "name": "FT_DirLink",
+          "number": 2
+        },
+        {
+          "name": "FT_DirDrive",
+          "number": 3
+        },
+        {
+          "name": "FT_File",
+          "number": 4
+        },
+        {
+          "name": "FT_FileLink",
+          "number": 5
+        }
+      ]
+    },
+    {
+      "name": "FileOperationStrategy",
+      "value": [
+        {
+          "name": "FOS_UNSPECIFIED",
+          "number": 0
+        },
+        {
+          "name": "FOS_OVERRIDE",
+          "number": 1
+        },
+        {
+          "name": "FOS_DUPLICATE",
+          "number": 2
+        },
+        {
+          "name": "FOS_SKIP",
+          "number": 3
+        },
+        {
+          "name": "FOS_RESUME",
+          "number": 4
+        }
+      ]
+    },
+    {
+      "name": "FileTransferError",
+      "value": [
+        {
+          "name": "FT_UNSPECIFIED",
+          "number": 0
+        },
+        {
+          "name": "FT_SUCCEEDED",
+          "number": 1
+        },
+        {
+          "name": "FT_UNEXPECTED_ERROR",
+          "number": 2
+        },
+        {
+          "name": "FT_PROTOCOL_ERROR",
+          "number": 3
+        },
+        {
+          "name": "FT_PERMISSION_DENIED",
+          "number": 4
+        },
+        {
+          "name": "FT_OUT_OF_DISK_SPACE",
+          "number": 5
+        },
+        {
+          "name": "FT_IO_ERROR",
+          "number": 6
+        },
+        {
+          "name": "FT_CANCELED",
+          "number": 7
+        },
+        {
+          "name": "FT_NOT_LOGGED_IN",
+          "number": 8
+        },
+        {
+          "name": "FT_FILE_NOT_FOUND",
+          "number": 9
+        },
+        {
+          "name": "FT_PAUSED",
+          "number": 10
+        },
+        {
+          "name": "FT_FILE_NOT_RESUMABLE",
+          "number": 11
+        },
+        {
+          "name": "FT_PERMISSION_AUTHORIZATION_PENDING",
+          "number": 12
+        }
+      ]
+    },
+    {
+      "name": "ClipboardError",
+      "value": [
+        {
+          "name": "CB_UNSPECIFIED",
+          "number": 0
+        },
+        {
+          "name": "CB_SUCCEEDED",
+          "number": 1
+        },
+        {
+          "name": "CB_FAILED",
+          "number": 2
+        }
+      ]
+    },
+    {
+      "name": "PrivateScreenType",
+      "value": [
+        {
+          "name": "PS_UNSPECIFIED",
+          "number": 0
+        },
+        {
+          "name": "PS_NOT_SET",
+          "number": 1
+        },
+        {
+          "name": "PS_NORMAL_PRIVACY",
+          "number": 2
+        },
+        {
+          "name": "PS_ENHANCED_PRIVACY",
+          "number": 3
+        }
+      ]
+    },
+    {
+      "name": "PermissionAuthState",
+      "value": [
+        {
+          "name": "PERMISSION_STATE_UNKOWN",
+          "number": 0
+        },
+        {
+          "name": "PERMISSION_STATE_REJECT",
+          "number": 1
+        },
+        {
+          "name": "PERMISSION_STATE_ALLOW",
+          "number": 2
+        }
+      ]
+    },
+    {
+      "name": "BuiltinScreenType",
+      "value": [
+        {
+          "name": "BS_UNKOWN",
+          "number": 0
+        },
+        {
+          "name": "BS_BUILTIN",
+          "number": 1
+        },
+        {
+          "name": "BS_NOT_BUILTIN",
+          "number": 2
+        }
+      ]
+    },
+    {
+      "name": "SystemSoundSupport",
+      "value": [
+        {
+          "name": "SS_UNKOWN",
+          "number": 0
+        },
+        {
+          "name": "SS_NONSUPPORT",
+          "number": 1
+        },
+        {
+          "name": "SS_SUPPORT",
+          "number": 2
+        }
+      ]
+    },
+    {
+      "name": "ScreenOrientation",
+      "value": [
+        {
+          "name": "SO_UNSPECIFIED",
+          "number": 0
+        },
+        {
+          "name": "SO_LANDSCAPE",
+          "number": 1
+        },
+        {
+          "name": "SO_PORTRAIT",
+          "number": 2
+        }
+      ]
+    }
+  ],
+  "syntax": "proto3"
+}

@@ -102,6 +102,27 @@ fn main() {
             }
             sleep(Duration::from_millis(ms));
         }
+        "orphan" => {
+            let helper = std::env::current_exe().expect("current_exe");
+            let mut command = std::process::Command::new(helper);
+            command.args(["sleep", "15000"]);
+            #[cfg(unix)]
+            if rest.first().map(String::as_str) == Some("detached") {
+                use std::os::unix::process::CommandExt;
+                unsafe {
+                    command.pre_exec(|| {
+                        if libc::setsid() < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        }
+                    });
+                }
+            }
+            let child = command.spawn().expect("grandchild");
+            println!("grandchild={}", child.id());
+            eprintln!("parent completed");
+        }
         _ => {
             eprintln!("child: unknown mode {mode}");
             exit(2);

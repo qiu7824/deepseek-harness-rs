@@ -33,7 +33,7 @@ fn checked_cli(path: &Path) -> Option<PathBuf> {
         .then(|| path.canonicalize().ok())
         .flatten()
 }
-fn installed_cli(configured: &str) -> Option<PathBuf> {
+pub(crate) fn installed_cli(configured: &str) -> Option<PathBuf> {
     if !configured.is_empty() {
         return checked_cli(Path::new(configured));
     }
@@ -129,6 +129,11 @@ async fn command(path: &Path, args: &[&str]) -> Result<Value, String> {
         return Err("UU 远程未完成操作，请在客户端检查登录与设备状态".into());
     }
     Ok(value["data"].clone())
+}
+fn connected_target(data: &Value, id: &str) -> bool {
+    data["devices"]
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|row| row["targetId"] == id))
 }
 struct Bridge {
     settings: Arc<SettingsProvider>,
@@ -268,7 +273,10 @@ impl Bridge {
         if action == "connect" && device["online"] != true {
             return Err("设备当前离线".into());
         }
-        command(&cli, &["device", action, id]).await?;
+        let result = command(&cli, &["device", action, id]).await?;
+        if action == "connect" && !connected_target(&result, id) {
+            return Err("UU 没有为该设备发起连接，请检查设备状态后重试".into());
+        }
         Ok(json!({"deviceId":id,"action":action,"completed":true}))
     }
 }
@@ -370,5 +378,17 @@ mod tests {
     #[test]
     fn unrelated_executable_is_rejected() {
         assert!(checked_cli(Path::new("C:/Windows/System32/cmd.exe")).is_none());
+    }
+    #[test]
+    fn empty_or_different_target_is_not_a_successful_connection() {
+        assert!(!connected_target(&json!({"devices":[]}), "local"));
+        assert!(!connected_target(
+            &json!({"devices":[{"targetId":"other"}]}),
+            "local"
+        ));
+        assert!(connected_target(
+            &json!({"devices":[{"targetId":"local"}]}),
+            "local"
+        ));
     }
 }

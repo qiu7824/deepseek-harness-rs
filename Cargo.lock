@@ -1403,7 +1403,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "dsh-acp"
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 dependencies = [
  "dsh-jsonrpc-runtime",
  "parking_lot",
@@ -1634,7 +1634,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-code-graph"
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 dependencies = [
  "ignore",
  "regex",
@@ -1777,7 +1777,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-compaction-tool-result-pruner"
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 dependencies = [
  "async-trait",
  "cordis",
@@ -1904,6 +1904,17 @@ dependencies = [
  "serde_yaml",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "dsh-desktop-controller"
+version = "0.1.3-alpha.9"
+dependencies = [
+ "base64 0.22.1",
+ "image",
+ "serde_json",
+ "windows",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2098,6 +2109,7 @@ dependencies = [
  "dsh-jobs-local",
  "dsh-llm",
  "dsh-llm-deepseek",
+ "dsh-llm-retry",
  "dsh-message-feedback",
  "dsh-native-command",
  "dsh-permission-presets",
@@ -2116,6 +2128,7 @@ dependencies = [
  "dsh-session-projection-cache",
  "dsh-session-query",
  "dsh-session-query-sqlite",
+ "dsh-session-reference",
  "dsh-session-stats",
  "dsh-session-title",
  "dsh-session-title-first-prompt-llm",
@@ -2190,7 +2203,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-host-apiproxy"
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2224,6 +2237,7 @@ dependencies = [
  "dsh-session-projection",
  "dsh-session-projection-cache",
  "dsh-session-query",
+ "dsh-session-reference",
  "dsh-session-title",
  "dsh-settings",
  "dsh-skill",
@@ -2255,11 +2269,12 @@ dependencies = [
 
 [[package]]
 name = "dsh-host-cli"
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 dependencies = [
  "cordis",
  "dsh-acp",
  "dsh-agent",
+ "dsh-agent-default-model",
  "dsh-app-boot",
  "dsh-home-paths",
  "dsh-host",
@@ -2435,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-jsonrpc-runtime"
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 dependencies = [
  "serde_json",
 ]
@@ -2452,7 +2467,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-launcher"
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 dependencies = [
  "dsh-home-paths",
  "libc",
@@ -2588,6 +2603,7 @@ dependencies = [
  "dsh-llm",
  "dsh-session",
  "dsh-session-persistence",
+ "dsh-session-persistence-jsonl",
  "dsh-storage",
  "dsh-storage-domain",
  "dsh-storage-test-support",
@@ -2965,6 +2981,8 @@ dependencies = [
  "dsh-session",
  "dsh-session-query",
  "dsh-session-title",
+ "dsh-spill",
+ "dsh-spill-local",
  "indexmap",
  "parking_lot",
  "regex",
@@ -3085,7 +3103,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-session-turn-outline"
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 dependencies = [
  "cordis",
  "dsh-llm",
@@ -3181,7 +3199,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-skin-installer"
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 dependencies = [
  "winresource",
  "zip",
@@ -3454,6 +3472,7 @@ dependencies = [
  "portable-pty",
  "tokio",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3923,7 +3942,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-tool-web"
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4028,8 +4047,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-uu-controller"
+version = "0.1.3-alpha.9"
+dependencies = [
+ "base64 0.22.1",
+ "image",
+ "reqwest",
+ "serde_json",
+ "sha2",
+ "windows",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "dsh-web"
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4042,7 +4074,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-web-fetch-http"
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 dependencies = [
  "async-trait",
  "axum",
@@ -4058,7 +4090,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-web-search-deepseek"
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7155,6 +7187,7 @@ dependencies = [
  "async-compression",
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "http",

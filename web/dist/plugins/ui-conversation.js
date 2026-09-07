@@ -913,6 +913,7 @@ window.__ModuleLoader__.load({
 			notices = (0, _deepseek_ai_dsh_client_runtime_client.createSnapshotStore)(null);
 			/** The public provide-channel action face (one stable identity per session). */
 			actions = {
+				restoreDraft: (text) => this.restoreDraft(text),
 				setDraft: (text) => {
 					this.setDraft(text);
 				},
@@ -934,10 +935,11 @@ window.__ModuleLoader__.load({
 			disposed = false;
 			/** Draft persistence mirror (chat store write; receives the clipboard projection, never raw placeholders). */
 			mirrorFn;
+			unsubscribeQueue;
 			constructor(deps) {
 				this.deps = deps;
 				this.state = (0, _deepseek_ai_dsh_client_runtime_client.createSnapshotStore)(this.compose());
-				deps.queue?.subscribe(() => {
+				this.unsubscribeQueue = deps.queue?.subscribe(() => {
 					this.publish();
 				});
 			}
@@ -953,6 +955,30 @@ window.__ModuleLoader__.load({
 					draft: text,
 					...editRange !== void 0 ? { editRange } : {}
 				}));
+			}
+			/** Restore persisted references through the same insertion transactions as a menu pick. */
+			restoreDraft(text) {
+				this.setDraft(text);
+				const references = [...text.matchAll(/@\[((?:\\.|[^\\\]])*)\]\((dsh-session:[A-Za-z0-9_-]+)\)/g)];
+				for (const match of references.reverse()) {
+					try {
+						const payload = match[2].slice("dsh-session:".length).replace(/-/g, "+").replace(/_/g, "/");
+						const sessionId = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(payload), value => value.charCodeAt(0))));
+						if (typeof sessionId !== "string" || !sessionId) continue;
+						const label = match[1].replace(/\\(.)/g, "$1");
+						if (sessionReferenceMention(sessionId, label) !== match[0]) continue;
+						this.insertReference({ source: "session-reference", ref: JSON.stringify({ sessionId, label }), label, clipboardText: match[0] }, { start: match.index, end: match.index + match[0].length, draftRev: this.snapshot.draftRev });
+					} catch {}
+				}
+			}
+			clipboardDraft() {
+				const state = this.core.state;
+				let text = "", cursor = 0;
+				for (const reference of state.occurrences) {
+					text += state.draft.slice(cursor, reference.offset) + reference.clipboardText;
+					cursor = reference.offset + 1;
+				}
+				return text + state.draft.slice(cursor);
 			}
 			/** Append ordered image ids unless an admission transaction is locked. */
 			addImages(ids) {
@@ -995,8 +1021,8 @@ window.__ModuleLoader__.load({
 			* leave the newer local state intact instead of erasing it as a stale
 			* settlement.
 			*/
-			commitAcceptedSend(draft, imageIds) {
-				if (this.snapshot.draft !== draft) return false;
+			commitAcceptedSend(draft, imageIds, sourceDraft) {
+				if (sourceDraft !== undefined ? this.snapshot.draft !== sourceDraft.draft || this.snapshot.draftRev !== sourceDraft.draftRev : this.snapshot.draft !== draft) return false;
 				if (this.imageIds.length !== imageIds.length || this.imageIds.some((id, index) => id !== imageIds[index])) return false;
 				this.commitSend(imageIds);
 				return true;
@@ -1049,7 +1075,7 @@ window.__ModuleLoader__.load({
 			*/
 			submit(mode = "queue") {
 				if (this.snapshot.draft.trim() === "" && this.imageIds.length > 0) {
-					if (this.snapshot.phase === "plain") this.deps.defaultSink("", [...this.imageIds], mode);
+					if (this.snapshot.phase === "plain") this.deps.defaultSink("", [...this.imageIds], mode, { draft: this.snapshot.draft, draftRev: this.snapshot.draftRev });
 					return;
 				}
 				this.run(this.core.dispatch({
@@ -1202,6 +1228,8 @@ window.__ModuleLoader__.load({
 			/** Teardown: abort any in-flight attempt and stop accepting async settlements. */
 			dispose() {
 				this.disposed = true;
+				this.unsubscribeQueue?.();
+				this.unsubscribeQueue = undefined;
 				this.run(this.core.dispatch({ type: "release" }));
 			}
 			/** Read the live machine state (guard derivation reads here). */
@@ -1257,9 +1285,10 @@ window.__ModuleLoader__.load({
 			*/
 			sinkSerialized(draft, mode) {
 				const imageIds = [...this.imageIds];
+				const sourceDraft = { draft, draftRev: this.core.state.draftRev };
 				const occurrences = this.core.state.occurrences;
 				if (occurrences.length === 0) {
-					this.deps.defaultSink(draft.trim(), imageIds, mode);
+					this.deps.defaultSink(draft.trim(), imageIds, mode, sourceDraft);
 					return;
 				}
 				const inputTriggers = this.deps.inputTriggers?.();
@@ -1279,7 +1308,7 @@ window.__ModuleLoader__.load({
 						cursor = part.offset + 1;
 					}
 					out += draft.slice(cursor);
-					this.deps.defaultSink(out.trim(), imageIds, mode);
+					this.deps.defaultSink(out.trim(), imageIds, mode, sourceDraft);
 				}, (error) => {
 					controller.abort();
 					if (this.disposed) return;
@@ -1350,9 +1379,10 @@ window.__ModuleLoader__.load({
 			publish() {
 				const next = this.compose();
 				this.state.set(next);
-				if (next.draft !== this.lastDraft) {
-					this.lastDraft = next.draft;
-					this.mirrorFn?.(next.draft);
+				const persisted = this.clipboardDraft();
+				if (persisted !== this.lastDraft) {
+					this.lastDraft = persisted;
+					this.mirrorFn?.(persisted);
 				}
 			}
 		};
@@ -1398,8 +1428,8 @@ window.__ModuleLoader__.load({
 					inputTriggers: () => this.controller(actx),
 					popup: () => this.popup(actx),
 					queue: queueReadFaceOf(session),
-					defaultSink: (text, imageIds, mode) => {
-						this.sink(session, text, imageIds, mode);
+					defaultSink: (text, imageIds, mode, sourceDraft) => {
+						this.sink(session, text, imageIds, mode, sourceDraft);
 					},
 					steerQueue: () => {
 						this.steerQueue(session, shell);
@@ -1463,12 +1493,12 @@ window.__ModuleLoader__.load({
 			* the exact draft and image ownership in place and surfaces one notice;
 			* there is no late restore that can overwrite text typed after Enter.
 			*/
-			async sink(session, text, imageIds, mode) {
+			async sink(session, text, imageIds, mode, sourceDraft) {
 				if (text === "" && imageIds.length === 0) return;
 				const shell = this.shells.get(session.sessionId);
 				try {
 					await this.conversation().sendSession(session, text, imageIds, mode);
-					if (this.shells.get(session.sessionId) === shell) shell?.commitAcceptedSend(text, imageIds);
+					if (this.shells.get(session.sessionId) === shell) shell?.commitAcceptedSend(text, imageIds, sourceDraft);
 				} catch (error) {
 					if (this.shells.get(session.sessionId) === shell) {
 						const message = error instanceof Error ? error.message : String(error);
@@ -3574,7 +3604,7 @@ window.__ModuleLoader__.load({
 			const inserted = "\n" + match[1] + (Number(match[2]) + 1) + match[3] + (match[4] || " ");
 			return { text: text.slice(0, start) + inserted + text.slice(end), caret: start + inserted.length, insertedLength: inserted.length };
 		}
-		function InputBar({ useSession, useInput, inputActions, keyboard, addImages, removeImage, draftImages, resolveSubmitMode, toggleCommandMenu, stop, command, t, renderSlot, useNotices, useLexicon, useMenuLauncher, useProjection, sessionId, variant, disabled: inert = false, blocked, workspacePickerOpen = false, onRequestWorkspace, placeholder, accessory, overlay, leftItems, rightItems, footer }) {
+		function InputBar({ useSession, useInput, inputActions, keyboard, addImages, removeImage, draftImages, resolveSubmitMode, toggleCommandMenu, toggleReferenceMenu, stop, command, t, renderSlot, useNotices, useLexicon, useMenuLauncher, useProjection, sessionId, variant, disabled: inert = false, blocked, workspacePickerOpen = false, onRequestWorkspace, placeholder, accessory, overlay, leftItems, rightItems, footer }) {
 			const input = useInput((s) => s);
 			const notice = useNotices((s) => s);
 			const lexicon = useLexicon((s) => s);
@@ -3650,7 +3680,7 @@ window.__ModuleLoader__.load({
 			const machineBusy = input?.phase === "adjudicating" || input?.phase === "submitting";
 			const workspaceTrigger = inert && !removed && onRequestWorkspace !== void 0;
 			const textareaDisabled = removed || locked && !workspaceTrigger;
-			const canSteerQueue = !locked && !machineBusy && !commandMenuOpen && empty && running && subagent === null && input.queue.some((row) => row.placement === "queued");
+			const canSteerQueue = !locked && !machineBusy && !commandMenuOpen && empty && (subagent === null || continuable) && input.queue.some((row) => row.placement === "queued");
 			(0, react.useEffect)(() => {
 				if (input === void 0 || inputActions === void 0) return;
 				if (attachments.length !== input.imageIds.length) inputActions.pruneImages(attachments.map((attachment) => attachment.id));
@@ -3777,7 +3807,7 @@ window.__ModuleLoader__.load({
 					keyboard.steerQueue();
 					return;
 				}
-				keyboard.submit(resolveSubmitMode(running, accelerated ? "accelerated" : "enter", subagent === null));
+				keyboard.submit(resolveSubmitMode(running, accelerated ? "accelerated" : "enter", subagent === null || subagent?.address.mode === "continuable"));
 			};
 			const onChange = (e) => {
 				if (keyboard === void 0 || locked) return;
@@ -4121,6 +4151,10 @@ window.__ModuleLoader__.load({
 												onClick: onToggleCommandMenu,
 												children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlusOutline16, { size: 14 })
 											})
+										}),
+										toggleReferenceMenu !== undefined && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
+											label: t("input.insertConversation"), side: "top", delayMs: 500,
+											children: (0, react_jsx_runtime.jsx)("button", { type: "button", className: InputBar_module_css_default.add, "aria-label": t("input.insertConversation"), "aria-haspopup": "listbox", disabled: locked || machineBusy, onMouseDown: keepFocus, onClick: () => { const el = inputRef.current; if (el !== null) toggleReferenceMenu(selectionOf(el)); }, children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconLinkOutline16, { size: 14 }) })
 										}),
 										(0, react_jsx_runtime.jsxs)("div", {
 											className: InputBar_module_css_default.modes,
@@ -5348,7 +5382,7 @@ window.__ModuleLoader__.load({
 		* scan as the composer, minus the lexicon: sent tokens were validated at
 		* compose time, so shape alone decorates).
 		*/
-		function projectUserText(text) {
+		function projectPlainUserText(text) {
 			const re = /(^|\s)([/@][\w-]+)(?=\s|$)/g;
 			const parts = [];
 			let cursor = 0;
@@ -5366,6 +5400,18 @@ window.__ModuleLoader__.load({
 			}
 			if (parts.length === 0) return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.MessageText, { text });
 			if (cursor < text.length) parts.push((0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.MessageText, { text: text.slice(cursor) }, cursor));
+			return (0, react_jsx_runtime.jsx)(react_jsx_runtime.Fragment, { children: parts });
+		}
+		function projectUserText(text) {
+			const references = (0, _deepseek_ai_dsh_client_runtime_client.sessionReferenceParts)(text);
+			if (!references.length) return projectPlainUserText(text);
+			const parts = []; let cursor = 0;
+			for (const reference of references) {
+				if (reference.start > cursor) parts.push((0, react_jsx_runtime.jsx)(react_jsx_runtime.Fragment, { children: projectPlainUserText(text.slice(cursor, reference.start)) }, `text:${cursor}`));
+				parts.push((0, react_jsx_runtime.jsx)("span", { className: MessageItem_module_css_default.refChip, "data-ref-chip": "session", title: reference.label, children: `@${reference.label}` }, `reference:${reference.start}`));
+				cursor = reference.end;
+			}
+			if (cursor < text.length) parts.push((0, react_jsx_runtime.jsx)(react_jsx_runtime.Fragment, { children: projectPlainUserText(text.slice(cursor)) }, `text:${cursor}`));
 			return (0, react_jsx_runtime.jsx)(react_jsx_runtime.Fragment, { children: parts });
 		}
 		/** Right-aligned bubble shared by user and steering rows. */
@@ -5727,6 +5773,7 @@ window.__ModuleLoader__.load({
 
 			const toBottom = (el) => {
 				anchorRef.current = null;
+				scrollSamplePendingRef.current = false;
 				el.scrollTop = el.scrollHeight;
 				observedTopRef.current = el.scrollTop;
 				atBottomRef.current = true;
@@ -5859,6 +5906,14 @@ window.__ModuleLoader__.load({
 					readerBackwardIntentRef.current = true;
 				};
 				const onScroll = () => {
+					const floor = Math.max(0, el.scrollHeight - el.clientHeight);
+					if (atBottomRef.current && !readerBackwardIntentRef.current && Math.abs(el.scrollTop - floor) <= 1) {
+						if (sampleTimer !== void 0) window.clearTimeout(sampleTimer);
+						sampleTimer = void 0;
+						scrollSamplePendingRef.current = false;
+						onScrollRef.current();
+						return;
+					}
 					if (readerForwardIntentRef.current && readerBackwardIntentRef.current) {
 						readerBackwardIntentRef.current = el.scrollTop < observedTopRef.current - .5;
 						readerForwardIntentRef.current = !readerBackwardIntentRef.current;
@@ -5917,6 +5972,7 @@ window.__ModuleLoader__.load({
 					followRef.current?.();
 				});
 				observer.observe(column);
+				observer.observe(scrollerOf(local));
 				if (composer !== null) observer.observe(composer);
 				return () => {
 					observer.disconnect();
@@ -6237,6 +6293,7 @@ window.__ModuleLoader__.load({
 			"placeholder.hero": "描述你想要构建的内容",
 			"placeholder.workspace": "选择一个工作区开始",
 			"input.commands": "命令",
+			"input.insertConversation": "插入对话",
 			"input.stop": "停止生成",
 			"input.send": "发送消息",
 			"input.waitingModel": "正在等待模型响应… {seconds}秒",
@@ -6399,7 +6456,8 @@ window.__ModuleLoader__.load({
 			"row.running": "运行中",
 			"row.failed": "失败",
 			"row.stopped": "已停止",
-			"queue.count": "{n} 条排队消息",
+			"queue.count": "{n} 条待发送消息",
+			"queue.sending": "发送中…",
 			"queue.image": "排队图片",
 			"queue.edit": "编辑排队消息",
 			"queue.edit.unsupported": "包含非文本内容，暂不支持编辑",
@@ -6416,6 +6474,7 @@ window.__ModuleLoader__.load({
 			"terminal.running": "运行中",
 			"terminal.failed": "失败",
 			"terminal.done": "已完成",
+			"terminal.unknown": "退出状态未知",
 			"terminal.noOutput": "无输出",
 			"terminal.collapseAria": "收起输出",
 			"terminal.expandAria": "展开其余 {n} 行输出",
@@ -6437,6 +6496,7 @@ window.__ModuleLoader__.load({
 			"placeholder.hero": "Describe what you want to build",
 			"placeholder.workspace": "Choose a workspace to start",
 			"input.commands": "Commands",
+			"input.insertConversation": "Insert conversation",
 			"input.stop": "Stop generating",
 			"input.send": "Send message",
 			"input.waitingModel": "Waiting for model response… {seconds}s",
@@ -6599,7 +6659,8 @@ window.__ModuleLoader__.load({
 			"row.running": "Running",
 			"row.failed": "Failed",
 			"row.stopped": "Stopped",
-			"queue.count": "{n} queued messages",
+			"queue.count": "{n} pending messages",
+			"queue.sending": "Sending…",
 			"queue.image": "Queued image",
 			"queue.edit": "Edit queued message",
 			"queue.edit.unsupported": "Contains non-text content; editing is not supported yet",
@@ -6616,6 +6677,7 @@ window.__ModuleLoader__.load({
 			"terminal.running": "Running",
 			"terminal.failed": "Failed",
 			"terminal.done": "Done",
+			"terminal.unknown": "Exit status unknown",
 			"terminal.noOutput": "No output",
 			"terminal.collapseAria": "Collapse output",
 			"terminal.expandAria": "Expand the remaining {n} output lines",
@@ -6967,9 +7029,8 @@ window.__ModuleLoader__.load({
 		}
 		function QueueDock({ useSession, updateQueue, notify, loadImage, t }) {
 			const inbox = useSession((s) => s.queue);
-			const queue = (0, react.useMemo)(() => inbox.filter((row) => row.placement === "queued"), [inbox]);
-			const running = useSession((s) => s.running);
-			const queueMutable = useSession((s) => s.subagent === null);
+			const queue = (0, react.useMemo)(() => inbox.filter((row) => row.placement === "queued" || row.placement === "sending"), [inbox]);
+			const queueMutable = useSession((s) => s.subagent === null || s.subagent?.address.mode === "continuable" && s.subagent.parentAvailable);
 			const [editing, setEditing] = (0, react.useState)(null);
 			const [busy, setBusy] = (0, react.useState)(null);
 			const [collapsed, setCollapsed] = (0, react.useState)(true);
@@ -7076,7 +7137,7 @@ window.__ModuleLoader__.load({
 									className: QueueDock_module_css_default.preview,
 									children: row.preview
 								})] }),
-								queueMutable && (0, react_jsx_runtime.jsx)("div", {
+								row.placement === "sending" ? (0, react_jsx_runtime.jsx)("span", { role: "status", className: QueueDock_module_css_default.preview, children: t("queue.sending") }) : queueMutable && (0, react_jsx_runtime.jsx)("div", {
 									className: QueueDock_module_css_default.actions,
 									children: editing?.id === row.id ? (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
 										label: t("queue.save"),
@@ -7146,13 +7207,12 @@ window.__ModuleLoader__.load({
 											label: t("queue.steer"),
 											side: "bottom",
 											delayMs: 500,
-											disabled: !running,
+											disabled: false,
 											children: (0, react_jsx_runtime.jsx)("button", {
 												type: "button",
 												className: QueueDock_module_css_default.action,
 												"aria-label": t("queue.steer"),
-												title: running ? void 0 : t("queue.steer.unavailable"),
-												disabled: busy !== null || !running,
+												disabled: busy !== null,
 												onClick: () => {
 													applyAction(row.id, { kind: "steer" }, t("queue.steerFailed"));
 												},
@@ -7726,7 +7786,7 @@ window.__ModuleLoader__.load({
 			const storedDraft = useStore((s) => s.draft);
 			const inspect = useStore((s) => s.inspect ?? null);
 			(0, react.useEffect)(() => {
-				if (inputState.draft === "" && storedDraft !== "") inputActions.setDraft(storedDraft);
+				if (inputState.draft === "" && storedDraft !== "") inputActions.restoreDraft(storedDraft);
 				const unmirror = bindDraftMirror(actions.setDraft);
 				return () => {
 					unmirror();
@@ -10271,6 +10331,36 @@ window.__ModuleLoader__.load({
 		function selectApproval({ interactions }) {
 			return interactions.find((i) => i.kind === "approval") ?? null;
 		}
+		/** Canonical reference text shared with the Host session-reference parser. */
+		function sessionReferenceMention(sessionId, label) {
+			const bytes = new TextEncoder().encode(JSON.stringify(sessionId));
+			const payload = btoa(Array.from(bytes, value => String.fromCharCode(value)).join("")).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+			const escaped = String(label || sessionId).replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+			return `@[${escaped}](dsh-session:${payload})`;
+		}
+		function createSessionReferenceSource(sessions) {
+			return {
+				name: "session-reference", trigger: "@", order: 20,
+				async candidates(owner, { query, signal }) {
+					if (signal.aborted) return [];
+					const snapshot = sessions.list.getSnapshot(), needle = String(query || "").toLocaleLowerCase();
+					const entries = snapshot.ids.filter(id => id !== owner.sessionId).map(id => ({ id, entry: snapshot.byId[id] })).filter(({ entry }) => entry && !entry.removed && !entry.blank);
+					const rows = entries.map(({ id, entry }) => ({ sessionId: id, label: typeof entry.title === "string" && entry.title.trim() ? entry.title : id, cwd: entry.cwd || "" }));
+					const labels = new Map(); for (const row of rows) labels.set(row.label, (labels.get(row.label) || 0) + 1);
+					return rows.filter(row => !needle || `${row.label} ${row.sessionId} ${row.cwd}`.toLocaleLowerCase().includes(needle)).slice(0, 50).map(row => ({ name: labels.get(row.label) > 1 ? `${row.label} · ${row.sessionId.slice(-8)}` : row.label, description: row.cwd, sessionId: row.sessionId, referenceLabel: row.label }));
+				},
+				onPick({ candidate }) {
+					const label = candidate.referenceLabel, sessionId = candidate.sessionId;
+					return { insert: { source: "session-reference", ref: JSON.stringify({ sessionId, label }), label, clipboardText: sessionReferenceMention(sessionId, label) } };
+				},
+				codec: { serialize(ref, signal) {
+					if (signal.aborted) throw new Error("Session reference was cancelled");
+					const value = JSON.parse(ref);
+					if (typeof value.sessionId !== "string" || !value.sessionId) throw new Error("Invalid session reference");
+					return sessionReferenceMention(value.sessionId, value.label);
+				} }
+			};
+		}
 		/** Mounts the conversation plugin.
 		* @param ctx - Client root context.
 		*/
@@ -10319,6 +10409,7 @@ window.__ModuleLoader__.load({
 				version: () => slots.getVersion("conversation.view")
 			};
 			const inputHub = new InputHub(ctx, t);
+			ctx.inject(["inputTriggers"], scope => { scope.effect(() => scope.inputTriggers.registerSource(createSessionReferenceSource(sessions)), "ui-conversation: session reference source"); });
 			const composerBlocks = new ComposerBlockRegistry();
 			ctx.effect(() => sessions.provide({
 				hooks: ["input"],
@@ -10386,12 +10477,12 @@ window.__ModuleLoader__.load({
 						const nextId = await workspaces.connectWorkspace(workspaceId);
 						if (sessionId !== void 0 && nextId !== sessionId) {
 							const from = inputHub.shell(sessionId);
-							const draft = from.snapshot.draft;
+							const draft = from.clipboardDraft();
 							const imageIds = from.snapshot.imageIds;
 							const next = inputHub.shell(nextId);
 							if (imageIds.length === 0 || next.addImages(imageIds)) {
 								if (draft !== "") {
-									next.setDraft(draft);
+									next.restoreDraft(draft);
 									from.setDraft("");
 								}
 								if (imageIds.length > 0) for (const id of imageIds) from.removeImage(id);
@@ -10503,6 +10594,11 @@ window.__ModuleLoader__.load({
 									draftRev: snapshot.draftRev
 								}
 							});
+						},
+						toggleReferenceMenu: inputTriggers === undefined ? undefined : selection => {
+							shell.dismissPopup();
+							const snapshot = shell.snapshot;
+							inputTriggers.toggleSource("session-reference", { trigger: "@", query: "", position: snapshot.draft.slice(0, selection.start).trim() === "" ? "leading" : "inline", span: { ...selection, draftRev: snapshot.draftRev } });
 						},
 						stop: async () => {
 							if (stopPending) return;

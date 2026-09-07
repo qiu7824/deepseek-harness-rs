@@ -7019,10 +7019,40 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			return timeZone;
 		}
 		//#endregion
+		//#region lib/types/client/session-reference-display.js
+		/** Decode only canonical session mentions; ordinary links and invalid lookalikes stay literal. */
+		function sessionReferenceParts(text) {
+			const references = [];
+			for (const match of String(text).matchAll(/@\[((?:\\.|[^\\\]])*)\]\((dsh-session:[A-Za-z0-9_-]+)\)/g)) {
+				if (match[2].length > 4096) continue;
+				try {
+					const encoded = match[2].slice("dsh-session:".length);
+					const decoded = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(atob(encoded.replace(/-/g, "+").replace(/_/g, "/")), value => value.charCodeAt(0)));
+					const sessionId = JSON.parse(decoded);
+					if (typeof sessionId !== "string" || sessionId.length === 0) continue;
+					const bytes = new TextEncoder().encode(JSON.stringify(sessionId));
+					const canonical = btoa(Array.from(bytes, value => String.fromCharCode(value)).join("")).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+					if (encoded !== canonical) continue;
+					const label = match[1].replace(/\\(.)/g, "$1");
+					if (label.replace(/\\/g, "\\\\").replace(/\]/g, "\\]") !== match[1]) continue;
+					references.push({ start: match.index, end: match.index + match[0].length, sessionId, label, raw: match[0] });
+				} catch {}
+			}
+			return references;
+		}
+		function displaySessionReferences(text) {
+			let result = "", cursor = 0;
+			for (const reference of sessionReferenceParts(text)) {
+				result += text.slice(cursor, reference.start) + "@" + reference.label;
+				cursor = reference.end;
+			}
+			return result + text.slice(cursor);
+		}
+		//#endregion
 		//#region lib/types/client/sessions/queue-mirror.js
 		const QUEUE_PREVIEW_CHARS = 200;
 		function previewOf(content) {
-			const flat = content.filter((block) => block.type !== "image").map((block) => block.type === "text" ? block.text : `[${block.type}]`).join(" ").replace(/\s+/g, " ").trim();
+			const flat = displaySessionReferences(content.filter((block) => block.type !== "image").map((block) => block.type === "text" ? block.text : `[${block.type}]`).join(" ")).replace(/\s+/g, " ").trim();
 			const chars = Array.from(flat);
 			return chars.length > QUEUE_PREVIEW_CHARS ? `${chars.slice(0, QUEUE_PREVIEW_CHARS).join("")}…` : flat;
 		}
@@ -7033,6 +7063,15 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		/** Authoritative transient queue projection and durable steering handoff. */
 		var SessionQueueMirror = class {
 			current = [];
+			local = new Map();
+			begin(requestId, content) {
+				this.local.set(requestId, { id: `sending:${requestId}`, requestId, placement: "sending", content, preview: previewOf(content), text: textOf(content) });
+				this.current = this.current.concat(this.local.get(requestId));
+			}
+			finish(requestId) {
+				this.local.delete(requestId);
+				this.current = this.current.filter(item => item.placement !== "sending" || item.requestId !== requestId);
+			}
 			/**
 			* Return the current immutable queue projection.
 			* @returns current queue rows.
@@ -7046,7 +7085,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			*/
 			reset() {
 				if (this.current.length === 0) return false;
-				this.current = [];
+				this.current = [...this.local.values()];
 				return true;
 			}
 			/**
@@ -7054,14 +7093,16 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* @param items - complete host queue snapshot.
 			*/
 			replace(items) {
+				const accepted = new Set(items.map(item => item.requestId ?? item.message.source?.rpcId));
 				this.current = items.map((item) => ({
 					id: item.id,
+					requestId: item.requestId ?? item.message.source?.rpcId,
 					messageId: item.message.id,
 					placement: item.placement,
 					content: item.message.content,
 					preview: previewOf(item.message.content),
 					text: textOf(item.message.content)
-				}));
+				})).concat([...this.local.values()].filter(item => !accepted.has(item.requestId)));
 			}
 			/**
 			* Retire a transient steering row once its durable message enters the log.
@@ -7071,7 +7112,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			acceptDurable(event) {
 				if (event.type !== "user/message") return false;
 				const messageId = event.data.id;
-				const index = this.current.findIndex((item) => item.placement === "steering" && item.messageId === messageId);
+				const requestId = event.data.source?.rpcId;
+				if (requestId) this.local.delete(requestId);
+				const index = this.current.findIndex((item) => item.messageId === messageId || requestId && item.requestId === requestId);
 				if (index < 0) return false;
 				this.current = this.current.filter((_item, candidate) => candidate !== index);
 				return true;
@@ -7176,6 +7219,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			pendingCache = null;
 			/** Authoritative stream-only inbox snapshot; pending work never hits history. */
 			queueMirror = new SessionQueueMirror();
+			promptInFlight = [];
+			promptRetry = null;
 			/** Session-owned business Context engine over the contiguous raw window. */
 			conversation;
 			running = false;
@@ -7271,7 +7316,28 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* @param mode - queue appends after the current turn; steer interrupts it.
 			* @returns the prompt result (also mirrored into promptError on failure).
 			*/
-			async prompt(content, mode) {
+			prompt(content, mode) {
+				const same = attempt => attempt.mode === mode && JSON.stringify(attempt.content) === JSON.stringify(content);
+				const active = this.promptInFlight.find(same);
+				if (active) return active.promise;
+				const retry = this.promptRetry;
+				const requestId = retry && same(retry) ? retry.requestId : globalThis.crypto?.randomUUID?.() ?? `prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+				const attempt = { content, mode, requestId };
+				this.promptRetry = null;
+				this.queueMirror.begin(requestId, content);
+				this.notifier.markDirty();
+				attempt.promise = this.sendPrompt(content, mode, requestId).then(result => {
+					if (!result.ok) this.promptRetry = attempt;
+					return result;
+				}).finally(() => {
+					this.promptInFlight = this.promptInFlight.filter(item => item !== attempt);
+					this.queueMirror.finish(requestId);
+					this.notifier.markDirty();
+				});
+				this.promptInFlight.push(attempt);
+				return attempt.promise;
+			}
+			async sendPrompt(content, mode, requestId) {
 				this.promptError = null;
 				this.lastAgentError = null;
 				this.promptAttempted = true;
@@ -7283,6 +7349,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				try {
 					if (this.address === void 0) result = (await this.api.sessions.prompt({
 						sessionId: this.sessionId,
+						requestId,
 						mode,
 						content,
 						clientTimeZone: resolvedClientTimeZone()
@@ -7298,12 +7365,14 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					else {
 						const routed = (await this.api.subagents.prompt({
 							...this.address,
+							requestId,
+							delivery: mode,
 							content,
 							clientTimeZone: resolvedClientTimeZone()
 						})).result;
 						result = routed.ok ? {
 							ok: true,
-							value: { accepted: true }
+							value: { ...routed.value, accepted: true }
 						} : routed;
 					}
 				} catch (error) {
@@ -7353,9 +7422,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			}
 			/** Apply one operation to a still-pending queue occurrence. */
 			async updateQueue(itemId, action) {
+				if (String(itemId).startsWith("sending:")) return { ok: false, error: { code: "queue-item-not-found", message: "Message is still being sent", details: { itemId } } };
 				try {
 					return (await this.api.sessions.updateQueue({
 						sessionId: this.sessionId,
+						...(this.address === undefined ? {} : { parentSessionId: this.address.parentSessionId, mode: this.address.mode }),
 						itemId,
 						action
 					})).result;
@@ -10844,6 +10915,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		exports.WorkspaceCreateError = WorkspaceCreateError;
 		exports.WorkspaceRuntime = WorkspaceRuntime;
 		exports.apply = apply;
+		exports.sessionReferenceParts = sessionReferenceParts;
+		exports.displaySessionReferences = displaySessionReferences;
 		exports.contextForm = contextForm;
 		exports.contextProvenance = contextProvenance;
 		exports.conversationContextKey = conversationContextKey;

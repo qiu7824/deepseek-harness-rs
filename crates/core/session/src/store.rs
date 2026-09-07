@@ -370,21 +370,13 @@ impl Session {
         let had_seed = seed.is_some();
         let mut state = SessionState::default();
         if let Some(seed) = seed {
-            for (index, source) in seed.iter().enumerate() {
-                let value = serde_json::to_value(source).map_err(|_| {
+            for (index, snapshot) in seed.into_iter().enumerate() {
+                let snapshot_value = serde_json::to_value(&snapshot).map_err(|_| {
                     format!("seed event at index {index} is not losslessly JSON-serializable")
                 })?;
-                let snapshot_value = if restore {
-                    value.clone()
-                } else {
-                    snapshot_json_value(&value).ok_or_else(|| {
-                        format!("seed event at index {index} is not losslessly JSON-serializable")
-                    })?
-                };
-                let snapshot: SessionEvent = serde_json::from_value(snapshot_value.clone())
-                    .map_err(|_| {
-                        format!("seed event at index {index} has an invalid event envelope")
-                    })?;
+                // SessionEvent and its JSON values are already owned. Validate
+                // the serialized envelope, then move the original record into
+                // the log instead of cloning and deserializing it repeatedly.
                 assert_session_event_envelope(&snapshot_value, index)?;
                 assert_supported_request_header(
                     &snapshot.type_,
@@ -1444,5 +1436,72 @@ fn emit_disposed(entry: &Arc<SessionEntry>) {
 impl Service for SessionStore {
     fn service_name(&self) -> &'static str {
         "sessions"
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    fn record(seq: u64) -> SessionEvent {
+        serde_json::from_value(serde_json::json!({
+            "seq":seq,"time":1700000000000i64,"type":"user/message","surfaceOp":"append",
+            "data":{"id":"owned-message","role":"user","content":[{"type":"text","text":"x".repeat(128 * 1024)}],"source":{"kind":"user"}}
+        })).unwrap()
+    }
+
+    #[test]
+    fn restore_moves_large_owned_payloads_without_reserializing_them() {
+        let event = record(0);
+        let address = event
+            .data
+            .pointer("/content/0/text")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .as_ptr();
+        let header = snapshot_session_header(&session_id("owned-restore"), None).unwrap();
+        let restored = Session::from_restore(
+            header.id.clone(),
+            vec![event],
+            &header,
+            SessionLogOffset::ZERO,
+        )
+        .unwrap();
+        assert_eq!(
+            restored.events()[0]
+                .data
+                .pointer("/content/0/text")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .as_ptr(),
+            address
+        );
+    }
+
+    #[test]
+    fn owned_restore_keeps_envelope_and_sequence_validation() {
+        let header = snapshot_session_header(&session_id("invalid-restore"), None).unwrap();
+        assert!(
+            Session::from_restore(
+                header.id.clone(),
+                vec![record(1)],
+                &header,
+                SessionLogOffset::ZERO
+            )
+            .is_err()
+        );
+        let mut missing_surface = record(0);
+        missing_surface.surface_op = None;
+        assert!(
+            Session::from_restore(
+                header.id.clone(),
+                vec![missing_surface],
+                &header,
+                SessionLogOffset::ZERO
+            )
+            .is_err()
+        );
     }
 }

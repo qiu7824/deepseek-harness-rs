@@ -4,7 +4,7 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: `0.1.3-alpha.8`.
+Current release line: `0.1.3-alpha.9`.
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 
@@ -14,9 +14,9 @@ The Rust edition maintains its own bounded conversation history, targeted naviga
 
 Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases):
 
-- `deepseek-harness-rs-v0.1.3-alpha.8-windows-x86_64-{core,skin,free}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.8-linux-x86_64-{core,skin,free}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.8-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.9-windows-x86_64-{core,skin}-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.9-linux-x86_64-{core,skin}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.9-macos-{x86_64,aarch64}-{core,skin}-portable.tar.gz`
 - matching Windows `setup.exe`, Linux `.deb`, and macOS `.pkg` installers
 
 A complete package contains the binary, `web/dist`, `config/agent-presets`, bundled Web plugins, and security documentation. Copying only the binary does not provide a complete Web installation.
@@ -44,6 +44,8 @@ The launcher is built with ZSUI at a fixed commit and requires no CMD, PowerShel
 For extension skins, download the separate `skin` package and run `deepseek-harness-rs-skin` (`.exe` on Windows). It installs only the skin payload into the adjacent `web/dist/skins`; the default `core` archive never bundles skin assets.
 
 The `free` package uses the same Rust runtime and Web UI as `core`, with only the anonymous models that passed release verification. Exact IDs in the [official model directory](https://opencode.ai/zen/v1/models) and official input/output/cache-read prices are checked before streaming inference and a tool-result round trip. Evidence in `free-model-verification.json` is less than 24 hours old and tied to the packaged binary hash. Settings provide the current free catalog, verification results, and controls to test and add eligible models; no credentials or skin payload are bundled.
+
+The optional `free` edition is published only when anonymous verification passes for that exact build. OpenCode currently restricts its free endpoint to its own client, so `free` is unavailable until a supported anonymous route passes these checks; `core` and `skin` remain independently verified.
 
 ## Data, profiles, and workspaces
 
@@ -124,9 +126,9 @@ Web plugins run in the application origin and have page-level JavaScript capabil
 Bundled plugins:
 
 - `dsh-voice-input`: browser speech input.
-- `dsh-composer-expand`: expandable composer.
-- `dsh-context-jump`: a Codex-style left-side conversation rail with hover titles, click-to-jump marks, top/bottom controls, and `Alt+Up/Down` navigation without replacing the native session header.
-- `dsh-web-preview-rs`: session-scoped Rust-native workspace browser for Markdown/source, images, media, PDF, isolated HTML sites, text/element annotations, and drop-to-workspace uploads. Project execution accepts only Host-detected fixed argv after a one-shot 60-second confirmation challenge and requires full WorkspaceWrite OS-sandbox enforcement, credential scrubbing, managed process trees, and bounded logs.
+- `dsh-context-jump`: an indexed conversation rail that loads bounded history around user-message targets, with hover previews and keyboard navigation.
+- `dsh-better-sidebar`: resizable workbench panes, workspace files, terminals and web previews, integrated with the native conversation interface.
+- `dsh-sidebar-workbench-suite`: Markdown/code/structured-data viewers, background jobs and the shared browser/desktop control panel.
 
 ## Capability status
 
@@ -181,7 +183,7 @@ See `PLUGIN_SECURITY.md` for the Web plugin trust boundary.
 - The generic pi-ai provider catalog has not been fully ported.
 - LSP remains a library-level implementation without production Host composition.
 - ACP real prompt/cancel and Python SDK real-turn regressions remain open.
-- The first `dsh-context-jump` release navigates rendered stable nodes; a full Turn/Step directory requires a formal timeline slot.
+- Conversation navigation uses the user-message index and targeted history pages; full conversation data stays on the Host.
 - Linux and macOS are considered published only after every GitHub Actions matrix asset succeeds.
 
 ## License

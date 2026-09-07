@@ -21,7 +21,7 @@ pub async fn wait_tick(poll_ms: u64, signal: Option<&SubprocessAbort>) -> bool {
     loop {
         tokio::select! {
             _ = &mut sleep => return true,
-            _ = tokio::task::yield_now() => {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(15)) => {
                 if signal.is_some_and(|signal| signal()) {
                     return false;
                 }

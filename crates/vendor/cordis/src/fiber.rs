@@ -207,6 +207,16 @@ impl FiberCore {
         inject: IndexMap<String, Option<ArcValue>>,
         runtime: Arc<PluginRuntime>,
     ) -> Arc<Self> {
+        Self::spawn_plugin_with_setup(parent, config, inject, runtime, |_| {})
+    }
+
+    pub fn spawn_plugin_with_setup(
+        parent: &Context,
+        config: ArcValue,
+        inject: IndexMap<String, Option<ArcValue>>,
+        runtime: Arc<PluginRuntime>,
+        setup: impl FnOnce(&Arc<Self>),
+    ) -> Arc<Self> {
         let uid = parent.registry.counter();
         let core = Arc::new(Self {
             uid: Mutex::new(Some(uid)),
@@ -272,6 +282,10 @@ impl FiberCore {
         let _ = parent
             .fiber
             .effect("ctx.plugin()", Box::pin(async move { Some(disposer) }));
+
+        // Ownership must be visible before either the publication listeners
+        // or the asynchronous activation chain can run on another worker.
+        setup(&core);
 
         // 3. Publish so observers can react (TS emits synchronously here).
         if let Some(ctx) = core.ctx() {

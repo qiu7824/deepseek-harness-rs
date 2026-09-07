@@ -154,6 +154,18 @@ impl RegistryService {
         plugin: Arc<dyn Plugin>,
         config: ArcValue,
     ) -> Arc<FiberCore> {
+        self.plugin_with_setup(parent, plugin, config, |_| {})
+    }
+
+    /// Two-phase fiber construction for owners that must install metadata
+    /// before config hooks and the plugin body can observe the new fiber.
+    pub fn plugin_with_setup(
+        &self,
+        parent: &Context,
+        plugin: Arc<dyn Plugin>,
+        config: ArcValue,
+        setup: impl FnOnce(&Arc<FiberCore>),
+    ) -> Arc<FiberCore> {
         let key = Arc::as_ptr(&plugin) as *const () as usize;
         let runtime = self
             .internal
@@ -167,7 +179,7 @@ impl RegistryService {
             })
             .clone();
         let inject = plugin.inject().as_map();
-        FiberCore::spawn_plugin(parent, config, inject, runtime)
+        FiberCore::spawn_plugin_with_setup(parent, config, inject, runtime, setup)
     }
 
     /// Run a callback once the requested services are available.

@@ -10,7 +10,7 @@ const dom = new JSDOM("<!doctype html><html><head></head><body><main id=\"root\"
 Object.assign(global, { window: dom.window, document: dom.window.document, Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true });
 const definitions = {};
 window.__ModuleLoader__ = { load: definition => { definitions[definition.id] = definition; } };
-vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, "../../release/plugins/dsh-sidebar-workbench-suite/lib/client.js"), "utf8"), { window, document, URLSearchParams, AbortController: dom.window.AbortController, console, setInterval, clearInterval, setTimeout, clearTimeout, fetch: (...args) => global.fetch(...args) });
+vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, "../../release/plugins/dsh-sidebar-workbench-suite/lib/client.js"), "utf8"), { window, document, URL, URLSearchParams, AbortController: dom.window.AbortController, console, setInterval, clearInterval, setTimeout, clearTimeout, fetch: (...args) => global.fetch(...args) });
 const registrations = { tabs: [], viewers: [] }, disposed = [];
 let updatedTab = null;
 const updatedTabs = [];
@@ -52,14 +52,16 @@ const sourceText = "# Overview\n\n- first\n\nText content.\n";
 const fetchRecords = [];
 const jobEntries = { parent: [{ id: "job-1", kind: "bash", label: "compile", status: "running", startedAt: 1 }], other: [{ id: "job-1", kind: "bash", label: "other compile", status: "running", startedAt: 2 }] };
 const fileBodies = new Map([["README.md", sourceText], ["data.json", '[{"name":"alpha","count":2}]'], ["preview.html", "<button>Preview</button>"], ["main.rs", "fn main() {}"]]);
-let fileRevision = 1;
+let fileRevision = 1;const controlModes=new Map();
+let computerAdapter="native",captureFailure=false;
 global.fetch = async (url, options = {}) => {
   let requestBody = null;
   if (options.body) { try { requestBody = JSON.parse(options.body); } catch { requestBody = String(options.body); } }
   fetchRecords.push([String(url), options.method || "GET", requestBody]);
   if (String(url).includes("/__dsh-devices/")) return new Response(JSON.stringify({installed:false,devices:[],website:"https://uuyc.163.com/"}),{status:200,headers:{"Content-Type":"application/json"}});
-  if (String(url).includes("__dsh-computer-use/meta")) return new Response(JSON.stringify({ enabled: true, available: true, adapter: "native", defaultBrowserSessionId: "default" }), { status: 200, headers: { "Content-Type": "application/json" } });
-  if (String(url).includes("__dsh-computer-use/action")) { const owner = requestBody.ownerSessionId; return new Response(JSON.stringify({ state: { url: "https://" + owner + ".test/", title: owner + " browser", viewport: { width: 1280, height: 720 } }, screenshot: { base64: "iVBORw0KGgo=", mediaType: "image/png" } }), { status: 200, headers: { "Content-Type": "application/json" } }); }
+  if (String(url).includes("__dsh-computer-use/meta")) return new Response(JSON.stringify({ enabled: true, available: true, adapter: computerAdapter, defaultBrowserSessionId: "default" }), { status: 200, headers: { "Content-Type": "application/json" } });
+  if (String(url).includes("__dsh-computer-use/action") && captureFailure && requestBody.action==="capture") return new Response(JSON.stringify({error:{code:"COMPUTER_USE_UU_ERROR",message:"远端画面不可用"}}),{status:503,headers:{"Content-Type":"application/json"}});
+  if (String(url).includes("__dsh-computer-use/action")) { const owner = requestBody.ownerSessionId;if(requestBody.action==="takeover")controlModes.set(owner,"manual");if(requestBody.action==="resume_agent")controlModes.set(owner,"agent"); return new Response(JSON.stringify({ control:{mode:controlModes.get(owner)||"agent",generation:0}, state: { controlId:owner+"-control",connected:true,interactive:true, url: "https://" + owner + ".test/", title: owner + " browser", viewport: { width: 1280, height: 720 } }, screenshot: { base64: "iVBORw0KGgo=", mediaType: "image/png" } }), { status: 200, headers: { "Content-Type": "application/json" } }); }
   if (String(url).includes("job-list")) { const parsed = new URL(String(url), dom.window.location.href); const owner = parsed.searchParams.get("sessionId"); return new Response(JSON.stringify({ entries: jobEntries[owner] || [] }), { status: 200, headers: { "Content-Type": "application/json" } }); }
   if (String(url).includes("job-read")) { const parsed = new URL(String(url), dom.window.location.href); const owner = parsed.searchParams.get("sessionId"); return new Response(JSON.stringify({ text: owner + " job output", cursor: 10, truncated: false, snapshot: { status: "completed" } }), { status: 200, headers: { "Content-Type": "application/json" } }); }
   if (String(url).includes("job-action")) return new Response(JSON.stringify({ accepted: true }), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -119,6 +121,15 @@ assert.ok(fetchRecords.some(row => row[0].includes("__dsh-computer-use/action") 
 assert.equal(document.querySelector('[data-tab="controlled-browser"]').dataset.browserSession, "default");
 assert.equal(fetchRecords.find(row => row[0].includes("__dsh-computer-use/action"))[2].browserSessionId, "default");
 assert.equal(document.querySelector(".dswSuiteBrowser img").alt, "parent browser");
+await click([...document.querySelectorAll('button')].find(x=>x.textContent==='人工接管'));
+assert.match(document.body.textContent,/智能体控制暂停/);
+await click([...document.querySelectorAll('button')].find(x=>x.textContent==='交还智能体'));
+assert.match(document.body.textContent,/智能体可操作/);
+await click([...document.querySelectorAll('button')].find(x=>x.textContent==='私密输入'));
+assert.equal(document.querySelector('input[aria-label="发送到受控浏览器"]').type,'password');
+await click([...document.querySelectorAll('button')].find(x=>x.textContent==='Enter'));
+assert.ok(fetchRecords.some(row=>row[2]?.action==='key'&&row[2].keys[0]==='Enter'));
+
 await input(document.querySelector('input[aria-label="发送到受控浏览器"]'), "private browser input");
 await render(h(registrations.tabs[1].component, { ctx: context, scope: { sessionId: "other" }, tab: { id: "browser", meta: {} }, visible: true, pluginSettings: { autoRefresh: false } }));
 assert.equal(document.querySelector('input[aria-label="发送到受控浏览器"]').value, "");
@@ -127,6 +138,56 @@ assert.doesNotMatch(document.body.textContent, /parent browser|private browser i
 registrations.tabs[1].onClose({ meta: { browserSessionId: "default" } }, { sessionId: "other" });
 await new Promise(resolve => setTimeout(resolve, 20));
 assert.ok(fetchRecords.filter(row => row[0].includes("__dsh-computer-use/action")).length >= 2);
+computerAdapter="native-desktop";
+await render(h(registrations.tabs[1].component, {ctx:context,scope:{sessionId:"desktop"},tab:{id:"desktop",meta:{}},visible:true}));
+assert.ok(document.querySelector(".dswSuiteBrowser img"));
+assert.equal(document.querySelector('input[aria-label="受控浏览器地址"]'),null);
+captureFailure=true;
+await click([...document.querySelectorAll("button")].find(button=>button.textContent==="刷新画面"));
+assert.equal(document.querySelector(".dswSuiteBrowser img"),null,"failed desktop capture must remove stale pixels");
+assert.equal([...document.querySelectorAll("button")].find(button=>button.textContent==="Enter").disabled,true);
+const captureCount=fetchRecords.filter(row=>row[2]?.ownerSessionId==="desktop"&&row[2]?.action==="capture").length;
+await React.act(async()=>{await new Promise(resolve=>setTimeout(resolve,650));});
+assert.equal(fetchRecords.filter(row=>row[2]?.ownerSessionId==="desktop"&&row[2]?.action==="capture").length,captureCount,"a failed desktop stream must stop polling");
+await click([...document.querySelectorAll("button")].find(button=>button.textContent==="关闭会话"));
+assert.match(document.body.textContent,/连接已关闭/);
+// Exercise the UU canvas independently of the legacy snapshot browser adapter.
+captureFailure=false;computerAdapter="uu-desktop";
+const sockets=[],decoders=[],draws=[],closedFrames=[];
+window.HTMLCanvasElement.prototype.getContext=function(){return {drawImage:(...args)=>draws.push(args)}};
+window.HTMLElement.prototype.attachEvent=function(){};window.HTMLElement.prototype.detachEvent=function(){};
+window.WebSocket=class { constructor(url){this.url=url;this.closed=false;this.sent=[];sockets.push(this)}send(value){this.sent.push(value)}close(){if(!this.closed){this.closed=true;this.onclose?.()}}message(data){this.onmessage?.({data})}};
+window.EncodedVideoChunk=class {constructor(data){Object.assign(this,data)}};
+window.VideoDecoder=class {constructor(callbacks){this.callbacks=callbacks;this.state="unconfigured";this.decodeQueueSize=0;decoders.push(this)}configure(config){this.config=config;this.state="configured"}decode(chunk){assert.equal(this.state,"configured");this.callbacks.output({displayWidth:1280,displayHeight:720,close:()=>closedFrames.push(chunk.timestamp)})}close(){assert.notEqual(this.state,"closed","decoder must be closed once");this.state="closed"}};
+const tick=async(callback=()=>{})=>React.act(async()=>{callback();await new Promise(resolve=>setTimeout(resolve,25));});
+await render(h(registrations.tabs[1].component,{ctx:context,scope:{sessionId:"uu"},tab:{id:"uu",meta:{}},visible:true}));
+assert.equal(sockets.length,1);assert.match(sockets[0].url,/ownerSessionId=uu/);
+assert.equal(document.querySelector('.dswSuiteBrowser img'),null);
+assert.ok(![...document.querySelectorAll('button')].some(x=>['输入','私密输入','Enter','Tab','刷新画面'].includes(x.textContent)),"UU uses direct input, no snapshot toolbar");
+const metadata={kind:"state",state:{controlId:"uu-control",connected:true,interactive:true,title:"UU Desktop",viewport:{width:1280,height:720}},control:{mode:"manual",generation:10},codec:"avc1.42C028",width:1280,height:720};
+await tick(()=>sockets[0].message(JSON.stringify(metadata)));
+const packet=new ArrayBuffer(14);new Uint8Array(packet)[0]=1;new DataView(packet).setBigUint64(1,33333n,true);
+await tick(()=>sockets[0].message(packet));
+assert.equal(draws.length,1);assert.deepEqual(closedFrames,[33333]);
+const canvas=document.querySelector('canvas'),keyboard=document.querySelector('.dswDesktopKeyboard');
+canvas.getBoundingClientRect=()=>({left:10,top:20,width:640,height:360});
+await tick(()=>canvas.dispatchEvent(new dom.window.MouseEvent('pointerdown',{bubbles:true,button:2,clientX:330,clientY:200})));
+assert.equal(document.activeElement,keyboard);
+await tick(()=>keyboard.dispatchEvent(new dom.window.KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'a',code:'KeyA'})));
+await tick(()=>keyboard.dispatchEvent(new dom.window.KeyboardEvent('keyup',{bubbles:true,cancelable:true,key:'a',code:'KeyA'})));
+await tick(()=>canvas.dispatchEvent(new dom.window.MouseEvent('pointerup',{bubbles:true,button:2,clientX:350,clientY:210})));
+const uuInput=fetchRecords.filter(x=>x[2]?.ownerSessionId==='uu').map(x=>x[2]);
+assert.deepEqual(uuInput.filter(x=>['mouse_down','key_down','key_up','mouse_up'].includes(x.action)).map(x=>x.action),['mouse_down','key_down','key_up','mouse_up']);
+assert.ok(uuInput.some(x=>x.action==='mouse_down'&&x.button==='right'&&x.x===640&&x.y===360&&x.controlId==='uu-control'&&x.includeScreenshot===false));
+assert.ok(uuInput.some(x=>x.action==='key_down'&&x.key==='KeyA'));
+assert.match(document.body.textContent,/人工接管中/,'old HTTP mode must not override newer video state');
+await tick(()=>keyboard.dispatchEvent(new dom.window.KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'Control',code:'ControlLeft'})));
+await tick(()=>window.dispatchEvent(new dom.window.Event('blur')));
+assert.ok(fetchRecords.some(x=>x[2]?.ownerSessionId==='uu'&&x[2]?.action==='release_inputs'));
+await tick(()=>{decoders.at(-1).state='closed';decoders.at(-1).callbacks.error(new Error('decode failed'))});
+assert.equal(sockets[0].closed,true);assert.equal(canvas.style.visibility,'hidden','decode errors hide stale pixels');
+assert.ok(!fetchRecords.some(x=>x[2]?.ownerSessionId==='uu'&&x[2]?.action==='capture'),'UU live view never falls back to JPEG polling');
+await render(h('div',null,'done'));
 plugin.test.clearFileDrafts();
 const threeMiBInMemory = "x".repeat(1536 * 1024);
 assert.equal(plugin.test.rememberFileDraft("oldest", threeMiBInMemory, "", "etag"), true);

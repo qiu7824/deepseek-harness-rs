@@ -136,7 +136,7 @@ async fn spill_replacement(
     };
     let save = SaveTextSpill {
         owner: SpillOwner { session_id },
-        source: SpillSource {
+        source: SpillSource::Tool {
             tool_name: tool_name.to_string(),
             call_id: call_id.clone(),
             label: label.to_string(),

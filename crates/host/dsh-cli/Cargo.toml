@@ -14,6 +14,7 @@ path = "src/main.rs"
 dsh-acp = { path = "../../acp/acp" }
 dsh-app-boot = { path = "../../boot/app-boot" }
 dsh-agent = { path = "../../core/agent" }
+dsh-agent-default-model = { path = "../../core/agent-default-model" }
 dsh-subagent = { path = "../../subagent/subagent" }
 dsh-jsonrpc-runtime = { path = "../../sdk/jsonrpc-runtime" }
 dsh-home-paths = { path = "../../util/home-paths" }

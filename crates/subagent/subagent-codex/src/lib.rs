@@ -1,6 +1,8 @@
 //! Fixed one-shot Codex provider. Each accepted run owns one real
 //! `codex app-server --stdio` child process.
 
+mod transcript;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,6 +28,111 @@ pub const NAME: &str = "subagent-codex";
 pub const PROVIDER_NAME: &str = "codex";
 /// Default process-tree termination grace.
 pub const DEFAULT_DISPOSE_GRACE_MS: u64 = 3_000;
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_PROTOCOL_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PENDING_NOTIFICATION_BYTES: usize = 16 * 1024 * 1024;
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    struct LiveProcess;
+    impl SubprocessHandle for LiveProcess {
+        fn stdin(&self) -> Option<Box<dyn tokio::io::AsyncWrite + Unpin + Send>> {
+            None
+        }
+        fn stdout(&self) -> Option<Box<dyn tokio::io::AsyncRead + Unpin + Send>> {
+            None
+        }
+        fn stderr(&self) -> Option<Box<dyn tokio::io::AsyncRead + Unpin + Send>> {
+            None
+        }
+        fn collected(&self) -> dsh_subprocess::SubprocessCollectedOutputs {
+            Default::default()
+        }
+        fn done(&self) -> BoxFuture<'static, Result<dsh_subprocess::SubprocessOutcome, String>> {
+            futures::future::pending().boxed()
+        }
+        fn terminate(&self) {}
+        fn wait_for_exit(
+            &self,
+            _: Option<dsh_subprocess::SubprocessAbort>,
+        ) -> BoxFuture<'static, bool> {
+            async { true }.boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn early_terminal_notification_is_retained_until_start_acknowledgement() {
+        let (reader, mut writer) = tokio::io::duplex(4096);
+        let mut wire = Wire::new(Box::new(reader), Box::new(tokio::io::sink()));
+        writer.write_all(b"{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"t\",\"turn\":{\"id\":\"turn-1\",\"status\":\"completed\"}}}\n{\"id\":1,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}\n").await.unwrap();
+        let child: Arc<dyn SubprocessHandle> = Arc::new(LiveProcess);
+        let signal: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
+        let result = wire
+            .request("turn/start", json!({}), &child, &signal)
+            .await
+            .unwrap();
+        assert_eq!(result["turn"]["id"], "turn-1");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), wire.read())
+                .await
+                .expect("terminal notification must remain buffered")
+                .unwrap()["method"],
+            "turn/completed"
+        );
+        assert_eq!(wire.pending_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn a_few_large_notifications_cannot_exceed_the_pending_byte_budget() {
+        let (reader, mut writer) = tokio::io::duplex(64 * 1024);
+        let mut wire = Wire::new(Box::new(reader), Box::new(tokio::io::sink()));
+        let producer = tokio::spawn(async move {
+            let mut notification = serde_json::to_vec(
+                &json!({"method":"item/completed","params":{"output":"x".repeat(6 * 1024 * 1024)}}),
+            )
+            .unwrap();
+            notification.push(b'\n');
+            for _ in 0..3 {
+                if writer.write_all(&notification).await.is_err() {
+                    return;
+                }
+            }
+            let _ = writer.write_all(b"{\"id\":1,\"result\":{}}\n").await;
+        });
+        let child: Arc<dyn SubprocessHandle> = Arc::new(LiveProcess);
+        let signal: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            wire.request("turn/start", json!({}), &child, &signal),
+        )
+        .await
+        .unwrap();
+        assert!(result.unwrap_err().contains("16 MiB byte budget"));
+        assert!(wire.pending_bytes <= MAX_PENDING_NOTIFICATION_BYTES);
+        drop(wire);
+        producer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_read_preserves_a_partial_json_frame() {
+        let (reader, mut writer) = tokio::io::duplex(4096);
+        let mut wire = Wire::new(Box::new(reader), Box::new(tokio::io::sink()));
+        writer.write_all(b"{\"method\":\"turn/com").await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(15), wire.read())
+                .await
+                .is_err()
+        );
+        writer
+            .write_all(b"pleted\",\"params\":{}}\n")
+            .await
+            .unwrap();
+        let frame = wire.read().await.unwrap();
+        assert_eq!(frame["method"], "turn/completed");
+    }
+}
 
 /// Deployment-owned explicit environment and teardown grace.
 #[derive(Debug, Clone)]
@@ -89,6 +196,10 @@ struct Wire {
     input: BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
     output: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
     next_id: u64,
+    pending: std::collections::VecDeque<(Value, usize)>,
+    pending_bytes: usize,
+    last_frame_bytes: usize,
+    line: Vec<u8>,
 }
 
 impl Wire {
@@ -100,6 +211,10 @@ impl Wire {
             input: BufReader::new(input),
             output,
             next_id: 1,
+            pending: Default::default(),
+            pending_bytes: 0,
+            last_frame_bytes: 0,
+            line: Vec::new(),
         }
     }
 
@@ -118,17 +233,37 @@ impl Wire {
     }
 
     async fn read(&mut self) -> Result<Value, String> {
+        if let Some((frame, bytes)) = self.pending.pop_front() {
+            self.pending_bytes = self.pending_bytes.saturating_sub(bytes);
+            return Ok(frame);
+        }
+        self.read_raw().await
+    }
+
+    async fn read_raw(&mut self) -> Result<Value, String> {
         loop {
-            let mut line = String::new();
-            let read =
-                self.input.read_line(&mut line).await.map_err(|error| {
+            let bytes =
+                self.input.fill_buf().await.map_err(|error| {
                     format!("subagent-codex: app-server stdout failed: {error}")
                 })?;
-            if read == 0 {
+            if bytes.is_empty() && self.line.is_empty() {
                 return Err("subagent-codex: app-server protocol stream closed".to_string());
             }
-            if !line.trim().is_empty() {
-                return serde_json::from_str(line.trim()).map_err(|error| {
+            let newline = bytes.iter().position(|byte| *byte == b'\n');
+            let consumed = newline.map_or(bytes.len(), |index| index + 1);
+            if self.line.len().saturating_add(consumed) > MAX_PROTOCOL_FRAME_BYTES {
+                return Err("subagent-codex: app-server frame exceeded 16 MiB".to_string());
+            }
+            let eof = bytes.is_empty();
+            self.line.extend_from_slice(&bytes[..consumed]);
+            self.input.consume(consumed);
+            if newline.is_none() && !eof {
+                continue;
+            }
+            let line = std::mem::take(&mut self.line);
+            self.last_frame_bytes = line.len();
+            if !line.iter().all(u8::is_ascii_whitespace) {
+                return serde_json::from_slice(&line).map_err(|error| {
                     format!("subagent-codex: invalid JSON-RPC line on stdout: {error}")
                 });
             }
@@ -156,9 +291,22 @@ impl Wire {
                 return Err("subagent-codex: app-server request aborted".to_string());
             }
             tokio::select! {
-                frame = self.read() => {
+                frame = self.read_raw() => {
                     let frame = frame?;
+                    if frame.get("method").is_some() && frame.get("id").is_some() {
+                        self.write(&json!({"jsonrpc":"2.0", "id":frame["id"], "error":{
+                            "code":-32601, "message":"This delegated client does not implement interactive server requests"
+                        }})).await?;
+                        return Err(format!("subagent-codex: interactive request {} requires an approval-capable client", frame["method"]));
+                    }
                     if frame.get("id").and_then(Value::as_u64) != Some(id) {
+                        if frame.get("method").is_some() {
+                            if self.pending.len() >= 1024 || self.pending_bytes.saturating_add(self.last_frame_bytes) > MAX_PENDING_NOTIFICATION_BYTES {
+                                return Err("subagent-codex: buffered notifications exceeded their count or 16 MiB byte budget".to_string());
+                            }
+                            self.pending_bytes += self.last_frame_bytes;
+                            self.pending.push_back((frame, self.last_frame_bytes));
+                        }
                         continue;
                     }
                     if let Some(error) = frame.get("error") {
@@ -175,7 +323,7 @@ impl Wire {
                         outcome.exit_code, outcome.signal,
                     ));
                 }
-                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                _ = tokio::time::sleep(CANCEL_POLL_INTERVAL) => {}
             }
         }
     }
@@ -402,15 +550,35 @@ impl SubagentProvider for CodexProvider {
         };
 
         let cancelled = Arc::new(AtomicBool::new(false));
+        let transcript = match transcript::Transcript::create(&request).await {
+            Ok(transcript) => transcript,
+            Err(error) => {
+                child.terminate();
+                let _ = child.wait_for_exit(None).await;
+                return Err(SubagentError::new("TRANSCRIPT_START_FAILED", error));
+            }
+        };
+        let child_id = transcript
+            .as_ref()
+            .map(|t| t.session.id().clone())
+            .unwrap_or_else(|| session_id(uuid::Uuid::new_v4().to_string()));
+        let transcript_for_finish = transcript.clone();
         let cancelled_for_result = cancelled.clone();
         let child_for_result = child.clone();
         let signal = request.request.signal.clone();
+        let effort = request
+            .request
+            .agent_options
+            .as_ref()
+            .and_then(|options| options.reasoning_effort.as_ref())
+            .map(|effort| effort.as_str().to_string());
         let result = async move {
             let turn = match wire
                 .request(
                     "turn/start",
                     json!({
                         "threadId": thread_id,
+                        "effort": effort,
                         "input": texts
                             .into_iter()
                             .map(|text| json!({ "type": "text", "text": text, "text_elements": [] }))
@@ -429,13 +597,7 @@ impl SubagentProvider for CodexProvider {
                         stop_reason: SubagentStopReason::Aborted,
                     });
                 }
-                Err(_) => {
-                    return Ok(SubagentResult {
-                        output: Vec::new(),
-                        structured: None,
-                        stop_reason: SubagentStopReason::Error,
-                    });
-                }
+                Err(error) => return Err(error),
             };
             let Some(turn_id) = turn
                 .get("turn")
@@ -477,15 +639,23 @@ impl SubagentProvider for CodexProvider {
                 }
                 tokio::select! {
                     frame = wire.read() => {
-                        let Ok(frame) = frame else {
-                            return Ok(SubagentResult {
-                                output: Vec::new(),
-                                structured: None,
-                                stop_reason: SubagentStopReason::Error,
-                            });
-                        };
+                        let frame = frame?;
+                        if frame.get("id").is_some() && frame.get("method").is_some() {
+                            // Never leave an unsupported server request waiting
+                            // forever (for example an approval interaction).
+                            wire.write(&json!({"jsonrpc":"2.0", "id":frame["id"], "error":{
+                                "code":-32601, "message":"This delegated client does not implement interactive server requests"
+                            }})).await?;
+                            return Err(format!("subagent-codex: interactive request {} requires an approval-capable client", frame["method"]));
+                        }
                         let method = frame.get("method").and_then(Value::as_str);
                         let params = frame.get("params").and_then(Value::as_object);
+                        if let (Some(transcript), Some(method), Some(params)) = (&transcript, method, params) {
+                            if params.get("threadId").and_then(Value::as_str) == Some(thread_id.as_str())
+                                && params.get("turnId").and_then(Value::as_str) == Some(turn_id.as_str()) {
+                                transcript.observe(method, &Value::Object(params.clone()))?;
+                            }
+                        }
                         if method == Some("item/completed") {
                             let Some(params) = params else { continue };
                             if params.get("threadId").and_then(Value::as_str) != Some(thread_id.as_str())
@@ -508,7 +678,7 @@ impl SubagentProvider for CodexProvider {
                                 Some(Value::String(phase)) if phase == "final_answer" => {
                                     final_answer = Some(text.to_string());
                                 }
-                                Some(Value::Null) => unphased_answer = Some(text.to_string()),
+                                None | Some(Value::Null) => unphased_answer = Some(text.to_string()),
                                 Some(Value::String(phase)) if phase == "commentary" => {}
                                 _ => {
                                     return Ok(SubagentResult {
@@ -544,12 +714,15 @@ impl SubagentProvider for CodexProvider {
                                 .and_then(|error| error.get("codexErrorInfo"))
                                 .and_then(Value::as_str)
                                 == Some("contextWindowExceeded");
-                        let stop_reason = if status == Some("completed") && !output.is_empty() {
+                        let stop_reason = if status == Some("completed") {
                             SubagentStopReason::Completed
+                        } else if status == Some("interrupted") {
+                            SubagentStopReason::Aborted
                         } else if context_exceeded {
                             SubagentStopReason::MaxTokens
                         } else {
-                            SubagentStopReason::Error
+                            return Err(terminal.get("error").and_then(|error| error.get("message"))
+                                .and_then(Value::as_str).unwrap_or("subagent-codex: turn failed without error detail").to_string());
                         };
                         return Ok(SubagentResult { output, structured: None, stop_reason });
                     }
@@ -569,10 +742,18 @@ impl SubagentProvider for CodexProvider {
                             },
                         });
                     }
-                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                    _ = tokio::time::sleep(CANCEL_POLL_INTERVAL) => {}
                 }
             }
         }
+        .then(move |outcome| async move {
+            if let Some(transcript) = transcript_for_finish {
+                if let Err(error) = transcript.finish(&outcome).await {
+                    return Err(format!("subagent-codex: transcript could not be flushed: {error}"));
+                }
+            }
+            outcome
+        })
         .boxed()
         .shared();
         let driven = result.clone();
@@ -581,7 +762,7 @@ impl SubagentProvider for CodexProvider {
         });
 
         Ok(Arc::new(CodexRun {
-            id: session_id(uuid::Uuid::new_v4().to_string()),
+            id: child_id,
             child,
             cancelled,
             result,

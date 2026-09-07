@@ -1,6 +1,6 @@
 //! Process plumbing for the local subprocess service: detached process-tree
 //! spawn with per-stream stdio dispositions, tail-keep collection with spill
-//! files, tree-scoped signalling (POSIX groups; Windows taskkill), and the
+//! files, tree-scoped signalling (Windows Jobs, Linux scopes, POSIX groups), and the
 //! SIGTERM→SIGKILL escalation. This layer reacts to an abort signal; callers
 //! own deadlines, teardown ladders, and cause classification. Rust port of
 //! `packages/subprocess/subprocess-local/src/spawn.ts`.
@@ -10,17 +10,16 @@
 //! - The abort predicate is polled every 15 ms (the TS `AbortSignal` is an
 //!   event target, which has no Rust equivalent), so abort reactions can lag
 //!   by up to one tick.
-//! - Spawn failures reject `spawn_subprocess` itself (Rust `Result`); the TS
-//!   seam instead returns a `pid: -1` handle whose `done` promise rejects.
+//! - Spawn and ownership-assignment failures reject `spawn_subprocess`
+//!   itself, before the caller receives a live handle.
 //! - Pipe-mode streams settle `done` at direct-child exit: Rust cannot
 //!   observe "all write ends closed" on a caller-owned read end, so the TS
 //!   close-bound for descendant-held pipe-mode pipes collapses into the exit
 //!   boundary (collect-mode drains stay bounded by `graceMs`).
-//! - Dropping the last handle/future clone before settlement kills the
-//!   direct child (tokio `kill_on_drop`), where a detached Node child would
-//!   survive. The owning service keeps every live handle until whole-tree
-//!   exit, so managed disposal is unaffected.
-//! - `taskkill` runs synchronously (`status()` instead of `spawnSync`).
+//! - A Windows Job outlives its root process and kills its members on final
+//!   handle close. Linux uses delegated cgroup v2 or a proven user-systemd
+//!   scope when available. The explicit process-group fallback on other
+//!   hosts cannot contain descendants which create another session.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -390,6 +389,10 @@ pub fn taskkill_process_tree(pid: i32) {
 /// synchronous and race-safe; the two background tasks (abort watcher,
 /// tree-exit observer) plus the settlement task coordinate through it.
 struct TreeShared {
+    #[cfg(target_os = "linux")]
+    scope: Option<crate::linux_scope::LinuxScope>,
+    #[cfg(windows)]
+    job: crate::windows_job::WindowsJob,
     observed: AtomicBool,
     settled: AtomicBool,
     child_exited: AtomicBool,
@@ -436,10 +439,14 @@ impl TreeShared {
         if self.pid <= 0 {
             return false;
         }
+        #[cfg(target_os = "linux")]
+        if let Some(scope) = &self.scope {
+            return scope.alive(self.child_exited.load(SeqCst)).unwrap_or(true);
+        }
         if self.platform == "win32" {
-            // Windows has no group-liveness probe; the direct child's exit is
-            // the observable boundary (taskkill /T already took the tree with
-            // it).
+            #[cfg(windows)]
+            return self.job.is_alive().unwrap_or(true);
+            #[cfg(not(windows))]
             return !self.child_exited.load(SeqCst);
         }
         #[cfg(unix)]
@@ -468,7 +475,7 @@ impl TreeShared {
             if code == Some(libc::EPERM) {
                 return true;
             }
-            !self.child_exited.load(SeqCst)
+            true // An observation error is not proof that the group exited.
         }
         #[cfg(not(unix))]
         {
@@ -481,7 +488,17 @@ impl TreeShared {
     /// child when the group is gone; Windows terminates the tree via taskkill
     /// (any signal value force-terminates) (TS `signalTree`).
     fn signal_tree(&self, sig: i32) {
+        #[cfg(target_os = "linux")]
+        if let Some(scope) = &self.scope {
+            if scope.signal(sig) {
+                return;
+            }
+        }
         if self.platform == "win32" {
+            #[cfg(windows)]
+            if self.job.terminate() {
+                return;
+            }
             (self.taskkill)(self.pid);
             return;
         }
@@ -545,7 +562,14 @@ impl TreeShared {
     /// tree — the seam's only termination verb. Idempotent, a no-op once the
     /// tree is gone (TS `terminate`).
     fn terminate(self: &Arc<Self>) {
-        if self.observed.load(SeqCst) || self.grace_timer.lock().is_some() {
+        if self.observed.load(SeqCst) {
+            return;
+        }
+        let mut timer_slot = self.grace_timer.lock();
+        if timer_slot
+            .as_ref()
+            .is_some_and(|timer| !timer.is_finished())
+        {
             return;
         }
         // Observe from the first termination tier onward, even when inherited
@@ -568,7 +592,7 @@ impl TreeShared {
             tokio::time::sleep(Duration::from_millis(grace_ms)).await;
             shared.kill_tier(sig_kill());
         });
-        *self.grace_timer.lock() = Some(timer);
+        *timer_slot = Some(timer);
     }
 
     /// Synchronous final termination without starting timers or waits (TS
@@ -596,6 +620,25 @@ struct LocalHandleInner {
 }
 
 impl LocalHandle {
+    /// Actual ownership backend for diagnostics; process-group fallback
+    /// cannot contain descendants that deliberately create a new session.
+    pub fn management_backend(&self) -> &'static str {
+        #[cfg(windows)]
+        {
+            return "windows-job";
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(scope) = &self.inner.shared.scope {
+            return scope.kind();
+        }
+        #[cfg(not(windows))]
+        {
+            "process-group (detached descendants are not contained)"
+        }
+    }
+    pub(crate) fn process_id(&self) -> u32 {
+        self.inner.pid as u32
+    }
     /// Local-only synchronous final termination (absent from the public
     /// seam).
     pub fn terminate_for_host_exit(&self) {
@@ -604,10 +647,6 @@ impl LocalHandle {
 }
 
 impl SubprocessHandle for LocalHandle {
-    fn pid(&self) -> i32 {
-        self.inner.pid
-    }
-
     fn stdin(&self) -> Option<Box<dyn AsyncWrite + Unpin + Send>> {
         self.inner.stdin.lock().take()
     }
@@ -789,7 +828,21 @@ pub fn spawn_subprocess(
     {
         return Err("aborted before spawn: aborted".to_string());
     }
-    let Some(program) = spec.argv.first() else {
+    if spec.argv.first().is_none_or(|program| program.is_empty()) {
+        return Err("invalid argv: expected a non-empty program name at argv[0]".into());
+    }
+    #[cfg(target_os = "linux")]
+    let env = child_env(spec.env.as_deref());
+    #[cfg(target_os = "linux")]
+    let scope = crate::linux_scope::LinuxScope::prepare();
+    #[cfg(target_os = "linux")]
+    let argv = match scope.as_ref() {
+        Some(scope) => scope.argv(&spec.argv, &spec.cwd, &env)?,
+        None => spec.argv.clone(),
+    };
+    #[cfg(not(target_os = "linux"))]
+    let argv = spec.argv.clone();
+    let Some(program) = argv.first() else {
         return Err("invalid argv: expected a non-empty program name at argv[0]".to_string());
     };
     if program.is_empty() {
@@ -802,13 +855,16 @@ pub fn spawn_subprocess(
         stderr: err_mode,
     } = spec.stdio;
 
+    #[cfg(not(target_os = "linux"))]
     let env = child_env(spec.env.as_deref());
 
     let mut command = Command::new(program);
     #[cfg(windows)]
-    command.creation_flags(0x0800_0000);
+    let job = crate::windows_job::WindowsJob::new()?;
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000 | 0x0000_0004); // NO_WINDOW | SUSPENDED
     command
-        .args(&spec.argv[1..])
+        .args(&argv[1..])
         .current_dir(&spec.cwd)
         .env_clear()
         .envs(env)
@@ -824,10 +880,14 @@ pub fn spawn_subprocess(
             SubprocessOutputMode::Inherit => std::process::Stdio::inherit(),
             _ => std::process::Stdio::piped(),
         });
-    // `detached` gives teardown a tree root on POSIX (its own process
-    // group); Windows terminates by root pid through taskkill /T instead.
+    // A POSIX group remains available as a signalling fallback; Windows
+    // membership is fixed before the suspended command can execute.
     #[cfg(unix)]
     command.process_group(0);
+    #[cfg(target_os = "linux")]
+    if let Some(scope) = &scope {
+        scope.configure(&mut command);
+    }
     // Deviation: the direct child is killed when the settlement future drops
     // (the service keeps live handles until whole-tree exit, so managed
     // disposal is unaffected).
@@ -837,6 +897,18 @@ pub fn spawn_subprocess(
         .spawn()
         .map_err(|error| format!("subprocess-local: failed to spawn {program}: {error}"))?;
     let pid = child.id().map(|id| id as i32).unwrap_or(-1);
+    #[cfg(windows)]
+    if let Err(error) = job.attach_and_resume(
+        child
+            .raw_handle()
+            .ok_or("child process handle unavailable")? as _,
+        pid as u32,
+    ) {
+        let _ = child.start_kill();
+        return Err(format!(
+            "subprocess-local: managed process startup failed: {error}"
+        ));
+    }
 
     let mut stdin_stream = child.stdin.take();
     let mut stdout_stream = child.stdout.take();
@@ -882,6 +954,10 @@ pub fn spawn_subprocess(
     };
 
     let shared = Arc::new(TreeShared {
+        #[cfg(target_os = "linux")]
+        scope,
+        #[cfg(windows)]
+        job,
         observed: AtomicBool::new(false),
         settled: AtomicBool::new(false),
         child_exited: AtomicBool::new(false),
@@ -903,7 +979,7 @@ pub fn spawn_subprocess(
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(SLEEP_TICK_MS)).await;
-                if watcher.settled.load(SeqCst) {
+                if watcher.observed.load(SeqCst) || !watcher.tree_alive() {
                     return;
                 }
                 let Some(abort) = &watcher.abort else {

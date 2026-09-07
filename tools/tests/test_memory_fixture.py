@@ -54,7 +54,16 @@ class FixtureTests(unittest.TestCase):
             count += 1
             last_seq = event["seq"]
             messages += int(event["type"].endswith("/message"))
-            deltas += int(event["type"] == "assistant/reasoning-delta")
+            deltas += int(event["type"] == "assistant/chunk" and event["data"].get("chunk", {}).get("type") == "reasoning-delta")
+            self.assertIsInstance(event["time"], int)
+            if event["type"] == "user/message":
+                self.assertEqual(event["surfaceOp"], "append")
+                self.assertEqual(event["data"]["role"], "user")
+                self.assertEqual(event["data"]["content"][0]["type"], "text")
+            if event["type"] == "assistant/message":
+                self.assertEqual(event["surfaceOp"], "append")
+                self.assertEqual(event["data"]["message"]["role"], "assistant")
+                self.assertTrue(all(seq < event["seq"] for seq in event["sourceEventSeqs"]))
 
         self.assertEqual(count, 68_000)
         self.assertEqual(last_seq, 67_999)

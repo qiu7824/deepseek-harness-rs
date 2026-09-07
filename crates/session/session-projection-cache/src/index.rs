@@ -87,6 +87,8 @@ pub struct SessionProjectionCache {
     table: Arc<dyn KvTable>,
     persistence: Arc<dyn SessionPersistenceApi>,
     dirty: Mutex<HashMap<usize, DirtyState>>,
+    /// One writer and at most one superseding cut per resident session.
+    flushes: Mutex<HashMap<usize, Option<(ProjectionCheckpoint, &'static str)>>>,
 }
 
 impl Service for SessionProjectionCache {
@@ -119,6 +121,7 @@ impl SessionProjectionCache {
             table,
             persistence,
             dirty: Mutex::new(HashMap::new()),
+            flushes: Mutex::new(HashMap::new()),
         });
         ctx.register_service(service.clone());
 
@@ -142,12 +145,11 @@ impl SessionProjectionCache {
         let event_service = service.clone();
         let event_listener: Arc<Listener> = Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
             let session = downcast::<Session>(&args[0]).expect("session arg").clone();
-            let event = downcast::<SessionEvent>(&args[1])
-                .expect("event arg")
-                .clone();
+            let turn_ended =
+                downcast::<SessionEvent>(&args[1]).expect("event arg").type_ == "turn/end";
             let service = event_service.clone();
             Box::pin(async move {
-                if event.type_ == "turn/end" {
+                if turn_ended {
                     service.spawn_flush(&session, "turn/end");
                     return None;
                 }
@@ -285,7 +287,16 @@ impl SessionProjectionCache {
     /// TS async functions execute this prefix before their first `await`; the
     /// detached Rust path must do the same before yielding to the executor.
     fn checkpoint_for_write(&self, session: &Session) -> ProjectionCheckpoint {
-        let rows = self.registry().checkpoint(session);
+        let attached = self
+            .ctx
+            .get_typed::<Arc<SessionStore>>("sessions", false)
+            .and_then(|store| store.get(session.id()))
+            .is_some_and(|live| live.ptr_eq(session));
+        let rows = if attached {
+            self.registry().checkpoint(session)
+        } else {
+            self.registry().checkpoint_detached(session)
+        };
         self.mark_clean(session);
         rows
     }
@@ -482,18 +493,32 @@ impl SessionProjectionCache {
     /// One fail-soft durable checkpoint (TS `flushSoft`).
     fn spawn_flush(self: &Arc<Self>, session: &Session, trigger: &'static str) {
         let rows = self.checkpoint_for_write(session);
+        let identity = session.identity();
+        {
+            let mut flushes = self.flushes.lock();
+            if let Some(pending) = flushes.get_mut(&identity) {
+                *pending = Some((rows, trigger));
+                return;
+            }
+            flushes.insert(identity, None);
+        }
         let service = self.clone();
         let session = session.clone();
         spawn_detached(async move {
-            match service.write_checkpoint(&session, &rows).await {
-                Ok(_) => {}
-                Err(error) => {
+            let mut next = Some((rows, trigger));
+            while let Some((rows, trigger)) = next {
+                if let Err(error) = service.write_checkpoint(&session, &rows).await {
                     service.ctx.named_logger(Some("session-projection-cache")).warn(vec![arc(
                         format!(
                             "session projection cache: {trigger} write for \"{}\" failed (cache stays stale): {error}",
                             session.id()
                         ),
                     )]);
+                }
+                let mut flushes = service.flushes.lock();
+                next = flushes.get_mut(&identity).and_then(Option::take);
+                if next.is_none() {
+                    flushes.remove(&identity);
                 }
             }
         });

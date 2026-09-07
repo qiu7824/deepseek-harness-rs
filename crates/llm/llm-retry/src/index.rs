@@ -165,17 +165,17 @@ pub fn apply(
             // registration was removed; lifetime cancellation prevents the
             // stale callback from entering a downstream policy.
             if state.lifetime.aborted() {
-                return None;
+                return Some(arc(None::<RequestErrorAction>));
             }
-            let payload = downcast_arc::<Arc<RequestErrorPayload>>(&args[0])
-                .expect("agent/request-error payload");
+            let payload =
+                downcast_arc::<RequestErrorPayload>(&args[0]).expect("agent/request-error payload");
             let next = downcast_arc::<NextFn>(&args[1]).expect("agent/request-error next");
             state.active.fetch_add(1, Ordering::SeqCst);
             let decision = recover(&state, payload.as_ref(), next).await;
             if state.active.fetch_sub(1, Ordering::SeqCst) == 1 {
                 state.drained.notify_waiters();
             }
-            decision
+            decision.or_else(|| Some(arc(None::<RequestErrorAction>)))
         })
     });
 
@@ -193,10 +193,13 @@ pub fn apply(
             dispose_listener().await;
             state.lifetime.abort();
             loop {
+                let drained = state.drained.notified();
+                tokio::pin!(drained);
+                drained.as_mut().enable();
                 if state.active.load(Ordering::SeqCst) == 0 {
                     return;
                 }
-                state.drained.notified().await;
+                drained.await;
             }
         })
     }))
@@ -209,6 +212,9 @@ enum DownstreamOutcome {
 
 async fn settle_downstream(next: Arc<NextFn>) -> DownstreamOutcome {
     let value = next.call().await;
+    if let Some(decision) = downcast_arc::<Option<RequestErrorAction>>(&value) {
+        return DownstreamOutcome::Decision(*decision);
+    }
     match downcast_arc::<RequestErrorAction>(&value) {
         Some(decision) => DownstreamOutcome::Decision(Some(*decision)),
         None => DownstreamOutcome::Decision(None),
@@ -245,7 +251,7 @@ async fn recover(
             return None;
         }
         if let DownstreamOutcome::Decision(Some(RequestErrorAction::Retry)) = downstream {
-            return Some(arc(RequestErrorAction::Retry));
+            return Some(arc(Some(RequestErrorAction::Retry)));
         }
     } else if !policy
         .retryable_codes()
@@ -383,5 +389,5 @@ async fn backoff(
     {
         return None;
     }
-    Some(arc(RequestErrorAction::Retry))
+    Some(arc(Some(RequestErrorAction::Retry)))
 }

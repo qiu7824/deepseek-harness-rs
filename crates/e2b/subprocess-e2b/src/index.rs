@@ -45,7 +45,7 @@ pub struct E2bSubprocessRuntime {
     pub ctx: Context,
     pub config: Config,
     e2b: Arc<E2bRuntime>,
-    live: Mutex<Vec<Arc<dyn SubprocessHandle>>>,
+    live: Arc<Mutex<Vec<Arc<dyn SubprocessHandle>>>>,
     disposing: Mutex<bool>,
 }
 
@@ -75,10 +75,22 @@ impl E2bSubprocessRuntime {
             ctx: ctx.clone(),
             config,
             e2b,
-            live: Mutex::new(Vec::new()),
+            live: Arc::new(Mutex::new(Vec::new())),
             disposing: Mutex::new(false),
         });
         ctx.register_service(service.clone());
+        let teardown = service.clone();
+        let _ = ctx.effect(
+            "E2B subprocess teardown",
+            Box::pin(async move {
+                Some(cordis::make_disposer(move || {
+                    let service = teardown.clone();
+                    Box::pin(async move {
+                        let _ = service.dispose().await;
+                    })
+                }))
+            }),
+        );
         Ok(service)
     }
 
@@ -95,11 +107,21 @@ impl E2bSubprocessRuntime {
         let mut failures = Vec::new();
         for handle in &handles {
             handle.terminate();
-            if let Err(error) = handle.done().await {
-                failures.push(error);
+            let cleanup = async {
+                let outcome = handle.done().await;
+                if handle.wait_for_exit(None).await {
+                    self.live.lock().retain(|live| !Arc::ptr_eq(live, handle));
+                }
+                outcome.map(|_| ())
+            };
+            match tokio::time::timeout(std::time::Duration::from_secs(30), cleanup).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => failures.push(error),
+                Err(_) => failures.push(
+                    "remote process cleanup could not prove group exit; ownership retained".into(),
+                ),
             }
         }
-        self.live.lock().clear();
         if failures.len() == 1 {
             return Err(failures.remove(0));
         }
@@ -237,6 +259,14 @@ impl SubprocessRuntime for E2bSubprocessRuntime {
             self.config.poll_ms,
         ));
         self.live.lock().push(handle.clone());
+        let live = self.live.clone();
+        let owned = handle.clone();
+        tokio::spawn(async move {
+            let _ = owned.done().await;
+            if owned.wait_for_exit(None).await {
+                live.lock().retain(|entry| !Arc::ptr_eq(entry, &owned));
+            }
+        });
         Ok(handle)
     }
 
@@ -263,6 +293,9 @@ pub async fn release_on_exit(
     handle: Arc<dyn SubprocessHandle>,
 ) {
     let _ = handle.done().await;
+    if !handle.wait_for_exit(None).await {
+        return;
+    }
     runtime
         .live
         .lock()

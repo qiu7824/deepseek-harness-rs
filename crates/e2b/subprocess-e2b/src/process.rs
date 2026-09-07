@@ -95,8 +95,9 @@ pub struct E2bSubprocessHandle {
     poll_ms: u64,
     paths: RemotePaths,
     remote_pid: AtomicI32,
-    quiescent: AtomicBool,
-    terminating: AtomicBool,
+    quiescent: Arc<AtomicBool>,
+    terminating: Arc<AtomicBool>,
+    launch_attempted: Arc<AtomicBool>,
     termination_failure: Arc<Mutex<Option<String>>>,
     done_result: Arc<Mutex<Option<Result<SubprocessOutcome, String>>>>,
     done_notify: Arc<tokio::sync::Notify>,
@@ -157,8 +158,9 @@ impl E2bSubprocessHandle {
             poll_ms,
             paths,
             remote_pid: AtomicI32::new(-1),
-            quiescent: AtomicBool::new(false),
-            terminating: AtomicBool::new(false),
+            quiescent: Arc::new(AtomicBool::new(false)),
+            terminating: Arc::new(AtomicBool::new(false)),
+            launch_attempted: Arc::new(AtomicBool::new(false)),
             termination_failure: Arc::new(Mutex::new(None)),
             done_result: Arc::new(Mutex::new(None)),
             done_notify: Arc::new(tokio::sync::Notify::new()),
@@ -177,8 +179,10 @@ impl E2bSubprocessHandle {
             let poll_ms = handle.poll_ms;
             let result_cell = handle.done_result.clone();
             let notify = handle.done_notify.clone();
+            let launch_attempted = handle.launch_attempted.clone();
             tokio::spawn(async move {
-                let result = run_state_machine(runtime, spec, state_dir, poll_ms).await;
+                let result =
+                    run_state_machine(runtime, spec, state_dir, poll_ms, launch_attempted).await;
                 *result_cell.lock() = Some(result);
                 notify.notify_waiters();
             });
@@ -259,6 +263,7 @@ async fn run_state_machine(
     spec: SubprocessSpawnSpec,
     state_dir: String,
     poll_ms: u64,
+    launch_attempted: Arc<AtomicBool>,
 ) -> Result<SubprocessOutcome, String> {
     let sandbox = runtime
         .get_sandbox()
@@ -291,6 +296,7 @@ async fn run_state_machine(
         };
         command_text(&spec, &paths)
     };
+    launch_attempted.store(true, Ordering::SeqCst);
     let handle = sandbox
         .run_background(
             &command,
@@ -363,10 +369,6 @@ fn environment_path(state_dir: &str, name: &str) -> String {
 }
 
 impl SubprocessHandle for E2bSubprocessHandle {
-    fn pid(&self) -> i32 {
-        self.remote_pid()
-    }
-
     fn stdin(&self) -> Option<Box<dyn tokio::io::AsyncWrite + Unpin + Send>> {
         let sender = self.stdin_pipe.lock().clone()?;
         Some(Box::new(ChannelWriter { sender }))
@@ -414,12 +416,17 @@ impl SubprocessHandle for E2bSubprocessHandle {
         }
         let runtime = self.runtime.clone();
         let state_dir = self.state_dir.clone();
-        let quiescent = Arc::new(AtomicBool::new(false));
         let failure = self.termination_failure.clone();
+        let terminating = self.terminating.clone();
+        let grace = self.spec.grace_ms;
         tokio::spawn(async move {
             let sandbox = match runtime.get_sandbox().await {
                 Ok(sandbox) => sandbox,
-                Err(_) => return,
+                Err(error) => {
+                    *failure.lock() = Some(error.to_string());
+                    terminating.store(false, Ordering::SeqCst);
+                    return;
+                }
             };
             // TERM first, then the grace, then KILL (TS terminateRemote).
             if let Ok(raw) = sandbox.read_bytes(&format!("{state_dir}/pid")).await {
@@ -428,7 +435,6 @@ impl SubprocessHandle for E2bSubprocessHandle {
                     let _ = signal_remote_groups(&sandbox, HashMap::new(), &[group], "TERM").await;
                 }
             }
-            let grace = self_spec_grace();
             tokio::time::sleep(std::time::Duration::from_millis(grace)).await;
             if let Ok(raw) = sandbox.read_bytes(&format!("{state_dir}/pid")).await {
                 let trimmed = String::from_utf8_lossy(&raw);
@@ -439,38 +445,70 @@ impl SubprocessHandle for E2bSubprocessHandle {
                     *failure.lock() = Some(error.to_string());
                 }
             }
-            let _ = quiescent;
+            terminating.store(false, Ordering::SeqCst);
         });
     }
 
     fn wait_for_exit(&self, signal: Option<SubprocessAbort>) -> BoxFuture<'static, bool> {
-        let done = self.done();
-        let mut done = Box::pin(done);
+        let runtime = self.runtime.clone();
+        let path = self.paths.pid.clone();
+        let quiescent = self.quiescent.clone();
+        let launch_attempted = self.launch_attempted.clone();
+        let outcome = self.done_result.clone();
+        let poll_ms = self.poll_ms.max(50);
         async move {
             loop {
+                if quiescent.load(Ordering::SeqCst) {
+                    return true;
+                }
                 if signal.as_ref().is_some_and(|signal| signal()) {
                     return false;
                 }
-                tokio::select! {
-                    result = &mut done => {
-                        let _ = result;
-                        return true;
+                if !launch_attempted.load(Ordering::SeqCst)
+                    && outcome.lock().as_ref().is_some_and(Result::is_err)
+                {
+                    quiescent.store(true, Ordering::SeqCst);
+                    return true;
+                }
+                if let Ok(sandbox) = runtime.get_sandbox().await {
+                    if let Ok(raw) = sandbox.read_bytes(&path).await {
+                        if let Ok(group) = String::from_utf8_lossy(&raw).trim().parse::<i64>() {
+                            if group > 0 {
+                                if let Ok(table) = sandbox
+                                    .run(
+                                        "ps -eo pgid=,stat=",
+                                        &dsh_e2b::E2bCommandOptions::with_envs(e2b_control_envs(
+                                            HashMap::new(),
+                                        )),
+                                    )
+                                    .await
+                                {
+                                    let alive = table.stdout.lines().any(|line| {
+                                        let mut fields = line.split_whitespace();
+                                        fields.next().and_then(|field| field.parse::<i64>().ok())
+                                            == Some(group)
+                                            && fields
+                                                .next()
+                                                .is_some_and(|state| !state.starts_with(['Z', 'X']))
+                                    });
+                                    if !alive {
+                                        quiescent.store(true, Ordering::SeqCst);
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
                     }
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+                }
+                // Remote/provider errors leave ownership intact for retry;
+                // the root outcome alone cannot prove descendant exit.
+                if !wait_tick(poll_ms, signal.as_ref()).await {
+                    return false;
                 }
             }
         }
         .boxed()
     }
-}
-
-/// The terminate ladder's grace source (the handle's spec; the ladder task
-/// runs detached, so it reads a captured copy).
-fn self_spec_grace() -> u64 {
-    // The handle's grace is captured by the caller closure; this helper is
-    // replaced by the real capture in the terminate body above via a
-    // per-instance grace field.
-    10_000
 }
 
 /// Bridged stdin sink (TS `DeferredStdin` collapse).

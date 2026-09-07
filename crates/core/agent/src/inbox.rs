@@ -25,6 +25,8 @@ pub struct InboxNotifications {
 struct InboxState {
     next_turn: Vec<UserMessage>,
     next_step: Vec<UserMessage>,
+    accepted_requests: std::collections::HashMap<String, MessageId>,
+    additional_context: std::collections::HashMap<String, UserMessage>,
 }
 
 /// A replay-once projection that incrementally consumes later inbox splices
@@ -116,6 +118,12 @@ impl Inbox {
         !state.next_turn.is_empty() || !state.next_step.is_empty()
     }
 
+    /// Stable acknowledgement for a browser request, including messages that
+    /// were already claimed or removed. Replayed from local durable splices.
+    pub fn message_for_request(&self, request_id: &str) -> Option<MessageId> {
+        self.state.lock().accepted_requests.get(request_id).cloned()
+    }
+
     /// Durably cancel all pending input, clearing next-step before
     /// next-turn.
     pub fn clear(&self) -> Result<(), String> {
@@ -143,6 +151,30 @@ impl Inbox {
     /// publishing each claimed message (TS `Inbox.claim`).
     pub fn claim(&self, target: InboxTarget, turn: u64) -> Result<Vec<UserMessage>, String> {
         let _mutation = self.begin_mutation()?;
+        let mut contexts = {
+            let state = self.state.lock();
+            state
+                .next_step
+                .iter()
+                .chain(
+                    state
+                        .next_turn
+                        .iter()
+                        .take(if target == InboxTarget::NextTurn {
+                            1
+                        } else {
+                            0
+                        }),
+                )
+                .filter_map(|message| {
+                    state
+                        .additional_context
+                        .get(message.id.as_str())
+                        .cloned()
+                        .map(|context| (message.id.clone(), context))
+                })
+                .collect::<std::collections::HashMap<_, _>>()
+        };
         let step_len = self.state.lock().next_step.len();
         let mut claimed = self.mutate_locked(
             InboxTarget::NextStep,
@@ -160,6 +192,15 @@ impl Inbox {
                 false,
             )?);
         }
+        claimed = claimed
+            .into_iter()
+            .flat_map(|message| {
+                contexts
+                    .remove(&message.id)
+                    .into_iter()
+                    .chain(std::iter::once(message))
+            })
+            .collect();
         if let Some(notify) = &self.notifications.claimed {
             for message in &claimed {
                 notify(message, turn);
@@ -174,6 +215,28 @@ impl Inbox {
         let _mutation = self.begin_mutation()?;
         let length = self.list_len(target);
         self.mutate_locked(target, length as f64, 0.0, vec![message], true)?;
+        Ok(())
+    }
+
+    pub fn append_with_context(
+        &self,
+        target: InboxTarget,
+        message: UserMessage,
+        context: Option<UserMessage>,
+    ) -> Result<(), String> {
+        let _mutation = self.begin_mutation()?;
+        let context = context
+            .into_iter()
+            .map(|context| (message.id.to_string(), Some(context)))
+            .collect();
+        self.mutate_locked_with_context(
+            target,
+            self.list_len(target) as f64,
+            0.0,
+            vec![message],
+            true,
+            context,
+        )?;
         Ok(())
     }
 
@@ -221,6 +284,28 @@ impl Inbox {
         Ok(true)
     }
 
+    pub fn replace_with_context(
+        &self,
+        message_id: &MessageId,
+        message: UserMessage,
+        context: Option<UserMessage>,
+    ) -> Result<bool, String> {
+        let _mutation = self.begin_mutation()?;
+        let Some(location) = self.locate(message_id) else {
+            return Ok(false);
+        };
+        let contexts = std::collections::HashMap::from([(message.id.to_string(), context)]);
+        self.mutate_locked_with_context(
+            location.target,
+            location.index as f64,
+            1.0,
+            vec![message],
+            true,
+            contexts,
+        )?;
+        Ok(true)
+    }
+
     /// Apply standard splice semantics and durably record the normalized
     /// result.
     pub fn move_to_next_step(&self, message_id: &MessageId) -> Result<bool, String> {
@@ -231,6 +316,15 @@ impl Inbox {
         if location.target != InboxTarget::NextTurn {
             return Ok(false);
         }
+        let context = self
+            .state
+            .lock()
+            .additional_context
+            .get(message_id.as_str())
+            .cloned()
+            .into_iter()
+            .map(|context| (message_id.to_string(), Some(context)))
+            .collect();
         let removed = self.mutate_locked(
             InboxTarget::NextTurn,
             location.index as f64,
@@ -238,7 +332,14 @@ impl Inbox {
             Vec::new(),
             false,
         )?;
-        self.mutate_locked(InboxTarget::NextStep, f64::INFINITY, 0.0, removed, false)?;
+        self.mutate_locked_with_context(
+            InboxTarget::NextStep,
+            f64::INFINITY,
+            0.0,
+            removed,
+            false,
+            context,
+        )?;
         Ok(true)
     }
 
@@ -300,6 +401,25 @@ impl Inbox {
         inserted: Vec<UserMessage>,
         discard_removed: bool,
     ) -> Result<Vec<UserMessage>, String> {
+        self.mutate_locked_with_context(
+            target,
+            start,
+            delete_count,
+            inserted,
+            discard_removed,
+            Default::default(),
+        )
+    }
+
+    fn mutate_locked_with_context(
+        &self,
+        target: InboxTarget,
+        start: f64,
+        delete_count: f64,
+        inserted: Vec<UserMessage>,
+        discard_removed: bool,
+        additional_context: std::collections::HashMap<String, Option<UserMessage>>,
+    ) -> Result<Vec<UserMessage>, String> {
         let list_len = self.list_len(target);
         let truncated_start = start.trunc();
         let offset = if truncated_start.is_nan() {
@@ -337,6 +457,7 @@ impl Inbox {
                 Some(actual_delete as u64)
             },
             inserted: inserted.clone(),
+            additional_context,
             outcome,
         };
         self.validate(&splice)?;
@@ -349,19 +470,32 @@ impl Inbox {
             serde_json::from_value(event.data).map_err(|error| error.to_string())?;
         let removed = {
             let mut state = self.state.lock();
+            remember_requests(&mut state, &logged.inserted);
+            apply_additional_context(&mut state, &logged.additional_context);
             let list = match target {
                 InboxTarget::NextTurn => &mut state.next_turn,
                 InboxTarget::NextStep => &mut state.next_step,
             };
-            list.splice(
-                actual_start..actual_start + actual_delete,
-                logged.inserted.clone(),
-            )
-            .collect()
+            let removed: Vec<UserMessage> = list
+                .splice(
+                    actual_start..actual_start + actual_delete,
+                    logged.inserted.clone(),
+                )
+                .collect();
+            prune_context(&mut state);
+            removed
         };
         if discard_removed && let Some(notify) = &self.notifications.discarded {
             for message in &removed {
-                notify(message);
+                // Replacing content under the same accepted identity is an
+                // edit, not cancellation of the continuation's owned work.
+                if !logged
+                    .inserted
+                    .iter()
+                    .any(|inserted| inserted.id == message.id)
+                {
+                    notify(message);
+                }
             }
         }
         if let Some(notify) = &self.notifications.inserted {
@@ -379,17 +513,29 @@ impl Inbox {
         let removed_count = splice.removed_count.unwrap_or(0) as usize;
         let start = splice.start as usize;
         let mut state = self.state.lock();
+        remember_requests(&mut state, &splice.inserted);
+        apply_additional_context(&mut state, &splice.additional_context);
         let list = match splice.target {
             InboxTarget::NextTurn => &mut state.next_turn,
             InboxTarget::NextStep => &mut state.next_step,
         };
-        Ok(list
+        let removed: Vec<UserMessage> = list
             .splice(start..start + removed_count, splice.inserted.clone())
-            .collect())
+            .collect();
+        prune_context(&mut state);
+        Ok(removed)
     }
 
     /// Validate one normalized splice against the current projection.
     fn validate(&self, splice: &InboxSplice) -> Result<(), String> {
+        if splice.additional_context.keys().any(|id| {
+            !splice
+                .inserted
+                .iter()
+                .any(|message| message.id.as_str() == id)
+        }) {
+            return Err("inbox context must belong to an inserted message".to_string());
+        }
         let list_len = self.list_len(splice.target);
         let removed_count = splice.removed_count.unwrap_or(0);
         if splice.start > list_len as u64 || splice.start + removed_count > list_len as u64 {
@@ -419,8 +565,210 @@ impl Inbox {
     }
 }
 
+fn apply_additional_context(
+    state: &mut InboxState,
+    contexts: &std::collections::HashMap<String, Option<UserMessage>>,
+) {
+    for (id, context) in contexts {
+        match context {
+            Some(context) => {
+                state.additional_context.insert(id.clone(), context.clone());
+            }
+            None => {
+                state.additional_context.remove(id);
+            }
+        }
+    }
+}
+
+fn prune_context(state: &mut InboxState) {
+    let pending = state
+        .next_turn
+        .iter()
+        .chain(&state.next_step)
+        .map(|message| message.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    state
+        .additional_context
+        .retain(|id, _| pending.contains(id.as_str()));
+}
+
+fn remember_requests(state: &mut InboxState, messages: &[UserMessage]) {
+    for message in messages {
+        if let dsh_llm::MessageSource::User {
+            rpc_id: Some(id), ..
+        } = &message.source
+        {
+            state
+                .accepted_requests
+                .entry(id.clone())
+                .or_insert_with(|| message.id.clone());
+        }
+    }
+}
+
 /// One located pending identity.
 struct Location {
     target: InboxTarget,
     index: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reference_context(text: &str) -> UserMessage {
+        dsh_llm::create_user_message(
+            vec![dsh_llm::ContentBlock::Text { text: text.into() }],
+            dsh_llm::MessageSource::Plugin {
+                plugin: "session-reference".into(),
+                form: Some(dsh_llm::ContextForm::Recall),
+                sections: None,
+                summary: None,
+                compaction_id: None,
+                source_command_id: None,
+            },
+        )
+    }
+
+    #[test]
+    fn reference_context_follows_the_exact_message_across_queue_steer_and_restore() {
+        let session = Session::create(
+            dsh_session::session_id("reference-queue-test"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let inbox = Inbox::new(&session, InboxNotifications::default()).unwrap();
+        let prompt = dsh_llm::create_user_message(
+            vec![dsh_llm::ContentBlock::Text {
+                text: "summarize @other".into(),
+            }],
+            dsh_llm::MessageSource::User {
+                rpc_id: Some("reference-request".into()),
+                client_time_zone: None,
+            },
+        );
+        let context = reference_context("fixed snapshot");
+        inbox
+            .append_with_context(InboxTarget::NextTurn, prompt.clone(), Some(context.clone()))
+            .unwrap();
+        assert!(
+            inbox.claim(InboxTarget::NextStep, 7).unwrap().is_empty(),
+            "queued reference cannot enter the active turn"
+        );
+        assert!(inbox.move_to_next_step(&prompt.id).unwrap());
+        let restored = Inbox::new(&session, InboxNotifications::default()).unwrap();
+        let claimed = restored.claim(InboxTarget::NextStep, 7).unwrap();
+        assert_eq!(claimed, vec![context, prompt]);
+        assert!(restored.state.lock().additional_context.is_empty());
+        let replayed = Inbox::new(&session, InboxNotifications::default()).unwrap();
+        assert!(replayed.state.lock().additional_context.is_empty());
+    }
+
+    #[test]
+    fn editing_and_removing_a_reference_clears_old_snapshot_storage() {
+        let session = Session::create(
+            dsh_session::session_id("reference-edit-test"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let inbox = Inbox::new(&session, InboxNotifications::default()).unwrap();
+        let prompt = dsh_llm::create_user_message(
+            vec![],
+            dsh_llm::MessageSource::User {
+                rpc_id: None,
+                client_time_zone: None,
+            },
+        );
+        inbox
+            .append_with_context(
+                InboxTarget::NextTurn,
+                prompt.clone(),
+                Some(reference_context("old")),
+            )
+            .unwrap();
+        inbox
+            .replace_with_context(&prompt.id, prompt.clone(), None)
+            .unwrap();
+        assert!(inbox.state.lock().additional_context.is_empty());
+        let restored = Inbox::new(&session, InboxNotifications::default()).unwrap();
+        assert!(restored.state.lock().additional_context.is_empty());
+        restored
+            .replace_with_context(&prompt.id, prompt.clone(), Some(reference_context("new")))
+            .unwrap();
+        restored.remove(&prompt.id).unwrap();
+        assert!(restored.state.lock().additional_context.is_empty());
+    }
+
+    #[test]
+    fn request_identity_survives_claim_remove_and_restore() {
+        let session =
+            Session::create(dsh_session::session_id("queue-test"), None, None, None).unwrap();
+        let inbox = Inbox::new(&session, InboxNotifications::default()).unwrap();
+        let message = dsh_llm::create_user_message(
+            vec![dsh_llm::ContentBlock::Text {
+                text: "queued".into(),
+            }],
+            dsh_llm::MessageSource::User {
+                rpc_id: Some("stable-client-request".into()),
+                client_time_zone: None,
+            },
+        );
+        inbox
+            .append(InboxTarget::NextTurn, message.clone())
+            .unwrap();
+        assert!(inbox.move_to_next_step(&message.id).unwrap());
+        assert!(!inbox.move_to_next_step(&message.id).unwrap());
+        let claimed = inbox.claim(InboxTarget::NextStep, 1).unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert!(!inbox.remove(&message.id).unwrap());
+        assert_eq!(
+            inbox.message_for_request("stable-client-request"),
+            Some(message.id.clone())
+        );
+        let restored = Inbox::new(&session, InboxNotifications::default()).unwrap();
+        assert_eq!(
+            restored.message_for_request("stable-client-request"),
+            Some(message.id)
+        );
+    }
+
+    #[test]
+    fn editing_preserves_accepted_identity_without_discarding_it() {
+        let session =
+            Session::create(dsh_session::session_id("queue-edit-test"), None, None, None).unwrap();
+        let discarded = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = discarded.clone();
+        let inbox = Inbox::new(
+            &session,
+            InboxNotifications {
+                discarded: Some(Arc::new(move |_| {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                })),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut message = dsh_llm::create_user_message(
+            vec![],
+            dsh_llm::MessageSource::User {
+                rpc_id: Some("edit-request".into()),
+                client_time_zone: None,
+            },
+        );
+        inbox
+            .append(InboxTarget::NextTurn, message.clone())
+            .unwrap();
+        message.content.push(dsh_llm::ContentBlock::Text {
+            text: "edited".into(),
+        });
+        assert!(inbox.replace(&message.id, message.clone()).unwrap());
+        assert_eq!(discarded.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(inbox.remove(&message.id).unwrap());
+        assert_eq!(discarded.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 }

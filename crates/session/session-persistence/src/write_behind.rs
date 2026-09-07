@@ -60,24 +60,26 @@ struct State {
 pub struct SessionWriteBehind {
     options: SessionWriteBehindOptions,
     state: Mutex<State>,
-    deadline_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    deadline_tx: tokio::sync::mpsc::UnboundedSender<Arc<Self>>,
 }
 
 impl SessionWriteBehind {
     pub fn new(options: SessionWriteBehindOptions) -> Arc<Self> {
-        let (deadline_tx, deadline_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (deadline_tx, deadline_rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Self>>();
         let controller = Arc::new(Self {
             options,
             state: Mutex::new(State::default()),
             deadline_tx,
         });
         {
-            let controller = Arc::clone(&controller);
+            // Only queued deadlines own the controller. Holding it across
+            // recv() would keep its own sender alive forever and retain the
+            // Session captured by the write/report callbacks after retirement.
             tokio::spawn(async move {
                 let mut receiver = deadline_rx;
                 loop {
                     match receiver.recv().await {
-                        Some(()) => controller.on_deadline(),
+                        Some(controller) => controller.on_deadline(),
                         None => return,
                     }
                 }
@@ -156,7 +158,9 @@ impl SessionWriteBehind {
         let delay = self.options.max_delay_ms;
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(delay)).await;
-            let _ = controller.deadline_tx.send(());
+            // Transfer ownership to the pump so an admitted automatic write
+            // still completes if the caller dropped its last handle.
+            let _ = controller.deadline_tx.send(Arc::clone(&controller));
         });
     }
 
@@ -289,5 +293,120 @@ impl SessionWriteBehind {
             let _ = tx.send(result.clone());
             result
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dsh_session::{Session, SessionSeq, session_id};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn event(seq: u64) -> SessionEvent {
+        SessionEvent {
+            type_: "test/event".into(),
+            seq: SessionSeq::new(seq).unwrap(),
+            time: 0,
+            data: serde_json::json!({"text": "x".repeat(4096)}),
+            ignorable: Some(true),
+            surface_op: None,
+            source_event_seqs: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_controller_releases_captured_session_log() {
+        let session = Session::create(session_id("idle-write-owner"), None, None, None).unwrap();
+        let log = Arc::downgrade(&session.events());
+        let controller = SessionWriteBehind::new(SessionWriteBehindOptions {
+            max_delay_ms: 10,
+            write: Arc::new(move |_| {
+                let _id = session.id().clone();
+                Box::pin(async { Ok(()) })
+            }),
+            report_background_failure: Arc::new(|error| panic!("{error}")),
+        });
+        tokio::task::yield_now().await;
+        let weak = Arc::downgrade(&controller);
+        drop(controller);
+        assert!(
+            weak.upgrade().is_none(),
+            "idle deadline pump retained its controller"
+        );
+        assert!(
+            log.upgrade().is_none(),
+            "retired writer retained its session log"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_flushed_lifecycles_release_session_snapshots() {
+        let writes = Arc::new(AtomicUsize::new(0));
+        let mut retired_logs = Vec::new();
+        for round in 0..32 {
+            let session = Session::create(
+                session_id(format!("retired-write-owner-{round}")),
+                Some((0..32).map(event).collect()),
+                None,
+                None,
+            )
+            .unwrap();
+            retired_logs.push(Arc::downgrade(&session.events()));
+            let writes = Arc::clone(&writes);
+            let controller = SessionWriteBehind::new(SessionWriteBehindOptions {
+                max_delay_ms: 10,
+                write: Arc::new(move |batch| {
+                    let _id = session.id().clone();
+                    writes.fetch_add(batch.len(), Ordering::SeqCst);
+                    Box::pin(async { Ok(()) })
+                }),
+                report_background_failure: Arc::new(|error| panic!("{error}")),
+            });
+            controller.enqueue(event(0));
+            controller.flush().await.unwrap();
+        }
+        assert_eq!(writes.load(Ordering::SeqCst), 32);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while retired_logs.iter().any(|log| log.strong_count() != 0) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("flushed lifecycle snapshots remained resident after their timers expired");
+    }
+
+    #[tokio::test]
+    async fn scheduled_write_survives_last_owner_until_durable_completion() {
+        let (written, outcome) = tokio::sync::oneshot::channel();
+        let written = Arc::new(Mutex::new(Some(written)));
+        let controller = SessionWriteBehind::new(SessionWriteBehindOptions {
+            max_delay_ms: 10,
+            write: Arc::new(move |batch| {
+                let written = written.lock().take().expect("one batch");
+                Box::pin(async move {
+                    tokio::task::yield_now().await;
+                    written.send(batch.len()).unwrap();
+                    Ok(())
+                })
+            }),
+            report_background_failure: Arc::new(|error| panic!("{error}")),
+        });
+        let weak = Arc::downgrade(&controller);
+        controller.enqueue(event(0));
+        drop(controller);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), outcome)
+                .await
+                .unwrap()
+                .unwrap(),
+            1
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while weak.strong_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("completed background writer remained resident");
     }
 }

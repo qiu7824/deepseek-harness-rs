@@ -47,6 +47,7 @@ fn not_found(session_id: &SessionId) -> SessionQueryError {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogicalSession {
     pub header: SessionHeader,
+    pub inherited_event_count: dsh_session::SessionLogOffset,
     pub events: Vec<SessionEvent>,
 }
 
@@ -216,8 +217,9 @@ impl SessionCorpus {
         }
         assert_session_headers_compatible(&loaded.meta, &listed)?;
         let snapshot = LogicalSession {
-            header: loaded.meta.clone(),
-            events: loaded.events.clone(),
+            header: loaded.meta,
+            inherited_event_count: loaded.inherited_event_count,
+            events: loaded.events,
         };
         if aborted(signal) {
             return Err(abort_error());
@@ -469,9 +471,9 @@ fn ordered_results<Value: Clone>(
     ids: &[SessionId],
     resolved: &Arc<std::sync::Mutex<HashMap<String, LogicalProjectionResult<Value>>>>,
 ) -> Vec<LogicalProjectionResult<Value>> {
-    let map = resolved.lock().expect("resolved");
+    let mut map = resolved.lock().expect("resolved");
     ids.iter()
-        .filter_map(|id| map.get(id.as_str()).cloned())
+        .filter_map(|id| map.remove(id.as_str()))
         .collect()
 }
 
@@ -515,6 +517,7 @@ async fn inspect_persisted(
 fn snapshot_live(session: &Session) -> LogicalSession {
     LogicalSession {
         header: session.header().clone(),
+        inherited_event_count: session.inherited_event_count(),
         events: session.events().iter().cloned().collect(),
     }
 }

@@ -4,6 +4,7 @@ use dsh_llm::{
     TokenUsage, call_id,
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 fn failure(message: impl Into<String>, code: &str) -> LlmFailure {
@@ -18,7 +19,8 @@ fn failure(message: impl Into<String>, code: &str) -> LlmFailure {
 
 /// The generic chat serializer does not carry provider-private replay state.
 /// Attach it only for the Anthropic route before converting the wire body.
-pub(crate) fn attach_replay(chat: &mut Value, options: &GenerateOptions) {
+pub(crate) fn attach_replay(chat: &mut Value, options: &GenerateOptions, base_url: &str) {
+    let endpoint_hash = replay_endpoint_hash(base_url);
     let Some(wire) = chat.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
@@ -29,15 +31,32 @@ pub(crate) fn attach_replay(chat: &mut Value, options: &GenerateOptions) {
             .filter(|m| m.role == Role::Assistant),
     ) {
         if let MessageSource::Model {
+            provider,
+            model,
             replay_state: Some(state),
-            ..
         } = &source.source
         {
-            if state["protocol"] == "anthropic-messages" && state["content"].is_array() {
+            let same_model = model == &options.model
+                || state["requestedModel"].as_str() == Some(options.model.as_str())
+                || state["responseModel"].as_str() == Some(options.model.as_str());
+            let same_endpoint = state["endpointHash"]
+                .as_str()
+                .is_none_or(|saved| saved == endpoint_hash);
+            if provider == &options.provider
+                && same_model
+                && same_endpoint
+                && state["protocol"] == "anthropic-messages"
+                && state["content"].is_array()
+            {
                 message["anthropic_content"] = state["content"].clone();
             }
         }
     }
+}
+
+fn replay_endpoint_hash(base_url: &str) -> String {
+    let endpoint = super::anthropic_transport::endpoint(base_url, "messages");
+    format!("{:x}", Sha256::digest(endpoint.as_bytes()))
 }
 
 pub(crate) fn request_from_chat(chat: &Value) -> Result<Value, LlmFailure> {
@@ -312,6 +331,10 @@ fn content(value: Option<&Value>) -> Result<Vec<Value>, LlmFailure> {
 
 #[derive(Default)]
 pub(crate) struct AnthropicTranslator {
+    requested_model: Option<String>,
+    response_model: Option<String>,
+    response_id: Option<String>,
+    endpoint_hash: Option<String>,
     blocks: BTreeMap<u64, Value>,
     finished: BTreeMap<u64, Value>,
     args: BTreeMap<u64, String>,
@@ -320,6 +343,16 @@ pub(crate) struct AnthropicTranslator {
     completed: bool,
 }
 impl AnthropicTranslator {
+    pub(crate) fn is_finished(&self) -> bool {
+        self.completed
+    }
+    pub(crate) fn new(requested_model: &str, base_url: &str) -> Self {
+        Self {
+            requested_model: Some(requested_model.into()),
+            endpoint_hash: Some(replay_endpoint_hash(base_url)),
+            ..Default::default()
+        }
+    }
     pub(crate) fn consume(&mut self, payload: &str) -> Result<Vec<StreamChunk>, LlmFailure> {
         let event: Value = serde_json::from_str(payload).map_err(|e| {
             failure(
@@ -343,6 +376,8 @@ impl AnthropicTranslator {
                 ));
             }
             "message_start" => {
+                self.response_model = response_identity(event.pointer("/message/model"), "model")?;
+                self.response_id = response_identity(event.pointer("/message/id"), "id")?;
                 if let Some(usage) = event.pointer("/message/usage") {
                     self.merge_usage(usage);
                 }
@@ -525,7 +560,15 @@ impl AnthropicTranslator {
                 out.push(StreamChunk::Usage {
                     usage: self.usage.clone(),
                 });
-                out.push(StreamChunk::Finish{reason,replay_state:Some(json!({"protocol":"anthropic-messages","content":self.finished.values().collect::<Vec<_>>()}))});
+                out.push(StreamChunk::Finish {
+                    reason,
+                    replay_state: Some(json!({
+                        "protocol":"anthropic-messages",
+                        "requestedModel":self.requested_model,"responseModel":self.response_model,
+                        "responseId":self.response_id,"endpointHash":self.endpoint_hash,
+                        "content":self.finished.values().collect::<Vec<_>>()
+                    })),
+                });
             }
             _ => (),
         }
@@ -557,6 +600,19 @@ impl AnthropicTranslator {
                 "STREAM_CLOSED",
             ))
         }
+    }
+}
+
+fn response_identity(value: Option<&Value>, field: &str) -> Result<Option<String>, LlmFailure> {
+    match value {
+        None => Ok(None),
+        Some(Value::String(text)) if !text.is_empty() && text.len() <= 1024 => {
+            Ok(Some(text.clone()))
+        }
+        Some(_) => Err(failure(
+            format!("Anthropic response {field} is invalid"),
+            "MALFORMED_RESPONSE",
+        )),
     }
 }
 fn index(value: &Value) -> Result<u64, LlmFailure> {
@@ -655,5 +711,117 @@ mod tests {
             .consume(r#"{"type":"error","error":{"type":"overloaded_error","message":"busy"}}"#)
             .unwrap_err();
         assert_eq!(failure.code, "overloaded_error");
+    }
+
+    #[test]
+    fn returned_model_alias_preserves_signed_tool_round_trip_without_changing_route() {
+        let requested = "claude-sonnet-4-6";
+        let returned = "claude-sonnet-4-6-20260801";
+        let base = "https://api.anthropic.com";
+        let mut translator = AnthropicTranslator::new(requested, base);
+        let mut assembler = dsh_llm::BlockAssembler::new();
+        for event in [
+            json!({"type":"message_start","message":{"id":"msg_real_1","model":returned,"usage":{"input_tokens":10,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Inspect the file"}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signed-"}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"payload"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"opaque-encrypted-block"}}),
+            json!({"type":"content_block_stop","index":1}),
+            json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"tool_read","name":"read","input":{}}}),
+            json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"中文.txt\"}"}}),
+            json!({"type":"content_block_stop","index":2}),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":42}}),
+            json!({"type":"message_stop"}),
+        ] {
+            for chunk in translator.consume(&event.to_string()).unwrap() {
+                assembler.push(&chunk);
+            }
+        }
+        translator.finish().unwrap();
+        let state = assembler.replay_state().unwrap().clone();
+        assert_eq!(state["requestedModel"], requested);
+        assert_eq!(state["responseModel"], returned);
+        assert_eq!(state["responseId"], "msg_real_1");
+        assert_eq!(state["content"][0]["signature"], "signed-payload");
+        assert_eq!(state["content"][1]["data"], "opaque-encrypted-block");
+        let assistant = dsh_llm::create_assistant_message(
+            assembler.blocks(),
+            dsh_llm::ModelMessageSource {
+                provider: "anthropic".into(),
+                model: returned.into(),
+                replay_state: Some(state),
+            },
+        );
+        let result = dsh_llm::create_tool_result_message(dsh_llm::ToolResultMessageInput {
+            call_id: call_id("tool_read"),
+            content: vec![ContentBlock::Text {
+                text: "verified result".into(),
+            }],
+            is_error: false,
+        });
+        let mut options = GenerateOptions {
+            provider: "anthropic".into(),
+            model: requested.into(),
+            reasoning_effort: Some(dsh_llm::reasoning_effort_id("high")),
+            messages: vec![assistant, result],
+            max_tokens: Some(4096),
+            system: None,
+            tools: None,
+            temperature: None,
+            stop: None,
+            signal: None,
+            session_id: None,
+            purpose: None,
+            agent_loop_request: false,
+        };
+        let serialize = |options: &GenerateOptions| {
+            crate::serialize::serialize_request_with_prepared_images(
+                options,
+                &crate::RequestDefaults::default(),
+                crate::ReasoningWireFormat::OpenAi,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        let mut chat = serialize(&options);
+        attach_replay(&mut chat, &options, base);
+        let body = request_from_chat(&chat).unwrap();
+        assert_eq!(body["model"], requested);
+        assert_eq!(
+            body["messages"][0]["content"][0]["signature"],
+            "signed-payload"
+        );
+        assert_eq!(
+            body["messages"][0]["content"][1]["data"],
+            "opaque-encrypted-block"
+        );
+        assert_eq!(
+            body["messages"][1]["content"][0]["tool_use_id"],
+            "tool_read"
+        );
+        assert_eq!(
+            body["messages"][1]["content"][0]["content"][0]["text"],
+            "verified result"
+        );
+        let mut changed_endpoint = serialize(&options);
+        attach_replay(&mut changed_endpoint, &options, "https://different.example");
+        assert!(
+            changed_endpoint["messages"][0]
+                .get("anthropic_content")
+                .is_none()
+        );
+        options.model = "claude-opus-4-6".into();
+        let mut changed_model = serialize(&options);
+        attach_replay(&mut changed_model, &options, base);
+        assert!(
+            changed_model["messages"][0]
+                .get("anthropic_content")
+                .is_none()
+        );
+        assert!(changed_model["messages"][0]["tool_calls"].is_array());
     }
 }

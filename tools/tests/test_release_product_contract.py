@@ -116,9 +116,11 @@ class ReleaseProductContractTests(unittest.TestCase):
         hashes = workflow_step(workflow, "生成校验和")
         self.assertLess(workflow.index("生成校验和"), workflow.index("上传当前平台产物"))
         self.assertIn("SHA256SUMS-${{ matrix.platform }}-${{ matrix.arch }}.txt", hashes)
-        self.assertIn("glob(f'{prefix}-*')", hashes)
-        self.assertIn("actual != expected", hashes)
-        self.assertIn("missing={sorted(expected-actual)}", hashes)
+        self.assertIn("tools/release_variants.py checksums", hashes)
+        self.assertIn("steps.variants.outputs.variants_json", hashes)
+        checksum_tool = (ROOT / "tools" / "release_variants.py").read_text(encoding="utf-8")
+        self.assertIn("actual != expected", checksum_tool)
+        self.assertIn("missing={sorted(expected-actual)}", checksum_tool)
         self.assertIn("dist/SHA256SUMS-${{ matrix.platform }}-${{ matrix.arch }}.txt", upload)
 
         for step_name in (
@@ -135,8 +137,11 @@ class ReleaseProductContractTests(unittest.TestCase):
         self.assertIn("choco install innounp --version 0.50", workflow)
 
         gate = workflow_step(workflow, "版本与产品门禁")
-        self.assertIn("python tools/verify_free_model_catalog.py", gate)
-        self.assertIn("ling-3.0-flash-fin-free", gate)
+        self.assertNotIn("python tools/verify_free_model_catalog.py", gate)
+        free_gate = workflow_step(workflow, "验证免费模型完整运行链路")
+        self.assertIn("continue-on-error: true", free_gate)
+        self.assertIn("--binary target/release/", free_gate)
+        self.assertIn("ling-3.0-flash-fin-free", free_gate)
 
     def test_free_model_catalog_verifier_uses_the_live_official_endpoint(self):
         verifier = (ROOT / "tools" / "verify_free_model_catalog.py").read_text(

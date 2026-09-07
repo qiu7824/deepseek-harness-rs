@@ -272,13 +272,18 @@ impl LoaderService {
                         }
                         let entry = core.entry_of(&fiber)?;
                         if entry.disposing() {
+                            core.untrack_fiber(&fiber);
                             return None;
                         }
-                        let current = entry.fiber.lock().clone();
+                        let mut current = entry.fiber.lock();
                         if current.as_ref().is_none_or(|f| !Arc::ptr_eq(f, &fiber)) {
+                            core.untrack_fiber(&fiber);
                             return None;
                         }
+                        current.take();
                         entry.options.lock().disabled = Some(serde_json::Value::Bool(true));
+                        drop(current);
+                        core.untrack_fiber(&fiber);
                         let parent = entry.parent.lock().clone()?;
                         parent.tree.write();
                         None

@@ -14,6 +14,8 @@
 //!   `readTitleSnapshots`; surface reads use the session-query engine.
 
 pub mod invariant;
+#[cfg(test)]
+mod tests;
 
 use std::sync::Arc;
 
@@ -45,6 +47,8 @@ pub struct Config {
     pub max_references: Option<usize>,
     pub candidate_limit: Option<usize>,
     pub max_reference_bytes: Option<usize>,
+    /// Maximum complete projection persisted for one truncated reference.
+    pub max_snapshot_bytes: Option<usize>,
 }
 
 /// The schemastery config schema (TS `SessionReferenceResolver.Config`).
@@ -69,10 +73,14 @@ pub fn config_schema() -> dsh_schemastery::Schema {
         ),
         (
             "maxReferenceBytes".to_string(),
+            Schema::number().step(1.0).min(1.0).default(Data::Undefined),
+        ),
+        (
+            "maxSnapshotBytes".into(),
             Schema::number()
                 .step(1.0)
                 .min(1.0)
-                .default(Data::Number(DEFAULT_MAX_REFERENCE_BYTES as f64)),
+                .default(Data::Number(16_777_216.0)),
         ),
     ]))
 }
@@ -344,12 +352,26 @@ pub fn stringify_tag_safe_json(value: &serde_json::Value) -> String {
         .replace('<', "\\u003c")
 }
 
+#[derive(Serialize)]
 struct ProjectedItem {
     role: String,
     text: String,
+    #[serde(skip)]
     checkpoint: bool,
-    original_text: String,
+    #[serde(skip)]
+    original_text: Option<String>,
+    #[serde(skip)]
     omitted_bytes: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectedSnapshot<'a> {
+    session_id: &'a SessionId,
+    label: &'a str,
+    captured_through_seq: Option<u64>,
+    cwd: &'a Option<String>,
+    conversation: &'a [ProjectedItem],
 }
 
 /// Project current user/assistant conversation while excluding tools,
@@ -372,9 +394,9 @@ fn project_session_conversation(snapshot: &SessionSurfaceSnapshot) -> Vec<Projec
                 if !text.is_empty() {
                     conversation.push(ProjectedItem {
                         role: "user".to_string(),
-                        text: text.clone(),
+                        text,
                         checkpoint,
-                        original_text: text,
+                        original_text: None,
                         omitted_bytes: 0,
                     });
                 }
@@ -390,9 +412,9 @@ fn project_session_conversation(snapshot: &SessionSurfaceSnapshot) -> Vec<Projec
                 if !text.is_empty() {
                     conversation.push(ProjectedItem {
                         role: "assistant".to_string(),
-                        text: text.clone(),
+                        text,
                         checkpoint: false,
-                        original_text: text,
+                        original_text: None,
                         omitted_bytes: 0,
                     });
                 }
@@ -415,6 +437,46 @@ fn text_content(content: &[ContentBlock]) -> String {
         .join("\n")
 }
 
+fn full_projection_text(
+    snapshot: &SessionSurfaceSnapshot,
+    label: &str,
+    max_bytes: usize,
+) -> Result<String, String> {
+    struct BoundedText {
+        bytes: Vec<u8>,
+        max: usize,
+    }
+    impl std::io::Write for BoundedText {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.max.saturating_sub(self.bytes.len()) {
+                return Err(std::io::Error::other("snapshot exceeds storage limit"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let conversation = project_session_conversation(snapshot);
+    let mut buffer = BoundedText {
+        bytes: Vec::with_capacity(max_bytes.min(64 * 1024)),
+        max: max_bytes,
+    };
+    serde_json::to_writer_pretty(
+        &mut buffer,
+        &ProjectedSnapshot {
+            session_id: &snapshot.session.id,
+            label,
+            captured_through_seq: snapshot.captured_through_seq,
+            cwd: &snapshot.session.cwd,
+            conversation: &conversation,
+        },
+    )
+    .map_err(|_| "snapshot exceeds storage limit".to_owned())?;
+    Ok(String::from_utf8(buffer.bytes).expect("JSON is UTF-8"))
+}
+
 /// Fit one projected snapshot into an exact rendered JSON-object byte cap
 /// (TS `retainReferencedSession`).
 pub fn retain_referenced_session(
@@ -422,17 +484,9 @@ pub fn retain_referenced_session(
     label: &str,
     max_bytes: usize,
 ) -> Option<(ReferencedSessionData, ReferenceRetentionStats)> {
-    let original = project_session_conversation(snapshot);
-    let mut retained: Vec<ProjectedItem> = original
-        .iter()
-        .map(|item| ProjectedItem {
-            role: item.role.clone(),
-            text: item.text.clone(),
-            checkpoint: item.checkpoint,
-            original_text: item.original_text.clone(),
-            omitted_bytes: 0,
-        })
-        .collect();
+    let mut retained = project_session_conversation(snapshot);
+    let original_messages = retained.len();
+    let compacted = retained.iter().any(|item| item.checkpoint);
     let mut omitted_messages = 0;
     let mut dropped_omitted_bytes = 0;
     let data = |retained: &[ProjectedItem]| -> ReferencedSessionData {
@@ -451,20 +505,54 @@ pub fn retain_referenced_session(
         }
     };
     let size = |retained: &[ProjectedItem]| -> usize {
-        stringify_tag_safe_json(&serde_json::to_value(data(retained)).expect("data")).len()
+        struct CountBytes(usize);
+        impl std::io::Write for CountBytes {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                // Model-facing JSON escapes '<' as six-byte \u003c.
+                self.0 += bytes.len() + bytes.iter().filter(|&&byte| byte == b'<').count() * 5;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut count = CountBytes(0);
+        serde_json::to_writer(
+            &mut count,
+            &ProjectedSnapshot {
+                session_id: &snapshot.session.id,
+                label,
+                captured_through_seq: snapshot.captured_through_seq,
+                cwd: &snapshot.session.cwd,
+                conversation: retained,
+            },
+        )
+        .expect("reference JSON byte count");
+        count.0
     };
 
-    while size(&retained) > max_bytes {
-        let newest_index = retained.len().saturating_sub(1);
-        let drop_index =
-            (0..retained.len()).find(|&index| !retained[index].checkpoint && index != newest_index);
-        let Some(drop_index) = drop_index else {
-            break;
-        };
-        let removed = retained.remove(drop_index);
-        omitted_messages += 1;
-        dropped_omitted_bytes += removed.original_text.len();
-    }
+    // Serialize once, then account for removed JSON entries in one pass.
+    // Rebuilding and serializing the entire vector per dropped message made
+    // long-reference preparation quadratic and multiplied peak allocations.
+    let mut rendered_bytes = size(&retained);
+    let newest_index = retained.len().saturating_sub(1);
+    let mut index = 0;
+    retained.retain(|item| {
+        let drop = rendered_bytes > max_bytes && !item.checkpoint && index != newest_index;
+        index += 1;
+        if drop {
+            let bytes =
+                stringify_tag_safe_json(&serde_json::json!({"role": item.role, "text": item.text}))
+                    .len();
+            rendered_bytes = rendered_bytes.saturating_sub(bytes + 1);
+            omitted_messages += 1;
+            dropped_omitted_bytes += item
+                .original_text
+                .as_ref()
+                .map_or(item.text.len(), String::len);
+        }
+        !drop
+    });
 
     while size(&retained) > max_bytes {
         let mut longest_index: Option<usize> = None;
@@ -484,7 +572,11 @@ pub fn retain_referenced_session(
         }
         let overflow = size(&retained) - max_bytes;
         let target = longest_bytes.saturating_sub(overflow).max(0);
-        let shortened = truncate_with_notice(&retained[longest_index].original_text, target);
+        let original = retained[longest_index]
+            .original_text
+            .as_ref()
+            .unwrap_or(&retained[longest_index].text);
+        let shortened = truncate_with_notice(original, target);
         if shortened.0 == retained[longest_index].text {
             return None;
         }
@@ -492,19 +584,18 @@ pub fn retain_referenced_session(
             role: retained[longest_index].role.clone(),
             text: shortened.0,
             checkpoint: retained[longest_index].checkpoint,
-            original_text: retained[longest_index].original_text.clone(),
+            original_text: Some(original.clone()),
             omitted_bytes: shortened.1,
         };
     }
 
-    let compacted = original.iter().any(|item| item.checkpoint);
     let retained_omitted: usize = retained.iter().map(|item| item.omitted_bytes).sum();
     let omitted_bytes = retained_omitted + dropped_omitted_bytes;
     Some((
         data(&retained),
         ReferenceRetentionStats {
             compacted,
-            original_messages: original.len(),
+            original_messages,
             retained_messages: retained.len(),
             omitted_messages,
             omitted_bytes,
@@ -551,11 +642,57 @@ fn truncate_with_notice(text: &str, max_output_bytes: usize) -> (String, usize) 
 pub struct SessionReferenceResolver {
     max_references: usize,
     candidate_limit: usize,
-    max_reference_bytes: usize,
+    max_reference_bytes: Option<usize>,
+    max_snapshot_bytes: usize,
     query: Arc<SessionQueryEngine>,
 }
 
 impl SessionReferenceResolver {
+    async fn request_budget(&self, agent: &Arc<dyn Agent>, content: &[ContentBlock]) -> usize {
+        let selection = agent
+            .ctx()
+            .get_typed::<Arc<parking_lot::Mutex<dsh_agent::ModelSelectionRef>>>(
+                &dsh_agent::model_selection_service_name(agent.ctx()),
+                false,
+            )
+            .and_then(|slot| slot.as_ref().lock().resolved_current());
+        let runtime = agent
+            .ctx()
+            .get_typed::<Arc<dsh_llm::LlmRuntime>>("llm", false)
+            .map(|slot| slot.as_ref().clone());
+        let mut window = agent
+            .session()
+            .request_context()
+            .filter(|context| {
+                selection.as_ref().is_none_or(|selected| {
+                    selected.provider == context.provider && selected.model == context.model
+                })
+            })
+            .map(|context| context.context_window)
+            .flatten();
+        if let (Some(selection), Some(runtime)) = (selection, runtime) {
+            window = None;
+            if let Ok(prepared) = runtime
+                .prepare_call(
+                    &dsh_llm::LlmCallConfig {
+                        provider: selection.provider,
+                        model: selection.model,
+                        reasoning_effort: selection.reasoning_effort,
+                        execution_mode: selection.execution_mode,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await
+            {
+                window = prepared.context.map(|context| context.context_window);
+            }
+        }
+        reference_request_budget(
+            window,
+            serde_json::to_vec(content).map_or(0, |bytes| bytes.len()),
+        )
+    }
     /// Build the resolver against the session-query engine.
     pub fn build(
         query: Arc<SessionQueryEngine>,
@@ -581,7 +718,8 @@ impl SessionReferenceResolver {
         Ok(Arc::new(Self {
             max_references,
             candidate_limit,
-            max_reference_bytes,
+            max_reference_bytes: config.max_reference_bytes,
+            max_snapshot_bytes: config.max_snapshot_bytes.unwrap_or(16 * 1024 * 1024).max(1),
             query,
         }))
     }
@@ -709,8 +847,24 @@ impl SessionReferenceResolver {
                 additional_context: None,
             });
         }
-        let mut prepared: Vec<(SessionReferenceInput, SessionSurfaceSnapshot)> = Vec::new();
+        let mut rendered: Vec<(ReferencedSessionData, ReferenceRetentionStats)> = Vec::new();
+        let total_budget = self.request_budget(agent, &accepted_content).await;
+        let per_reference = self
+            .max_reference_bytes
+            .unwrap_or(total_budget / inputs.len())
+            .min(total_budget / inputs.len());
+        let spill = agent
+            .ctx()
+            .get_typed::<Arc<dyn dsh_spill::SpillStore>>("spillStore", false)
+            .map(|slot| slot.as_ref().clone());
+        let mut snapshot_metadata = Vec::new();
         for input in inputs {
+            if signal.is_some_and(|signal| signal()) {
+                return Err(SessionReferenceError::new(
+                    SessionReferenceErrorCode::SessionReferenceCancelled,
+                    "session reference cancelled",
+                ));
+            }
             let snapshot = self
                 .query
                 .read_surface(&input.session_id)
@@ -721,48 +875,79 @@ impl SessionReferenceResolver {
                         format!("failed to read referenced session: {}", error.message),
                     )
                 })?;
-            prepared.push((input, snapshot));
-        }
-        let mut rendered: Vec<(ReferencedSessionData, ReferenceRetentionStats)> = Vec::new();
-        for (input, snapshot) in prepared {
             let label = input
                 .label
                 .clone()
                 .unwrap_or_else(|| input.session_id.as_str().to_string());
-            let retained = retain_referenced_session(&snapshot, &label, self.max_reference_bytes)
-                .ok_or_else(|| {
+            let retained = retain_referenced_session(
+                &snapshot,
+                &label,
+                per_reference.saturating_sub((per_reference / 4).min(2048)),
+            )
+            .ok_or_else(|| {
                 SessionReferenceError::new(
                     SessionReferenceErrorCode::SessionReferenceBudgetExceeded,
                     "referenced session snapshot cannot fit the configured byte budget",
                 )
             })?;
+            let metadata = if retained.1.truncated {
+                if let Some(store) = &spill {
+                    match full_projection_text(&snapshot, &label, self.max_snapshot_bytes) {
+                        Err(reason) => serde_json::json!({"status":"unavailable", "reason":reason}),
+                        Ok(content) => match store
+                            .save_text(&dsh_spill::SaveTextSpill {
+                                owner: dsh_spill::SpillOwner {
+                                    session_id: agent.id().clone(),
+                                },
+                                source: dsh_spill::SpillSource::SessionReference {
+                                    session_id: snapshot.session.id.clone(),
+                                    captured_through_seq: snapshot.captured_through_seq,
+                                },
+                                suggested_name: "session-reference.json".into(),
+                                content,
+                            })
+                            .await
+                        {
+                            Ok(saved) => {
+                                serde_json::json!({"status":"saved", "locator": saved.locator.as_str(), "bytes":saved.bytes, "retrievalHint":saved.retrieval_hint})
+                            }
+                            Err(_) => {
+                                serde_json::json!({"status":"unavailable", "reason":"snapshot storage failed"})
+                            }
+                        },
+                    }
+                } else {
+                    serde_json::json!({"status":"unavailable", "reason":"no snapshot storage service"})
+                }
+            } else {
+                serde_json::json!({"status":"not-needed"})
+            };
+            snapshot_metadata.push(metadata);
             rendered.push(retained);
         }
-        let prompt = format!(
-            "{PROMPT_PREFIX}{}{PROMPT_SUFFIX}",
-            stringify_tag_safe_json(
-                &serde_json::to_value(rendered.iter().map(|(data, _)| data).collect::<Vec<_>>())
-                    .expect("data")
-            )
-        );
-        let reference_values: Vec<serde_json::Value> = rendered
+        let rendered_values: Vec<_> = rendered
             .iter()
-            .enumerate()
-            .map(|(index, (data, stats))| {
-                serde_json::json!({
-                    "sessionId": data.session_id,
-                    "label": data.label,
-                    "capturedThroughSeq": data.captured_through_seq,
-                    "compacted": stats.compacted,
-                    "originalMessages": stats.original_messages,
-                    "retainedMessages": stats.retained_messages,
-                    "omittedMessages": stats.omitted_messages,
-                    "omittedBytes": stats.omitted_bytes,
-                    "truncated": stats.truncated,
-                    "inputIndex": index,
-                })
+            .zip(snapshot_metadata)
+            .map(|((data, stats), saved)| {
+                let mut value = serde_json::to_value(data).expect("reference JSON");
+                value["retention"] = serde_json::to_value(stats).expect("retention JSON");
+                value["fullSnapshot"] = saved;
+                value
             })
             .collect();
+        let prompt = format!(
+            "{PROMPT_PREFIX}{}{PROMPT_SUFFIX}",
+            stringify_tag_safe_json(&serde_json::to_value(&rendered_values).expect("data"))
+        );
+        if rendered_values
+            .iter()
+            .any(|value| stringify_tag_safe_json(value).len() > per_reference)
+        {
+            return Err(SessionReferenceError::new(
+                SessionReferenceErrorCode::SessionReferenceBudgetExceeded,
+                "reference metadata cannot fit the configured byte budget",
+            ));
+        }
         let additional_context = create_user_message(
             vec![ContentBlock::Text { text: prompt }],
             MessageSource::Plugin {
@@ -774,14 +959,21 @@ impl SessionReferenceResolver {
                 source_command_id: None,
             },
         );
-        let _ = reference_values; // The structured source rides the durable
-        // message source; the Rust `MessageSource`
-        // models the core kinds (documented).
         Ok(PreparedReferencedMessage {
             content: accepted_content,
             additional_context: Some(additional_context),
         })
     }
+}
+
+/// Reserve at most 1/16 of a known context window for reference tokens,
+/// estimated at three UTF-8 bytes/token. Multiple references share this cap.
+fn reference_request_budget(window: Option<u64>, content_bytes: usize) -> usize {
+    let bytes = window
+        .map(|tokens| tokens.saturating_mul(3) / 16)
+        .unwrap_or(DEFAULT_MAX_REFERENCE_BYTES as u64)
+        .min(512 * 1024) as usize;
+    bytes.saturating_sub(content_bytes.min(bytes)).max(1024)
 }
 
 fn normalize_references(

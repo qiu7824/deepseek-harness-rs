@@ -365,6 +365,16 @@ impl ReactLoopAgent {
     }
 
     fn send(&self, message: UserMessage, target: InboxTarget, wakeup: bool) {
+        self.send_with_context(message, target, wakeup, None);
+    }
+
+    fn send_with_context(
+        &self,
+        message: UserMessage,
+        target: InboxTarget,
+        wakeup: bool,
+        context: Option<UserMessage>,
+    ) {
         let waking_after_abort = wakeup
             && matches!(
                 &*self.phase.lock(),
@@ -377,7 +387,7 @@ impl ReactLoopAgent {
             target
         };
         self.inbox
-            .splice(resolved_target, f64::INFINITY, 0.0, vec![message])
+            .append_with_context(resolved_target, message, context)
             .expect("inbox splice");
         if wakeup {
             self.wake_driver(waking_after_abort);
@@ -906,11 +916,17 @@ impl ReactLoopAgent {
                 continue;
             }
 
+            let response_model = assembler
+                .replay_state()
+                .and_then(|state| state.get("responseModel"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|model| !model.is_empty() && model.len() <= 1024)
+                .unwrap_or(&request.model);
             let message = create_assistant_message(
                 assembler.blocks(),
                 ModelMessageSource {
                     provider: request.provider.clone(),
-                    model: request.model.clone(),
+                    model: response_model.to_string(),
                     replay_state: assembler.replay_state().cloned(),
                 },
             );
@@ -1094,6 +1110,26 @@ impl ReactLoopAgent {
             },
         });
         let baseline = self.session.request_header();
+        let notice = if boundary_messages.is_empty() {
+            None
+        } else {
+            dsh_agent::model_selection::model_switch_notice(
+                baseline.as_ref().map(|header| &header.config),
+                &config,
+            )
+        };
+        if let Some(message) = &notice {
+            self.session
+                .append(
+                    "user/message",
+                    serde_json::to_value(message).expect("model switch notice"),
+                    Some(SurfaceIntent {
+                        surface_op: SurfaceOp::Append,
+                        source_event_seqs: None,
+                    }),
+                )
+                .expect("model switch notice");
+        }
         if !self.request_header_logged.load(Ordering::SeqCst) {
             self.session
                 .append(
@@ -1164,6 +1200,9 @@ impl ReactLoopAgent {
             purpose: None,
             agent_loop_request: false,
         };
+        if let Some(notice) = notice {
+            request.messages.push(notice.into());
+        }
         mark_agent_loop_request(&mut request);
         let signal_for_request = Arc::clone(signal);
         request.signal = Some(Arc::new(move || signal_for_request.aborted()));
@@ -1350,12 +1389,29 @@ impl Agent for ReactLoopAgent {
         self.send(message, target, wakeup)
     }
 
+    fn send_with_context(
+        &self,
+        message: UserMessage,
+        target: InboxTarget,
+        context: Option<UserMessage>,
+    ) {
+        self.send_with_context(message, target, true, context);
+    }
+
     fn followup(&self, message: UserMessage) {
         self.send(message, InboxTarget::NextTurn, true)
     }
 
     fn steer(&self, message: UserMessage) {
         self.send(message, InboxTarget::NextStep, true)
+    }
+
+    fn steer_queued(&self, message_id: &dsh_llm::MessageId) -> Result<bool, String> {
+        let moved = self.inbox.move_to_next_step(message_id)?;
+        if moved {
+            self.wake_driver(true);
+        }
+        Ok(moved)
     }
 
     fn inject(&self, message: UserMessage) {

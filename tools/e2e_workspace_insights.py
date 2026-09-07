@@ -17,9 +17,10 @@ from e2e_settings_model_preserves_data import require_ok, rpc
 
 
 class PreviewClient:
-    def __init__(self, port: int, session_id: str):
+    def __init__(self, port: int, session_id: str, *, timeout: float = 15):
         self.port = port
         self.session_id = session_id
+        self.timeout = timeout
         self.requests: list[dict[str, object]] = []
 
     def request(self, operation: str, params: dict[str, object] | None = None, body: dict[str, object] | None = None) -> tuple[int, dict[str, object]]:
@@ -34,7 +35,7 @@ class PreviewClient:
         if body is not None:
             encoded = json.dumps(body).encode("utf-8")
             headers["content-type"] = "application/json"
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=15)
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=self.timeout)
         try:
             connection.request(method, target, body=encoded, headers=headers)
             response = connection.getresponse()

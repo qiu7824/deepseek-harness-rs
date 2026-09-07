@@ -196,12 +196,13 @@ impl Entry {
         self.patch_context().await?;
         let ctx = self.ctx.lock().clone();
         let config: ArcValue = options.config.clone().map(arc).unwrap_or_else(|| arc(()));
-        let fiber = ctx.plugin(plugin, config);
-        self.core.track_fiber(&fiber, self.clone());
-        if options.group.unwrap_or(false) {
-            self.core.mark_carrier(&fiber);
-        }
-        *self.fiber.lock() = Some(fiber.clone());
+        let fiber = ctx.plugin_with_setup(plugin, config, |fiber| {
+            self.core.track_fiber(fiber, self.clone());
+            if options.group.unwrap_or(false) {
+                self.core.mark_carrier(fiber);
+            }
+            *self.fiber.lock() = Some(fiber.clone());
+        });
         match fiber.settle().await {
             Ok(()) => Ok(()),
             Err(error) => {

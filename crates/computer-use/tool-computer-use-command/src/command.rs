@@ -281,6 +281,7 @@ impl CommandAdapter {
                     "sessionId": client_session_id
                 }),
                 owner_id: Some(owner_id.to_string()),
+                origin: crate::ControlOrigin::Human,
             };
             let result = match self.wire_arguments(&request) {
                 Ok((arguments, _, _, _)) => self

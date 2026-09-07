@@ -150,13 +150,11 @@ impl SessionQueryEngine {
         session_id: &SessionId,
     ) -> Result<SessionLogSnapshot, SessionQueryError> {
         let loaded = self.corpus.load(session_id, None).await?;
-        dsh_session::Session::create(
+        let validated = dsh_session::Session::from_restore(
             session_id.clone(),
-            Some(loaded.events.clone()),
-            Some(&loaded.header),
-            loaded.header.is_seeded.then_some(
-                dsh_session::SessionLogOffset::new(0).expect("zero is a valid Session log offset"),
-            ),
+            loaded.events,
+            &loaded.header,
+            loaded.inherited_event_count,
         )
         .map_err(|error| {
             SessionQueryError::new(
@@ -164,9 +162,12 @@ impl SessionQueryEngine {
                 format!("stored session \"{session_id}\" is corrupt: {error}"),
             )
         })?;
+        let events = validated.events();
+        drop(validated);
+        let events = Arc::try_unwrap(events).unwrap_or_else(|events| events.as_ref().clone());
         Ok(SessionLogSnapshot {
             session: loaded.header,
-            events: loaded.events.iter().cloned().collect(),
+            events,
         })
     }
 

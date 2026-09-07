@@ -1,5 +1,32 @@
 //! Anonymous protocol checks. These results never substitute for a release binary test.
+use futures::StreamExt;
 use serde_json::{Value, json};
+pub(crate) const CLIENT_RESTRICTION_REASON: &str = "供应商仅限OpenCode，Rust匿名不可用";
+
+fn provider_restriction(value: &Value) -> bool {
+    let value = value.get("error").unwrap_or(value);
+    let kind = value
+        .get("type")
+        .or_else(|| value.get("code"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let message = value
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    message.contains("opencode")
+        && message.contains("only")
+        && (kind == "MissingSessionID" || message.contains("free tier"))
+}
+
+fn http_failure(status: u16, bytes: &[u8]) -> String {
+    let value = serde_json::from_slice::<Value>(bytes).unwrap_or(Value::Null);
+    if provider_restriction(&value) {
+        return format!("{CLIENT_RESTRICTION_REASON}（HTTP {status}）");
+    }
+    format!("HTTP {status}")
+}
 
 const CHECK: &str = "Call connectivity_check exactly once with status ok. After receiving the tool result, reply with OK.";
 
@@ -22,7 +49,17 @@ async fn stream(
             }
         })?;
     if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status().as_u16()));
+        let status = response.status().as_u16();
+        let mut body = Vec::new();
+        let mut chunks = response.bytes_stream();
+        while let Some(Ok(chunk)) = chunks.next().await {
+            let remaining = 8192usize.saturating_sub(body.len());
+            body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            if body.len() == 8192 {
+                break;
+            }
+        }
+        return Err(http_failure(status, &body));
     }
     if !response
         .headers()
@@ -32,7 +69,6 @@ async fn stream(
     {
         return Err("服务没有返回流式响应".into());
     }
-    use futures::StreamExt;
     let mut chunks = response.bytes_stream();
     let mut bytes = Vec::new();
     while let Some(chunk) = chunks.next().await {
@@ -68,6 +104,9 @@ fn completion(events: &[Value]) -> Result<(String, Vec<Value>), String> {
     let mut finished = false;
     for event in events {
         if let Some(error) = event.get("error") {
+            if provider_restriction(error) {
+                return Err(CLIENT_RESTRICTION_REASON.into());
+            }
             return Err(format!(
                 "模型服务返回错误：{}",
                 error
@@ -137,6 +176,12 @@ fn completion(events: &[Value]) -> Result<(String, Vec<Value>), String> {
 }
 
 fn responses(events: &[Value]) -> Result<(String, Vec<Value>), String> {
+    if events
+        .iter()
+        .any(|event| provider_restriction(event.get("response").unwrap_or(event)))
+    {
+        return Err(CLIENT_RESTRICTION_REASON.into());
+    }
     if events.iter().any(|e| {
         matches!(
             e.get("type").and_then(Value::as_str),
@@ -261,6 +306,22 @@ pub(super) async fn verify(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vendor_client_restriction_is_reported_as_unavailable_without_bypass() {
+        let error = json!({"error":{"type":"MissingSessionID","message":"OpenCode's free tier can only be used in OpenCode"}});
+        assert!(
+            http_failure(400, error.to_string().as_bytes()).contains(CLIENT_RESTRICTION_REASON)
+        );
+        assert_eq!(
+            completion(&[error.clone()]).unwrap_err(),
+            CLIENT_RESTRICTION_REASON
+        );
+        assert_eq!(responses(&[error]).unwrap_err(), CLIENT_RESTRICTION_REASON);
+        assert_eq!(
+            http_failure(400, b"{\"error\":{\"message\":\"invalid model\"}}"),
+            "HTTP 400"
+        );
+    }
     #[test]
     fn fragmented_call_keeps_identity_and_requires_real_completion() {
         let events = vec![

@@ -1247,6 +1247,17 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         self.coordinator().append(id, events).await
     }
 
+    async fn append_annotation(
+        &self,
+        expected: &SessionHeader,
+        event_type: &str,
+        data: serde_json::Value,
+    ) -> Result<SessionEvent, String> {
+        self.coordinator()
+            .append_annotation(expected, event_type, data)
+            .await
+    }
+
     async fn delete(&self, id: &SessionId) -> Result<bool, String> {
         self.coordinator().delete(id).await
     }

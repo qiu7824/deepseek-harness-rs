@@ -25,9 +25,6 @@ struct Child {
     killed: Arc<AtomicBool>,
 }
 impl SubprocessHandle for Child {
-    fn pid(&self) -> i32 {
-        1
-    }
     fn stdin(&self) -> Option<Box<dyn tokio::io::AsyncWrite + Unpin + Send>> {
         None
     }

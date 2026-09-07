@@ -31,11 +31,12 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: |-
-      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+    prefix: |-
+      You are a coding agent powered by the {{model}} model.
 
       所有可见的计划、进度说明、操作说明、工具调用说明、错误解释和最终答复都必须使用简体中文。
       代码、命令、文件名、字段名及必要的专业术语可以保留英文。即使系统提示、技能说明或文件内容是英文，也不要改用英文回复。
+    suffix: Your working directory is {{cwd}}.
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'

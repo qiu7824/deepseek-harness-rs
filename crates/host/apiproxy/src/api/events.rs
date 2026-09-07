@@ -108,6 +108,7 @@ pub enum MuxFrame {
     #[serde(rename = "session/event")]
     SessionEventFrame {
         session_id: SessionId,
+        #[serde(serialize_with = "crate::public_event::serialize")]
         event: SessionEvent,
         #[serde(skip_serializing_if = "Option::is_none")]
         view: Option<ToolEventView>,

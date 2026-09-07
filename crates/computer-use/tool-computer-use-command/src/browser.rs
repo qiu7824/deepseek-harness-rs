@@ -38,7 +38,7 @@ const STATE_EXPRESSION: &str = r#"(() => {
     activeElement: active ? {
       tagName: String(active.tagName || "").toLowerCase(),
       id: String(active.id || "").slice(0, 1024),
-      value: typeof active.value === "string" ? active.value.slice(0, 4096) : null
+      value: active.type !== "password" && typeof active.value === "string" ? active.value.slice(0, 4096) : null
     } : null
   };
 })()"#;
@@ -650,6 +650,55 @@ impl BrowserSession {
                 self.scroll(x, y, delta_x, delta_y, signal).await?;
                 settle(signal, argument_wait_ms(&request.arguments, 100)?).await?;
             }
+            "key" | "keypress" => {
+                let key = key_event(&request.arguments)?;
+                let mut down = key.clone();
+                down["type"] = json!("keyDown");
+                let pressed = self.cdp("Input.dispatchKeyEvent", down, signal).await;
+                let mut up = key;
+                up["type"] = json!("keyUp");
+                up.as_object_mut().unwrap().remove("text");
+                let cleanup: AbortPredicate = Arc::new(|| false);
+                let released = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    self.cdp("Input.dispatchKeyEvent", up, &cleanup),
+                )
+                .await;
+                pressed?;
+                released.map_err(|_| {
+                    AdapterError::new(
+                        "COMPUTER_USE_TIMEOUT",
+                        "releasing the browser key timed out",
+                    )
+                })??;
+                settle(signal, argument_wait_ms(&request.arguments, 100)?).await?;
+            }
+            "drag" => {
+                let x = required_number(&request.arguments, "x", 0.0, 100_000.0)?;
+                let y = required_number(&request.arguments, "y", 0.0, 100_000.0)?;
+                let end_x = required_number(&request.arguments, "endX", 0.0, 100_000.0)?;
+                let end_y = required_number(&request.arguments, "endY", 0.0, 100_000.0)?;
+                let pressed=self.cdp("Input.dispatchMouseEvent",json!({"type":"mousePressed","x":x,"y":y,"button":"left","buttons":1,"clickCount":1}),signal).await;
+                let mut last = (x, y);
+                let moved=async {
+                    pressed?;
+                    for step in 1..=12 {
+                        let ratio=f64::from(step)/12.0;last=(x+(end_x-x)*ratio,y+(end_y-y)*ratio);
+                        self.cdp("Input.dispatchMouseEvent",json!({"type":"mouseMoved","x":last.0,"y":last.1,"button":"left","buttons":1}),signal).await?;
+                        settle(signal,16).await?;
+                    }
+                    Ok::<(),AdapterError>(())
+                }.await;
+                let cleanup: AbortPredicate = Arc::new(|| false);
+                let released=tokio::time::timeout(Duration::from_secs(2),self.cdp("Input.dispatchMouseEvent",json!({"type":"mouseReleased","x":last.0,"y":last.1,"button":"left","buttons":0,"clickCount":1}),&cleanup)).await;
+                moved?;
+                released.map_err(|_| {
+                    AdapterError::new(
+                        "COMPUTER_USE_TIMEOUT",
+                        "releasing the browser pointer timed out",
+                    )
+                })??;
+            }
             other => {
                 return Err(AdapterError::new(
                     "COMPUTER_USE_UNSUPPORTED_ACTION",
@@ -671,6 +720,9 @@ impl BrowserSession {
                 | "type"
                 | "input"
                 | "scroll"
+                | "key"
+                | "keypress"
+                | "drag"
         );
         let include_screenshot = request
             .arguments
@@ -899,6 +951,78 @@ impl BrowserSession {
         })?;
         decode_screenshot(encoded, MAX_SCREENSHOT_BYTES)
     }
+}
+
+fn key_event(arguments: &Value) -> Result<Value, AdapterError> {
+    let names = arguments
+        .get("keys")
+        .and_then(Value::as_array)
+        .filter(|keys| !keys.is_empty() && keys.len() <= 5)
+        .ok_or_else(|| {
+            AdapterError::new(
+                "COMPUTER_USE_INVALID_ARGUMENT",
+                "keys must contain a key with optional Control, Alt, Shift or Meta modifiers",
+            )
+        })?;
+    let mut modifiers = 0;
+    for name in &names[..names.len() - 1] {
+        modifiers |= match name.as_str().unwrap_or("").to_ascii_lowercase().as_str() {
+            "alt" => 1,
+            "ctrl" | "control" => 2,
+            "meta" | "command" => 4,
+            "shift" => 8,
+            _ => {
+                return Err(AdapterError::new(
+                    "COMPUTER_USE_INVALID_ARGUMENT",
+                    "unknown keyboard modifier",
+                ));
+            }
+        };
+    }
+    let name = names.last().and_then(Value::as_str).unwrap_or("");
+    let (key, code, vk) = match name.to_ascii_lowercase().as_str() {
+        "enter" => ("Enter".into(), "Enter".into(), 13),
+        "tab" => ("Tab".into(), "Tab".into(), 9),
+        "escape" | "esc" => ("Escape".into(), "Escape".into(), 27),
+        "backspace" => ("Backspace".into(), "Backspace".into(), 8),
+        "delete" => ("Delete".into(), "Delete".into(), 46),
+        "space" => (" ".into(), "Space".into(), 32),
+        "arrowleft" | "left" => ("ArrowLeft".into(), "ArrowLeft".into(), 37),
+        "arrowup" | "up" => ("ArrowUp".into(), "ArrowUp".into(), 38),
+        "arrowright" | "right" => ("ArrowRight".into(), "ArrowRight".into(), 39),
+        "arrowdown" | "down" => ("ArrowDown".into(), "ArrowDown".into(), 40),
+        "home" => ("Home".into(), "Home".into(), 36),
+        "end" => ("End".into(), "End".into(), 35),
+        "pageup" => ("PageUp".into(), "PageUp".into(), 33),
+        "pagedown" => ("PageDown".into(), "PageDown".into(), 34),
+        _ if name.len() == 1 && name.as_bytes()[0].is_ascii_alphanumeric() => {
+            let ch = name.as_bytes()[0];
+            (
+                name.to_string(),
+                format!(
+                    "{}{}",
+                    if ch.is_ascii_digit() { "Digit" } else { "Key" },
+                    (ch as char).to_ascii_uppercase()
+                ),
+                i32::from(ch.to_ascii_uppercase()),
+            )
+        }
+        _ => {
+            return Err(AdapterError::new(
+                "COMPUTER_USE_INVALID_ARGUMENT",
+                "unsupported browser key",
+            ));
+        }
+    };
+    let mut value = json!({"key":key,"code":code,"windowsVirtualKeyCode":vk,"nativeVirtualKeyCode":vk,"modifiers":modifiers});
+    if modifiers & 7 == 0 {
+        if key == "Enter" {
+            value["text"] = json!("\r")
+        } else if key.len() == 1 {
+            value["text"] = json!(key)
+        }
+    }
+    Ok(value)
 }
 
 fn decode_screenshot(encoded: &str, max_bytes: usize) -> Result<Vec<u8>, AdapterError> {

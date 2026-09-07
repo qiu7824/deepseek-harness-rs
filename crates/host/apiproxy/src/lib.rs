@@ -12,6 +12,7 @@ mod interactions;
 mod learning_preview;
 pub mod native_path_opener;
 pub mod proxy;
+mod public_event;
 mod queue_projection;
 mod remote_payload;
 pub mod session_export;

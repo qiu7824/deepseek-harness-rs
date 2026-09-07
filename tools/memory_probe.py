@@ -142,13 +142,23 @@ def collect_executable_path(
 
 
 def _run_text(argv: list[str]) -> str:
-    return subprocess.run(
-        argv,
-        check=True,
-        capture_output=True,
-        text=True,
-        errors="replace",
-    ).stdout
+    options = dict(check=True,capture_output=True,text=True,errors="replace",creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+    try:
+        return subprocess.run(argv,**options).stdout
+    except FileNotFoundError:
+        # WMIC is optional on modern Windows; CIM exposes the same process counters.
+        if len(argv)!=7 or argv[0]!="wmic" or argv[1:3]!=["process","where"] or argv[4]!="get":
+            raise
+        match=re.fullmatch(r"(ProcessId|ParentProcessId)=(\d+)",argv[3])
+        fields=argv[5].split(",")
+        allowed=set(_PROCESS_FIELDS)|{"ProcessId","ParentProcessId","ExecutablePath","Name"}
+        if match is None or not fields or any(field not in allowed for field in fields):
+            raise ValueError("unsupported process probe")
+        properties=",".join("'"+field+"'" for field in fields)
+        script=("[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); "
+                "Get-CimInstance Win32_Process -Filter '"+match[1]+" = "+match[2]+"' | ForEach-Object { "
+                "$metricRow=$_; @("+properties+") | ForEach-Object { [Console]::WriteLine(('{0}={1}' -f $_,$metricRow.$_)) }; [Console]::WriteLine('') }")
+        return subprocess.run(["powershell.exe","-NoProfile","-NonInteractive","-Command",script],encoding="utf-8",**options).stdout
 
 
 def collect_snapshot(

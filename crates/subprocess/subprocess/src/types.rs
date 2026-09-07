@@ -174,8 +174,6 @@ pub struct SubprocessCollectedOutputs {
 /// `SubprocessHandle`). Collected output remains readable after exit; piped
 /// streams belong to the caller. Termination is tree-scoped everywhere.
 pub trait SubprocessHandle: Send + Sync {
-    /// Process id (tree root); -1 when the spawn itself failed.
-    fn pid(&self) -> i32;
     /// The child's stdin, present iff spawned with `stdin: 'pipe'`.
     fn stdin(&self) -> Option<Box<dyn AsyncWrite + Unpin + Send>>;
     /// The child's raw stdout, present iff spawned with `stdout: 'pipe'`.

@@ -20,14 +20,21 @@ def main():
         presets=call('agentPreset.list',{})['presets'];assert {'minimal','cordis','standard','code'}<={p['id'] for p in presets}
         for preset in ['minimal','cordis']:
             created=call('session.create',{'cwd':str(project),'agentPreset':preset});assert created['agentPreset']==preset,created
-        opened=client.ok('terminal-action',body={'sessionId':session,'action':'open','name':'workspace routing'});terminal=opened['id']
+        # The backend owns a 20s startup deadline plus rollback. Give the
+        # terminal request enough time to return its actual result or error.
+        terminal_client=PreviewClient(port,session,timeout=35)
+        opened_at=time.monotonic()
+        opened=terminal_client.ok('terminal-action',body={'sessionId':session,'action':'open','name':'workspace routing'});terminal=opened['id']
+        terminal_open_ms=round((time.monotonic()-opened_at)*1000)
+        assert opened.get('status')=='running',opened
         import os
         command='echo route-proof> "%TEMP%\\routing-proof.txt"\r' if os.name=='nt' else 'printf route-proof > "$TMPDIR/routing-proof.txt"\r'
-        client.ok('terminal-action',body={'sessionId':session,'terminalId':terminal,'action':'input','text':command})
+        terminal_client.ok('terminal-action',body={'sessionId':session,'terminalId':terminal,'action':'input','text':command})
         deadline=time.monotonic()+20
         while time.monotonic()<deadline and not list(scratch.rglob('routing-proof.txt')):time.sleep(.1)
         assert list(scratch.rglob('routing-proof.txt')),'terminal ignored workspace scratch setting'
-        client.ok('terminal-action',body={'sessionId':session,'terminalId':terminal,'action':'close'})
+        assert any(path.read_text().strip()=='route-proof' for path in scratch.rglob('routing-proof.txt')),'terminal input did not execute correctly'
+        terminal_client.ok('terminal-action',body={'sessionId':session,'terminalId':terminal,'action':'close'})
         status,devices=client.raw('/__dsh-devices/status',{});assert status==200,devices;assert isinstance(devices['installed'],bool)
         if devices.get('signedIn') and devices.get('devices'):
             identity=devices['devices'][0]['id']
@@ -35,7 +42,7 @@ def main():
             status,value=client.raw('/__dsh-devices/status',{});assert value['boundDeviceId']==identity
             status,value=client.raw('/__dsh-devices/unbind',{});assert status==200,value
         status,value=client.raw('/__dsh-devices/connect',{'deviceId':'not-an-owned-device'});assert status==400,value
-        (run/'evidence.json').write_text(json.dumps({'workspaceRouting':True,'nativePresets':['minimal','cordis'],'deviceInstalled':devices['installed'],'deviceListCount':len(devices.get('devices',[])),'remoteConnectionsStarted':0}),encoding='utf-8')
+        (run/'evidence.json').write_text(json.dumps({'workspaceRouting':True,'nativePresets':['minimal','cordis'],'terminalOpenMs':terminal_open_ms,'terminalOpenHttpStatus':terminal_client.requests[0]['status'],'terminalInputVerified':True,'terminalClosed':True,'deviceInstalled':devices['installed'],'deviceListCount':len(devices.get('devices',[])),'remoteConnectionsStarted':0}),encoding='utf-8')
     print('PASS workspace routing, foreign directory protection, native presets and UU device binding:',run)
 
 if __name__=='__main__':main()

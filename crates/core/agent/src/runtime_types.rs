@@ -185,11 +185,31 @@ pub trait Agent: Send + Sync + 'static {
     /// driver.
     fn send(&self, message: UserMessage, target: InboxTarget, wakeup: bool);
 
+    /// Bind a prepared reference snapshot to the submitted message. The loop
+    /// implementation persists it separately until that exact inbox claim.
+    fn send_with_context(
+        &self,
+        mut message: UserMessage,
+        target: InboxTarget,
+        context: Option<UserMessage>,
+    ) {
+        if let Some(context) = context {
+            message.content.splice(0..0, context.content);
+        }
+        self.send(message, target, true);
+    }
+
     /// Queue an ordinary follow-up turn and wake the driver.
     fn followup(&self, message: UserMessage);
 
     /// Submit steering for the nearest step.
     fn steer(&self, message: UserMessage);
+
+    /// Atomically move pending input to the next step without discarding its
+    /// identity. A live driver also wakes when the turn just became idle.
+    fn steer_queued(&self, message_id: &dsh_llm::MessageId) -> Result<bool, String> {
+        self.inbox().move_to_next_step(message_id)
+    }
 
     /// Queue model-facing context for the next pre-step without waking the
     /// driver.

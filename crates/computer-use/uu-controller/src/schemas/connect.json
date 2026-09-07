@@ -1,0 +1,347 @@
+{
+  "name": "connect.proto",
+  "package": "gv_pb",
+  "dependency": [
+    "defines.proto",
+    "feature_flag.proto"
+  ],
+  "messageType": [
+    {
+      "name": "CaptureParams",
+      "field": [
+        {
+          "name": "fps",
+          "number": 1,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_ENUM",
+          "typeName": ".gv_pb.FPS"
+        },
+        {
+          "name": "video_quality",
+          "number": 2,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_ENUM",
+          "typeName": ".gv_pb.VideoQuality"
+        },
+        {
+          "name": "cursor_capture",
+          "number": 3,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_BOOL"
+        },
+        {
+          "name": "choose_resolution_type",
+          "number": 4,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_ENUM",
+          "typeName": ".gv_pb.ChooseResolutionType"
+        },
+        {
+          "name": "local_resolution",
+          "number": 5,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_MESSAGE",
+          "typeName": ".gv_pb.ScreenResolution"
+        },
+        {
+          "name": "choose_resolution",
+          "number": 6,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_MESSAGE",
+          "typeName": ".gv_pb.ScreenResolution"
+        },
+        {
+          "name": "chroma_format",
+          "number": 7,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_ENUM",
+          "typeName": ".gv_pb.ChromaFormat"
+        },
+        {
+          "name": "max_custom_bitrate",
+          "number": 8,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        },
+        {
+          "name": "enable_hdr",
+          "number": 9,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_BOOL"
+        },
+        {
+          "name": "auto_frame_quality",
+          "number": 10,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_ENUM",
+          "typeName": ".gv_pb.VideoQuality"
+        },
+        {
+          "name": "fpsCount",
+          "number": 11,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        }
+      ]
+    },
+    {
+      "name": "DecoderCap",
+      "field": [
+        {
+          "name": "fps",
+          "number": 1,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        },
+        {
+          "name": "codec_type",
+          "number": 2,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_ENUM",
+          "typeName": ".gv_pb.CodecType"
+        },
+        {
+          "name": "resolution_width",
+          "number": 3,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        },
+        {
+          "name": "resolution_height",
+          "number": 4,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        },
+        {
+          "name": "chroma_format",
+          "number": 5,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_ENUM",
+          "typeName": ".gv_pb.ChromaFormat"
+        }
+      ]
+    },
+    {
+      "name": "VirtualDisplayMode",
+      "field": [
+        {
+          "name": "width",
+          "number": 1,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        },
+        {
+          "name": "height",
+          "number": 2,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        },
+        {
+          "name": "VSync",
+          "number": 3,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        }
+      ]
+    },
+    {
+      "name": "VirtualDisplayInitResolution",
+      "field": [
+        {
+          "name": "width",
+          "number": 1,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        },
+        {
+          "name": "height",
+          "number": 2,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        }
+      ]
+    },
+    {
+      "name": "ConnectOptions",
+      "field": [
+        {
+          "name": "capture_type",
+          "number": 1,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_ENUM",
+          "typeName": ".gv_pb.ConnectOptions.Type"
+        },
+        {
+          "name": "type_value",
+          "number": 2,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        },
+        {
+          "name": "capture_params",
+          "number": 3,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_MESSAGE",
+          "typeName": ".gv_pb.CaptureParams"
+        },
+        {
+          "name": "decoder_cap_list",
+          "number": 4,
+          "label": "LABEL_REPEATED",
+          "type": "TYPE_MESSAGE",
+          "typeName": ".gv_pb.DecoderCap"
+        },
+        {
+          "name": "force_virtual_display",
+          "number": 5,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_BOOL"
+        },
+        {
+          "name": "virtual_display_modes",
+          "number": 6,
+          "label": "LABEL_REPEATED",
+          "type": "TYPE_MESSAGE",
+          "typeName": ".gv_pb.VirtualDisplayMode"
+        },
+        {
+          "name": "virtual_display_init_resolution",
+          "number": 7,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_MESSAGE",
+          "typeName": ".gv_pb.VirtualDisplayInitResolution"
+        },
+        {
+          "name": "client_type",
+          "number": 8,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_ENUM",
+          "typeName": ".gv_pb.ClientType"
+        },
+        {
+          "name": "device_id",
+          "number": 9,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_STRING"
+        },
+        {
+          "name": "control_connect_type",
+          "number": 10,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_ENUM",
+          "typeName": ".gv_pb.ControlConnectType"
+        },
+        {
+          "name": "feature_flag",
+          "number": 11,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_MESSAGE",
+          "typeName": ".gv_pb.FeatureFlag"
+        },
+        {
+          "name": "client_version",
+          "number": 12,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_STRING"
+        }
+      ],
+      "enumType": [
+        {
+          "name": "Type",
+          "value": [
+            {
+              "name": "CT_UNKNOWN",
+              "number": 0
+            },
+            {
+              "name": "CT_DESKTOP",
+              "number": 1
+            },
+            {
+              "name": "CT_WINDOW",
+              "number": 2
+            },
+            {
+              "name": "CT_MUMU",
+              "number": 3
+            },
+            {
+              "name": "CT_HOOK",
+              "number": 4
+            },
+            {
+              "name": "CT_FILETRANSFER",
+              "number": 5
+            },
+            {
+              "name": "CT_SECOND_SCREEN",
+              "number": 6
+            },
+            {
+              "name": "CT_QUICKLAUNCH",
+              "number": 7
+            },
+            {
+              "name": "CT_TERMINAL",
+              "number": 8
+            },
+            {
+              "name": "CT_PORTMAPPING",
+              "number": 9
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "EncoderCap",
+      "field": [
+        {
+          "name": "capture_mode",
+          "number": 1,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_ENUM",
+          "typeName": ".gv_pb.CaptureMode"
+        },
+        {
+          "name": "fps",
+          "number": 2,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        },
+        {
+          "name": "corec_type",
+          "number": 3,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_ENUM",
+          "typeName": ".gv_pb.CodecType"
+        },
+        {
+          "name": "resolution_width",
+          "number": 4,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        },
+        {
+          "name": "resolution_height",
+          "number": 5,
+          "label": "LABEL_OPTIONAL",
+          "type": "TYPE_INT32"
+        }
+      ]
+    },
+    {
+      "name": "CodecNegotiation",
+      "field": [
+        {
+          "name": "encoder_cap_list",
+          "number": 1,
+          "label": "LABEL_REPEATED",
+          "type": "TYPE_MESSAGE",
+          "typeName": ".gv_pb.EncoderCap"
+        }
+      ]
+    }
+  ],
+  "syntax": "proto3"
+}

@@ -1,11 +1,36 @@
 use indexmap::IndexMap;
 use serde_json::Value;
 
-/// Schemastery represents numbers as f64. Normalize only integral capacity
-/// fields before serde's u64 conversion; fractions remain validation failures.
+/// Schemastery represents numbers as f64. Normalize integral capacity and
+/// compatibility fields before typed conversion; fractions remain failures.
 pub(crate) fn normalize_capacity_numbers(value: &mut Value) {
     match value {
         Value::Object(fields) => {
+            if let Some(value) = fields.get_mut("vllmPriority") {
+                if let Some(number) = value.as_f64().filter(|number| {
+                    number.is_finite()
+                        && number.fract() == 0.0
+                        && *number >= i32::MIN as f64
+                        && *number <= i32::MAX as f64
+                }) {
+                    *value = serde_json::json!(number as i32);
+                }
+            }
+            if let Some(budgets) = fields
+                .get_mut("thinkingBudgets")
+                .and_then(Value::as_object_mut)
+            {
+                for value in budgets.values_mut() {
+                    if let Some(number) = value.as_f64().filter(|number| {
+                        number.is_finite()
+                            && number.fract() == 0.0
+                            && *number >= 1.0
+                            && *number <= 1_000_000.0
+                    }) {
+                        *value = serde_json::json!(number as u64);
+                    }
+                }
+            }
             for (key, value) in fields {
                 if ["contextWindow", "maxTokens", "defaultContextWindow"].contains(&key.as_str()) {
                     if let Some(number) = value.as_f64().filter(|n| {

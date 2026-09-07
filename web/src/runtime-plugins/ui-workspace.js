@@ -459,7 +459,39 @@ window.__ModuleLoader__.load({
 			const label = row.workspaceId === void 0 ? t("group.ungrouped") : row.label;
 			const active = group.expanded && group.containsCurrent;
 			const [menuOpen, setMenuOpen] = (0, react.useState)(false);
-			const workspaceMenuItems = [{
+			const [apps, setApps] = (0, react.useState)(null);
+			const [appError, setAppError] = (0, react.useState)("");
+			const [openingApp, setOpeningApp] = (0, react.useState)(null);
+			const openingRef = (0, react.useRef)(false);
+			const localHost = /^(localhost|127(?:\.\d+){3}|\[::1\])$/.test(globalThis.location?.hostname ?? "localhost");
+			(0, react.useEffect)(() => {
+				if (!menuOpen || row.workspaceId === undefined) return;
+				const controller = new AbortController();
+				setApps(null);
+				const timer = setTimeout(() => { controller.abort(); setApps([]); setAppError(t("openApp.failed")); }, 10000);
+				fetch("/__dsh-open-in-app/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workspaceId: row.workspaceId }), signal: controller.signal }).then(async response => {
+					const value = await response.json();
+					if (!response.ok) throw new Error(value.message ?? value.error?.message ?? value.error ?? t("openApp.failed"));
+					if (!controller.signal.aborted) setApps(value.apps ?? []);
+				}).catch(error => { if (!controller.signal.aborted) { setAppError(error.message); setApps([]); } }).finally(() => clearTimeout(timer));
+				return () => { clearTimeout(timer); controller.abort(); };
+			}, [menuOpen, row.workspaceId]);
+			const openApp = async appId => {
+				if (openingRef.current) return;
+				openingRef.current = true; setOpeningApp(appId); setAppError("");
+				try {
+					const response = await fetch("/__dsh-open-in-app/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workspaceId: row.workspaceId, appId }) });
+					const value = await response.json();
+					if (!response.ok || value.opened !== true) throw new Error(value.message ?? value.error?.message ?? value.error ?? t("openApp.failed"));
+					setMenuOpen(false);
+				} catch (error) { setAppError(error.message); setMenuOpen(true); }
+				finally { openingRef.current = false; setOpeningApp(null); }
+			};
+			const appIcon = id => id === "files" ? _deepseek_ai_dsh_client_ui_primitives.IconFolderOpen16 : ["terminal", "powershell", "gnome-terminal", "konsole"].includes(id) ? _deepseek_ai_dsh_client_ui_primitives.IconApiOutline14 : _deepseek_ai_dsh_client_ui_primitives.IconCodeOutline16;
+			const appItems = apps === null ? [{ id: "apps-loading", label: t("openApp.loading"), disabled: true }] : apps.map(app => ({ id: `app:${app.id}`, label: openingApp === app.id ? t("openApp.opening") : t(localHost ? "openApp.name" : "openApp.remoteName", { name: app.name }), disabled: openingApp !== null, icon: (0, react_jsx_runtime.jsx)(appIcon(app.id), {}) }));
+			if (apps?.length === 0) appItems.push({ id: "apps-empty", label: t("openApp.empty"), disabled: true });
+			if (appError) appItems.push({ id: "apps-error", label: appError, disabled: true });
+			const workspaceMenuItems = [{ id: "open-app", label: t("openApp.title"), icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpen16, {}), submenu: appItems }, {
 				id: "rename",
 				label: t("rename"),
 				icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconEditOutline16, {})
@@ -506,6 +538,7 @@ window.__ModuleLoader__.load({
 							},
 							items: workspaceMenuItems,
 							onSelect: (id) => {
+								if (id.startsWith("app:")) { void openApp(id.slice(4)); return; }
 								setMenuOpen(false);
 								/* v8 ignore next -- workspaceMenuItems carries exactly these two rows today. */
 								if (id !== "rename" && id !== "delete") return;
@@ -2422,6 +2455,14 @@ window.__ModuleLoader__.load({
 		*/
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
+			"openApp.title": "在应用中打开",
+			"openApp.empty": "未找到可用应用",
+			"openApp.name": "在 {name} 中打开",
+			"openApp.remoteName": "在 Host 电脑用 {name} 打开",
+			"openApp.loading": "正在读取可用应用…",
+			"openApp.opening": "正在打开…",
+			"openApp.failed": "打开应用失败",
+
 			"group.ungrouped": "未分组",
 			"session.new": "新会话",
 			"section.workspaces": "工作区",
@@ -2501,6 +2542,14 @@ window.__ModuleLoader__.load({
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
+			"openApp.title": "Open in application",
+			"openApp.empty": "No applications available",
+			"openApp.name": "Open in {name}",
+			"openApp.remoteName": "Open in {name} on Host",
+			"openApp.loading": "Loading applications…",
+			"openApp.opening": "Opening…",
+			"openApp.failed": "Failed to open application",
+
 			"group.ungrouped": "Ungrouped",
 			"session.new": "New Session",
 			"section.workspaces": "Workspaces",

@@ -10,6 +10,45 @@ window.__ModuleLoader__.load({
             return React.createElement("button",{type:"button",role:"switch",id,"aria-label":label,"aria-checked":checked,disabled,className:"dshSettingsSwitch",onClick:()=>onChange(!checked)},React.createElement("span",{className:"dshSettingsSwitchThumb"}));
         }
 
+        const sharedSecretClasses={field:"KMY8pG_field",head:"KMY8pG_head",label:"KMY8pG_label",badges:"KMY8pG_badges",badge:"KMY8pG_badge",badgeMuted:"KMY8pG_badgeMuted",input:"KMY8pG_input",hint:"KMY8pG_hint"};
+        function sharedSettingsElement(type, props) { const {children,...rest}=props; return Array.isArray(children)?React.createElement(type,rest,...children):React.createElement(type,rest,children); }
+        function SettingsSecretField(props) {
+			return sharedSettingsElement("div", {
+				className: sharedSecretClasses.field,
+				children: [
+					sharedSettingsElement("div", {
+						className: sharedSecretClasses.head,
+						children: [sharedSettingsElement("label", {
+							className: sharedSecretClasses.label,
+							htmlFor: props.id,
+							children: props.label
+						}), sharedSettingsElement("span", {
+							className: sharedSecretClasses.badges,
+							children: sharedSettingsElement("span", {
+								className: props.configured ? sharedSecretClasses.badge : sharedSecretClasses.badgeMuted,
+								children: props.stateLabel
+							})
+						})]
+					}),
+					sharedSettingsElement("input", {
+						id: props.id,
+						className: sharedSecretClasses.input,
+						type: "password",
+						autoComplete: "off",
+						value: props.text,
+						disabled: props.disabled,
+						onChange: (event) => {
+							props.onEdit(event.target.value);
+						}
+					}),
+					sharedSettingsElement("p", {
+						className: sharedSecretClasses.hint,
+						children: props.hint
+					})
+				]
+			});
+		}
+        if(typeof document!=="undefined"&&!document.querySelector("style[data-dsh-secret-field]")){const tag=document.createElement("style");tag.dataset.dshSecretField="";tag.textContent=".KMY8pG_field{flex-direction:column;gap:6px;padding:12px 0;display:flex}.KMY8pG_field+.KMY8pG_field{border-top:1px solid var(--dsw-alias-border-l2)}.KMY8pG_head{align-items:center;gap:8px;display:flex}.KMY8pG_label{min-width:0;color:var(--dsw-alias-label-primary);flex:1;font-size:13px;font-weight:500;line-height:1.5}.KMY8pG_badges{align-items:center;gap:8px;display:inline-flex}.KMY8pG_badge{white-space:nowrap;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}.KMY8pG_badgeMuted{white-space:nowrap;color:var(--dsw-alias-label-tertiary);border-radius:999px;padding:1px 8px;font-size:11px;line-height:17px}.KMY8pG_reset{font:inherit;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;padding:0;font-size:12px;line-height:1.5}.KMY8pG_reset:hover:not(:disabled){color:var(--dsw-alias-label-primary)}.KMY8pG_reset:disabled{cursor:default}.KMY8pG_input{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);height:34px;font:inherit;color:var(--dsw-alias-label-primary);border-radius:8px;padding:0 12px;font-size:13px;line-height:1.5}.KMY8pG_input:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.KMY8pG_input:disabled{color:var(--dsw-alias-label-tertiary);cursor:default}.KMY8pG_inputInvalid{border-color:var(--dsw-alias-label-error);}.KMY8pG_invalid{color:var(--dsw-alias-label-error);margin:0;font-size:12px;line-height:1.5}.KMY8pG_hint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:1.5}";document.head.appendChild(tag);}
 		let _deepseek_ai_dsh_client_schema_form = require("@deepseek-ai/dsh-client-schema-form");
 		let _deepseek_ai_dsh_client_runtime_client = require("@deepseek-ai/dsh-client-runtime/client");
 		//#region lib/types/client/settings-scope.js
@@ -87,6 +126,11 @@ window.__ModuleLoader__.load({
 					value
 				});
 			}
+			/** Write-only settings need an explicit admission result because the saved secret is never echoed. */
+			setChecked(field, value) {
+				if (this.persistence !== "host" || this.disposed) return Promise.reject(new Error("此连接不能修改设置"));
+				return this.write({ op: "set", path: [field], value }, true);
+			}
 			/**
 			* Queue one field clear; see {@link SettingsScope.unset} for the ordering,
 			* revision, and recovery contract.
@@ -99,7 +143,7 @@ window.__ModuleLoader__.load({
 					path: [field]
 				});
 			}
-			write(op) {
+			write(op, checked = false) {
 				this.readGeneration += 1;
 				const generation = ++this.writeGeneration;
 				return this.enqueue(async () => {
@@ -113,10 +157,12 @@ window.__ModuleLoader__.load({
 						});
 					} catch (_settingsWriteFailure) {
 						if (!this.disposed && generation === this.writeGeneration) await this.read(++this.readGeneration);
+						if (checked) throw _settingsWriteFailure;
 						return;
 					}
 					if (!response.result.ok) {
 						if (!this.disposed && generation === this.writeGeneration) await this.read(++this.readGeneration);
+						if (checked) throw new Error(response.result.error.message || "设置保存失败");
 						return;
 					}
 					this.accept(response.result.value, generation === this.writeGeneration);
@@ -171,6 +217,7 @@ window.__ModuleLoader__.load({
 					draft.revision = view.revision;
 					draft.base = view.base;
 					draft.user = view.user;
+					draft.secrets = view.secrets ?? [];
 					if (writable !== void 0) draft.writable = writable;
 					if (decoded === void 0) return;
 					draft.status = "ready";
@@ -201,7 +248,7 @@ window.__ModuleLoader__.load({
 		* (`packages/client/tsdown.client.ts`).
 		*/
 		var SettingsScopeBinder = class extends _deepseek_ai_cordis.Service {
-            controls=Object.freeze({Switch:SettingsSwitch});
+            controls=Object.freeze({Switch:SettingsSwitch,SecretField:SettingsSecretField});
 			/**
 			* @param ctx - the providing plugin's context.
 			*/

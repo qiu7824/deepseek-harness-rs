@@ -1,4 +1,6 @@
 //! Durable, lifecycle-bound feedback for finalized assistant messages.
+//! Session annotations are authoritative; the storage domain remains a
+//! compatible materialized index for older sidecar records.
 //! Rust port of `packages/feedback/message-feedback/src/index.ts`
 //! (+ `spec.ts`, `types.ts`).
 //!
@@ -16,8 +18,8 @@ mod recorded;
 pub use recorded::NegativeFeedbackRecorded;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 
 use cordis::{ArcValue, Context, Plugin, PluginError};
 use dsh_brand::Branded;
@@ -74,7 +76,7 @@ pub struct MessageFeedbackSessionIdentity {
     pub cwd: Option<String>,
 }
 
-/// One whole-Session sidecar.
+/// One whole-Session legacy sidecar or materialized feedback index.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MessageFeedbackRow {
     pub session: MessageFeedbackSessionIdentity,
@@ -99,6 +101,9 @@ pub enum MessageFeedbackFailure {
     NoteTooLarge {
         max_bytes: u64,
         actual_bytes: u64,
+    },
+    Persistence {
+        message: String,
     },
 }
 
@@ -295,12 +300,12 @@ fn same_header_identity(left: &SessionHeader, right: &SessionHeader) -> bool {
     left.id == right.id && left.created_at == right.created_at && left.cwd == right.cwd
 }
 
-/// Storage-domain sidecar service (TS `MessageFeedbackService`).
+/// Session-log feedback service with a compatible storage-domain index.
 pub struct MessageFeedbackService {
     ctx: Context,
     max_note_bytes: u64,
     table: Mutex<Option<Arc<dyn KvTable>>>,
-    operation_tails: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    operation_tails: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
     mutation_admission_open: AtomicBool,
     _domain: parking_lot::Mutex<Option<Arc<Domain>>>,
 }
@@ -331,21 +336,24 @@ impl MessageFeedbackService {
 
     /// Read feedback belonging to the current persisted Session lifecycle.
     pub async fn list(&self, request: &MessageFeedbackListRequest) -> MessageFeedbackListResult {
-        let known = self.inspect_session(&request.session_id).await?;
-        let row = self
-            .table
+        self.enqueue(&request.session_id, async {
+            let known = self.inspect_session(&request.session_id).await?;
+            let row = self
+                .table_handle()?
+                .get(request.session_id.as_str())
+                .and_then(|value| serde_json::from_value::<MessageFeedbackRow>(value).ok());
+            Ok(MessageFeedbackSuccess::of(MessageFeedbackListValue {
+                items: project_feedback(&known, row.as_ref()),
+            }))
+        })
+        .await
+    }
+
+    fn table_handle(&self) -> Result<Arc<dyn KvTable>, MessageFeedbackRejected> {
+        self.table
             .lock()
-            .as_ref()
-            .expect("table")
-            .get(request.session_id.as_str())
-            .and_then(|value| serde_json::from_value::<MessageFeedbackRow>(value).ok());
-        let items = match &row {
-            Some(row) if same_identity(row, &known.meta) => row.items.clone(),
-            _ => Vec::new(),
-        };
-        Ok(MessageFeedbackSuccess::of(MessageFeedbackListValue {
-            items,
-        }))
+            .clone()
+            .ok_or_else(|| persistence_failure("message feedback service is closed"))
     }
 
     /// Create or replace feedback for one derived append-origin assistant
@@ -365,7 +373,7 @@ impl MessageFeedbackService {
                     },
                 ));
             }
-            let durable = self.ensure_target_durable(&known).await;
+            let durable = self.ensure_target_durable(&known).await?;
             if !same_header_identity(&durable.meta, &known.meta)
                 || !has_feedback_target(&durable, &request.message_id)
             {
@@ -376,17 +384,11 @@ impl MessageFeedbackService {
                     },
                 ));
             }
-            let table = self.table.lock().as_ref().expect("table").clone();
+            let table = self.table_handle()?;
             let stored = table
                 .get(request.session_id.as_str())
                 .and_then(|value| serde_json::from_value::<MessageFeedbackRow>(value).ok());
-            let current = match &stored {
-                Some(stored) if same_identity(stored, &durable.meta) => Some(stored),
-                _ => None,
-            };
-            let mut items: Vec<MessageFeedbackItem> = current
-                .map(|current| current.items.clone())
-                .unwrap_or_default();
+            let mut items = project_feedback(&durable, stored.as_ref());
             let index = items
                 .iter()
                 .position(|item| item.message_id == request.message_id);
@@ -426,13 +428,25 @@ impl MessageFeedbackService {
                 session: identity_of(&durable.meta),
                 items,
             };
-            table
+            self.record(
+                &durable.meta,
+                "feedback/message-put",
+                serde_json::json!({"item":item}),
+            )
+            .await?;
+            if let Err(error) = table
                 .put(
                     request.session_id.as_str(),
                     serde_json::to_value(&row).expect("row"),
                 )
                 .await
-                .expect("message-feedback: table.put failed");
+            {
+                self.ctx
+                    .named_logger(Some("message-feedback"))
+                    .warn(vec![cordis::arc(format!(
+                        "feedback index update failed: {error}"
+                    ))]);
+            }
             if let Some(observation) =
                 recorded::negative_observation(&durable, &item, existing.as_ref())
             {
@@ -451,17 +465,11 @@ impl MessageFeedbackService {
     ) -> MessageFeedbackDeleteResult {
         self.enqueue(&request.session_id, async {
             let known = self.inspect_session(&request.session_id).await?;
-            let table = self.table.lock().as_ref().expect("table").clone();
+            let table = self.table_handle()?;
             let stored = table
                 .get(request.session_id.as_str())
                 .and_then(|value| serde_json::from_value::<MessageFeedbackRow>(value).ok());
-            let current = match &stored {
-                Some(stored) if same_identity(stored, &known.meta) => Some(stored),
-                _ => None,
-            };
-            let items: Vec<MessageFeedbackItem> = current
-                .map(|current| current.items.clone())
-                .unwrap_or_default();
+            let items = project_feedback(&known, stored.as_ref());
             let existing = items
                 .iter()
                 .find(|item| item.message_id == request.message_id);
@@ -481,7 +489,13 @@ impl MessageFeedbackService {
                 .into_iter()
                 .filter(|item| item.message_id != request.message_id)
                 .collect();
-            table
+            self.record(
+                &known.meta,
+                "feedback/message-delete",
+                serde_json::json!({"messageId":request.message_id,"version":request.if_version}),
+            )
+            .await?;
+            if let Err(error) = table
                 .put(
                     request.session_id.as_str(),
                     serde_json::to_value(&MessageFeedbackRow {
@@ -491,7 +505,13 @@ impl MessageFeedbackService {
                     .expect("row"),
                 )
                 .await
-                .expect("put");
+            {
+                self.ctx
+                    .named_logger(Some("message-feedback"))
+                    .warn(vec![cordis::arc(format!(
+                        "feedback index update failed: {error}"
+                    ))]);
+            }
             Ok(MessageFeedbackSuccess::of(MessageFeedbackDeleteValue {
                 absent: true,
             }))
@@ -514,44 +534,52 @@ impl MessageFeedbackService {
                 },
             ));
         };
-        let live = self
-            .ctx
-            .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
-            .map(|slot| slot.as_ref().clone());
-        if live
-            .as_ref()
-            .is_none_or(|store| store.get(session_id).is_none())
-        {
-            let snapshots = persistence
-                .list_snapshots()
-                .await
-                .expect("message-feedback: listSnapshots failed");
-            if !snapshots
-                .iter()
-                .any(|snapshot| snapshot.header.id == *session_id)
-                && live
-                    .as_ref()
-                    .is_none_or(|store| store.get(session_id).is_none())
-            {
-                return Err(MessageFeedbackRejected::of(
-                    MessageFeedbackFailure::SessionNotFound {
-                        session_id: session_id.clone(),
-                    },
-                ));
+        persistence.inspect(session_id).await.map_err(|error| {
+            if error.contains("not found") || error.contains("does not exist") {
+                MessageFeedbackRejected::of(MessageFeedbackFailure::SessionNotFound {
+                    session_id: session_id.clone(),
+                })
+            } else {
+                persistence_failure(error)
             }
-        }
-        persistence
-            .inspect(session_id)
-            .await
-            .map_err(|error| panic!("message-feedback: inspect failed: {error}"))
+        })
     }
 
-    async fn ensure_target_durable(&self, inspection: &SessionInspection) -> SessionInspection {
+    async fn record(
+        &self,
+        meta: &SessionHeader,
+        kind: &str,
+        mut data: JsonValue,
+    ) -> Result<(), MessageFeedbackRejected> {
+        data["sessionId"] = serde_json::json!(meta.id);
+        data["session"] = serde_json::to_value(identity_of(meta)).expect("feedback identity");
         let persistence = self
             .ctx
             .get_typed::<Arc<dyn SessionPersistenceApi>>("sessionPersistence", false)
             .map(|slot| slot.as_ref().clone())
-            .expect("message-feedback: no persistence service");
+            .ok_or_else(|| {
+                MessageFeedbackRejected::of(MessageFeedbackFailure::Persistence {
+                    message: "session persistence is unavailable".into(),
+                })
+            })?;
+        persistence
+            .append_annotation(meta, kind, data)
+            .await
+            .map(|_| ())
+            .map_err(|message| {
+                MessageFeedbackRejected::of(MessageFeedbackFailure::Persistence { message })
+            })
+    }
+
+    async fn ensure_target_durable(
+        &self,
+        inspection: &SessionInspection,
+    ) -> Result<SessionInspection, MessageFeedbackRejected> {
+        let persistence = self
+            .ctx
+            .get_typed::<Arc<dyn SessionPersistenceApi>>("sessionPersistence", false)
+            .map(|slot| slot.as_ref().clone())
+            .ok_or_else(|| persistence_failure("session persistence is unavailable"))?;
         let store = self
             .ctx
             .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
@@ -567,23 +595,23 @@ impl MessageFeedbackService {
                 .expect("store")
                 .flush(live)
                 .await
-                .expect("message-feedback: session flush failed");
+                .map_err(persistence_failure)?;
             if !flushed {
-                panic!(
-                    "message-feedback: no durability listener participated for live session '{}'",
+                return Err(persistence_failure(format!(
+                    "no durability listener participated for live session '{}'",
                     inspection.meta.id
-                );
+                )));
             }
         }
         let result = persistence
             .read_from(&inspection.meta.id, 0)
             .await
-            .expect("message-feedback: readFrom failed");
-        SessionInspection {
+            .map_err(persistence_failure)?;
+        Ok(SessionInspection {
             meta: result.meta,
             inherited_event_count: result.inherited_event_count,
             events: result.events,
-        }
+        })
     }
 
     fn resolve_note(&self, note: Option<&str>) -> Result<Option<String>, MessageFeedbackFailure> {
@@ -614,16 +642,27 @@ impl MessageFeedbackService {
         F: std::future::Future<Output = Result<T, MessageFeedbackRejected>>,
     {
         if !self.mutation_admission_open.load(Ordering::SeqCst) {
-            panic!("message-feedback: service is disposing");
+            return Err(persistence_failure("message feedback service is closed"));
         }
         let key = session_id.as_str().to_string();
-        let tail = self
-            .operation_tails
-            .lock()
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone();
+        let tail = {
+            let mut tails = self.operation_tails.lock();
+            if tails.len() >= 256 {
+                tails.retain(|_, tail| tail.strong_count() > 0);
+            }
+            match tails.get(&key).and_then(Weak::upgrade) {
+                Some(tail) => tail,
+                None => {
+                    let tail = Arc::new(tokio::sync::Mutex::new(()));
+                    tails.insert(key, Arc::downgrade(&tail));
+                    tail
+                }
+            }
+        };
         let _guard = tail.lock().await;
+        if !self.mutation_admission_open.load(Ordering::SeqCst) {
+            return Err(persistence_failure("message feedback service is closed"));
+        }
         operation.await
     }
 
@@ -637,6 +676,65 @@ impl MessageFeedbackService {
             futures::executor::block_on(domain.close());
         }
     }
+}
+
+fn persistence_failure(message: impl Into<String>) -> MessageFeedbackRejected {
+    MessageFeedbackRejected::of(MessageFeedbackFailure::Persistence {
+        message: message.into(),
+    })
+}
+
+fn project_feedback(
+    inspection: &SessionInspection,
+    legacy: Option<&MessageFeedbackRow>,
+) -> Vec<MessageFeedbackItem> {
+    let mut items = legacy
+        .filter(|row| same_identity(row, &inspection.meta))
+        .map(|row| row.items.clone())
+        .unwrap_or_default();
+    for event in &inspection.events {
+        if event.data.get("sessionId").and_then(JsonValue::as_str)
+            != Some(inspection.meta.id.as_str())
+        {
+            continue;
+        }
+        let Some(identity) = event.data.get("session").and_then(|value| {
+            serde_json::from_value::<MessageFeedbackSessionIdentity>(value.clone()).ok()
+        }) else {
+            continue;
+        };
+        if identity != identity_of(&inspection.meta) {
+            continue;
+        }
+        match event.type_.as_str() {
+            "feedback/message-put" => {
+                if let Some(item) = event
+                    .data
+                    .get("item")
+                    .filter(|value| validate_item(value).is_ok())
+                    .and_then(|value| {
+                        serde_json::from_value::<MessageFeedbackItem>(value.clone()).ok()
+                    })
+                {
+                    if let Some(existing) = items
+                        .iter_mut()
+                        .find(|existing| existing.message_id == item.message_id)
+                    {
+                        *existing = item
+                    } else {
+                        items.push(item)
+                    }
+                }
+            }
+            "feedback/message-delete" => {
+                if let Some(id) = event.data.get("messageId").and_then(JsonValue::as_str) {
+                    items.retain(|item| item.message_id.as_str() != id);
+                }
+            }
+            _ => {}
+        }
+    }
+    items
 }
 
 fn has_feedback_target(inspection: &SessionInspection, message_id: &dsh_llm::MessageId) -> bool {

@@ -313,6 +313,7 @@ impl Catalog {
                     "status",
                     "available",
                     "reason",
+                    "failureCode",
                     "inference",
                     "streaming",
                     "toolCall",
@@ -380,6 +381,7 @@ impl Catalog {
             entry["status"] = json!("testing");
             entry["available"] = json!(false);
             entry["reason"] = Value::Null;
+            entry["failureCode"] = Value::Null;
             state.testing = Some(model.to_string());
         }
         let service = self.clone();
@@ -447,6 +449,9 @@ impl Catalog {
                             });
                             entry["available"] = json!(false);
                             entry["reason"] = json!(error);
+                            if error.contains(super::free_probe::CLIENT_RESTRICTION_REASON) {
+                                entry["failureCode"] = json!("PROVIDER_CLIENT_RESTRICTED");
+                            }
                         }
                     }
                 }

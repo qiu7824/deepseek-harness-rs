@@ -354,6 +354,19 @@ impl SubagentRuntime {
     }
 
     /// Deliver one model-authored message between exact live adjacent Agents.
+    pub async fn update_queue(
+        &self,
+        parent: Arc<dyn Agent>,
+        child_id: &dsh_session::SessionId,
+        item_id: &dsh_llm::MessageId,
+        action: crate::continuation::SubagentQueueAction,
+    ) -> Result<(), SubagentError> {
+        self.manager()
+            .update_queue(parent, child_id, item_id, action)
+            .await
+    }
+
+    /// Deliver one model-authored message between exact live adjacent Agents.
     pub async fn send_message(
         &self,
         sender: Arc<dyn Agent>,
@@ -386,6 +399,17 @@ impl SubagentRuntime {
         content: &[dsh_llm::ContentBlock],
     ) -> dsh_llm::MessageId {
         self.manager().submit_followup(admission, content)
+    }
+
+    /// Roll back one unaccepted preflight admission.
+    pub fn submit_followup_with_context(
+        &self,
+        admission: crate::continuation::SubagentFollowupAdmission,
+        content: &[dsh_llm::ContentBlock],
+        context: Option<dsh_llm::UserMessage>,
+    ) -> dsh_llm::MessageId {
+        self.manager()
+            .submit_followup_with_context(admission, content, context)
     }
 
     /// Roll back one unaccepted preflight admission.

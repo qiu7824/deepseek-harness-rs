@@ -9,7 +9,8 @@ window.__ModuleLoader__.load({
 			backoffBaseMs: 500,
 			backoffFactor: 2,
 			backoffMaxMs: 1e4,
-			generationReadyTimeoutMs: 3e3
+			generationReadyWarningMs: 3e3,
+			generationReadyTimeoutMs: 15e3
 		};
 		const MANUAL_RECONNECT = /* @__PURE__ */ new Error("connection: manual reconnect requested");
 		const NETWORK_STATE_CHANGED = /* @__PURE__ */ new Error("connection: browser network state changed");
@@ -45,6 +46,8 @@ window.__ModuleLoader__.load({
 			current = null;
 			retryDelay = null;
 			running = false;
+			loopId = 0;
+			loopTask = null;
 			immediateRetry = false;
 			networkAvailable = true;
 			lastState;
@@ -52,20 +55,29 @@ window.__ModuleLoader__.load({
 			constructor(source, sinks = {}, config = {}) {
 				this.source = source;
 				this.sinks = sinks;
-				this.config = {
-					...CONNECTION_DEFAULTS,
-					...config
-				};
+				this.config = { ...CONNECTION_DEFAULTS };
+				for (const [key, value] of Object.entries(config)) {
+					if (!(key in CONNECTION_DEFAULTS) || !Number.isFinite(value)) continue;
+					const minimum = 1;
+					const maximum = key === "backoffFactor" ? 10 : 12e4;
+					if (value >= minimum && value <= maximum) this.config[key] = value;
+				}
 			}
 			/** Idempotent: begin the connect/pump/reconnect loop. */
 			start() {
 				if (this.running) return;
 				this.running = true;
-				this.loop();
+				const runId = ++this.loopId;
+				const previous = this.loopTask;
+				this.loopTask = (async () => {
+					await previous;
+					if (this.running && this.loopId === runId) await this.loop(runId);
+				})();
 			}
 			/** Stop the loop and abort the current generation source. */
 			stop() {
 				this.running = false;
+				this.loopId++;
 				this.current?.abort();
 				this.current = null;
 				this.retryDelay?.abort();
@@ -104,29 +116,25 @@ window.__ModuleLoader__.load({
 				const cap = this.backoffCap(attempt);
 				return cap / 2 + Math.random() * (cap / 2);
 			}
-			isFinalBackoffTier(attempt) {
-				const cap = this.backoffCap(attempt);
-				const nextCap = this.backoffCap(attempt + 1);
-				return cap >= this.config.backoffMaxMs || !Number.isFinite(nextCap) || nextCap <= cap;
-			}
 			/** Read through a method: stop() flips the flag across awaits, so narrowing from the loop condition must not stick. */
 			isRunning() {
 				return this.running;
 			}
 			/** Re-read both mutable liveness guards after a potentially reentrant sink. */
 			isGenerationActive(controller) {
-				return this.isRunning() && !controller.signal.aborted;
+				return this.isRunning() && this.current === controller && !controller.signal.aborted;
 			}
-			async loop() {
+			async loop(runId) {
+				const currentRun = () => this.running && this.loopId === runId;
 				let retry = false;
-				while (this.running) {
+				while (currentRun()) {
 					if (!this.networkAvailable && !this.immediateRetry) {
 						const retryDelay = new AbortController();
 						this.retryDelay = retryDelay;
 						this.emitState("disconnected");
 						await waitForAbort(retryDelay.signal);
 						if (this.retryDelay === retryDelay) this.retryDelay = null;
-						if (!this.isRunning()) return;
+						if (!currentRun()) return;
 						retry = true;
 						continue;
 					}
@@ -136,30 +144,22 @@ window.__ModuleLoader__.load({
 						this.immediateRetry = false;
 						if (immediate) this.attempt = 0;
 						manualAttempt = immediate;
-						if (!immediate && this.attempt > 0 && this.isFinalBackoffTier(this.attempt)) {
-							const retryDelay = new AbortController();
-							this.retryDelay = retryDelay;
-							this.emitState("disconnected");
-							await waitForAbort(retryDelay.signal);
-							if (this.retryDelay === retryDelay) this.retryDelay = null;
-							continue;
-						}
 						const attempt = ++this.attempt;
 						this.emitState("connecting");
-						if (!this.isRunning()) return;
+						if (!currentRun()) return;
 						if (!immediate) {
 							const retryDelay = new AbortController();
 							this.retryDelay = retryDelay;
 							await sleep(this.backoffDelay(attempt), retryDelay.signal);
 							if (this.retryDelay === retryDelay) this.retryDelay = null;
-							if (!this.isRunning()) return;
+							if (!currentRun()) return;
 							if (retryDelay.signal.aborted) continue;
 						}
 						console.warn(`[connection] connection lost, retry #${String(attempt)}`);
 						this.callSink(() => {
 							this.sinks.onReconnectRequested?.();
 						});
-						if (!this.isRunning()) return;
+						if (!currentRun()) return;
 					}
 					const gen = ++this.generation;
 					const ac = new AbortController();
@@ -176,7 +176,7 @@ window.__ModuleLoader__.load({
 						rejectSourceLost = reject;
 					});
 					const reportReady = (host) => {
-						if (sourceReady) return;
+						if (sourceReady || gen !== this.generation || !this.isGenerationActive(ac)) return;
 						sourceReady = true;
 						resolveReady(host);
 					};
@@ -185,7 +185,7 @@ window.__ModuleLoader__.load({
 							if (gen === this.generation && !ac.signal.aborted) ac.abort();
 							resolve();
 						};
-						Promise.resolve().then(() => this.source(ac.signal, reportReady)).then(() => {
+						Promise.resolve().then(() => ac.signal.aborted ? undefined : this.source(ac.signal, reportReady)).then(() => {
 							const error = /* @__PURE__ */ new Error("connection generation ended");
 							if (!sourceReady) rejectReady(error);
 							rejectSourceLost(error);
@@ -198,7 +198,7 @@ window.__ModuleLoader__.load({
 						});
 					});
 					try {
-						const host = await Promise.race([waitForReady(ready, this.config.generationReadyTimeoutMs, ac.signal), sourceLost]);
+						const host = await Promise.race([waitForReady(ready, this.config.generationReadyTimeoutMs, ac.signal, this.config.generationReadyWarningMs), sourceLost]);
 						if (ac.signal.aborted) throw new Error("generation aborted during readiness handshake");
 						this.attempt = 0;
 						this.emitState("connected");
@@ -209,7 +209,7 @@ window.__ModuleLoader__.load({
 						if (!ac.signal.aborted) ac.abort();
 					}
 					await failed;
-					if (!this.isRunning()) return;
+					if (!currentRun()) return;
 					if (manualAttempt) this.attempt = 0;
 					retry = true;
 				}
@@ -229,13 +229,14 @@ window.__ModuleLoader__.load({
 				}
 			}
 		};
-		/** Await source readiness while reporting, but not cancelling, a slow Host. */
-		function waitForReady(ready, timeoutMs, signal) {
+		/** Bound the handshake; the controller aborts and awaits source cleanup before retrying. */
+		function waitForReady(ready, timeoutMs, signal, warningMs) {
 			return new Promise((resolve, reject) => {
 				let settled = false;
-				const timeout = setTimeout(() => {
-					console.warn(`[connection] generation is still not ready after ${String(timeoutMs)}ms`);
-				}, timeoutMs);
+				const warning = setTimeout(() => {
+					console.warn(`[connection] generation is still not ready after ${String(warningMs)}ms`);
+				}, Math.min(warningMs ?? timeoutMs, timeoutMs));
+				const timeout = setTimeout(() => finish({ error: new Error(`connection readiness timed out after ${timeoutMs}ms`) }), timeoutMs);
 				const aborted = () => {
 					finish({ error: new Error("connection generation aborted", { cause: signal.reason }) });
 				};
@@ -243,11 +244,13 @@ window.__ModuleLoader__.load({
 					if (settled) return;
 					settled = true;
 					clearTimeout(timeout);
+					clearTimeout(warning);
 					signal.removeEventListener("abort", aborted);
 					if ("error" in outcome) reject(outcome.error);
 					else resolve(outcome.value);
 				};
 				signal.addEventListener("abort", aborted, { once: true });
+				if (signal.aborted) aborted();
 				ready.then((value) => {
 					finish({ value });
 				}, (error) => {
@@ -10072,9 +10075,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					wake = void 0;
 				};
 				const handleOpen = () => {
-					onOpen?.();
+					if (!signal.aborted) onOpen?.();
 				};
 				const handleMessage = (event) => {
+					if (signal.aborted) return;
 					let full;
 					let frame;
 					try {
@@ -10098,6 +10102,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					enqueue({ kind: "end" });
 				};
 				const handleAbort = () => {
+					inbox.length = 0;
+					enqueue({ kind: "end" });
 					if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) socket.close();
 				};
 				socket.addEventListener("open", handleOpen);

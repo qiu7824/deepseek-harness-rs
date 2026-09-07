@@ -138,6 +138,9 @@ def main() -> None:
         prefix + "web/dist/plugins/ui-theme.js",
         prefix + "plugins/dsh-context-jump/lib/client.js",
     }
+    if args.platform == "windows":
+        required.add(prefix + "dsh-desktop-controller.exe")
+        required.add(prefix + "dsh-uu-controller.exe")
     if args.variant == "skin":
         required.add(prefix + "plugins/dsh-skin-center/lib/client.js")
     elif any(name.startswith(prefix + "plugins/dsh-skin-center/") for name in names):

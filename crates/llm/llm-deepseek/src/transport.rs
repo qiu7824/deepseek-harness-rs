@@ -2,6 +2,19 @@ use http_body_util::{BodyExt, Full};
 use hyper::{HeaderMap, StatusCode};
 use hyper_util::rt::TokioIo;
 
+fn body_error(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = format!("HTTP response body failed: {error}");
+    let mut cause = error.source();
+    // reqwest's `decode` category also wraps a truncated HTTP body. Preserve
+    // the actual cause instead of misdiagnosing every failure as compression.
+    for _ in 0..8 {
+        let Some(error) = cause else { break };
+        message.push_str(&format!("; caused by: {error}"));
+        cause = error.source();
+    }
+    message
+}
+
 enum ResponseBody {
     Reqwest(reqwest::Response),
     Hyper {
@@ -27,10 +40,9 @@ impl Drop for CancelableResponse {
 impl CancelableResponse {
     pub async fn next_data(&mut self) -> Result<Option<bytes::Bytes>, String> {
         match &mut self.response {
-            ResponseBody::Reqwest(response) => response
-                .chunk()
-                .await
-                .map_err(|error| format!("HTTP response body failed: {error}")),
+            ResponseBody::Reqwest(response) => {
+                response.chunk().await.map_err(|error| body_error(&error))
+            }
             ResponseBody::Hyper { body, .. } => loop {
                 match body.frame().await {
                     Some(Ok(frame)) => {
@@ -38,7 +50,7 @@ impl CancelableResponse {
                             return Ok(Some(data));
                         }
                     }
-                    Some(Err(error)) => return Err(format!("HTTP response body failed: {error}")),
+                    Some(Err(error)) => return Err(body_error(&error)),
                     None => return Ok(None),
                 }
             },

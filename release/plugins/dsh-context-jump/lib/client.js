@@ -4,11 +4,9 @@ window.__ModuleLoader__.load({
 		var module = { exports: {} };
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
-		//#region \0rolldown/runtime.js
-		var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod), cb = null), mod.exports);
-		//#endregion
 		let react = require("react");
 		let react_dom = require("react-dom");
+		const { displaySessionReferences } = require("@deepseek-ai/dsh-client-runtime/client");
 		//#region src/client/locales.ts
 		/** `userRail` namespace dictionaries. */
 		/** Simplified Chinese dictionary (the key-set source of truth). */
@@ -77,7 +75,7 @@ window.__ModuleLoader__.load({
 		* @returns the capped single-line-ish preview; short text is unchanged.
 		*/
 		function snippet(text, max) {
-			const collapsed = text.replace(/\s+/g, " ").trim();
+			const collapsed = displaySessionReferences(text).replace(/\s+/g, " ").trim();
 			return collapsed.length <= max ? collapsed : `${collapsed.slice(0, max)}…`;
 		}
 		/**
@@ -120,7 +118,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:/workspace/dsh-user-message-rail/src/client/UserRail.module.css.mjs
-		const css = "._6bmela_layer{z-index:10;pointer-events:none;width:20px;animation:.42s _6bmela_dsh-user-rail-fade-in;position:fixed;top:0;bottom:0}@media (pointer:coarse),(width<=767px){._6bmela_layer{display:none}}@keyframes _6bmela_dsh-user-rail-fade-in{0%{opacity:0}to{opacity:1}}._6bmela_tick{cursor:pointer;pointer-events:auto;background:0 0;border:0;height:10px;margin:0;padding:0;transition:width .12s;position:absolute;left:0;transform:translateY(-50%)}._6bmela_tick:before{content:\"\";background:var(--dsw-alias-label-tertiary);opacity:.5;border-radius:1px;width:100%;height:2px;transition:background-color .12s,opacity .12s;position:absolute;top:50%;left:0;transform:translateY(-50%)}._6bmela_tick[data-current]:before{background:var(--dsw-alias-label-primary);opacity:1}._6bmela_popover{z-index:100;background:var(--dsw-alias-tooltip-bg);width:max-content;max-width:320px;max-height:140px;color:var(--dsw-static-neutral-bluish-00);box-shadow:var(--dsw-shadow-lv3);pointer-events:auto;border-radius:8px;padding:8px 10px;position:absolute;left:calc(100% + 14px);overflow:hidden}._6bmela_popoverText{white-space:pre-line;overflow-wrap:break-word;font-size:13px;line-height:20px}._6bmela_popoverMeta{opacity:.72;margin-top:4px;font-size:12px;line-height:16px}._6bmela_tick:before,._6bmela_tick[data-current]:before{opacity:0}._6bmela_layer:hover ._6bmela_tick:before{opacity:.5;transition-delay:.4s}._6bmela_layer:hover ._6bmela_tick[data-current]:before{opacity:1}._6bmela_layer:focus-visible ._6bmela_tick:before,._6bmela_layer:focus-within ._6bmela_tick:before{opacity:.5;transition-delay:0}._6bmela_layer:focus-within ._6bmela_tick[data-current]:before{opacity:1}";
+		const css = "._6bmela_layer{z-index:10;pointer-events:none;width:20px;animation:.42s _6bmela_dsh-user-rail-fade-in;position:fixed;top:0;bottom:0}@media (width<=767px){._6bmela_layer{width:16px}._6bmela_popover{max-width:min(280px,calc(100vw - 64px))}}@keyframes _6bmela_dsh-user-rail-fade-in{0%{opacity:0}to{opacity:1}}._6bmela_tick{cursor:pointer;pointer-events:auto;background:0 0;border:0;height:10px;margin:0;padding:0;transition:width .12s;position:absolute;left:0;transform:translateY(-50%)}._6bmela_tick:before{content:\"\";background:var(--dsw-alias-label-tertiary);opacity:.5;border-radius:1px;width:100%;height:2px;transition:background-color .12s,opacity .12s;position:absolute;top:50%;left:0;transform:translateY(-50%)}._6bmela_tick[data-current]:before{background:var(--dsw-alias-label-primary);opacity:1}._6bmela_popover{z-index:100;background:var(--dsw-alias-tooltip-bg);width:max-content;max-width:320px;max-height:140px;color:var(--dsw-static-neutral-bluish-00);box-shadow:var(--dsw-shadow-lv3);pointer-events:auto;border-radius:8px;padding:8px 10px;position:absolute;left:calc(100% + 14px);overflow:hidden}._6bmela_popoverText{white-space:pre-line;overflow-wrap:break-word;font-size:13px;line-height:20px}._6bmela_popoverMeta{opacity:.72;margin-top:4px;font-size:12px;line-height:16px}._6bmela_tick:before{opacity:.35}._6bmela_tick[data-current]:before{opacity:.8}._6bmela_layer:hover ._6bmela_tick:before{opacity:.5;transition-delay:.4s}._6bmela_layer:hover ._6bmela_tick[data-current]:before{opacity:1}._6bmela_layer:focus-visible ._6bmela_tick:before,._6bmela_layer:focus-within ._6bmela_tick:before{opacity:.5;transition-delay:0}._6bmela_layer:focus-within ._6bmela_tick[data-current]:before{opacity:1}";
 		const tagId = "dsh-user-message-rail//workspace/dsh-user-message-rail/src/client/UserRail.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -138,51 +136,7 @@ window.__ModuleLoader__.load({
 			"tick": "_6bmela_tick"
 		};
 		//#endregion
-		//#region node_modules/react/cjs/react-jsx-runtime.production.min.js
-		/**
-		* @license React
-		* react-jsx-runtime.production.min.js
-		*
-		* Copyright (c) Facebook, Inc. and its affiliates.
-		*
-		* This source code is licensed under the MIT license found in the
-		* LICENSE file in the root directory of this source tree.
-		*/
-		var require_react_jsx_runtime_production_min = /* @__PURE__ */ __commonJSMin(((exports) => {
-			var f = require("react");
-			var k = Symbol.for("react.element");
-			var m = Object.prototype.hasOwnProperty;
-			var n = f.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentOwner;
-			var p = {
-				key: !0,
-				ref: !0,
-				__self: !0,
-				__source: !0
-			};
-			function q(c, a, g) {
-				var b, d = {}, e = null, h = null;
-				void 0 !== g && (e = "" + g);
-				void 0 !== a.key && (e = "" + a.key);
-				void 0 !== a.ref && (h = a.ref);
-				for (b in a) m.call(a, b) && !p.hasOwnProperty(b) && (d[b] = a[b]);
-				if (c && c.defaultProps) for (b in a = c.defaultProps, a) void 0 === d[b] && (d[b] = a[b]);
-				return {
-					$$typeof: k,
-					type: c,
-					key: e,
-					ref: h,
-					props: d,
-					_owner: n.current
-				};
-			}
-			exports.jsx = q;
-			exports.jsxs = q;
-		}));
-		//#endregion
-		//#region src/client/UserRail.tsx
-		var import_jsx_runtime = (/* @__PURE__ */ __commonJSMin(((exports, module) => {
-			module.exports = require_react_jsx_runtime_production_min();
-		})))();
+		let import_jsx_runtime = require("react/jsx-runtime");
 		/** Preview cap: a very long message stays a summary in the popover. */
 		const PREVIEW_MAX = 200;
 		/** Accessible tick-label cap; the popover carries the full preview. */
@@ -199,18 +153,23 @@ window.__ModuleLoader__.load({
 		}
 		/** Locate the active conversation scrollport and its chat flow, when mounted. */
 		function conversationBox() {
-			const port = document.querySelector("[data-conversation-scroll]");
+			const ports = [...document.querySelectorAll("[data-conversation-scroll]")];
+			const port = ports.find((node) => node.getClientRects().length > 0 && node.querySelector("[data-chat-flow]")) ?? ports.find((node) => node.querySelector("[data-chat-flow]")) ?? null;
 			const flow = port?.querySelector("[data-chat-flow]") ?? null;
 			return port === null || flow === null ? null : {
 				port,
 				flow
 			};
 		}
-		/** The strip's left edge: inset from the chat box's left face so the whole
-		*  rail sits inside the chat window, its tick line aligned with the window's
-		*  top title bar. */
+		/** Keep the strip inside the conversation's visible body. */
 		function stripLeft(port) {
-			return port.getBoundingClientRect().left + 20;
+			return port.getBoundingClientRect().left + (window.innerWidth <= 767 ? 6 : 20);
+		}
+		function stripBounds(port) {
+			if (port === undefined) return { top: 0, height: 0 };
+			const rect = port.getBoundingClientRect();
+			const top = Math.max(0, rect.top);
+			return { top, height: Math.max(0, Math.min(window.innerHeight, rect.bottom) - top) };
 		}
 		/**
 		* The rail entry: pure presentation over the session kit — every datum
@@ -225,14 +184,15 @@ window.__ModuleLoader__.load({
 				railFace.getSnapshot,
 				railFace.getSnapshot
 			) ?? [];
-			const [railHeight, setRailHeight] = (0, react.useState)(() => window.innerHeight);
+			const [railHeight, setRailHeight] = (0, react.useState)(() => stripBounds(conversationBox()?.port).height);
+			const [railTop, setRailTop] = (0, react.useState)(() => stripBounds(conversationBox()?.port).top);
 			const max = maxVisibleTicks(railHeight);
 			const allEntries = (0, react.useMemo)(() => Array.isArray(indexed) && indexed.length > 0 ? indexed : userEntries(order, nodes), [indexed, order, nodes]);
 			const [windowStart, setWindowStart] = (0, react.useState)(0);
 			(0, react.useEffect)(() => {
 				setWindowStart(Math.max(0, allEntries.length - max));
 			}, [allEntries.length, max]);
-			const entries = (0, react.useMemo)(() => allEntries.slice(windowStart, windowStart + max), [allEntries, windowStart, max]);
+			const entries = (0, react.useMemo)(() => allEntries.slice(Math.min(windowStart, Math.max(0, allEntries.length - max)), Math.min(windowStart, Math.max(0, allEntries.length - max)) + max), [allEntries, windowStart, max]);
 			const pageTicks = (direction) => setWindowStart((current) => Math.max(0, Math.min(Math.max(0, allEntries.length - max), current + direction * Math.max(1, max - 1))));
 			const entriesRef = (0, react.useRef)(entries);
 			entriesRef.current = entries;
@@ -250,12 +210,14 @@ window.__ModuleLoader__.load({
 			railLeftRef.current = railLeft;
 			const railHeightRef = (0, react.useRef)(railHeight);
 			railHeightRef.current = railHeight;
+			const railTopRef = (0, react.useRef)(railTop);
+			railTopRef.current = railTop;
 			const currentRef = (0, react.useRef)(current);
 			currentRef.current = current;
 			const [popoverTop, setPopoverTop] = (0, react.useState)(null);
 			const popoverRef = (0, react.useRef)(null);
 			const rafRef = (0, react.useRef)(0);
-			const ready = entries.length > 0 && box !== null && railLeft !== null;
+			const ready = entries.length > 0 && box !== null && railLeft !== null && railHeight > 0;
 			/** The viewport's vertical center: the whole tick set is symmetric around it. */
 			const railCenter = railHeight / 2;
 			/** Half the set's height: offsets the group so the first and last lines
@@ -277,7 +239,11 @@ window.__ModuleLoader__.load({
 					railLeftRef.current = nextLeft;
 					setRailLeft(nextLeft);
 				}
-				const nextHeight = window.innerHeight;
+				const { top: nextTop, height: nextHeight } = stripBounds(next?.port);
+				if (railTopRef.current !== nextTop) {
+					railTopRef.current = nextTop;
+					setRailTop(nextTop);
+				}
 				if (railHeightRef.current !== nextHeight) {
 					railHeightRef.current = nextHeight;
 					setRailHeight(nextHeight);
@@ -293,9 +259,10 @@ window.__ModuleLoader__.load({
 				const viewportCenter = port.getBoundingClientRect().top + port.clientHeight / 2;
 				let best = null;
 				let bestDist = Infinity;
+				const renderedRows = new Map([...flow.querySelectorAll("[data-chat-anchor-key]")].map((row) => [row.dataset.chatAnchorKey, row]));
 				entriesRef.current.forEach((entry, index) => {
-					const row = findRow(flow, entry.key);
-					if (row === null) return;
+					const row = renderedRows.get(entry.key);
+					if (row === undefined) return;
 					const rect = row.getBoundingClientRect();
 					const rowCenter = rect.top + rect.height / 2;
 					const dist = Math.abs(rowCenter - viewportCenter);
@@ -318,12 +285,16 @@ window.__ModuleLoader__.load({
 				});
 			}, [refresh]);
 			(0, react.useEffect)(() => {
-				const observer = new MutationObserver(scheduleRefresh);
+				const observer = new MutationObserver((records) => {
+					const current = boxRef.current;
+					if (current === null || !current.port.isConnected || !current.flow.isConnected || records.some((record) => current.flow.contains(record.target))) scheduleRefresh();
+				});
 				observer.observe(document.body, {
 					childList: true,
 					subtree: true
 				});
-				return () => observer.disconnect();
+				scheduleRefresh();
+				return () => { observer.disconnect(); if (rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = 0; };
 			}, [scheduleRefresh]);
 			(0, react.useEffect)(() => {
 				window.addEventListener("resize", scheduleRefresh);
@@ -334,6 +305,7 @@ window.__ModuleLoader__.load({
 				if (current === null || typeof ResizeObserver === "undefined") return;
 				const observer = new ResizeObserver(scheduleRefresh);
 				observer.observe(current.port);
+				observer.observe(current.flow);
 				return () => observer.disconnect();
 			}, [box, scheduleRefresh]);
 			(0, react.useEffect)(() => {
@@ -397,7 +369,7 @@ window.__ModuleLoader__.load({
 			const count = allEntries.length;
 			return (0, react_dom.createPortal)(/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 				className: UserRail_module_css_default.layer,
-				style: { left: railLeft },
+				style: { left: railLeft, top: railTop, height: railHeight, bottom: "auto" },
 				tabIndex: 0,
 				"aria-label": `${t("rail.aria", { count })}，当前 ${windowStart + 1}-${windowStart + entries.length}`,
 				onWheel: (event) => {
@@ -410,7 +382,7 @@ window.__ModuleLoader__.load({
 				},
 				children: [targetError !== null && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 					role: "alert",
-					style: { position: "fixed", left: railLeft + 28, top: railCenter - 18, zIndex: 101, padding: "7px 10px", borderRadius: 6, background: "var(--dsw-alias-tooltip-bg)", color: "var(--dsw-static-neutral-bluish-00)", fontSize: 12, whiteSpace: "nowrap" },
+					style: { position: "fixed", left: railLeft + 28, top: railTop + railCenter - 18, zIndex: 101, padding: "7px 10px", borderRadius: 6, background: "var(--dsw-alias-tooltip-bg)", color: "var(--dsw-static-neutral-bluish-00)", fontSize: 12, whiteSpace: "nowrap" },
 					children: targetError
 				}), entries.map((entry, index) => {
 					const label = snippet(entry.text, SNIPPET_MAX);

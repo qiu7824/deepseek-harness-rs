@@ -5,6 +5,13 @@ use serde_json::Value;
 
 pub type AbortPredicate = Arc<dyn Fn() -> bool + Send + Sync>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ControlOrigin {
+    #[default]
+    Agent,
+    Human,
+}
+
 #[derive(Clone)]
 pub struct AdapterRequest {
     pub action: String,
@@ -12,6 +19,8 @@ pub struct AdapterRequest {
     /// Host-owned isolation scope. Model arguments cannot set this value.
     /// Built-in browser sessions use the owning agent/session id.
     pub owner_id: Option<String>,
+    /// Assigned by the Host transport, never deserialized from tool arguments.
+    pub origin: ControlOrigin,
 }
 
 impl AdapterRequest {
@@ -32,11 +41,17 @@ impl AdapterRequest {
             action,
             arguments: arguments.clone(),
             owner_id: None,
+            origin: ControlOrigin::Agent,
         })
     }
 
     pub fn with_owner_id(mut self, owner_id: impl Into<String>) -> Self {
         self.owner_id = Some(owner_id.into());
+        self
+    }
+
+    pub fn with_origin(mut self, origin: ControlOrigin) -> Self {
+        self.origin = origin;
         self
     }
 }
@@ -97,6 +112,35 @@ impl std::error::Error for AdapterError {}
 #[async_trait]
 pub trait ComputerUseAdapter: Send + Sync + 'static {
     fn adapter_id(&self) -> &'static str;
+
+    /// Browsers own isolated sessions; desktop drivers override this with a
+    /// physical device identity so two conversations cannot race one desktop.
+    fn control_scope(&self, request: &AdapterRequest) -> Result<String, AdapterError> {
+        let name = request
+            .arguments
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
+            return Err(AdapterError::new(
+                "COMPUTER_USE_SESSION_ID",
+                "invalid control session name",
+            ));
+        }
+        Ok(format!(
+            "{}\0{}",
+            request.owner_id.as_deref().unwrap_or("host"),
+            name
+        ))
+    }
+
+    async fn change_control(
+        &self,
+        _request: &AdapterRequest,
+        _manual: bool,
+    ) -> Result<(), AdapterError> {
+        Ok(())
+    }
 
     /// A side-effect-light readiness probe for settings and GUI diagnostics.
     /// Implementations must not launch a controlled session here.

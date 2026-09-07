@@ -26,6 +26,7 @@ fn request(effort: &str) -> GenerateOptions {
 fn connection() -> crate::ResolvedDeepSeekOptions {
     resolve_adapter_options(&DeepSeekConfig {
         models: Some(vec![DeepSeekCatalogModel {
+            compat: None,
             execution_modes: Default::default(),
             reasoning_default: None,
             api: None,

@@ -71,6 +71,12 @@ def main() -> None:
     launcher_output = binary_name(args.platform, "dsh-launcher")
     shutil.copy2(core_source, stage / core_output)
     shutil.copy2(launcher_source, stage / launcher_output)
+    if args.platform == "windows":
+        for controller in ("dsh-desktop-controller", "dsh-uu-controller"):
+            controller_source = ROOT / "target" / "release" / f"{controller}.exe"
+            if not controller_source.is_file():
+                raise SystemExit(f"missing controller binary: build {controller} before packaging")
+            shutil.copy2(controller_source, stage / controller_source.name)
     shutil.copy2(
         ROOT / "packaging" / "windows" / "deepseek-black.ico",
         stage / "deepseek-black.ico",

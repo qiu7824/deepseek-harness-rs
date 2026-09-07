@@ -24,6 +24,34 @@ from free_model_evidence import provider_for
 DEFAULT_CATALOG_URL = "https://opencode.ai/zen/v1/models"
 DEFAULT_MODEL_ID = "ling-3.0-flash-fin-free"
 PRICING_URL = "https://opencode.ai/docs/zen/"
+CLIENT_RESTRICTION_CODE = "PROVIDER_CLIENT_RESTRICTED"
+CLIENT_RESTRICTION_REASON = "供应商仅限OpenCode，Rust匿名不可用"
+
+
+def provider_error_details(value: object, status: int | None = None) -> dict:
+    error = value.get("error", value) if isinstance(value, dict) else {}
+    error = error if isinstance(error, dict) else {"message": str(error)}
+    kind = str(error.get("type") or error.get("code") or "")[:120]
+    message = str(error.get("message") or "")[:700]
+    restricted = "opencode" in message.lower() and "only" in message.lower() and (
+        kind == "MissingSessionID" or "free tier" in message.lower())
+    return {"status": "unavailable" if restricted or status != 429 else "rate-limited",
+            "available": False,
+            **({"httpStatus": status} if status is not None else {}),
+            **({"providerErrorType": kind} if kind else {}),
+            **({"providerErrorMessage": message} if message else {}),
+            **({"failureCode": CLIENT_RESTRICTION_CODE} if restricted else {}),
+            "reason": CLIENT_RESTRICTION_REASON if restricted else (
+                f"匿名端点返回 HTTP {status}" if status is not None else message or kind or "免费模型校验失败")}
+
+
+def http_error_details(error: urllib.error.HTTPError) -> dict:
+    try:
+        raw = error.read(8192) if error.fp is not None else b""
+        value = json.loads(raw) if raw else {}
+    except (OSError, ValueError, AttributeError):
+        value = {}
+    return provider_error_details(value, error.code)
 
 
 def open_with_retry(request, timeout):
@@ -146,6 +174,9 @@ def streamed_completion(endpoint: str, body: dict, timeout: float) -> dict:
             payload = json.loads(data)
             if payload.get("error"):
                 failure = payload["error"]
+                details = provider_error_details(payload)
+                if details.get("failureCode") == CLIENT_RESTRICTION_CODE:
+                    raise ValueError(CLIENT_RESTRICTION_REASON)
                 detail = str(failure.get("code") or failure.get("type") or failure.get("message") or "provider error") if isinstance(failure, dict) else str(failure)
                 raise ValueError("free inference stream error: " + detail[:300])
             for choice in payload.get("choices") or []:
@@ -229,6 +260,9 @@ def responses_completion(endpoint: str, body: dict, timeout: float) -> dict:
             event = json.loads(value)
             kind = event.get("type")
             if kind in ("error", "response.failed", "response.incomplete"):
+                details = provider_error_details(event.get("response", event))
+                if details.get("failureCode") == CLIENT_RESTRICTION_CODE:
+                    raise ValueError(CLIENT_RESTRICTION_REASON)
                 raise ValueError("free Responses stream returned a provider failure")
             if kind == "response.output_text.delta":
                 text += event.get("delta", "")
@@ -474,12 +508,18 @@ def verify_many(url: str = DEFAULT_CATALOG_URL, binary: Path | None = None, work
                 timeout: float = 180, report_path: Path | None = None, preferred: str = DEFAULT_MODEL_ID) -> dict:
     if url != DEFAULT_CATALOG_URL:
         raise ValueError("free verification is restricted to the official anonymous endpoint")
-    catalog = fetch_model_ids(url)
-    prices = pricing_catalog()
-    ids = sorted(set(prices) | {model for model in catalog if model.endswith("-free")}, key=lambda model: (model != preferred, model))
     report = {"schemaVersion": 2, "url": url, "pricingSource": PRICING_URL,
               "verifiedAt": datetime.now(timezone.utc).isoformat(), "binarySha256": binary_sha256(binary) if binary else None,
               "models": [], "includedModels": [], "defaultModel": None}
+    save_report(report_path, report)
+    try:
+        catalog = fetch_model_ids(url)
+        prices = pricing_catalog()
+    except Exception as error:
+        report["verificationError"] = http_error_details(error) if isinstance(error, urllib.error.HTTPError) else {"reason": str(error)[:700]}
+        save_report(report_path, report)
+        raise
+    ids = sorted(set(prices) | {model for model in catalog if model.endswith("-free")}, key=lambda model: (model != preferred, model))
     for model in ids:
         row = {"model": model, "name": model, "status": "pending-verification", "available": False,
                "verifiedAt": datetime.now(timezone.utc).isoformat(), "catalogAvailable": model in catalog,
@@ -504,12 +544,13 @@ def verify_many(url: str = DEFAULT_CATALOG_URL, binary: Path | None = None, work
                 else:
                     row.update(reason="匿名流式及工具往返已通过，等待正式二进制验证")
             except urllib.error.HTTPError as error:
-                row.update(status="rate-limited" if error.code == 429 else "unavailable",
-                           httpStatus=error.code, reason=f"匿名端点返回 HTTP {error.code}")
+                row.update(http_error_details(error))
             except Exception as error:
                 message = str(error)
                 limited = "429" in message or "rate_limit" in message.lower() or "rate limit" in message.lower()
                 row.update(status="rate-limited" if limited else "unavailable", reason=message[:700])
+                if CLIENT_RESTRICTION_REASON in message:
+                    row.update(failureCode=CLIENT_RESTRICTION_CODE, available=False)
         row["verifiedAt"] = datetime.now(timezone.utc).isoformat()
         save_report(report_path, report)
         print(json.dumps({"model": model, "status": row["status"], "reason": row.get("reason")}, ensure_ascii=True), flush=True)
@@ -524,7 +565,7 @@ def main() -> None:
     parser.add_argument("--all", action="store_true", help="Check every live officially priced free candidate independently")
     parser.add_argument("--prefer", default=DEFAULT_MODEL_ID, help="Preferred default if this model passes all checks")
     parser.add_argument("--url", default=DEFAULT_CATALOG_URL)
-    parser.add_argument("--report", help="Write the successful release-gate evidence as JSON")
+    parser.add_argument("--report", help="Write successful evidence and failed verification diagnostics as JSON")
     parser.add_argument("--binary", type=Path, help="Verify a real release executable using an isolated Harness session")
     parser.add_argument("--workdir", type=Path, help="Parent directory for temporary Harness verification data")
     parser.add_argument("--timeout", type=float, default=180, help="Maximum seconds for the isolated Harness verification")
@@ -543,9 +584,18 @@ def main() -> None:
             raise SystemExit("no candidate passed this verification stage; per-model evidence was retained")
         print(json.dumps({"includedModels": evidence["includedModels"], "defaultModel": evidence["defaultModel"]}))
         return
-    evidence = verify(args.model, args.url)
-    if args.binary:
-        evidence.update(verify_harness(args.binary, args.model, args.url, args.workdir, args.timeout, evidence["api"]))
+    try:
+        evidence = verify(args.model, args.url)
+        if args.binary:
+            evidence.update(verify_harness(args.binary, args.model, args.url, args.workdir, args.timeout, evidence["api"]))
+    except Exception as error:
+        details = http_error_details(error) if isinstance(error, urllib.error.HTTPError) else {"status": "unavailable", "available": False, "reason": str(error)[:700]}
+        save_report(Path(args.report) if args.report else None, {
+            "schemaVersion": 2, "url": args.url, "pricingSource": PRICING_URL,
+            "verifiedAt": datetime.now(timezone.utc).isoformat(),
+            "models": [{"model": args.model, **details}], "includedModels": [], "defaultModel": None,
+        })
+        raise SystemExit(details["reason"]) from None
     if args.report:
         Path(args.report).parent.mkdir(parents=True, exist_ok=True)
         with open(args.report, "w", encoding="utf-8") as stream:

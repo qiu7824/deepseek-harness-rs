@@ -8,6 +8,34 @@ use dsh_llm::{LlmCallConfig, ReasoningEffortId};
 use dsh_system_prompt::SharedAssembly;
 use parking_lot::Mutex;
 
+/// A switch is conversation context, not a system-prompt mutation: keeping
+/// it in the durable message history preserves the stable cache prefix.
+pub fn model_switch_notice(
+    previous: Option<&LlmCallConfig>,
+    selected: &LlmCallConfig,
+) -> Option<dsh_llm::UserMessage> {
+    let previous = previous?;
+    if previous.provider == selected.provider && previous.model == selected.model {
+        return None;
+    }
+    Some(dsh_llm::create_user_message(
+        vec![dsh_llm::ContentBlock::Text {
+            text: format!(
+                "The active model changed from {}/{} to {}/{}. Continue the existing task with its current instructions and progress.",
+                previous.provider, previous.model, selected.provider, selected.model
+            ),
+        }],
+        dsh_llm::MessageSource::Plugin {
+            plugin: "model-selection".into(),
+            form: None,
+            sections: None,
+            summary: Some("Active model changed".into()),
+            compaction_id: None,
+            source_command_id: None,
+        },
+    ))
+}
+
 /// Complete provider, model, and optional reasoning effort selected for one
 /// live Agent.
 #[derive(Debug, Clone, PartialEq)]

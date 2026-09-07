@@ -325,7 +325,7 @@ window.__ModuleLoader__.load({
 		};
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-message-feedback\src\client\MessageFeedbackActions.module.css.mjs
-		const css = ".eTUJsW_action{width:28px;height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:28px;justify-content:center;align-items:center;padding:6px;display:inline-flex}.eTUJsW_action:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}.eTUJsW_action:disabled{cursor:default;opacity:.4}.eTUJsW_action[data-active]{color:var(--dsw-alias-label-primary)}.eTUJsW_noteOpen{max-width:220px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;cursor:pointer;background:0 0;border:none;border-radius:14px;padding:0 8px;font-size:13px;line-height:28px;overflow:hidden}.eTUJsW_noteOpen:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}.eTUJsW_noteEditor{align-items:flex-start;gap:6px;display:inline-flex}.eTUJsW_noteInput{border:1px solid var(--dsw-alias-border-secondary);background:var(--dsw-alias-bg-primary);width:260px;color:var(--dsw-alias-label-primary);font:inherit;resize:vertical;border-radius:8px;padding:6px 8px;font-size:13px}.eTUJsW_noteSave,.eTUJsW_noteCancel{cursor:pointer;border:none;border-radius:14px;height:28px;padding:0 10px;font-size:13px}.eTUJsW_noteSave{background:var(--dsw-alias-interactive-bg-primary);color:var(--dsw-alias-label-inverse)}.eTUJsW_noteSave:disabled{cursor:default;opacity:.4}.eTUJsW_noteCancel{color:var(--dsw-alias-label-tertiary);background:0 0}.eTUJsW_noteCancel:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}.eTUJsW_failure{color:var(--dsw-alias-label-tertiary);padding-left:4px;font-size:13px;line-height:28px}";
+		const css = ".eTUJsW_action{width:28px;height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:28px;justify-content:center;align-items:center;padding:6px;display:inline-flex}.eTUJsW_action:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}.eTUJsW_action:disabled{cursor:default;opacity:.4}.eTUJsW_action[data-active]{color:var(--dsw-alias-label-primary)}.eTUJsW_noteOpen{max-width:220px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;cursor:pointer;background:0 0;border:none;border-radius:14px;padding:0 8px;font-size:13px;line-height:28px;overflow:hidden}.eTUJsW_noteOpen:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}.eTUJsW_noteEditor{align-items:flex-start;gap:6px;display:inline-flex}.eTUJsW_noteInput{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);width:260px;color:var(--dsw-alias-label-primary);font:inherit;resize:vertical;border-radius:8px;padding:6px 8px;font-size:13px}.eTUJsW_noteSave,.eTUJsW_noteCancel{cursor:pointer;border:none;border-radius:14px;height:28px;padding:0 10px;font-size:13px}.eTUJsW_noteSave{background:var(--dsw-alias-interactive-bg-primary);color:var(--dsw-alias-label-inverse)}.eTUJsW_noteSave:disabled{cursor:default;opacity:.4}.eTUJsW_noteCancel{color:var(--dsw-alias-label-tertiary);background:0 0}.eTUJsW_noteCancel:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}.eTUJsW_failure{color:var(--dsw-alias-label-tertiary);padding-left:4px;font-size:13px;line-height:28px}";
 		const tagId = "@deepseek-ai/dsh-client-ui-message-feedback/MessageFeedbackActions.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -357,11 +357,73 @@ window.__ModuleLoader__.load({
 		* shared feedback hook.
 		* @returns the rating buttons, plus the note editor while it is open.
 		*/
-		function MessageFeedbackActions({ messageId, ensure, rate, toggle, clearNote, useFeedback, t }) {
+		function FeedbackDeliverySettings({ scope, controls, t }) {
+			const snapshot=(0,react.useSyncExternalStore)(listener=>scope.subscribe(listener),()=>scope.getSnapshot(),()=>scope.getSnapshot());
+			const [endpoint,setEndpoint]=(0,react.useState)(""),[busy,setBusy]=(0,react.useState)(false),[error,setError]=(0,react.useState)("");
+			const configured=snapshot.secrets?.some(secret=>secret.path.length===1&&secret.path[0]==="endpoint"&&secret.set)===true;
+			const disabled=busy||snapshot.status!=="ready"||!snapshot.writable;
+			const save=async(key,value)=>{if(disabled)return;setBusy(true);setError("");try{await scope.setChecked(key,value);if(key==="endpoint")setEndpoint("")}catch(failure){setError(failure.message||String(failure))}finally{setBusy(false)}};
+			return (0,react_jsx_runtime.jsxs)("section",{className:"dswSuiteSettings",children:[
+				(0,react_jsx_runtime.jsx)("p",{children:t("delivery.description")}),
+				(0,react_jsx_runtime.jsxs)("div",{className:"dswSuiteSetting",children:[(0,react_jsx_runtime.jsx)("span",{children:t("delivery.enabled")}), (0,react_jsx_runtime.jsx)(controls.Switch,{checked:snapshot.value?.enabled===true,disabled,label:t("delivery.enabled"),onChange:value=>save("enabled",value)})]}),
+				(0,react_jsx_runtime.jsx)(controls.SecretField,{id:"feedback-recipient",label:t("delivery.endpoint"),configured,stateLabel:t(configured?"delivery.configured":"delivery.unconfigured"),text:endpoint,disabled,onEdit:setEndpoint,hint:t("delivery.endpointHint")}),
+				(0,react_jsx_runtime.jsxs)("div",{className:"dswSuiteToolbar",children:[(0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",size:"sm",disabled:disabled||!endpoint.trim(),onClick:()=>save("endpoint",endpoint.trim()),children:t("note.save")}), (0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"ghost",size:"sm",disabled:disabled||!configured,onClick:()=>save("endpoint",""),children:t("delivery.clear")})]}),
+				(snapshot.status!=="ready"||error)&&(0,react_jsx_runtime.jsx)("p",{role:"status",children:error||snapshot.error||t(snapshot.status==="unavailable"?"delivery.readonly":"delivery.loading")})
+			]});
+		}
+		async function feedbackSubmissionRequest(action, body) {
+			const response = await fetch(`/__dsh-feedback/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+			const value = await response.json();
+			if (!response.ok) throw new Error(value.message ?? value.error ?? "反馈提交失败");
+			return value;
+		}
+		function feedbackSubmissionId() {
+			return globalThis.crypto?.randomUUID?.() ?? "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, value => { const random = Math.random() * 16 | 0; return (value === "x" ? random : random & 3 | 8).toString(16); });
+		}
+		function FeedbackSubmissionDialog({ sessionId, messageId, open, onClose, t }) {
+			const key = `dsh.feedback.submission:${sessionId}:${messageId}`;
+			const [submissionId, setSubmissionId] = (0, react.useState)(() => { try { return localStorage.getItem(key) || feedbackSubmissionId(); } catch { return feedbackSubmissionId(); } });
+			const [packet, setPacket] = (0, react.useState)(null), [busy, setBusy] = (0, react.useState)(false), [error, setError] = (0, react.useState)("");
+			const alive = (0, react.useRef)(true);
+			(0, react.useEffect)(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+			(0, react.useEffect)(() => {
+				if (!open) return;
+				let active = true; setBusy(true); setError(""); setPacket(null);
+				try { localStorage.setItem(key, submissionId); } catch {}
+				feedbackSubmissionRequest("prepare", { sessionId, messageId, requestId: submissionId }).then(value => { if (active) setPacket(value); }, failure => { if (active) setError(failure.message); }).finally(() => { if (active) setBusy(false); });
+				return () => { active = false; };
+			}, [open, sessionId, messageId, submissionId]);
+			const send = async () => {
+				if (busy || !packet?.canSend) return;
+				setBusy(true); setError("");
+				try { const value = await feedbackSubmissionRequest("send", { sessionId, submissionId, destinationKey: packet.destinationKey }); if (alive.current) setPacket(value); }
+				catch (failure) { if (alive.current) setError(failure.message); try { const value = await feedbackSubmissionRequest("status", { sessionId, submissionId }); if (alive.current) setPacket(value); } catch {} }
+				finally { if (alive.current) setBusy(false); }
+			};
+			const download = () => { if (!packet) return; const url = URL.createObjectURL(new Blob([JSON.stringify(packet.payload, null, 2)], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = `feedback-${submissionId}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
+			return (0, react_jsx_runtime.jsxs)(_deepseek_ai_dsh_client_ui_primitives.Modal, {
+				open, onClose, title: t("submission.title"), closeLabel: t("note.cancel"),
+				footer: (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+					(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, { variant: "outline", disabled: busy, onClick: () => setSubmissionId(feedbackSubmissionId()), children: t("submission.refresh") }),
+					(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, { variant: "outline", disabled: !packet || busy, onClick: download, children: t("submission.download") }),
+					packet?.canSend && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, { variant: "primary", disabled: busy, onClick: send, children: busy ? t("submission.sending") : packet.status === "failed" ? t("submission.retry") : t("submission.send") })
+				] }),
+				children: [
+					(0, react_jsx_runtime.jsx)("p", { children: t("submission.description") }),
+					packet && (0, react_jsx_runtime.jsxs)("p", { role: "status", children: [t(`submission.status.${packet.status}`), packet.destination ? ` · ${packet.destination}` : ` · ${t("submission.localOnly")}`] }),
+					packet && (0, react_jsx_runtime.jsx)("p", { children: t("submission.summary", { count: packet.payload.messages.length, seq: packet.payload.capturedThroughSeq ?? "—", omitted: packet.payload.omittedMessages ?? 0 }) }),
+					busy && !packet && (0, react_jsx_runtime.jsx)("p", { role: "status", children: t("submission.preparing") }),
+					packet && (0, react_jsx_runtime.jsxs)("details", { className: "dshSettingsDisclosure", children: [(0, react_jsx_runtime.jsx)("summary", { children: t("submission.preview") }), (0, react_jsx_runtime.jsx)("pre", { style: { maxHeight: 280, overflow: "auto", whiteSpace: "pre-wrap", fontSize: 12, padding: 12, background: "var(--dsw-alias-markdown-code-block)", borderRadius: 8 }, children: JSON.stringify(packet.payload, null, 2) })] }),
+					(error || packet?.lastError) && (0, react_jsx_runtime.jsx)("p", { role: "alert", style: { color: "var(--dsw-alias-state-error-primary)" }, children: error || packet.lastError })
+				]
+			});
+		}
+		function MessageFeedbackActions({ sessionId, messageId, ensure, rate, toggle, clearNote, useFeedback, t }) {
 			const item = useFeedback((view) => view.items.get(messageId));
 			const loadFailed = useFeedback((view) => view.status === "error");
 			const rating = item?.rating;
 			const [noteOpen, setNoteOpen] = (0, react.useState)(false);
+			const [submissionOpen, setSubmissionOpen] = (0, react.useState)(false);
 			const [draft, setDraft] = (0, react.useState)("");
 			const [pending, setPending] = (0, react.useState)(false);
 			const [failure, setFailure] = (0, react.useState)(null);
@@ -456,6 +518,8 @@ window.__ModuleLoader__.load({
 						children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconDislikeOutline16, {})
 					})
 				}),
+				rating !== void 0 && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, { variant: "ghost", size: "sm", disabled: pending, onClick: () => setSubmissionOpen(true), children: t("submission.title") }),
+				submissionOpen && (0, react_jsx_runtime.jsx)(FeedbackSubmissionDialog, { sessionId, messageId, open: submissionOpen, onClose: () => setSubmissionOpen(false), t }),
 				rating !== void 0 && !noteOpen && (0, react_jsx_runtime.jsx)("button", {
 					type: "button",
 					className: MessageFeedbackActions_module_css_default.noteOpen,
@@ -475,18 +539,16 @@ window.__ModuleLoader__.load({
 								setDraft(event.target.value);
 							}
 						}),
-						(0, react_jsx_runtime.jsx)("button", {
-							type: "button",
-							className: MessageFeedbackActions_module_css_default.noteSave,
+						(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+							variant: "primary", size: "sm",
 							disabled: pending,
 							onClick: () => {
 								onSaveNote(rating);
 							},
 							children: t("note.save")
 						}),
-						(0, react_jsx_runtime.jsx)("button", {
-							type: "button",
-							className: MessageFeedbackActions_module_css_default.noteCancel,
+						(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+							variant: "outline", size: "sm",
 							onClick: () => {
 								setNoteOpen(false);
 							},
@@ -511,6 +573,32 @@ window.__ModuleLoader__.load({
 		/** `feedback` namespace dictionaries. */
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
+			"delivery.title": "反馈交付",
+			"delivery.description": "反馈默认保存在本地。启用接收端后，仍需在提交包中查看内容并点击发送。",
+			"delivery.enabled": "允许提交到接收端",
+			"delivery.endpoint": "接收地址",
+			"delivery.configured": "已配置",
+			"delivery.unconfigured": "未配置",
+			"delivery.endpointHint": "使用 HTTPS 接收地址；本机调试可用 HTTP。地址只写入配置，不会回显；留空保留现有地址。",
+			"delivery.clear": "清除地址",
+			"delivery.loading": "正在读取反馈设置…",
+			"delivery.readonly": "此连接无法修改设置，请在 Host 电脑配置。",
+
+			"submission.title": "提交反馈",
+			"submission.summary": "{count} 条对话 · 截取到序号 {seq} · 省略或截短 {omitted} 条",
+			"submission.description": "提交包包含这条反馈及截至该回答的用户、助手对话文本。先查看内容，再决定是否发送到设置中的接收端。工具输出、系统提示和请求凭据不包含在提交包中。",
+			"submission.refresh": "重新截取",
+			"submission.download": "下载本地包",
+			"submission.sending": "正在提交…",
+			"submission.send": "发送到接收端",
+			"submission.retry": "重试同一提交",
+			"submission.localOnly": "远端提交未启用，内容仅保存在本地",
+			"submission.preparing": "正在保存本地提交包…",
+			"submission.preview": "查看提交内容",
+			"submission.status.local": "已保存到本地",
+			"submission.status.failed": "远端提交未确认",
+			"submission.status.delivered": "接收端已确认",
+
 			"action.like": "好的回答",
 			"action.likeActive": "取消标记",
 			"action.dislike": "有问题的回答",
@@ -526,6 +614,32 @@ window.__ModuleLoader__.load({
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
+			"delivery.title": "Feedback delivery",
+			"delivery.description": "Feedback is stored locally by default. Enabling a recipient still requires reviewing the package and choosing Send.",
+			"delivery.enabled": "Allow delivery to recipient",
+			"delivery.endpoint": "Recipient URL",
+			"delivery.configured": "Configured",
+			"delivery.unconfigured": "Not configured",
+			"delivery.endpointHint": "Use HTTPS; loopback development endpoints may use HTTP. The URL is write-only. A blank draft preserves the stored URL.",
+			"delivery.clear": "Clear URL",
+			"delivery.loading": "Loading feedback settings…",
+			"delivery.readonly": "Configure feedback delivery on the Host computer.",
+
+			"submission.title": "Submit feedback",
+			"submission.summary": "{count} messages · captured through sequence {seq} · {omitted} omitted or shortened",
+			"submission.description": "The package contains this feedback and user/assistant text through the selected answer. Review it before sending to the configured recipient. Tool output, system prompts and request credentials are excluded.",
+			"submission.refresh": "Capture again",
+			"submission.download": "Download package",
+			"submission.sending": "Sending…",
+			"submission.send": "Send to recipient",
+			"submission.retry": "Retry this submission",
+			"submission.localOnly": "Remote delivery is disabled; stored locally only",
+			"submission.preparing": "Saving local package…",
+			"submission.preview": "Review package",
+			"submission.status.local": "Saved locally",
+			"submission.status.failed": "Remote delivery unconfirmed",
+			"submission.status.delivered": "Recipient confirmed",
+
 			"action.like": "Good response",
 			"action.likeActive": "Remove rating",
 			"action.dislike": "Bad response",
@@ -568,6 +682,10 @@ window.__ModuleLoader__.load({
 				zh,
 				en
 			}), "ui-message-feedback: dictionaries");
+			ctx.inject(["settingsScope"],scope=>{
+				const settings=scope.settingsScope.bind({namespace:"feedback-delivery",decode:value=>({enabled:value?.enabled===true})});
+				scope.slots.inject("settings.plugin.item",()=>scope.slots.register({name:"settings.plugin.item",id:"feedback-delivery",order:45,locale:NS},()=> (0,react_jsx_runtime.jsxs)("details",{className:"dshSettingsDisclosure",children:[(0,react_jsx_runtime.jsx)("summary",{children:scope.locale.bind(NS)("delivery.title")}), (0,react_jsx_runtime.jsx)(FeedbackDeliverySettings,{scope:settings,controls:scope.settingsScope.controls,t:scope.locale.bind(NS)})]})));
+			});
 			const controllers = /* @__PURE__ */ new Map();
 			const call = async (method, payload) => {
 				const rpcId = typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -602,6 +720,7 @@ window.__ModuleLoader__.load({
 					inject: (sessionId) => {
 						const controller = controllerFor(sessionId);
 						return {
+							sessionId,
 							hooks: { feedback: controller },
 							ensure: () => controller.ensure(),
 							rate: (messageId, rating, note) => controller.rate(messageId, rating, note),

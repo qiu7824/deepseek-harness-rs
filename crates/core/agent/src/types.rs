@@ -33,6 +33,14 @@ pub struct InboxSplice {
     )]
     pub removed_count: Option<u64>,
     pub inserted: Vec<dsh_llm::Message>,
+    /// Read-only context bound to a particular queued message and claimed
+    /// only with that message, rather than injected into the active turn.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::HashMap::is_empty",
+        rename = "additionalContext"
+    )]
+    pub additional_context: std::collections::HashMap<String, Option<dsh_llm::UserMessage>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<InboxSpliceOutcome>,
 }

@@ -252,6 +252,23 @@ impl Plugin for PresetTreePlugin {
         // never truncate a shipped composition.
         include.readonly.store(true, Ordering::SeqCst);
         include.tree.set_write_backend(Arc::new(|| {}));
+        // This wrapper calls Include directly, so it also owns the teardown
+        // normally installed by IncludePlugin, including partial startup.
+        let cleanup = include.clone();
+        let _ = ctx.effect(
+            "preset include cleanup",
+            Box::pin(async move {
+                Some(cordis::make_disposer(move || {
+                    let include = cleanup.clone();
+                    Box::pin(async move {
+                        if let Err(error) = include.stop().await {
+                            tracing::warn!("preset include cleanup failed: {error}");
+                        }
+                        *include.tree.extras.lock() = None;
+                    })
+                }))
+            }),
+        );
         include
             .init()
             .await

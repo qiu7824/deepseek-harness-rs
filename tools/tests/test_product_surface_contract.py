@@ -68,48 +68,50 @@ class ProductSurfaceContractTests(unittest.TestCase):
 
     def test_prompt_acceptance_cannot_be_overwritten_by_a_late_idle_frame(self):
         runtime = RUNTIME.read_text(encoding="utf-8")
-        prompt = runtime[runtime.index("async prompt(content, mode)"):runtime.index("async readAttachment", runtime.index("async prompt(content, mode)"))]
+        prompt = runtime[runtime.index("async sendPrompt(content, mode, requestId)"):runtime.index("async readAttachment", runtime.index("async sendPrompt(content, mode, requestId)"))]
         self.assertIn("const runningRevisionAtStart = this.runningRevision", prompt)
         self.assertIn("if (result.value.accepted && this.runningRevision === runningRevisionAtStart) this.handleRunning(true)", prompt)
         self.assertNotIn("this.running = true", prompt)
 
     def test_prompt_marks_send_attempt_before_returning_from_history_browse(self):
         runtime = RUNTIME.read_text(encoding="utf-8")
-        prompt = runtime[runtime.index("async prompt(content, mode)"):runtime.index("async readAttachment", runtime.index("async prompt(content, mode)"))]
+        prompt = runtime[runtime.index("async sendPrompt(content, mode, requestId)"):runtime.index("async readAttachment", runtime.index("async sendPrompt(content, mode, requestId)"))]
         attempted = prompt.index("this.promptAttempted = true")
         return_latest = prompt.index("await this.returnLatest()")
         self.assertLess(attempted, return_latest)
 
     def test_prompt_rebases_running_revision_after_returning_from_history_browse(self):
         runtime = RUNTIME.read_text(encoding="utf-8")
-        prompt = runtime[runtime.index("async prompt(content, mode)"):runtime.index("async readAttachment", runtime.index("async prompt(content, mode)"))]
+        prompt = runtime[runtime.index("async sendPrompt(content, mode, requestId)"):runtime.index("async readAttachment", runtime.index("async sendPrompt(content, mode, requestId)"))]
         return_latest = prompt.index("await this.returnLatest()")
         revision = prompt.index("const runningRevisionAtStart = this.runningRevision")
         self.assertLess(return_latest, revision)
 
     def test_ordinary_send_commits_only_after_host_acceptance(self):
         conversation = CONVERSATION.read_text(encoding="utf-8")
-        start = conversation.index("\n\t\t\tasync sink(session, text, imageIds, mode) {")
+        start = conversation.index("\n\t\t\tasync sink(session, text, imageIds, mode, sourceDraft) {")
         end = conversation.index("\n\t\t\tasync steerQueue(session, shell)", start)
         sink = conversation[start:end]
         self.assertIn("await this.conversation().sendSession(session, text, imageIds, mode)", sink)
         accepted = sink.index("await this.conversation().sendSession(session, text, imageIds, mode)")
-        committed = sink.index("shell?.commitAcceptedSend(text, imageIds)")
+        committed = sink.index("shell?.commitAcceptedSend(text, imageIds, sourceDraft)")
         self.assertLess(accepted, committed)
         self.assertNotIn(".catch(() =>", sink)
         self.assertIn('shell?.notify("error", message)', sink)
 
     def test_late_send_acceptance_does_not_clear_newer_local_input(self):
         conversation = CONVERSATION.read_text(encoding="utf-8")
-        start = conversation.index("commitAcceptedSend(draft, imageIds)")
+        start = conversation.index("commitAcceptedSend(draft, imageIds, sourceDraft)")
         end = conversation.index("commitSend(imageIds)", start)
         commit = conversation[start:end]
-        self.assertIn("if (this.snapshot.draft !== draft) return false", commit)
+        self.assertIn("this.snapshot.draft !== sourceDraft.draft", commit)
+        self.assertIn("this.snapshot.draftRev !== sourceDraft.draftRev", commit)
+        self.assertIn("this.snapshot.draft !== draft", commit)
         self.assertIn("this.imageIds.some((id, index) => id !== imageIds[index])", commit)
 
     def test_failed_ordinary_send_keeps_the_original_draft_without_late_restore(self):
         conversation = CONVERSATION.read_text(encoding="utf-8")
-        start = conversation.index("\n\t\t\tasync sink(session, text, imageIds, mode) {")
+        start = conversation.index("\n\t\t\tasync sink(session, text, imageIds, mode, sourceDraft) {")
         end = conversation.index("\n\t\t\tasync steerQueue(session, shell)", start)
         sink = conversation[start:end]
         self.assertNotIn("restoreImages(imageIds)", sink)
@@ -145,16 +147,16 @@ class ProductSurfaceContractTests(unittest.TestCase):
             subagent_prompt.index(".admit_followup(parent"),
             subagent_prompt.index("store.save_images(&pending_images)"),
         )
-        self.assertIn(".followup(parent,", subagent_prompt)
-        text_only_branch = subagent_prompt[
-            subagent_prompt.index("if pending_images.is_empty()") : subagent_prompt.index(
-                "let admission = match runtime", subagent_prompt.index("if pending_images.is_empty()")
-            )
+        admission_branch = subagent_prompt[
+            subagent_prompt.index("let admission = match runtime") : subagent_prompt.index("let saved_images =")
         ]
-        self.assertIn('error.code == "CANCELLED"', text_only_branch)
-        self.assertIn("RpcError::Cancelled", text_only_branch)
+        self.assertIn('error.code == "CANCELLED"', admission_branch)
+        self.assertIn("RpcError::Cancelled", admission_branch)
+        self.assertIn("admission.accepted_message().is_some()", admission_branch)
+        self.assertIn("prepare_prompt_references(&admission.agent()", subagent_prompt)
+        self.assertLess(subagent_prompt.index("prepare_prompt_references(&admission.agent()"), subagent_prompt.index("runtime.submit_followup_with_context("))
         self.assertIn("runtime.abort_followup(admission).await", subagent_prompt)
-        self.assertIn("runtime.submit_followup(admission", subagent_prompt)
+        self.assertIn("runtime.submit_followup_with_context(", subagent_prompt)
         self.assertNotIn("store\n                        .save_image(", subagent_prompt)
         self.assertIn("MODEL_DOES_NOT_SUPPORT_IMAGES", continuation)
         self.assertIn("async fn cold_materialize(", continuation)
@@ -168,7 +170,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertNotIn("submit_admitted(", submit_followup)
         self.assertIn("self.commit_admitted(", submit_followup)
         self.assertIn("fn commit_admitted(", continuation)
-        self.assertIn("let message_id = runtime.submit_followup(admission", subagent_prompt)
+        self.assertIn("let message_id = runtime.submit_followup_with_context(", subagent_prompt)
         self.assertIn("match store.save_images(&pending_images).await", subagent_prompt)
         self.assertIn("runtime.abort_followup(admission).await", subagent_prompt)
         self.assertIn("QueueImageThumb", conversation)

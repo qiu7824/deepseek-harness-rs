@@ -23,9 +23,6 @@ struct Handle {
     signed_in: Arc<AtomicBool>,
 }
 impl SubprocessHandle for Handle {
-    fn pid(&self) -> i32 {
-        1
-    }
     fn stdin(&self) -> Option<Box<dyn tokio::io::AsyncWrite + Unpin + Send>> {
         None
     }

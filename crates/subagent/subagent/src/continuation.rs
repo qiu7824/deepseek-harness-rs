@@ -3,15 +3,8 @@
 //! settlement delivery to the parent, behind `ctx.subagents`. Rust port of
 //! `packages/subagent/subagent/src/continuation.ts`.
 //!
-//! # Deviations
-//!
-//! - Cold resume rejects with `NOT_RESUMABLE`: the Rust agent loop's resume
-//!   path is not wired to a persistence backend yet.
-//! - The activation setup registry is not ported: materialization composes
-//!   policy + persona/restriction without deployment contributions.
-//! - `agent/inbox/claimed`/`discarded` accounting is not wired (the Rust
-//!   inbox publishes those payloads through the agent scope; the accepted
-//!   set drains when the watcher observes quiescence instead).
+//! Durable cold reconstruction and live delivery share the same child gate;
+//! inbox claimed/discarded notifications settle accepted request ownership.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -57,6 +50,16 @@ pub struct ContinuableStart {
 pub struct SubagentFollowupOptions {
     pub source: MessageSource,
     pub signal: Arc<dyn Fn() -> bool + Send + Sync>,
+    pub steer: bool,
+}
+
+pub enum SubagentQueueAction {
+    Edit {
+        content: Vec<ContentBlock>,
+        context: Option<dsh_llm::UserMessage>,
+    },
+    Remove,
+    Steer,
 }
 
 #[derive(Clone)]
@@ -88,6 +91,12 @@ pub struct SubagentFollowupAdmission {
 }
 
 impl SubagentFollowupAdmission {
+    pub fn agent(&self) -> Arc<dyn Agent> {
+        self.activation.lock().handle().agent.clone()
+    }
+    pub fn accepted_message(&self) -> Option<MessageId> {
+        accepted_request(&self.activation.lock().handle().agent, &self.options.source)
+    }
     fn commit(&mut self) {
         self.rollback_on_drop = false;
     }
@@ -558,6 +567,62 @@ impl SubagentContinuationManager {
     }
 
     /// Deliver one model-authored message between exact live adjacent Agents.
+    pub async fn update_queue(
+        &self,
+        parent: Arc<dyn Agent>,
+        child_id: &SessionId,
+        item_id: &MessageId,
+        action: SubagentQueueAction,
+    ) -> Result<(), SubagentError> {
+        let _gate = self.locks.acquire(child_id).await;
+        let activation = self
+            .activations
+            .lock()
+            .get(child_id.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                SubagentError::new("QUEUE_ITEM_NOT_FOUND", "queued item is no longer pending")
+            })?;
+        let signal: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
+        self.prepare_submit(&activation, &parent, child_id, &signal)?;
+        let agent = activation.lock().handle().agent.clone();
+        let inbox = agent.inbox();
+        let result = match action {
+            SubagentQueueAction::Edit { content, context } => {
+                let message = inbox
+                    .next_turn()
+                    .into_iter()
+                    .chain(inbox.next_step())
+                    .find(|message| message.id == *item_id);
+                if let Some(mut message) = message {
+                    let images = message
+                        .content
+                        .iter()
+                        .filter(|block| matches!(block, ContentBlock::Image { .. }))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    message.content = content;
+                    message.content.extend(images);
+                    inbox.replace_with_context(item_id, message, context)
+                } else {
+                    Ok(false)
+                }
+            }
+            SubagentQueueAction::Remove => inbox.remove(item_id),
+            SubagentQueueAction::Steer => agent.steer_queued(item_id),
+        }
+        .map_err(|error| SubagentError::new("QUEUE_UPDATE_FAILED", error))?;
+        if !result {
+            return Err(SubagentError::new(
+                "QUEUE_ITEM_NOT_FOUND",
+                "queued item is no longer pending",
+            ));
+        }
+        activation.lock().poke.notify_waiters();
+        Ok(())
+    }
+
+    /// Deliver one model-authored message between exact live adjacent Agents.
     pub async fn send_message(
         &self,
         sender: Arc<dyn Agent>,
@@ -668,7 +733,9 @@ impl SubagentContinuationManager {
                 true,
             ),
         };
-        if dsh_llm::content_has_image(content) {
+        if dsh_llm::content_has_image(content)
+            && accepted_request(&activation.lock().handle().agent, &options.source).is_none()
+        {
             let child = activation.lock().handle().agent.clone();
             if let Err(error) = self.assert_image_capable(&child, &options.signal).await {
                 if rollback_on_drop {
@@ -697,11 +764,25 @@ impl SubagentContinuationManager {
     /// waits for this infallible commit so persisted resources cannot orphan.
     pub fn submit_followup(
         &self,
-        mut admission: SubagentFollowupAdmission,
+        admission: SubagentFollowupAdmission,
         content: &[ContentBlock],
     ) -> MessageId {
-        let message_id =
-            self.commit_admitted(&admission.activation, content, &admission.options.source);
+        self.submit_followup_with_context(admission, content, None)
+    }
+
+    pub fn submit_followup_with_context(
+        &self,
+        mut admission: SubagentFollowupAdmission,
+        content: &[ContentBlock],
+        context: Option<dsh_llm::UserMessage>,
+    ) -> MessageId {
+        let message_id = self.commit_admitted(
+            &admission.activation,
+            content,
+            &admission.options.source,
+            admission.options.steer,
+            context,
+        );
         admission.commit();
         message_id
     }
@@ -726,6 +807,7 @@ impl SubagentContinuationManager {
             ChildDeliveryOptions::Steer { signal } => SubagentFollowupOptions {
                 source: Self::agent_message_source(&parent),
                 signal: signal.clone(),
+                steer: true,
             },
         };
         let activation = self
@@ -1236,7 +1318,7 @@ impl SubagentContinuationManager {
     ) -> Result<MessageId, SubagentError> {
         let child_id = activation.lock().child_id.clone();
         self.prepare_submit(activation, &parent, &child_id, signal)?;
-        Ok(self.commit_admitted(activation, content, source))
+        Ok(self.commit_admitted(activation, content, source, false, None))
     }
 
     fn submit_delivery_admitted(
@@ -1251,7 +1333,7 @@ impl SubagentContinuationManager {
         self.prepare_submit(activation, &parent, &child_id, signal)?;
         Ok(match options {
             ChildDeliveryOptions::Queue(options) => {
-                self.commit_admitted(activation, content, &options.source)
+                self.commit_admitted(activation, content, &options.source, options.steer, None)
             }
             ChildDeliveryOptions::Steer { .. } => {
                 self.commit_agent_message(activation, content, &parent)
@@ -1265,11 +1347,26 @@ impl SubagentContinuationManager {
         activation: &Arc<parking_lot::Mutex<Activation>>,
         content: &[ContentBlock],
         source: &MessageSource,
+        steer: bool,
+        context: Option<dsh_llm::UserMessage>,
     ) -> MessageId {
+        let child_agent = activation.lock().handle().agent.clone();
+        if let Some(message_id) = accepted_request(&child_agent, source) {
+            return message_id;
+        }
         let message = create_user_message(content.to_vec(), source.clone());
         let message_id = message.id.clone();
-        let child_agent = activation.lock().handle().agent.clone();
-        Self::send_waking(activation, &message_id, || child_agent.followup(message));
+        Self::send_waking(activation, &message_id, || {
+            child_agent.send_with_context(
+                message,
+                if steer {
+                    dsh_agent::InboxTarget::NextStep
+                } else {
+                    dsh_agent::InboxTarget::NextTurn
+                },
+                context,
+            );
+        });
         activation.lock().announced = true;
         message_id
     }
@@ -1473,10 +1570,17 @@ impl SubagentContinuationManager {
                     return;
                 }
                 let poke = activation.lock().poke.clone();
+                let notified = poke.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
                 let child_agent = activation.lock().handle().agent.clone();
-                tokio::select! {
-                    _ = child_agent.when_idle() => {},
-                    _ = poke.notified() => {},
+                if Self::state_of(&activation.lock()) != ActivationState::Settled {
+                    wait_for_activity_change(
+                        child_agent.status() == dsh_agent::AgentStatus::Running,
+                        child_agent.when_idle(),
+                        &mut notified,
+                    )
+                    .await;
                 }
                 if activation.lock().disposal.is_some() {
                     return;
@@ -1737,6 +1841,31 @@ impl SubagentContinuationManager {
     }
 }
 
+async fn wait_for_activity_change(
+    running: bool,
+    when_idle: cordis::BoxFuture<'static, ()>,
+    changed: impl std::future::Future<Output = ()>,
+) {
+    // Idle children can still own running descendants. Polling an already
+    // resolved when_idle here would spin until those descendants settle.
+    if running {
+        tokio::select! { _ = when_idle => {}, _ = changed => {} }
+    } else {
+        changed.await;
+    }
+}
+
+fn accepted_request(agent: &Arc<dyn Agent>, source: &MessageSource) -> Option<MessageId> {
+    if let MessageSource::User {
+        rpc_id: Some(id), ..
+    } = source
+    {
+        agent.inbox().message_for_request(id)
+    } else {
+        None
+    }
+}
+
 /// One line telling a parent that a background child is finished and why.
 fn settlement_summary(child_id: &SessionId, stop_reason: SubagentStopReason) -> String {
     let subject = format!("Background subagent {child_id}");
@@ -1753,3 +1882,29 @@ fn settlement_summary(child_id: &SessionId, stop_reason: SubagentStopReason) -> 
 
 // Re-exported for the runtime's public continuable surface.
 pub use crate::types::SubagentResult as _SubagentResultAnchor;
+
+#[cfg(test)]
+mod settlement_wait_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn idle_child_waits_for_descendants_without_polling_resolved_idle_future() {
+        let polled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = polled.clone();
+        let idle = Box::pin(async move {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let (done, changed) = tokio::sync::oneshot::channel();
+        let mut waiting = Box::pin(wait_for_activity_change(false, idle, async {
+            let _ = changed.await;
+        }));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(15), &mut waiting)
+                .await
+                .is_err()
+        );
+        assert_eq!(polled.load(std::sync::atomic::Ordering::SeqCst), 0);
+        done.send(()).unwrap();
+        waiting.await;
+    }
+}

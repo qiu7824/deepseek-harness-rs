@@ -41,6 +41,80 @@ const HISTORY_SOURCE_BYTE_LIMIT: usize = 64 * 1024 * 1024;
 const HISTORY_TRANSPORT_EVENT_LIMIT: usize = 4_096;
 const HISTORY_TRANSPORT_BYTE_LIMIT: usize = 8 * 1024 * 1024;
 
+/// Old session headers may carry ordinary Windows paths while workspaces
+/// store canonical verbatim paths. Only widen an exact match when both
+/// absolute names resolve to the same existing directory.
+async fn session_cwd_matches(existing: Option<&str>, requested: &str) -> bool {
+    let Some(existing) = existing else {
+        return false;
+    };
+    if existing == requested {
+        return true;
+    }
+    if !std::path::Path::new(existing).is_absolute()
+        || !std::path::Path::new(requested).is_absolute()
+    {
+        return false;
+    }
+    let (existing, requested) = tokio::join!(
+        tokio::fs::canonicalize(existing),
+        tokio::fs::canonicalize(requested)
+    );
+    match (existing, requested) {
+        (Ok(existing), Ok(requested)) if existing == requested => tokio::fs::metadata(existing)
+            .await
+            .is_ok_and(|metadata| metadata.is_dir()),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod session_cwd_tests {
+    #[tokio::test]
+    async fn legacy_session_cwd_accepts_only_resolved_directory_aliases() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-session-cwd-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = root.join("project");
+        let foreign = root.join("other");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir(&foreign).unwrap();
+        let ordinary = first.to_str().unwrap();
+        let canonical = std::fs::canonicalize(&first).unwrap();
+        assert!(super::session_cwd_matches(Some(ordinary), canonical.to_str().unwrap()).await);
+        assert!(
+            super::session_cwd_matches(Some(ordinary), first.join(".").to_str().unwrap()).await
+        );
+        assert!(!super::session_cwd_matches(Some(ordinary), foreign.to_str().unwrap()).await);
+        assert!(!super::session_cwd_matches(None, ordinary).await);
+        assert!(!super::session_cwd_matches(Some("project"), ordinary).await);
+        let missing = root.join("missing");
+        assert!(
+            !super::session_cwd_matches(
+                Some(missing.to_str().unwrap()),
+                missing.join(".").to_str().unwrap()
+            )
+            .await
+        );
+        let file = root.join("file.txt");
+        std::fs::write(&file, "fixture").unwrap();
+        let alias = first.join("..").join("file.txt");
+        assert!(
+            !super::session_cwd_matches(Some(file.to_str().unwrap()), alias.to_str().unwrap())
+                .await
+        );
+        std::fs::remove_file(file).unwrap();
+        std::fs::remove_dir(first).unwrap();
+        std::fs::remove_dir(foreign).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+}
+
 /// Keep unreadable histories distinct from genuinely absent sessions.
 fn history_read_error(session_id: &str, message: String) -> RpcError {
     if message == format!("session \"{session_id}\" not found") {
@@ -3472,14 +3546,35 @@ impl ApiProxyService {
             .and_then(|registry| registry.get(session.id()))
             .is_some_and(|agent| agent.status() == dsh_agent::AgentStatus::Running);
         let header = session.header();
-        let events = session.events();
-        let blank = !events.iter().any(|event| event.type_ == "turn/start");
-        let updated_at = events
-            .iter()
-            .rev()
-            .find(|event| event.type_ == "user/message")
-            .map(|event| event.time)
-            .unwrap_or_else(|| header.created_at as i64);
+        let snapshot = projections.map(|registry| registry.snapshot(session));
+        let metadata = snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .values
+                .get(dsh_session_title::SESSION_LIST_METADATA_KEY)
+        });
+        let (blank, updated_at) = match metadata.and_then(|metadata| {
+            Some((
+                metadata.get("blank")?.as_bool()?,
+                metadata.get("updatedAt")?.as_i64()?,
+            ))
+        }) {
+            Some(metadata) => metadata,
+            None => {
+                // Keep the full-log Arc scoped to the fallback. Holding it
+                // across projection cloning forces copy-on-write on a
+                // concurrent streamed append in this live session.
+                let events = session.events();
+                (
+                    !events.iter().any(|event| event.type_ == "turn/start"),
+                    events
+                        .iter()
+                        .rev()
+                        .find(|event| event.type_ == "user/message")
+                        .map(|event| event.time)
+                        .unwrap_or(header.created_at as i64),
+                )
+            }
+        };
         crate::api::sessions::SessionSummary {
             session_id: session.id().clone(),
             updated_at,
@@ -3492,12 +3587,9 @@ impl ApiProxyService {
             }),
             cwd: header.cwd.clone(),
             agent_preset: header.agent_preset.clone(),
-            projections: projections.map(|registry| {
-                let snapshot = registry.snapshot(session);
-                crate::api::sessions::SessionProjectionsBlock {
-                    as_of_seq: snapshot.as_of_seq,
-                    values: serde_json::Value::Object(snapshot.values),
-                }
+            projections: snapshot.map(|snapshot| crate::api::sessions::SessionProjectionsBlock {
+                as_of_seq: snapshot.as_of_seq,
+                values: serde_json::Value::Object(snapshot.values),
             }),
         }
     }
@@ -3705,7 +3797,7 @@ impl ApiProxyService {
             match self.resolver.resolve(existing_id).await {
                 crate::agent_lookup::ApiRemoteAgentResult::Agent(agent) => {
                     let existing_cwd = agent.session().header().cwd.clone();
-                    if existing_cwd.as_deref() != Some(cwd.as_str()) {
+                    if !session_cwd_matches(existing_cwd.as_deref(), &cwd).await {
                         return err(
                             request.rpc_id,
                             RpcError::SessionConflict(RpcErrorBody {
@@ -4359,11 +4451,14 @@ impl ApiProxyService {
             )
             .ok()
         });
-        let page_events = if live_session.is_some() || request.payload.before_seq.is_some() {
+        let mut page_events = if live_session.is_some() || request.payload.before_seq.is_some() {
             crate::api::sessions::coalesce_history_transport_events(page_events)
         } else {
             page_events
         };
+        for event in &mut page_events {
+            crate::public_event::strip(event);
+        }
         if page_events.len() > HISTORY_TRANSPORT_EVENT_LIMIT
             || Self::compact_history_bytes(&page_events) > HISTORY_TRANSPORT_BYTE_LIMIT
         {
@@ -5100,18 +5195,65 @@ impl ApiProxyService {
             agent.session().header(),
             Some(&agent),
         ) {
-            return err(
-                request.rpc_id,
-                RpcError::AgentBusy(RpcErrorBody {
-                    message: format!(
-                        "session \"{}\" is owned by subagent routing",
-                        request.payload.session_id
-                    ),
-                    details: crate::api::rpc::ReasonDetails {
-                        reason: "use subagent delivery for this child session".to_string(),
-                    },
-                }),
-            );
+            if request.payload.mode != Some(crate::api::subagents::SubagentMode::Continuable) {
+                return err(
+                    request.rpc_id,
+                    invalid_prompt("queue operations require a continuable subagent address"),
+                );
+            }
+            let parent = request
+                .payload
+                .parent_session_id
+                .as_ref()
+                .and_then(|parent_id| agents.get(parent_id));
+            let Some(parent) = parent else {
+                return err(
+                    request.rpc_id,
+                    invalid_prompt("the exact live parent session is required"),
+                );
+            };
+            let Some(runtime) = self.subagents() else {
+                return err(request.rpc_id, Self::subagents_absent());
+            };
+            if agent.session().header().parent_session.as_ref() != Some(parent.id()) {
+                return err(
+                    request.rpc_id,
+                    invalid_prompt("subagent queue belongs to a different parent"),
+                );
+            }
+            let action = match request.payload.action {
+                QueueAction::Edit { content } => {
+                    let prepared = match prepare_prompt_references(&agent, content, None).await {
+                        Ok(prepared) => prepared,
+                        Err(error) => return err(request.rpc_id, error),
+                    };
+                    dsh_subagent::continuation::SubagentQueueAction::Edit {
+                        content: prepared.content,
+                        context: prepared.additional_context,
+                    }
+                }
+                QueueAction::Remove => dsh_subagent::continuation::SubagentQueueAction::Remove,
+                QueueAction::Steer => dsh_subagent::continuation::SubagentQueueAction::Steer,
+            };
+            return match runtime
+                .update_queue(parent, &request.payload.session_id, &item_id, action)
+                .await
+            {
+                Ok(()) => ok(
+                    request.rpc_id,
+                    crate::api::sessions::AcceptedResult { accepted: true },
+                ),
+                Err(error) if error.code == "QUEUE_ITEM_NOT_FOUND" => err(
+                    request.rpc_id,
+                    RpcError::QueueItemNotFound(RpcErrorBody {
+                        message: error.message,
+                        details: crate::api::rpc::ItemIdDetails {
+                            item_id: item_id.to_string(),
+                        },
+                    }),
+                ),
+                Err(error) => err(request.rpc_id, invalid_prompt(&error.to_string())),
+            };
         }
         let inbox = agent.inbox();
         let in_turn = inbox
@@ -5155,9 +5297,7 @@ impl ApiProxyService {
                 }),
             );
         };
-        if matches!(request.payload.action, QueueAction::Steer)
-            && (!in_turn || agent.status() != dsh_agent::AgentStatus::Running)
-        {
+        if matches!(request.payload.action, QueueAction::Steer) && !in_turn {
             return err(
                 request.rpc_id,
                 RpcError::SteerUnavailable(RpcErrorBody {
@@ -5168,19 +5308,40 @@ impl ApiProxyService {
                 }),
             );
         }
-        match request.payload.action {
+        let mutation = match request.payload.action {
             QueueAction::Edit { content } => {
+                let prepared = match prepare_prompt_references(&agent, content, None).await {
+                    Ok(prepared) => prepared,
+                    Err(error) => return err(request.rpc_id, error),
+                };
                 let mut edited = message.clone();
-                edited.content = content;
-                let _ = inbox.replace(&item_id, edited);
+                edited.content = prepared.content;
+                edited.content.extend(
+                    message
+                        .content
+                        .iter()
+                        .filter(|block| matches!(block, dsh_llm::ContentBlock::Image { .. }))
+                        .cloned(),
+                );
+                inbox.replace_with_context(&item_id, edited, prepared.additional_context)
             }
-            QueueAction::Remove => {
-                let _ = inbox.remove(&item_id);
+            QueueAction::Remove => inbox.remove(&item_id),
+            QueueAction::Steer => agent.steer_queued(&item_id),
+        };
+        match mutation {
+            Ok(true) => {}
+            Ok(false) => {
+                return err(
+                    request.rpc_id,
+                    RpcError::QueueItemNotFound(RpcErrorBody {
+                        message: "queued item is no longer pending".to_string(),
+                        details: crate::api::rpc::ItemIdDetails {
+                            item_id: item_id.to_string(),
+                        },
+                    }),
+                );
             }
-            QueueAction::Steer => {
-                let _ = inbox.remove(&item_id);
-                agent.steer(message);
-            }
+            Err(error) => return err(request.rpc_id, invalid_prompt(&error)),
         }
         ok(
             request.rpc_id,
@@ -5192,6 +5353,17 @@ impl ApiProxyService {
         request: RpcRequest<crate::api::sessions::SessionPromptRequest>,
     ) -> RpcResponse<serde_json::Value> {
         use crate::api::sessions::{PromptContentPart, PromptMode};
+        if request
+            .payload
+            .request_id
+            .as_ref()
+            .is_some_and(|id| id.trim().is_empty() || id.len() > 200)
+        {
+            return err(
+                request.rpc_id,
+                invalid_prompt("requestId must contain 1 to 200 bytes"),
+            );
+        }
 
         // The browser zone is validated and canonicalized up front (TS
         // `canonicalClientTimeZone`).
@@ -5226,6 +5398,21 @@ impl ApiProxyService {
                 return err(request.rpc_id, error);
             }
         };
+        if request
+            .payload
+            .request_id
+            .as_ref()
+            .and_then(|id| agent.inbox().message_for_request(id))
+            .is_some()
+        {
+            return ok(
+                request.rpc_id,
+                crate::api::sessions::SessionPromptResult {
+                    accepted: true,
+                    command: None,
+                },
+            );
+        }
         if request
             .payload
             .content
@@ -5348,17 +5535,31 @@ impl ApiProxyService {
                 }
             }
         }
+        let prepared = match prepare_prompt_references(&agent, content, None).await {
+            Ok(prepared) => prepared,
+            Err(error) => return err(request.rpc_id, error),
+        };
         // Request identity and optional browser zone ride the exact durable
         // user message.
         let source = dsh_llm::MessageSource::User {
-            rpc_id: Some(request.rpc_id.to_string()),
+            rpc_id: Some(
+                request
+                    .payload
+                    .request_id
+                    .clone()
+                    .unwrap_or_else(|| request.rpc_id.to_string()),
+            ),
             client_time_zone: canonical_time_zone,
         };
-        let message = dsh_llm::create_user_message(content, source);
-        match request.payload.mode {
-            PromptMode::Steer => agent.steer(message),
-            PromptMode::Queue => agent.followup(message),
-        }
+        let message = dsh_llm::create_user_message(prepared.content, source);
+        agent.send_with_context(
+            message,
+            match request.payload.mode {
+                PromptMode::Steer => dsh_agent::InboxTarget::NextStep,
+                PromptMode::Queue => dsh_agent::InboxTarget::NextTurn,
+            },
+            prepared.additional_context,
+        );
         self.spawn_idle_retirement(Arc::clone(&agent));
         drop(admission);
         ok(
@@ -5813,6 +6014,28 @@ impl ApiProxyService {
                                     } else {
                                         "inactive"
                                     }
+                                })
+                                .or_else(|| {
+                                    self.sessions().and_then(|sessions| sessions.get(id)).map(
+                                        |session| {
+                                            if session
+                                                .events()
+                                                .iter()
+                                                .rev()
+                                                .find(|event| {
+                                                    matches!(
+                                                        event.type_.as_str(),
+                                                        "turn/start" | "turn/end"
+                                                    )
+                                                })
+                                                .is_some_and(|event| event.type_ == "turn/start")
+                                            {
+                                                "running"
+                                            } else {
+                                                "inactive"
+                                            }
+                                        },
+                                    )
                                 }),
                             _ => None,
                         };
@@ -5862,18 +6085,34 @@ impl ApiProxyService {
         let child_id = request.payload.child_session_id.clone();
         let parent_id = request.payload.parent_session_id.clone();
         // The generic-history data plane: attached child or cold inspection.
-        let (header, events): (dsh_session::SessionHeader, Vec<dsh_session::SessionEvent>) =
-            match self.sessions().and_then(|store| store.get(&child_id)) {
-                Some(session) => (session.header().clone(), session.events().to_vec()),
-                None => {
-                    let Some(persistence) = self
-                        .ctx
-                        .get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
-                            "sessionPersistence",
-                            false,
-                        )
-                        .map(|slot| slot.as_ref().clone())
-                    else {
+        let (header, events): (
+            dsh_session::SessionHeader,
+            Arc<Vec<dsh_session::SessionEvent>>,
+        ) = match self.sessions().and_then(|store| store.get(&child_id)) {
+            Some(session) => (session.header().clone(), session.events()),
+            None => {
+                let Some(persistence) = self
+                    .ctx
+                    .get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
+                        "sessionPersistence",
+                        false,
+                    )
+                    .map(|slot| slot.as_ref().clone())
+                else {
+                    return err(
+                        request.rpc_id,
+                        RpcError::SubagentNotFound(RpcErrorBody {
+                            message: "subagent disappeared during history read".to_string(),
+                            details: crate::api::rpc::SubagentPairDetails {
+                                parent_session_id: parent_id.to_string(),
+                                child_session_id: child_id.to_string(),
+                            },
+                        }),
+                    );
+                };
+                match persistence.inspect(&child_id).await {
+                    Ok(inspection) => (inspection.meta, Arc::new(inspection.events)),
+                    Err(_) => {
                         return err(
                             request.rpc_id,
                             RpcError::SubagentNotFound(RpcErrorBody {
@@ -5884,24 +6123,10 @@ impl ApiProxyService {
                                 },
                             }),
                         );
-                    };
-                    match persistence.inspect(&child_id).await {
-                        Ok(inspection) => (inspection.meta, inspection.events),
-                        Err(_) => {
-                            return err(
-                                request.rpc_id,
-                                RpcError::SubagentNotFound(RpcErrorBody {
-                                    message: "subagent disappeared during history read".to_string(),
-                                    details: crate::api::rpc::SubagentPairDetails {
-                                        parent_session_id: parent_id.to_string(),
-                                        child_session_id: child_id.to_string(),
-                                    },
-                                }),
-                            );
-                        }
                     }
                 }
-            };
+            }
+        };
         if signal.aborted() {
             return err(
                 request.rpc_id,
@@ -5943,7 +6168,10 @@ impl ApiProxyService {
         };
         let page: Vec<HistoryEntry> = page_events
             .into_iter()
-            .map(|event| HistoryEntry { event, view: None })
+            .map(|mut event| {
+                crate::public_event::strip(&mut event);
+                HistoryEntry { event, view: None }
+            })
             .collect();
         ok(
             request.rpc_id,
@@ -5961,6 +6189,23 @@ impl ApiProxyService {
         signal: AbortSignal,
     ) -> RpcResponse<serde_json::Value> {
         use crate::api::subagents::SubagentPromptReceipt;
+        if request.payload.mode != crate::api::subagents::SubagentMode::Continuable {
+            return err(
+                request.rpc_id,
+                invalid_prompt("one-shot subagents are read-only"),
+            );
+        }
+        if request
+            .payload
+            .request_id
+            .as_ref()
+            .is_some_and(|id| id.trim().is_empty() || id.len() > 200)
+        {
+            return err(
+                request.rpc_id,
+                invalid_prompt("requestId must contain 1 to 200 bytes"),
+            );
+        }
 
         let canonical_time_zone = match &request.payload.client_time_zone {
             None => None,
@@ -6114,40 +6359,21 @@ impl ApiProxyService {
             }
         }
         let source = dsh_llm::MessageSource::User {
-            rpc_id: Some(request.rpc_id.to_string()),
+            rpc_id: Some(
+                request
+                    .payload
+                    .request_id
+                    .clone()
+                    .unwrap_or_else(|| request.rpc_id.to_string()),
+            ),
             client_time_zone: canonical_time_zone,
         };
         let abort_flag = signal.clone();
         let options = dsh_subagent::SubagentFollowupOptions {
             source,
             signal: Arc::new(move || abort_flag.aborted()),
+            steer: request.payload.delivery == crate::api::subagents::SubagentPromptDelivery::Steer,
         };
-        if pending_images.is_empty() {
-            return match runtime
-                .followup(parent, &child_id, &admission_content, options)
-                .await
-            {
-                Ok(message_id) => ok(request.rpc_id, SubagentPromptReceipt { message_id }),
-                Err(error) => {
-                    if signal.aborted() || error.code == "CANCELLED" {
-                        return err(
-                            request.rpc_id,
-                            RpcError::Cancelled(RpcErrorBody {
-                                message: "subagent prompt was cancelled".to_string(),
-                                details: EmptyDetails {},
-                            }),
-                        );
-                    }
-                    err(
-                        request.rpc_id,
-                        RpcError::Internal(RpcErrorBody {
-                            message: format!("subagent prompt failed: {error}"),
-                            details: EmptyDetails {},
-                        }),
-                    )
-                }
-            };
-        }
         let admission = match runtime
             .admit_followup(parent, &child_id, &admission_content, options)
             .await
@@ -6181,6 +6407,16 @@ impl ApiProxyService {
                 );
             }
         };
+        if admission.accepted_message().is_some() {
+            let message_id = runtime.submit_followup(admission, &[]);
+            return ok(
+                request.rpc_id,
+                SubagentPromptReceipt {
+                    message_id,
+                    request_id: request.payload.request_id,
+                },
+            );
+        }
         let saved_images = if pending_images.is_empty() {
             Vec::new()
         } else {
@@ -6218,8 +6454,28 @@ impl ApiProxyService {
                 }
             }
         }
-        let message_id = runtime.submit_followup(admission, &content);
-        ok(request.rpc_id, SubagentPromptReceipt { message_id })
+        let abort = signal.clone();
+        let abort: dsh_session_query::corpus::SessionQueryAbort = Arc::new(move || abort.aborted());
+        let prepared =
+            match prepare_prompt_references(&admission.agent(), content, Some(&abort)).await {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    runtime.abort_followup(admission).await;
+                    return err(request.rpc_id, error);
+                }
+            };
+        let message_id = runtime.submit_followup_with_context(
+            admission,
+            &prepared.content,
+            prepared.additional_context,
+        );
+        ok(
+            request.rpc_id,
+            SubagentPromptReceipt {
+                message_id,
+                request_id: request.payload.request_id,
+            },
+        )
     }
 
     async fn subagent_interrupt(
@@ -6227,6 +6483,12 @@ impl ApiProxyService {
         request: RpcRequest<crate::api::subagents::SubagentInterruptRequest>,
     ) -> RpcResponse<serde_json::Value> {
         use crate::api::subagents::SubagentInterruptReceipt;
+        if request.payload.mode != crate::api::subagents::SubagentMode::Continuable {
+            return err(
+                request.rpc_id,
+                invalid_prompt("one-shot subagents are read-only"),
+            );
+        }
 
         let Some(runtime) = self.subagents() else {
             return err(request.rpc_id, Self::subagents_absent());
@@ -7564,7 +7826,7 @@ impl ApiProxyCarrier for ApiProxyService {
                     let event = args
                         .get(1)
                         .and_then(|value| cordis::downcast::<dsh_session::SessionEvent>(value))
-                        .cloned();
+                        .map(crate::public_event::clone_for_browser);
                     if let (Some(session), Some(event)) = (session, event) {
                         if event.type_ == "agent/inbox/spliced" {
                             // Keep projection and publication under one lock so
@@ -8216,6 +8478,63 @@ impl ApiProxyCarrier for ApiProxyService {
             body: Some(body),
         }
     }
+}
+
+/// Resolve references in the receiving Agent's scope before atomic admission.
+async fn prepare_prompt_references(
+    agent: &Arc<dyn dsh_agent::Agent>,
+    content: Vec<dsh_llm::ContentBlock>,
+    signal: Option<&dsh_session_query::corpus::SessionQueryAbort>,
+) -> Result<dsh_session_reference::PreparedReferencedMessage, RpcError> {
+    let mut references = Vec::new();
+    for block in &content {
+        if let dsh_llm::ContentBlock::Text { text } = block {
+            if !text.contains(dsh_session_reference::SESSION_REFERENCE_SCHEME) {
+                continue;
+            }
+            let parsed = dsh_session_reference::parse_session_reference_text(text)
+                .map_err(reference_rpc_error)?;
+            // Keep canonical mentions in the durable human message so a
+            // queued edit can re-resolve or explicitly remove its references.
+            references.extend(parsed.references);
+        }
+    }
+    if references.is_empty() {
+        return Ok(dsh_session_reference::PreparedReferencedMessage {
+            content,
+            additional_context: None,
+        });
+    }
+    let resolver = agent
+        .ctx()
+        .get_typed::<Arc<dsh_session_reference::SessionReferenceResolver>>(
+            "sessionReferenceResolver",
+            false,
+        )
+        .map(|slot| slot.as_ref().clone())
+        .ok_or_else(|| invalid_prompt("session reference resolver is unavailable"))?;
+    resolver
+        .prepare(agent, &content, &references, signal)
+        .await
+        .map_err(reference_rpc_error)
+}
+
+fn reference_rpc_error(error: dsh_session_reference::SessionReferenceError) -> RpcError {
+    if error.code == dsh_session_reference::SessionReferenceErrorCode::SessionReferenceCancelled {
+        RpcError::Cancelled(RpcErrorBody {
+            message: error.message,
+            details: EmptyDetails {},
+        })
+    } else {
+        invalid_prompt(&format!("{}: {}", error.code.as_str(), error.message))
+    }
+}
+
+fn invalid_prompt(message: &str) -> RpcError {
+    RpcError::BadRequest(RpcErrorBody {
+        message: message.to_string(),
+        details: crate::api::rpc::BadRequestDetails { issues: vec![] },
+    })
 }
 
 /// `bad-request` for a payload that failed its second parse.

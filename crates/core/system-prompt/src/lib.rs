@@ -136,6 +136,10 @@ pub struct PromptAssembly {
 
 /// The deployment persona's section name and order.
 pub const PERSONA_SECTION: &str = "deployment:persona";
+/// Stable aliases keep scoped overrides compatible with existing deployments.
+pub const PERSONA_PREFIX_SECTION: &str = PERSONA_SECTION;
+pub const PERSONA_SUFFIX_SECTION: &str = "deployment:persona-suffix";
+pub const PERSONA_SUFFIX_ORDER: f64 = 900.0;
 
 /// Prompt order of the persona slot; the first section a model reads.
 pub const PERSONA_ORDER: f64 = 0.0;
@@ -245,6 +249,9 @@ pub struct Config {
     pub include_runtime_context: bool,
     /// Deployment-wide order-0 persona template.
     pub persona: String,
+    /// Explicit prefix supersedes the legacy persona field, including empty text.
+    pub persona_prefix: Option<String>,
+    pub persona_suffix: String,
     /// Model-facing tool names in order, with [`TOOL_ORDER_REST`] exactly
     /// once.
     pub tool_order: Option<Vec<String>>,
@@ -259,6 +266,8 @@ impl Default for Config {
             include_harness_identity: true,
             include_runtime_context: true,
             persona: String::new(),
+            persona_prefix: None,
+            persona_suffix: String::new(),
             tool_order: None,
         }
     }
@@ -284,6 +293,14 @@ pub fn config_schema() -> schemastery::Schema {
     dict.insert(
         "toolOrder".to_string(),
         Schema::array(Schema::string()).default(Data::Undefined),
+    );
+    dict.insert(
+        "personaPrefix".into(),
+        Schema::string().default(Data::Undefined),
+    );
+    dict.insert(
+        "personaSuffix".into(),
+        Schema::string().default(Data::String(String::new())),
     );
     Schema::object(dict)
 }
@@ -333,11 +350,69 @@ pub fn parse_config(value: &JsonValue) -> Result<Config, String> {
         }
     };
     let tool_order = validate_tool_order(tool_order)?;
+    let persona_prefix = optional_text(object, "personaPrefix")?;
+    if persona_prefix
+        .as_ref()
+        .is_some_and(|prefix| !persona.is_empty() && prefix != &persona)
+    {
+        return Err("persona and personaPrefix conflict; remove the legacy persona field".into());
+    }
+    let persona_suffix = optional_text(object, "personaSuffix")?.unwrap_or_default();
     Ok(Config {
         include_harness_identity,
         include_runtime_context,
         persona,
+        persona_prefix,
+        persona_suffix,
         tool_order,
+    })
+}
+
+fn optional_text(object: &Map<String, JsonValue>, key: &str) -> Result<Option<String>, String> {
+    match object.get(key) {
+        None | Some(JsonValue::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(|s| Some(s.to_owned()))
+            .ok_or_else(|| format!("{key} must be a string")),
+    }
+}
+
+/// Shared parser for both preset validation and Host persona installation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PersonaConfig {
+    pub prefix: String,
+    pub suffix: String,
+    pub complete: bool,
+    pub include_runtime_context: bool,
+}
+
+pub fn parse_persona_config(value: &JsonValue) -> Result<PersonaConfig, String> {
+    let object = value
+        .as_object()
+        .ok_or("persona config must be an object")?;
+    let legacy = optional_text(object, "text")?;
+    let prefix = optional_text(object, "prefix")?;
+    if let (Some(old), Some(new)) = (&legacy, &prefix) {
+        if old != new {
+            return Err("text and prefix conflict; remove the legacy text field".into());
+        }
+    }
+    let boolean = |key: &str, fallback| match object.get(key) {
+        None => Ok(fallback),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| format!("{key} must be a boolean")),
+    };
+    let suffix = optional_text(object, "suffix")?.unwrap_or_default();
+    if prefix.is_none() && legacy.is_none() && !object.contains_key("suffix") {
+        return Err("persona requires prefix, suffix, or legacy text".into());
+    }
+    Ok(PersonaConfig {
+        prefix: prefix.or(legacy).unwrap_or_default(),
+        suffix,
+        complete: boolean("complete", false)?,
+        include_runtime_context: boolean("includeRuntimeContext", true)?,
     })
 }
 
@@ -598,7 +673,16 @@ impl SystemPrompt {
             PromptSection {
                 name: PERSONA_SECTION.to_string(),
                 order: PERSONA_ORDER,
-                text: PromptText::Static(config.persona),
+                text: PromptText::Static(config.persona_prefix.unwrap_or(config.persona)),
+                complete: None,
+            },
+        );
+        service.section(
+            ctx,
+            PromptSection {
+                name: PERSONA_SUFFIX_SECTION.into(),
+                order: PERSONA_SUFFIX_ORDER,
+                text: PromptText::Static(config.persona_suffix),
                 complete: None,
             },
         );
@@ -606,6 +690,40 @@ impl SystemPrompt {
             service.suppress_runtime_context(ctx);
         }
         Ok(service)
+    }
+
+    /// Install both scoped slots, even when suffix is omitted, to prevent a
+    /// deployment suffix leaking into a preset which replaces the persona.
+    pub fn install_persona(
+        &self,
+        ctx: &Context,
+        config: &JsonValue,
+    ) -> Result<Vec<Disposer>, String> {
+        let config = parse_persona_config(config)?;
+        let mut disposers = vec![
+            self.section(
+                ctx,
+                PromptSection {
+                    name: PERSONA_PREFIX_SECTION.into(),
+                    order: PERSONA_ORDER,
+                    text: config.prefix.into(),
+                    complete: Some(config.complete),
+                },
+            ),
+            self.section(
+                ctx,
+                PromptSection {
+                    name: PERSONA_SUFFIX_SECTION.into(),
+                    order: PERSONA_SUFFIX_ORDER,
+                    text: config.suffix.into(),
+                    complete: None,
+                },
+            ),
+        ];
+        if !config.include_runtime_context {
+            disposers.push(self.suppress_runtime_context(ctx));
+        }
+        Ok(disposers)
     }
 
     /// Register an ordered prompt section in the calling context's scope

@@ -266,6 +266,17 @@ impl Context {
         self.registry.plugin(self, plugin, config)
     }
 
+    /// Bind owner metadata before the fiber is published or can activate.
+    /// `setup` runs synchronously; normal plugin loading remains unchanged.
+    pub fn plugin_with_setup(
+        &self,
+        plugin: Arc<dyn Plugin>,
+        config: ArcValue,
+        setup: impl FnOnce(&Arc<FiberCore>),
+    ) -> Arc<FiberCore> {
+        self.registry.plugin_with_setup(self, plugin, config, setup)
+    }
+
     /// Run a callback once the requested services are available.
     pub fn inject(&self, deps: InjectSpec, callback: InjectCallback) -> Arc<FiberCore> {
         self.registry.inject(self, deps, callback)

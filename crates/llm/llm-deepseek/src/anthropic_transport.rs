@@ -25,7 +25,7 @@ pub(crate) async fn request(
     {
         chat["reasoning_effort"] = serde_json::json!("off");
     }
-    anthropic::attach_replay(&mut chat, options);
+    anthropic::attach_replay(&mut chat, options, &connection.base_url);
     let body = anthropic::request_from_chat(&chat)?;
     let encoded = serde_json::to_vec(&body)
         .map_err(|_| failure("Anthropic request encode failed", "INVALID_REQUEST"))?;
@@ -45,7 +45,7 @@ pub(crate) async fn request(
         bearer,
         encoded,
         &headers,
-        None,
+        options.signal.clone(),
     )
     .await
     .map_err(|error| failure(format!("Anthropic request failed: {error}"), "TRANSPORT"))?;
@@ -59,15 +59,26 @@ pub(crate) async fn request(
         return Err(http_failure(status, &headers, &bytes, provider_name));
     }
     let mut parser = sse::SseParser::new();
-    let mut translator = anthropic::AnthropicTranslator::default();
+    let mut translator = anthropic::AnthropicTranslator::new(&options.model, &connection.base_url);
     let mut bytes_read = 0usize;
     let mut chunks_read = 0usize;
-    while let Some(bytes) =
-        tokio::time::timeout(connection.stream_idle_timeout, response.next_data())
-            .await
-            .map_err(|_| failure("Anthropic stream idle timeout", "TIMEOUT"))?
-            .map_err(|error| failure(format!("Anthropic stream failed: {error}"), "TRANSPORT"))?
-    {
+    loop {
+        let read = tokio::time::timeout(connection.stream_idle_timeout, response.next_data());
+        tokio::pin!(read);
+        let bytes = loop {
+            tokio::select! {
+                result = &mut read => break result
+                    .map_err(|_| failure("Anthropic stream idle timeout", "TIMEOUT"))?
+                    .map_err(|error| failure(format!("Anthropic stream failed: {error}"), "TRANSPORT"))?,
+                _ = sender.closed() => return Err(failure("Anthropic consumer closed", "CANCELLED")),
+                _ = tokio::time::sleep(Duration::from_millis(15)) => {
+                    if options.signal.as_ref().is_some_and(|signal| signal()) { return Err(failure("Anthropic stream cancelled", "CANCELLED")); }
+                }
+            }
+        };
+        let Some(bytes) = bytes else {
+            break;
+        };
         bytes_read = bytes_read.saturating_add(bytes.len());
         if bytes_read > MAX_SUCCESS_RESPONSE_BYTES {
             return Err(failure(
@@ -89,6 +100,9 @@ pub(crate) async fn request(
                     .send(chunk)
                     .await
                     .map_err(|_| failure("Anthropic consumer closed", "CANCELLED"))?;
+            }
+            if translator.is_finished() {
+                return Ok(());
             }
         }
     }

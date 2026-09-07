@@ -2,6 +2,7 @@
 
 mod anthropic;
 mod anthropic_transport;
+mod compat;
 mod files_api;
 mod responses;
 mod serialize;
@@ -36,6 +37,7 @@ pub use upload_index::{
 };
 
 pub const PROVIDER: &str = "deepseek-official";
+pub use compat::{ProviderCompatibility, ThinkingTokenBudgetField};
 pub const PUBLIC_BASE_URL: &str = "https://api.deepseek.com";
 
 const MAX_SUCCESS_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -98,6 +100,8 @@ pub struct CatalogReasoningEffort {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeepSeekCatalogModel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat: Option<ProviderCompatibility>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub execution_modes: Vec<dsh_llm::ExecutionMode>,
 
@@ -124,6 +128,7 @@ pub struct DeepSeekCatalogModel {
 
 #[derive(Debug, Clone, Default)]
 pub struct DeepSeekConfig {
+    pub compat: Option<ProviderCompatibility>,
     pub oauth: bool,
     pub headers: Vec<(String, String)>,
     pub api: Option<String>,
@@ -145,6 +150,7 @@ pub struct DeepSeekConfig {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedDeepSeekOptions {
+    pub compat: ProviderCompatibility,
     pub oauth: bool,
     pub headers: Vec<(String, String)>,
     pub api: String,
@@ -168,6 +174,7 @@ pub fn resolve_adapter_options(
     let models = config.models.clone().unwrap_or_else(|| {
         vec![
             DeepSeekCatalogModel {
+                compat: None,
                 execution_modes: Default::default(),
                 reasoning_default: None,
                 api: None,
@@ -183,6 +190,7 @@ pub fn resolve_adapter_options(
                 image_input: Some(false),
             },
             DeepSeekCatalogModel {
+                compat: None,
                 execution_modes: Default::default(),
                 reasoning_default: None,
                 api: None,
@@ -198,6 +206,7 @@ pub fn resolve_adapter_options(
                 image_input: Some(false),
             },
             DeepSeekCatalogModel {
+                compat: None,
                 execution_modes: Default::default(),
                 reasoning_default: None,
                 api: None,
@@ -251,7 +260,28 @@ pub fn resolve_adapter_options(
             LlmErrorOptions::default(),
         ));
     }
+    let compat = config.compat.clone().unwrap_or_default();
+    let base_url = config
+        .base_url
+        .clone()
+        .unwrap_or_else(|| PUBLIC_BASE_URL.to_string());
+    compat
+        .validate_endpoint(&api, &base_url)
+        .map_err(|message| LlmError::new(&message, "INVALID_CONFIG", Default::default()))?;
+    for model in &models {
+        compat
+            .merged(model.compat.as_ref())
+            .validate_endpoint(model.api.as_deref().unwrap_or(&api), &base_url)
+            .map_err(|message| {
+                LlmError::new(
+                    &format!("model {}: {message}", model.id),
+                    "INVALID_CONFIG",
+                    Default::default(),
+                )
+            })?;
+    }
     Ok(ResolvedDeepSeekOptions {
+        compat,
         oauth: config.oauth,
         headers: config.headers.clone(),
         api,
@@ -260,10 +290,7 @@ pub fn resolve_adapter_options(
             .clone()
             .unwrap_or_else(|| DEFAULT_API_KEY_ENV.to_string()),
         keyless: config.keyless,
-        base_url: config
-            .base_url
-            .clone()
-            .unwrap_or_else(|| PUBLIC_BASE_URL.to_string()),
+        base_url,
         defaults: RequestDefaults {
             thinking: config.thinking,
             reasoning_effort: config.reasoning_effort,
@@ -1143,6 +1170,11 @@ async fn request_chunks(
         }
     }
     apply_model_max_tokens(&mut options, &connection);
+    let stable_effort = if options.purpose.as_deref() == Some("session-title") {
+        Some(reasoning_effort_id("off"))
+    } else {
+        options.reasoning_effort.clone()
+    };
     map_reasoning_effort_for_request(&mut options, &connection, reasoning_wire_format)?;
     if connection.api == "openai-responses" || connection.api == "anthropic-messages" {
         let (image_urls, image_meta) =
@@ -1178,6 +1210,9 @@ async fn request_chunks(
             provider_name,
             &request_headers(&connection),
             sender,
+            cancelled.clone(),
+            options.session_id.as_deref(),
+            &exact_options.messages,
         )
         .await;
     }
@@ -1187,7 +1222,7 @@ async fn request_chunks(
         let resolved_files =
             resolve_image_file_ids(&options, &connection, &api_key, attachment_store.as_ref())
                 .await;
-        let (body, used_files) = match resolved_files {
+        let (mut body, used_files) = match resolved_files {
             Ok(Some(files)) => {
                 let mut exact_options = options.clone();
                 exact_options.messages = files.messages.clone();
@@ -1224,6 +1259,11 @@ async fn request_chunks(
                 )
             }
         };
+        compat::apply_chat(
+            &mut body,
+            &connection,
+            stable_effort.as_ref().map(|effort| effort.as_str()),
+        )?;
         let encoded = serde_json::to_vec(&body).map_err(|error| {
             failure(
                 format!("{provider_name} request encode failed: {error}"),
@@ -1307,6 +1347,9 @@ async fn request_chunks(
                 provider_name,
                 &request_headers(&connection),
                 sender,
+                cancelled.clone(),
+                options.session_id.as_deref(),
+                &exact_options.messages,
             )
             .await;
         }
@@ -1418,9 +1461,19 @@ async fn request_responses_chunks(
     provider_name: &str,
     attribution: &[(String, String)],
     sender: &tokio::sync::mpsc::Sender<StreamChunk>,
+    cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
+    session_id: Option<&str>,
+    history: &[dsh_llm::Message],
 ) -> Result<(), LlmFailure> {
-    let mut body = responses::request_for_endpoint(chat_body, &connection.base_url)?;
+    let mut body = responses::request_for_endpoint_with_history(
+        chat_body,
+        &connection.base_url,
+        history,
+        provider_name,
+    )?;
+    responses::apply_session_cache_key(&mut body, session_id, &connection.base_url);
     let model = chat_body.get("model").and_then(serde_json::Value::as_str);
+    crate::compat::apply_responses(&mut body, connection, model)?;
     if !connection
         .models
         .iter()
@@ -1444,7 +1497,7 @@ async fn request_responses_chunks(
         (!connection.keyless).then_some(api_key),
         encoded,
         attribution,
-        None,
+        cancelled.clone(),
     )
     .await
     .map_err(|error| {
@@ -1466,14 +1519,20 @@ async fn request_responses_chunks(
     let mut translator = responses::ResponsesTranslator::default();
     let mut emitted_chunks = 0_usize;
     let mut received_bytes = 0_usize;
-    while let Some(bytes) =
-        tokio::time::timeout(connection.stream_idle_timeout, response.next_data())
-            .await
-            .map_err(|_| failure("Responses stream idle timeout", "TIMEOUT"))?
-            .map_err(|error| {
-                failure(format!("Responses API stream failed: {error}"), "TRANSPORT")
-            })?
-    {
+    loop {
+        let bytes = tokio::select! {
+            bytes = tokio::time::timeout(connection.stream_idle_timeout, response.next_data()) =>
+                bytes.map_err(|_| failure("Responses stream idle timeout", "TIMEOUT"))?
+                    .map_err(|error| failure(format!("Responses API stream failed: {error}"), "TRANSPORT"))?,
+            _ = sender.closed() => return Err(failure("Responses stream consumer closed", "CANCELLED")),
+            _ = async {
+                loop {
+                    if cancelled.as_ref().is_some_and(|is_cancelled| is_cancelled()) { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            } => return Err(failure("Responses stream cancelled", "CANCELLED")),
+        };
+        let Some(bytes) = bytes else { break };
         received_bytes = received_bytes.saturating_add(bytes.len());
         if received_bytes > MAX_SUCCESS_RESPONSE_BYTES {
             return Err(failure(
@@ -1490,16 +1549,28 @@ async fn request_responses_chunks(
                     "RESPONSE_TOO_LARGE",
                 ));
             }
-            for chunk in translated {
+            for mut chunk in translated {
+                responses::bind_replay_metadata(
+                    &mut chunk,
+                    &connection.base_url,
+                    model.unwrap_or(""),
+                );
                 sender
                     .send(chunk)
                     .await
                     .map_err(|_| failure("Responses stream consumer closed", "CANCELLED"))?;
             }
+            // response.completed is authoritative. Waiting for HTTP EOF after
+            // it can hang on keep-alive or turn a successful turn into a tail
+            // transport/decode error when an intermediary closes the body.
+            if translator.completed() {
+                return Ok(());
+            }
         }
     }
     for payload in parser.finish_at_eof()? {
-        for chunk in translator.consume(&payload)? {
+        for mut chunk in translator.consume(&payload)? {
+            responses::bind_replay_metadata(&mut chunk, &connection.base_url, model.unwrap_or(""));
             sender
                 .send(chunk)
                 .await

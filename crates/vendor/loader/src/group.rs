@@ -85,12 +85,28 @@ impl EntryGroup {
     pub async fn remove(&self, id: &str, is_dispose: bool) -> Result<(), LoaderError> {
         let entry = self.tree.store.lock().get(id).cloned();
         let Some(entry) = entry else { return Ok(()) };
+        // A replaced group's late cleanup must not remove a re-homed entry.
+        if entry
+            .parent
+            .lock()
+            .as_ref()
+            .is_none_or(|parent| !std::ptr::eq(parent.as_ref(), self))
+        {
+            return Ok(());
+        }
         let result = entry.dispose_fiber().await;
         if !is_dispose {
             let options = entry.options.lock().clone();
             self.unlink(&options);
         }
-        self.tree.store.lock().remove(id);
+        let mut store = self.tree.store.lock();
+        if store
+            .get(id)
+            .is_some_and(|current| Arc::ptr_eq(current, &entry))
+        {
+            store.remove(id);
+        }
+        drop(store);
         let options = entry.options.lock().clone();
         self.ctx.emit(
             "loader/partial-dispose",
@@ -153,11 +169,19 @@ impl EntryGroup {
 
     /// Stop every child entry (TS `stop`).
     pub async fn stop(self: &Arc<Self>) -> Result<(), LoaderError> {
-        let ids: Vec<String> = self
-            .data
-            .lock()
+        // `data` is committed only after a successful update. Startup can
+        // fail after children have activated, so clean actual owned entries.
+        let entries = self.tree.entries();
+        let ids: Vec<String> = entries
             .iter()
-            .map(|options| options.id.clone())
+            .filter(|entry| {
+                entry
+                    .parent
+                    .lock()
+                    .as_ref()
+                    .is_some_and(|parent| Arc::ptr_eq(parent, self))
+            })
+            .map(|entry| entry.options.lock().id.clone())
             .collect();
         let mut errors = Vec::new();
         for id in ids {
@@ -200,6 +224,30 @@ impl Plugin for GroupPlugin {
             })?;
         let group = EntryGroup::new(ctx.clone(), tree, Some(entry.clone()));
         *entry.subgroup.lock() = Some(group.clone());
+
+        let cleanup = group.clone();
+        let owner = entry.clone();
+        let _ = ctx.effect(
+            "loader group cleanup",
+            Box::pin(async move {
+                Some(cordis::make_disposer(move || {
+                    let group = cleanup.clone();
+                    let owner = owner.clone();
+                    Box::pin(async move {
+                        if let Err(error) = group.stop().await {
+                            tracing::warn!("loader group cleanup failed: {error}");
+                        }
+                        let mut current = owner.subgroup.lock();
+                        if current
+                            .as_ref()
+                            .is_some_and(|current| Arc::ptr_eq(current, &group))
+                        {
+                            current.take();
+                        }
+                    })
+                }))
+            }),
+        );
 
         // internal/update: reconcile child entries when the group config
         // changes (TS `Group` ctor listener).

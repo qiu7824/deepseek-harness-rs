@@ -33,13 +33,19 @@ pub struct SpillOwner {
 /// for a readable filename and inspection; purely descriptive, never
 /// interpreted for access control (TS `SpillSource`).
 #[derive(Debug, Clone, PartialEq)]
-pub struct SpillSource {
-    /// The tool whose result was spilled (e.g. `web_fetch`).
-    pub tool_name: String,
-    /// The model-issued call id the result belongs to.
-    pub call_id: CallId,
-    /// A short human label for the artifact (e.g. `result`).
-    pub label: String,
+pub enum SpillSource {
+    Tool {
+        /// The tool whose result was spilled (e.g. `web_fetch`).
+        tool_name: String,
+        /// The model-issued call id the result belongs to.
+        call_id: CallId,
+        /// A short human label for the artifact (e.g. `result`).
+        label: String,
+    },
+    SessionReference {
+        session_id: SessionId,
+        captured_through_seq: Option<u64>,
+    },
 }
 
 /// One request to persist text to a spill artifact (TS `SaveTextSpill`).

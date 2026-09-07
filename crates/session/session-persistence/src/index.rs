@@ -191,6 +191,17 @@ pub trait SessionPersistenceApi: Send + Sync {
     /// Durably persist a batch of events.
     async fn append(&self, id: &SessionId, events: &[SessionEvent]) -> Result<(), String>;
 
+    /// Append non-conversational user metadata under the backend's lifecycle gate.
+    async fn append_annotation(
+        &self,
+        expected: &SessionHeader,
+        event_type: &str,
+        data: serde_json::Value,
+    ) -> Result<SessionEvent, String> {
+        let _ = (expected, event_type, data);
+        Err("session annotations are not supported by this persistence backend".into())
+    }
+
     /// Permanently remove one detached session and all backend-owned artifacts.
     async fn delete(&self, id: &SessionId) -> Result<bool, String> {
         let _ = id;

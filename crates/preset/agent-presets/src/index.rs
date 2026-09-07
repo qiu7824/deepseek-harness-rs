@@ -82,6 +82,9 @@ struct StandingMount {
 }
 
 type StandingFuture = Shared<BoxFuture<'static, Result<Arc<StandingMount>, PresetMountError>>>;
+#[cfg(test)]
+#[path = "standing_tests.rs"]
+mod standing_tests;
 
 /// Registry over the deployment's agent presets.
 pub struct AgentPresets {
@@ -101,7 +104,7 @@ pub struct AgentPresets {
     /// during plugin mount).
     settings_inject: Mutex<Option<Arc<cordis::FiberCore>>>,
     /// Standing mounts by preset id, single-flight (TS `standing`).
-    standing: Mutex<IndexMap<String, StandingFuture>>,
+    standing: Mutex<IndexMap<String, Arc<StandingFuture>>>,
     /// Parent bindings of the agents this roster composed, keyed by the
     /// agent's scope key (TS `WeakMap`; Rust keys are identity-hashed and
     /// retained for the process lifetime — see the `dsh-scope` note).
@@ -563,7 +566,13 @@ impl AgentPresets {
         loop {
             let pending = self.standing.lock().get(&preset.id).cloned();
             if let Some(pending) = pending {
-                let mounted = pending.await?;
+                let mounted = match pending.as_ref().clone().await {
+                    Ok(mounted) => mounted,
+                    Err(error) => {
+                        self.remove_standing_if(&preset.id, &pending);
+                        return Err(error);
+                    }
+                };
                 // Files are the only composition editor (authoring is
                 // copy/delete), so the stamp is what notices an edit: a
                 // changed file starts the next generation. An unreadable
@@ -578,9 +587,7 @@ impl AgentPresets {
                 // Guarded delete: a caller that raced this one may have
                 // already started the next generation, and dropping THAT
                 // pointer would fork a third.
-                if self.standing.lock().get(&preset.id).is_some() {
-                    self.standing.lock().shift_remove(&preset.id);
-                }
+                self.remove_standing_if(&preset.id, &pending);
                 continue;
             }
             // Stamped before the file is read: an edit racing the mount makes
@@ -591,32 +598,57 @@ impl AgentPresets {
                     format!("composition file is unreadable: {}", preset.path),
                 )
             })?;
-            let key = ScopeKey::new();
-            let scope = create_scope(
-                &self.ctx,
-                key.clone(),
-                &dsh_scope::CreateScopeOptions::default(),
-            );
-            let preset_for_mount = preset.clone();
-            let created: Shared<BoxFuture<'static, Result<Arc<StandingMount>, PresetMountError>>> =
-                async move {
-                    if let Err(error) = mount_preset(&scope.ctx, &preset_for_mount).await {
-                        // A settled failure is removed so a later session
-                        // retries a preset whose file has been fixed.
-                        // (The standing-map deletion happens in the caller
-                        // loop below; the scope is disposed here.)
-                        let _ = (scope.dispose)().await;
-                        return Err(error);
+            // Recheck under one lock after the asynchronous stat. Only the
+            // winner constructs a scope and publishes its shared mount.
+            let created = {
+                let mut standing = self.standing.lock();
+                if let Some(pending) = standing.get(&preset.id) {
+                    pending.clone()
+                } else {
+                    let key = ScopeKey::new();
+                    let scope = create_scope(
+                        &self.ctx,
+                        key.clone(),
+                        &dsh_scope::CreateScopeOptions::default(),
+                    );
+                    let preset_for_mount = preset.clone();
+                    let created: Shared<
+                        BoxFuture<'static, Result<Arc<StandingMount>, PresetMountError>>,
+                    > = async move {
+                        if let Err(error) = mount_preset(&scope.ctx, &preset_for_mount).await {
+                            // A settled failure is removed so a later session
+                            // retries a preset whose file has been fixed.
+                            // (The standing-map deletion happens in the caller
+                            // loop below; the scope is disposed here.)
+                            let _ = (scope.dispose)().await;
+                            return Err(error);
+                        }
+                        Ok(Arc::new(StandingMount { key, scope, stamp }))
                     }
-                    Ok(Arc::new(StandingMount { key, scope, stamp }))
+                    .boxed()
+                    .shared();
+                    let created = Arc::new(created);
+                    standing.insert(preset.id.clone(), created.clone());
+                    created
                 }
-                .boxed()
-                .shared();
-            self.standing
-                .lock()
-                .insert(preset.id.clone(), created.clone());
-            let mounted = created.await?;
-            return Ok(mounted);
+            };
+            match created.as_ref().clone().await {
+                Ok(mounted) => return Ok(mounted),
+                Err(error) => {
+                    self.remove_standing_if(&preset.id, &created);
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    fn remove_standing_if(&self, id: &str, expected: &Arc<StandingFuture>) {
+        let mut standing = self.standing.lock();
+        if standing
+            .get(id)
+            .is_some_and(|current| Arc::ptr_eq(current, expected))
+        {
+            standing.shift_remove(id);
         }
     }
 }

@@ -556,10 +556,16 @@ impl dsh_spill::SpillStore for Resources {
         };
         let text = input.content.clone();
         let bytes = text.len() as u64;
+        let (label, file) = match &input.source {
+            dsh_spill::SpillSource::SessionReference { .. } => {
+                ("会话完整引用", "session-reference.json")
+            }
+            _ => ("工具完整输出", "output.txt"),
+        };
         let id = tokio::task::spawn_blocking(move || {
-            let mut lease = store.allocate(&owner, "", "log", "工具完整输出")?;
+            let mut lease = store.allocate(&owner, "", "log", label)?;
             let id = lease.id().to_string();
-            store.write_text(&id, "output.txt", &text)?;
+            store.write_text(&id, file, &text)?;
             lease.finish(true)?;
             Ok::<_, String>(id)
         })
@@ -569,7 +575,7 @@ impl dsh_spill::SpillStore for Resources {
             locator: dsh_spill::spill_locator(format!("scratch:{id}")),
             bytes,
             retrieval_hint: format!(
-                "Use workspace_scratch action=read id={id} path=output.txt with offset and limit (characters)."
+                "Use workspace_scratch action=read id={id} path={file} with offset and limit (characters)."
             ),
         })
     }

@@ -79,6 +79,24 @@ const render = () => React.act(async () => root.render(React.createElement(conte
   assert.equal(older,1,'an upward wheel at the boundary loads one page even without a scroll event');
   await React.act(async()=>{top=height-200;scroll.dispatchEvent(new window.WheelEvent('wheel',{deltaY:80,bubbles:true}));scroll.dispatchEvent(new window.Event('scroll'));scroll.dispatchEvent(new window.Event('scrollend'))});
   assert.equal(newer,1,'historical browsing can page down and return to later content');
+  const queueActions=[];
+  const queueContext={react:React,react_jsx_runtime:jsx,QueueDock_module_css_default:new Proxy({},{get:(_t,key)=>String(key)}),
+    _deepseek_ai_dsh_client_ui_primitives:new Proxy({Tooltip:({children})=>children},{get:(target,key)=>target[key]??(()=>null)})};
+  const queueStart=source.indexOf('function QueueImageThumb('),queueEnd=source.indexOf('const queueDockEntry',queueStart);
+  vm.runInNewContext(source.slice(queueStart,queueEnd),queueContext);
+  state.queue=[{id:'accepted',placement:'queued',content:[{type:'text',text:'queued text'}],preview:'queued text',text:'queued text'},
+    {id:'sending:request',placement:'sending',content:[{type:'text',text:'sending text'}],preview:'sending text',text:'sending text'}];
+  state.subagent={address:{mode:'continuable'},parentAvailable:true};state.running=false;
+  await React.act(async()=>root.render(React.createElement(queueContext.QueueDock,{useSession:select=>select(state),updateQueue:async(id,action)=>queueActions.push({id,action}),notify(){},loadImage:async()=>'',t:key=>key})));
+  await React.act(async()=>document.querySelector('[data-queue-dock] button[aria-expanded]').click());
+  const queueRows=[...document.querySelectorAll('[data-queue-dock] li')];
+  assert.equal(queueRows.length,2);assert.equal(queueRows[1].querySelectorAll('button').length,0,'sending rows expose no queue mutations');
+  assert.equal(queueRows[1].querySelector('[role=status]').textContent,'queue.sending');
+  const steer=queueRows[0].querySelector('button[aria-label="queue.steer"]');
+  assert.equal(steer.disabled,false,'an idle continuable child can deliver an admitted queue row');
+  await React.act(async()=>steer.click());assert.equal(queueActions[0].action.kind,'steer');assert.equal(queueActions[0].id,'accepted');
+  await React.act(async()=>queueRows[0].querySelector('button[aria-label="queue.edit"]').click());
+  assert.equal(document.querySelector('input[aria-label="queue.edit"]').value,'queued text','continuable child queue supports editing');
   const widths=[],commits=[],rootRef={current:{clientWidth:1200,getBoundingClientRect:()=>({left:0,right:1200,width:1200})}};
   const handleContext={react:React,react_jsx_runtime:jsx,window,requestAnimationFrame:window.requestAnimationFrame.bind(window),cancelAnimationFrame:window.cancelAnimationFrame.bind(window),getComputedStyle:()=>({getPropertyValue:()=> '800'}),CONTENT_MIN:640,CONTENT_EDGE_BUDGET:176,ConversationRoot_module_css_default:{widthHandle:'widthHandle'}};
   const handleStart=source.indexOf('function WidthHandle('),handleEnd=source.indexOf('function ConversationRoot(',handleStart);
@@ -91,5 +109,5 @@ const render = () => React.act(async () => root.render(React.createElement(conte
   await React.act(async()=>handle.dispatchEvent(new window.KeyboardEvent('keydown',{key:'Home',bubbles:true})));assert.equal(commits.at(-1),null,'keyboard reset restores automatic width');
   await React.act(async()=>handle.dispatchEvent(new window.MouseEvent('mousedown',{button:0,bubbles:true})));
   await React.act(async () => root.unmount());const count=widths.length;window.dispatchEvent(new window.MouseEvent('mousemove',{clientX:100}));await new Promise(resolve=>setTimeout(resolve,25));assert.equal(widths.length,count,'unmount removes drag listeners');dom.window.close();
-  console.log('PASS conversation: numbered Ctrl+Enter, plain steering shortcut, upward intent, stream resize and explicit follow recovery');
+  console.log('PASS conversation: numbered Ctrl+Enter, steering, scroll intent/follow, child queue controls and sending lockout');
 })().catch(error => { console.error(error); process.exitCode = 1; dom.window.close(); });

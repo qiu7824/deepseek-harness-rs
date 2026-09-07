@@ -7,10 +7,14 @@
 
 pub mod index;
 pub mod invariant;
+#[cfg(target_os = "linux")]
+mod linux_scope;
 mod portable_terminal;
 pub mod process_inspector;
 pub mod spawn;
 pub mod terminal;
+#[cfg(windows)]
+mod windows_job;
 
 pub use index::LocalSubprocessRuntime;
 pub use portable_terminal::PortableTerminalHandle;

@@ -29,7 +29,7 @@ class PageFixture(BaseHTTPRequestHandler):
         body = f"""<!doctype html><html><head><meta charset=utf-8><title>{title}</title>
         <style>html,body{{margin:0}}body{{height:3000px}}button{{position:absolute;left:20px;top:20px;width:180px;height:50px}}input{{position:absolute;left:20px;top:100px;width:300px;height:40px}}</style></head>
         <body><button onclick=\"document.title='clicked'\">Click</button>
-        <input id=entry oninput=\"document.title='typed:'+this.value\"><div style=\"position:absolute;top:2600px\">bottom</div></body></html>""".encode()
+        <input id=entry oninput=\"document.title='typed:'+this.value\"><input id=secret type=password style=\"top:160px\"><div id=dragger style=\"position:absolute;left:20px;top:230px;width:180px;height:50px;background:blue\" onmousedown=\"window.dragging=true\">Drag</div><script>document.addEventListener('mouseup',()=>{{if(window.dragging){{document.title='dragged';window.dragging=false}}}})</script><div style=\"position:absolute;top:2600px\">bottom</div></body></html>""".encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -162,6 +162,19 @@ def main() -> int:
                 "action": "type", "x": 60, "y": 120, "text": "hello", "waitMs": 100,
             })
             assert typed["state"]["activeElement"]["value"] == "hello", typed
+            assert typed["control"]["mode"] == "manual", typed
+            keyboard = browser_request(port, "action", {"ownerSessionId": first_owner,"action":"key","keys":["Control","a"]})
+            keyboard = browser_request(port, "action", {"ownerSessionId": first_owner,"action":"key","keys":["Backspace"]})
+            assert keyboard["state"]["activeElement"]["value"] == "", keyboard
+            secret = browser_request(port, "action", {"ownerSessionId":first_owner,"action":"type","x":60,"y":180,"text":"private-input-check"})
+            assert secret["state"]["activeElement"]["value"] is None, secret["state"]
+            assert "private-input-check" not in json.dumps(secret["state"])
+            dragged = browser_request(port,"action",{"ownerSessionId":first_owner,"action":"drag","x":60,"y":250,"endX":280,"endY":300})
+            assert dragged["state"]["title"] == "dragged", dragged["state"]
+            resumed = browser_request(port,"action",{"ownerSessionId":first_owner,"action":"resume_agent"})
+            assert resumed["control"]["mode"] == "agent", resumed
+            manual = browser_request(port,"action",{"ownerSessionId":first_owner,"action":"takeover"})
+            assert manual["control"]["mode"] == "manual", manual
             scrolled = browser_request(port, "action", {
                 "ownerSessionId": first_owner, "browserSessionId": "default",
                 "action": "scroll", "x": 100, "y": 300, "deltaY": 700, "waitMs": 150,
@@ -202,20 +215,8 @@ def main() -> int:
             while time.monotonic() < deadline and crash_profile.exists():
                 time.sleep(0.05)
             assert not crash_profile.exists(), list(profile_root.glob("session-*"))
-            retired_after_crash: dict[str, object] | None = None
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                try:
-                    retired_after_crash = browser_request(
-                        port,
-                        "meta",
-                        {"ownerSessionId": crash_owner},
-                        expected_status=403,
-                    )
-                    break
-                except AssertionError:
-                    time.sleep(0.05)
-            assert retired_after_crash and retired_after_crash["error"] == "session-not-active", retired_after_crash
+            cold_meta=browser_request(port,"meta",{"ownerSessionId":crash_owner})
+            assert cold_meta["enabled"] and cold_meta["available"], cold_meta
             call("workspace.archiveSession", {"sessionId": crash_owner})
             call("workspace.deleteArchivedSession", {"sessionId": crash_owner})
 
@@ -230,7 +231,7 @@ def main() -> int:
             })
             assert surviving["state"]["title"] == "second", surviving
             retired = browser_request(port, "meta", {"ownerSessionId": first_owner}, expected_status=403)
-            assert retired["error"] == "session-not-active", retired
+            assert retired["error"] == "session-not-found", retired
 
             closed = browser_request(port, "action", {
                 "ownerSessionId": second_owner, "browserSessionId": "default", "action": "close",
@@ -239,7 +240,9 @@ def main() -> int:
             evidence = {
                 "status": "passed",
                 "adapter": meta["adapter"],
-                "actions": ["navigate", "click", "type", "scroll", "status", "close"],
+                "actions": ["navigate", "click", "type", "key", "drag", "takeover", "resume_agent", "scroll", "status", "close"],
+                "passwordStateRedacted": True,
+                "coldSessionControl": True,
                 "screenshotBytes": len(screenshot),
                 "ownerIsolation": True,
                 "sharedDefaultSession": meta["defaultBrowserSessionId"],

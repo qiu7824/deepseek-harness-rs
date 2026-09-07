@@ -12,6 +12,7 @@ pub(crate) fn schema() -> Schema {
         ("description".into(), Schema::string()),
         ("contextWindow".into(), Schema::number().min(1.0).step(1.0)),
         ("maxTokens".into(), Schema::number().min(1.0).step(1.0)),
+        ("compat".into(), super::provider_compatibility::schema()),
         ("imageInput".into(), Schema::boolean()),
         ("source".into(), Schema::string()),
         ("accountScope".into(), Schema::string()),
@@ -29,6 +30,7 @@ pub(crate) fn schema() -> Schema {
         })
         .collect::<Vec<_>>();
     Schema::object(indexmap::IndexMap::from([
+        ("compat".into(), super::provider_compatibility::schema()),
         (
             "modelPreferences".into(),
             super::provider_auth_catalog::preferences_schema(),
@@ -99,6 +101,12 @@ pub(crate) fn config(value: &Value) -> Result<DeepSeekConfig, String> {
         }
     }
     Ok(DeepSeekConfig {
+        compat: value
+            .get("compat")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("DeepSeek compat: {error}"))?,
         api_key_env: value
             .get("apiKeyEnv")
             .and_then(Value::as_str)

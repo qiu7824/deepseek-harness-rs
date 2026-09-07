@@ -29,6 +29,7 @@ members = [
   "crates/sdk/*",
   "crates/code-runtime/*",
   "crates/code-graph/*",
+  "crates/computer-use/*",
   "crates/workflow/*",
   "crates/jobs/*",
   "crates/goal/*",
@@ -61,7 +62,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.3-alpha.8"
+version = "0.1.3-alpha.9"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/deepseek-ai/deepseek-harness"

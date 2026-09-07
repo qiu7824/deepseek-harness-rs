@@ -84,14 +84,14 @@ window.__ModuleLoader__.load({
     async function json(url, options) {
       const response = await fetch(url, options);
       const value = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(value.message || value.error || "HTTP " + response.status);
+      if (!response.ok) throw Object.assign(new Error(value.message || value.error?.message || value.error || "HTTP " + response.status),{code:typeof value.error==="string"?value.error:value.error?.code});
       return value;
     }
     function installStyle() {
       if (document.querySelector('style[data-plugin-css="dsh-sidebar-workbench-suite"]')) return;
       const style = document.createElement("style");
       style.dataset.pluginCss = "dsh-sidebar-workbench-suite";
-      style.textContent = ".dswSuite{box-sizing:border-box;min-width:0;min-height:0;height:100%;display:flex;flex-direction:column;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base)}.dswSuite *{box-sizing:border-box}.dswSuiteBar{min-height:42px;display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);flex-wrap:wrap}.dswSuiteBar input,.dswSuiteBar select,.dswSuiteBar button,.dswSuiteBar button:disabled,.dswSuiteTitle{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:auto}.dswSuiteEditor{min-height:0;flex:1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.dswSuiteSource{min-width:0;min-height:0;display:flex;border-right:1px solid var(--dsw-alias-border-l2)}.dswSuiteSource textarea{width:100%;min-height:0;resize:none;border:0;outline:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:14px;font:12.5px/1.65 var(--ds-font-family-code);tab-size:2}.dswSuitePreview{min-width:0;min-height:0;overflow:auto;padding:16px 20px;line-height:1.7;overflow-wrap:anywhere}.dswSuitePreview pre{overflow:auto;padding:12px;border-radius:8px;background:var(--dsw-alias-markdown-code-block);font:12px/1.6 var(--ds-font-family-code)}.dswSuiteHtml{display:block;width:100%;height:100%;min-height:0;border:0;background:white}.dswSuiteOutline{max-width:240px;max-height:160px;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px}.dswSuiteOutline button{width:100%;display:block;text-align:left;border:0;background:none;color:var(--dsw-alias-label-secondary);padding:4px 6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dswSuiteDiagram{width:100%;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px;margin:10px 0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDiagram svg{display:block;min-width:420px;max-width:100%;height:auto}.dswSuiteStatus{padding:8px 12px;color:var(--dsw-alias-label-tertiary);font-size:12px}.dswSuiteError{color:var(--dsw-alias-state-error-primary)}.dswSuiteList{min-height:0;flex:1;overflow:auto;padding:8px}.dswSuiteRow{width:100%;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:start;text-align:left;border:1px solid transparent;border-radius:8px;background:none;color:inherit;padding:9px;cursor:pointer}.dswSuiteRow:hover,.dswSuiteRow[data-active=true]{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l2)}.dswSuiteDot{width:8px;height:8px;margin-top:5px;border-radius:50%;background:var(--dsw-alias-label-caption)}.dswSuiteDot[data-live=true]{background:var(--dsw-alias-state-business-primary)}.dswSuiteDot[data-error=true]{background:var(--dsw-alias-state-error-primary)}.dswSuiteMeta{font-size:11px;color:var(--dsw-alias-label-tertiary)}.dswSuiteSplit{min-height:0;flex:1;display:grid;grid-template-columns:240px minmax(0,1fr)}.dswSuiteDetail{min-width:0;min-height:0;overflow:auto;padding:12px;border-left:1px solid var(--dsw-alias-border-l2);white-space:pre-wrap}.dswSuiteTableWrap{min-height:0;flex:1;overflow:auto}.dswSuiteTable{border-collapse:collapse;width:max-content;min-width:100%;font:12px/1.5 var(--ds-font-family-code)}.dswSuiteTable th,.dswSuiteTable td{padding:7px 9px;border:1px solid var(--dsw-alias-border-l2);text-align:left;max-width:420px;overflow-wrap:anywhere}.dswSuiteTable th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDownload{margin:auto;max-width:420px;text-align:center;padding:24px}.dswSuiteDownload a{display:inline-block;padding:8px 12px;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-link)}.dswSuiteBrowser{min-height:0;flex:1;display:grid;place-items:center;overflow:hidden;background:#111}.dswSuiteBrowser img{display:block;max-width:100%;max-height:100%;cursor:crosshair;user-select:none}.dswSuiteBrowserEmpty{color:#ccc;text-align:center;padding:24px}@media(max-width:768px){.dswSuiteEditor,.dswSuiteSplit{grid-template-columns:minmax(0,1fr)}.dswSuiteSource{border-right:0;border-bottom:1px solid var(--dsw-alias-border-l2);min-height:240px}.dswSuitePreview{min-height:240px}.dswSuiteSplit>.dswSuiteList{max-height:180px}.dswSuiteDetail{border-left:0;border-top:1px solid var(--dsw-alias-border-l2)}.dswSuiteBar input{min-width:0;flex:1}.dswSuiteOutline{max-width:100%;width:100%}}";
+      style.textContent = ".dswSuite{box-sizing:border-box;min-width:0;min-height:0;height:100%;display:flex;flex-direction:column;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base)}.dswSuite *{box-sizing:border-box}.dswSuiteBar{min-height:42px;display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);flex-wrap:wrap}.dswSuiteBar input,.dswSuiteBar select,.dswSuiteBar button,.dswSuiteBar button:disabled,.dswSuiteTitle{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:auto}.dswSuiteEditor{min-height:0;flex:1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.dswSuiteSource{min-width:0;min-height:0;display:flex;border-right:1px solid var(--dsw-alias-border-l2)}.dswSuiteSource textarea{width:100%;min-height:0;resize:none;border:0;outline:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:14px;font:12.5px/1.65 var(--ds-font-family-code);tab-size:2}.dswSuitePreview{min-width:0;min-height:0;overflow:auto;padding:16px 20px;line-height:1.7;overflow-wrap:anywhere}.dswSuitePreview pre{overflow:auto;padding:12px;border-radius:8px;background:var(--dsw-alias-markdown-code-block);font:12px/1.6 var(--ds-font-family-code)}.dswSuiteHtml{display:block;width:100%;height:100%;min-height:0;border:0;background:white}.dswSuiteOutline{max-width:240px;max-height:160px;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px}.dswSuiteOutline button{width:100%;display:block;text-align:left;border:0;background:none;color:var(--dsw-alias-label-secondary);padding:4px 6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dswSuiteDiagram{width:100%;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px;margin:10px 0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDiagram svg{display:block;min-width:420px;max-width:100%;height:auto}.dswSuiteStatus{padding:8px 12px;color:var(--dsw-alias-label-tertiary);font-size:12px}.dswSuiteError{color:var(--dsw-alias-state-error-primary)}.dswSuiteList{min-height:0;flex:1;overflow:auto;padding:8px}.dswSuiteRow{width:100%;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:start;text-align:left;border:1px solid transparent;border-radius:8px;background:none;color:inherit;padding:9px;cursor:pointer}.dswSuiteRow:hover,.dswSuiteRow[data-active=true]{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l2)}.dswSuiteDot{width:8px;height:8px;margin-top:5px;border-radius:50%;background:var(--dsw-alias-label-caption)}.dswSuiteDot[data-live=true]{background:var(--dsw-alias-state-business-primary)}.dswSuiteDot[data-error=true]{background:var(--dsw-alias-state-error-primary)}.dswSuiteMeta{font-size:11px;color:var(--dsw-alias-label-tertiary)}.dswSuiteSplit{min-height:0;flex:1;display:grid;grid-template-columns:240px minmax(0,1fr)}.dswSuiteDetail{min-width:0;min-height:0;overflow:auto;padding:12px;border-left:1px solid var(--dsw-alias-border-l2);white-space:pre-wrap}.dswSuiteTableWrap{min-height:0;flex:1;overflow:auto}.dswSuiteTable{border-collapse:collapse;width:max-content;min-width:100%;font:12px/1.5 var(--ds-font-family-code)}.dswSuiteTable th,.dswSuiteTable td{padding:7px 9px;border:1px solid var(--dsw-alias-border-l2);text-align:left;max-width:420px;overflow-wrap:anywhere}.dswSuiteTable th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDownload{margin:auto;max-width:420px;text-align:center;padding:24px}.dswSuiteDownload a{display:inline-block;padding:8px 12px;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-link)}.dswSuiteBrowser{min-height:0;flex:1;display:grid;place-items:center;overflow:hidden;background:#111}.dswSuiteBrowser img{display:block;max-width:100%;max-height:100%;cursor:crosshair;user-select:none}.dswDesktopVideo{position:relative;min-height:0;flex:1;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base)}.dswDesktopCanvas{min-height:0;flex:1;display:grid;place-items:center;overflow:hidden;position:relative;background:#111}.dswDesktopCanvas canvas{display:block;max-width:100%;max-height:100%;outline:none;touch-action:none;cursor:default}.dswDesktopWaiting{position:absolute;color:#aaa;font-size:12px}.dswDesktopKeyboard{position:absolute;opacity:0;width:1px;height:1px;padding:0;border:0;resize:none;pointer-events:none;left:50%;top:50%}.dswDesktopStatus{min-height:34px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 10px;border-top:1px solid var(--dsw-alias-border-l2);font-size:11px;color:var(--dsw-alias-label-tertiary)}.dswDesktopVideo:fullscreen{width:100vw;height:100vh}.dswDesktopVideo:fullscreen .dswDesktopCanvas{width:100%;height:100%}.dswSuiteBrowserEmpty{color:#ccc;text-align:center;padding:24px}@media(max-width:768px){.dswSuiteEditor,.dswSuiteSplit{grid-template-columns:minmax(0,1fr)}.dswSuiteSource{border-right:0;border-bottom:1px solid var(--dsw-alias-border-l2);min-height:240px}.dswSuitePreview{min-height:240px}.dswSuiteSplit>.dswSuiteList{max-height:180px}.dswSuiteDetail{border-left:0;border-top:1px solid var(--dsw-alias-border-l2)}.dswSuiteBar input{min-width:0;flex:1}.dswSuiteOutline{max-width:100%;width:100%}}";
       style.textContent += ".dswSuiteSettings{border:1px solid var(--dsw-alias-border-l2);border-radius:14px;padding:16px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1)}.dswSuiteSettings h3{margin:0 0 6px;font-size:14px}.dswSuiteSettings>p{margin:0 0 10px;color:var(--dsw-alias-label-tertiary);font-size:12px}.dswSuiteSetting{display:grid;grid-template-columns:minmax(0,1fr) minmax(120px,220px);gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--dsw-alias-border-l2)}.dswSuiteSetting span{font-size:13px}.dswSuiteSetting input,.dswSuiteSetting select{font:inherit;min-height:32px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;color:inherit;background:var(--dsw-alias-bg-base);padding:4px 8px}.dswSuiteSettingControl{display:flex;gap:6px;justify-content:flex-end}.dswSuiteSettingControl input{min-width:0;width:100%}@media(max-width:520px){.dswSuiteSetting{grid-template-columns:minmax(0,1fr)}.dswSuiteSettingControl{justify-content:stretch}}";
       document.head.appendChild(style);
     }
@@ -428,27 +428,193 @@ window.__ModuleLoader__.load({
     function JobsTab(props) {
       return h(JobsSessionTab, { ...props, key: props.scope.sessionId + "\u0000" + props.tab.id });
     }
+    function DesktopVideo({ ownerId, sessionId, state, control, visible, playing, send, updateState, updateControl, reportError, api }) {
+      const canvas = React.useRef(null), keyboard = React.useRef(null), root = React.useRef(null);
+      const current = React.useRef(null); current.current = { state, control, send, updateState, updateControl, reportError };
+      const ready = React.useRef(false), alive = React.useRef(true), composing = React.useRef(false);
+      const keys = React.useRef(new Set()), buttons = React.useRef(new Set()), queue = React.useRef([]), pumping = React.useRef(false), drain = React.useRef([]);
+      const lastMove = React.useRef(0), pendingMove = React.useRef(null), moveTimer = React.useRef(null);
+      const [hasFrame, setHasFrame] = React.useState(false), [fps, setFps] = React.useState(0), [focused, setFocused] = React.useState(false);
+      const connected = state?.connected === true;
+      const updateMode = value => current.current.updateControl(previous => !previous || (value.generation ?? 0) >= (previous.generation ?? 0) ? value : previous);
+      const pump = async () => {
+        if (pumping.current) return;
+        pumping.current = true;
+        try {
+          while (queue.current.length) {
+            const next = queue.current.shift();
+            const value = await current.current.send(next.action, { ...next.args, controlId: next.controlId, includeScreenshot: false }, { quiet: true, input: true });
+            if (!value && next.action !== "release_inputs") { queue.current = [{ action: "release_inputs", args: {}, controlId: next.controlId }]; keys.current.clear(); buttons.current.clear(); }
+          }
+        } finally { pumping.current = false; for (const resolve of drain.current.splice(0)) resolve(); }
+      };
+      const enqueue = (action, args = {}) => {
+        const controlId = current.current.state?.controlId;
+        if (!controlId || (!ready.current && !["release_inputs", "key_up", "mouse_up"].includes(action))) return;
+        const next = { action, args, controlId };
+        if (action === "mouse_move" && queue.current.at(-1)?.action === "mouse_move") queue.current[queue.current.length - 1] = next;
+        else if (queue.current.length < 64) queue.current.push(next);
+        else { queue.current = [{ action: "release_inputs", args: {}, controlId }]; keys.current.clear(); buttons.current.clear(); current.current.reportError("输入队列已满，请稍后继续"); }
+        void pump();
+      };
+      const release = () => {
+        if (moveTimer.current) clearTimeout(moveTimer.current);
+        moveTimer.current = null; pendingMove.current = null;
+        if (keys.current.size || buttons.current.size) { keys.current.clear(); buttons.current.clear(); enqueue("release_inputs"); }
+        if (alive.current) setFocused(false);
+      };
+      const releaseAndFlush = () => { release(); return pumping.current || queue.current.length ? new Promise(resolve => drain.current.push(resolve)) : Promise.resolve(); };
+      React.useEffect(() => {
+        alive.current = true; api.current = { releaseAndFlush };
+        const blur = () => release(); window.addEventListener("blur", blur);
+        const unload = () => {
+          const controlId = current.current.state?.controlId;
+          if (controlId && (keys.current.size || buttons.current.size || pumping.current || queue.current.length)) {
+            void fetch("/__dsh-computer-use/action", { method: "POST", headers: { "Content-Type": "application/json" }, keepalive: true, body: JSON.stringify({ ownerSessionId: ownerId, browserSessionId: sessionId, action: "release_inputs", controlId, includeScreenshot: false }) }).catch(() => {});
+          }
+          queue.current = []; keys.current.clear(); buttons.current.clear(); release();
+        };
+        window.addEventListener("pagehide", unload);
+        return () => { unload(); alive.current = false; window.removeEventListener("blur", blur); window.removeEventListener("pagehide", unload); window.navigator.keyboard?.unlock?.(); api.current = null; };
+      }, []);
+      React.useEffect(() => { if (!visible) release(); }, [visible]);
+      React.useEffect(() => {
+        ready.current = false; setHasFrame(false); setFps(0);
+        if (!visible || !connected || !playing) { release(); return; }
+        let cancelled = false, socket = null, decoder = null, configuration = null, needKey = true, stopRequested = false;
+        let count = 0, measuredAt = window.performance.now();
+        const closeDecoder = () => { const old = decoder; decoder = null; if (old && old.state !== "closed") { try { old.close(); } catch {} } };
+        const fail = message => {
+          if (cancelled) return;
+          ready.current = false; setHasFrame(false); release(); current.current.reportError(message);
+          current.current.updateState(previous => previous ? { ...previous, interactive: false } : previous);
+          stopRequested = true; socket?.close(); closeDecoder();
+        };
+        if (typeof window.VideoDecoder !== "function" || typeof window.EncodedVideoChunk !== "function") { fail("当前浏览器不支持 H.264 实时视频解码"); return; }
+        const context = canvas.current?.getContext("2d", { alpha: false, desynchronized: true });
+        if (!context) { fail("无法创建视频显示区域"); return; }
+        const configure = config => {
+          closeDecoder(); needKey = true; configuration = config;
+          const nextDecoder = new window.VideoDecoder({
+            output(frame) {
+              try {
+                if (cancelled || decoder !== nextDecoder) return;
+                if (canvas.current.width !== frame.displayWidth || canvas.current.height !== frame.displayHeight) { canvas.current.width = frame.displayWidth; canvas.current.height = frame.displayHeight; }
+                context.drawImage(frame, 0, 0, canvas.current.width, canvas.current.height);
+                ready.current = true; setHasFrame(true); count++;
+                const now = window.performance.now();
+                if (now - measuredAt >= 1000) { setFps(Math.round(count * 1000 / (now - measuredAt))); count = 0; measuredAt = now; }
+              } finally { frame.close(); }
+            },
+            error() { fail("视频解码中断，请重新连接"); }
+          });
+          decoder = nextDecoder;
+          decoder.configure({ ...config, optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" });
+        };
+        const open = () => {
+          if (document.hidden || cancelled || stopRequested) return;
+          const url = new URL("/__dsh-computer-use/stream", window.location.href); url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+          url.searchParams.set("ownerSessionId", ownerId); url.searchParams.set("browserSessionId", sessionId);
+          const connection = new window.WebSocket(url.href); socket = connection; connection.binaryType = "arraybuffer";
+          connection.onmessage = event => {
+            if (cancelled || socket !== connection) return;
+            try {
+              if (typeof event.data === "string") {
+                const message = JSON.parse(event.data);
+                if (message.kind === "error") { fail(message.message || "视频连接失败"); return; }
+                if (message.kind !== "state") return;
+                if (message.state) current.current.updateState(message.state);
+                if (message.control) updateMode(message.control);
+                const config = { codec: message.codec, codedWidth: message.width, codedHeight: message.height };
+                if (!configuration || JSON.stringify(configuration) !== JSON.stringify(config)) configure(config);
+                return;
+              }
+              if (!decoder || event.data.byteLength < 10 || event.data.byteLength > 4 * 1024 * 1024) return;
+              const bytes = new Uint8Array(event.data), key = bytes[0] === 1;
+              if (decoder.decodeQueueSize > 2) { configure(configuration); connection.send("keyframe"); }
+              if (needKey && !key) return;
+              needKey = false;
+              const view = new DataView(event.data); const timestamp = Number(view.getBigUint64(1, true));
+              decoder.decode(new window.EncodedVideoChunk({ type: key ? "key" : "delta", timestamp, data: bytes.subarray(9) }));
+            } catch { fail("视频数据不可用，请重新连接"); }
+          };
+          connection.onerror = () => { if (!cancelled && !document.hidden && socket === connection) fail("视频通道连接失败，请重新连接"); };
+          connection.onclose = () => { if (!cancelled && !document.hidden && !stopRequested && socket === connection) fail("视频连接已断开，请重新连接"); };
+        };
+        const visibility = () => {
+          if (document.hidden) { ready.current = false; release(); const old = socket; socket = null; old?.close(); closeDecoder(); configuration = null; }
+          else open();
+        };
+        open(); document.addEventListener("visibilitychange", visibility);
+        return () => { cancelled = true; ready.current = false; document.removeEventListener("visibilitychange", visibility); const old = socket; socket = null; old?.close(); closeDecoder(); };
+      }, [ownerId, sessionId, visible, connected, playing]);
+      const point = event => {
+        const rect = canvas.current.getBoundingClientRect(), viewport = current.current.state?.viewport;
+        if (!viewport || !rect.width || !rect.height) return null;
+        return { x: Math.max(0, Math.min(viewport.width - 1, (event.clientX - rect.left) * viewport.width / rect.width)), y: Math.max(0, Math.min(viewport.height - 1, (event.clientY - rect.top) * viewport.height / rect.height)) };
+      };
+      const mouseName = button => ["left", "middle", "right"][button];
+      const flushMove = () => { if (pendingMove.current) { enqueue("mouse_move", pendingMove.current); pendingMove.current = null; } lastMove.current = window.performance.now(); moveTimer.current = null; };
+      const move = event => {
+        if (!ready.current || (current.current.control?.mode !== "manual" && !buttons.current.size && !focused)) return;
+        pendingMove.current = point(event);
+        if (!moveTimer.current) { const delay = Math.max(0, 16 - (window.performance.now() - lastMove.current)); moveTimer.current = setTimeout(flushMove, delay); }
+      };
+      const down = event => {
+        if (!ready.current || !mouseName(event.button)) return;
+        event.preventDefault(); event.currentTarget.setPointerCapture?.(event.pointerId);
+        keyboard.current.focus({ preventScroll: true }); setFocused(true);
+        flushMove(); const position = point(event); if (!position) return;
+        const button = mouseName(event.button); buttons.current.add(button); enqueue("mouse_down", { ...position, button });
+      };
+      const up = event => {
+        const button = mouseName(event.button); if (!buttons.current.delete(button)) return;
+        pendingMove.current = point(event); flushMove(); enqueue("mouse_up", { button });
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+      };
+      const keyName = event => event.code || event.key;
+      const keyDown = event => {
+        if (!ready.current || composing.current || event.nativeEvent?.isComposing || event.key === "Process" || event.keyCode === 229) return;
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") return;
+        event.preventDefault(); event.stopPropagation();
+        if (event.key === "Escape") { release(); window.navigator.keyboard?.unlock?.(); keyboard.current.blur(); if (document.fullscreenElement) void document.exitFullscreen?.(); void releaseAndFlush().then(() => current.current.send("takeover", { includeScreenshot: false })); return; }
+        const key = keyName(event); keys.current.add(key); enqueue("key_down", { key });
+      };
+      const keyUp = event => { const key = keyName(event); if (keys.current.delete(key)) { event.preventDefault(); event.stopPropagation(); enqueue("key_up", { key }); } };
+      const paste = event => { const text = event.clipboardData?.getData("text/plain"); if (!text) return; event.preventDefault(); release(); enqueue("type", { text: text.slice(0, 8192) }); keyboard.current.value = ""; };
+      const fullscreen = async () => { try { if (document.fullscreenElement) { window.navigator.keyboard?.unlock?.(); await document.exitFullscreen(); return; } await root.current.requestFullscreen?.(); if (document.fullscreenElement && window.navigator.keyboard?.lock) await window.navigator.keyboard.lock(); keyboard.current.focus({ preventScroll: true }); setFocused(true); } catch { current.current.reportError("浏览器未开启全屏键盘捕获"); } };
+      return h("div", { className: "dswDesktopVideo", ref: root, "data-video-ready": hasFrame || undefined },
+        h("div", { className: "dswDesktopCanvas" }, h("canvas", { ref: canvas, width: 1920, height: 1080, tabIndex: 0, role: "application", "aria-label": "远程桌面：点击后直接使用键盘和鼠标", style: { visibility: hasFrame ? "visible" : "hidden" }, onPointerDown: down, onPointerUp: up, onPointerMove: move, onPointerCancel: release, onContextMenu: event => event.preventDefault(), onWheel: event => { if (!ready.current) return; event.preventDefault(); event.stopPropagation(); const position = point(event); if (position) enqueue("mouse_move", position); const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 540 : 1; enqueue("scroll", { deltaX: Math.max(-10000, Math.min(10000, event.deltaX * unit)), deltaY: Math.max(-10000, Math.min(10000, event.deltaY * unit)) }); } }), !hasFrame && h("div", { className: "dswDesktopWaiting", role: "status" }, connected ? "正在连接实时视频…" : "连接桌面后显示画面")),
+        h("textarea", { ref: keyboard, tabIndex: -1, "aria-hidden": true, className: "dswDesktopKeyboard", autoComplete: "off", spellCheck: false, onKeyDown: keyDown, onKeyUp: keyUp, onBlur: release, onPaste: paste, onCompositionStart: () => { composing.current = true; }, onCompositionEnd: event => { composing.current = false; if (event.data) enqueue("type", { text: event.data }); event.currentTarget.value = ""; } }),
+        h("div", { className: "dswDesktopStatus" }, h("span", null, focused ? "正在操作远端 · Esc 释放键鼠" : "点击画面后直接使用键盘和鼠标"), h("span", null, hasFrame ? `${state?.viewport?.width || 0}×${state?.viewport?.height || 0} · ${fps} 帧/秒` : ""), h(Button, { variant: "ghost", size: "sm", onClick: fullscreen }, "全屏")));
+    }
+
     function ControlledBrowserSession(props) {
       const browserSessionId = props.browserSessionId;
+      const desktopInput=React.useRef(null);
       const autoRefresh = props.pluginSettings?.autoRefresh === true;
-      const alive = React.useRef(true);
+      const alive = React.useRef(true),closed=React.useRef(false);
       const lifetime = React.useRef(null); if (!lifetime.current) lifetime.current = new AbortController();
       const requestSequence = React.useRef(0), appliedSequence = React.useRef(0), foregroundRequests = React.useRef(0);
       React.useEffect(() => { alive.current = true; if (lifetime.current.signal.aborted) lifetime.current = new AbortController(); return () => { alive.current = false; lifetime.current.abort(); }; }, []);
-      const [url, setUrl] = React.useState(props.tab.path || "about:blank"), [state, setState] = React.useState(null), [image, setImage] = React.useState(""), [typing, setTyping] = React.useState(""), [busy, setBusy] = React.useState(false), [error, setError] = React.useState(""), [meta, setMeta] = React.useState(null);
+      const [url, setUrl] = React.useState(props.tab.path || "about:blank"), [state, setState] = React.useState(null), [image, setImage] = React.useState(""), [typing, setTyping] = React.useState(""), [busy, setBusy] = React.useState(false), [error, setError] = React.useState(""), [meta, setMeta] = React.useState(null),[control,setControl]=React.useState(null),[privateInput,setPrivateInput]=React.useState(false),[liveDesktop,setLiveDesktop]=React.useState(true);
+      const sdkDesktop=meta?.adapter==="uu-desktop";
+      const desktop=["native-desktop","uu-desktop"].includes(meta?.adapter),interactive=!!state&&state.interactive!==false&&state.connected!==false;
       const action = async (name, extra, options) => {
         const sequence = ++requestSequence.current, quiet = options?.quiet === true;
+        if(name==="close")closed.current=true;else if(name==="start"){closed.current=false;setLiveDesktop(true)}
         try {
           if (!quiet) { foregroundRequests.current += 1; setBusy(true); setError(""); }
-          const value = await json("/__dsh-computer-use/action", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: props.scope.sessionId, browserSessionId, action: name, includeScreenshot: true, ...(extra || {}) }), signal: options?.signal || lifetime.current.signal });
+          const value = await json("/__dsh-computer-use/action", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: props.scope.sessionId, browserSessionId, action: name, includeScreenshot: !sdkDesktop, ...(extra || {}) }), signal: options?.signal || lifetime.current.signal });
           if (alive.current && sequence >= appliedSequence.current) {
             appliedSequence.current = sequence;
+            if(value.control){setControl(previous=>!previous||(value.control.generation??0)>=(previous.generation??0)?value.control:previous);if(name==="resume_agent")setTyping("");}
             if (value.state) { setState(value.state); if (value.state.url) setUrl(value.state.url); }
             if (value.screenshot?.base64) setImage("data:" + value.screenshot.mediaType + ";base64," + value.screenshot.base64);
-            if (name === "close") { setState(null); setImage(""); }
+            if (name === "close") { setState(null); setImage("");setControl(null);setTyping(""); }
           }
           return value;
-        } catch (reason) { if (alive.current && reason?.name !== "AbortError") setError(reason.message || String(reason)); return null; }
+        } catch (reason) { if(quiet&&!options?.input&&reason?.code==="COMPUTER_USE_MANUAL_CONTROL")return {};if (alive.current && sequence >= appliedSequence.current && reason?.name !== "AbortError") {appliedSequence.current=sequence;setError(reason.message || String(reason));if(desktop&&["start","capture"].includes(name)){setImage("");setLiveDesktop(false);setState(previous=>previous?{...previous,interactive:false}:previous);}} return null; }
         finally {
           if (!quiet) foregroundRequests.current = Math.max(0, foregroundRequests.current - 1);
           if (alive.current && !quiet && foregroundRequests.current === 0) setBusy(false);
@@ -463,30 +629,42 @@ window.__ModuleLoader__.load({
           setMeta(value);
           if (!value.enabled) { setError("Computer Use 未启用，请在设置 → 插件 → Computer Use 中开启并重启 Host"); return; }
           if (value.available === false) { setError(value.error?.message || "Computer Use 执行器当前不可用，请检查浏览器或外部命令设置"); return; }
-          await action("start", props.tab.path && /^https?:/i.test(props.tab.path) ? { url: props.tab.path } : {}, { signal: controller.signal });
-          if(active&&autoRefresh)stop=visiblePoll(async signal=>{await action("capture",null,{quiet:true,signal});return 3000},3000);
+          if(closed.current)return;
+          const started=await action("start", {includeScreenshot:value.adapter!=="uu-desktop",...(props.tab.path && /^https?:/i.test(props.tab.path) ? { url: props.tab.path } : {})}, { signal: controller.signal });
+          if(active&&started&&autoRefresh&&!["native-desktop","uu-desktop"].includes(value.adapter))stop=visiblePoll(async signal=>{if(closed.current)return null;await action("capture",null,{quiet:true,signal});return 3000},3000);
         }).catch(reason => { if (active && reason?.name !== "AbortError") setError(reason.message || String(reason)); });
         return () => { active = false; controller.abort(); stop?.(); };
       }, [props.visible, props.scope.sessionId, browserSessionId, autoRefresh]);
+      React.useEffect(()=>{
+        if(meta?.adapter!=="native-desktop"||!props.visible||!state?.connected||!liveDesktop||busy)return;
+        return visiblePoll(async signal=>{if(closed.current)return null;const value=await action("capture",null,{quiet:true,signal});return value?500:null},500);
+      },[desktop,props.visible,state?.connected,liveDesktop,busy]);
+      const reconnect=async()=>{await desktopInput.current?.releaseAndFlush();if(state){const value=await action("close",{includeScreenshot:false});if(!value)return;}await action("start");};
       const navigate = () => {
         let target = url.trim();
         if (target && !/^https?:\/\//i.test(target)) target = "https://" + target;
         if (target) action("navigate", { url: target });
       };
       const point = event => {
-        if (!state?.viewport) return;
+        if (busy||!interactive||!state?.viewport) return;
         const rect = event.currentTarget.getBoundingClientRect();
-        const x = Math.max(0, Math.min(state.viewport.width, (event.clientX - rect.left) * state.viewport.width / rect.width));
-        const y = Math.max(0, Math.min(state.viewport.height, (event.clientY - rect.top) * state.viewport.height / rect.height));
+        const x = Math.max(0, Math.min(Math.max(0,state.viewport.width-1), (event.clientX - rect.left) * state.viewport.width / rect.width));
+        const y = Math.max(0, Math.min(Math.max(0,state.viewport.height-1), (event.clientY - rect.top) * state.viewport.height / rect.height));
         action(event.detail > 1 ? "double_click" : "click", { x, y });
       };
+      const sendText=()=>{if(!typing||busy||!interactive)return;const text=typing;setTyping("");void action("type",{text});};
+      const key=keys=>action("key",{keys});
+      const dragStart=React.useRef(null),dragged=React.useRef(false);
+      const pointerPoint=event=>{const rect=event.currentTarget.getBoundingClientRect();return {x:Math.max(0,Math.min(Math.max(0,state.viewport.width-1),(event.clientX-rect.left)*state.viewport.width/rect.width)),y:Math.max(0,Math.min(Math.max(0,state.viewport.height-1),(event.clientY-rect.top)*state.viewport.height/rect.height))}};
       return h("section", { className: "dswSuite", "data-tab": "controlled-browser", "data-browser-session": browserSessionId },
-        h("div", { className: "dswSuiteBar" }, h(Button, { variant: "outline", size: "sm", disabled: busy, onClick: () => action("click", { x: 0, y: 0, button: "back" }) }, "后退"), h("input", { value: url, "aria-label": "受控浏览器地址", onChange: event => setUrl(event.target.value), onKeyDown: event => { if (event.key === "Enter") navigate(); } }), h(Button, { variant: "outline", size: "sm", disabled: busy || !url.trim(), onClick: navigate }, "转到"), h(Button, { variant: "outline", size: "sm", disabled: busy, onClick: () => action("capture") }, "刷新画面"), h(Button, { variant: "outline", size: "sm", onClick: () => action("close", { includeScreenshot: false }) }, "关闭会话")),
+        h("div", { className: "dswSuiteBar" }, h(Button,{variant:"outline",size:"sm",disabled:busy,onClick:reconnect},state?"重新连接":"连接"),h(Button,{variant:"outline",size:"sm",disabled:!state,onClick:async()=>{await desktopInput.current?.releaseAndFlush();await action(control?.mode==="manual"?"resume_agent":"takeover",{includeScreenshot:false})}},control?.mode==="manual"?"交还智能体":"人工接管"),h("span",{className:"dswSuiteMeta",role:"status"},!interactive?state?.connected===false?"连接已断开":state?"等待桌面画面":"未连接":control?.mode==="manual"?"人工接管中 · 智能体控制暂停":"智能体可操作"),!desktop&&h(Button, { variant: "outline", size: "sm", disabled: busy||!state, onClick: () => action("click", { x: 0, y: 0, button: "back" }) }, "后退"), !desktop&&h("input", { value: url, "aria-label": "受控浏览器地址", onChange: event => setUrl(event.target.value), onKeyDown: event => { if (event.key === "Enter") navigate(); } }), !desktop&&h(Button, { variant: "outline", size: "sm", disabled: busy || !url.trim(), onClick: navigate }, "转到"),desktop&&h("strong",{className:"dswSuiteTitle"},state?.title||(meta?.adapter==="uu-desktop"?"远程设备":"本机桌面")),desktop&&h(Button,{variant:"outline",size:"sm","aria-pressed":liveDesktop,disabled:!state?.connected,onClick:()=>setLiveDesktop(v=>!v)},"实时画面"), !sdkDesktop&&h(Button, { variant: "outline", size: "sm", disabled: busy, onClick: () => action("capture") }, "刷新画面"), h(Button, { variant: "outline", size: "sm", onClick: async () => {await desktopInput.current?.releaseAndFlush();await action("close", { includeScreenshot: false })} }, "关闭会话")),
         error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error),
-        h("div", { className: "dswSuiteBrowser" }, image ? h("img", { src: image, alt: state?.title || "受控浏览器画面", draggable: false, onClick: point }) : h("div", { className: "dswSuiteBrowserEmpty" }, "正在启动隔离浏览器并获取画面…")),
-        h("div", { className: "dswSuiteBar" }, h("input", { value: typing, placeholder: "输入到当前焦点", "aria-label": "发送到受控浏览器", onChange: event => setTyping(event.target.value), onKeyDown: event => { if (event.key === "Enter" && typing) { action("type", { text: typing }).then(() => setTyping("")); } } }), h(Button, { variant: "outline", size: "sm", disabled: !typing, onClick: () => action("type", { text: typing }).then(() => setTyping("")) }, "输入"), h(Button, { variant: "outline", size: "sm", onClick: () => action("scroll", { deltaY: -540 }) }, "向上"), h(Button, { variant: "outline", size: "sm", onClick: () => action("scroll", { deltaY: 540 }) }, "向下"), h("span", { className: "dswSuiteMeta" }, (meta?.adapter || "未连接") + " · " + (state ? (state.title || state.url) + " · " + state.viewport.width + "×" + state.viewport.height : "会话 " + browserSessionId))));
+        sdkDesktop ? h(DesktopVideo,{ownerId:props.scope.sessionId,sessionId:browserSessionId,state,control,visible:props.visible,playing:liveDesktop,send:action,updateState:setState,updateControl:setControl,reportError:setError,api:desktopInput}) : h("div", { className: "dswSuiteBrowser" }, image ? h("img", { src: image, alt: state?.title || "受控浏览器画面", draggable: false, tabIndex:0,onClick:event=>{if(dragged.current){dragged.current=false;return}point(event)}, "aria-label":"控制画面，操作即接管；画面聚焦时 Esc 暂停智能体",onKeyDown:event=>{if(event.key==="Escape"){event.preventDefault();void action("takeover",{includeScreenshot:false})}},onPointerDown:event=>{if(event.button!==0||busy||!interactive||!state?.viewport)return;dragStart.current=pointerPoint(event);event.currentTarget.setPointerCapture?.(event.pointerId)},onPointerUp:event=>{const start=dragStart.current;dragStart.current=null;if(!start||!state?.viewport)return;const end=pointerPoint(event);if(Math.hypot(end.x-start.x,end.y-start.y)>6){dragged.current=true;void action("drag",{...start,endX:end.x,endY:end.y});}},onPointerCancel:()=>{dragStart.current=null} }) : h("div", { className: "dswSuiteBrowserEmpty" }, closed.current?"连接已关闭。点击连接重新打开。":error?"暂时无法显示画面":"正在连接并获取画面…")),
+        !sdkDesktop&&h("div", { className: "dswSuiteBar" }, h("input", { type:privateInput?"password":"text",autoComplete:"off",maxLength:8192,value: typing, placeholder: "输入到当前焦点", "aria-label": "发送到受控浏览器", onFocus:()=>{if(state&&control?.mode!=="manual")void action("takeover",{includeScreenshot:false})}, onChange: event => setTyping(event.target.value), onKeyDown: event => { if(event.key==="Enter")sendText(); } }), h(Button, { variant: "outline", size: "sm", disabled: !typing||busy||!interactive, onClick: sendText }, "输入"),h(Button,{variant:"outline",size:"sm","aria-pressed":privateInput,onClick:()=>{setPrivateInput(v=>!v);if(state&&control?.mode!=="manual")void action("takeover",{includeScreenshot:false})}},"私密输入"),...["Enter","Tab","Backspace","Escape"].map(name=>h(Button,{key:name,variant:"outline",size:"sm",disabled:busy||!interactive,onClick:()=>key([name])},name)), h(Button, { variant: "outline", size: "sm", disabled:busy||!interactive,onClick: () => action("scroll", { deltaY: -540 }) }, "向上"), h(Button, { variant: "outline", size: "sm", disabled:busy||!interactive,onClick: () => action("scroll", { deltaY: 540 }) }, "向下"), h("span", { className: "dswSuiteMeta" }, (meta?.adapter || "未连接") + " · " + (state ? (state.title || state.url) + " · " + state.viewport.width + "×" + state.viewport.height : "会话 " + browserSessionId))));
     }
     function ControlledBrowserTab(props) {
+      const sidebar=props.sidebar;
+      React.useEffect(()=>{if(props.tab.title==="受控浏览器")sidebar?.updateTab?.(props.tab.id,{title:"Computer Use"},props.scope)},[sidebar,props.tab.id,props.tab.title,props.scope.sessionId]);
       const browserSessionId = props.tab.meta?.browserSessionId || "default";
       return h(ControlledBrowserSession, { ...props, browserSessionId, key: props.scope.sessionId + "\u0000" + props.tab.id + "\u0000" + browserSessionId });
     }
@@ -511,14 +689,14 @@ window.__ModuleLoader__.load({
       const act=async(action,payload)=>{if(pending.current)return;pending.current=true;setBusy(true);setError("");try{if(action!=="status")await deviceRequest(action,payload);const next=await deviceRequest("status");if(alive.current)setState(next)}catch(error){if(alive.current)setError(error.message||String(error))}finally{pending.current=false;if(alive.current)setBusy(false)}};
       React.useEffect(()=>{alive.current=true;void act("status");return()=>{alive.current=false}},[]);
       return h("div",{className:"dswSuiteSettings","data-settings":"uu-devices"},h("h3",null,"远程设备"),
-        h("p",null,"使用 UU 远程账号中的设备，绑定后可在这里发起连接。"),
+        h("p",null,"UU 远程桌面使用已绑定设备；本机桌面直接控制运行 Host 的电脑。"),
         !state&&h("p",{role:"status"},"正在读取设备…"),state?.message&&h("p",{role:"status"},state.message),
         state?.installed===false&&h("a",{href:"https://uuyc.163.com/",target:"_blank",rel:"noopener noreferrer",className:"dswSuiteButton"},"安装 UU 远程"),
         h("div",{className:"dswSuiteToolbar"},state?.installed&&h(Button,{variant:"outline",size:"sm",type:"button",disabled:busy,onClick:()=>void act("open-client")},state.signedIn?"打开 UU 远程":"打开 UU 远程并登录"),h(Button,{variant:"outline",size:"sm",type:"button",disabled:busy,onClick:()=>void act("status")},busy?"正在刷新…":"刷新设备")),
         state?.signedIn&&h("p",null,"当前账号：",state.account?.name),
         state?.signedIn&&!state.devices?.length&&h("p",null,"当前账号没有可用设备，请在被控设备安装 UU 远程并登录同一账号。"),
-        (state?.devices||[]).map(device=>h("div",{className:"dswSuiteSetting",key:device.id},h("div",null,h("strong",null,device.name),h("p",null,device.local?"当前设备":device.online?"在线":"离线",state.boundDeviceId===device.id?" · 已绑定":"")),h("div",{className:"dswSuiteToolbar"},h(Button,{variant:"outline",size:"sm",type:"button",disabled:busy,onClick:()=>void act(state.boundDeviceId===device.id?"unbind":"bind",{deviceId:device.id})},state.boundDeviceId===device.id?"解除绑定":"绑定"),state.boundDeviceId===device.id&&!device.local&&h(React.Fragment,null,h(Button,{variant:"outline",size:"sm",type:"button",disabled:busy||!device.online,onClick:()=>void act("connect",{deviceId:device.id})},"连接设备"),h(Button,{variant:"outline",size:"sm",type:"button",disabled:busy,onClick:()=>void act("disconnect",{deviceId:device.id})},"断开连接"))))),
-        state?.installed&&h("p",null,"远端桌面在 UU 客户端显示，可手动接管和输入密码。当前设备无需远程连接；模型目前支持下方浏览器控制，暂不支持 UU 桌面操作。"),
+        (state?.devices||[]).map(device=>h("div",{className:"dswSuiteSetting",key:device.id},h("div",null,h("strong",null,device.name),h("p",null,device.local?"当前设备":device.online?"在线":"离线",state.boundDeviceId===device.id?" · 已绑定":"")),h("div",{className:"dswSuiteToolbar"},h(Button,{variant:"outline",size:"sm",type:"button",disabled:busy,onClick:()=>void act(state.boundDeviceId===device.id?"unbind":"bind",{deviceId:device.id})},state.boundDeviceId===device.id?"解除绑定":"绑定"),state.boundDeviceId===device.id&&h("span",{className:"dswSuiteMeta"},"已绑定远程设备")))),
+        state?.installed&&h("p",null,"选择执行适配器后，在 Computer Use 工作台连接、查看画面和人工接管。UU 远程桌面由独立进程使用 SDK 控制绑定设备；本机桌面使用 Windows 原生接口。"),
         error&&h("p",{role:"alert",className:"dswSuiteError"},error));
     }
     function ComputerUseSettings({ scope }) {
@@ -526,14 +704,14 @@ window.__ModuleLoader__.load({
       const [error, setError] = React.useState("");
       const fields = [
         { key: "enabled", label: "启用 Computer Use", type: "switch", defaultValue: false },
-        { key: "adapter", label: "执行适配器", type: "select", defaultValue: "auto", options: [{ value: "auto", label: "自动" }, { value: "native-browser", label: "内置浏览器" }, { value: "command", label: "外部命令" }] },
+        { key: "adapter", label: "执行适配器", type: "select", defaultValue: "auto", options: [{ value: "auto", label: "自动" }, { value: "native-browser", label: "内置浏览器" }, { value: "uu-desktop", label: "UU 远程桌面" }, { value: "native-desktop", label: "本机桌面（Rust 原生）" }, { value: "command", label: "外部命令" }] },
         { key: "browserExecutable", label: "浏览器可执行文件", type: "text", defaultValue: "" },
         { key: "browserHeadless", label: "后台运行浏览器", type: "switch", defaultValue: true },
         { key: "maxBrowserSessions", label: "最大浏览器会话数", type: "number", min: 1, max: 16, defaultValue: 4 },
         { key: "timeoutSeconds", label: "操作超时（秒）", type: "number", min: 5, max: 300, defaultValue: 60 },
         { key: "command", label: "外部控制命令", type: "text", defaultValue: "" }
       ];
-      return h("section", { className: "dswSuiteSettings", "data-settings": "computer-use" }, h(DeviceSettings, {}), h("h3", null, "浏览器控制"), h("p", null, "模型与工作台共用受控浏览器。浏览器运行设置重启后生效。"), snapshot.status !== "ready" ? h("div", { className: "dswSuiteStatus" }, snapshot.status === "error" ? (snapshot.error || "设置读取失败") : "正在读取设置…") : fields.map(field => h(SettingRow, { key: field.key, scope, snapshot, field, error: setError })), error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error));
+      return h("section", { className: "dswSuiteSettings", "data-settings": "computer-use" }, h(DeviceSettings, {}), h("h3", null, "控制环境"), h("p", null, "模型与工作台共用控制环境，支持人工接管。更换执行适配器后重启生效。"), snapshot.status !== "ready" ? h("div", { className: "dswSuiteStatus" }, snapshot.status === "error" ? (snapshot.error || "设置读取失败") : "正在读取设置…") : fields.map(field => h(SettingRow, { key: field.key, scope, snapshot, field, error: setError })), error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error));
     }
     function apply(ctx) {
       installStyle();
@@ -547,7 +725,7 @@ window.__ModuleLoader__.load({
         sidebar.registerFileViewer({ id: "suite:office", title: "本地文档", exts: ["doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "zip", "7z", "rar"], priority: 100, fetchStrategy: "binary-download", component: DownloadViewer }),
         sidebar.registerFileViewer({ id: "suite:code", title: "CodeMirror 文本编辑器", exts: ["", "txt", "log", "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte", "rs", "py", "go", "java", "c", "cc", "cpp", "h", "hpp", "cs", "rb", "php", "sh", "bash", "zsh", "ps1", "sql", "yaml", "yml", "toml", "ini", "conf", "env", "xml", "css", "scss", "less", "html", "htm", "svg", "dockerfile", "makefile"], priority: 90, fetchStrategy: "fsRead", component: CodeWorkbench }),
         sidebar.registerTab({ id: "suite:jobs", title: "后台任务", order: 80, single: true, component: JobsTab }),
-        sidebar.registerTab({ id: "suite:controlled-browser", title: "受控浏览器", order: 100, single: true, component: ControlledBrowserTab, settings: { pluginToggles: [{ key: "autoRefresh", title: "自动刷新浏览器画面", type: "switch", defaultValue: false }] }, onClose: (tab, scope) => { void fetch("/__dsh-computer-use/action", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: scope.sessionId, browserSessionId: tab.meta?.browserSessionId || "default", action: "close", includeScreenshot: false }) }).catch(() => {}); } })
+        sidebar.registerTab({ id: "suite:controlled-browser", title: "Computer Use", order: 100, single: true, component: props=>h(ControlledBrowserTab,{...props,sidebar}), settings: { pluginToggles: [{ key: "autoRefresh", title: "自动刷新浏览器画面", type: "switch", defaultValue: false }] }, onClose: (tab, scope) => { void fetch("/__dsh-computer-use/action", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: scope.sessionId, browserSessionId: tab.meta?.browserSessionId || "default", action: "close", includeScreenshot: false }) }).catch(() => {}); } })
       ];
       ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({ name: "settings.plugin.item", id: "computer-use", order: 40, label: "Computer Use" }, () => h("details", {className:"dshSettingsDisclosure"},h("summary",null,"Computer Use 与远程设备"),h(ComputerUseSettings, { scope: computerUseScope }))));
       ctx.effect?.(() => () => { clearFileDrafts(); for (const dispose of disposers.reverse()) dispose(); }, "sidebar-workbench-suite: registrations");

@@ -305,13 +305,45 @@ async fn run_headless(
     let companions = dsh_host::mount_companions(&host);
     let (host, ()) = own_host_result(host, companions).await?;
 
-    let model = std::env::var("DSH_DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-chat".to_string());
+    let configuration = async {
+        host.agent_presets.ready().await?;
+        let selection = headless_selection(
+            &host.ctx,
+            std::env::var("DSH_DEEPSEEK_MODEL").ok().as_deref(),
+        )
+        .await?;
+        Ok((selection, host.agent_presets.default_id()))
+    }
+    .await;
+    let (host, (selection, preset_id)) = own_host_result(host, configuration).await?;
+    let presets = host.agent_presets.clone();
+    let setup_selection = selection.clone();
+    let setup_preset = preset_id.clone();
+    let setup: dsh_agent::AgentSetup = Arc::new(move |agent_ctx, _agent| {
+        let ctx = agent_ctx.clone();
+        let selected = setup_selection.clone();
+        let presets = presets.clone();
+        let preset_id = setup_preset.clone();
+        Box::pin(async move {
+            let mut state = dsh_agent::ModelSelectionRef::default();
+            state.current = Some(selected);
+            let _ =
+                dsh_agent::install_model_selection(&ctx, Arc::new(parking_lot::Mutex::new(state)))
+                    .await;
+            presets
+                .mount(&ctx, Some(&preset_id))
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(None)
+        })
+    });
     let create_result = host
         .agent_loop
         .create_agent(
             &host.ctx,
             dsh_agent::CreateAgentOptions {
                 meta: Some(dsh_session::CreateSessionMeta {
+                    agent_preset: Some(preset_id),
                     cwd: Some(
                         std::env::current_dir()
                             .map_err(|error| format!("dsh: headless cwd: {error}"))?
@@ -321,11 +353,13 @@ async fn run_headless(
                     ..Default::default()
                 }),
                 agent_options: Some(dsh_agent::AgentOptions {
-                    execution_mode: Default::default(),
-                    provider: Some(dsh_llm_deepseek::PROVIDER.to_string()),
-                    model: Some(model),
+                    execution_mode: selection.execution_mode,
+                    provider: Some(selection.provider),
+                    model: Some(selection.model),
+                    reasoning_effort: selection.reasoning_effort,
                     ..Default::default()
                 }),
+                setup: Some(setup),
                 ..Default::default()
             },
         )
@@ -408,6 +442,40 @@ async fn run_headless(
             }
         }
     }
+}
+
+/// Direct factory callers must explicitly select their model; the default
+/// settings service is a source, not an Agent request-waterfall listener.
+async fn headless_selection(
+    ctx: &Context,
+    legacy_model: Option<&str>,
+) -> Result<dsh_agent::ModelSelection, String> {
+    if let Some(model) = legacy_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        return Ok(dsh_agent::ModelSelection {
+            provider: dsh_llm_deepseek::PROVIDER.into(),
+            model: model.into(),
+            reasoning_effort: None,
+            execution_mode: Default::default(),
+        });
+    }
+    let service = ctx
+        .get_typed::<Arc<dsh_agent_default_model::AgentDefaultModelConfigService>>(
+            "agentDefaultModel",
+            false,
+        )
+        .ok_or("dsh: headless requires the configured agent-default-model service")?;
+    service
+        .ready()
+        .await
+        .map_err(|error| format!("dsh: headless default model: {error}"))?;
+    let selection = service.current_selection();
+    if selection.provider.trim().is_empty() || selection.model.trim().is_empty() {
+        return Err("dsh: agent-default-model must select a non-empty provider and model".into());
+    }
+    Ok(selection)
 }
 
 async fn own_host_result<T>(
@@ -494,6 +562,48 @@ mod web_bind_tests {
                 "127.0.0.1".to_string(),
             ]),
             Ok(4096)
+        );
+    }
+}
+
+#[cfg(test)]
+mod headless_selection_tests {
+    use super::*;
+    #[tokio::test]
+    async fn configured_default_is_used_and_legacy_override_is_explicit() {
+        let ctx = Context::root();
+        dsh_agent_default_model::AgentDefaultModelConfigService::install(
+            &ctx,
+            dsh_agent_default_model::AgentDefaultModelConfig {
+                provider: "configured-route".into(),
+                model: "configured-model".into(),
+            },
+        );
+        let selected = headless_selection(&ctx, None).await.unwrap();
+        assert_eq!(
+            (selected.provider.as_str(), selected.model.as_str()),
+            ("configured-route", "configured-model")
+        );
+        assert_eq!(headless_selection(&ctx, Some(" ")).await.unwrap(), selected);
+        let override_selection = headless_selection(&ctx, Some(" legacy-model "))
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                override_selection.provider.as_str(),
+                override_selection.model.as_str()
+            ),
+            (dsh_llm_deepseek::PROVIDER, "legacy-model")
+        );
+        assert!(override_selection.reasoning_effort.is_none());
+    }
+    #[tokio::test]
+    async fn missing_default_fails_before_starting_a_model_turn() {
+        assert!(
+            headless_selection(&Context::root(), None)
+                .await
+                .unwrap_err()
+                .contains("agent-default-model")
         );
     }
 }
