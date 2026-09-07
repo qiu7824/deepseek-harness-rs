@@ -16,7 +16,7 @@
 | 对话引用 | 原生候选菜单/chip、可恢复草稿、成功发送清理；与对应消息原子入队并在 claim 时注入 | `session_reference_input_harness.cjs`、真实队列引用 E2E |
 | 旧 Windows 会话恢复 | 普通路径与系统规范路径仅在解析到同一真实目录时视为等价；保留工作区隔离 | `session_cwd_tests`、`e2e_session_workspace_resume.py` |
 | 长引用补读 | 按模型能力计算预算，显式预算优先；同一序列生成预览和完整快照，提供真实 scratch 读取入口 | 10k Unicode 引用实存读回及源继续增长回归 |
-| persona | prefix/suffix 与旧 persona/text 兼容，冲突诊断、complete、作用域覆盖；全局设置和预设入口共用解析器 | `system-prompt/tests/persona_layers.rs`、Host 设置回归 |
+| persona | prefix/suffix 与旧 persona/text 兼容，冲突诊断、complete、作用域覆盖；全局设置和预设入口共用解析器 | `system-prompt/tests/persona_compatibility.rs`、Host 设置回归 |
 | 模型切换通知 | 下一次真正接纳请求记录一次持久通知；仅改变推理等级不产生模型切换通知 | 实际 AgentLoop 多回合及 Provider 失败重试 fixture |
 | Astra/Responses | 完成即结算、静默连接可取消、传输失败受控恢复；保留原输出阶段和不透明重放状态 | `llm-deepseek` 单元及真实 HTTP fixture |
 | Anthropic 重放 | 保留签名、redacted thinking、返回模型和原请求 alias；模型或端点切换不复用旧签名 | 工具往返及流完成/取消 HTTP fixture |

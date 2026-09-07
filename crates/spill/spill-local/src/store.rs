@@ -112,14 +112,6 @@ fn set_dir_mode(dir: &std::path::Path) {
     let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
 }
 
-#[cfg(unix)]
-fn set_file_mode(file: &tokio::fs::File) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = file
-        .set_permissions(std::fs::Permissions::from_mode(0o600))
-        .await;
-}
-
 /// Write `content` to a fresh file under the session-scoped directory and
 /// return its path + byte length. The filename is a random hex prefix plus
 /// the sanitized `suggested_name`, so it is unpredictable (defeats symlink
@@ -135,13 +127,11 @@ pub async fn save_text_file(options: SaveTextOptions) -> Result<SavedText, std::
     let prefix = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
     let path = std::path::Path::new(&dir).join(format!("{prefix}-{safe_name}"));
     let bytes = options.content.len() as u64;
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .await?;
+    let mut open = tokio::fs::OpenOptions::new();
+    open.write(true).create_new(true);
     #[cfg(unix)]
-    set_file_mode(&file);
+    open.mode(0o600);
+    let mut file = open.open(&path).await?;
     tokio::io::AsyncWriteExt::write_all(&mut file, options.content.as_bytes()).await?;
     // Flush before returning: the caller reads the artifact back (and other
     // processes may list it) as soon as `save_text` resolves.
