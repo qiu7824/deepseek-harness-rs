@@ -484,6 +484,21 @@ async fn handle(
         Ok(value) => value,
         Err(_) => return failure("请求格式无效"),
     };
+    if operation == "workspace-settings" {
+        let Some(path) = args["path"].as_str() else {
+            return failure("缺少工作区路径");
+        };
+        if args.get("location").is_some_and(|value| !value.is_string()) {
+            return failure("垃圾槽位置必须是字符串");
+        }
+        return match resources
+            .workspace_location(path, args.get("location").and_then(Value::as_str))
+            .await
+        {
+            Ok(value) => response(StatusCode::OK, value),
+            Err(error) => failure(error),
+        };
+    }
     if operation == "resources"
         || operation == "collect"
         || operation == "resource-action"

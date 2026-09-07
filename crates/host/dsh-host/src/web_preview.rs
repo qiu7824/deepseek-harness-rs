@@ -2666,7 +2666,6 @@ impl PreviewService {
                 Ok(value) => value,
                 Err(response) => return response,
             };
-            self.code_index.request(&root, false);
             return json_response(
                 StatusCode::OK,
                 &MetaBody {

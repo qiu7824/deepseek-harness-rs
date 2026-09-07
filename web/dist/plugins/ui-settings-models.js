@@ -2070,21 +2070,21 @@ window.__ModuleLoader__.load({
             const count=snapshot?.rateLimitResetCredits?.availableCount;
             const fmtTime=v=>typeof v==="number"?new Date(v*1000).toLocaleString():"未提供";
             const outcomes={reset:"已使用 1 张重置卡",alreadyRedeemed:"该次重置此前已完成",noCredit:"没有可用重置卡",nothingToReset:"当前没有可重置窗口"};
-            return h("section",{className:"dshCodexUsage",style:{marginTop:12,padding:12,border:"1px solid var(--border-color, #8885)",borderRadius:8},"aria-label":"Codex 账户用量"},
+            return h("section",{className:"dshCodexUsage "+ModelsSection_module_css_default.modelCatalog,"aria-label":"Codex 账户用量"},
                 h("strong",null,"Codex 账户用量"),
-                h("p",null,"账户共享额度 · ",snapshot?.status==="stale"?"数据待刷新":snapshot?.updatedAt?"更新于 "+fmtTime(snapshot.updatedAt):"等待账号核验"),
+                h("p",{className:ModelsSection_module_css_default.modelCatalogMeta},"账户共享额度 · ",snapshot?.status==="stale"?"数据待刷新":snapshot?.updatedAt?"更新于 "+fmtTime(snapshot.updatedAt):"等待账号核验"),
                 ...Object.entries(windows).flatMap(([id,bucket])=>["primary","secondary"].filter(key=>bucket[key]).map(key=>{const window=bucket[key],used=window.usedPercent,remaining=typeof used==="number"?Math.max(0,Math.min(100,100-used)):null;return h("div",{key:id+key,style:{margin:"8px 0"}},h("div",null,bucket.limitName??id," · ",typeof window.windowDurationMins==="number"?window.windowDurationMins+" 分钟窗口":key),h("div",null,remaining===null?"额度未提供":`已用 ${used}% · 剩余 ${remaining}%`),remaining!==null&&h("progress",{value:remaining,max:100,"aria-label":"剩余额度",style:{width:"100%"}}),h("small",null,"恢复时间：",fmtTime(window.resetsAt)));})),
                 h("p",null,"可用重置卡：",typeof count==="number"?count:"未提供"),
                 ...(snapshot?.rateLimitResetCredits?.credits??[]).map(card=>h("div",{key:card.id},card.title??"重置卡"," · 有效期：",card.expiresAt==null?"未提供":fmtTime(card.expiresAt))),
                 h("div",{style:{display:"flex",gap:8,flexWrap:"wrap"}},
-                    h("button",{type:"button",disabled:busy||disabled,onClick:()=>run(()=>load(true))},"刷新用量"),
-                    h("button",{type:"button",disabled:busy||disabled,onClick:()=>run(async()=>{const value=await call("usage-login");if(mounted.current){setLogin(value);setSnapshot(null);}})},"连接用量账号"),
-                    h("button",{type:"button",disabled:busy||disabled||snapshot?.status!=="fresh",onClick:()=>run(async()=>{const value=await call("usage-history");if(mounted.current)setHistory(value);})},"Token 统计"),
-                    h("button",{type:"button",disabled:busy||disabled||snapshot?.status!=="fresh"||(!pending&&!(count>0)),onClick:reset},pending?"核对该次重置":"使用 1 张重置卡")),
+                    h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||disabled,onClick:()=>run(()=>load(true))},"刷新用量"),
+                    h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||disabled,onClick:()=>run(async()=>{const value=await call("usage-login");if(mounted.current){setLogin(value);setSnapshot(null);}})},"连接用量账号"),
+                    h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||disabled||snapshot?.status!=="fresh",onClick:()=>run(async()=>{const value=await call("usage-history");if(mounted.current)setHistory(value);})},"Token 统计"),
+                    h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||disabled||snapshot?.status!=="fresh"||(!pending&&!(count>0)),onClick:reset},pending?"核对该次重置":"使用 1 张重置卡")),
                 login&&h("div",{role:"status"},h("p",null,"请登录与当前 Codex 模型相同的账号，完成后刷新用量。"),h("code",null,login.userCode),typeof login.verificationUrl==="string"&&login.verificationUrl.startsWith("https://auth.openai.com/")&&h("a",{href:login.verificationUrl,target:"_blank",rel:"noopener noreferrer",style:{marginLeft:8}},"打开官方登录页")),
                 operation&&h("p",{role:"status"},outcomes[operation.outcome]??(operation.state==="unknown"?"兑换结果未确认，请核对该次操作":operation.state==="prepared"?"等待使用该次重置":"正在核对重置状态")),
                 history&&h("div",null,h("p",null,"累计 Token：",history.summary?.lifetimeTokens??"未提供"),...(history.dailyUsageBuckets??[]).map(row=>h("div",{key:row.startDate},row.startDate,"：",row.tokens??"未提供"))),
-                error&&h("p",{role:"alert"},error));
+                error&&h("p",{role:"alert",className:ModelsSection_module_css_default.error},error));
         }
 
         function AccountConnections({controller,api,namespaces,t,disabled}) {
@@ -3196,7 +3196,7 @@ window.__ModuleLoader__.load({
 				label: () => t("nav"),
 				inject: injected
 			}, ModelsSection));
-            ctx.slots.inject("settings.section", () => ctx.slots.register({name:"settings.section",id:"free-models",order:11,label:()=>t("freeTitle"),inject:()=>({controller,t})},FreeModelsSection));
+            if(window.__DSH_BOOT__?.variant==="free") ctx.slots.inject("settings.section", () => ctx.slots.register({name:"settings.section",id:"free-models",order:11,label:()=>t("freeTitle"),inject:()=>({controller,t})},FreeModelsSection));
 			ctx.slots.inject("settings.onboarding", () => ctx.slots.register({
 				name: "settings.onboarding",
 				id: "welcome-notice",

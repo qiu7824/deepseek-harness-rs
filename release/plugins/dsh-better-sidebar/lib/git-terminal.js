@@ -51,9 +51,10 @@ window.__ModuleLoader__.load({
     }
 
     function installStyles() {
-      if (document.querySelector(`style[data-plugin="${STYLE_ID}"]`)) return;
+      if (document.querySelector('style[data-dsh-git-terminal-style]')) return;
       const style = document.createElement("style");
       style.dataset.plugin = STYLE_ID;
+      style.dataset.dshGitTerminalStyle = "";
       style.textContent = `
 .dgt-shell{min-width:0;min-height:0;flex:1;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base)}
 .dgt-toolbar{min-height:38px;display:flex;align-items:center;gap:6px;padding:5px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary)}
@@ -386,6 +387,9 @@ window.__ModuleLoader__.load({
           mainBody);
       }
 
+      if (!git) return React.createElement("section", { className: "dgt-shell", "aria-label": "Git 工作台" },
+        React.createElement("div", { className: "dgt-toolbar" }, React.createElement("span", {className:"dgt-grow"}, "Git"), React.createElement("button", {type:"button",onClick:()=>refresh().catch(failure=>setError(failure.message))}, "刷新")),
+        React.createElement("div", {className:"dgt-empty",role:"status"}, error || "正在读取仓库…"));
       return React.createElement("section", { className: "dgt-shell", "aria-label": "Git 工作台" }, selectors,
         error && React.createElement("div", { className: "dgt-error", role: "alert" }, error),
         view === "changes" && compose,
@@ -662,15 +666,20 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         if (!selected) { setText(""); return; }
-        let live = true;
-        const read = async () => {
-          try {
-            const value = await json(endpoint("terminal-read", selected.homeSessionId, { terminalId: selected.terminalId, count: 2000 }));
-            if (live) { setText(value.text || ""); setError(""); }
-          } catch (failure) { if (live) setError(`终端已断开：${failure.message}`); }
+        let live=true,timer=0,inflight=false,controller=null,last=null,delay=350;
+        const read=async()=>{
+          clearTimeout(timer);if(!live||document.hidden||inflight)return;
+          inflight=true;controller=new AbortController();
+          try{
+            const value=await json(endpoint("terminal-read",selected.homeSessionId,{terminalId:selected.terminalId,count:2000}),{signal:controller.signal});
+            if(live&&!controller.signal.aborted){const next=value.text||"";delay=next===last?Math.min(4000,delay*1.6):350;if(next!==last){last=next;setText(next)}setError("")}
+          }catch(failure){if(live&&failure?.name!=="AbortError"){setError(`终端已断开：${failure.message}`);delay=10000}}
+          finally{inflight=false;if(live&&!document.hidden)timer=setTimeout(read,delay)}
         };
-        void read(); const timer = setInterval(read, 350);
-        return () => { live = false; clearInterval(timer); };
+        const wake=()=>{clearTimeout(timer);if(document.hidden)controller?.abort();else{delay=350;void read()}};
+        document.addEventListener("visibilitychange",wake);terminalRef.current?.addEventListener("keydown",wake);const element=terminalRef.current;
+        void read();
+        return ()=>{live=false;clearTimeout(timer);controller?.abort();document.removeEventListener("visibilitychange",wake);element?.removeEventListener("keydown",wake)};
       }, [selected && terminalKey(selected)]);
 
       React.useEffect(() => {

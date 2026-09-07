@@ -48,8 +48,11 @@ pub struct LocalSubprocessRuntime {
     path_prefixes: Mutex<Vec<std::path::PathBuf>>,
 }
 
-pub type ResourceProvider =
-    Arc<dyn Fn() -> Result<Option<Arc<dsh_workspace_resources::Store>>, String> + Send + Sync>;
+pub type ResourceProvider = Arc<
+    dyn Fn(&str, &[(String, String)]) -> Result<Option<Arc<dsh_workspace_resources::Store>>, String>
+        + Send
+        + Sync,
+>;
 
 impl Drop for LocalSubprocessRuntime {
     fn drop(&mut self) {
@@ -331,7 +334,18 @@ impl SubprocessRuntime for LocalSubprocessRuntime {
             .resources
             .lock()
             .clone()
-            .map(|provider| provider())
+            .map(|provider| {
+                let env = spec
+                    .env
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        value.as_ref().map(|value| (key.clone(), value.clone()))
+                    })
+                    .collect::<Vec<_>>();
+                provider(&spec.cwd, &env)
+            })
             .transpose()?
             .flatten()
             .map(|store| {
@@ -423,7 +437,7 @@ impl SubprocessRuntime for LocalSubprocessRuntime {
                 .map(|(name, value)| (name, Some(value)))
                 .collect::<Vec<_>>();
             let mut resources = resource_provider
-                .map(|provider| provider())
+                .map(|provider| provider(&spec.cwd, spec.env.as_deref().unwrap_or_default()))
                 .transpose()?
                 .flatten()
                 .map(|store| store.prepare_execution(&spec.cwd, &spec.argv, &extra))

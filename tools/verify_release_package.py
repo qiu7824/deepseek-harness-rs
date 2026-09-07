@@ -137,8 +137,11 @@ def main() -> None:
         prefix + "web/dist/index.html",
         prefix + "web/dist/plugins/ui-theme.js",
         prefix + "plugins/dsh-context-jump/lib/client.js",
-        prefix + "plugins/dsh-skin-center/lib/client.js",
     }
+    if args.variant == "skin":
+        required.add(prefix + "plugins/dsh-skin-center/lib/client.js")
+    elif any(name.startswith(prefix + "plugins/dsh-skin-center/") for name in names):
+        raise SystemExit("non-skin archive includes the skin-center plugin")
 
     missing = sorted(required - names)
     if missing:

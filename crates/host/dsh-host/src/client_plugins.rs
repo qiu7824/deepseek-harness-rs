@@ -563,6 +563,10 @@ pub fn compose(
     boot_payload: &mut Value,
     profile: &Path,
 ) -> Result<Vec<dsh_host_webserver::RouteDisposer>, String> {
+    let skins_allowed = boot_payload
+        .get("variant")
+        .and_then(Value::as_str)
+        .is_none_or(|variant| matches!(variant, "skin" | "development"));
     let plugins = discover(profile)?.into_iter();
     let entries = boot_payload
         .get_mut("entries")
@@ -570,13 +574,29 @@ pub fn compose(
         .ok_or_else(|| "web plugin manifest entries are absent".to_string())?;
     let mut disposers = Vec::new();
     for plugin in plugins {
+        if plugin.id == "dsh-skin-center" && !skins_allowed {
+            continue;
+        }
         for asset in &plugin.assets {
-            let bytes = asset.bytes.clone();
+            let source = asset.source.clone();
+            let expected = Sha256::digest(&asset.bytes).to_vec();
             let route = asset.route.clone();
             let handler = Arc::new(move |request: dsh_host_webserver::WebRequest| {
-                let bytes = bytes.clone();
+                let source = source.clone();
+                let expected = expected.clone();
                 Box::pin(async move {
-                    Ok::<WebResponse, WebHandlerError>(javascript_response(request.method(), bytes))
+                    let bytes = tokio::task::spawn_blocking(move || {
+                        read_bounded(&source, MAX_CLIENT_ASSET_BYTES)
+                    })
+                    .await;
+                    let bytes = match bytes {
+                        Ok(Ok(Some(bytes))) if Sha256::digest(&bytes).as_slice() == expected => bytes,
+                        _ => return Ok::<WebResponse, WebHandlerError>(Response::builder().status(StatusCode::CONFLICT).header(http::header::CONTENT_TYPE,"text/plain; charset=utf-8").body(Body::from("Plugin asset changed; restart Host to load the current revision")).unwrap()),
+                    };
+                    Ok::<WebResponse, WebHandlerError>(javascript_response(
+                        request.method(),
+                        Bytes::from(bytes),
+                    ))
                 })
                     as futures::future::BoxFuture<'static, Result<WebResponse, WebHandlerError>>
             });

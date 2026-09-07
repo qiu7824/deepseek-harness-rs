@@ -5717,6 +5717,7 @@ window.__ModuleLoader__.load({
 			* jump-centering scrolls do not set this latch and therefore cannot feed
 			* back into loadNewer while a historical target is active. */
 			const readerForwardIntentRef = (0, react.useRef)(false);
+			const readerBackwardIntentRef = (0, react.useRef)(false);
 			const firstKey = order[0];
 			const firstSeq = firstKey === void 0 ? null : nodeStore.get(firstKey)?.anchorSeq ?? null;
 			const lastKey = order.at(-1) ?? null;
@@ -5760,7 +5761,7 @@ window.__ModuleLoader__.load({
 					followSigRef.current = followSig;
 					return;
 				}
-				if (anchorRef.current !== null && firstSeq !== null && firstSeqRef.current !== null && firstSeq < firstSeqRef.current) {
+				if (anchorRef.current !== null && firstSeq !== null && firstSeqRef.current !== null && firstSeq !== firstSeqRef.current) {
 					const anchor = anchorRef.current;
 					anchorRef.current = null;
 					const row = anchorElement(local, anchor.key);
@@ -5792,13 +5793,16 @@ window.__ModuleLoader__.load({
 				const floor = Math.max(0, el.scrollHeight - el.clientHeight);
 				const movedByReader = Math.abs(el.scrollTop - Math.min(observedTopRef.current, floor)) > .5;
 				const isAtBottom = movedByReader ? floor - el.scrollTop <= 25 : atBottomRef.current;
-				if (el.scrollTop <= 80 && hasMore && !loadingOlder && anchorRef.current === null) {
+				if (el.scrollTop <= 80 && readerBackwardIntentRef.current && hasMore && !loadingOlder && !loadingNewer && anchorRef.current === null) {
+					readerBackwardIntentRef.current = false;
 					const position = scrollPosition(local, el);
 					if (position !== null) anchorRef.current = { key: position.anchorKey, top: position.anchorTop };
 					Promise.resolve(loadOlder());
 				}
 				if (isAtBottom && hasMoreAfter && !loadingNewer && !newerRequestRef.current && (!historyBrowsing || readerForwardIntentRef.current)) {
 					readerForwardIntentRef.current = false;
+					const position = scrollPosition(local, el);
+					if (position !== null) anchorRef.current = { key: position.anchorKey, top: position.anchorTop };
 					newerRequestRef.current = true;
 					Promise.resolve(loadNewer()).finally(() => {
 						newerRequestRef.current = false;
@@ -5835,24 +5839,30 @@ window.__ModuleLoader__.load({
 					setScrollSampleTick((tick) => tick + 1);
 				};
 				const onWheel = (event) => {
-					if (event.deltaY > 0) readerForwardIntentRef.current = true;
-					else if (event.deltaY < 0) { readerForwardIntentRef.current = false; releaseFollow(); }
+					if (event.deltaY > 0) { readerForwardIntentRef.current = true; readerBackwardIntentRef.current = false; }
+					else if (event.deltaY < 0) { readerForwardIntentRef.current = false; readerBackwardIntentRef.current = true; releaseFollow(); }
+					if (event.deltaY !== 0) { scrollSamplePendingRef.current = true; sampleTimer ??= window.setTimeout(sample, SCROLL_SAMPLE_INTERVAL_MS); }
 				};
 				const releaseFollow = () => {
 					if (atBottomRef.current) { atBottomRef.current = false; setAtBottom(false); }
 				};
 				const onKeyDown = (event) => {
 					if (event.target?.closest?.("input,textarea,[contenteditable=true]")) return;
-					if (["ArrowDown", "PageDown", "End", " "].includes(event.key)) readerForwardIntentRef.current = true;
-					else if (["ArrowUp", "PageUp", "Home"].includes(event.key)) { readerForwardIntentRef.current = false; releaseFollow(); }
+					if (["ArrowDown", "PageDown", "End", " "].includes(event.key)) { readerForwardIntentRef.current = true; readerBackwardIntentRef.current = false; }
+					else if (["ArrowUp", "PageUp", "Home"].includes(event.key)) { readerForwardIntentRef.current = false; readerBackwardIntentRef.current = true; releaseFollow(); }
 				};
 				let touchY = null;
 				const onTouchStart = event => { touchY = event.touches[0]?.clientY ?? null; };
-				const onTouchMove = event => { const y = event.touches[0]?.clientY; if (touchY !== null && y > touchY) releaseFollow(); touchY = y ?? null; };
+				const onTouchMove = event => { const y = event.touches[0]?.clientY; if (touchY !== null && y !== undefined) { readerBackwardIntentRef.current = y > touchY; readerForwardIntentRef.current = y < touchY; if (y > touchY) releaseFollow(); } touchY = y ?? null; };
 				const onPointerDown = () => {
 					readerForwardIntentRef.current = true;
+					readerBackwardIntentRef.current = true;
 				};
 				const onScroll = () => {
+					if (readerForwardIntentRef.current && readerBackwardIntentRef.current) {
+						readerBackwardIntentRef.current = el.scrollTop < observedTopRef.current - .5;
+						readerForwardIntentRef.current = !readerBackwardIntentRef.current;
+					}
 					if (el.scrollTop < observedTopRef.current - .5) releaseFollow();
 					scrollSamplePendingRef.current = true;
 					sampleTimer ??= window.setTimeout(sample, SCROLL_SAMPLE_INTERVAL_MS);
@@ -5913,8 +5923,8 @@ window.__ModuleLoader__.load({
 				};
 			}, []);
 			(0, react.useEffect)(() => {
-				if (!loadingOlder) anchorRef.current = null;
-			}, [loadingOlder]);
+				if (!loadingOlder && !loadingNewer) anchorRef.current = null;
+			}, [loadingOlder, loadingNewer]);
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: ChatView_module_css_default.root,
 				children: [(0, react_jsx_runtime.jsxs)("div", {
@@ -7389,7 +7399,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-conversation\src\client\skeleton\ConversationRoot.module.css.mjs
-		const css$6 = ".c9AePG_root{background:var(--dsw-alias-bg-base);--dsh-chat-content-width:var(--dsh-chat-user-width,clamp(680px,calc(var(--dsh-conversation-column-width,0px) * .64),920px));--dsh-composer-card-max-width:calc(var(--dsh-chat-content-width) + 32px);--dsh-composer-side-clearance:16px;--dsh-composer-dock-inset:8px;flex-direction:column;min-width:0;height:100%;display:flex;position:relative}.c9AePG_widthHandle{z-index:4;cursor:col-resize;touch-action:none;background:transparent;border:0;width:18px;padding:0;position:absolute;top:0;bottom:0}.c9AePG_widthHandle[data-width-handle=left]{left:max(0px,calc(50% - var(--dsh-chat-content-width) / 2 - 18px))}.c9AePG_widthHandle[data-width-handle=right]{right:max(0px,calc(50% - var(--dsh-chat-content-width) / 2 - 18px))}.c9AePG_widthHandle:after{content:\"\";opacity:0;background:var(--dsw-alias-brand-primary);border-radius:2px;width:2px;position:absolute;top:25%;bottom:25%;left:8px;transition:opacity .15s}.c9AePG_widthHandle:hover:after,.c9AePG_widthHandle:focus-visible:after{opacity:.65}.c9AePG_header{border-bottom:1px solid #0000;flex:none;padding:12px 28px 0 20px;position:relative}.c9AePG_header:after{content:\"\";z-index:0;background:var(--dsw-alias-border-l2);pointer-events:none;height:1px;position:absolute;bottom:1px;left:0;right:0}.c9AePG_headerHidden{display:none}.c9AePG_titleRow{align-items:center;gap:0;min-height:32px;display:flex}.c9AePG_titleCluster{flex:1;align-items:center;gap:10px;min-width:0;display:flex}.c9AePG_crumbs{white-space:nowrap;align-items:center;gap:4px;min-width:0;display:flex;overflow:hidden}.c9AePG_crumbSeg{align-items:center;gap:4px;min-width:0;display:inline-flex}.c9AePG_crumbSep{color:var(--dsw-alias-label-caption);font-size:14px;line-height:20px}.c9AePG_crumb{max-width:220px;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;cursor:pointer;background:0 0;border:none;border-radius:12px;padding:4px 8px;font-size:14px;line-height:20px;overflow:hidden}.c9AePG_crumb:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.c9AePG_crumbCurrent{color:var(--dsw-alias-label-primary);cursor:default;font-weight:500}.c9AePG_headerActions{flex:none;align-items:center;gap:8px;display:flex}.c9AePG_headerUtilities{flex:none;align-items:center;gap:8px;margin-left:20px;display:flex}.c9AePG_headerUtilities:empty{display:none}.c9AePG_tabs{z-index:1;gap:36px;margin-top:4px;padding-left:8px;display:flex;position:relative}.c9AePG_tab{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;padding:0 0 11px;font-size:13px;font-weight:500;line-height:16px;position:relative}.c9AePG_tab:after{content:\"\";background:0 0;border-radius:2px;height:2px;position:absolute;bottom:1px;left:0;right:0}.c9AePG_tabActive{color:var(--dsw-alias-state-business-primary)}.c9AePG_tabActive:after{background:var(--dsw-alias-state-business-primary)}.c9AePG_viewArea{flex-direction:column;flex:1;min-height:0;display:flex}.c9AePG_composerStack{--dsh-composer-stack-gap:6px;gap:var(--dsh-composer-stack-gap);flex-direction:column;display:flex}.c9AePG_composerSeat{--dsh-composer-text-max-height:336px;flex-direction:column;flex:none;display:flex}.c9AePG_root[data-phase=active]{overflow:hidden}.c9AePG_root[data-phase=active] .c9AePG_header{flex:none}.c9AePG_scrollBody{scrollbar-gutter:stable;flex-direction:column;flex:1;min-height:0;display:flex;overflow:hidden auto}.c9AePG_root[data-phase=active] .c9AePG_viewArea{flex:1 0 auto;min-height:auto}.c9AePG_root[data-phase=active] .c9AePG_composerSeat{z-index:7;background:linear-gradient(180deg, color-mix(in srgb, var(--dsw-alias-bg-base) 0%, transparent) 0px, var(--dsw-alias-bg-base) 36px);position:sticky;bottom:0}.c9AePG_scrollBody:has([data-conversation-composer-overlay]){scrollbar-gutter:auto;position:relative;overflow:hidden auto}.c9AePG_scrollBody:has([data-conversation-composer-overlay])>[data-slot=conversation\\.session]>.c9AePG_viewArea{flex:1 1 0;min-height:0;overflow:hidden}.c9AePG_scrollBody:has([data-conversation-composer-overlay])>.c9AePG_composerSeat{right:var(--dsh-scrollbar-width);position:absolute;bottom:0;left:0}.c9AePG_composerHero{width:min(calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)), 100%);z-index:1;align-self:center;gap:8px;padding-bottom:32px;position:relative}.c9AePG_heroGlow{z-index:-1;aspect-ratio:1051/468;pointer-events:none;width:135.438%;position:absolute;bottom:92px;left:50%;transform:translate(-50%,50%)}.c9AePG_heroWorkspaceRow{align-items:center;gap:2px;min-width:0;margin-top:4px;padding-left:20px;display:flex}.c9AePG_root[data-phase=hero] .c9AePG_scrollBody{justify-content:center;overflow-y:auto}.c9AePG_root[data-phase=settling] .c9AePG_composerSeat{visibility:hidden}";
+		const css$6 = ".c9AePG_root{background:var(--dsw-alias-bg-base);--dsh-chat-content-width:var(--dsh-chat-user-width,clamp(680px,calc(var(--dsh-conversation-column-width,0px) * .64),920px));--dsh-composer-card-max-width:calc(var(--dsh-chat-content-width) + 32px);--dsh-composer-side-clearance:16px;--dsh-composer-dock-inset:8px;flex-direction:column;min-width:0;height:100%;display:flex;position:relative}.c9AePG_widthHandle{z-index:4;cursor:col-resize;touch-action:none;background:transparent;border:0;box-shadow:none;outline:0;width:18px;height:64px;padding:0;position:absolute;top:calc(50% - 32px);bottom:auto}.c9AePG_widthHandle[data-width-handle=left]{left:max(0px,calc(50% - var(--dsh-chat-content-width) / 2 - 22px))}.c9AePG_widthHandle[data-width-handle=right]{right:max(0px,calc(50% - var(--dsh-chat-content-width) / 2 - 22px))}.c9AePG_widthHandle:before{display:none}.c9AePG_widthHandle:after{content:\"\";opacity:0;background:var(--dsw-alias-label-tertiary);border-radius:2px;width:3px;height:28px;position:absolute;top:18px;left:7px;transition:opacity .15s}.c9AePG_widthHandle:hover:after{opacity:.6;transition-delay:.4s}.c9AePG_widthHandle:focus-visible:after,.c9AePG_widthHandle[data-dragging=true]:after{opacity:1;transition-delay:0;background:var(--dsw-alias-brand-primary)}.c9AePG_header{border-bottom:1px solid #0000;flex:none;padding:12px 28px 0 20px;position:relative}.c9AePG_header:after{content:\"\";z-index:0;background:var(--dsw-alias-border-l2);pointer-events:none;height:1px;position:absolute;bottom:1px;left:0;right:0}.c9AePG_headerHidden{display:none}.c9AePG_titleRow{align-items:center;gap:0;min-height:32px;display:flex}.c9AePG_titleCluster{flex:1;align-items:center;gap:10px;min-width:0;display:flex}.c9AePG_crumbs{white-space:nowrap;align-items:center;gap:4px;min-width:0;display:flex;overflow:hidden}.c9AePG_crumbSeg{align-items:center;gap:4px;min-width:0;display:inline-flex}.c9AePG_crumbSep{color:var(--dsw-alias-label-caption);font-size:14px;line-height:20px}.c9AePG_crumb{max-width:220px;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;cursor:pointer;background:0 0;border:none;border-radius:12px;padding:4px 8px;font-size:14px;line-height:20px;overflow:hidden}.c9AePG_crumb:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.c9AePG_crumbCurrent{color:var(--dsw-alias-label-primary);cursor:default;font-weight:500}.c9AePG_headerActions{flex:none;align-items:center;gap:8px;display:flex}.c9AePG_headerUtilities{flex:none;align-items:center;gap:8px;margin-left:20px;display:flex}.c9AePG_headerUtilities:empty{display:none}.c9AePG_tabs{z-index:1;gap:36px;margin-top:4px;padding-left:8px;display:flex;position:relative}.c9AePG_tab{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;padding:0 0 11px;font-size:13px;font-weight:500;line-height:16px;position:relative}.c9AePG_tab:after{content:\"\";background:0 0;border-radius:2px;height:2px;position:absolute;bottom:1px;left:0;right:0}.c9AePG_tabActive{color:var(--dsw-alias-state-business-primary)}.c9AePG_tabActive:after{background:var(--dsw-alias-state-business-primary)}.c9AePG_viewArea{flex-direction:column;flex:1;min-height:0;display:flex}.c9AePG_composerStack{--dsh-composer-stack-gap:6px;gap:var(--dsh-composer-stack-gap);flex-direction:column;display:flex}.c9AePG_composerSeat{--dsh-composer-text-max-height:336px;flex-direction:column;flex:none;display:flex}.c9AePG_root[data-phase=active]{overflow:hidden}.c9AePG_root[data-phase=active] .c9AePG_header{flex:none}.c9AePG_scrollBody{scrollbar-gutter:stable;flex-direction:column;flex:1;min-height:0;display:flex;overflow:hidden auto}.c9AePG_root[data-phase=active] .c9AePG_viewArea{flex:1 0 auto;min-height:auto}.c9AePG_root[data-phase=active] .c9AePG_composerSeat{z-index:7;background:linear-gradient(180deg, color-mix(in srgb, var(--dsw-alias-bg-base) 0%, transparent) 0px, var(--dsw-alias-bg-base) 36px);position:sticky;bottom:0}.c9AePG_scrollBody:has([data-conversation-composer-overlay]){scrollbar-gutter:auto;position:relative;overflow:hidden auto}.c9AePG_scrollBody:has([data-conversation-composer-overlay])>[data-slot=conversation\\.session]>.c9AePG_viewArea{flex:1 1 0;min-height:0;overflow:hidden}.c9AePG_scrollBody:has([data-conversation-composer-overlay])>.c9AePG_composerSeat{right:var(--dsh-scrollbar-width);position:absolute;bottom:0;left:0}.c9AePG_composerHero{width:min(calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)), 100%);z-index:1;align-self:center;gap:8px;padding-bottom:32px;position:relative}.c9AePG_heroGlow{z-index:-1;aspect-ratio:1051/468;pointer-events:none;width:135.438%;position:absolute;bottom:92px;left:50%;transform:translate(-50%,50%)}.c9AePG_heroWorkspaceRow{align-items:center;gap:2px;min-width:0;margin-top:4px;padding-left:20px;display:flex}.c9AePG_root[data-phase=hero] .c9AePG_scrollBody{justify-content:center;overflow-y:auto}.c9AePG_root[data-phase=settling] .c9AePG_composerSeat{visibility:hidden}";
 		const tagId$6 = "@deepseek-ai/dsh-client-ui-conversation/ConversationRoot.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$6) + "]") === null) {
 			const tag = document.createElement("style");
@@ -7438,26 +7448,30 @@ window.__ModuleLoader__.load({
 				return null;
 			}
 		}
-		function WidthHandle({ side, rootRef, onWidth }) {
-			const onPointerDown = (event) => {
-				if (event.button !== 0 || rootRef.current === null) return;
-				event.preventDefault();
-				const move = (next) => {
-					const rect = rootRef.current?.getBoundingClientRect();
-					if (rect === void 0) return;
-					const edge = side === "left" ? next.clientX - rect.left : rect.right - next.clientX;
-					const width = Math.round(Math.max(CONTENT_MIN, Math.min(rect.width - CONTENT_EDGE_BUDGET, (rect.width / 2 - edge) * 2)));
-					onWidth(width);
-				};
-				const up = () => {
-					window.removeEventListener("pointermove", move);
-					window.removeEventListener("pointerup", up);
-				};
-				window.addEventListener("pointermove", move);
-				window.addEventListener("pointerup", up, { once: true });
-			};
-			return (0, react_jsx_runtime.jsx)("button", { type: "button", className: ConversationRoot_module_css_default.widthHandle, "data-width-handle": side, "aria-label": side === "left" ? "调整对话宽度左边界" : "调整对话宽度右边界", onPointerDown });
-		}
+		function WidthHandle({ side, rootRef, onWidth, onCommit }) {
+            const cleanup = react.useRef(null), callbacks = react.useRef({onWidth,onCommit});
+            callbacks.current={onWidth,onCommit};
+            const [dragging,setDragging]=react.useState(false);
+            react.useEffect(()=>()=>cleanup.current?.(),[]);
+            const start = event => {
+                if(event.button!==0 || !rootRef.current || cleanup.current)return;
+                event.preventDefault();
+                let frame=0,last=null;
+                const flush=()=>{frame=0;if(last!==null)callbacks.current.onWidth(last)};
+                const move=next=>{
+                    const rect=rootRef.current?.getBoundingClientRect();if(!rect)return;
+                    const edge=side==='left'?next.clientX-rect.left:rect.right-next.clientX;
+                    last=Math.round(Math.max(Math.min(CONTENT_MIN,rect.width),Math.min(rect.width-CONTENT_EDGE_BUDGET,(rect.width/2-edge)*2)));
+                    if(!frame)frame=requestAnimationFrame(flush);
+                };
+                const pointer=event.type==='pointerdown';
+                const dispose=()=>{if(frame)cancelAnimationFrame(frame);window.removeEventListener(pointer?'pointermove':'mousemove',move);window.removeEventListener(pointer?'pointerup':'mouseup',end);window.removeEventListener('pointercancel',end);window.removeEventListener('blur',end);cleanup.current=null};
+                const end=()=>{dispose();if(last!==null){callbacks.current.onWidth(last);callbacks.current.onCommit(last)}setDragging(false)};
+                cleanup.current=dispose;setDragging(true);
+                window.addEventListener(pointer?'pointermove':'mousemove',move);window.addEventListener(pointer?'pointerup':'mouseup',end);window.addEventListener('pointercancel',end);window.addEventListener('blur',end);
+            };
+            return react_jsx_runtime.jsx('button',{type:'button',className:ConversationRoot_module_css_default.widthHandle,'data-width-handle':side,'data-dragging':dragging||undefined,'aria-label':side==='left'?'调整对话宽度左边界':'调整对话宽度右边界',title:'拖动调整对话宽度；双击恢复默认',onPointerDown:start,onMouseDown:start,onDoubleClick:()=>{callbacks.current.onWidth(null);callbacks.current.onCommit(null)},onKeyDown:event=>{if(!['ArrowLeft','ArrowRight','Home'].includes(event.key))return;event.preventDefault();const width=event.key==='Home'?null:Math.max(CONTENT_MIN,(Number.parseFloat(getComputedStyle(rootRef.current).getPropertyValue('--dsh-chat-user-width'))||rootRef.current.clientWidth*.64)+(event.key==='ArrowRight'?1:-1)*(side==='left'?-1:1)*32);callbacks.current.onWidth(width);callbacks.current.onCommit(width)}});
+        }
 		function ConversationRoot({ sessionId, useSession, useSessions, useWorkspaces, useInput, useComposerBlock, renderSlot, renderSlotChain, selectWorkspace, t }) {
 			const openState = useSession((s) => s.openState);
 			const composerPhase = useSession((s) => s.composerPhase);
@@ -7473,10 +7487,7 @@ window.__ModuleLoader__.load({
 			const pickerAnchor = (0, react.useRef)(null);
 			const rootRef = (0, react.useRef)(null);
 			const [contentWidth, setContentWidth] = (0, react.useState)(readWidthPreference);
-			const setWidth = (width) => {
-				setContentWidth(width);
-				try { localStorage.setItem(WIDTH_PREF_KEY, String(width)); } catch {}
-			};
+			const commitWidth = (width) => { try { if(width===null)localStorage.removeItem(WIDTH_PREF_KEY);else localStorage.setItem(WIDTH_PREF_KEY,String(width)); } catch {} };
 			(0, react.useEffect)(() => {
 				const root = rootRef.current;
 				if (root === null) return;
@@ -7593,7 +7604,7 @@ window.__ModuleLoader__.load({
 				className: ConversationRoot_module_css_default.root,
 				"data-phase": phase,
 				style: contentWidth === null ? void 0 : { "--dsh-chat-user-width": `${contentWidth}px` },
-				children: [(0, react_jsx_runtime.jsx)(WidthHandle, { side: "left", rootRef, onWidth: setWidth }), (0, react_jsx_runtime.jsx)(WidthHandle, { side: "right", rootRef, onWidth: setWidth }), renderSlot("conversation.session.header", {}), (0, react_jsx_runtime.jsxs)("div", {
+				children: [(0, react_jsx_runtime.jsx)(WidthHandle, { side: "left", rootRef, onWidth: setContentWidth, onCommit: commitWidth }), (0, react_jsx_runtime.jsx)(WidthHandle, { side: "right", rootRef, onWidth: setContentWidth, onCommit: commitWidth }), renderSlot("conversation.session.header", {}), (0, react_jsx_runtime.jsxs)("div", {
 					className: ConversationRoot_module_css_default.scrollBody,
 					"data-conversation-scroll": "",
 					children: [renderSlot("conversation.session", {}), composerSeat]

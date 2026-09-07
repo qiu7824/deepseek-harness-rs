@@ -87,6 +87,12 @@ def main() -> None:
     )
     args = parser.parse_args()
     print(json.dumps(stage_release_web(args.target.resolve()), ensure_ascii=False))
+    if args.target.resolve() == (ROOT / "target" / "release" / "web" / "dist").resolve():
+        for relative in ("config/agent-presets", "release/plugins"):
+            destination = ROOT / "target" / "release" / ("plugins" if relative == "release/plugins" else relative)
+            if destination.exists():
+                shutil.rmtree(destination)
+            shutil.copytree(ROOT / relative, destination)
 
 
 if __name__ == "__main__":

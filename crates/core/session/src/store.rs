@@ -291,8 +291,9 @@ fn assert_supported_request_header(
 /// Mutable log state of one session.
 #[derive(Default)]
 pub(crate) struct SessionState {
-    log: Vec<SessionEvent>,
-    events_snapshot: Option<Arc<Vec<SessionEvent>>>,
+    // Full snapshots share the durable log. Append only copies when a
+    // consumer still owns a previous immutable snapshot.
+    log: Arc<Vec<SessionEvent>>,
     surface: SurfaceManager,
     header_fold: Option<EpochHeader>,
     header_fold_seq: usize,
@@ -400,7 +401,7 @@ impl Session {
                     .surface
                     .validate_next(&state.log, &snapshot)
                     .map_err(|error| format!("invalid seed event at index {index}: {error}"))?;
-                state.log.push(snapshot);
+                Arc::make_mut(&mut state.log).push(snapshot);
             }
         }
         let first_live_seq = SessionLogOffset::new(state.log.len() as u64)?;
@@ -446,7 +447,7 @@ impl Session {
                 .surface
                 .validate_next(&state.log, &event)
                 .expect("the end-seed marker carries no surface metadata");
-            state.log.push(event);
+            Arc::make_mut(&mut state.log).push(event);
         }
         Ok(Session {
             inner: Arc::new(SessionInner {
@@ -496,19 +497,14 @@ impl Session {
         from_seq: SessionLogOffset,
         to_seq_exclusive: Option<SessionLogOffset>,
     ) -> Arc<Vec<SessionEvent>> {
-        let mut state = self.inner.state.lock();
+        let state = self.inner.state.lock();
         let end = to_seq_exclusive
             .map(|value| value.get() as usize)
             .unwrap_or(state.log.len())
             .min(state.log.len());
         let start = (from_seq.get() as usize).min(end);
         if start == 0 && end == state.log.len() {
-            if let Some(snapshot) = &state.events_snapshot {
-                return Arc::clone(snapshot);
-            }
-            let snapshot = Arc::new(state.log.clone());
-            state.events_snapshot = Some(Arc::clone(&snapshot));
-            return snapshot;
+            return Arc::clone(&state.log);
         }
         Arc::new(state.log[start..end].to_vec())
     }
@@ -654,8 +650,7 @@ impl Session {
                     }
                     None => Vec::new(),
                 };
-                state.log.push(event.clone());
-                state.events_snapshot = None;
+                Arc::make_mut(&mut state.log).push(event.clone());
                 Ok((Some(event), listeners))
             })();
         let (event, listeners) = match outcome {

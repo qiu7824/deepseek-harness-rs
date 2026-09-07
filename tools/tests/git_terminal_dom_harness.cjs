@@ -25,6 +25,8 @@ Object.assign(global, {
 Object.defineProperty(global, "navigator", { configurable: true, value: dom.window.navigator });
 window.confirm = () => true;
 window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};
+// The loader may mark another plugin's asynchronous style with this owner.
+const unrelatedStyle=document.createElement('style');unrelatedStyle.dataset.plugin='dsh-better-sidebar/git-terminal';unrelatedStyle.textContent='.unrelated{display:block}';document.head.appendChild(unrelatedStyle);
 
 const requests = [];
 const xtermCalls = [];
@@ -104,6 +106,9 @@ const button = text => [...document.querySelectorAll("button")].find(node => nod
 (async () => {
   const root = ReactClient.createRoot(document.getElementById("root"));
   await act(() => root.render(React.createElement(exported.GitWorkbench, { sessionId: "session-a" })));
+  assert.ok(document.querySelector('style[data-dsh-git-terminal-style]'),'independent style marker is required even with a loader-owned tag');
+  assert.equal(window.getComputedStyle(document.querySelector('.dgt-shell')).display,'flex');
+  assert.equal(window.getComputedStyle(document.querySelector('.dgt-toolbar')).display,'flex');
   assert.equal(document.querySelectorAll('select[aria-label^="Git "]').length, 3);
   assert.match(document.body.textContent, /packages\/sub/);
   assert.match(document.body.textContent, /src\/app\.js/);

@@ -10,6 +10,23 @@ use std::{
     sync::Arc,
 };
 
+fn validate_location(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("垃圾槽位置必须为绝对路径".into());
+    }
+    dsh_workspace_resources::checked_path(path)?;
+    if path.is_dir()
+        && !path.join(".dsh-resources").is_file()
+        && std::fs::read_dir(path)
+            .map_err(|e| e.to_string())?
+            .next()
+            .is_some()
+    {
+        return Err("请选择空目录或已有受管垃圾槽目录".into());
+    }
+    Ok(())
+}
+
 pub(crate) struct Resources {
     settings: Arc<SettingsProvider>,
     default_root: PathBuf,
@@ -33,6 +50,56 @@ impl Resources {
         } else {
             PathBuf::from(policy.location)
         };
+        self.open_store(root)
+    }
+    pub fn current_for(&self, project: &str) -> Result<Arc<Store>, String> {
+        let project = std::fs::canonicalize(project).map_err(|e| e.to_string())?;
+        let key = digest(project.to_string_lossy().as_bytes());
+        let location = self
+            .settings
+            .get(&settings_namespace("workspace-scratch-paths")?)
+            .and_then(|value| value.to_json())
+            .and_then(|value| value["locations"][&key].as_str().map(str::to_owned));
+        match location.filter(|value| !value.is_empty()) {
+            Some(location) => self.open_store(PathBuf::from(location)),
+            None => self.current(),
+        }
+    }
+    pub async fn workspace_location(
+        &self,
+        path: &str,
+        location: Option<&str>,
+    ) -> Result<Value, String> {
+        if !Path::new(path).is_absolute() {
+            return Err("工作区必须使用绝对路径".into());
+        }
+        let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+        if !path.is_dir() {
+            return Err("工作区必须是目录".into());
+        }
+        let key = digest(path.to_string_lossy().as_bytes());
+        let ns = settings_namespace("workspace-scratch-paths")?;
+        if let Some(location) = location {
+            if !location.is_empty() {
+                let root = PathBuf::from(location);
+                validate_location(&root)?;
+                self.open_store(root)?;
+            }
+            self.settings
+                .update(&ns, json!({"locations":{key.clone():location}}), None)
+                .await?;
+        }
+        let stored = self
+            .settings
+            .get(&ns)
+            .and_then(|value| value.to_json())
+            .and_then(|value| value["locations"][&key].as_str().map(str::to_owned))
+            .unwrap_or_default();
+        Ok(
+            json!({"path":path,"location":stored,"effectiveLocation":self.current_for(&path.to_string_lossy())?.root()}),
+        )
+    }
+    fn open_store(&self, root: PathBuf) -> Result<Arc<Store>, String> {
         if !root.is_absolute() {
             return Err("垃圾槽存储位置必须是绝对路径".into());
         }
@@ -173,6 +240,30 @@ impl Resources {
         subprocess: &Arc<dsh_subprocess_local::LocalSubprocessRuntime>,
         agents: Arc<dsh_agent::AgentRegistry>,
     ) -> Result<Arc<Self>, String> {
+        settings.register(
+            ctx,
+            settings_namespace("workspace-scratch-paths")?,
+            Schema::object(indexmap::IndexMap::from([(
+                "locations".into(),
+                Schema::dict(Schema::string(), None).default(Data::Object(Default::default())),
+            )])),
+            SettingsRegisterOptions {
+                validate: Some(Arc::new(|value| {
+                    let json = value.to_json().ok_or("工作区垃圾槽设置无效")?;
+                    if let Some(locations) = json["locations"].as_object() {
+                        for location in locations
+                            .values()
+                            .filter_map(Value::as_str)
+                            .filter(|s| !s.is_empty())
+                        {
+                            validate_location(Path::new(location))?;
+                        }
+                    }
+                    Ok(())
+                })),
+                ..Default::default()
+            },
+        )?;
         let mut fields = indexmap::IndexMap::new();
         for name in ["enabled", "autoClean", "reduceContext"] {
             fields.insert(name.into(), Schema::boolean().default(Data::Bool(true)));
@@ -256,12 +347,17 @@ impl Resources {
         let managed: Arc<dyn dsh_workspace_resources::ManagedWorkspaces> = manager.clone();
         ctx.register_service(managed);
         let weak = Arc::downgrade(&manager);
-        subprocess.set_resource_provider(Arc::new(move || {
+        subprocess.set_resource_provider(Arc::new(move |cwd, env| {
             let Some(manager) = weak.upgrade() else {
                 return Err("资源管理器已关闭".into());
             };
             if manager.policy().enabled {
-                manager.current().map(Some)
+                let project = env
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("DSH_PROJECT_ROOT"))
+                    .map(|(_, value)| value.as_str())
+                    .unwrap_or(cwd);
+                manager.current_for(project).map(Some)
             } else {
                 Ok(None)
             }
@@ -365,7 +461,7 @@ impl Resources {
                     return Err("垃圾槽已关闭".into());
                 }
                 super::workspace_copy::prepare(
-                    &self.current()?,
+                    &self.current_for(project)?,
                     owner,
                     project,
                     args.get("files"),
@@ -391,7 +487,7 @@ impl Resources {
                 if !self.policy().enabled {
                     return Err("垃圾槽已关闭".into());
                 }
-                let store = self.current()?;
+                let store = self.current_for(project)?;
                 let kind = args.get("kind").and_then(Value::as_str).unwrap_or("script");
                 let mut lease = store.allocate(
                     owner,
@@ -449,8 +545,15 @@ impl dsh_spill::SpillStore for Resources {
         &self,
         input: &dsh_spill::SaveTextSpill,
     ) -> Result<dsh_spill::SpillRef, String> {
-        let store = self.current()?;
         let owner = input.owner.session_id.as_str().to_string();
+        let project = self
+            .agents
+            .get(&input.owner.session_id)
+            .and_then(|agent| agent.session().header().cwd.clone());
+        let store = match project {
+            Some(project) => self.current_for(&project)?,
+            None => self.current()?,
+        };
         let text = input.content.clone();
         let bytes = text.len() as u64;
         let id = tokio::task::spawn_blocking(move || {

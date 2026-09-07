@@ -6,6 +6,8 @@ window.__ModuleLoader__.load({
   factory: (require) => {
     const module = { exports: {} }, exports = module.exports;
     const React = require("react"), h = React.createElement;
+    const Button=require("@deepseek-ai/dsh-client-ui-primitives").Button;
+    let SettingsSwitch;
     const inject = ["betterSidebar", "connection", "sessions", "settingsScope", "slots"];
     const assetBase = suiteAssetBase;
     const assetVersions = globalThis.__DSH_SIDEBAR_SUITE_ASSET_VERSIONS__ ||= Object.create(null);
@@ -85,50 +87,12 @@ window.__ModuleLoader__.load({
       if (!response.ok) throw new Error(value.message || value.error || "HTTP " + response.status);
       return value;
     }
-    async function apiCall(connection, domain, method, payload, signal) {
-      const direct = connection.api && connection.api[domain] && connection.api[domain][method];
-      const response = direct ? await direct(payload, signal) : { result: await connection.rpc.call("/api", domain.slice(0, -1) + "." + method, payload, signal) };
-      if (!response || !response.result || !response.result.ok) throw new Error(response && response.result && response.result.error && response.result.error.message || domain + "." + method + " failed");
-      return response.result.value;
-    }
-    const publicText = content => (Array.isArray(content) ? content : []).filter(block => block && block.type === "text").map(block => String(block.text || "")).join("\n");
-    function historyMessages(history) {
-      const rows = [];
-      for (const item of history && history.events || []) {
-        const event = item.event || item, data = event.data || {};
-        if (event.type === "user/message" || event.type === "assistant/message") {
-          const text = publicText(data.message && data.message.content || data.content);
-          if (text) rows.push({ role: event.type.indexOf("user") === 0 ? "user" : "assistant", text, seq: event.seq });
-        } else if (event.type === "turn/end" && data.reason && data.reason.kind === "error") {
-          rows.push({ role: "status", text: data.reason.error && data.reason.error.message || "任务失败", seq: event.seq });
-        }
-      }
-      return rows;
-    }
-    function useAsync(load, deps, enabled, interval) {
-      const stateKey = JSON.stringify(deps);
-      const [state, setState] = React.useState({ key: stateKey, loading: enabled, value: null, error: "" });
-      React.useEffect(() => {
-        if (!enabled) { setState({ key: stateKey, loading: false, value: null, error: "" }); return; }
-        let active = true, timer = null;
-        const controller = new AbortController();
-        setState({ key: stateKey, loading: true, value: null, error: "" });
-        const run = async () => {
-          try { const value = await load(controller.signal); if (active) setState({ key: stateKey, loading: false, value, error: "" }); }
-          catch (error) { if (active) setState({ key: stateKey, loading: false, value: null, error: error.message || String(error) }); }
-          finally { if (active && interval) timer = setTimeout(run, interval); }
-        };
-        run();
-        return () => { active = false; controller.abort(); if (timer) clearTimeout(timer); };
-      }, deps);
-      return state.key === stateKey ? state : { key: stateKey, loading: enabled, value: null, error: "" };
-    }
     function installStyle() {
       if (document.querySelector('style[data-plugin-css="dsh-sidebar-workbench-suite"]')) return;
       const style = document.createElement("style");
       style.dataset.pluginCss = "dsh-sidebar-workbench-suite";
-      style.textContent = ".dswSuite{box-sizing:border-box;min-width:0;min-height:0;height:100%;display:flex;flex-direction:column;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base)}.dswSuite *{box-sizing:border-box}.dswSuiteBar{min-height:42px;display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);flex-wrap:wrap}.dswSuiteBar input,.dswSuiteBar select,.dswSuiteBar button,.dswSuiteCompose textarea,.dswSuiteCompose button{font:inherit;color:inherit;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:var(--dsw-alias-bg-base);min-height:30px;padding:4px 8px}.dswSuiteBar button,.dswSuiteCompose button{cursor:pointer}.dswSuiteBar button:disabled,.dswSuiteCompose button:disabled{opacity:.45;cursor:default}.dswSuiteTitle{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:auto}.dswSuiteEditor{min-height:0;flex:1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.dswSuiteSource{min-width:0;min-height:0;display:flex;border-right:1px solid var(--dsw-alias-border-l2)}.dswSuiteSource textarea{width:100%;min-height:0;resize:none;border:0;outline:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:14px;font:12.5px/1.65 var(--ds-font-family-code);tab-size:2}.dswSuitePreview{min-width:0;min-height:0;overflow:auto;padding:16px 20px;line-height:1.7;overflow-wrap:anywhere}.dswSuitePreview pre{overflow:auto;padding:12px;border-radius:8px;background:var(--dsw-alias-markdown-code-block);font:12px/1.6 var(--ds-font-family-code)}.dswSuiteHtml{display:block;width:100%;height:100%;min-height:0;border:0;background:white}.dswSuiteOutline{max-width:240px;max-height:160px;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px}.dswSuiteOutline button{width:100%;display:block;text-align:left;border:0;background:none;color:var(--dsw-alias-label-secondary);padding:4px 6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dswSuiteDiagram{width:100%;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px;margin:10px 0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDiagram svg{display:block;min-width:420px;max-width:100%;height:auto}.dswSuiteStatus{padding:8px 12px;color:var(--dsw-alias-label-tertiary);font-size:12px}.dswSuiteError{color:var(--dsw-alias-state-error-primary)}.dswSuiteList{min-height:0;flex:1;overflow:auto;padding:8px}.dswSuiteRow{width:100%;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:start;text-align:left;border:1px solid transparent;border-radius:8px;background:none;color:inherit;padding:9px;cursor:pointer}.dswSuiteRow:hover,.dswSuiteRow[data-active=true]{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l2)}.dswSuiteDot{width:8px;height:8px;margin-top:5px;border-radius:50%;background:var(--dsw-alias-label-caption)}.dswSuiteDot[data-live=true]{background:var(--dsw-alias-state-business-primary)}.dswSuiteDot[data-error=true]{background:var(--dsw-alias-state-error-primary)}.dswSuiteMeta{font-size:11px;color:var(--dsw-alias-label-tertiary)}.dswSuiteChat{min-height:0;flex:1;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:8px}.dswSuiteMessage{max-width:88%;padding:8px 10px;border-radius:10px;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--dsw-alias-bg-layer-1)}.dswSuiteMessage[data-role=user]{align-self:flex-end;background:var(--dsw-alias-interactive-bg-hover)}.dswSuiteMessage[data-role=status]{color:var(--dsw-alias-state-error-primary)}.dswSuiteCompose{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:7px;padding:8px;border-top:1px solid var(--dsw-alias-border-l2)}.dswSuiteCompose textarea{min-height:54px;resize:vertical}.dswSuiteSplit{min-height:0;flex:1;display:grid;grid-template-columns:240px minmax(0,1fr)}.dswSuiteDetail{min-width:0;min-height:0;overflow:auto;padding:12px;border-left:1px solid var(--dsw-alias-border-l2);white-space:pre-wrap}.dswSuiteTableWrap{min-height:0;flex:1;overflow:auto}.dswSuiteTable{border-collapse:collapse;width:max-content;min-width:100%;font:12px/1.5 var(--ds-font-family-code)}.dswSuiteTable th,.dswSuiteTable td{padding:7px 9px;border:1px solid var(--dsw-alias-border-l2);text-align:left;max-width:420px;overflow-wrap:anywhere}.dswSuiteTable th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDownload{margin:auto;max-width:420px;text-align:center;padding:24px}.dswSuiteDownload a{display:inline-block;padding:8px 12px;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-link)}.dswSuiteBrowser{min-height:0;flex:1;display:grid;place-items:center;overflow:hidden;background:#111}.dswSuiteBrowser img{display:block;max-width:100%;max-height:100%;cursor:crosshair;user-select:none}.dswSuiteBrowserEmpty{color:#ccc;text-align:center;padding:24px}@media(max-width:768px){.dswSuiteEditor,.dswSuiteSplit{grid-template-columns:minmax(0,1fr)}.dswSuiteSource{border-right:0;border-bottom:1px solid var(--dsw-alias-border-l2);min-height:240px}.dswSuitePreview{min-height:240px}.dswSuiteSplit>.dswSuiteList{max-height:180px}.dswSuiteDetail{border-left:0;border-top:1px solid var(--dsw-alias-border-l2)}.dswSuiteCompose{grid-template-columns:minmax(0,1fr) auto}.dswSuiteCompose textarea{grid-column:1/-1}.dswSuiteBar input{min-width:0;flex:1}.dswSuiteOutline{max-width:100%;width:100%}}";
-      style.textContent += ".dswSuiteSettings{border:1px solid var(--dsw-alias-border-l2);border-radius:14px;padding:16px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1)}.dswSuiteSettings h3{margin:0 0 6px;font-size:14px}.dswSuiteSettings>p{margin:0 0 10px;color:var(--dsw-alias-label-tertiary);font-size:12px}.dswSuiteSetting{display:grid;grid-template-columns:minmax(0,1fr) minmax(120px,220px);gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--dsw-alias-border-l2)}.dswSuiteSetting span{font-size:13px}.dswSuiteSetting input,.dswSuiteSetting select,.dswSuiteSetting button{font:inherit;min-height:32px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;color:inherit;background:var(--dsw-alias-bg-base);padding:4px 8px}.dswSuiteSettingControl{display:flex;gap:6px;justify-content:flex-end}.dswSuiteSettingControl input{min-width:0;width:100%}@media(max-width:520px){.dswSuiteSetting{grid-template-columns:minmax(0,1fr)}.dswSuiteSettingControl{justify-content:stretch}}";
+      style.textContent = ".dswSuite{box-sizing:border-box;min-width:0;min-height:0;height:100%;display:flex;flex-direction:column;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base)}.dswSuite *{box-sizing:border-box}.dswSuiteBar{min-height:42px;display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);flex-wrap:wrap}.dswSuiteBar input,.dswSuiteBar select,.dswSuiteBar button,.dswSuiteBar button:disabled,.dswSuiteTitle{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:auto}.dswSuiteEditor{min-height:0;flex:1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.dswSuiteSource{min-width:0;min-height:0;display:flex;border-right:1px solid var(--dsw-alias-border-l2)}.dswSuiteSource textarea{width:100%;min-height:0;resize:none;border:0;outline:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:14px;font:12.5px/1.65 var(--ds-font-family-code);tab-size:2}.dswSuitePreview{min-width:0;min-height:0;overflow:auto;padding:16px 20px;line-height:1.7;overflow-wrap:anywhere}.dswSuitePreview pre{overflow:auto;padding:12px;border-radius:8px;background:var(--dsw-alias-markdown-code-block);font:12px/1.6 var(--ds-font-family-code)}.dswSuiteHtml{display:block;width:100%;height:100%;min-height:0;border:0;background:white}.dswSuiteOutline{max-width:240px;max-height:160px;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px}.dswSuiteOutline button{width:100%;display:block;text-align:left;border:0;background:none;color:var(--dsw-alias-label-secondary);padding:4px 6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dswSuiteDiagram{width:100%;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px;margin:10px 0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDiagram svg{display:block;min-width:420px;max-width:100%;height:auto}.dswSuiteStatus{padding:8px 12px;color:var(--dsw-alias-label-tertiary);font-size:12px}.dswSuiteError{color:var(--dsw-alias-state-error-primary)}.dswSuiteList{min-height:0;flex:1;overflow:auto;padding:8px}.dswSuiteRow{width:100%;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:start;text-align:left;border:1px solid transparent;border-radius:8px;background:none;color:inherit;padding:9px;cursor:pointer}.dswSuiteRow:hover,.dswSuiteRow[data-active=true]{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l2)}.dswSuiteDot{width:8px;height:8px;margin-top:5px;border-radius:50%;background:var(--dsw-alias-label-caption)}.dswSuiteDot[data-live=true]{background:var(--dsw-alias-state-business-primary)}.dswSuiteDot[data-error=true]{background:var(--dsw-alias-state-error-primary)}.dswSuiteMeta{font-size:11px;color:var(--dsw-alias-label-tertiary)}.dswSuiteSplit{min-height:0;flex:1;display:grid;grid-template-columns:240px minmax(0,1fr)}.dswSuiteDetail{min-width:0;min-height:0;overflow:auto;padding:12px;border-left:1px solid var(--dsw-alias-border-l2);white-space:pre-wrap}.dswSuiteTableWrap{min-height:0;flex:1;overflow:auto}.dswSuiteTable{border-collapse:collapse;width:max-content;min-width:100%;font:12px/1.5 var(--ds-font-family-code)}.dswSuiteTable th,.dswSuiteTable td{padding:7px 9px;border:1px solid var(--dsw-alias-border-l2);text-align:left;max-width:420px;overflow-wrap:anywhere}.dswSuiteTable th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDownload{margin:auto;max-width:420px;text-align:center;padding:24px}.dswSuiteDownload a{display:inline-block;padding:8px 12px;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-link)}.dswSuiteBrowser{min-height:0;flex:1;display:grid;place-items:center;overflow:hidden;background:#111}.dswSuiteBrowser img{display:block;max-width:100%;max-height:100%;cursor:crosshair;user-select:none}.dswSuiteBrowserEmpty{color:#ccc;text-align:center;padding:24px}@media(max-width:768px){.dswSuiteEditor,.dswSuiteSplit{grid-template-columns:minmax(0,1fr)}.dswSuiteSource{border-right:0;border-bottom:1px solid var(--dsw-alias-border-l2);min-height:240px}.dswSuitePreview{min-height:240px}.dswSuiteSplit>.dswSuiteList{max-height:180px}.dswSuiteDetail{border-left:0;border-top:1px solid var(--dsw-alias-border-l2)}.dswSuiteBar input{min-width:0;flex:1}.dswSuiteOutline{max-width:100%;width:100%}}";
+      style.textContent += ".dswSuiteSettings{border:1px solid var(--dsw-alias-border-l2);border-radius:14px;padding:16px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1)}.dswSuiteSettings h3{margin:0 0 6px;font-size:14px}.dswSuiteSettings>p{margin:0 0 10px;color:var(--dsw-alias-label-tertiary);font-size:12px}.dswSuiteSetting{display:grid;grid-template-columns:minmax(0,1fr) minmax(120px,220px);gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--dsw-alias-border-l2)}.dswSuiteSetting span{font-size:13px}.dswSuiteSetting input,.dswSuiteSetting select{font:inherit;min-height:32px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;color:inherit;background:var(--dsw-alias-bg-base);padding:4px 8px}.dswSuiteSettingControl{display:flex;gap:6px;justify-content:flex-end}.dswSuiteSettingControl input{min-width:0;width:100%}@media(max-width:520px){.dswSuiteSetting{grid-template-columns:minmax(0,1fr)}.dswSuiteSettingControl{justify-content:stretch}}";
       document.head.appendChild(style);
     }
     function inlineNodes(text, key) {
@@ -296,14 +260,14 @@ window.__ModuleLoader__.load({
       return h("section", { className: "dswSuite", "data-viewer": "markdown-workbench" },
         h("div", { className: "dswSuiteBar" },
           h("strong", { className: "dswSuiteTitle", title: props.path }, props.title),
-          [["source", "源码"], ["preview", "预览"], ["split", "分栏"]].map(row => h("button", { key: row[0], "data-active": mode === row[0] || undefined, onClick: () => setMode(row[0]) }, row[1])),
+          [["source", "源码"], ["preview", "预览"], ["split", "分栏"]].map(row => h(Button, { variant: "outline", size: "sm", key: row[0], "data-active": mode === row[0] || undefined, onClick: () => setMode(row[0]) }, row[1])),
           h("input", { value: query, placeholder: "查找", "aria-label": "在文档中查找", onChange: event => setQuery(event.target.value) }),
           h("span", { className: "dswSuiteMeta" }, matches + " 处"),
           h("input", { value: replacement, placeholder: "替换为", "aria-label": "替换文本", onChange: event => setReplacement(event.target.value) }),
-          h("button", { disabled: !query, onClick: () => editSource(source.split(query).join(replacement)) }, "全部替换"),
-          h("button", { disabled: source === saved || !etag, onClick: save }, status || "保存")),
+          h(Button, { variant: "outline", size: "sm", disabled: !query, onClick: () => editSource(source.split(query).join(replacement)) }, "全部替换"),
+          h(Button, { variant: "outline", size: "sm", disabled: source === saved || !etag, onClick: save }, status || "保存")),
         error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error),
-        rendered.outline.length > 0 && h("nav", { className: "dswSuiteOutline", "aria-label": "Markdown 大纲" }, rendered.outline.map(row => h("button", { key: row.id, style: { paddingLeft: 6 + row.level * 8 }, onClick: () => document.getElementById(row.id)?.scrollIntoView({ behavior: "smooth", block: "start" }) }, row.text))),
+        rendered.outline.length > 0 && h("nav", { className: "dswSuiteOutline", "aria-label": "Markdown 大纲" }, rendered.outline.map(row => h(Button, { variant: "outline", size: "sm", key: row.id, style: { paddingLeft: 6 + row.level * 8 }, onClick: () => document.getElementById(row.id)?.scrollIntoView({ behavior: "smooth", block: "start" }) }, row.text))),
         h("div", { className: "dswSuiteEditor", style: mode === "split" ? undefined : { gridTemplateColumns: "minmax(0,1fr)" } },
           showSource && h(CodeEditor, { value: source, path: props.path, onChange: editSource, onSave: save }),
           showPreview && h(MarkdownPreview, { source, outline: rendered.outline, mermaidEnabled: pluginSettings.mermaid !== false, fallback: rendered.content })));
@@ -354,7 +318,7 @@ window.__ModuleLoader__.load({
       };
       const matches = query ? source.toLocaleLowerCase().split(query.toLocaleLowerCase()).length - 1 : 0;
       return h("section", { className: "dswSuite", "data-viewer": "code-workbench" },
-        h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle", title: props.path }, props.title), previewable && [["source", "源码"], ["preview", "预览"], ["split", "分栏"]].map(row => h("button", { key: row[0], onClick: () => setMode(row[0]) }, row[1])), h("input", { value: query, placeholder: "查找", onChange: event => setQuery(event.target.value) }), h("span", { className: "dswSuiteMeta" }, matches + " 处"), h("input", { value: replacement, placeholder: "替换为", onChange: event => setReplacement(event.target.value) }), h("button", { disabled: !query, onClick: () => editSource(source.split(query).join(replacement)) }, "全部替换"), h("button", { disabled: source === saved || !etag, onClick: save }, status || "保存")),
+        h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle", title: props.path }, props.title), previewable && [["source", "源码"], ["preview", "预览"], ["split", "分栏"]].map(row => h(Button, { variant: "outline", size: "sm", key: row[0], onClick: () => setMode(row[0]) }, row[1])), h("input", { value: query, placeholder: "查找", onChange: event => setQuery(event.target.value) }), h("span", { className: "dswSuiteMeta" }, matches + " 处"), h("input", { value: replacement, placeholder: "替换为", onChange: event => setReplacement(event.target.value) }), h(Button, { variant: "outline", size: "sm", disabled: !query, onClick: () => editSource(source.split(query).join(replacement)) }, "全部替换"), h(Button, { variant: "outline", size: "sm", disabled: source === saved || !etag, onClick: save }, status || "保存")),
         error && h("div", { className: "dswSuiteStatus dswSuiteError" }, error),
         h("div", { className: "dswSuiteEditor", style: mode === "split" ? undefined : { gridTemplateColumns: "minmax(0,1fr)" } }, mode !== "preview" && h(CodeEditor, { value: source, path: props.path, onChange: editSource, onSave: save }), previewable && mode !== "source" && h("iframe", { className: "dswSuiteHtml", sandbox: "allow-scripts", srcDoc: source, title: "预览 " + props.path })));
     }
@@ -394,7 +358,7 @@ window.__ModuleLoader__.load({
       } catch (reason) { error = reason.message || String(reason); }
       const headers = rows[0] || [], body = rows.slice(1);
       return h("section", { className: "dswSuite", "data-viewer": "structured-data" },
-        h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle" }, props.title), h("button", { onClick: () => setMode("table") }, "表格"), h("button", { onClick: () => setMode("source") }, "源码"), h("span", { className: "dswSuiteMeta" }, body.length + " 行 · " + headers.length + " 列"), h("button", { disabled: source === saved || !etag, onClick: save }, "保存")),
+        h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle" }, props.title), h(Button, { variant: "outline", size: "sm", onClick: () => setMode("table") }, "表格"), h(Button, { variant: "outline", size: "sm", onClick: () => setMode("source") }, "源码"), h("span", { className: "dswSuiteMeta" }, body.length + " 行 · " + headers.length + " 列"), h(Button, { variant: "outline", size: "sm", disabled: source === saved || !etag, onClick: save }, "保存")),
         (error || saveError) && h("div", { className: "dswSuiteStatus dswSuiteError" }, error || saveError),
         mode === "source" ? h("div", { className: "dswSuiteEditor", style: { gridTemplateColumns: "minmax(0,1fr)" } }, h(CodeEditor, { value: source, path: props.path, onChange: setSource, onSave: save })) : !error && h("div", { className: "dswSuiteTableWrap" }, h("table", { className: "dswSuiteTable" },
           h("thead", null, h("tr", null, headers.map((cell, index) => h("th", { key: index }, cell)))),
@@ -403,62 +367,17 @@ window.__ModuleLoader__.load({
     function DownloadViewer(props) {
       return h("section", { className: "dswSuite" }, h("div", { className: "dswSuiteDownload" }, h("h3", null, props.title), h("p", null, "可下载后使用系统关联的本地应用打开。"), h("a", { href: endpoint("file", props.scope.sessionId, props.path), download: props.title }, "下载文件")));
     }
-    function SideConversationSession(props) {
-      const connection = props.ctx.get("connection"), sidebar = props.ctx.get("betterSidebar");
-      const sideSessionId = props.tab.meta && props.tab.meta.sideSessionId;
-      const keepDraft = props.pluginSettings?.keepDraft !== false;
-      const history = useAsync(signal => sideSessionId ? apiCall(connection, "sessions", "history", { sessionId: sideSessionId, maxMessages: 80 }, signal) : Promise.resolve({ events: [] }), [props.scope.sessionId, sideSessionId, props.visible], props.visible, props.visible && sideSessionId ? 1000 : 0);
-      const [draft, setDraft] = React.useState(keepDraft ? props.tab.meta?.draft || "" : ""), [busy, setBusy] = React.useState(false), [error, setError] = React.useState("");
-      const alive = React.useRef(true), controllers = React.useRef(new Set());
-      React.useEffect(() => { alive.current = true; return () => { alive.current = false; for (const controller of controllers.current) controller.abort(); controllers.current.clear(); }; }, []);
-      const request = async task => {
-        const controller = new AbortController(); controllers.current.add(controller);
-        try { return await task(controller.signal); }
-        finally { controllers.current.delete(controller); }
+    function visiblePoll(run, initialDelay=1500) {
+      let live=true,timer=0,inflight=false,controller=null,delay=initialDelay;
+      const tick=async()=>{
+        clearTimeout(timer);if(!live||document.hidden||inflight||delay===null)return;
+        inflight=true;controller=new AbortController();
+        try { delay=await run(controller.signal,delay); } catch(error) { if(error?.name!=="AbortError")delay=Math.min(15000,Math.max(3000,delay*2)); }
+        finally { inflight=false;if(live&&!document.hidden&&delay!==null)timer=setTimeout(tick,delay); }
       };
-      React.useEffect(() => {
-        if (!keepDraft || draft === (props.tab.meta?.draft || "")) return;
-        const timer = setTimeout(() => sidebar.updateTab(props.tab.id, { meta: { ...(props.tab.meta || {}), draft } }, { sessionId: props.scope.sessionId }), 250);
-        return () => clearTimeout(timer);
-      }, [draft, keepDraft, props.tab.id, props.scope.sessionId]);
-      React.useEffect(() => {
-        if (keepDraft) return;
-        setDraft("");
-        if (props.tab.meta?.draft) sidebar.updateTab(props.tab.id, { meta: { ...(props.tab.meta || {}), draft: "" } }, { sessionId: props.scope.sessionId });
-      }, [keepDraft, props.scope.sessionId, props.tab.id]);
-      const create = async () => {
-        const ownerSessionId = props.scope.sessionId, tabId = props.tab.id, tabMeta = props.tab.meta || {};
-        try {
-          setBusy(true); setError("");
-          const list = await request(signal => apiCall(connection, "sessions", "list", {}, signal));
-          if (!alive.current) return;
-          const parent = list.items.find(item => item.sessionId === ownerSessionId);
-          if (!parent || !parent.cwd) throw new Error("当前会话没有可复用的工作目录");
-          const created = await request(signal => apiCall(connection, "sessions", "create", { cwd: parent.cwd, agentPreset: parent.agentPreset || "standard" }, signal));
-          if (alive.current) sidebar.updateTab(tabId, { meta: { ...tabMeta, sideSessionId: created.sessionId } }, { sessionId: ownerSessionId });
-        } catch (reason) { if (alive.current && reason?.name !== "AbortError") setError(reason.message || String(reason)); }
-        finally { if (alive.current) setBusy(false); }
-      };
-      const send = async () => {
-        if (!sideSessionId || !draft.trim()) return;
-        const message = draft, targetSessionId = sideSessionId;
-        try {
-          setBusy(true); setError("");
-          await request(signal => apiCall(connection, "sessions", "prompt", { sessionId: targetSessionId, content: [{ type: "text", text: message }], mode: "queue", clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }, signal));
-          if (alive.current) setDraft("");
-        } catch (reason) { if (alive.current && reason?.name !== "AbortError") setError(reason.message || String(reason)); }
-        finally { if (alive.current) setBusy(false); }
-      };
-      const cancel = async () => { const targetSessionId = sideSessionId; try { await request(signal => apiCall(connection, "sessions", "cancel", { sessionId: targetSessionId }, signal)); } catch (reason) { if (alive.current && reason?.name !== "AbortError") setError(reason.message || String(reason)); } };
-      const messages = historyMessages(history.value);
-      return h("section", { className: "dswSuite", "data-tab": "side-conversation" },
-        h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle" }, props.tab.title), sideSessionId ? h("span", { className: "dswSuiteMeta", title: sideSessionId }, "独立会话已连接") : h("button", { disabled: busy, onClick: create }, "创建独立会话"), h("button", { disabled: !sideSessionId, onClick: cancel }, "停止")),
-        (error || history.error) && h("div", { className: "dswSuiteStatus dswSuiteError" }, error || history.error),
-        h("div", { className: "dswSuiteChat" }, messages.length ? messages.map(row => h("div", { className: "dswSuiteMessage", "data-role": row.role, key: row.seq + "-" + row.role }, row.text)) : h("div", { className: "dswSuiteStatus" }, sideSessionId ? "尚无消息。" : "创建一个与主任务分离的侧边会话。")),
-        h("div", { className: "dswSuiteCompose" }, h("textarea", { value: draft, disabled: !sideSessionId || busy, placeholder: "给侧边会话发送消息", onChange: event => setDraft(event.target.value), onKeyDown: event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); send(); } } }), h("button", { disabled: !sideSessionId || !draft.trim() || busy, onClick: send }, "发送"), h("button", { disabled: !sideSessionId, onClick: () => props.ctx.get("sessions").open(sideSessionId) }, "在主区打开")));
-    }
-    function SideConversationTab(props) {
-      return h(SideConversationSession, { ...props, key: props.scope.sessionId + "\u0000" + props.tab.id });
+      const visibility=()=>{clearTimeout(timer);if(document.hidden)controller?.abort();else void tick()};
+      document.addEventListener("visibilitychange",visibility);void tick();
+      return ()=>{live=false;clearTimeout(timer);controller?.abort();document.removeEventListener("visibilitychange",visibility)};
     }
     function JobsSessionTab(props) {
       const [jobs, setJobs] = React.useState([]), [selected, setSelected] = React.useState(""), [output, setOutput] = React.useState(""), [error, setError] = React.useState(""), [refreshSerial, setRefreshSerial] = React.useState(0);
@@ -466,38 +385,32 @@ window.__ModuleLoader__.load({
       React.useEffect(() => { alive.current = true; return () => { alive.current = false; for (const controller of mutations.current) controller.abort(); mutations.current.clear(); }; }, []);
       React.useEffect(() => {
         if (!props.visible) return;
-        let active = true, timer = null;
-        const controller = new AbortController();
-        const refresh = async () => {
+        let active=true,last="";
+        const stop=visiblePoll(async(signal,delay)=>{
           try {
-            const value = await json(endpoint("job-list", props.scope.sessionId), { signal: controller.signal });
-            if (active) { setJobs(Array.isArray(value.entries) ? value.entries : []); setError(""); }
-          } catch (reason) { if (active && reason?.name !== "AbortError") setError(reason.message || String(reason)); }
-          finally { if (active) timer = setTimeout(refresh, 900); }
-        };
-        refresh();
-        return () => { active = false; controller.abort(); clearTimeout(timer); };
+            const value=await json(endpoint("job-list",props.scope.sessionId),{signal});if(!active||signal.aborted)return delay;
+            const entries=Array.isArray(value.entries)?value.entries:[],signature=JSON.stringify(entries);
+            if(signature!==last){last=signature;setJobs(entries)}setError("");
+            return entries.some(job=>["running","stopping"].includes(job.status))?1500:15000;
+          }catch(reason){if(active&&reason?.name!=="AbortError")setError(reason.message||String(reason));throw reason}
+        });
+        return ()=>{active=false;stop()};
       }, [props.visible, props.scope.sessionId, refreshSerial]);
       React.useEffect(() => {
         if (!props.visible || !selected) return;
-        let active = true, settled = false, cursor = 0, timer = null;
-        const controller = new AbortController();
+        let active=true,cursor=0;
         setOutput("");
-        const read = async () => {
-          if (settled) return;
-          try {
-            const value = await json(endpoint("job-read", props.scope.sessionId) + "&jobId=" + encodeURIComponent(selected) + "&cursor=" + cursor, { signal: controller.signal });
-            if (active) {
-              if (value.text) setOutput(current => value.truncated ? value.text : current + value.text);
-              if (Number.isSafeInteger(value.cursor) && value.cursor >= cursor) cursor = value.cursor;
-              setError("");
-              settled = value.snapshot && ["completed", "killed", "failed"].includes(value.snapshot.status);
-            }
-          } catch (reason) { if (active && reason?.name !== "AbortError") setError(reason.message || String(reason)); }
-          finally { if (active && !settled) timer = setTimeout(read, 900); }
-        };
-        read();
-        return () => { active = false; controller.abort(); clearTimeout(timer); };
+        const stop=visiblePoll(async(signal,delay)=>{
+          try{
+            const value=await json(endpoint("job-read",props.scope.sessionId)+"&jobId="+encodeURIComponent(selected)+"&cursor="+cursor,{signal});
+            if(!active||signal.aborted)return delay;
+            if(value.text)setOutput(current=>(value.truncated?value.text:current+value.text).slice(-1024*1024));
+            if(Number.isSafeInteger(value.cursor)&&value.cursor>=cursor)cursor=value.cursor;
+            setError("");
+            return value.snapshot&&["completed","killed","failed"].includes(value.snapshot.status)?null:value.text?1000:Math.min(5000,delay*1.5);
+          }catch(reason){if(active&&reason?.name!=="AbortError")setError(reason.message||String(reason));throw reason}
+        },1000);
+        return ()=>{active=false;stop()};
       }, [props.visible, selected, props.scope.sessionId]);
       const kill = async id => {
         const controller = new AbortController(); mutations.current.add(controller);
@@ -506,52 +419,18 @@ window.__ModuleLoader__.load({
         finally { mutations.current.delete(controller); }
       };
       return h("section", { className: "dswSuite", "data-tab": "background-jobs" },
-        h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle" }, "后台任务"), h("span", { className: "dswSuiteMeta" }, jobs.filter(job => ["running", "stopping"].includes(job.status)).length + " 个运行中 · " + jobs.length + " 个总计")),
+        h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle" }, "后台任务"), h("span", { className: "dswSuiteMeta" }, jobs.filter(job => ["running", "stopping"].includes(job.status)).length + " 个运行中 · " + jobs.length + " 个总计"),h(Button,{variant:"outline",size:"sm",onClick:()=>setRefreshSerial(value=>value+1)},"刷新")),
         error && h("div", { className: "dswSuiteStatus dswSuiteError" }, error),
         h("div", { className: "dswSuiteSplit" },
-          h("div", { className: "dswSuiteList" }, jobs.length ? jobs.map(job => h("div", { className: "dswSuiteRow", "data-active": selected === job.id || undefined, key: job.id, role: "button", tabIndex: 0, onClick: () => setSelected(job.id) }, h("span", { className: "dswSuiteDot", "data-live": ["running", "stopping"].includes(job.status) || undefined, "data-error": job.status === "failed" || undefined }), h("span", null, h("strong", null, job.label), h("div", { className: "dswSuiteMeta" }, job.kind + " · " + job.status + (job.detail ? " · " + job.detail : ""))), ["running", "stopping"].includes(job.status) && h("button", { onClick: event => { event.stopPropagation(); kill(job.id); } }, "终止"))) : h("div", { className: "dswSuiteStatus" }, "当前会话没有后台任务。")),
+          h("div", { className: "dswSuiteList" }, jobs.length ? jobs.map(job => h("div", { className: "dswSuiteRow", "data-active": selected === job.id || undefined, key: job.id, role: "button", tabIndex: 0, onClick: () => setSelected(job.id) }, h("span", { className: "dswSuiteDot", "data-live": ["running", "stopping"].includes(job.status) || undefined, "data-error": job.status === "failed" || undefined }), h("span", null, h("strong", null, job.label), h("div", { className: "dswSuiteMeta" }, job.kind + " · " + job.status + (job.detail ? " · " + job.detail : ""))), ["running", "stopping"].includes(job.status) && h(Button, { variant: "outline", size: "sm", onClick: event => { event.stopPropagation(); kill(job.id); } }, "终止"))) : h("div", { className: "dswSuiteStatus" }, "当前会话没有后台任务。")),
           h("pre", { className: "dswSuiteDetail" }, selected ? output || "等待输出…" : "选择任务查看实时输出。")));
     }
     function JobsTab(props) {
       return h(JobsSessionTab, { ...props, key: props.scope.sessionId + "\u0000" + props.tab.id });
     }
-    function flattenSubagents(catalogs, parentSessionId, depth = 0, seen = new Set()) {
-      if (seen.has(parentSessionId) || depth > 12) return [];
-      seen.add(parentSessionId);
-      const entries = catalogs?.[parentSessionId]?.entries?.filter(item => item.kind === "child") || [];
-      return entries.flatMap(child => [{ ...child, parentSessionId, depth }, ...flattenSubagents(catalogs, child.id, depth + 1, seen)]);
-    }
-    function SubagentMonitorSession(props) {
-      const sessions = props.ctx.get("sessions"), connection = props.ctx.get("connection");
-      const snapshot = React.useSyncExternalStore(sessions.list.subscribe, sessions.list.getSnapshot, sessions.list.getSnapshot);
-      const catalogs = snapshot.subagentsByParent || {}, catalog = catalogs[props.scope.sessionId];
-      const children = flattenSubagents(catalogs, props.scope.sessionId);
-      const [selected, setSelected] = React.useState(null), [error, setError] = React.useState("");
-      const alive = React.useRef(true), mutations = React.useRef(new Set());
-      React.useEffect(() => { alive.current = true; return () => { alive.current = false; for (const controller of mutations.current) controller.abort(); mutations.current.clear(); }; }, []);
-      React.useEffect(() => { if (props.visible) sessions.refreshSubagents(props.scope.sessionId); }, [props.visible, props.scope.sessionId]);
-      React.useEffect(() => { if (props.visible) for (const child of children) if (child.hasChildren && !catalogs[child.id]) sessions.refreshSubagents(child.id); }, [props.visible, children.map(child => child.id + ":" + child.hasChildren).join("|")]);
-      const history = useAsync(signal => selected ? apiCall(connection, "subagents", "history", { parentSessionId: selected.parentSessionId, childSessionId: selected.id, mode: selected.mode, maxMessages: 40 }, signal) : Promise.resolve({ events: [] }), [props.scope.sessionId, selected && selected.id, selected && selected.activity, props.visible], props.visible && !!selected, selected && selected.activity === "running" ? 1000 : 0);
-      const interrupt = async child => {
-        const controller = new AbortController(); mutations.current.add(controller);
-        try { await apiCall(connection, "subagents", "interrupt", { parentSessionId: child.parentSessionId, childSessionId: child.id, mode: child.mode }, controller.signal); }
-        catch (reason) { if (alive.current && reason?.name !== "AbortError") setError(reason.message || String(reason)); }
-        finally { mutations.current.delete(controller); }
-      };
-      const open = child => sessions.openSubagent({ parentSessionId: child.parentSessionId, childSessionId: child.id, mode: child.mode });
-      return h("section", { className: "dswSuite", "data-tab": "subagent-monitor" },
-        h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle" }, "子智能体"), h("span", { className: "dswSuiteMeta" }, children.filter(row => row.activity === "running").length + " 个运行中 · " + children.length + " 个总计"), h("button", { onClick: () => sessions.refreshSubagents(props.scope.sessionId) }, "刷新")),
-        (error || catalog && catalog.error || history.error) && h("div", { className: "dswSuiteStatus dswSuiteError" }, error || catalog && catalog.error || history.error),
-        h("div", { className: "dswSuiteSplit" },
-          h("div", { className: "dswSuiteList" }, children.length ? children.map(child => h("div", { className: "dswSuiteRow", "data-active": selected && selected.id === child.id || undefined, key: child.id, role: "button", tabIndex: 0, style: { paddingLeft: 9 + child.depth * 14 }, onClick: () => setSelected(child) }, h("span", { className: "dswSuiteDot", "data-live": child.activity === "running" || undefined }), h("span", null, h("strong", null, child.label || child.id), h("div", { className: "dswSuiteMeta" }, child.mode + " · " + child.activity)), h("span", null, child.activity === "running" && h("button", { onClick: event => { event.stopPropagation(); interrupt(child); } }, "中止"), h("button", { onClick: event => { event.stopPropagation(); open(child); } }, "打开")))) : h("div", { className: "dswSuiteStatus" }, "当前会话没有子智能体。")),
-          h("div", { className: "dswSuiteDetail" }, selected ? historyMessages(history.value).map(row => h("div", { className: "dswSuiteMessage", "data-role": row.role, key: row.seq + "-" + row.role }, row.text)) : "选择子智能体查看进度与结果。")));
-    }
-    function SubagentMonitorTab(props) {
-      return h(SubagentMonitorSession, { ...props, key: props.scope.sessionId + "\u0000" + props.tab.id });
-    }
     function ControlledBrowserSession(props) {
       const browserSessionId = props.browserSessionId;
-      const autoRefresh = props.pluginSettings?.autoRefresh !== false;
+      const autoRefresh = props.pluginSettings?.autoRefresh === true;
       const alive = React.useRef(true);
       const lifetime = React.useRef(null); if (!lifetime.current) lifetime.current = new AbortController();
       const requestSequence = React.useRef(0), appliedSequence = React.useRef(0), foregroundRequests = React.useRef(0);
@@ -577,22 +456,17 @@ window.__ModuleLoader__.load({
       };
       React.useEffect(() => {
         if (!props.visible) return;
-        let active = true, timer = null;
-        const controller = new AbortController();
-        const refresh = async () => {
-          if (!active) return;
-          await action("capture", null, { quiet: true, signal: controller.signal });
-          if (active) timer = setTimeout(refresh, 1200);
-        };
+        let active=true,stop=null;
+        const controller=new AbortController();
         json("/__dsh-computer-use/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: props.scope.sessionId }), signal: controller.signal }).then(async value => {
           if (!active) return;
           setMeta(value);
           if (!value.enabled) { setError("Computer Use 未启用，请在设置 → 插件 → Computer Use 中开启并重启 Host"); return; }
           if (value.available === false) { setError(value.error?.message || "Computer Use 执行器当前不可用，请检查浏览器或外部命令设置"); return; }
           await action("start", props.tab.path && /^https?:/i.test(props.tab.path) ? { url: props.tab.path } : {}, { signal: controller.signal });
-          if (active && autoRefresh) timer = setTimeout(refresh, 1200);
+          if(active&&autoRefresh)stop=visiblePoll(async signal=>{await action("capture",null,{quiet:true,signal});return 3000},3000);
         }).catch(reason => { if (active && reason?.name !== "AbortError") setError(reason.message || String(reason)); });
-        return () => { active = false; controller.abort(); clearTimeout(timer); };
+        return () => { active = false; controller.abort(); stop?.(); };
       }, [props.visible, props.scope.sessionId, browserSessionId, autoRefresh]);
       const navigate = () => {
         let target = url.trim();
@@ -607,10 +481,10 @@ window.__ModuleLoader__.load({
         action(event.detail > 1 ? "double_click" : "click", { x, y });
       };
       return h("section", { className: "dswSuite", "data-tab": "controlled-browser", "data-browser-session": browserSessionId },
-        h("div", { className: "dswSuiteBar" }, h("button", { disabled: busy, onClick: () => action("click", { x: 0, y: 0, button: "back" }) }, "后退"), h("input", { value: url, "aria-label": "受控浏览器地址", onChange: event => setUrl(event.target.value), onKeyDown: event => { if (event.key === "Enter") navigate(); } }), h("button", { disabled: busy || !url.trim(), onClick: navigate }, "转到"), h("button", { disabled: busy, onClick: () => action("capture") }, "刷新画面"), h("button", { onClick: () => action("close", { includeScreenshot: false }) }, "关闭会话")),
+        h("div", { className: "dswSuiteBar" }, h(Button, { variant: "outline", size: "sm", disabled: busy, onClick: () => action("click", { x: 0, y: 0, button: "back" }) }, "后退"), h("input", { value: url, "aria-label": "受控浏览器地址", onChange: event => setUrl(event.target.value), onKeyDown: event => { if (event.key === "Enter") navigate(); } }), h(Button, { variant: "outline", size: "sm", disabled: busy || !url.trim(), onClick: navigate }, "转到"), h(Button, { variant: "outline", size: "sm", disabled: busy, onClick: () => action("capture") }, "刷新画面"), h(Button, { variant: "outline", size: "sm", onClick: () => action("close", { includeScreenshot: false }) }, "关闭会话")),
         error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error),
         h("div", { className: "dswSuiteBrowser" }, image ? h("img", { src: image, alt: state?.title || "受控浏览器画面", draggable: false, onClick: point }) : h("div", { className: "dswSuiteBrowserEmpty" }, "正在启动隔离浏览器并获取画面…")),
-        h("div", { className: "dswSuiteBar" }, h("input", { value: typing, placeholder: "输入到当前焦点", "aria-label": "发送到受控浏览器", onChange: event => setTyping(event.target.value), onKeyDown: event => { if (event.key === "Enter" && typing) { action("type", { text: typing }).then(() => setTyping("")); } } }), h("button", { disabled: !typing, onClick: () => action("type", { text: typing }).then(() => setTyping("")) }, "输入"), h("button", { onClick: () => action("scroll", { deltaY: -540 }) }, "向上"), h("button", { onClick: () => action("scroll", { deltaY: 540 }) }, "向下"), h("span", { className: "dswSuiteMeta" }, (meta?.adapter || "未连接") + " · " + (state ? (state.title || state.url) + " · " + state.viewport.width + "×" + state.viewport.height : "会话 " + browserSessionId))));
+        h("div", { className: "dswSuiteBar" }, h("input", { value: typing, placeholder: "输入到当前焦点", "aria-label": "发送到受控浏览器", onChange: event => setTyping(event.target.value), onKeyDown: event => { if (event.key === "Enter" && typing) { action("type", { text: typing }).then(() => setTyping("")); } } }), h(Button, { variant: "outline", size: "sm", disabled: !typing, onClick: () => action("type", { text: typing }).then(() => setTyping("")) }, "输入"), h(Button, { variant: "outline", size: "sm", onClick: () => action("scroll", { deltaY: -540 }) }, "向上"), h(Button, { variant: "outline", size: "sm", onClick: () => action("scroll", { deltaY: 540 }) }, "向下"), h("span", { className: "dswSuiteMeta" }, (meta?.adapter || "未连接") + " · " + (state ? (state.title || state.url) + " · " + state.viewport.width + "×" + state.viewport.height : "会话 " + browserSessionId))));
     }
     function ControlledBrowserTab(props) {
       const browserSessionId = props.tab.meta?.browserSessionId || "default";
@@ -622,10 +496,30 @@ window.__ModuleLoader__.load({
       React.useEffect(() => setDraft(String(value)), [value]);
       const save = async next => { try { error(""); await scope.set(field.key, next); } catch (reason) { error(reason.message || String(reason)); } };
       let control;
-      if (field.type === "switch") control = h("input", { "aria-label": field.label, type: "checkbox", role: "switch", checked: value === true, disabled: !snapshot.writable, onChange: event => save(event.target.checked) });
+      if (field.type === "switch") control = h(SettingsSwitch, { label: field.label, checked: value === true, disabled: !snapshot.writable, onChange: save });
       else if (field.type === "select") control = h("select", { "aria-label": field.label, value, disabled: !snapshot.writable, onChange: event => save(event.target.value) }, field.options.map(option => h("option", { key: option.value, value: option.value }, option.label)));
-      else control = h("div", { className: "dswSuiteSettingControl" }, h("input", { "aria-label": field.label, type: field.type, min: field.min, max: field.max, value: draft, disabled: !snapshot.writable, onChange: event => setDraft(event.target.value), onKeyDown: event => { if (event.key === "Enter") save(field.type === "number" ? Number(draft) : draft); } }), h("button", { disabled: !snapshot.writable || draft === String(value), onClick: () => save(field.type === "number" ? Number(draft) : draft) }, "保存"));
+      else control = h("div", { className: "dswSuiteSettingControl" }, h("input", { "aria-label": field.label, type: field.type, min: field.min, max: field.max, value: draft, disabled: !snapshot.writable, onChange: event => setDraft(event.target.value), onKeyDown: event => { if (event.key === "Enter") save(field.type === "number" ? Number(draft) : draft); } }), h(Button, {variant:"outline",size:"sm", disabled: !snapshot.writable || draft === String(value), onClick: () => save(field.type === "number" ? Number(draft) : draft) }, "保存"));
       return h("div", { className: "dswSuiteSetting" }, h("span", null, field.label), control);
+    }
+    async function deviceRequest(action, payload={}) {
+      const response=await fetch(`/__dsh-devices/${action}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+      const value=await response.json();if(!response.ok)throw new Error(value.message||`HTTP ${response.status}`);return value;
+    }
+    function DeviceSettings() {
+      const [state,setState]=React.useState(null),[error,setError]=React.useState(""),[busy,setBusy]=React.useState(false);
+      const alive=React.useRef(true),pending=React.useRef(false);
+      const act=async(action,payload)=>{if(pending.current)return;pending.current=true;setBusy(true);setError("");try{if(action!=="status")await deviceRequest(action,payload);const next=await deviceRequest("status");if(alive.current)setState(next)}catch(error){if(alive.current)setError(error.message||String(error))}finally{pending.current=false;if(alive.current)setBusy(false)}};
+      React.useEffect(()=>{alive.current=true;void act("status");return()=>{alive.current=false}},[]);
+      return h("div",{className:"dswSuiteSettings","data-settings":"uu-devices"},h("h3",null,"远程设备"),
+        h("p",null,"使用 UU 远程账号中的设备，绑定后可在这里发起连接。"),
+        !state&&h("p",{role:"status"},"正在读取设备…"),state?.message&&h("p",{role:"status"},state.message),
+        state?.installed===false&&h("a",{href:"https://uuyc.163.com/",target:"_blank",rel:"noopener noreferrer",className:"dswSuiteButton"},"安装 UU 远程"),
+        h("div",{className:"dswSuiteToolbar"},state?.installed&&h(Button,{variant:"outline",size:"sm",type:"button",disabled:busy,onClick:()=>void act("open-client")},state.signedIn?"打开 UU 远程":"打开 UU 远程并登录"),h(Button,{variant:"outline",size:"sm",type:"button",disabled:busy,onClick:()=>void act("status")},busy?"正在刷新…":"刷新设备")),
+        state?.signedIn&&h("p",null,"当前账号：",state.account?.name),
+        state?.signedIn&&!state.devices?.length&&h("p",null,"当前账号没有可用设备，请在被控设备安装 UU 远程并登录同一账号。"),
+        (state?.devices||[]).map(device=>h("div",{className:"dswSuiteSetting",key:device.id},h("div",null,h("strong",null,device.name),h("p",null,device.local?"当前设备":device.online?"在线":"离线",state.boundDeviceId===device.id?" · 已绑定":"")),h("div",{className:"dswSuiteToolbar"},h(Button,{variant:"outline",size:"sm",type:"button",disabled:busy,onClick:()=>void act(state.boundDeviceId===device.id?"unbind":"bind",{deviceId:device.id})},state.boundDeviceId===device.id?"解除绑定":"绑定"),state.boundDeviceId===device.id&&!device.local&&h(React.Fragment,null,h(Button,{variant:"outline",size:"sm",type:"button",disabled:busy||!device.online,onClick:()=>void act("connect",{deviceId:device.id})},"连接设备"),h(Button,{variant:"outline",size:"sm",type:"button",disabled:busy,onClick:()=>void act("disconnect",{deviceId:device.id})},"断开连接"))))),
+        state?.installed&&h("p",null,"远端桌面在 UU 客户端显示，可手动接管和输入密码。当前设备无需远程连接；模型目前支持下方浏览器控制，暂不支持 UU 桌面操作。"),
+        error&&h("p",{role:"alert",className:"dswSuiteError"},error));
     }
     function ComputerUseSettings({ scope }) {
       const snapshot = React.useSyncExternalStore(listener => scope.subscribe(listener), () => scope.getSnapshot(), () => scope.getSnapshot());
@@ -639,29 +533,28 @@ window.__ModuleLoader__.load({
         { key: "timeoutSeconds", label: "操作超时（秒）", type: "number", min: 5, max: 300, defaultValue: 60 },
         { key: "command", label: "外部控制命令", type: "text", defaultValue: "" }
       ];
-      return h("section", { className: "dswSuiteSettings", "data-settings": "computer-use" }, h("h3", null, "Computer Use"), h("p", null, "为模型和侧栏受控浏览器提供同一执行层。设置保存后重启 Host 生效。"), snapshot.status !== "ready" ? h("div", { className: "dswSuiteStatus" }, "正在读取设置…") : fields.map(field => h(SettingRow, { key: field.key, scope, snapshot, field, error: setError })), error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error));
+      return h("section", { className: "dswSuiteSettings", "data-settings": "computer-use" }, h(DeviceSettings, {}), h("h3", null, "浏览器控制"), h("p", null, "模型与工作台共用受控浏览器。浏览器运行设置重启后生效。"), snapshot.status !== "ready" ? h("div", { className: "dswSuiteStatus" }, snapshot.status === "error" ? (snapshot.error || "设置读取失败") : "正在读取设置…") : fields.map(field => h(SettingRow, { key: field.key, scope, snapshot, field, error: setError })), error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error));
     }
     function apply(ctx) {
       installStyle();
+      SettingsSwitch=ctx.settingsScope.controls.Switch;
       const sidebar = ctx.betterSidebar || ctx.get("betterSidebar");
       if (!sidebar) throw new Error("dsh-sidebar-workbench-suite requires betterSidebar");
-      const computerUseScope = ctx.settingsScope.bind({ namespace: "computer-use" });
+      const computerUseScope = ctx.settingsScope.bind({ namespace: "computer-use", decode: value => value && typeof value === "object" && !Array.isArray(value) ? value : undefined });
       const disposers = [
         sidebar.registerFileViewer({ id: "suite:markdown", title: "Markdown 工作台", exts: ["md", "mdx", "markdown"], priority: 120, fetchStrategy: "fsRead", settings: { pluginToggles: [{ key: "outline", title: "显示 Markdown 大纲", type: "switch", defaultValue: true }, { key: "mermaid", title: "渲染 Mermaid 图表", type: "switch", defaultValue: true }] }, component: MarkdownWorkbench }),
         sidebar.registerFileViewer({ id: "suite:structured", title: "结构化数据表", exts: ["json", "csv", "tsv"], priority: 110, fetchStrategy: "fsRead", component: StructuredViewer }),
         sidebar.registerFileViewer({ id: "suite:office", title: "本地文档", exts: ["doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "zip", "7z", "rar"], priority: 100, fetchStrategy: "binary-download", component: DownloadViewer }),
         sidebar.registerFileViewer({ id: "suite:code", title: "CodeMirror 文本编辑器", exts: ["", "txt", "log", "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte", "rs", "py", "go", "java", "c", "cc", "cpp", "h", "hpp", "cs", "rb", "php", "sh", "bash", "zsh", "ps1", "sql", "yaml", "yml", "toml", "ini", "conf", "env", "xml", "css", "scss", "less", "html", "htm", "svg", "dockerfile", "makefile"], priority: 90, fetchStrategy: "fsRead", component: CodeWorkbench }),
-        sidebar.registerTab({ id: "suite:side-conversation", title: "侧边对话", order: 70, single: true, component: SideConversationTab, settings: { pluginToggles: [{ key: "keepDraft", title: "保留侧边对话草稿", type: "switch", defaultValue: true }] } }),
         sidebar.registerTab({ id: "suite:jobs", title: "后台任务", order: 80, single: true, component: JobsTab }),
-        sidebar.registerTab({ id: "suite:subagents", title: "子智能体", order: 90, single: true, badge: (_context, scope) => flattenSubagents(ctx.get("sessions").list.getSnapshot().subagentsByParent || {}, scope.sessionId).filter(row => row.activity === "running").length || null, component: SubagentMonitorTab }),
-        sidebar.registerTab({ id: "suite:controlled-browser", title: "受控浏览器", order: 100, single: true, component: ControlledBrowserTab, settings: { pluginToggles: [{ key: "autoRefresh", title: "自动刷新浏览器画面", type: "switch", defaultValue: true }] }, onClose: (tab, scope) => { void fetch("/__dsh-computer-use/action", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: scope.sessionId, browserSessionId: tab.meta?.browserSessionId || "default", action: "close", includeScreenshot: false }) }).catch(() => {}); } })
+        sidebar.registerTab({ id: "suite:controlled-browser", title: "受控浏览器", order: 100, single: true, component: ControlledBrowserTab, settings: { pluginToggles: [{ key: "autoRefresh", title: "自动刷新浏览器画面", type: "switch", defaultValue: false }] }, onClose: (tab, scope) => { void fetch("/__dsh-computer-use/action", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: scope.sessionId, browserSessionId: tab.meta?.browserSessionId || "default", action: "close", includeScreenshot: false }) }).catch(() => {}); } })
       ];
-      ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({ name: "settings.plugin.item", id: "computer-use", order: 40, label: "Computer Use" }, () => h(ComputerUseSettings, { scope: computerUseScope })));
+      ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({ name: "settings.plugin.item", id: "computer-use", order: 40, label: "Computer Use" }, () => h("details", {className:"dshSettingsDisclosure"},h("summary",null,"Computer Use 与远程设备"),h(ComputerUseSettings, { scope: computerUseScope }))));
       ctx.effect?.(() => () => { clearFileDrafts(); for (const dispose of disposers.reverse()) dispose(); }, "sidebar-workbench-suite: registrations");
     }
     exports.apply = apply;
     exports.inject = inject;
-    exports.test = { parseCsv, renderMarkdown, historyMessages, MermaidDiagram, MarkdownWorkbench, CodeWorkbench, StructuredViewer, SideConversationTab, JobsTab, SubagentMonitorTab, ControlledBrowserTab, ComputerUseSettings, rememberFileDraft, fileDraftCacheSnapshot: () => ({ keys: [...fileDrafts.keys()], bytes: fileDraftBytes }), clearFileDrafts };
+    exports.test = { parseCsv, renderMarkdown, visiblePoll, MermaidDiagram, MarkdownWorkbench, CodeWorkbench, StructuredViewer, JobsTab, ControlledBrowserTab, ComputerUseSettings, DeviceSettings, rememberFileDraft, fileDraftCacheSnapshot: () => ({ keys: [...fileDrafts.keys()], bytes: fileDraftBytes }), clearFileDrafts };
     return module.exports;
   }
 });

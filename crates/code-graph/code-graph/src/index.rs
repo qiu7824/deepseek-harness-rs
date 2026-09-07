@@ -464,7 +464,7 @@ impl CodeIndex {
         }
         let seat = {
             let mut cache = self.cache.lock().unwrap();
-            if cache.len() >= 8 && !cache.contains_key(&root) {
+            if cache.len() >= 2 && !cache.contains_key(&root) {
                 if let Some(key) = cache
                     .iter()
                     .find(|(_, value)| Arc::strong_count(value) == 1)

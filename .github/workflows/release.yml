@@ -59,6 +59,7 @@ jobs:
           node tools/tests/turn_usage_optional_harness.js
           node tools/tests/rust_release_ui_harness.cjs
           node tools/tests/test_history_compaction.mjs
+          node tools/tests/history_retention_harness.cjs
           npm install --prefix "$RUNNER_TEMP/dsh-dom-tests" --ignore-scripts --no-audit --no-fund react@19.2.8 react-dom@19.2.8 react-test-renderer@19.2.8 jsdom@26.1.0
           node tools/tests/model_management_harness.cjs
           node tools/tests/model_management_react_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
@@ -128,6 +129,8 @@ jobs:
           python tools/e2e_workspace_insights.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-insights-no-node" --without-node
           python tools/e2e_sidebar_git_terminal.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-sidebar-git-terminal" --without-node
           python tools/e2e_workspace_resources.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-resources"
+          python tools/e2e_workspace_device_settings.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-device-settings"
+          python tools/e2e_package_variant.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-package-variant" --variant core
           if [[ "${{ matrix.platform }}" == "windows" ]]; then
             python tools/e2e_computer_use.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-computer-use"
             python tools/e2e_scratch_context.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-scratch-context"

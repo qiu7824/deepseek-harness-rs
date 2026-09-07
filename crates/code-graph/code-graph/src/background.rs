@@ -77,7 +77,7 @@ impl BackgroundIndex {
                 return;
             }
         }
-        if jobs.len() >= 8 && !jobs.contains_key(&root) {
+        if jobs.len() >= 2 && !jobs.contains_key(&root) {
             if let Some(key) = jobs
                 .iter()
                 .filter(|(_, job)| !job.running)

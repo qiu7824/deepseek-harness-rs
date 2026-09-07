@@ -1136,7 +1136,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         // Preserve complete interrupted events and synthesize only missing
         // closers.
         let closers = interrupted_turn_closers(&stored_events);
-        let mut balanced = stored_events.clone();
+        let mut balanced = stored_events;
         balanced.extend(closers.clone());
         let sessions = self.sessions()?;
         let session = sessions.prepare(

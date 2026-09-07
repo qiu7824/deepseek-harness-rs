@@ -136,6 +136,7 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
+      if(window.__DSH_BOOT__?.variant && !["skin","development"].includes(window.__DSH_BOOT__.variant)) return;
       installCss();
       ctx.slots.inject("settings.section", () => ctx.slots.register({
         name: "settings.section",

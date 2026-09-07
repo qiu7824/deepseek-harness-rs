@@ -85,7 +85,7 @@ def verify(port: int, workdir: pathlib.Path, workspace: pathlib.Path, original: 
     client = PreviewClient(port, session_id)
     meta = client.ok("meta")
     assert meta["sessionId"] == session_id
-    initial = client.graph_until(lambda graph: len(graph["symbols"]) >= 3, "automatic indexing after read-only meta")
+    initial = client.graph_until(lambda graph: len(graph["symbols"]) >= 3, "indexing on the first graph query")
     assert initial["engine"] == "rust-tree-sitter"
     assert initial["stats"]["indexedFiles"] == 3
     assert initial["stats"]["parsedFiles"] == 3

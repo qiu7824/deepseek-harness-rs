@@ -32,6 +32,7 @@ pub mod runtime_paths;
 mod sidebar_settings;
 #[cfg(test)]
 mod ultra_control_tests;
+mod uu_devices;
 mod web_preview;
 mod workspace_copy;
 mod workspace_resources;
@@ -149,8 +150,11 @@ mod allocator_response_lifecycle_tests {
 fn packaged_resource(relative: &str) -> std::path::PathBuf {
     let adjacent = std::env::current_exe()
         .ok()
-        .and_then(|path| path.parent().map(|parent| parent.join(relative)))
-        .filter(|path| path.exists());
+        .and_then(|path| path.parent().map(|parent| parent.join(relative)));
+    if !cfg!(debug_assertions) {
+        return adjacent.unwrap_or_else(|| std::path::PathBuf::from(relative));
+    }
+    let adjacent = adjacent.filter(|path| path.exists());
     adjacent.unwrap_or_else(|| {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../")
@@ -1511,7 +1515,10 @@ async fn bridge_api_request(
         })
         .collect();
     #[cfg(windows)]
-    let collect_after_response = parts.uri.path() == "/api/session.history";
+    let collect_after_response = matches!(
+        parts.uri.path(),
+        "/api/session.history" | "/api/session.models"
+    );
     let response = handler
         .handle(CarrierRequest {
             method: parts.method,
@@ -1915,7 +1922,7 @@ fn compose_host_in_fiber(
             root: sessions_root.to_string_lossy().to_string(),
             pack_chunks: true,
             compression: JsonlCompression::Zstd,
-            prepared_session_cache_size: 5,
+            prepared_session_cache_size: 1,
             write_batch_max_delay_ms: 200,
         },
     )
@@ -3611,9 +3618,25 @@ fn compose_host_in_fiber(
     let object = boot_payload
         .as_object_mut()
         .expect("web plugin manifest must be an object");
+    let variant = std::fs::read(packaged_resource("PACKAGE.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|value| value["variant"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| {
+            if cfg!(debug_assertions) {
+                "development"
+            } else {
+                "core"
+            }
+            .into()
+        });
+    object.insert("variant".into(), serde_json::json!(variant));
     object.insert(
         "noSkin".to_string(),
-        serde_json::Value::Bool(!packaged_resource("web/dist/skins").is_dir()),
+        serde_json::Value::Bool(
+            variant != "skin" && variant != "development"
+                || !packaged_resource("web/dist/skins").is_dir(),
+        ),
     );
     object.insert("apiBase".to_string(), serde_json::json!("/api"));
     object.insert(
@@ -3628,12 +3651,14 @@ fn compose_host_in_fiber(
         Vec::new()
     };
     let provider_auth_route = account_auth.register(&web_server);
+    uu_devices::register(ctx, &web_server, settings.clone())?;
     account_auth.register_usage_tool(ctx)?;
     let free_catalog_route = free_catalog::register(
         &web_server,
         &data_root,
         &packaged_resource("free-model-verification.json"),
         settings.clone(),
+        variant == "free" || variant == "development",
     )?;
     let web_preview_route = web_preview::register(
         &web_server,

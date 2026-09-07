@@ -592,7 +592,11 @@ pub(super) fn register(
     data: &Path,
     evidence: &Path,
     settings: Arc<dsh_settings::SettingsProvider>,
+    enabled: bool,
 ) -> Result<RouteDisposer, String> {
+    if !enabled {
+        return Ok(Arc::new(|| {}));
+    }
     let service = Catalog::new(data, evidence, settings)?;
     Ok(server.register(WebRoute {
         kind: WebRouteKind::Prefix,

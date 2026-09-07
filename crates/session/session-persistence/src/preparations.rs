@@ -18,6 +18,8 @@ use indexmap::IndexMap;
 use parking_lot::Mutex;
 use tokio::sync::{Notify, OnceCell};
 
+const MAX_CACHED_PREPARED_EVENTS: u64 = 4096;
+
 /// One prepared source exposing its exact unpublished Session.
 pub trait PreparedSource: Send + Sync + 'static {
     fn session(&self) -> &Session;
@@ -87,7 +89,11 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
             state.source.clone().unwrap_or(loaded.clone())
         };
         if self.is_current(&entry, id) && entry.state.lock().phase == PreparationPhase::Ready {
-            self.touch(&entry);
+            if source.session().seq().get() > MAX_CACHED_PREPARED_EVENTS {
+                self.discard_ready(id, &source);
+            } else {
+                self.touch(&entry);
+            }
         }
         Ok(source)
     }
@@ -255,23 +261,24 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
     /// Discard an exact stale ready source without disturbing an exclusive
     /// owner.
     pub fn discard_ready(&self, id: &SessionId, expected: &Arc<S>) -> DiscardOutcome {
-        let entry = self.entries.lock().get(id.as_str()).cloned();
+        let mut entries = self.entries.lock();
+        let entry = entries.get(id.as_str()).cloned();
         let Some(entry) = entry else {
             return DiscardOutcome::Missing;
         };
-        let source_is_expected = entry
-            .state
-            .lock()
+        let state = entry.state.lock();
+        let source_is_expected = state
             .source
             .as_ref()
             .is_some_and(|source| Arc::ptr_eq(source, expected));
         if !source_is_expected {
             return DiscardOutcome::Missing;
         }
-        if entry.state.lock().phase != PreparationPhase::Ready {
+        if state.phase != PreparationPhase::Ready {
             return DiscardOutcome::Retained;
         }
-        self.remove(&entry);
+        entries.shift_remove(id.as_str());
+        entry.notify.notify_waiters();
         DiscardOutcome::Discarded
     }
 
@@ -379,19 +386,29 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
         }
         entry.state.lock().phase = PreparationPhase::Ready;
         entry.notify.notify_waiters();
+        let source = entry.state.lock().source.clone();
+        if let Some(source) = source
+            && source.session().seq().get() > MAX_CACHED_PREPARED_EVENTS
+        {
+            self.discard_ready(&entry.id, &source);
+            return;
+        }
         self.touch(entry);
     }
 
     fn remove(&self, entry: &Arc<PreparationEntry<S, C>>) {
-        let current = self
-            .entries
-            .lock()
+        let mut entries = self.entries.lock();
+        let current = entries
             .get(entry.id.as_str())
             .is_some_and(|live| Arc::ptr_eq(live, entry));
         if !current {
             return;
         }
-        self.entries.lock().shift_remove(entry.id.as_str());
+        entries.shift_remove(entry.id.as_str());
+        // A reservation owns its entry. Release the reverse owner when the
+        // entry leaves the pool, including successful attachment; otherwise
+        // every restored session leaks its prepared log and inspection.
+        entry.state.lock().reservation = None;
         entry.notify.notify_waiters();
     }
 
@@ -431,4 +448,110 @@ pub enum DiscardOutcome {
     Discarded,
     Retained,
     Missing,
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+    struct Source(Session);
+    impl PreparedSource for Source {
+        fn session(&self) -> &Session {
+            &self.0
+        }
+    }
+    fn source(count: usize) -> Arc<Source> {
+        let session = Session::create(
+            dsh_session::session_id("prepared-retention"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        for _ in 0..count {
+            session
+                .append("retention-fixture", serde_json::json!({}), None)
+                .unwrap();
+        }
+        Arc::new(Source(session))
+    }
+    fn loader(source: &Arc<Source>) -> LoadFn<Source> {
+        let source = source.clone();
+        Arc::new(move || {
+            let source = source.clone();
+            Box::pin(async move { Ok(source) })
+        })
+    }
+    #[tokio::test]
+    async fn consumed_reservations_release_the_prepared_source() {
+        for operation in ["attach", "discard", "release"] {
+            let source = source(10);
+            let weak_source = Arc::downgrade(&source);
+            let pool = SessionPreparations::<Source, ()>::new(1);
+            let reservation = pool
+                .reserve(
+                    source.session().id(),
+                    loader(&source),
+                    Arc::new(|source| Box::pin(async move { Ok(Some((source, ()))) })),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let weak_entry = Arc::downgrade(&reservation.entry);
+            match operation {
+                "attach" => pool.attach(&reservation).unwrap(),
+                "discard" => pool.discard(&reservation),
+                _ => pool.release(&reservation, false),
+            }
+            drop(reservation);
+            drop(source);
+            assert!(
+                weak_entry.upgrade().is_none(),
+                "{operation} retained its reservation"
+            );
+            assert!(
+                weak_source.upgrade().is_none(),
+                "{operation} retained its prepared history"
+            );
+        }
+    }
+    #[tokio::test]
+    async fn large_read_only_preparations_are_not_kept_after_inspection() {
+        let source = source(4100);
+        let pool = SessionPreparations::<Source, ()>::new(5);
+        let found = pool
+            .inspect(source.session().id(), loader(&source))
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(&source, &found));
+        assert!(!pool.has(source.session().id()));
+    }
+    #[tokio::test]
+    async fn reservations_survive_inspection_and_large_release_drops_the_cache() {
+        let source = source(4100);
+        let pool = SessionPreparations::<Source, ()>::new(5);
+        let reservation = pool
+            .reserve(
+                source.session().id(),
+                loader(&source),
+                Arc::new(|source| Box::pin(async move { Ok(Some((source, ()))) })),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        pool.inspect(source.session().id(), loader(&source))
+            .await
+            .unwrap();
+        assert!(pool.has(source.session().id()));
+        pool.release(&reservation, true);
+        assert!(!pool.has(source.session().id()));
+    }
+    #[tokio::test]
+    async fn small_preparations_keep_the_existing_reuse_behavior() {
+        let source = source(10);
+        let pool = SessionPreparations::<Source, ()>::new(1);
+        pool.inspect(source.session().id(), loader(&source))
+            .await
+            .unwrap();
+        assert!(pool.has(source.session().id()));
+    }
 }

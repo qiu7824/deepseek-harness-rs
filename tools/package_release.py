@@ -83,6 +83,8 @@ def main() -> None:
             )
 
     copy_tree(ROOT / "release" / "plugins", stage / "plugins")
+    if args.variant != "skin":
+        shutil.rmtree(stage / "plugins" / "dsh-skin-center", ignore_errors=True)
     staged_web = ROOT / "target" / "release" / "web" / "dist"
     if not staged_web.is_dir():
         raise SystemExit(f"missing staged web distribution: {staged_web}")

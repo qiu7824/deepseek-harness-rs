@@ -12,18 +12,6 @@ CODEX = ROOT / "crates" / "subagent" / "subagent-codex" / "src" / "lib.rs"
 
 
 class RustUiContractTests(unittest.TestCase):
-    def test_conversation_width_is_draggable_and_persisted(self):
-        source = CONVERSATION.read_text(encoding="utf-8")
-        for required in (
-            'const WIDTH_PREF_KEY = "dsh.conversation.contentWidth"',
-            "function WidthHandle",
-            'localStorage.setItem(WIDTH_PREF_KEY',
-            '"data-width-handle": side',
-            "--dsh-chat-user-width",
-            "--dsh-conversation-column-width",
-        ):
-            self.assertIn(required, source)
-
     def test_appearance_uses_original_general_row_and_typography(self):
         theme = THEME.read_text(encoding="utf-8")
         host = HOST.read_text(encoding="utf-8")
