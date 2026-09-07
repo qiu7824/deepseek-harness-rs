@@ -78,7 +78,12 @@ impl Fixture {
         let header = SessionHeader {
             id: session_id(name),
             created_at,
-            cwd: Some("E:/工作区".into()),
+            cwd: Some(
+                std::env::temp_dir()
+                    .join("工作区")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
             version: dsh_session::SESSION_FORMAT_VERSION,
             parent_session: None,
             is_seeded: false,
