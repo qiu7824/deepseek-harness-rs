@@ -101,7 +101,7 @@ def main() -> None:
         reason = result["free"].get("reason", "匿名流式、工具往返和当前正式二进制校验通过")
         with args.summary.open("a", encoding="utf-8") as stream:
             stream.write(f"\n发布版本：{', '.join(result['variants'])}。\n\n免费版：{result['free']['status']}；{reason}\n")
-    print(json.dumps(result, ensure_ascii=False))
+    print(json.dumps(result, ensure_ascii=True))
 
 
 if __name__ == "__main__":

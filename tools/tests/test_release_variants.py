@@ -1,7 +1,9 @@
 from __future__ import annotations
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,6 +14,38 @@ from tools.tests.test_free_model_evidence import attested, report
 
 
 class ReleaseVariantsTests(unittest.TestCase):
+    def test_cli_preserves_denial_diagnostics_with_legacy_console_encoding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "dsh"
+            binary.write_bytes(b"fixture binary")
+            evidence = root / "free.json"
+            reason = "供应商仅限OpenCode，Rust匿名不可用"
+            evidence.write_text(json.dumps(report([{
+                **attested(), "status": "unavailable", "available": False, "reason": reason,
+            }]), ensure_ascii=False), encoding="utf-8")
+            selection = root / "selection.json"
+            output = root / "github-output.txt"
+            summary = root / "summary.md"
+            environment = dict(os.environ, PYTHONIOENCODING="cp1252:strict")
+            completed = subprocess.run([
+                sys.executable, str(Path(variants.__file__).resolve()), "select",
+                "--report", str(evidence), "--binary", str(binary),
+                "--probe-outcome", "failure", "--selection-report", str(selection),
+                "--github-output", str(output), "--summary", str(summary),
+            ], env=environment, capture_output=True, check=False)
+            self.assertEqual(completed.returncode, 0, completed.stderr.decode("cp1252"))
+            selected = json.loads(completed.stdout.decode("ascii"))
+            self.assertEqual(selected["variants"], ["core", "skin"])
+            self.assertEqual(selected["free"]["status"], "unavailable")
+            self.assertEqual(selected["free"]["reason"], reason)
+            saved = selection.read_text(encoding="utf-8")
+            self.assertIn(reason, saved)
+            self.assertEqual(json.loads(saved), selected)
+            self.assertIn(reason, summary.read_text(encoding="utf-8"))
+            self.assertEqual(output.read_text(encoding="utf-8"),
+                             'variants=core skin\nvariants_json=["core","skin"]\n')
+
     def test_core_skin_are_independent_of_missing_failed_or_stale_free_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); binary=root/"dsh";binary.write_bytes(b"fixture binary")

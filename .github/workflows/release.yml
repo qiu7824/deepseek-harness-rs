@@ -273,6 +273,16 @@ jobs:
             target/free-model-verification.log
             target/release-variants.json
           if-no-files-found: warn
+      - name: 保留会话恢复失败证据
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: session-restore-diagnostics-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/dsh-session-workspace-resume/history-*.json
+            ${{ runner.temp }}/dsh-session-workspace-resume/authority-*.json
+            ${{ runner.temp }}/dsh-session-workspace-resume/evidence.json
+          if-no-files-found: ignore
       - name: 上传当前平台产物
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
