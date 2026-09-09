@@ -2097,7 +2097,7 @@ window.__ModuleLoader__.load({
             const [open,setOpen]=react.useState(false),[selected,setSelected]=react.useState(null),[switching,setSwitching]=react.useState(false);
             react.useEffect(()=>{service.load().catch(()=>{})},[service]);
             const signed=state.accounts.filter(account=>account.signedIn&&account.scope!=="subagent");
-            const account=signed.find(item=>item.id===selected)??signed[0]??(state.status!=="error"?{id:"openai-codex",name:"ChatGPT / Codex",signedIn:false,scope:""}:null);
+            const account=signed.find(item=>item.id===selected)??signed[0];
             const manage=()=>{setOpen(false);window.dispatchEvent(new CustomEvent("dsh-open-settings",{detail:{section:"models"}}))};
             const accountRows=account?.accounts??[];
             const switchAccount=async scope=>{if(!scope||switching)return;setSwitching(true);try{await accountRequest("switch",{provider:account.id,accountScope:scope});await service.load(true);}catch(error){console.error(error);}finally{setSwitching(false);}};
