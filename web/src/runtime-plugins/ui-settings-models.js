@@ -1134,7 +1134,7 @@ window.__ModuleLoader__.load({
 		* digit-leading id passes every check this card makes and then fails at the
 		* credential seam with a raw regular expression the user cannot act on.
 		*/
-		const PROVIDER_PRESETS = [{"id": "openai-api", "name": "OpenAI API", "baseURL": "https://api.openai.com/v1", "api": "openai-responses"}, {"id": "anthropic-api", "name": "Anthropic API", "baseURL": "https://api.anthropic.com/v1", "api": "anthropic-messages"}, {"id": "gemini", "name": "Google Gemini", "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai", "api": "openai-completions"}, {"id": "opencode-free", "name": "OpenCode Free", "baseURL": "https://opencode.ai/zen/v1", "api": "openai-completions", "keyless": true, "models": [{"id": "ling-3.0-flash-fin-free", "name": "Ling 3.0 Flash Fin Free", "contextWindow": 262144, "maxTokens": 16384, "reasoningEfforts": false}]}, {"id": "alibaba", "name": "Alibaba Cloud", "baseURL": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "api": "openai-completions"}, {"id": "alibaba-cn", "name": "阿里云百炼", "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api": "openai-completions"}, {"id": "alibaba-token-plan", "name": "Alibaba Token Plan", "baseURL": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "api": "openai-completions"}, {"id": "alibaba-token-plan-cn", "name": "阿里云 Token Plan", "baseURL": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "api": "openai-completions"}, {"id": "ai-gateway", "name": "Vercel AI Gateway", "baseURL": "https://ai-gateway.vercel.sh/v1", "api": "openai-completions"}, {"id": "arcee", "name": "Arcee AI", "baseURL": "https://api.arcee.ai/api/v1", "api": "openai-completions"}, {"id": "fireworks", "name": "Fireworks AI", "baseURL": "https://api.fireworks.ai/inference/v1", "api": "openai-completions"}, {"id": "kimi-coding", "name": "Kimi International", "baseURL": "https://api.moonshot.ai/v1", "api": "openai-completions"}, {"id": "kimi-coding-cn", "name": "Kimi 中国", "baseURL": "https://api.moonshot.cn/v1", "api": "openai-completions"}, {"id": "nvidia", "name": "NVIDIA Build", "baseURL": "https://integrate.api.nvidia.com/v1", "api": "openai-completions"}, {"id": "nebius-token-factory", "name": "Nebius Token Factory", "baseURL": "https://api.tokenfactory.nebius.com/v1", "api": "openai-completions"}, {"id": "meta-ai", "name": "Meta Model API", "baseURL": "https://api.meta.ai/v1", "api": "openai-completions"}, {"id": "minimax-api", "name": "MiniMax International", "baseURL": "https://api.minimax.io/anthropic", "api": "anthropic-messages"}, {"id": "minimax-cn-api", "name": "MiniMax 中国", "baseURL": "https://api.minimaxi.com/anthropic", "api": "anthropic-messages"}, {"id": "commandcode", "name": "CommandCode", "baseURL": "https://api.commandcode.ai/provider/v1", "api": "openai-completions"}, {"id": "actual", "name": "Actual Computer", "baseURL": "https://api.actual.inc/v1", "api": "openai-responses"}, {"id": "xai", "name": "xAI API", "baseURL": "https://api.x.ai/v1", "api": "openai-responses"}];
+		const PROVIDER_PRESETS = [{"id": "openai-api", "name": "OpenAI API", "baseURL": "https://api.openai.com/v1", "api": "openai-responses"}, {"id": "anthropic-api", "name": "Anthropic API", "baseURL": "https://api.anthropic.com/v1", "api": "anthropic-messages"}, {"id": "gemini", "name": "Google Gemini", "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai", "api": "openai-completions"}, {"id": "alibaba", "name": "Alibaba Cloud", "baseURL": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "api": "openai-completions"}, {"id": "alibaba-cn", "name": "阿里云百炼", "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api": "openai-completions"}, {"id": "alibaba-token-plan", "name": "Alibaba Token Plan", "baseURL": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "api": "openai-completions"}, {"id": "alibaba-token-plan-cn", "name": "阿里云 Token Plan", "baseURL": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "api": "openai-completions"}, {"id": "ai-gateway", "name": "Vercel AI Gateway", "baseURL": "https://ai-gateway.vercel.sh/v1", "api": "openai-completions"}, {"id": "arcee", "name": "Arcee AI", "baseURL": "https://api.arcee.ai/api/v1", "api": "openai-completions"}, {"id": "fireworks", "name": "Fireworks AI", "baseURL": "https://api.fireworks.ai/inference/v1", "api": "openai-completions"}, {"id": "kimi-coding", "name": "Kimi International", "baseURL": "https://api.moonshot.ai/v1", "api": "openai-completions"}, {"id": "kimi-coding-cn", "name": "Kimi 中国", "baseURL": "https://api.moonshot.cn/v1", "api": "openai-completions"}, {"id": "nvidia", "name": "NVIDIA Build", "baseURL": "https://integrate.api.nvidia.com/v1", "api": "openai-completions"}, {"id": "nebius-token-factory", "name": "Nebius Token Factory", "baseURL": "https://api.tokenfactory.nebius.com/v1", "api": "openai-completions"}, {"id": "meta-ai", "name": "Meta Model API", "baseURL": "https://api.meta.ai/v1", "api": "openai-completions"}, {"id": "minimax-api", "name": "MiniMax International", "baseURL": "https://api.minimax.io/anthropic", "api": "anthropic-messages"}, {"id": "minimax-cn-api", "name": "MiniMax 中国", "baseURL": "https://api.minimaxi.com/anthropic", "api": "anthropic-messages"}, {"id": "commandcode", "name": "CommandCode", "baseURL": "https://api.commandcode.ai/provider/v1", "api": "openai-completions"}, {"id": "actual", "name": "Actual Computer", "baseURL": "https://api.actual.inc/v1", "api": "openai-responses"}, {"id": "xai", "name": "xAI API", "baseURL": "https://api.x.ai/v1", "api": "openai-responses"}, {"id": "openrouter", "name": "OpenRouter", "baseURL": "https://openrouter.ai/api/v1", "api": "openai-completions"}, {"id": "novita", "name": "NovitaAI", "baseURL": "https://api.novita.ai/openai/v1", "api": "openai-completions"}, {"id": "gmi", "name": "GMI Cloud", "baseURL": "https://api.gmi-serving.com/v1", "api": "openai-completions"}, {"id": "huggingface", "name": "Hugging Face", "baseURL": "https://router.huggingface.co/v1", "api": "openai-completions"}, {"id": "stepfun", "name": "StepFun API", "baseURL": "https://api.stepfun.com/v1", "api": "openai-completions"}, {"id": "zai", "name": "Z.AI / GLM", "baseURL": "https://api.z.ai/api/paas/v4", "api": "openai-completions"}, {"id": "alibaba-coding-plan", "name": "Alibaba Coding Plan", "baseURL": "https://coding-intl.dashscope.aliyuncs.com/v1", "api": "openai-completions"}, {"id": "opencode-zen", "name": "OpenCode Zen", "baseURL": "https://opencode.ai/zen/v1", "api": "openai-completions"}, {"id": "opencode-go", "name": "OpenCode Go", "baseURL": "https://opencode.ai/zen/go/v1", "api": "openai-completions"}, {"id": "kilocode", "name": "Kilo Code", "baseURL": "https://api.kilo.ai/api/gateway", "api": "openai-completions"}, {"id": "xiaomi", "name": "Xiaomi MiMo", "baseURL": "https://api.xiaomimimo.com/v1", "api": "openai-completions"}, {"id": "tencent-tokenhub", "name": "Tencent TokenHub", "baseURL": "https://tokenhub.tencentmaas.com/v1", "api": "openai-completions"}, {"id": "tencent-tokenplan", "name": "Tencent TokenPlan", "baseURL": "https://api.lkeap.cloud.tencent.com/plan/anthropic", "api": "anthropic-messages"}, {"id": "lmstudio", "name": "LM Studio", "baseURL": "http://127.0.0.1:1234/v1", "api": "openai-completions", "keyless": true}];
 		const ROUTE_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 		/**
 		* Render the custom-provider creation card.
@@ -1895,6 +1895,16 @@ window.__ModuleLoader__.load({
             const missing=Object.keys(changes).filter(id=>!ids.has(id)).map(id=>({id,availability:"missing"}));
             return [...known,...missing].map(model=>({...model,...Object.fromEntries(Object.entries(changes[model.id]??{}).map(([key,edit])=>[key,edit.value]))})).concat(manual.map(model=>({...model,source:"manual",enabled:model.enabled!==false})));
         }
+        function manualModelFailure(catalog,manual) {
+            const ids=new Set((catalog?.models??[]).map(model=>model.id));
+            for(const model of manual){
+                const id=typeof model.id==="string"?model.id.trim():"";
+                if(!id)return{draftId:model._draftId,key:"modelIdRequired"};
+                if(ids.has(id))return{draftId:model._draftId,key:"modelIdDuplicate"};
+                ids.add(id);
+            }
+            return null;
+        }
         function preferenceOps(catalog,changes,manual) {
             const ops=[];
             for (const [id,fields] of Object.entries(changes)) for (const [field,edit] of Object.entries(fields)) {
@@ -1905,12 +1915,8 @@ window.__ModuleLoader__.load({
                 ops.push(edit.value===void 0?{op:"unset",path}:{op:"set",path,value:edit.value});
             }
             if (manual.length) {
-                const ids=new Set(catalog.models.map(model=>model.id));
-                for (const model of manual) {
-                    if (!String(model.id??"").trim() || ids.has(String(model.id??"").trim())) throw new Error("modelManualIdConflict");
-                    ids.add(String(model.id).trim());
-                }
-                ops.push({op:"set",path:[...(catalog.settingsPath??catalog.preferencePath.slice(0,-2)),"models"],value:[...catalog.profileModels,...manual.map(model=>{const {_draftId,...entry}=model;return{...entry,id:String(entry.id).trim(),source:"manual",accountScope:catalog.accountScope}})]});
+                if(manualModelFailure(catalog,manual))throw new Error("modelManualIdConflict");
+                ops.push({op:"set",path:[...(catalog.settingsPath??catalog.preferencePath.slice(0,-2)),"models"],value:[...catalog.profileModels,...manual.map(model=>{const {_draftId,...entry}=model;if(typeof entry.name==="string"&&!entry.name.trim())delete entry.name;return{...entry,id:entry.id.trim(),source:"manual",accountScope:catalog.accountScope}})]});
             }
             return ops;
         }
@@ -1932,7 +1938,7 @@ window.__ModuleLoader__.load({
             render(){return this.state.error?(0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.error,role:"alert",children:[this.props.t("modelEditorFailed")," ",this.state.error,(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,onClick:()=>this.setState({error:null}),children:this.props.t("retry")})]}):this.props.children;}
         }
         function validCapacityDraft(text) { const parsed=parseCapacity(text);return text.trim()===""||Number.isSafeInteger(parsed)&&parsed>0; }
-        function ProviderModelManager({provider,api,t,disabled,revision,onSaved,initialModels=[]}) {
+        function ProviderModelManager({provider,api,t,disabled,revision,onSaved,onDirtyChange,initialModels=[]}) {
             const [catalog,setCatalog]=(0,react.useState)(null),[changes,setChanges]=(0,react.useState)({}),[manual,setManual]=(0,react.useState)([]);
             const [expanded,setExpanded]=(0,react.useState)(false),[query,setQuery]=(0,react.useState)(""),[loading,setLoading]=(0,react.useState)(false),[saving,setSaving]=(0,react.useState)(false),[error,setError]=(0,react.useState)(null),[saved,setSaved]=(0,react.useState)(false),[nextAccount,setNextAccount]=(0,react.useState)(null);
             const [capacityText,setCapacityText]=(0,react.useState)({});
@@ -1941,7 +1947,9 @@ window.__ModuleLoader__.load({
             const mounted=(0,react.useRef)(true),generation=(0,react.useRef)(0),savingRef=(0,react.useRef)(false),catalogRef=(0,react.useRef)(catalog),changesRef=(0,react.useRef)(changes),manualRef=(0,react.useRef)(manual);
             catalogRef.current=catalog;changesRef.current=changes;manualRef.current=manual;
             const dirty=Object.keys(changes).length>0||manual.length>0||Object.keys(capacityText).length>0;
+            (0,react.useEffect)(()=>{onDirtyChange?.(dirty)},[dirty,onDirtyChange]);
             const invalidCapacity=Object.values(capacityText).some(text=>!validCapacityDraft(text));
+            const manualFailure=manualModelFailure(catalog,manual);
             const message=reason=>{const key=reason instanceof Error?reason.message:String(reason);return ["modelPreferenceConflict","modelManualIdConflict","modelAccountChanged"].includes(key)?t(key):key};
             const load=(0,react.useCallback)(async(action="models")=>{
                 if(savingRef.current)return;
@@ -1968,8 +1976,8 @@ window.__ModuleLoader__.load({
             };
             const rows=draftModelRows(catalog??{models:initialModels},changes,manual);
             const filter=query.trim().toLocaleLowerCase();
-            const visible=rows.filter(model=>!filter||(model.id+" "+(model.name??"")).toLocaleLowerCase().includes(filter));
-            const shown=expanded?visible:visible.slice(0,6);
+            const visible=rows.filter(model=>model._draftId||!filter||(model.id+" "+(model.name??"")).toLocaleLowerCase().includes(filter));
+            const shown=expanded?visible:[...visible.filter(model=>!model._draftId).slice(0,6),...visible.filter(model=>model._draftId)];
             const editable=!disabled&&!saving&&catalog!==null&&nextAccount===null;
             const update=(model,field,value)=>{
                 const manualIndex=model._draftId?manual.findIndex(candidate=>candidate._draftId===model._draftId):-1;
@@ -1977,7 +1985,7 @@ window.__ModuleLoader__.load({
                 edit(model.id,field,value);
             };
             const save=async()=>{
-                if(savingRef.current||!editable||!dirty||invalidCapacity)return;
+                if(savingRef.current||!editable||!dirty||invalidCapacity||manualFailure)return;
                 savingRef.current=true;setSaving(true);setSaved(false);setError(null);++generation.current;
                 try{
                     await savePreferenceDraft({provider,accountScope:catalog.accountScope,changes,manual,read:id=>accountRequest("models",{provider:id}),write:payload=>api.settings.mutate(payload)});
@@ -1990,23 +1998,31 @@ window.__ModuleLoader__.load({
             };
             const cancel=()=>{setChanges({});changesRef.current={};setManual([]);manualRef.current=[];setCapacityText({});setError(null);setSaved(false);if(nextAccount){setCatalog(nextAccount);setNextAccount(null)}else load();};
             const button=(label,action,extra={})=>(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,onClick:action,disabled:disabled||saving,...extra,children:label});
+            const modelField=(model,index,field)=>{
+                const capacity=field==="contextWindow"||field==="maxTokens",key=`${model._draftId??model.id}:${field}`;
+                const value=capacity?(capacityText[key]??(typeof model[field]==="number"?formatCapacity(model[field]):"")):model[field]??"";
+                const label=field==="id"?t("modelId"):field==="name"?t("modelName"):t(field==="contextWindow"?"modelContextWindow":"modelMaxTokens");
+                return (0,react_jsx_runtime.jsxs)("label",{children:[label,(0,react_jsx_runtime.jsx)("input",{type:"text",className:ModelsSection_module_css_default.input,value,disabled:!editable,required:field==="id",autoFocus:field==="id",placeholder:field==="name"?t("modelNamePlaceholder"):void 0,"aria-label":field==="id"||model._draftId&&field==="name"?`${label} ${index+1}`:`${model.id||index+1} ${field}`,"aria-invalid":capacity?!validCapacityDraft(value):field==="id"&&manualFailure?.draftId===model._draftId,onChange:event=>{const text=event.target.value;if(capacity){setCapacityText(current=>({...current,[key]:text}));const parsed=parseCapacity(text);if(validCapacityDraft(text))update(model,field,parsed)}else update(model,field,field==="id"?text:text||void 0)}})]},field);
+            };
+            const removeManual=model=>{setManual(current=>current.filter(row=>row._draftId!==model._draftId));setCapacityText(current=>Object.fromEntries(Object.entries(current).filter(([key])=>!key.startsWith(model._draftId+":"))));setSaved(false);setError(null);};
             return (0,react_jsx_runtime.jsxs)("section",{className:"dshModelManager","data-model-manager":provider,"aria-label":t("models"),children:[
                 (0,react_jsx_runtime.jsxs)("div",{className:"dshModelManagerHead",children:[(0,react_jsx_runtime.jsx)("strong",{children:`${t("models")} · ${rows.length}`}),button(t(expanded?"modelCollapse":"modelManage"),()=>setExpanded(value=>!value),{"aria-expanded":expanded}),button(t("modelRefresh"),()=>load("refresh"),{disabled:disabled||saving||loading})]}),
                 expanded&&(0,react_jsx_runtime.jsxs)("div",{className:"dshModelToolbar",children:[(0,react_jsx_runtime.jsx)("input",{type:"search",className:ModelsSection_module_css_default.input,value:query,"aria-label":t("modelSearch"),placeholder:t("modelSearch"),onChange:event=>setQuery(event.target.value)}),button(t("modelShowFiltered"),()=>visible.forEach(model=>update(model,"enabled",true)),{disabled:!editable||visible.length===0}),button(t("modelHideFiltered"),()=>visible.forEach(model=>update(model,"enabled",false)),{disabled:!editable||visible.length===0})]}),
                 loading&&(0,react_jsx_runtime.jsx)("div",{className:"dshModelHint",role:"status",children:t("loading")}),
-                (0,react_jsx_runtime.jsx)("div",{className:"dshModelRows",children:shown.map((model,index)=>(0,react_jsx_runtime.jsxs)("div",{"data-model-id":model.id,children:[(0,react_jsx_runtime.jsxs)("div",{className:"dshModelRow",children:[(0,react_jsx_runtime.jsxs)("div",{className:"dshModelIdentity",children:[(0,react_jsx_runtime.jsx)("span",{className:"dshModelName",children:model.name||model.id||t("modelManualNew")}), (0,react_jsx_runtime.jsx)("span",{className:"dshModelId",children:model.id||t("modelId")})]}),(0,react_jsx_runtime.jsx)(ModelVisibility,{checked:model.enabled!==false,disabled:!editable,label:`${t("modelVisible")} ${model.name||model.id}`,t,onChange:value=>update(model,"enabled",value)})]}),
-                    expanded&&(0,react_jsx_runtime.jsxs)("details",{className:"dshModelDetails",children:[(0,react_jsx_runtime.jsx)("summary",{children:t("modelAdvanced")}), (0,react_jsx_runtime.jsx)("div",{className:"dshModelFields",children:[...(model._draftId?["id"]:[]),"name","contextWindow","maxTokens"].map(field=>{
-                        const capacity=field==="contextWindow"||field==="maxTokens",key=`${model._draftId??model.id}:${field}`;
-                        const value=capacity?(capacityText[key]??(typeof model[field]==="number"?formatCapacity(model[field]):"")):model[field]??"";
-                        return (0,react_jsx_runtime.jsxs)("label",{children:[field==="id"?t("modelId"):field==="name"?t("modelName"):t(field==="contextWindow"?"modelContextWindow":"modelMaxTokens"),(0,react_jsx_runtime.jsx)("input",{className:ModelsSection_module_css_default.input,value,disabled:!editable,"aria-label":`${model.id||index+1} ${field}`,"aria-invalid":capacity&&!validCapacityDraft(value),onChange:event=>{const text=event.target.value;if(capacity){setCapacityText(current=>({...current,[key]:text}));const parsed=parseCapacity(text);if(validCapacityDraft(text))update(model,field,parsed)}else update(model,field,field==="id"?text:text||void 0)}})]},field)
-                    })})]})]},model._draftId??model.id??`new-${index}`))}),
+                (0,react_jsx_runtime.jsx)("div",{className:"dshModelRows",children:shown.map((model,index)=>(0,react_jsx_runtime.jsxs)("div",{"data-model-id":model.id,"data-model-draft":model._draftId,className:model._draftId?ModelsSection_module_css_default.modelEntry:void 0,children:[
+                    (0,react_jsx_runtime.jsxs)("div",{className:"dshModelRow",children:[(0,react_jsx_runtime.jsxs)("div",{className:"dshModelIdentity",children:[(0,react_jsx_runtime.jsx)("span",{className:"dshModelName",children:model._draftId?t("modelManualNew"):model.name||model.id}), !model._draftId&&(0,react_jsx_runtime.jsx)("span",{className:"dshModelId",children:model.id})]}),(0,react_jsx_runtime.jsx)(ModelVisibility,{checked:model.enabled!==false,disabled:!editable,label:`${t("modelVisible")} ${model.name||model.id||t("modelManualNew")}`,t,onChange:value=>update(model,"enabled",value)})]}),
+                    model._draftId&&(0,react_jsx_runtime.jsx)("div",{className:"dshModelFields",children:[modelField(model,index,"id"),modelField(model,index,"name")]}),
+                    expanded&&(0,react_jsx_runtime.jsxs)("details",{className:"dshModelDetails",children:[(0,react_jsx_runtime.jsx)("summary",{children:t("modelAdvanced")}), (0,react_jsx_runtime.jsx)("div",{className:"dshModelFields",children:[...(!model._draftId?["name"]:[]),"contextWindow","maxTokens"].map(field=>modelField(model,index,field))})]}),
+                    model._draftId&&button(t("modelManualRemove"),()=>removeManual(model),{"aria-label":`${t("modelManualRemove")} ${index+1}`,disabled:!editable})
+                ]},model._draftId??model.id??`new-${index}`))}),
                 !shown.length&&(0,react_jsx_runtime.jsx)("div",{className:"dshModelEmpty",children:t(catalog?"modelNoMatches":"modelCatalogUnavailable")}),
                 !expanded&&rows.length>shown.length&&(0,react_jsx_runtime.jsx)("div",{className:"dshModelCount",children:t("modelMoreCount").replace("{count}",String(rows.length-shown.length))}),
-                expanded&&button(t("modelManualAdd"),()=>{const id=`manual-${++manualSequence.current}`;setManual(current=>[...current,{_draftId:id,id:"",name:"",enabled:true}]);setSaved(false)},{disabled:!editable}),
+                expanded&&button(t("modelManualAdd"),()=>{const id=`manual-${++manualSequence.current}`;setManual(current=>[...current,{_draftId:id,id:"",enabled:true}]);setSaved(false);setError(null)},{disabled:!editable}),
                 (0,react_jsx_runtime.jsx)("div",{className:"dshModelHint",children:t("modelPreferencesHint")}),
                 error&&(0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.error,role:"alert",children:error}),
                 invalidCapacity&&(0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.error,role:"alert",children:t("modelCapacityDraftInvalid")}),
-                (dirty||saved)&&(0,react_jsx_runtime.jsxs)("div",{className:"dshModelFooter",children:[(0,react_jsx_runtime.jsx)("span",{role:"status",children:t(saved?"modelPreferencesSaved":"modelUnsaved")}),dirty&&button(t("cancel"),cancel),dirty&&(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.primaryButton,disabled:!editable||invalidCapacity,onClick:save,children:t(saving?"applying":"apply")})]})
+                manualFailure&&(0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.error,role:"alert",children:t(manualFailure.key)}),
+                (dirty||saved)&&(0,react_jsx_runtime.jsxs)("div",{className:"dshModelFooter",children:[(0,react_jsx_runtime.jsx)("span",{role:"status",children:t(saved?"modelPreferencesSaved":"modelUnsaved")}),dirty&&button(t("cancel"),cancel),dirty&&(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.primaryButton,disabled:!editable||invalidCapacity||manualFailure!==null,onClick:save,children:t(saving?"applying":"apply")})]})
             ]});
         }
 
@@ -2046,23 +2062,73 @@ window.__ModuleLoader__.load({
         }
 
 
+        if(typeof document!=="undefined"&&!document.querySelector("style[data-account-navigation]")){const style=document.createElement("style");style.dataset.accountNavigation="";style.textContent=".dshSidebarAccount{width:100%;display:flex;align-items:stretch}.dshSidebarAccount>div{width:100%;display:flex}.dshAccountBadge{align-self:stretch;justify-content:flex-start}.dshAccountBadge>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.dshAccountDisclosure{display:inline-flex;align-items:center;gap:8px;padding:6px 0;border:0;background:none;color:inherit;font:inherit;font-weight:500;cursor:pointer;min-width:0;text-align:left}.dshAccountEntry[hidden],.dshAccountEntry [hidden]{display:none!important}.dshAccountDialog{width:min(560px,calc(100vw - 32px))}.dshAccountSwitcher{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}";document.head.appendChild(style)}
+        function createAccountDirectory() {
+            const store=(0,_deepseek_ai_dsh_client_runtime_client.createSnapshotStore)({accounts:[],status:"idle",error:null});
+            let flight=null,updated=0,disposed=false,generation=0;
+            return {store,dispose(){disposed=true;generation++},invalidate(){updated=0;generation++},async load(force=false){
+                if(disposed)return;
+                if(flight)return flight;
+                if(!force&&updated&&Date.now()-updated<60000)return store.getSnapshot();
+                store.update(value=>{value.status="loading";value.error=null});
+                flight=(async()=>{
+                    while(!disposed){
+                        const version=generation;
+                        try {
+                            const value=await accountRequest("providers");
+                            if(disposed)break;
+                            if(version!==generation)continue;
+                            updated=Date.now();store.set({accounts:Array.isArray(value.providers)?value.providers:[],status:"ready",error:null});
+                            break;
+                        } catch(error){
+                            if(disposed)break;
+                            if(version!==generation)continue;
+                            store.update(value=>{value.status="error";value.error=messageOf$1(error)});throw error;
+                        }
+                    }
+                    return store.getSnapshot();
+                })().finally(()=>{flight=null});
+                return flight;
+            }};
+        }
+        function SidebarAccount({controller,t,wide}) {
+            const h=react.createElement,service=controller.accounts;
+            const state=(0,react.useSyncExternalStore)(service.store.subscribe,service.store.getSnapshot,service.store.getSnapshot);
+            const [open,setOpen]=react.useState(false),[selected,setSelected]=react.useState(null),[switching,setSwitching]=react.useState(false);
+            react.useEffect(()=>{service.load().catch(()=>{})},[service]);
+            const signed=state.accounts.filter(account=>account.signedIn&&account.scope!=="subagent");
+            const account=signed.find(item=>item.id===selected)??signed[0]??(state.status!=="error"?{id:"openai-codex",name:"ChatGPT / Codex",signedIn:false,scope:""}:null);
+            const manage=()=>{setOpen(false);window.dispatchEvent(new CustomEvent("dsh-open-settings",{detail:{section:"models"}}))};
+            const accountRows=account?.accounts??[];
+            const switchAccount=async scope=>{if(!scope||switching)return;setSwitching(true);try{await accountRequest("switch",{provider:account.id,accountScope:scope});await service.load(true);}catch(error){console.error(error);}finally{setSwitching(false);}};
+            if(!account)return null;
+            return h(react.Fragment,null,
+                h("button",{type:"button",className:"dshSidebarAction dshAccountBadge","data-rail":!wide||undefined,title:account.name+" · "+t("accountSignedIn"),"aria-label":t("accountTitle"),"aria-haspopup":"dialog",onClick:()=>{setOpen(true);service.load().catch(()=>{})}},
+					 h(_deepseek_ai_dsh_client_ui_primitives.IconAgentPresetOutline16,{size:16}),wide&&h("span",null,account.name)),
+                h(_deepseek_ai_dsh_client_ui_primitives.Modal,{open,onClose:()=>setOpen(false),title:t("accountTitle"),closeLabel:t("close"),className:"dshAccountDialog",footer:h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",onClick:manage},t("accountManage"))},
+                    state.error&&h("p",{role:"alert"},state.error),
+                    accountRows.length>1&&h("nav",{className:"dshAccountSwitcher","aria-label":t("accountProviders")},...accountRows.map((item,index)=>h("button",{key:item.accountScope,type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:switching,"aria-pressed":item.active===true,onClick:()=>switchAccount(item.accountScope)},item.accountId??`${t("accountSignedIn")} ${index+1}`,item.active===true?" · 当前":""))),
+                    open&&(account?h("div",null,h("p",{className:ModelsSection_module_css_default.modelCatalogMeta},account.name," · ",t("accountSignedIn")),account.id==="openai-codex"?h(CodexUsagePanel,{key:account.accountScope,account,disabled:false}):h("p",null,t("accountUsageUnavailable"))):h("p",null,t(state.status==="loading"?"accountReading":"accountNoLogin")))));
+        }
         function CodexUsagePanel({account,disabled}) {
             const h=react.createElement;
-            const [snapshot,setSnapshot]=react.useState(null),[history,setHistory]=react.useState(null),[login,setLogin]=react.useState(null),[busy,setBusy]=react.useState(false),[error,setError]=react.useState(null);
+            const [snapshot,setSnapshot]=react.useState(null),[history,setHistory]=react.useState(null),[busy,setBusy]=react.useState(false),[error,setError]=react.useState(null);
             const mounted=react.useRef(true),generation=react.useRef(0),running=react.useRef(false);
             const call=(action,body={})=>accountRequest(action,{provider:"openai-codex",...body});
             const load=react.useCallback(async(force=false)=>{
                 const seq=++generation.current;
-                try {const value=await call("usage",{refresh:force});if(mounted.current&&seq===generation.current){setSnapshot(value);setLogin(null);setError(value.error??null);}}
+                try {const value=await call("usage",{refresh:force});if(mounted.current&&seq===generation.current){setSnapshot(value);setError(value.error??null);}}
                 catch(e){if(mounted.current&&seq===generation.current)setError(messageOf$1(e));}
             },[account.accountScope]);
-            react.useEffect(()=>{mounted.current=true;setSnapshot(null);setHistory(null);setLogin(null);load();const timer=setInterval(()=>{if(document.visibilityState!=="hidden"&&!running.current)load();},30000);return()=>{mounted.current=false;++generation.current;clearInterval(timer);};},[load]);
+            react.useEffect(()=>{mounted.current=true;setSnapshot(null);setHistory(null);load();const timer=setInterval(()=>{if(document.visibilityState!=="hidden"&&!running.current)load();},30000);return()=>{mounted.current=false;++generation.current;clearInterval(timer);};},[load]);
             const run=async(fn)=>{if(running.current||disabled)return;running.current=true;setBusy(true);setError(null);try{await fn();}catch(e){if(mounted.current)setError(messageOf$1(e));}finally{running.current=false;if(mounted.current)setBusy(false);}};
+            const [confirmReset,setConfirmReset]=react.useState(false);
             const operation=snapshot?.operation;
             const pending=operation&&["prepared","sending","unknown"].includes(operation.state);
             const reset=()=>run(async()=>{
+                setConfirmReset(false);
                 const prepared=pending?{operation}:await call("reset-prepare");
-                const value=await call("reset-consume",{operationId:prepared.operation.operationId});
+                const value=await call("reset-consume",{operationId:prepared.operation.operationId,confirmed:true});
                 if(!mounted.current)return;
                 setSnapshot(old=>({...old,...value.usage,operation:value.operation}));setError(value.error??null);
             });
@@ -2078,23 +2144,34 @@ window.__ModuleLoader__.load({
                 ...(snapshot?.rateLimitResetCredits?.credits??[]).map(card=>h("div",{key:card.id},card.title??"重置卡"," · 有效期：",card.expiresAt==null?"未提供":fmtTime(card.expiresAt))),
                 h("div",{style:{display:"flex",gap:8,flexWrap:"wrap"}},
                     h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||disabled,onClick:()=>run(()=>load(true))},"刷新用量"),
-                    h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||disabled,onClick:()=>run(async()=>{const value=await call("usage-login");if(mounted.current){setLogin(value);setSnapshot(null);}})},"连接用量账号"),
+                    h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||disabled,onClick:()=>run(async()=>{const seq=++generation.current,value=await call("usage-login");if(mounted.current&&seq===generation.current){setSnapshot(value);setError(value.error??null);}})},"同步用量账号"),
                     h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||disabled||snapshot?.status!=="fresh",onClick:()=>run(async()=>{const value=await call("usage-history");if(mounted.current)setHistory(value);})},"Token 统计"),
-                    h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||disabled||snapshot?.status!=="fresh"||(!pending&&!(count>0)),onClick:reset},pending?"核对该次重置":"使用 1 张重置卡")),
-                login&&h("div",{role:"status"},h("p",null,"请登录与当前 Codex 模型相同的账号，完成后刷新用量。"),h("code",null,login.userCode),typeof login.verificationUrl==="string"&&login.verificationUrl.startsWith("https://auth.openai.com/")&&h("a",{href:login.verificationUrl,target:"_blank",rel:"noopener noreferrer",style:{marginLeft:8}},"打开官方登录页")),
+                    h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||disabled||snapshot?.status!=="fresh"||(!pending&&!(count>0)),onClick:()=>setConfirmReset(true)},pending?"核对该次重置":"使用 1 张重置卡")),
+                h(_deepseek_ai_dsh_client_ui_primitives.Modal,{open:confirmReset,onClose:()=>{if(!busy)setConfirmReset(false)},title:pending?"确认核对重置操作":"确认使用重置卡",closeLabel:"取消",footer:h(react.Fragment,null,
+                    h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",disabled:busy,onClick:()=>setConfirmReset(false)},"取消"),
+                    h(_deepseek_ai_dsh_client_ui_primitives.Button,{disabled:busy,onClick:reset},pending?"确认核对":"确认使用 1 张"))},
+                    h("p",null,account.name," · ",snapshot?.account?.email??"当前登录账号"),
+                    h("p",null,pending?"核对将沿用上一次操作编号；如果之前未完成，可能会使用一张重置卡。":"该操作可能消耗 1 张重置卡，成功后无法撤销。是否继续？")),
                 operation&&h("p",{role:"status"},outcomes[operation.outcome]??(operation.state==="unknown"?"兑换结果未确认，请核对该次操作":operation.state==="prepared"?"等待使用该次重置":"正在核对重置状态")),
                 history&&h("div",null,h("p",null,"累计 Token：",history.summary?.lifetimeTokens??"未提供"),...(history.dailyUsageBuckets??[]).map(row=>h("div",{key:row.startDate},row.startDate,"：",row.tokens??"未提供"))),
                 error&&h("p",{role:"alert",className:ModelsSection_module_css_default.error},error));
         }
 
-        function AccountConnections({controller,api,namespaces,t,disabled}) {
-            const [accounts,setAccounts]=(0,react.useState)([]),[attempt,setAttempt]=(0,react.useState)(null),[busy,setBusy]=(0,react.useState)(false),[failure,setFailure]=(0,react.useState)(null);
+        function AccountConnections({controller,api,namespaces,t,disabled,onManagedProvidersChange}) {
+            const service=controller.accounts;
+            const directory=(0,react.useSyncExternalStore)(service.store.subscribe,service.store.getSnapshot,service.store.getSnapshot),accounts=directory.accounts;
+            const [attempt,setAttempt]=(0,react.useState)(null),[busy,setBusy]=(0,react.useState)(false),[failure,setFailure]=(0,react.useState)(null);
+            const [accountsOpen,setAccountsOpen]=react.useState(false),[activeAccount,setActiveAccount]=react.useState(null),[dirtyAccounts,setDirtyAccounts]=react.useState(()=>new Set());
+            const dirtyCallbacks=react.useRef(new Map());
+            const dirtyCallback=id=>{if(!dirtyCallbacks.current.has(id))dirtyCallbacks.current.set(id,dirty=>setDirtyAccounts(old=>{if(old.has(id)===dirty)return old;const next=new Set(old);if(dirty)next.add(id);else next.delete(id);return next}));return dirtyCallbacks.current.get(id)};
+            const managedProviders=(0,react.useMemo)(()=>[...new Set(accounts.filter(account=>account.signedIn&&account.scope!=="subagent").map(account=>account.provider||account.id))],[accounts]);
+            (0,react.useEffect)(()=>{onManagedProvidersChange?.(managedProviders)},[managedProviders,onManagedProvidersChange]);
             const attemptRef=(0,react.useRef)(null),busyRef=(0,react.useRef)(false),mounted=(0,react.useRef)(true),generation=(0,react.useRef)(0);
             const refresh=(0,react.useCallback)(async()=>{
-                const version=++generation.current;
-                const value=await accountRequest("providers");
-                if(mounted.current&&version===generation.current)setAccounts(Array.isArray(value.providers)?value.providers:[]);
-            },[]);
+                ++generation.current;
+                service.invalidate();
+                await service.load(true);
+            },[service]);
             (0,react.useEffect)(()=>{
                 mounted.current=true;refresh().catch(error=>{if(mounted.current)setFailure(messageOf$1(error))});
                 return()=>{mounted.current=false;++generation.current;const id=attemptRef.current;attemptRef.current=null;if(id)accountRequest("cancel",{attempt:id}).catch(()=>{})};
@@ -2137,19 +2214,19 @@ window.__ModuleLoader__.load({
                 catch(error){if(mounted.current){attemptRef.current=id;setAttempt({...pending})}throw error}
             });
             return (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowCard,children:[
-                (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowHead,children:[(0,react_jsx_runtime.jsx)("div",{className:ModelsSection_module_css_default.rowName,children:t("accountTitle")}), (0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||!!attempt,onClick:()=>run(refresh),children:t("accountRefresh")})]}),
+                (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowHead,children:[(0,react_jsx_runtime.jsxs)("button",{type:"button",className:"dshAccountDisclosure",onClick:()=>setAccountsOpen(value=>!value),"aria-expanded":accountsOpen,children:[(0,react_jsx_runtime.jsx)(IconChevron,{open:accountsOpen}),t("accountTitle"),(0,react_jsx_runtime.jsx)("span",{className:ModelsSection_module_css_default.rowTag,children:accounts.filter(item=>item.signedIn).length+" / "+accounts.length})]}), (0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||!!attempt,onClick:()=>run(refresh),children:t("accountRefresh")})]}),
                 (0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.advancedHint,children:t("accountHint")}),
-                ...accounts.map(account=>(0,react_jsx_runtime.jsxs)("div",{className:"dshAccountEntry",children:[
+                ...accounts.map(account=>(0,react_jsx_runtime.jsxs)("div",{className:"dshAccountEntry",hidden:!accountsOpen,children:[
                     (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowHead,children:[
-                        (0,react_jsx_runtime.jsx)("span",{className:ModelsSection_module_css_default.rowName,children:account.name}),
+                        (0,react_jsx_runtime.jsxs)("button",{type:"button",className:"dshAccountDisclosure",onClick:()=>setActiveAccount(value=>value===account.id?null:account.id),"aria-expanded":activeAccount===account.id,children:[(0,react_jsx_runtime.jsx)(IconChevron,{open:activeAccount===account.id}),account.name]}),
                         (0,react_jsx_runtime.jsx)("span",{className:ModelsSection_module_css_default.rowTag,children:`${t(account.signedIn?"accountSignedIn":"accountSignedOut")}${account.scope==="subagent"?` · ${t("accountSubagent")}`:""}`}),
-                        (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowActions,children:[
+                        (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowActions,hidden:activeAccount!==account.id,children:[
                             account.installed===false?(0,react_jsx_runtime.jsx)("a",{className:ModelsSection_module_css_default.secondaryButton,href:account.installUrl,target:"_blank",rel:"noopener noreferrer",children:t("accountInstallCli")}):(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:disabled||busy||!!attempt,onClick:()=>start(account.id,account.signedIn),children:t(account.signedIn?account.scope==="subagent"?"accountRefresh":"accountReconnect":"accountLogin")}),
                             account.signedIn&&account.scope!=="subagent"&&(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.dangerButton,disabled:disabled||busy||!!attempt,onClick:()=>logout(account.id),children:t("accountLogout")})
                         ]})
                     ]}),
-                    account.id==="openai-codex"&&account.signedIn&&(0,react_jsx_runtime.jsx)(CodexUsagePanel,{account,disabled:disabled||busy||!!attempt},account.accountScope),
-                    account.signedIn&&account.scope!=="subagent"&&(0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0,react_jsx_runtime.jsx)(ProviderModelManager,{provider:account.provider||account.id,api,t,disabled:disabled||busy||!!attempt,revision:namespaces?.get(account.settingsNs)?.revision??account.catalog?.updatedAt,onSaved:async()=>{await Promise.all([refresh(),controller.load()])}})})
+                    accountsOpen&&activeAccount===account.id&&account.id==="openai-codex"&&account.signedIn&&(0,react_jsx_runtime.jsx)(CodexUsagePanel,{account,disabled:disabled||busy||!!attempt},account.accountScope),
+                    account.signedIn&&account.scope!=="subagent"&&((accountsOpen&&activeAccount===account.id)||dirtyAccounts.has(account.id))&&(0,react_jsx_runtime.jsx)("div",{hidden:!accountsOpen||activeAccount!==account.id,children:(0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0,react_jsx_runtime.jsx)(ProviderModelManager,{provider:account.provider||account.id,api,t,disabled:disabled||busy||!!attempt,revision:namespaces?.get(account.settingsNs)?.revision??account.catalog?.updatedAt,onDirtyChange:dirtyCallback(account.id),onSaved:async()=>{await Promise.all([refresh(),controller.load()])}})})})
                 ]},account.id)),
                 attempt&&(0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.editor,role:"status",children:[
                     (0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.advancedHint,children:t(attempt.mode==="cli"?"accountCliVerify":"accountVerify")}),
@@ -2173,6 +2250,13 @@ window.__ModuleLoader__.load({
 			const [savedTarget, setSavedTarget] = (0, react.useState)(void 0);
 			const [declaring, setDeclaring] = (0, react.useState)(false);
 			const [dismissedSetup, setDismissedSetup] = (0, react.useState)(() => /* @__PURE__ */ new Set());
+			const [accountManagedProviders, setAccountManagedProviders] = (0, react.useState)([]);
+			const [expandedProviders, setExpandedProviders] = (0, react.useState)(() => /* @__PURE__ */ new Set());
+			const toggleProviderModels = (provider) => setExpandedProviders((previous) => {
+				const next = new Set(previous);
+				if (next.has(provider)) next.delete(provider); else next.add(provider);
+				return next;
+			});
 			const announceSaved = (target) => {
 				controller.load().then(() => {
 					setSavedTarget(target);
@@ -2240,8 +2324,8 @@ window.__ModuleLoader__.load({
 				displayName: savedRow.entry.displayName
 			};
 			const anyUsable = state.rows.some(providerUsable);
-			const configured = state.rows.filter((row) => row.configured);
-			const addable = state.rows.filter((row) => !row.configured && row.entry.settingsNs !== "");
+			const configured = state.rows.filter((row) => row.configured && !accountManagedProviders.includes(row.entry.provider));
+			const addable = state.rows.filter((row) => !row.configured && row.entry.settingsNs !== "" && !accountManagedProviders.includes(row.entry.provider));
 			const addTarget = adding ? editing : void 0;
 			const addNamespace = addTarget === void 0 ? void 0 : state.namespaces.get(addTarget.settingsNs);
 			const protocols = protocolChoices(state.namespaces.get("llm-pi-ai"));
@@ -2260,7 +2344,7 @@ window.__ModuleLoader__.load({
 						className: ModelsSection_module_css_default["notice"],
 						children: t("readOnly")
 					}) : null,
-					(0, react_jsx_runtime.jsx)(AccountConnections, { controller, api, namespaces:state.namespaces, t, disabled: !state.writable }),
+					(0, react_jsx_runtime.jsx)(AccountConnections, { controller, api, namespaces:state.namespaces, t, disabled: !state.writable, onManagedProvidersChange:setAccountManagedProviders }),
                     state.error&&(0,react_jsx_runtime.jsxs)("div",{role:"alert",className:ModelsSection_module_css_default.error,children:[state.error,(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,onClick:()=>controller.load(),children:t("retry")})]}),
 					savedIdentity === void 0 ? null : (0, react_jsx_runtime.jsx)("p", {
 						className: ModelsSection_module_css_default["savedNotice"],
@@ -2348,7 +2432,7 @@ window.__ModuleLoader__.load({
 											children: t("remove")
 										}) : null]
 									})]
-								}), (0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0,react_jsx_runtime.jsx)(ProviderModelManager,{provider:target.provider,api,t,disabled:!state.writable,revision:namespace.revision,initialModels,onSaved:()=>controller.load()})},target.provider+"-models"), open ? renderProviderEditor({
+								}), (0,react_jsx_runtime.jsxs)(react.Fragment,{children:[(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default["linkButton"],"aria-expanded":expandedProviders.has(target.provider),onClick:()=>toggleProviderModels(target.provider),children:expandedProviders.has(target.provider)?t("collapseModels"):t("expandModels")}), (0,react_jsx_runtime.jsx)("div",{hidden:!expandedProviders.has(target.provider),children:(0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0,react_jsx_runtime.jsx)(ProviderModelManager,{provider:target.provider,api,t,disabled:!state.writable,revision:namespace.revision,initialModels,onSaved:()=>controller.load()})},target.provider+"-models")})] }), open ? renderProviderEditor({
 									target,
 									namespace,
 									api,
@@ -2855,6 +2939,7 @@ window.__ModuleLoader__.load({
             modelHidden: "Hidden",
             modelManualAdd: "Add manual model",
             modelManualNew: "New model",
+            modelManualRemove: "Remove draft",
             modelNoMatches: "No matching models",
             modelCatalogUnavailable: "Model catalog is not loaded",
             modelMoreCount: "{count} more models",
@@ -2868,6 +2953,8 @@ window.__ModuleLoader__.load({
             modelCapacityDraftInvalid: "Enter a positive integer or a capacity such as 32K or 1.5M.",
             accountConnectionManaged: "This connection is managed by account authorization. Reconnect or sign out from Accounts; do not replace it with an API key.",
             editConnection: "Edit connection",
+            expandModels: "Show models",
+            collapseModels: "Hide models",
             accountRefreshList: "Refresh accounts",
 
 			nav: "Models",
@@ -2937,6 +3024,7 @@ window.__ModuleLoader__.load({
 			fetchModels: "Fetch available models",
             modelVisible: "Show", providerPreset: "Provider", providerKeyless: "Connect without an API key",
             accountSubagent: "Subagent", accountInstallCli: "Install official client", accountRefresh: "Refresh status", accountCliVerify: "Complete sign-in in the official Claude Code client. Its credentials remain with that client.",
+            accountManage: "Manage accounts and models", accountProviders: "Signed-in providers", accountUsageUnavailable: "This provider does not expose usage here.", accountNoLogin: "No signed-in account. Open account settings to connect a provider.", accountReading: "Reading accounts…",
             accountTitle: "Accounts", accountHint: "Sign in with a provider subscription. Credentials refresh automatically and stay on this device.",
             accountSignedIn: "Connected", accountSignedOut: "Disconnected", accountReconnect: "Reconnect", accountLogin: "Sign in", accountLogout: "Sign out",
             accountVerify: "Open the sign-in page, enter this code, and complete authorization. This page will update automatically.", accountOpen: "Open sign-in page",
@@ -2990,6 +3078,7 @@ window.__ModuleLoader__.load({
             modelHidden: "隐藏",
             modelManualAdd: "添加手动模型",
             modelManualNew: "新模型",
+            modelManualRemove: "移除草稿",
             modelNoMatches: "没有匹配的模型",
             modelCatalogUnavailable: "模型目录尚未载入",
             modelMoreCount: "另有 {count} 个模型",
@@ -3003,6 +3092,8 @@ window.__ModuleLoader__.load({
             modelCapacityDraftInvalid: "容量请输入正整数或带 K/M 的数值，例如 32K、1.5M。",
             accountConnectionManaged: "此连接由账号授权管理；请使用账号登录区续期或退出，不要在 API 密钥编辑器中修改。",
             editConnection: "编辑连接",
+            expandModels: "展开模型",
+            collapseModels: "收起模型",
             accountRefreshList: "刷新账号",
 
 			nav: "模型",
@@ -3072,6 +3163,7 @@ window.__ModuleLoader__.load({
 			fetchModels: "获取可用模型",
             modelVisible: "显示", providerPreset: "供应商预设", providerKeyless: "无需 API 密钥",
             accountSubagent: "子智能体", accountInstallCli: "安装官方客户端", accountRefresh: "刷新状态", accountCliVerify: "请在官方 Claude Code 客户端打开的页面完成登录；凭据由该客户端管理。",
+            accountManage: "管理账号与模型", accountProviders: "已登录的供应商", accountUsageUnavailable: "该供应商暂未提供此处可读取的用量信息。", accountNoLogin: "尚未登录账号，可在账号设置中连接供应商。", accountReading: "正在读取账号…",
             accountTitle: "账号登录", accountHint: "使用供应商订阅登录，凭据保存在本机并自动续期。",
             accountSignedIn: "已连接", accountSignedOut: "未连接", accountReconnect: "重新连接", accountLogin: "登录", accountLogout: "退出登录",
             accountVerify: "打开登录页面，输入验证码并完成授权，此处会自动更新。", accountOpen: "打开登录页面",
@@ -3148,6 +3240,9 @@ window.__ModuleLoader__.load({
 			}), "ui-settings-models: copy dictionaries");
 			const connection = ctx.get("connection");
 			const controller = new ModelsSettingsStore(connection.api);
+            controller.accounts=createAccountDirectory();
+            ctx.effect(()=>()=>controller.accounts.dispose(),"account directory");
+            ctx.slots.inject("sidebar.account",()=>ctx.slots.register({name:"sidebar.account",id:"account-summary",order:0,locale:NS,inject:()=>({controller,t:ctx.locale.bind(NS)})},SidebarAccount));
 			const useSnapshot = (0, _deepseek_ai_dsh_client_web_react.bindSnapshotSelector)(controller.store);
 			const t = ctx.locale.bind(NS);
 			const injected = () => ({
@@ -3173,6 +3268,7 @@ window.__ModuleLoader__.load({
 					refreshIfLoaded(controller);
 				};
 				const refreshAll = () => {
+                    controller.accounts.invalidate();controller.accounts.load(true).catch(()=>{});
 					refreshModels();
 					refreshWelcomeIfLoaded(welcomeController);
 				};
@@ -3181,7 +3277,7 @@ window.__ModuleLoader__.load({
 						refreshModels();
 						if (ns === "ui-onboarding") refreshWelcomeIfLoaded(welcomeController);
 					}),
-					ctx.remote.$on("credentials/updated", refreshModels),
+					ctx.remote.$on("credentials/updated", () => {refreshModels();controller.accounts.invalidate();controller.accounts.load(true).catch(()=>{});}),
 					ctx.remote.$on("llm/adapters-updated", refreshModels),
 					ctx.on("connection/reset", refreshAll)
 				];

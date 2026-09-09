@@ -5,6 +5,8 @@ use crate::{
     NativeIconColorMode, Rect, SemanticTextStyle, WidgetId, ZsIcon, ZsPointerButton,
     ZsPointerModifiers,
 };
+#[cfg(feature = "image-preview")]
+use crate::{NativeImageInterpolation, ZsImageFrame};
 
 /// Lifecycle phase for a Canvas pointer capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -130,6 +132,11 @@ pub enum ZsCanvasPrimitive {
         rect: ZsCanvasRect,
         color: ColorRole,
     },
+    #[cfg(feature = "image-preview")]
+    Image {
+        frame: ZsImageFrame,
+        rect: ZsCanvasRect,
+    },
 }
 
 impl ZsCanvasPrimitive {
@@ -151,6 +158,11 @@ impl ZsCanvasPrimitive {
 
     pub const fn icon(icon: ZsIcon, rect: ZsCanvasRect, color: ColorRole) -> Self {
         Self::Icon { icon, rect, color }
+    }
+
+    #[cfg(feature = "image-preview")]
+    pub fn image(frame: ZsImageFrame, rect: ZsCanvasRect) -> Self {
+        Self::Image { frame, rect }
     }
 }
 
@@ -277,6 +289,14 @@ fn canvas_primitive_to_native(
                 NativeIconColorMode::ThemeAware,
             )
             .with_color(*color),
+        ),
+        #[cfg(feature = "image-preview")]
+        ZsCanvasPrimitive::Image { frame, rect } => NativeDrawCommand::Image(
+            crate::NativeDrawImageCommand::new(
+                frame.clone(),
+                Rect { x: 0, y: 0, width: frame.width() as i32, height: frame.height() as i32 },
+                canvas_rect_to_native(bounds, *rect, dpi),
+            ).interpolation(NativeImageInterpolation::Smooth),
         ),
     }
 }

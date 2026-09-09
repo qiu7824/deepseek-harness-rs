@@ -7131,6 +7131,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		const HISTORY_WINDOW_PAGES = 5;
 		const HISTORY_WINDOW_EVENTS = 4096;
 		const HISTORY_WINDOW_BYTES = 8 * 1024 * 1024;
+		const HISTORY_LIVE_PAGE_BYTES = Math.floor(HISTORY_WINDOW_BYTES / HISTORY_WINDOW_PAGES);
+		const HISTORY_LIVE_BUFFER_BYTES = HISTORY_WINDOW_BYTES;
+		function historyEntryBytes(event, view) { return JSON.stringify({ event, view }).length * 2; }
+		function historyMessage(event) { return event.type === "user/message" || event.type === "assistant/message"; }
 		function eventEndSeq(event) {
 			const end = event?.data?.__historyEndSeq;
 			return Number.isSafeInteger(end) && end >= event.seq ? end : event.seq;
@@ -7161,8 +7165,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		function compactSingleHistoryPage(events, views) {
 			const compactedEvents = [];
 			const compactedViews = [];
+			const completed = new Set(events.filter(event => event.type === "assistant/message").flatMap(event => event.sourceEventSeqs ?? []));
 			for (let index = 0; index < events.length; index += 1) {
 				const event = events[index];
+				if (event.type === "assistant/chunk" && completed.has(event.seq)) continue;
 				const key = historyChunkKey(event);
 				const previous = compactedEvents.at(-1);
 				const previousKey = historyChunkKey(previous);
@@ -7181,6 +7187,12 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					data: { ...event.data, chunk: { ...event.data.chunk } }
 				});
 				compactedViews.push(views[index]);
+			}
+			if (compactedEvents.length && events.length) {
+				const first = compactedEvents[0];
+				compactedEvents[0] = { ...first, data: { ...first.data, __historyStartSeq: eventStartSeq(events[0]) } };
+				const end = compactedEvents.length - 1;
+				compactedEvents[end] = { ...compactedEvents[end], data: { ...compactedEvents[end].data, __historyEndSeq: eventEndSeq(events.at(-1)) } };
 			}
 			return { events: compactedEvents, views: compactedViews };
 		}
@@ -7205,6 +7217,13 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			*  a pre-disconnect open whose history request is already doomed. Stale doOpen
 			*  passes drop all writes once the generation moves on. */
 			openGeneration = 0;
+			historyNavigationRevision = 0;
+			historyNavigationReason = null;
+			historyFetch = null;
+			olderRequest = null;
+			newerRequest = null;
+			navigationRequest = null;
+			gapRequest = null;
 			loadingOlder = false;
 			/** Shared low-water target while a turn jump pages backwards. */
 			jumpTargetSeq = null;
@@ -7243,6 +7262,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			lastAgentError = null;
 			/** Live events buffered during open/resync and stitched by sequence once history lands. */
 			liveBuffer = [];
+			liveBufferBytes = 0;
+			liveBufferDroppedThrough = -1;
+			tailRepairNeeded = false;
 			/** Gap repair in flight; live events detour to the buffer until the tail page lands. */
 			stitching = false;
 			/** subscribed.lastSeq baseline (gap detection; null when no subscribed frame arrived — degrade to the liveBuffer dedup path). */
@@ -7527,8 +7549,42 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					firstSeq: entries[0] === void 0 ? 0 : eventStartSeq(entries[0].event),
 					lastSeq: entries.length === 0 ? -1 : eventEndSeq(entries[entries.length - 1].event),
 					eventCount: entries.length,
-					bytes: entries.reduce((sum, entry) => sum + JSON.stringify(entry).length * 2, 0)
+					messageCount: entries.filter(entry => historyMessage(entry.event)).length,
+					bytes: entries.reduce((sum, entry) => sum + historyEntryBytes(entry.event, entry.view), 0)
 				};
+			}
+			/** Invalidate paging work without replacing the reader's current window. */
+			cancelHistoryPaging() {
+				this.olderRequest = null; this.newerRequest = null;
+				this.jumpTargetSeq = null; this.jumpPromise = null;
+				this.loadingOlder = false; this.loadingNewer = false;
+				this.notifier.markDirty();
+			}
+			beginHistoryNavigation(reason = "around") {
+				this.cancelHistoryPaging();
+				this.historyNavigationRevision = (this.historyNavigationRevision ?? 0) + 1;
+				this.historyNavigationReason = reason;
+				if (this.stitching || this.gapRequest) this.tailRepairNeeded = true;
+				this.gapRequest = null; this.stitching = false;
+				const request = { generation: this.openGeneration, revision: this.historyNavigationRevision };
+				this.navigationRequest = request;
+				return request;
+			}
+			currentHistoryRequest(request, field) {
+				return this[field] === request && request.generation === this.openGeneration && request.revision === (this.historyNavigationRevision ?? 0);
+			}
+			/** One request per live connection; superseded queued intents never reach the wire. */
+			async fetchHistory(payload, current) {
+				while (this.historyFetch) {
+					const pending = this.historyFetch;
+					try { await pending.promise; } catch {}
+					if (!current()) return null;
+				}
+				if (!current()) return null;
+				const pending = { promise: Promise.resolve().then(() => this.history(payload)) };
+				this.historyFetch = pending;
+				try { return await pending.promise; }
+				finally { if (this.historyFetch === pending) this.historyFetch = null; }
 			}
 			trimHistoryWindow(dropFrom) {
 				let drop = 0, changed = false;
@@ -7550,7 +7606,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					this.events.splice(0, drop);
 					this.views.splice(0, drop);
 				}
-				if (this.events.length > HISTORY_WINDOW_EVENTS && this.historyPages.length === 1) {
+				if (this.events.length > HISTORY_WINDOW_EVENTS && this.historyPages.length === 1 && this.events.length >= (this.historyPages[0].nextCompactAt ?? HISTORY_WINDOW_EVENTS)) {
 					const compacted = compactSingleHistoryPage(this.events, this.views);
 					this.events = compacted.events;
 					this.views = compacted.views;
@@ -7558,193 +7614,192 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					page.firstSeq = eventStartSeq(this.events[0]);
 					page.lastSeq = eventEndSeq(this.events[this.events.length - 1]);
 					page.eventCount = this.events.length;
+					page.bytes = this.events.reduce((sum, event, index) => sum + historyEntryBytes(event, this.views[index]), 0);
+					page.nextCompactAt = Math.max(HISTORY_WINDOW_EVENTS, this.events.length + 1024);
 					changed = true;
 				}
 				// Never cut a raw event range: one page is the minimum retention unit.
 				// A single oversized safe page may exceed the soft event limit, preserving
 				// assistant chunks/message provenance instead of hiding visible output.
 				this.baseSeq = this.events[0] === void 0 ? 0 : eventStartSeq(this.events[0]);
+				this.hasMore = this.hasMoreBefore;
 				if (changed) this.conversation.replaceWindow(this.events.map((event, index) => ({ event, view: this.views[index] })), this.hasMoreBefore);
 				return changed;
 			}
-			/** Page up: pull one earlier page with the window's first seq as beforeSeq and prepend. */
+			/** Page up: retain the newly fetched head and evict whole tail pages. */
 			async loadOlder() {
-				const generation = this.openGeneration, before = this.baseSeq;
-				if (this.openState !== "open" || !this.hasMoreBefore || this.loadingOlder || this.loadingNewer) return;
-				this.loadingOlder = true;
-				this.notifier.markDirty();
-				try {
-					const { result } = await this.history({
-						beforeSeq: this.baseSeq,
-						maxMessages: HISTORY_PAGE_MESSAGES
-					});
-					if (generation !== this.openGeneration || this.baseSeq !== before || !result.ok) return;
-					const older = result.value.events;
-					if (older.length === 0) {
-						this.hasMoreBefore = result.value.hasMoreBefore;
-						this.hasMore = this.hasMoreBefore;
-						this.conversation.prepend([], this.hasMoreBefore);
-						return;
-					}
-					const tail = older[older.length - 1];
-					if (tail === void 0 || eventEndSeq(tail.event) + 1 !== this.baseSeq) {
-						console.error(`[web-runtime] history page discontinuous: tail seq ${tail === void 0 ? "missing" : eventEndSeq(tail.event)} vs baseSeq ${this.baseSeq}`);
-						this.hasMore = false;
-						this.conversation.prepend([], false);
-						return;
-					}
-					this.events = [...older.map((e) => e.event), ...this.events];
-					this.views = [...older.map((e) => e.view), ...this.views];
-					this.historyPages.unshift(this.pageMeta(older));
-					/* v8 ignore next -- the ?? arm needs older[0] undefined, but the empty-page branch above already returned. */
-					this.baseSeq = older[0] === void 0 ? this.baseSeq : eventStartSeq(older[0].event);
-					this.hasMoreBefore = result.value.hasMoreBefore;
-					this.hasMore = this.hasMoreBefore;
-					if (!this.trimHistoryWindow("tail")) this.conversation.prepend(older.map(conversationInput), this.hasMoreBefore);
-					if (this.hasMoreAfter) this.historyTargetSeq = this.baseSeq;
-				} catch (error) {
-					console.error("[web-runtime] loadOlder failed:", error);
-				} finally {
-					this.loadingOlder = false;
-					this.notifier.markDirty();
-				}
+			    if (this.openState !== "open" || !this.hasMoreBefore || this.loadingOlder || this.loadingNewer) return;
+			    const request = { generation: this.openGeneration, revision: this.historyNavigationRevision ?? 0 };
+			    const before = this.baseSeq;
+			    this.olderRequest = request; this.loadingOlder = true; this.notifier.markDirty();
+			    try {
+			        const response = await this.fetchHistory({ beforeSeq: before, maxMessages: HISTORY_PAGE_MESSAGES }, () => this.currentHistoryRequest(request, "olderRequest"));
+                    if (response === null) return;
+                    const { result } = response;
+			        if (!this.currentHistoryRequest(request, "olderRequest") || this.baseSeq !== before || !result.ok) return;
+			        const older = result.value.events;
+			        if (older.length === 0) {
+			            this.hasMoreBefore = result.value.hasMoreBefore;
+			            this.hasMore = this.hasMoreBefore;
+			            this.conversation.prepend([], this.hasMoreBefore);
+			            return;
+			        }
+			        if (eventEndSeq(older.at(-1).event) + 1 !== before) {
+			            console.error("[web-runtime] older history page is not adjacent to the retained window");
+			            return;
+			        }
+			        this.events = [...older.map(entry => entry.event), ...this.events];
+			        this.views = [...older.map(entry => entry.view), ...this.views];
+			        this.historyPages.unshift(this.pageMeta(older));
+			        this.baseSeq = eventStartSeq(older[0].event);
+			        this.hasMoreBefore = result.value.hasMoreBefore; this.hasMore = this.hasMoreBefore;
+			        if (!this.trimHistoryWindow("tail")) this.conversation.prepend(older.map(conversationInput), this.hasMoreBefore);
+			        if (this.hasMoreAfter) this.historyTargetSeq = this.baseSeq;
+			    } catch (error) {
+			        console.error("[web-runtime] loadOlder failed:", error);
+			    } finally {
+			        if (this.olderRequest === request) {
+			            this.olderRequest = null; this.loadingOlder = false; this.notifier.markDirty();
+			        }
+			    }
 			}
-			/** Page backwards until the bounded window covers one durable sequence. */
+			/** Page backwards until the bounded window covers a durable sequence. */
 			loadThrough(seq) {
-				if (this.openState !== "open" || !Number.isSafeInteger(seq) || seq < 0 || !this.hasMoreBefore || this.baseSeq <= seq) return Promise.resolve();
-				this.jumpTargetSeq = Math.min(this.jumpTargetSeq ?? seq, seq);
-				if (this.jumpPromise !== null) return this.jumpPromise;
-				// A reader-owned single-page pull wins. The caller can retry once it settles.
-				if (this.loadingOlder) return Promise.resolve();
-				this.loadingOlder = true;
-				this.notifier.markDirty();
-				this.jumpPromise = (async () => {
-					try {
-						while (this.hasMoreBefore && this.jumpTargetSeq !== null && this.baseSeq > this.jumpTargetSeq) {
-							const before = this.baseSeq;
-							const { result } = await this.history({ beforeSeq: this.baseSeq, maxMessages: JUMP_PAGE_MESSAGES });
-							if (!result.ok) return;
-							const older = result.value.events;
-							if (older.length === 0) {
-								this.hasMoreBefore = result.value.hasMoreBefore;
-								this.hasMore = this.hasMoreBefore;
-								this.conversation.prepend([], this.hasMoreBefore);
-								return;
-							}
-							const tail = older[older.length - 1];
-							if (tail === void 0 || eventEndSeq(tail.event) + 1 !== this.baseSeq) return;
-							this.events = [...older.map((entry) => entry.event), ...this.events];
-							this.views = [...older.map((entry) => entry.view), ...this.views];
-							this.historyPages.unshift(this.pageMeta(older));
-							this.baseSeq = eventStartSeq(older[0].event);
-							this.hasMoreBefore = result.value.hasMoreBefore;
-							this.hasMore = this.hasMoreBefore;
-							if (!this.trimHistoryWindow("tail")) this.conversation.prepend(older.map(conversationInput), this.hasMoreBefore);
-							if (this.hasMoreAfter) this.historyTargetSeq = this.baseSeq;
-							if (this.baseSeq >= before) return;
-						}
-					} catch (error) {
-						console.error("[web-runtime] loadThrough failed:", error);
-					} finally {
-						this.jumpTargetSeq = null;
-						this.jumpPromise = null;
-						this.loadingOlder = false;
-						this.notifier.markDirty();
-					}
-				})();
-				return this.jumpPromise;
+			    if (this.openState !== "open" || !Number.isSafeInteger(seq) || seq < 0 || !this.hasMoreBefore || this.baseSeq <= seq || this.loadingNewer) return Promise.resolve();
+			    if (this.jumpPromise !== null && this.jumpPromise !== void 0) {
+			        this.jumpTargetSeq = Math.min(this.jumpTargetSeq ?? seq, seq);
+			        return this.jumpPromise;
+			    }
+			    if (this.loadingOlder) return Promise.resolve();
+			    const request = { generation: this.openGeneration, revision: this.historyNavigationRevision ?? 0 };
+			    this.olderRequest = request; this.loadingOlder = true; this.jumpTargetSeq = seq; this.notifier.markDirty();
+			    const work = (async () => {
+			        try {
+			            while (this.currentHistoryRequest(request, "olderRequest") && this.hasMoreBefore && this.jumpTargetSeq !== null && this.baseSeq > this.jumpTargetSeq) {
+			                const before = this.baseSeq;
+			                const response = await this.fetchHistory({ beforeSeq: before, maxMessages: JUMP_PAGE_MESSAGES }, () => this.currentHistoryRequest(request, "olderRequest"));
+                            if (response === null) return;
+                            const { result } = response;
+			                if (!this.currentHistoryRequest(request, "olderRequest") || this.baseSeq !== before || !result.ok) return;
+			                const older = result.value.events;
+			                if (older.length === 0) {
+			                    this.hasMoreBefore = result.value.hasMoreBefore; this.hasMore = this.hasMoreBefore;
+			                    this.conversation.prepend([], this.hasMoreBefore); return;
+			                }
+			                if (eventEndSeq(older.at(-1).event) + 1 !== before) return;
+			                this.events = [...older.map(entry => entry.event), ...this.events];
+			                this.views = [...older.map(entry => entry.view), ...this.views];
+			                this.historyPages.unshift(this.pageMeta(older));
+			                this.baseSeq = eventStartSeq(older[0].event);
+			                this.hasMoreBefore = result.value.hasMoreBefore; this.hasMore = this.hasMoreBefore;
+			                if (!this.trimHistoryWindow("tail")) this.conversation.prepend(older.map(conversationInput), this.hasMoreBefore);
+			                if (this.hasMoreAfter) this.historyTargetSeq = this.baseSeq;
+			                if (this.baseSeq >= before) return;
+			            }
+			        } catch (error) {
+			            console.error("[web-runtime] loadThrough failed:", error);
+			        } finally {
+			            if (this.olderRequest === request) {
+			                this.olderRequest = null; this.loadingOlder = false; this.jumpTargetSeq = null; this.notifier.markDirty();
+			            }
+			        }
+			    })();
+			    const promise = work.finally(() => { if (this.jumpPromise === promise) this.jumpPromise = null; });
+			    this.jumpPromise = promise;
+			    return promise;
 			}
-			/** Page down from an indexed historical window and rejoin the live tail. */
+			/** Page down from the exact still-current historical tail. */
 			async loadNewer() {
-				if (this.openState !== "open" || !this.hasMoreAfter || this.loadingNewer || this.loadingOlder) return;
-				const tailSeq = this.windowTailSeq();
-				if (tailSeq === null) return;
-				const generation = this.openGeneration;
-				this.loadingNewer = true;
-				this.notifier.markDirty();
-				try {
-					const { result } = await this.history({ afterSeq: tailSeq + 1, maxMessages: HISTORY_PAGE_MESSAGES });
-					if (generation !== this.openGeneration || !result.ok) return;
-					const newer = result.value.events.filter((entry) => entry.event.seq > tailSeq);
-					if (newer.length > 0) {
-						this.historyPages.push(this.pageMeta(newer));
-						for (const entry of newer) this.appendLive(entry.event, entry.view, false, false);
-						this.trimHistoryWindow("head");
-					}
-					this.hasMoreAfter = result.value.hasMoreAfter;
-					if (!this.hasMoreAfter) {
-						this.historyTargetSeq = null;
-						const buffered = this.liveBuffer;
-						this.liveBuffer = [];
-						for (const item of buffered) this.appendLive(item.event, item.view);
-						this.trimHistoryWindow("head");
-					}
-				} catch (error) {
-					console.error("[web-runtime] loadNewer failed:", error);
-				} finally {
-					this.loadingNewer = false;
-					this.notifier.markDirty();
-				}
+			    if (this.openState !== "open" || !this.hasMoreAfter || this.loadingNewer || this.loadingOlder) return;
+			    const tailSeq = this.windowTailSeq();
+			    if (tailSeq === null) return;
+			    const request = { generation: this.openGeneration, revision: this.historyNavigationRevision ?? 0 };
+			    this.newerRequest = request; this.loadingNewer = true; this.notifier.markDirty();
+			    try {
+			        const response = await this.fetchHistory({ afterSeq: tailSeq + 1, maxMessages: HISTORY_PAGE_MESSAGES }, () => this.currentHistoryRequest(request, "newerRequest"));
+                    if (response === null) return;
+                    const { result } = response;
+			        if (!this.currentHistoryRequest(request, "newerRequest") || this.windowTailSeq() !== tailSeq || !result.ok) return;
+			        const newer = result.value.events.filter(entry => eventEndSeq(entry.event) > tailSeq);
+			        if (newer.length && eventStartSeq(newer[0].event) !== tailSeq + 1) {
+			            console.error("[web-runtime] newer history page is not adjacent to the retained window");
+			            return;
+			        }
+			        this.hasMoreAfter = result.value.hasMoreAfter;
+			        if (newer.length) {
+			            this.historyPages.push(this.pageMeta(newer));
+			            for (const entry of newer) this.appendLive(entry.event, entry.view, false, false);
+			            this.trimHistoryWindow("head");
+			        }
+			        if (!this.hasMoreAfter) {
+			            this.historyTargetSeq = null;
+			            this.stitchLiveBuffer();
+			            this.trimHistoryWindow("head");
+			        }
+			    } catch (error) {
+			        console.error("[web-runtime] loadNewer failed:", error);
+			    } finally {
+			        if (this.newerRequest === request) {
+			            this.newerRequest = null; this.loadingNewer = false; this.notifier.markDirty(); this.maybeRepairTail();
+			        }
+			    }
 			}
-			/** Replace the rendered window with a forward page starting at targetSeq. */
+			/** Select a historical reading window; newest navigation wins. */
 			async loadAround(targetSeq, force = false) {
-				if (this.openState !== "open" || !Number.isSafeInteger(targetSeq) || targetSeq < 0) return false;
-				if (!force && this.events.some((event) => eventContainsSeq(event, targetSeq))) return true;
-				const generation = this.openGeneration;
-				try {
-					const { result } = await this.history({ afterSeq: targetSeq, maxMessages: HISTORY_PAGE_MESSAGES });
-					if (generation !== this.openGeneration) return false;
-					if (!result.ok || !result.value.events.some((entry) => eventContainsSeq(entry.event, targetSeq))) return false;
-					this.historyTargetSeq = result.value.hasMoreAfter ? targetSeq : null;
-					this.installWindow(result.value.events, result.value.hasMore, void 0, {
-						hasMoreBefore: result.value.hasMoreBefore,
-						hasMoreAfter: result.value.hasMoreAfter
-					});
-					return true;
-				} catch (error) {
-					console.error("[web-runtime] loadAround failed:", error);
-					return false;
-				}
+			    if (this.openState !== "open" || !Number.isSafeInteger(targetSeq) || targetSeq < 0) return false;
+			    const request = this.beginHistoryNavigation();
+			    if (!force && this.events.some(event => eventContainsSeq(event, targetSeq))) {
+			        this.historyTargetSeq = targetSeq; this.readingAwayFromTail = true; this.notifier.markDirty(); return true;
+			    }
+			    try {
+			        const response = await this.fetchHistory({ afterSeq: targetSeq, maxMessages: HISTORY_PAGE_MESSAGES }, () => this.currentHistoryRequest(request, "navigationRequest"));
+                    if (response === null) return false;
+                    const { result } = response;
+			        if (!this.currentHistoryRequest(request, "navigationRequest")) return false;
+			        if (!result.ok || !result.value.events.some((entry) => eventContainsSeq(entry.event, targetSeq))) return false;
+			        this.historyTargetSeq = targetSeq; this.readingAwayFromTail = true;
+			        this.installWindow(result.value.events, result.value.hasMore, void 0, {
+			            hasMoreBefore: result.value.hasMoreBefore, hasMoreAfter: result.value.hasMoreAfter
+			        });
+			        return true;
+			    } catch (error) {
+			        console.error("[web-runtime] loadAround failed:", error); return false;
+			    }
 			}
-			/** Restore the normal live tail after browsing a historical window. */
+			/** Restore the live tail directly, without replaying every middle page. */
 			async returnLatest() {
-				if (this.historyTargetSeq === null) return;
-				const generation = this.openGeneration;
-				this.stitching = true;
-				try {
-					const { result } = await this.history({ maxMessages: HISTORY_PAGE_MESSAGES });
-					if (generation !== this.openGeneration) return;
-					if (!result.ok) throw new Error(`conversation.returnLatest failed: ${result.error.code}: ${result.error.message}`);
-					this.historyTargetSeq = null;
-					this.installWindow(result.value.events, result.value.hasMore, result.value.projections);
-				} finally {
-					if (generation === this.openGeneration) this.stitching = false;
-				}
+			    const request = this.beginHistoryNavigation("latest");
+			    this.readingAwayFromTail = false;
+			    if (this.historyTargetSeq === null && !this.hasMoreAfter && !this.tailRepairNeeded) { this.notifier.markDirty(); return; }
+			    this.stitching = true;
+			    try {
+			        const response = await this.fetchHistory({ maxMessages: HISTORY_PAGE_MESSAGES }, () => this.currentHistoryRequest(request, "navigationRequest"));
+                    if (response === null) return;
+                    const { result } = response;
+			        if (!this.currentHistoryRequest(request, "navigationRequest")) return;
+			        if (!result.ok) throw new Error(`conversation.returnLatest failed: ${result.error.code}: ${result.error.message}`);
+			        this.historyTargetSeq = null;
+			        this.installWindow(result.value.events, result.value.hasMore, result.value.projections);
+			        this.openState = "open"; this.openError = null;
+			    } finally {
+			        if (this.currentHistoryRequest(request, "navigationRequest")) {
+			            this.stitching = false; this.notifier.markDirty(); this.maybeRepairTail();
+			        }
+			    }
 			}
-			/** Remember whether the reader is inspecting history without moving the live window. */
+			/** Preserve the reader's window when subsequent live traffic arrives. */
 			rememberReadingPosition(awayFromTail) { this.readingAwayFromTail = awayFromTail === true; }
-			/** Reconnect rebuild (manager calls this on onConnected for instances that were opened):
-			*  retain the current window while rerunning open; pending waits for the baseline replay. Invalidates any
-			*  in-flight open first — its history request rode the dead connection and must not settle
-			*  the fresh generation into 'error'. */
+			/** Reconnect preserves the current reading anchor and invalidates every older request. */
 			async resync() {
-				if (this.openState === "cold") return;
-				if (this.readingAwayFromTail && this.historyTargetSeq === null && this.events.length) this.historyTargetSeq = this.baseSeq;
-				this.openGeneration++;
-				this.openPromise = null;
-				this.openState = "cold";
-				this.openError = null;
-				// Keep the last valid bounded window until a replacement succeeds.
-				this.loadingOlder = false;
-				this.loadingNewer = false;
-				this.stitching = false;
-				// Preserve an indexed historical reading anchor across reconnects.
-				this.pending.clear();
-				this.pendingRev++;
-				this.subscribedLastSeq = null;
-				this.liveBuffer = [];
-				this.notifier.markDirty();
-				await this.open();
+			    if (this.openState === "cold") return;
+			    if (this.readingAwayFromTail && this.historyTargetSeq === null && this.events.length) this.historyTargetSeq = this.baseSeq;
+			    this.openGeneration++;
+			    this.beginHistoryNavigation("resync");
+                this.historyFetch = null;
+			    this.openPromise = null; this.openState = "cold"; this.openError = null;
+			    this.pending.clear(); this.pendingRev++; this.subscribedLastSeq = null;
+			    this.liveBuffer = []; this.liveBufferBytes = 0; this.liveBufferDroppedThrough = -1; this.tailRepairNeeded = false;
+			    this.notifier.markDirty(); await this.open();
 			}
 			/**
 			* uSES subscription entry.
@@ -7888,40 +7943,35 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			/** @param generation - openGeneration at launch; every await re-checks it and a stale pass
 			*  drops all writes (resync superseded this open — its outcome belongs to a dead connection). */
 			async doOpen(generation) {
-				this.openState = "loading";
-				this.openError = null;
-				this.notifier.markDirty();
-				try {
-					const historical = this.historyTargetSeq !== null;
+                const revision = this.historyNavigationRevision ?? 0;
+                const current = () => generation === this.openGeneration && revision === (this.historyNavigationRevision ?? 0);
+                this.openState = "loading"; this.openError = null; this.notifier.markDirty();
+                try {
+                    const historical = this.historyTargetSeq !== null;
                     const anchor = historical ? Math.min(this.historyTargetSeq, this.baseSeq) : null;
-                    const request = historical ? {afterSeq:anchor,maxMessages:HISTORY_PAGE_MESSAGES*Math.max(1,Math.min(HISTORY_WINDOW_PAGES,this.historyPages.length))} : {maxMessages:HISTORY_PAGE_MESSAGES};
-                    let { result } = await this.history(request);
-                    if (generation !== this.openGeneration) return;
-					if (!result.ok) {
-						this.openState = "error";
-						this.openError = result.error;
-						return;
-					}
-					if (historical && !result.value.hasMoreAfter) this.historyTargetSeq = null;
-                    this.installWindow(result.value.events, result.value.hasMore, result.value.projections, historical ? {hasMoreBefore:result.value.hasMoreBefore,hasMoreAfter:result.value.hasMoreAfter} : {});
+                    const payload = historical ? { afterSeq: anchor, maxMessages: HISTORY_PAGE_MESSAGES * Math.max(1, Math.min(HISTORY_WINDOW_PAGES, this.historyPages.length)) } : { maxMessages: HISTORY_PAGE_MESSAGES };
+                    let response = await this.fetchHistory(payload, current);
+                    if (response === null || !current()) return;
+                    let { result } = response;
+                    if (!result.ok) { this.openState = "error"; this.openError = result.error; return; }
+                    this.installWindow(result.value.events, result.value.hasMore, result.value.projections, historical ? { hasMoreBefore: result.value.hasMoreBefore, hasMoreAfter: result.value.hasMoreAfter } : {});
                     const tailSeq = this.windowTailSeq();
-					if (!historical && this.subscribedLastSeq !== null && tailSeq !== null && this.subscribedLastSeq > tailSeq) {
-						result = (await this.history({ maxMessages: HISTORY_PAGE_MESSAGES })).result;
-						if (generation !== this.openGeneration) return;
-						if (result.ok) this.installWindow(result.value.events, result.value.hasMore, result.value.projections);
-					}
-					this.openState = "open";
+                    if (!historical && this.subscribedLastSeq !== null && tailSeq !== null && this.subscribedLastSeq > tailSeq) {
+                        response = await this.fetchHistory({ maxMessages: HISTORY_PAGE_MESSAGES }, current);
+                        if (response === null || !current()) return;
+                        result = response.result;
+                        if (result.ok) this.installWindow(result.value.events, result.value.hasMore, result.value.projections);
+                    }
+                    this.openState = "open";
+                    this.maybeRepairTail();
+                } catch (error) {
+                    if (!current()) return;
+                    this.openState = "error";
+                    const folded = transportError(error);
+                    this.openError = folded.ok ? null : folded.error;
+                } finally { if (current()) this.notifier.markDirty(); }
+            }
 
-				} catch (error) {
-					if (generation !== this.openGeneration) return;
-					this.openState = "error";
-					const folded = transportError(error);
-					/* v8 ignore next -- the `? null` arm is unreachable: transportError always returns ok:false. */
-					this.openError = folded.ok ? null : folded.error;
-				} finally {
-					if (generation === this.openGeneration) this.notifier.markDirty();
-				}
-			}
 			/** Install the history window + stitch the liveBuffer (seq is the sole dedup key).
 			*  Stitching MUST NOT route through acceptLiveEvent: openState is still 'loading' here
 			*  (doOpen flips it after install), so recursing would push every buffered event straight
@@ -7940,70 +7990,83 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				if (this.events.some((event) => event.type === "turn/start")) this.firstPromptPendingTurn = false;
 				this.conversation.replaceWindow(entries.map(conversationInput), this.hasMoreBefore);
 				if (projections !== void 0) this.projections.seed(projections);
-				if (this.historyTargetSeq === null) {
-					const buffered = this.liveBuffer;
-					this.liveBuffer = [];
-					for (const item of buffered) this.appendLive(item.event, item.view);
-				}
+				if (this.historyTargetSeq === null) this.stitchLiveBuffer();
 				this.trimHistoryWindow("head");
 				this.notifier.markDirty();
 			}
 			/** Seq-guarded append shared by stitching and the open-state live path. */
 			appendLive(event, view, trim = true, trackPage = true) {
-				const tailSeq = this.windowTailSeq();
-				if (tailSeq !== null && event.seq <= tailSeq) return "none";
-				const previous = this.events[this.events.length - 1];
-				this.events.push(event);
-				this.views.push(view);
-				if (trackPage) {
-					const page = this.historyPages[this.historyPages.length - 1];
-					if (page === void 0 || previous?.type === "turn/end") this.historyPages.push({
-						firstSeq: event.seq,
-						lastSeq: eventEndSeq(event),
-						eventCount: 1, bytes: JSON.stringify({event, view}).length * 2
-					});
-					else {
-						page.lastSeq = eventEndSeq(event);
-						page.eventCount += 1;
-						page.bytes = (page.bytes || 0) + JSON.stringify({event, view}).length * 2;
-					}
-				}
-				if (event.type === "turn/start") this.firstPromptPendingTurn = false;
-				const queueChanged = this.queueMirror.acceptDurable(event);
-				const publication = this.conversation.append({
-					event,
-					view
-				});
-				if (trim && (this.historyPages.length > HISTORY_WINDOW_PAGES || this.events.length > HISTORY_WINDOW_EVENTS)) this.trimHistoryWindow("head");
-				return queueChanged ? "immediate" : publication;
-			}
-			bufferLive(event, view) {
-				this.liveBuffer.push({ event, view });
-				if (this.liveBuffer.length > 4096) this.liveBuffer.splice(0, this.liveBuffer.length - 4096);
-			}
-			/** Land a live session/event (open/repair in flight -> buffer; overlapping seq -> drop;
-			*  a seq gap -> buffer + tail-page repull instead of appending a hole (a gap is an
-			*  expected reconnect-window artifact, repaired by refetch). The window stays one contiguous
-			*  raw range, which lets Conversation Definitions correlate every recorded event between its
-			*  ends and lets a compaction checkpoint resolve its cited summary event. */
-			acceptLiveEvent(event, view) {
-				if (this.historyTargetSeq !== null) {
-					this.bufferLive(event, view);
-					return;
-				}
-				if (this.openState === "loading" || this.stitching) {
-					this.bufferLive(event, view);
-					return;
-				}
-				if (this.openState !== "open") return;
-				const tailSeq = this.windowTailSeq();
-				if (tailSeq !== null && event.seq > tailSeq + 1) {
-					this.bufferLive(event, view);
-					this.repairGap();
-					return;
-				}
-				this.scheduleConversation(this.appendLive(event, view));
-			}
+                const tailSeq = this.windowTailSeq();
+                if (tailSeq !== null && eventEndSeq(event) <= tailSeq) return "none";
+                const previous = this.events.at(-1);
+                this.events.push(event); this.views.push(view);
+                if (trackPage) {
+                    const page = this.historyPages.at(-1);
+                    const full = page && ((page.messageCount || 0) >= HISTORY_PAGE_MESSAGES || (page.bytes || 0) >= HISTORY_LIVE_PAGE_BYTES || page.eventCount >= Math.ceil(HISTORY_WINDOW_EVENTS / HISTORY_WINDOW_PAGES));
+                    const boundary = previous?.type === "turn/end" || (full && event.type === "step/start");
+                    if (!page || boundary) this.historyPages.push(this.pageMeta([{ event, view }]));
+                    else {
+                        page.lastSeq = eventEndSeq(event); page.eventCount += 1;
+                        page.messageCount = (page.messageCount || 0) + Number(historyMessage(event));
+                        page.bytes = (page.bytes || 0) + historyEntryBytes(event, view);
+                    }
+                }
+                if (event.type === "turn/start") this.firstPromptPendingTurn = false;
+                const queueChanged = this.queueMirror.acceptDurable(event);
+                const publication = this.conversation.append({ event, view });
+                if (trim && (this.historyPages.length > HISTORY_WINDOW_PAGES || this.events.length > HISTORY_WINDOW_EVENTS || this.historyPages.reduce((sum, page) => sum + (page.bytes || 0), 0) > HISTORY_WINDOW_BYTES)) this.trimHistoryWindow("head");
+                return queueChanged ? "immediate" : publication;
+            }
+            bufferLive(event, view) {
+                const bytes = historyEntryBytes(event, view);
+                this.liveBuffer.push({ event, view, bytes });
+                this.liveBufferBytes = (this.liveBufferBytes ?? 0) + bytes;
+                while (this.liveBuffer.length && (this.liveBuffer.length > HISTORY_WINDOW_EVENTS || this.liveBufferBytes > HISTORY_LIVE_BUFFER_BYTES)) {
+                    const dropped = this.liveBuffer.shift();
+                    this.liveBufferBytes -= dropped.bytes ?? historyEntryBytes(dropped.event, dropped.view);
+                    this.liveBufferDroppedThrough = Math.max(this.liveBufferDroppedThrough ?? -1, eventEndSeq(dropped.event));
+                }
+            }
+            /** Bounded buffers may lose a prefix; fetch a fresh tail instead of appending a hole. */
+            stitchLiveBuffer() {
+                let tail = this.windowTailSeq() ?? -1;
+                if ((this.liveBufferDroppedThrough ?? -1) > tail) { this.tailRepairNeeded = true; return; }
+                this.liveBufferDroppedThrough = -1; this.tailRepairNeeded = false;
+                const buffered = this.liveBuffer.sort((left, right) => left.event.seq - right.event.seq);
+                this.liveBuffer = []; this.liveBufferBytes = 0;
+                for (let index = 0; index < buffered.length; index += 1) {
+                    const item = buffered[index];
+                    if (eventEndSeq(item.event) <= tail) continue;
+                    if (eventStartSeq(item.event) !== tail + 1) {
+                        for (const pending of buffered.slice(index)) this.bufferLive(pending.event, pending.view);
+                        this.tailRepairNeeded = true; return;
+                    }
+                    this.appendLive(item.event, item.view, false);
+                    tail = eventEndSeq(item.event);
+                }
+            }
+            maybeRepairTail() {
+                if (this.tailRepairNeeded && this.historyTargetSeq === null && this.openState === "open" && !this.stitching) void this.repairGap();
+            }
+            /** Reading a retained page freezes its range; new traffic remains bounded until tail restoration. */
+            acceptLiveEvent(event, view) {
+                const tailSeq = this.windowTailSeq();
+                if (tailSeq !== null && eventEndSeq(event) <= tailSeq) return;
+                if (this.historyTargetSeq !== null || (this.readingAwayFromTail && this.openState === "open" && tailSeq !== null)) {
+                    if (this.historyTargetSeq === null) this.historyTargetSeq = this.baseSeq;
+                    const changed = !this.hasMoreAfter;
+                    this.hasMoreAfter = true; this.bufferLive(event, view);
+                    if (changed) this.notifier.markDirty();
+                    return;
+                }
+                if (this.openState === "loading" || this.stitching) { this.bufferLive(event, view); return; }
+                if (this.openState !== "open") return;
+                if ((tailSeq !== null && eventStartSeq(event) !== tailSeq + 1) || this.tailRepairNeeded) {
+                    this.bufferLive(event, view); this.repairGap(); return;
+                }
+                this.scheduleConversation(this.appendLive(event, view));
+            }
+
 			/** Route assembler cadence into the Session's existing microtask/RAF notifier. */
 			scheduleConversation(publication) {
 				if (publication === "immediate") this.notifier.markDirty();
@@ -8013,19 +8076,22 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			*  installWindow path. No openState transition — the UI keeps the current window (no loading
 			*  flash); events arriving meanwhile detour to liveBuffer via the stitching flag. */
 			async repairGap() {
-				/* v8 ignore next -- re-entry guard: acceptLiveEvent already detours to liveBuffer while stitching, so no second call reaches here. */
-				if (this.stitching) return;
-				this.stitching = true;
-				const generation = this.openGeneration;
-				try {
-					const { result } = await this.history({ maxMessages: HISTORY_PAGE_MESSAGES });
-					if (result.ok && generation === this.openGeneration && this.openState === "open") this.installWindow(result.value.events, result.value.hasMore, result.value.projections);
-				} catch (error) {
-					console.error("[web-runtime] gap repair failed:", error);
-				} finally {
-					this.stitching = false;
-				}
-			}
+                if (this.stitching || this.historyTargetSeq !== null || this.openState !== "open") return;
+                const request = { generation: this.openGeneration, revision: this.historyNavigationRevision ?? 0 };
+                this.gapRequest = request; this.stitching = true; this.tailRepairNeeded = false;
+                try {
+                    const response = await this.fetchHistory({ maxMessages: HISTORY_PAGE_MESSAGES }, () => this.currentHistoryRequest(request, "gapRequest"));
+                    if (response === null || !this.currentHistoryRequest(request, "gapRequest") || this.historyTargetSeq !== null || this.openState !== "open") return;
+                    const { result } = response;
+                    if (result.ok) this.installWindow(result.value.events, result.value.hasMore, result.value.projections);
+                    else this.tailRepairNeeded = true;
+                } catch (error) {
+                    if (this.currentHistoryRequest(request, "gapRequest")) { this.tailRepairNeeded = true; console.error("[web-runtime] gap repair failed:", error); }
+                } finally {
+                    if (this.gapRequest === request) { this.gapRequest = null; this.stitching = false; this.notifier.markDirty(); }
+                }
+            }
+
 			windowTailSeq() {
 				const tail = this.events[this.events.length - 1];
 				return tail === void 0 ? null : eventEndSeq(tail);
@@ -8061,6 +8127,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					hasMoreBefore: this.hasMoreBefore,
 					hasMoreAfter: this.hasMoreAfter,
 					historyBrowsing: this.historyTargetSeq !== null,
+                    historyNavigationRevision: this.historyNavigationRevision,
+                    historyNavigationReason: this.historyNavigationReason,
 					loadingOlder: this.loadingOlder,
 					baseSeq: this.baseSeq,
 					loadingNewer: this.loadingNewer,

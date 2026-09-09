@@ -47,6 +47,7 @@ struct State {
     index: CodeIndex,
     jobs: Mutex<HashMap<PathBuf, Job>>,
     active: AtomicUsize,
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 #[derive(Clone)]
@@ -57,6 +58,7 @@ impl Default for BackgroundIndex {
             index: CodeIndex::new(),
             jobs: Mutex::new(HashMap::new()),
             active: AtomicUsize::new(0),
+            changed: tokio::sync::watch::channel(0).0,
         }))
     }
 }
@@ -157,6 +159,9 @@ impl BackgroundIndex {
                 }
             }
             state.active.fetch_sub(1, Ordering::AcqRel);
+            state
+                .changed
+                .send_modify(|version| *version = version.wrapping_add(1));
         });
     }
 
@@ -164,7 +169,37 @@ impl BackgroundIndex {
         if let Some(job) = self.0.jobs.lock().unwrap().get_mut(root) {
             job.cancel.store(true, Ordering::Release);
             job.status = "cancelled".into();
+            self.0
+                .changed
+                .send_modify(|version| *version = version.wrapping_add(1));
         }
+    }
+
+    /// Share the immutable index with Agent tools without building a second
+    /// graph or copying the full browser snapshot into each tool result.
+    pub fn inspect(
+        &self,
+        root: &Path,
+    ) -> (
+        Option<Arc<GraphSnapshot>>,
+        String,
+        IndexStats,
+        Option<String>,
+    ) {
+        let jobs = self.0.jobs.lock().unwrap();
+        match jobs.get(root) {
+            Some(job) => (
+                job.snapshot.clone(),
+                job.status.clone(),
+                job.stats.clone(),
+                job.error.clone(),
+            ),
+            None => (None, "queued".into(), IndexStats::default(), None),
+        }
+    }
+
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.changed.subscribe()
     }
 
     pub fn view(&self, root: &Path, query: &GraphQuery, resume: bool) -> GraphView {

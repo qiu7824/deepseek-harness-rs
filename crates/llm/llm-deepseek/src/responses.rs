@@ -1,12 +1,55 @@
-use std::collections::BTreeMap;
-
-use dsh_llm::{ContentBlock, FinishReason, LlmFailure, StreamChunk, TokenUsage, call_id};
+use dsh_llm::{LlmFailure, StreamChunk};
 use serde_json::{Value, json};
 
 #[cfg(test)]
 mod tests {
     use super::request_from_chat;
     use serde_json::json;
+    #[test]
+    fn only_explicit_commentary_without_tools_requires_a_followup() {
+        use dsh_llm::StreamChunk;
+        for (phases, expected) in [
+            (vec![Some("commentary")], true),
+            (vec![Some("commentary"), Some("commentary")], true),
+            (vec![Some("final_answer")], false),
+            (vec![Some("commentary"), Some("final_answer")], false),
+            (vec![Some("commentary"), None], false),
+            (vec![None], false),
+            (vec![Some("unknown")], false),
+            (vec![], false),
+        ] {
+            let output = phases.iter().enumerate().map(|(index, phase)| {
+                let mut item = json!({"id":format!("message-{index}"),"type":"message","role":"assistant","content":[{"type":"output_text","text":"content"}]});
+                if let Some(phase) = phase { item["phase"] = json!(phase); }
+                item
+            }).collect::<Vec<_>>();
+            let mut translator = super::ResponsesTranslator::default();
+            let chunks = translator
+                .consume(
+                    &json!({"type":"response.completed","response":{"output":output}}).to_string(),
+                )
+                .unwrap();
+            let state = chunks
+                .iter()
+                .find_map(|chunk| match chunk {
+                    StreamChunk::Finish { replay_state, .. } => replay_state.as_ref(),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                state["continuation"] == "commentary",
+                expected,
+                "{phases:?}"
+            );
+            assert_eq!(state["items"], json!(output));
+        }
+        let mut translator = super::ResponsesTranslator::default();
+        let chunks = translator.consume(&json!({"type":"response.completed","response":{"output":[
+            {"type":"message","role":"assistant","phase":"commentary","content":[]},
+            {"type":"function_call","id":"call-item","call_id":"call","name":"read","arguments":"{}"}
+        ]}}).to_string()).unwrap();
+        assert!(chunks.iter().any(|chunk| matches!(chunk, StreamChunk::Finish { reason:dsh_llm::FinishReason::ToolCalls, replay_state:Some(state) } if state.get("continuation").is_none())));
+    }
     #[test]
     fn response_usage_cache_buckets_do_not_double_count_prompt_tokens() {
         let mut translator = super::ResponsesTranslator::default();
@@ -209,6 +252,46 @@ mod tests {
             assert_eq!(body["max_output_tokens"], 8192);
         }
     }
+
+    #[test]
+    fn completion_metadata_stays_local_and_never_changes_request_token_limits() {
+        use dsh_llm::{ContentBlock, ModelMessageSource, create_assistant_message};
+        for endpoint in [
+            "https://api.openai.com/v1",
+            "https://chatgpt.com/backend-api/codex",
+        ] {
+            let source = create_assistant_message(
+                vec![ContentBlock::Text {
+                    text: "Saved prefix".into(),
+                }],
+                ModelMessageSource {
+                    provider: "openai".into(),
+                    model: "test".into(),
+                    replay_state: Some(
+                        json!({"format":"openai-responses-v1","items":[],"responseStatus":"incomplete","incompleteReason":"max_output_tokens","hasVisibleFinal":true,"truncatedToolCalls":false}),
+                    ),
+                },
+            );
+            let chat = json!({"model":"test","max_tokens":32,"messages":[{"role":"assistant","content":"Saved prefix"},{"role":"user","content":"Continue"}]});
+            let body =
+                super::request_for_endpoint_with_history(&chat, endpoint, &[source], "openai")
+                    .unwrap();
+            assert_eq!(body["input"][0]["content"][0]["text"], "Saved prefix");
+            for key in [
+                "responseStatus",
+                "incompleteReason",
+                "hasVisibleFinal",
+                "truncatedToolCalls",
+            ] {
+                assert!(!body.to_string().contains(key));
+            }
+            if endpoint.contains("chatgpt.com") {
+                assert!(body.get("max_output_tokens").is_none());
+            } else {
+                assert_eq!(body["max_output_tokens"], 32);
+            }
+        }
+    }
 }
 
 fn failure(message: impl Into<String>, code: &str) -> LlmFailure {
@@ -241,6 +324,25 @@ pub(crate) fn apply_session_cache_key(body: &mut Value, session_id: Option<&str>
     use sha2::{Digest, Sha256};
     let hash = format!("{:x}", Sha256::digest(session.as_bytes()));
     body["prompt_cache_key"] = json!(format!("dsh-{}", &hash[..48]));
+}
+
+/// Mark the stable prefix boundary understood by the Responses API.  The
+/// marker is deliberately placed on the first input content block; user
+/// turns remain after the boundary, so a changing request cannot invalidate
+/// the reusable system/tool prefix.
+pub(crate) fn apply_cache_breakpoint(body: &mut Value, endpoint: &str) {
+    let Ok(url) = reqwest::Url::parse(endpoint) else { return };
+    let official = url.scheme() == "https"
+        && (url.host_str() == Some("api.openai.com")
+            || (url.host_str() == Some("chatgpt.com")
+                && url.path().contains("/backend-api/codex")));
+    if !official { return; }
+    let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else { return; };
+    let item_index = items.iter().position(|item| item["role"].as_str() == Some("system") || item["role"].as_str() == Some("developer")).or_else(|| items.iter().position(|item| item["role"].is_string()));
+    let Some(item) = item_index.and_then(|index| items.get_mut(index)) else { return; };
+    if let Some(content) = item.get_mut("content").and_then(Value::as_array_mut)
+        && let Some(first) = content.first_mut().and_then(Value::as_object_mut)
+    { first.insert("prompt_cache_breakpoint".into(), json!(true)); }
 }
 
 pub(crate) fn request_from_chat(chat: &Value) -> Result<Value, LlmFailure> {
@@ -503,294 +605,6 @@ pub(crate) fn request_for_endpoint_with_history(
     Ok(body)
 }
 
-#[derive(Default)]
-pub(crate) struct ResponsesTranslator {
-    next_index: u64,
-    text: Option<(u64, String)>,
-    reasoning: Option<(u64, String)>,
-    tools: BTreeMap<String, (u64, String, String, String)>,
-    completed: bool,
-    replay_items: Vec<Value>,
-}
-
-impl ResponsesTranslator {
-    pub(crate) fn completed(&self) -> bool {
-        self.completed
-    }
-
-    pub(crate) fn consume(&mut self, payload: &str) -> Result<Vec<StreamChunk>, LlmFailure> {
-        if self.completed {
-            return Ok(Vec::new());
-        }
-        if payload == "[DONE]" {
-            return Ok(Vec::new());
-        }
-        let event: Value = serde_json::from_str(payload).map_err(|error| {
-            failure(
-                format!("malformed Responses SSE payload: {error}"),
-                "MALFORMED_RESPONSE",
-            )
-        })?;
-        let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
-        let mut out = Vec::new();
-        match kind {
-            "response.output_text.delta" => {
-                let delta = event.get("delta").and_then(Value::as_str).unwrap_or("");
-                if self.text.is_none() {
-                    let index = self.next_index;
-                    self.next_index += 1;
-                    self.text = Some((index, String::new()));
-                    out.push(StreamChunk::BlockStart {
-                        index,
-                        block_type: "text".to_string(),
-                    });
-                }
-                let (index, text) = self.text.as_mut().expect("text");
-                text.push_str(delta);
-                out.push(StreamChunk::TextDelta {
-                    index: *index,
-                    text: delta.to_string(),
-                });
-            }
-            "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
-                let delta = event.get("delta").and_then(Value::as_str).unwrap_or("");
-                if self.reasoning.is_none() {
-                    let index = self.next_index;
-                    self.next_index += 1;
-                    self.reasoning = Some((index, String::new()));
-                    out.push(StreamChunk::BlockStart {
-                        index,
-                        block_type: "reasoning".to_string(),
-                    });
-                }
-                let (index, text) = self.reasoning.as_mut().expect("reasoning");
-                text.push_str(delta);
-                out.push(StreamChunk::ReasoningDelta {
-                    index: *index,
-                    text: delta.to_string(),
-                });
-            }
-            "response.output_item.added" => {
-                if event.pointer("/item/type").and_then(Value::as_str) == Some("function_call") {
-                    let item_id = event
-                        .pointer("/item/id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    let call = event
-                        .pointer("/item/call_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    let name = event
-                        .pointer("/item/name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    let index = self.next_index;
-                    self.next_index += 1;
-                    self.tools
-                        .insert(item_id, (index, call.clone(), name.clone(), String::new()));
-                    out.push(StreamChunk::BlockStart {
-                        index,
-                        block_type: "tool-call".to_string(),
-                    });
-                    out.push(StreamChunk::ToolCallDelta {
-                        index,
-                        id: call_id(call),
-                        name: Some(name),
-                        arguments_delta: String::new(),
-                    });
-                }
-            }
-            "response.function_call_arguments.delta" => {
-                let item_id = event.get("item_id").and_then(Value::as_str).unwrap_or("");
-                if let Some((index, call, _name, args)) = self.tools.get_mut(item_id) {
-                    let delta = event.get("delta").and_then(Value::as_str).unwrap_or("");
-                    args.push_str(delta);
-                    out.push(StreamChunk::ToolCallDelta {
-                        index: *index,
-                        id: call_id(call.clone()),
-                        name: None,
-                        arguments_delta: delta.to_string(),
-                    });
-                }
-            }
-            "response.output_item.done" => {
-                if let Some(item) = event.get("item").filter(|item| item["type"].is_string()) {
-                    self.replay_items.push(item.clone());
-                }
-            }
-            "response.completed" => {
-                let mut items = std::mem::take(&mut self.replay_items);
-                if let Some(output) = event
-                    .pointer("/response/output")
-                    .and_then(Value::as_array)
-                    .filter(|items| !items.is_empty())
-                {
-                    items = output.clone();
-                }
-                // Terminal output is authoritative even if an intermediary coalesces
-                // deltas. Keep assistant phases and complete tool arguments in replay.
-                let text_parts = items
-                    .iter()
-                    .filter(|item| item["type"] == "message" && item["role"] == "assistant")
-                    .flat_map(|item| item["content"].as_array().into_iter().flatten())
-                    .filter_map(|part| match part["type"].as_str() {
-                        Some("output_text") => part["text"].as_str(),
-                        Some("refusal") => part["refusal"].as_str(),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                if !text_parts.is_empty() {
-                    let text = text_parts.concat();
-                    if let Some((_, old)) = &mut self.text {
-                        *old = text
-                    } else {
-                        let index = self.next_index;
-                        self.next_index += 1;
-                        out.push(StreamChunk::BlockStart {
-                            index,
-                            block_type: "text".into(),
-                        });
-                        self.text = Some((index, text));
-                    }
-                }
-                let summaries = items
-                    .iter()
-                    .filter(|item| item["type"] == "reasoning")
-                    .flat_map(|item| item["summary"].as_array().into_iter().flatten())
-                    .filter_map(|part| part["text"].as_str())
-                    .collect::<Vec<_>>();
-                if !summaries.is_empty() {
-                    let text = summaries.join("\n\n");
-                    if let Some((_, old)) = &mut self.reasoning {
-                        *old = text
-                    } else {
-                        let index = self.next_index;
-                        self.next_index += 1;
-                        out.push(StreamChunk::BlockStart {
-                            index,
-                            block_type: "reasoning".into(),
-                        });
-                        self.reasoning = Some((index, text));
-                    }
-                }
-                for item in items.iter().filter(|item| item["type"] == "function_call") {
-                    let (Some(call), Some(name), Some(arguments)) = (
-                        item["call_id"].as_str(),
-                        item["name"].as_str(),
-                        item["arguments"].as_str(),
-                    ) else {
-                        continue;
-                    };
-                    if let Some((_, _, old_name, old_arguments)) =
-                        self.tools.values_mut().find(|(_, id, _, _)| id == call)
-                    {
-                        *old_name = name.into();
-                        *old_arguments = arguments.into();
-                    } else {
-                        let index = self.next_index;
-                        self.next_index += 1;
-                        out.push(StreamChunk::BlockStart {
-                            index,
-                            block_type: "tool-call".into(),
-                        });
-                        self.tools.insert(
-                            item["id"].as_str().unwrap_or(call).into(),
-                            (index, call.into(), name.into(), arguments.into()),
-                        );
-                    }
-                }
-                let has_tool_calls = !self.tools.is_empty();
-                if let Some((index, text)) = self.reasoning.take() {
-                    out.push(StreamChunk::BlockEnd {
-                        index,
-                        block: ContentBlock::Reasoning { text },
-                    });
-                }
-                if let Some((index, text)) = self.text.take() {
-                    out.push(StreamChunk::BlockEnd {
-                        index,
-                        block: ContentBlock::Text { text },
-                    });
-                }
-                for (_, (index, call, name, args)) in std::mem::take(&mut self.tools) {
-                    out.push(StreamChunk::BlockEnd {
-                        index,
-                        block: ContentBlock::ToolCall {
-                            id: call_id(call),
-                            name,
-                            arguments: args,
-                        },
-                    });
-                }
-                if let Some(usage) = event.pointer("/response/usage") {
-                    let cache_read = usage
-                        .pointer("/input_tokens_details/cached_tokens")
-                        .and_then(Value::as_u64);
-                    let cache_write = usage
-                        .pointer("/input_tokens_details/cache_write_tokens")
-                        .and_then(Value::as_u64);
-                    out.push(StreamChunk::Usage {
-                        usage: TokenUsage {
-                            input_tokens: usage
-                                .get("input_tokens")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0)
-                                .saturating_sub(cache_read.unwrap_or(0))
-                                .saturating_sub(cache_write.unwrap_or(0)),
-                            output_tokens: usage
-                                .get("output_tokens")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0),
-                            cache_read_tokens: cache_read,
-                            cache_write_tokens: cache_write,
-                            reasoning_tokens: usage
-                                .pointer("/output_tokens_details/reasoning_tokens")
-                                .and_then(Value::as_u64),
-                        },
-                    });
-                }
-                self.completed = true;
-                let mut replay_state = json!({"format":"openai-responses-v1","items":items,"usageAccounting":"disjoint"});
-                if let Some(model) = event
-                    .pointer("/response/model")
-                    .and_then(Value::as_str)
-                    .filter(|model| !model.is_empty())
-                {
-                    replay_state["responseModel"] = json!(model);
-                }
-                out.push(StreamChunk::Finish {
-                    reason: if has_tool_calls {
-                        FinishReason::ToolCalls
-                    } else {
-                        FinishReason::Stop
-                    },
-                    replay_state: Some(replay_state),
-                });
-            }
-            "response.failed" | "response.incomplete" => {
-                return Err(failure(
-                    event
-                        .pointer("/response/error/message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("Responses request failed"),
-                    "PROVIDER_ERROR",
-                ));
-            }
-            _ => {}
-        }
-        Ok(out)
-    }
-    pub(crate) fn finish(&self) -> Result<(), LlmFailure> {
-        if self.completed {
-            Ok(())
-        } else {
-            Err(failure(
-                "Responses stream ended before response.completed",
-                "STREAM_CLOSED",
-            ))
-        }
-    }
-}
+#[path = "responses_stream.rs"]
+mod stream;
+pub(crate) use stream::ResponsesTranslator;

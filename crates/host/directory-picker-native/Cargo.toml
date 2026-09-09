@@ -8,10 +8,14 @@ description = "Native backend of the directory-picker seam: an OS directory choo
 [dependencies]
 cordis = { path = "../../vendor/cordis" }
 dsh-host-directory-picker = { path = "../directory-picker" }
+dsh-host-directory-picker-browse = { path = "../directory-picker-browse" }
 dsh-native-command = { path = "../../util/native-command" }
 async-trait = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

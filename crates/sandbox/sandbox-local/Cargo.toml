@@ -11,6 +11,8 @@ dsh-sandbox = { path = "../sandbox" }
 
 [target.'cfg(windows)'.dependencies]
 junction = "2.0"
+fs2 = "0.4"
+sha2 = { workspace = true }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",

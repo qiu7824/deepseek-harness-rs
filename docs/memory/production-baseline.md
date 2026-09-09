@@ -2,82 +2,55 @@
 
 ## 身份与范围
 
-- 日期：2026-08-26
-- 正式入口：`http://127.0.0.1:58080/`
-- 正式二进制：`target/release/dsh.exe`
-- 配置根：报告只记录路径SHA-256，不记录明文路径
-- 原始报告：[production-baseline.jsonl](production-baseline.jsonl)
+- 日期：2026-09-08。
+- 正式入口：`http://127.0.0.1:58080/`。
+- 安装版本：Windows core `0.1.3-alpha.10`；进程身份和二进制摘要见机器派生证据。
+- 场景：真实配置下的会话列表和固定历史窗口，模型空闲；不恢复 Agent、不调用模型、不修改会话或凭据。
+- 原始报告：[production-baseline.jsonl](production-baseline.jsonl)。报告记录配置根的摘要，不包含配置根明文或会话正文。
 
-该基线通过正式58080、当前正式配置根和真实`dsh.exe`监听PID执行。场景只调用只读RPC，不恢复Agent、不调用模型、不执行Git写操作、不修改会话或凭据。
+## 测量结果
 
-## 可记账结论
+列表与历史分别累计执行 200 次读取。历史使用固定 `afterSeq=30`、`maxMessages=8`，因此该工作负载是同一有界窗口的重复读取，不是整段对话的上下翻页。进程和二进制身份全程一致。
 
-- `session.list`在累计20、100、200次边界没有显示线性增长。
-- 有界history在累计20、100、200次边界出现可控高水位，第二组100结束后未继续按次数线性增长。
-- 全程PID不变，线程、handles和直接子进程保持在机器派生证据记录的稳定范围。
-- 原始报告包含13条记录：7条snapshot、6条workload；所有snapshot的binary SHA和home path hash一致。
-- 原始报告不包含正式配置根明文、会话正文、凭据、命令行或Git提交内容。
+Host 工作集在基线为约 50.6 MiB，历史读取后的最高采样值为约 67.3 MiB；空闲复采样约 47.9 MiB。Private Bytes 的最高采样值约 88.2 MiB，空闲复采样约 68.8 MiB。工作集与私有提交量分开记录，不能互换，也不能把临时高水位直接认定为永久泄漏。
+
+历史请求每次平均约 0.49–0.57 秒，列表请求约 0.17 秒。该延迟仍可能影响连续翻页的响应体验，需要结合真实浏览器加载、锚点和渲染耗时定位。
 
 ## 未完成与限制
 
-- 该结果证明的是当前正式会话目标的有界list/history，不代表68k synthetic fixture已通过Rust JSONL/SQLite后端。
-- 尚未覆盖Git第二批100、PTY填满/关闭、浏览器20/100次刷新、subagent history、attachment cold scan、完成/删除/重启。
-- 该矩阵在新Release运行期执行，是只读RPC基线；不得用单次baseline替代长期浏览器交互后的稳定常驻值。
-- 同一SHA下正式浏览器单次刷新后：Host Working Set 32.8MB、Private 75.9MB、18线程、190 handles、直接子进程0；浏览器JS heap约29.2MB、DOM约1013节点。
-- 单次刷新请求中`settings.describe`仍出现7次，是下一阶段明确RED；此外host/list/subagent/workspace/history/skill/commands/preset/models各1次，credentials 2次。
-- 此单次刷新值不能推翻此前长期运行约95MB Working Set/158MB Private的高水位观测；下一阶段需要自动化20/100次刷新和静置采样。
-- Working Set和Private Bytes必须继续分开记账。
+- 这些数据不证明长期滚动已经稳定，也不证明恢复到约 20 MiB 的历史空闲水平。
+- 未覆盖当前前端连续上下翻页、20/100 次刷新、工具展开/收起、附件浏览、子代理历史、PTY 开关及重启后的完整矩阵。
+- 未测浏览器 JavaScript 堆、DOM 节点长期驻留和帧时间，不能据此排除侧栏或其他前端组件的影响。
+- 静置复采样发生在只读历史核对之后，不是强制 GC 或清空工作集后的结果。
+- 其他二进制、不同会话规模、活跃模型长上下文及旧 synthetic fixture 的结果不能直接混用。
 
-## 68k合成夹具
-
-工具`tools/memory_fixture.py`已实际流式生成并删除临时fixture：
-
-- 事件数：68,000
-- 消息组：40（80个消息边界）
-- 字节数：6,651,610
-- SHA-256：`b4c64a5e7f0c10fd24d8232b731c660683f2aba62fc90df063fe015b35cd9234`
-
-fixture完全合成，不使用正式会话正文、用户路径或凭据。下一阶段需要由Rust JSONL/SQLite后端测试导入该逻辑记录流并验证首/中/尾页。
-
-## 复现命令
-
-```bash
-python -m unittest discover -s tools/tests -p "test_memory_*.py" -v
-python tools/memory_scenarios.py \
-  --binary "D:/deepwork/deepseek-harness-rs/target/release/dsh.exe" \
-  --home "$LOCALAPPDATA/DeepSeek Harness" \
-  --history-session "<当前可读且hasMore=true的会话ID>" \
-  --output "docs/memory/production-baseline.jsonl"
-python tools/validate_memory_baseline.py --report docs/memory/production-baseline.jsonl --markdown docs/memory/production-baseline.md --update
-python tools/validate_memory_baseline.py --report docs/memory/production-baseline.jsonl --markdown docs/memory/production-baseline.md
-```
-
-每次Release SHA变化后必须重跑并覆盖本基线；旧报告自动失效。
+每次候选二进制变化后，应重新采集对应身份的正式记录。报告与派生表通过 `tools/validate_memory_baseline.py` 校验。
 
 <!-- MEMORY-EVIDENCE:START -->
 ## 机器派生证据（请勿手工编辑）
 
-- PID：`15596`
-- 二进制SHA-256：`9585c2e102516dd8ead940a39e914e767708ec0d141ad26cfcdb6f73084a7d4e`
-- 报告SHA-256：`5f72d1ba12497c841966c07e02c1d905a6f004af9bfbf55ba714f81a106a6d43`
-- 记录：13（snapshot 7 / workload 6）
+- PID：`56236`
+- 二进制SHA-256：`6ecad246e5bfdd6a6efec27b438f251e05107cc96bf3eecf5840bf3d5f44ff41`
+- 报告SHA-256：`e55e8811f3bbf53d29c15605249940677636ca3d667880c42de45016c70208e6`
+- 记录：14（snapshot 8 / workload 6）
 
 | 采样点 | Working Set MB | Private MB | 线程 | Handles |
 |---|---:|---:|---:|---:|
-| baseline | 33.5 | 76.3 | 18 | 191 |
-| list_20 | 32.9 | 77.0 | 20 | 193 |
-| list_100 | 32.9 | 76.6 | 20 | 193 |
-| list_second_100 | 32.8 | 76.4 | 20 | 193 |
-| history_20 | 38.4 | 78.8 | 20 | 193 |
-| history_100 | 41.5 | 85.9 | 20 | 193 |
-| history_second_100 | 38.5 | 82.1 | 20 | 193 |
+| baseline | 50.6 | 73.5 | 10 | 211 |
+| list_20 | 50.0 | 78.3 | 11 | 212 |
+| list_100 | 50.9 | 79.1 | 11 | 212 |
+| list_second_100 | 49.3 | 77.3 | 11 | 212 |
+| history_20 | 50.1 | 70.7 | 11 | 212 |
+| history_100 | 57.0 | 77.8 | 9 | 210 |
+| history_second_100 | 67.3 | 88.2 | 9 | 210 |
+| idle_after_history | 47.9 | 68.8 | 8 | 209 |
 
 | 工作负载 | 批次请求 | 累计请求 | 响应MB | 秒 |
 |---|---:|---:|---:|---:|
-| list_20 | 20 | 20 | 1.07 | 0.269 |
-| list_100 | 80 | 100 | 4.26 | 1.396 |
-| list_second_100 | 100 | 200 | 5.33 | 2.092 |
-| history_20 | 20 | 20 | 8.56 | 3.102 |
-| history_100 | 80 | 100 | 34.24 | 8.234 |
-| history_second_100 | 100 | 200 | 42.80 | 10.014 |
+| list_20 | 20 | 20 | 2.14 | 3.328 |
+| list_100 | 80 | 100 | 8.55 | 13.587 |
+| list_second_100 | 100 | 200 | 10.69 | 17.395 |
+| history_20 | 20 | 20 | 0.53 | 9.953 |
+| history_100 | 80 | 100 | 2.13 | 45.333 |
+| history_second_100 | 100 | 200 | 2.66 | 49.394 |
 <!-- MEMORY-EVIDENCE:END -->

@@ -35,9 +35,9 @@ use serde_json::{Map, Value as JsonValue};
 use crate::json::snapshot_json_value;
 use crate::surface::{SurfaceManager, derive_event_message};
 use crate::types::{
-    CreateSessionOptions, EpochHeader, RequestContext, SessionEvent, SessionHeader, SessionId,
-    SessionLogOffset, SessionSeq, SurfaceIntent, end_seed_data, session_id,
-    snapshot_session_header, validate_session_header,
+    CreateSessionOptions, EpochHeader, LEGACY_SESSION_FORMAT_VERSION, RequestContext,
+    SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionId, SessionLogOffset, SessionSeq,
+    SurfaceIntent, end_seed_data, session_id, snapshot_session_header, validate_session_header,
 };
 
 /// Store attachment keyed by session identity (TS `attachments` WeakMap).
@@ -283,6 +283,13 @@ fn assert_supported_request_header(
             "{location} uses unsupported legacy request/header reason \"fallback\""
         ));
     }
+    if type_ == "request/header"
+        && data.pointer("/header/system").is_some()
+    {
+        return Err(format!(
+            "{location} must omit header.system; use system/message"
+        ));
+    }
     Ok(())
 }
 
@@ -368,6 +375,15 @@ impl Session {
         supplied_inherited_event_count: Option<SessionLogOffset>,
     ) -> Result<Session, String> {
         let had_seed = seed.is_some();
+        let seed = if header
+            .is_some_and(|value| value.version == LEGACY_SESSION_FORMAT_VERSION)
+        {
+            let legacy = header.cloned().expect("header present");
+            let events = seed.clone().unwrap_or_default();
+            Some(crate::migrate_v0_to_v3(legacy, &events)?.events)
+        } else {
+            seed
+        };
         let mut state = SessionState::default();
         if let Some(seed) = seed {
             for (index, snapshot) in seed.into_iter().enumerate() {
@@ -402,6 +418,21 @@ impl Session {
                 let value = serde_json::to_value(header).map_err(|_| {
                     "session header is not losslessly JSON-serializable".to_string()
                 })?;
+                // Alpha.1 introduced the V3 envelope.  Callers restoring an
+                // in-memory session may still hand us the pre-V3 (V0)
+                // header; upgrade that metadata at the boundary so the live
+                // session always exposes the canonical V3 shape.  Durable
+                // logs are migrated by the persistence backend where the
+                // event history is available for prompt reconstruction.
+                let value = if value.get("version").and_then(JsonValue::as_u64)
+                    == Some(LEGACY_SESSION_FORMAT_VERSION)
+                {
+                    let mut upgraded = value;
+                    upgraded["version"] = JsonValue::from(SESSION_FORMAT_VERSION);
+                    upgraded
+                } else {
+                    value
+                };
                 validate_session_header(&id, &value)?
             }
             None => snapshot_session_header(&id, None)?,
@@ -510,6 +541,15 @@ impl Session {
     /// explicit-cost snapshot/read APIs.
     pub fn events(&self) -> Arc<Vec<SessionEvent>> {
         self.snapshot_events(SessionLogOffset::ZERO, None)
+    }
+
+    /// Read the current log while holding its short-lived read boundary.
+    /// The callback must not re-enter this Session. Bounded page selectors
+    /// use this to avoid pinning an Arc snapshot that makes append clone the
+    /// whole log while generation and history reads overlap.
+    pub fn with_events<R>(&self, read: impl FnOnce(&[SessionEvent]) -> R) -> R {
+        let state = self.inner.state.lock();
+        read(&state.log)
     }
 
     /// Whether one existing event belongs to this Session rather than its parent.

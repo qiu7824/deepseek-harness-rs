@@ -1,6 +1,9 @@
 use super::support::{harness, message, register_adapter};
 use dsh_agent::{Agent, ModelSelection, ModelSelectionRef, install_model_selection};
-use dsh_llm::{ChunkStream, FinishReason, GenerateOptions, LlmAdapter, MessageSource, StreamChunk};
+use dsh_llm::{
+    ChunkStream, ContentBlock, FinishReason, GenerateOptions, LlmAdapter, MessageSource,
+    StreamChunk,
+};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +15,20 @@ impl LlmAdapter for RecordingAdapter {
         let fail_once =
             options.model == "model-b" && !calls.iter().any(|call| call.model == "model-b");
         calls.push(options.clone());
-        Box::pin(futures::stream::iter([StreamChunk::Finish {
+        let mut chunks = Vec::new();
+        if !fail_once {
+            chunks.push(StreamChunk::BlockStart {
+                index: 0,
+                block_type: "text".into(),
+            });
+            chunks.push(StreamChunk::BlockEnd {
+                index: 0,
+                block: ContentBlock::Text {
+                    text: "Completed the request.".into(),
+                },
+            });
+        }
+        chunks.push(StreamChunk::Finish {
             reason: if fail_once {
                 FinishReason::Error {
                     failure: dsh_llm::LlmFailure {
@@ -29,7 +45,8 @@ impl LlmAdapter for RecordingAdapter {
             replay_state: Some(
                 serde_json::json!({"responseModel":format!("{}-resolved",options.model)}),
             ),
-        }]))
+        });
+        Box::pin(futures::stream::iter(chunks))
     }
 }
 #[tokio::test]

@@ -31,6 +31,146 @@ fn recovery() -> RecoveryObservation {
 }
 
 #[tokio::test]
+async fn runtime_diagnostics_cannot_be_confirmed_or_injected_as_reusable_rules() {
+    let root = root();
+    let store = LearningStore::open(root.clone()).await.unwrap();
+    let entry = store
+        .record_failure(FailureObservation {
+            code: "SHELL_FAILED".into(),
+            ..failure("runtime")
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    let rows = store.list(&json!({}));
+    assert_eq!(rows["diagnosticTotal"], 1);
+    assert_eq!(rows["items"][0]["disposition"], "diagnostic");
+    assert_eq!(rows["items"][0]["reusableRule"], false);
+    assert!(
+        store
+            .invoke(
+                "memory.learningConfirm",
+                json!({"id":entry.id,"confirmed":true,"suggestion":"Retry every shell failure"})
+            )
+            .await
+            .is_err()
+    );
+    drop(store);
+    let path = root.join("learning.json");
+    let mut document: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    document["entries"][0]["status"] = json!("verified");
+    document["entries"][0]["verification"] = json!("user-confirmed");
+    std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let restored = LearningStore::open(root.clone()).await.unwrap();
+    assert!(
+        restored
+            .verified(&entry.workspace_key, None, None, None, 20)
+            .is_empty()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn control_states_are_not_saved_as_model_failures() {
+    let root = root();
+    let store = LearningStore::open(root.clone()).await.unwrap();
+    for code in [
+        "COMPUTER_USE_MANUAL_CONTROL",
+        "COMPUTER_USE_ABORTED",
+        "COMPUTER_USE_SESSION_NOT_FOUND",
+        "COMPUTER_USE_DESKTOP_DISCONNECTED",
+        "COMPUTER_USE_BUSY",
+        "COMPUTER_USE_FRAME_PENDING",
+        "COMPUTER_USE_CAPTURE_INTERRUPTED",
+        "COMPUTER_USE_DEVICE_BUSY",
+        "COMPUTER_USE_HUMAN_REQUIRED",
+        "COMPUTER_USE_SESSION_LIMIT",
+        "USER_APPROVAL_TIMED_OUT",
+        "USER_APPROVAL_UNAVAILABLE",
+    ] {
+        let observation = FailureObservation {
+            code: code.into(),
+            ..failure(code)
+        };
+        assert!(
+            store.record_failure(observation).await.unwrap().is_none(),
+            "{code}"
+        );
+    }
+    assert_eq!(store.list(&json!({}))["total"], 0);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn legacy_control_records_remain_readable_without_entering_model_context() {
+    let root = root();
+    let store = LearningStore::open(root.clone()).await.unwrap();
+    let saved = store
+        .record_failure(failure("legacy"))
+        .await
+        .unwrap()
+        .unwrap();
+    drop(store);
+    let path = root.join("learning.json");
+    let mut document: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    document["entries"][0]["code"] = json!("COMPUTER_USE_MANUAL_CONTROL");
+    document["entries"][0]["status"] = json!("verified");
+    document["entries"][0]["verification"] = json!("user-confirmed");
+    std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let store = LearningStore::open(root.clone()).await.unwrap();
+    assert_eq!(store.list(&json!({}))["total"], 1);
+    assert!(
+        store
+            .verified(&saved.workspace_key, None, None, None, 20)
+            .is_empty()
+    );
+    assert!(store.invoke("memory.learningConfirm", json!({"id":saved.id,"confirmed":true,"suggestion":"Stop until the user returns control."})).await.is_err());
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "legacy evidence must not be deleted or rewritten"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn ambiguous_edit_recovery_is_automatic_but_requires_matching_evidence() {
+    let root = root();
+    let store = LearningStore::open(root.clone()).await.unwrap();
+    store
+        .record_failure(FailureObservation {
+            code: "FS_AMBIGUOUS_EDIT".into(),
+            tool: "edit".into(),
+            ..failure("ambiguous")
+        })
+        .await
+        .unwrap();
+    let matching = RecoveryObservation {
+        tool: "edit".into(),
+        ..recovery()
+    };
+    let unrelated = RecoveryObservation {
+        resource_fingerprint: Some(digest(b"another-file")),
+        ..matching.clone()
+    };
+    assert!(store.record_recovery(unrelated).await.unwrap().is_empty());
+    assert_eq!(store.record_recovery(matching).await.unwrap().len(), 1);
+    let entry = &store.list(&json!({}))["items"][0];
+    assert_eq!(entry["verification"], "recovered");
+    assert_eq!(entry["ruleId"], "unique-edit-target");
+    assert_eq!(
+        store
+            .verified(&workspace_key("D:/project"), Some("edit"), None, None, 10)
+            .len(),
+        1
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn failures_deduplicate_across_models_and_reopen_without_raw_output() {
     let root = root();
     let store = LearningStore::open(root.clone()).await.unwrap();
@@ -260,16 +400,16 @@ async fn unicode_routes_keep_distinct_identity_and_match_exact_provider_scope() 
     let store = LearningStore::open(root.clone()).await.unwrap();
     for (call, provider) in [("one", "中文服务甲"), ("two", "中文服务乙")] {
         let mut observation = failure(call);
-        observation.source = "provider".into();
+        observation.source = "feedback".into();
         observation.tool.clear();
         observation.provider = provider.into();
         observation.model = "推理模型一".into();
-        observation.code = "RATE_LIMIT".into();
+        observation.code = "USER_FEEDBACK".into();
         let entry = store.record_failure(observation).await.unwrap().unwrap();
         store
             .invoke(
                 "memory.learningConfirm",
-                json!({"id":entry.id,"confirmed":true}),
+                json!({"id":entry.id,"confirmed":true,"suggestion":"保留引用文件的完整路径。"}),
             )
             .await
             .unwrap();
@@ -325,7 +465,13 @@ async fn master_memory_switch_blocks_capture_recovery_and_reuse_without_changing
         "disabled policy invalidated the old pending recovery"
     );
     assert_eq!(store.list(&json!({}))["items"][0]["occurrences"], 1);
-    for code in ["ABORTED", "USER_APPROVAL_DENIED", "USER_APPROVAL_CANCELLED"] {
+    for code in [
+        "ABORTED",
+        "USER_APPROVAL_DENIED",
+        "USER_APPROVAL_CANCELLED",
+        "USER_APPROVAL_TIMED_OUT",
+        "USER_APPROVAL_UNAVAILABLE",
+    ] {
         let mut observation = failure(code);
         observation.code = code.into();
         assert!(store.record_failure(observation).await.unwrap().is_none());

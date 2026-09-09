@@ -167,17 +167,20 @@ impl ZsuiTheme {
     pub fn light() -> Self {
         Self {
             colors: ZsuiColorTokens {
-                surface: Color::rgb(243, 243, 243),
+                // Product-neutral light defaults stay close to the web light
+                // surface so the desktop shell does not introduce a second
+                // gray scale at the application boundary.
+                surface: Color::rgb(245, 245, 245),
                 surface_raised: Color::rgb(255, 255, 255),
-                text_primary: Color::rgb(27, 27, 27),
-                text_secondary: Color::rgb(97, 97, 97),
-                accent: Color::rgb(0, 103, 192),
-                control: Color::rgb(255, 255, 255),
-                border: Color::rgb(209, 209, 209),
+                text_primary: Color::rgb(41, 41, 41),
+                text_secondary: Color::rgb(101, 103, 107),
+                accent: Color::rgb(86, 134, 254),
+                control: Color::rgb(237, 243, 254),
+                border: Color::rgb(229, 229, 229),
                 accent_text: Color::rgb(255, 255, 255),
-                success: Color::rgb(15, 123, 15),
-                warning: Color::rgb(157, 93, 0),
-                danger: Color::rgb(196, 43, 28),
+                success: Color::rgb(34, 197, 94),
+                warning: Color::rgb(245, 158, 11),
+                danger: Color::rgb(239, 68, 68),
             },
             radius: ZsuiRadiusTokens::default(),
             spacing: ZsuiSpacingTokens::default(),

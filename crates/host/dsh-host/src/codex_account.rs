@@ -13,6 +13,107 @@ use tokio::{
     sync::Mutex,
 };
 
+pub(crate) struct AccountTokens {
+    pub access_token: String,
+    pub account_id: String,
+}
+/// Invoked only from an active account RPC while ProviderAuth owns its refresh lock.
+pub(crate) type TokenRefresher = std::sync::Arc<
+    dyn Fn() -> futures::future::BoxFuture<'static, Result<AccountTokens, String>> + Send + Sync,
+>;
+struct RefreshRequest {
+    id: Value,
+    account_id: String,
+}
+struct RefreshWindow(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl Drop for RefreshWindow {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+async fn refresh_external_tokens(
+    binding: Option<&(String, TokenRefresher)>,
+    account_id: &str,
+    attempted: &mut bool,
+) -> Result<Value, String> {
+    let (expected, refresh) = binding
+        .filter(|(expected, _)| expected == account_id)
+        .ok_or("账户身份不匹配，拒绝刷新其他账号")?;
+    if *attempted {
+        return Err("同一账户请求最多刷新一次".into());
+    }
+    *attempted = true;
+    match tokio::time::timeout(Duration::from_secs(8), refresh()).await {
+        Ok(Ok(tokens)) if tokens.account_id == *expected && !tokens.access_token.is_empty() => Ok(
+            json!({"accessToken":tokens.access_token,"chatgptAccountId":tokens.account_id,"chatgptPlanType":null}),
+        ),
+        _ => Err("当前模型账号的正常刷新未完成".into()),
+    }
+}
+
+fn account_rpc_error(error: &Value) -> String {
+    let code = error.get("code").and_then(Value::as_i64);
+    let message: String = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .chars()
+        .take(2048)
+        .collect();
+    let lower = message.to_ascii_lowercase();
+    let status = ["/data/status", "/data/statusCode", "/data/httpStatus"]
+        .into_iter()
+        .find_map(|path| {
+            error
+                .pointer(path)
+                .and_then(Value::as_u64)
+                .filter(|status| (400..600).contains(status))
+        })
+        .or_else(|| {
+            [401, 403, 429, 500, 502, 503, 504]
+                .into_iter()
+                .find(|status| {
+                    [
+                        format!("http {status}"),
+                        format!("http status {status}"),
+                        format!("status code: {status}"),
+                        format!("status {status}"),
+                        format!("{status} unauthorized"),
+                        format!("{status} forbidden"),
+                        format!("{status} too many requests"),
+                    ]
+                    .iter()
+                    .any(|value| lower.contains(value))
+                })
+        });
+    match (code, status) {
+        (Some(-32601), _) => "此 Codex CLI 版本不支持该账户功能，请更新官方 Codex CLI".into(),
+        (_, Some(401)) => "账户服务认证已失效（HTTP 401）；请刷新当前登录凭据后重试".into(),
+        (_, Some(403)) => {
+            "账户服务拒绝访问（HTTP 403）；请检查账户权限或服务限制，登录状态已保留".into()
+        }
+        (_, Some(429)) => "账户服务请求过于频繁（HTTP 429），请稍后重试".into(),
+        (_, Some(status)) if status >= 500 => {
+            format!("账户服务暂时不可用（HTTP {status}），请稍后重试")
+        }
+        _ if lower.contains("authentication required") || lower.contains("not authenticated") => {
+            "用量服务尚未接入当前模型账号，请刷新用量重新连接".into()
+        }
+        _ if lower.contains("external auth must use")
+            || lower.contains("external chatgpt auth is disabled") =>
+        {
+            "当前 Codex 账户策略不允许此模型账号，请检查工作区或管理员登录策略；登录状态已保留"
+                .into()
+        }
+        _ if lower.contains("experimentalapi") || lower.contains("experimental api") => {
+            "此账户功能需要官方 Codex CLI 的实验协议支持，请更新客户端".into()
+        }
+        (Some(-32602), _) => "账户接口请求不受当前 Codex CLI 支持，请检查客户端版本".into(),
+        _ => "账户服务未能完成请求；请稍后重试，当前登录状态已保留".into(),
+    }
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -76,6 +177,9 @@ struct Bridge {
     notifications: std::sync::Arc<parking_lot::Mutex<std::collections::VecDeque<Value>>>,
     reader: tokio::task::JoinHandle<()>,
     next_id: u64,
+    refresh_rx: tokio::sync::mpsc::Receiver<RefreshRequest>,
+    refresh_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    refresher: Option<(String, TokenRefresher)>,
 }
 impl Drop for Bridge {
     fn drop(&mut self) {
@@ -92,6 +196,7 @@ trait AccountRpc: Send {
     fn notifications(&mut self) -> Vec<Value> {
         Vec::new()
     }
+    fn set_refresher(&mut self, _account_id: &str, _refresh: Option<TokenRefresher>) {}
 }
 #[async_trait::async_trait]
 impl AccountRpc for Bridge {
@@ -107,6 +212,9 @@ impl AccountRpc for Bridge {
     }
     fn notifications(&mut self) -> Vec<Value> {
         self.notifications.lock().drain(..).collect()
+    }
+    fn set_refresher(&mut self, account_id: &str, refresh: Option<TokenRefresher>) {
+        self.refresher = refresh.map(|refresh| (account_id.to_string(), refresh));
     }
 }
 type Connector = std::sync::Arc<
@@ -179,6 +287,9 @@ impl Bridge {
         let pending: Replies = Default::default();
         let notifications =
             std::sync::Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new()));
+        let (refresh_tx, refresh_rx) = tokio::sync::mpsc::channel::<RefreshRequest>(2);
+        let refresh_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let active = refresh_active.clone();
         let replies = pending.clone();
         let notices = notifications.clone();
         let writer = input.clone();
@@ -191,6 +302,23 @@ impl Bridge {
                 };
                 if frame.get("method").is_some() {
                     if let Some(id) = frame.get("id") {
+                        if frame["method"] == "account/chatgptAuthTokens/refresh"
+                            && frame.pointer("/params/reason").and_then(Value::as_str)
+                                == Some("unauthorized")
+                            && active.load(std::sync::atomic::Ordering::Acquire)
+                            && let Some(account_id) = frame
+                                .pointer("/params/previousAccountId")
+                                .and_then(Value::as_str)
+                                .filter(|id| !id.is_empty() && id.len() <= 256)
+                            && refresh_tx
+                                .try_send(RefreshRequest {
+                                    id: id.clone(),
+                                    account_id: account_id.into(),
+                                })
+                                .is_ok()
+                        {
+                            continue;
+                        }
                         let response = json!({"id":id,"error":{"code":-32601,"message":"Unsupported account host request"}});
                         if tokio::time::timeout(
                             Duration::from_secs(5),
@@ -215,14 +343,7 @@ impl Bridge {
                 if let Some(id) = frame.get("id").and_then(Value::as_u64) {
                     if let Some(reply) = replies.lock().remove(&id) {
                         let value = if let Some(error) = frame.get("error") {
-                            Err(
-                                if error.get("code").and_then(Value::as_i64) == Some(-32601) {
-                                    "此 Codex CLI 版本不支持该账户功能"
-                                } else {
-                                    "账户服务拒绝请求；请检查登录状态或稍后重试"
-                                }
-                                .into(),
-                            )
+                            Err(account_rpc_error(error))
                         } else {
                             frame
                                 .get("result")
@@ -244,8 +365,11 @@ impl Bridge {
             notifications,
             reader,
             next_id: 1,
+            refresh_rx,
+            refresh_active,
+            refresher: None,
         };
-        bridge.rpc("initialize",json!({"clientInfo":{"name":"dsh-account","title":"DeepSeek Harness","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":false}})).await?;
+        bridge.rpc("initialize",json!({"clientInfo":{"name":"dsh-account","title":"DeepSeek Harness","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
         tokio::time::timeout(
             Duration::from_secs(5),
             write_frame(&bridge.input, json!({"method":"initialized","params":{}})),
@@ -255,21 +379,35 @@ impl Bridge {
         Ok(bridge)
     }
     async fn rpc(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        while let Ok(stale) = self.refresh_rx.try_recv() {
+            tokio::time::timeout(Duration::from_secs(5),
+                write_frame(&self.input,json!({"id":stale.id,"error":{"code":-32000,"message":"The previous account request ended"}})))
+                .await.map_err(|_|"账户旧请求清理超时".to_string())??;
+        }
         let id = self.next_id;
         self.next_id += 1;
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
         self.pending.lock().insert(id, tx);
+        self.refresh_active.store(
+            self.refresher.is_some(),
+            std::sync::atomic::Ordering::Release,
+        );
+        let _refresh_window = RefreshWindow(self.refresh_active.clone());
         let result = tokio::time::timeout(Duration::from_secs(35), async {
-            write_frame(
-                &self.input,
-                json!({"id":id,"method":method,"params":params}),
-            )
-            .await?;
-            rx.await.map_err(|_| "账户连接已关闭".to_string())?
-        })
-        .await
-        .map_err(|_| "账户服务响应超时".to_string())
-        .and_then(|value| value);
+            write_frame(&self.input,json!({"id":id,"method":method,"params":params})).await?;
+            let mut refreshed = false;
+            loop {
+                tokio::select! {
+                    result = &mut rx => return result.map_err(|_|"账户连接已关闭".to_string())?,
+                    request = self.refresh_rx.recv() => {
+                        let Some(request)=request else {return Err("账户刷新通道已关闭".into())};
+                        let result=refresh_external_tokens(self.refresher.as_ref(),&request.account_id,&mut refreshed).await;
+                        let frame=match result {Ok(value)=>json!({"id":request.id,"result":value}),Err(message)=>json!({"id":request.id,"error":{"code":-32000,"message":message}})};
+                        write_frame(&self.input,frame).await?;
+                    }
+                }
+            }
+        }).await.map_err(|_|"账户服务响应超时".to_string()).and_then(|result|result);
         self.pending.lock().remove(&id);
         result
     }
@@ -305,22 +443,25 @@ fn find_codex() -> Option<PathBuf> {
 }
 
 struct Binding {
+    epoch: uuid::Uuid,
+    last_used: tokio::time::Instant,
     scope: String,
     account_id: String,
     bridge: Box<dyn AccountRpc>,
     snapshot: Option<Value>,
     snapshot_at: u64,
+    token_key: String,
 }
 pub(crate) struct CodexAccountService {
     root: PathBuf,
-    binding: Mutex<Option<Binding>>,
+    binding: std::sync::Arc<Mutex<Option<Binding>>>,
     connector: Connector,
 }
 impl CodexAccountService {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
-            binding: Mutex::new(None),
+            binding: std::sync::Arc::new(Mutex::new(None)),
             connector: std::sync::Arc::new(|home| {
                 Box::pin(async move {
                     Bridge::start(&home)
@@ -340,6 +481,41 @@ impl CodexAccountService {
             .await;
             binding.bridge.stop().await;
         }
+    }
+
+    async fn release_idle(binding: &Mutex<Option<Binding>>, epoch: uuid::Uuid) -> Option<Duration> {
+        const IDLE: Duration = Duration::from_secs(60);
+        let mut guard = binding.lock().await;
+        let current = guard.as_ref().filter(|current| current.epoch == epoch)?;
+        let elapsed = tokio::time::Instant::now().saturating_duration_since(current.last_used);
+        if elapsed < IDLE {
+            return Some(IDLE - elapsed);
+        }
+        if let Some(mut old) = guard.take() {
+            // Stop this helper only. Login credentials and reset journals stay
+            // intact, and no account/logout or redemption RPC is sent.
+            let _ = tokio::time::timeout(Duration::from_secs(5), old.bridge.stop()).await;
+        }
+        None
+    }
+
+    fn expire_idle(&self, epoch: uuid::Uuid) {
+        let binding = std::sync::Arc::downgrade(&self.binding);
+        tokio::spawn(async move {
+            let mut delay = Duration::from_secs(60);
+            loop {
+                tokio::time::sleep(delay).await;
+                let Some(active) = binding.upgrade() else {
+                    break;
+                };
+                let next = Self::release_idle(&active, epoch).await;
+                drop(active);
+                match next {
+                    Some(next) => delay = next,
+                    None => break,
+                }
+            }
+        });
     }
     fn directory(&self, scope: &str) -> PathBuf {
         self.root.join(crate::provider_auth_catalog::key(scope))
@@ -380,11 +556,30 @@ impl CodexAccountService {
                         }
                     }
                 }
+                Some("account/updated")
+                    if notification
+                        .pointer("/params/authMode")
+                        .and_then(Value::as_str)
+                        == Some("chatgptAuthTokens") =>
+                {
+                    // The successful external bind already invalidated the
+                    // cache before its RPC. Its delayed confirmation must not
+                    // expire a quota snapshot fetched after that bind.
+                }
+                Some("account/login/completed")
+                    if notification.pointer("/params/success") == Some(&Value::Bool(true))
+                        && notification
+                            .pointer("/params/loginId")
+                            .is_none_or(Value::is_null) =>
+                {
+                    // Idempotent confirmation of the same verified identity.
+                }
                 Some(
                     "account/updated" | "account/login/completed" | "account/state/invalidated",
                 ) => {
                     binding.snapshot = None;
                     binding.snapshot_at = 0;
+                    binding.token_key.clear();
                 }
                 _ => (),
             }
@@ -400,7 +595,13 @@ impl CodexAccountService {
             .await;
         match result {
             Ok(mut value) => {
-                if value.get("accountId").and_then(Value::as_str) != Some(account_id) {
+                if binding.token_key.is_empty()
+                    || binding.account_id != account_id
+                    || value
+                        .get("accountId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| id != account_id)
+                {
                     binding.snapshot = None;
                     return Err("用量账号未核验或与当前模型账号不一致，请连接相同账号".into());
                 }
@@ -425,14 +626,51 @@ impl CodexAccountService {
             }
         }
     }
-    pub async fn handle(
+    pub async fn handle_authenticated(
         &self,
         scope: &str,
         account_id: &str,
+        access_token: &str,
         action: &str,
         body: &Value,
+        refresh: Option<TokenRefresher>,
     ) -> Result<Value, String> {
+        if scope.is_empty() || account_id.is_empty() || access_token.is_empty() {
+            return Err("当前模型账号缺少可用的登录身份，请先登录模型账号".into());
+        }
+        if action == "reset-consume" && body.get("confirmed") != Some(&Value::Bool(true)) {
+            return Err("使用重置卡前必须由用户确认".into());
+        }
         let mut guard = self.binding.lock().await;
+        let result = self
+            .handle_locked(
+                &mut guard,
+                scope,
+                account_id,
+                access_token,
+                action,
+                body,
+                refresh,
+            )
+            .await;
+        if action != "reset-status" {
+            if let Some(binding) = guard.as_mut() {
+                binding.last_used = tokio::time::Instant::now();
+            }
+        }
+        result
+    }
+
+    async fn handle_locked(
+        &self,
+        guard: &mut Option<Binding>,
+        scope: &str,
+        account_id: &str,
+        access_token: &str,
+        action: &str,
+        body: &Value,
+        refresh: Option<TokenRefresher>,
+    ) -> Result<Value, String> {
         let home = self.directory(scope);
         if action == "reset-status" {
             return Ok(
@@ -447,29 +685,46 @@ impl CodexAccountService {
                 old.bridge.stop().await;
             }
         }
+        if guard
+            .as_mut()
+            .is_some_and(|binding| !binding.bridge.alive())
+        {
+            if let Some(mut previous) = guard.take() {
+                previous.bridge.stop().await;
+            }
+        }
         if guard.is_none() {
             tokio::fs::create_dir_all(&home)
                 .await
                 .map_err(|_| "无法创建账户目录")?;
+            let epoch = uuid::Uuid::new_v4();
             *guard = Some(Binding {
+                epoch,
+                last_used: tokio::time::Instant::now(),
                 scope: scope.into(),
                 account_id: account_id.into(),
                 bridge: (self.connector)(home.clone()).await?,
                 snapshot: None,
                 snapshot_at: 0,
+                token_key: String::new(),
             });
+            self.expire_idle(epoch);
         }
         let binding = guard.as_mut().unwrap();
-        if !binding.bridge.alive() {
-            *guard = None;
-            return Err("账户服务已退出，请重新连接".into());
-        }
+        binding.last_used = tokio::time::Instant::now();
+        binding.bridge.set_refresher(account_id, refresh);
+        let token_key = crate::provider_auth_catalog::key(access_token);
         if action == "usage-login" {
-            binding.snapshot = None;
-            return binding
-                .bridge
-                .call("account/login/start", json!({"type":"chatgptDeviceCode"}))
-                .await;
+            binding.token_key.clear();
+        }
+        if binding.token_key != token_key {
+            binding.snapshot_at = 0;
+            binding.token_key.clear();
+            let result=binding.bridge.call("account/login/start",json!({"type":"chatgptAuthTokens","accessToken":access_token,"chatgptAccountId":account_id,"chatgptPlanType":null})).await?;
+            if result.get("type").and_then(Value::as_str) != Some("chatgptAuthTokens") {
+                return Err("Codex 账户服务未确认当前模型登录身份，请更新官方客户端".into());
+            }
+            binding.token_key = token_key;
         }
         let operation_path = home.join("reset-operation.json");
         let _operation_lock = if action.starts_with("reset-") {
@@ -497,7 +752,7 @@ impl CodexAccountService {
             action != "usage" || body.get("refresh") == Some(&Value::Bool(true)),
         )
         .await?;
-        if action == "usage" {
+        if matches!(action, "usage" | "usage-login") {
             let mut value = usage;
             value["operation"] = Self::operation(&operation_path)
                 .await?
@@ -587,6 +842,24 @@ impl CodexAccountService {
         let refreshed = Self::read_usage(binding, account_id, true).await.ok();
         Ok(json!({"operation":operation.view(),"usage":refreshed,"error":error}))
     }
+    #[cfg(test)]
+    async fn handle(
+        &self,
+        scope: &str,
+        account_id: &str,
+        action: &str,
+        body: &Value,
+    ) -> Result<Value, String> {
+        self.handle_authenticated(
+            scope,
+            account_id,
+            "fixture-account-token",
+            action,
+            body,
+            None,
+        )
+        .await
+    }
 }
 
 fn merge_rate_limit(snapshot: &mut Value, update: &Value) {
@@ -622,6 +895,158 @@ fn merge_rate_limit(snapshot: &mut Value, update: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rpc_failures_keep_distinct_safe_auth_policy_rate_and_transport_messages() {
+        for (error, expected) in [
+            (
+                json!({"code":-32602,"message":"codex account authentication required to read rate limits"}),
+                "尚未接入",
+            ),
+            (json!({"code":-32601,"message":"private payload"}), "不支持"),
+            (
+                json!({"code":-32603,"message":"HTTP 401 Unauthorized private-token"}),
+                "HTTP 401",
+            ),
+            (
+                json!({"code":-32603,"message":"HTTP 403 private-token"}),
+                "HTTP 403",
+            ),
+            (
+                json!({"code":-32603,"data":{"statusCode":429,"token":"private-token"}}),
+                "HTTP 429",
+            ),
+            (
+                json!({"code":-32603,"message":"HTTP 503 private-token"}),
+                "HTTP 503",
+            ),
+            (
+                json!({"code":-32602,"message":"External auth must use one of workspace(s) private-workspace"}),
+                "账户策略",
+            ),
+        ] {
+            let message = account_rpc_error(&error);
+            assert!(message.contains(expected));
+            assert!(!message.contains("private"));
+        }
+    }
+
+    #[tokio::test]
+    async fn external_refresh_is_same_account_once_only_and_never_echoes_rejected_tokens() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = calls.clone();
+        let refresh: TokenRefresher = std::sync::Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Ok(AccountTokens {
+                    access_token: "fixture-refreshed-token".into(),
+                    account_id: "account-a".into(),
+                })
+            })
+        });
+        let binding = ("account-a".into(), refresh);
+        let mut attempted = false;
+        assert!(
+            refresh_external_tokens(Some(&binding), "account-b", &mut attempted)
+                .await
+                .is_err()
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let value = refresh_external_tokens(Some(&binding), "account-a", &mut attempted)
+            .await
+            .unwrap();
+        assert_eq!(value["chatgptAccountId"], "account-a");
+        assert_eq!(value["accessToken"], "fixture-refreshed-token");
+        assert!(
+            refresh_external_tokens(Some(&binding), "account-a", &mut attempted)
+                .await
+                .is_err()
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let wrong: TokenRefresher = std::sync::Arc::new(|| {
+            Box::pin(async {
+                Ok(AccountTokens {
+                    access_token: "private-token".into(),
+                    account_id: "account-b".into(),
+                })
+            })
+        });
+        let mut attempted = false;
+        let error = refresh_external_tokens(
+            Some(&("account-a".into(), wrong)),
+            "account-a",
+            &mut attempted,
+        )
+        .await
+        .unwrap_err();
+        assert!(!error.contains("private-token"));
+    }
+
+    #[tokio::test]
+    async fn current_model_tokens_bind_before_quota_and_official_reply_needs_no_account_id() {
+        let root = std::env::temp_dir().join(format!("dsh-account-bind-{}", uuid::Uuid::new_v4()));
+        let state = std::sync::Arc::new(std::sync::Mutex::new(FakeState {
+            account: "account-a".into(),
+            ..Default::default()
+        }));
+        let service = fake_service(root.clone(), state.clone());
+        let value = service
+            .handle("scope-a", "account-a", "usage", &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(value["status"], "fresh");
+        assert!(value.get("accountId").is_none());
+        assert_eq!(
+            state.lock().unwrap().calls,
+            ["account/login/start", "account/rateLimits/read"]
+        );
+        {
+            let mut state = state.lock().unwrap();
+            state.notices.push(
+                json!({"method":"account/updated","params":{"authMode":"chatgptAuthTokens"}}),
+            );
+            state.notices.push(json!({"method":"account/login/completed","params":{"success":true,"loginId":null}}));
+        }
+        service
+            .handle("scope-a", "account-a", "usage", &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(
+            state.lock().unwrap().calls.len(),
+            2,
+            "unforced refresh uses the current account cache"
+        );
+        state.lock().unwrap().offline = true;
+        let stale = service
+            .handle("scope-a", "account-a", "usage-login", &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(stale["status"], "stale");
+        assert_eq!(stale["rateLimits"], value["rateLimits"]);
+        assert!(stale.get("verificationUrl").is_none());
+        assert!(!service.directory("scope-a").join("auth.json").exists());
+        drop(service);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_external_auth_never_reads_or_publishes_quota() {
+        let root = std::env::temp_dir().join(format!("dsh-account-bind-{}", uuid::Uuid::new_v4()));
+        let state = std::sync::Arc::new(std::sync::Mutex::new(FakeState {
+            account: "account-a".into(),
+            login_type: Some("chatgptDeviceCode".into()),
+            ..Default::default()
+        }));
+        let service = fake_service(root.clone(), state.clone());
+        assert!(
+            service
+                .handle("scope-a", "account-a", "usage", &json!({}))
+                .await
+                .is_err()
+        );
+        assert_eq!(state.lock().unwrap().calls, ["account/login/start"]);
+        drop(service);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
     #[tokio::test]
     async fn framed_account_reader_is_bounded_and_preserves_following_messages() {
         let wire = b"{\"method\":\"account/updated\"}\n{\"id\":2,\"result\":{}}\n";
@@ -661,23 +1086,39 @@ mod tests {
     }
     #[derive(Default)]
     struct FakeState {
+        stops: usize,
         keys: std::collections::HashSet<String>,
         lose_response: bool,
         fail_refresh: bool,
         account: String,
+        calls: Vec<String>,
+        offline: bool,
+        login_type: Option<String>,
+        notices: Vec<Value>,
     }
     struct FakeRpc(std::sync::Arc<std::sync::Mutex<FakeState>>);
     #[async_trait::async_trait]
     impl AccountRpc for FakeRpc {
         async fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
             let mut state = self.0.lock().unwrap();
+            state.calls.push(method.into());
             match method {
+                "account/login/start" => {
+                    if params["type"] != "chatgptAuthTokens"
+                        || params["chatgptAccountId"] != state.account
+                    {
+                        return Err("fixture account mismatch".into());
+                    }
+                    state.notices.push(json!({"method":"account/updated","params":{"authMode":"chatgptAuthTokens"}}));
+                    state.notices.push(json!({"method":"account/login/completed","params":{"success":true,"loginId":null}}));
+                    Ok(json!({"type":state.login_type.as_deref().unwrap_or("chatgptAuthTokens")}))
+                }
                 "account/rateLimits/read" => {
-                    if state.fail_refresh && !state.keys.is_empty() {
+                    if state.offline || state.fail_refresh && !state.keys.is_empty() {
                         return Err("offline".into());
                     }
                     Ok(
-                        json!({"accountId":state.account,"rateLimits":{"limitId":"codex","primary":{"usedPercent":75,"windowDurationMins":300,"resetsAt":null}},"rateLimitResetCredits":{"availableCount":2-state.keys.len(),"credits":null}}),
+                        json!({"rateLimits":{"limitId":"codex","primary":{"usedPercent":75,"windowDurationMins":300,"resetsAt":null}},"rateLimitResetCredits":{"availableCount":2-state.keys.len(),"credits":null}}),
                     )
                 }
                 "account/rateLimitResetCredit/consume" => {
@@ -694,7 +1135,12 @@ mod tests {
                 _ => Err("unexpected method".into()),
             }
         }
-        async fn stop(&mut self) {}
+        async fn stop(&mut self) {
+            self.0.lock().unwrap().stops += 1;
+        }
+        fn notifications(&mut self) -> Vec<Value> {
+            self.0.lock().unwrap().notices.drain(..).collect()
+        }
     }
     fn fake_service(
         root: PathBuf,
@@ -702,13 +1148,92 @@ mod tests {
     ) -> CodexAccountService {
         CodexAccountService {
             root,
-            binding: Mutex::new(None),
+            binding: std::sync::Arc::new(Mutex::new(None)),
             connector: std::sync::Arc::new(move |_| {
                 let state = state.clone();
                 Box::pin(async move { Ok(Box::new(FakeRpc(state)) as Box<dyn AccountRpc>) })
             }),
         }
     }
+    #[tokio::test]
+    async fn reset_requires_confirmation_before_connecting_or_redeeming() {
+        let root = std::env::temp_dir().join(format!("dsh-reset-confirm-{}", uuid::Uuid::new_v4()));
+        let state = std::sync::Arc::new(std::sync::Mutex::new(FakeState {
+            account: "account-a".into(),
+            ..Default::default()
+        }));
+        let service = fake_service(root.clone(), state.clone());
+        for body in [
+            json!({}),
+            json!({"confirmed":false}),
+            json!({"confirmed":"true"}),
+        ] {
+            let error = service
+                .handle("scope-a", "account-a", "reset-consume", &body)
+                .await
+                .unwrap_err();
+            assert!(error.contains("确认"));
+        }
+        assert!(state.lock().unwrap().keys.is_empty());
+        assert!(
+            !root.exists(),
+            "unconfirmed requests must not initialize an account connection"
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_usage_helper_stops_without_logging_out_or_redeeming_and_reconnects() {
+        let root = std::env::temp_dir().join(format!("dsh-usage-idle-{}", uuid::Uuid::new_v4()));
+        let state = std::sync::Arc::new(std::sync::Mutex::new(FakeState {
+            account: "account-a".into(),
+            ..Default::default()
+        }));
+        let service = fake_service(root.clone(), state.clone());
+        service
+            .handle("scope-a", "account-a", "usage", &json!({}))
+            .await
+            .unwrap();
+        let epoch = service.binding.lock().await.as_ref().unwrap().epoch;
+        assert!(
+            CodexAccountService::release_idle(&service.binding, epoch)
+                .await
+                .is_some()
+        );
+        assert_eq!(state.lock().unwrap().stops, 0);
+        service.binding.lock().await.as_mut().unwrap().last_used =
+            tokio::time::Instant::now() - Duration::from_secs(61);
+        let calls = state.lock().unwrap().calls.clone();
+        assert!(
+            CodexAccountService::release_idle(&service.binding, epoch)
+                .await
+                .is_none()
+        );
+        assert!(service.binding.lock().await.is_none());
+        assert_eq!(state.lock().unwrap().stops, 1);
+        assert_eq!(
+            state.lock().unwrap().calls,
+            calls,
+            "idle cleanup sends no account operation"
+        );
+        assert!(state.lock().unwrap().keys.is_empty());
+        let again = service
+            .handle("scope-a", "account-a", "usage", &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(again["status"], "fresh");
+        assert!(
+            CodexAccountService::release_idle(&service.binding, epoch)
+                .await
+                .is_none()
+        );
+        assert!(
+            service.binding.lock().await.is_some(),
+            "an old deadline cannot stop a new binding"
+        );
+        drop(service);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     async fn account_reset_reconnect_reuses_persisted_key_and_never_double_redeems() {
         let root = std::env::temp_dir().join(format!("dsh-reset-{}", uuid::Uuid::new_v4()));
@@ -727,7 +1252,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(prepared, again);
-        let body = json!({"operationId":prepared["operation"]["operationId"]});
+        let body = json!({"operationId":prepared["operation"]["operationId"],"confirmed":true});
         let result = service
             .handle("scope-a", "account-a", "reset-consume", &body)
             .await
@@ -773,7 +1298,7 @@ mod tests {
                 "scope-a",
                 "account-a",
                 "reset-consume",
-                &json!({"operationId":prepared["operation"]["operationId"]}),
+                &json!({"operationId":prepared["operation"]["operationId"],"confirmed":true}),
             )
             .await
             .unwrap();

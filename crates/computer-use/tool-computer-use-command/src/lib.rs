@@ -2,10 +2,13 @@
 //! controller and a backwards-compatible external-command adapter.
 
 mod adapter;
+mod arguments;
 mod browser;
 mod command;
 mod control;
 mod desktop;
+#[cfg(test)]
+mod lifecycle_tests;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -89,6 +92,16 @@ impl ComputerUseRuntime {
         self.adapter.adapter_id()
     }
 
+    /// Built-in transport capabilities. External commands provide their own
+    /// protocol, so their supported action set remains unknown.
+    pub fn supported_actions(&self) -> Option<&'static [&'static str]> {
+        supported_actions(self.adapter_id())
+    }
+
+    pub fn human_only_actions(&self) -> &'static [&'static str] {
+        human_only_actions(self.adapter_id())
+    }
+
     pub fn availability(&self) -> Result<(), AdapterError> {
         self.adapter.availability()
     }
@@ -165,6 +178,9 @@ impl ComputerUseRuntime {
         signal: AbortPredicate,
         origin: ControlOrigin,
     ) -> Result<AdapterOutput, AdapterError> {
+        let normalized = arguments::normalize(self.adapter_id(), arguments)?;
+        let arguments = normalized.as_ref();
+        validate_window_target(self.adapter_id(), arguments)?;
         let was_active = self.adapter.has_owner_activity(&owner_id);
         let request = AdapterRequest::from_arguments(arguments)?
             .with_owner_id(owner_id.clone())
@@ -226,6 +242,17 @@ impl ComputerUseRuntime {
     }
 
     async fn reap_inactive(&self) {
+        let owners = self
+            .owner_agents
+            .lock()
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect::<Vec<_>>();
+        for owner in owners {
+            if owner.status() == dsh_agent::AgentStatus::Running {
+                self.adapter.mark_owner_active(owner.id().as_str());
+            }
+        }
         for owner_id in self.adapter.reap_inactive().await {
             if self.adapter.has_owner_activity(&owner_id) {
                 continue;
@@ -241,6 +268,133 @@ impl ComputerUseRuntime {
             }
         }
     }
+}
+
+fn supported_actions(adapter: &str) -> Option<&'static [&'static str]> {
+    match adapter {
+        "native-browser" => Some(&[
+            "start",
+            "status",
+            "capture",
+            "navigate",
+            "cua_browser_state",
+            "click",
+            "double_click",
+            "type",
+            "input",
+            "key",
+            "keypress",
+            "drag",
+            "scroll",
+            "list_sessions",
+            "close",
+            "takeover",
+            "resume_agent",
+        ]),
+        "native-desktop" => Some(&[
+            "start",
+            "status",
+            "capture",
+            "click",
+            "double_click",
+            "type",
+            "input",
+            "key",
+            "keypress",
+            "drag",
+            "scroll",
+            "list_sessions",
+            "list_windows",
+            "focus_window",
+            "close",
+            "mouse_move",
+            "mouse_down",
+            "mouse_up",
+            "key_down",
+            "key_up",
+            "release_inputs",
+            "takeover",
+            "resume_agent",
+        ]),
+        "uu-desktop" => Some(&[
+            "start",
+            "status",
+            "capture",
+            "click",
+            "double_click",
+            "type",
+            "input",
+            "key",
+            "keypress",
+            "drag",
+            "scroll",
+            "list_sessions",
+            "close",
+            "video_frame",
+            "mouse_move",
+            "mouse_down",
+            "mouse_up",
+            "key_down",
+            "key_up",
+            "release_inputs",
+            "takeover",
+            "resume_agent",
+        ]),
+        _ => None,
+    }
+}
+
+fn human_only_actions(adapter: &str) -> &'static [&'static str] {
+    match adapter {
+        "native-desktop" => &[
+            "mouse_move",
+            "mouse_down",
+            "mouse_up",
+            "key_down",
+            "key_up",
+            "release_inputs",
+            "takeover",
+            "resume_agent",
+        ],
+        "uu-desktop" => &[
+            "video_frame",
+            "mouse_move",
+            "mouse_down",
+            "mouse_up",
+            "key_down",
+            "key_up",
+            "release_inputs",
+            "takeover",
+            "resume_agent",
+        ],
+        _ => &["takeover", "resume_agent"],
+    }
+}
+
+fn validate_window_target(adapter: &str, arguments: &Value) -> Result<(), AdapterError> {
+    let Some(value) = arguments.get("windowId") else {
+        return Ok(());
+    };
+    // External command arguments are an existing pass-through protocol.
+    if adapter == "command" {
+        return Ok(());
+    }
+    if adapter != "native-desktop" || arguments["action"].as_str().map(str::trim) != Some("start") {
+        return Err(AdapterError::new(
+            "COMPUTER_USE_INVALID_ARGUMENT",
+            "windowId is supported only by native-desktop start",
+        ));
+    }
+    if value
+        .as_u64()
+        .is_none_or(|id| id == 0 || id > isize::MAX as u64)
+    {
+        return Err(AdapterError::new(
+            "COMPUTER_USE_INVALID_ARGUMENT",
+            "windowId must be a positive integer window handle returned by list_windows",
+        ));
+    }
+    Ok(())
 }
 
 const READ_ONLY_ACTIONS: &[&str] = &[
@@ -465,19 +619,22 @@ pub fn install_adapter(
                 "properties": {
                     "action": {
                         "type": "string",
-                        "description": "Actions: start, status, capture, click, double_click, type, key, drag, scroll, list_sessions, close. Browser additionally supports navigate. Native desktop controls this computer; UU desktop controls the device bound in settings. Each physical desktop is owned by one conversation at a time. If control.mode is manual, stop observing and sending input until the user returns control; only the GUI may resume."
+                        "description": "Actions: start, status, capture, click, double_click, type, key, drag, scroll, list_sessions, close. Browser additionally supports navigate. Native desktop additionally supports list_windows after start: read visible windowId/title/bounds, then close before starting a chosen windowId. Native focus_window focuses only the already bound window; when state.foreground is false, use focus_window then capture a fresh screenshot before input. Native desktop controls the Host computer; UU desktop controls the device bound in settings. Each physical desktop is owned by one conversation at a time. If control.mode is manual, stop observing and sending input until the user returns control; only the GUI may resume. After control is returned, capture a fresh screenshot before input. Raw key/mouse edges and video_frame are GUI-only."
                     },
                     "sessionId": {
                         "type": "string",
                         "description": "Stable isolated browser-session name. Defaults to default."
                     },
                     "url": { "type": "string", "description": "Absolute http/https URL for start or navigate." },
+                    "windowId": { "type": "integer", "description": "Native-desktop start only: positive integer window handle returned by list_windows, validated from 1 through the Host platform handle limit. Omit to use the primary desktop. Close the current control session before changing the target; do not guess a window ID." },
                     "x": { "type": "number", "description": "Viewport x coordinate; validated between 0 and 100000." },
                     "y": { "type": "number", "description": "Viewport y coordinate; validated between 0 and 100000." },
                     "button": { "type": "string", "enum": ["left", "right", "middle", "back", "forward"] },
                     "text": { "type": "string", "description": "Text inserted into the focused element; type may also include x and y to focus first." },
-                    "deltaX": { "type": "number" },
-                    "deltaY": { "type": "number" },
+                    "deltaX": { "type": "number", "description": "Horizontal scroll amount: positive moves right, negative moves left. Scroll requires deltaX or deltaY." },
+                    "deltaY": { "type": "number", "description": "Vertical scroll amount: positive moves down, negative moves up." },
+                    "scrollX": { "type": "number", "description": "Alias for deltaX; do not supply conflicting values." },
+                    "scrollY": { "type": "number", "description": "Alias for deltaY; do not supply conflicting values." },
                     "keys": { "type":"array", "items":{"type":"string"}, "description":"One to five names: optional modifiers followed by one key, e.g. [Control,a] or [Enter]." },
                     "endX": { "type":"number", "description":"Drag end x coordinate in the returned viewport." },
                     "endY": { "type":"number", "description":"Drag end y coordinate in the returned viewport." },
@@ -772,6 +929,22 @@ mod tests {
         assert!(schema.description.contains("isolated browser"));
         assert_eq!(schema.parameters["required"], json!(["action"]));
         assert!(schema.parameters["properties"].get("sessionId").is_some());
+        assert_eq!(
+            schema.parameters["properties"]["windowId"]["type"],
+            "integer"
+        );
+        assert!(
+            schema.parameters["properties"]["windowId"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("positive integer")
+        );
+        assert!(
+            schema.parameters["properties"]["action"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("list_windows")
+        );
 
         let result = tools
             .execute(ToolExecutionInput {
@@ -816,6 +989,155 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(cancelled.code, "COMPUTER_USE_ABORTED");
+    }
+
+    struct RecordingAdapter {
+        id: &'static str,
+        calls: SyncMutex<Vec<Value>>,
+    }
+    #[async_trait::async_trait]
+    impl ComputerUseAdapter for RecordingAdapter {
+        fn adapter_id(&self) -> &'static str {
+            self.id
+        }
+        async fn execute(
+            &self,
+            request: AdapterRequest,
+            _: AbortPredicate,
+        ) -> Result<AdapterOutput, AdapterError> {
+            self.calls.lock().push(request.arguments);
+            Ok(AdapterOutput::json(json!({"ok":true})))
+        }
+    }
+    fn recording_runtime(id: &'static str) -> (ComputerUseRuntime, Arc<RecordingAdapter>) {
+        let adapter = Arc::new(RecordingAdapter {
+            id,
+            calls: SyncMutex::new(Vec::new()),
+        });
+        (
+            ComputerUseRuntime {
+                ctx: Context::root(),
+                adapter: adapter.clone(),
+                timeout: Duration::from_secs(5),
+                owner_agents: SyncMutex::new(HashMap::new()),
+            },
+            adapter,
+        )
+    }
+
+    #[tokio::test]
+    async fn invalid_window_targets_are_rejected_before_the_worker_for_both_origins() {
+        let (runtime, adapter) = recording_runtime("native-desktop");
+        for value in [
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!("42"),
+            Value::Null,
+            json!(u64::MAX),
+        ] {
+            let args = json!({"action":"start","windowId":value});
+            assert_eq!(
+                runtime
+                    .execute("owner", &args, Arc::new(|| false))
+                    .await
+                    .unwrap_err()
+                    .code,
+                "COMPUTER_USE_INVALID_ARGUMENT"
+            );
+            assert_eq!(
+                runtime
+                    .execute_for_human_session("owner".into(), &args, Arc::new(|| false))
+                    .await
+                    .unwrap_err()
+                    .code,
+                "COMPUTER_USE_INVALID_ARGUMENT"
+            );
+        }
+        assert!(adapter.calls.lock().is_empty());
+        runtime
+            .execute(
+                "owner",
+                &json!({"action":"start","windowId":42}),
+                Arc::new(|| false),
+            )
+            .await
+            .unwrap();
+        assert_eq!(adapter.calls.lock()[0]["windowId"], 42);
+        assert!(
+            runtime
+                .execute(
+                    "owner",
+                    &json!({"action":"capture","windowId":42}),
+                    Arc::new(|| false)
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(adapter.calls.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn window_targets_are_native_only_without_changing_command_pass_through() {
+        for id in ["native-browser", "uu-desktop"] {
+            let (runtime, adapter) = recording_runtime(id);
+            assert!(
+                runtime
+                    .execute(
+                        "owner",
+                        &json!({"action":"start","windowId":42}),
+                        Arc::new(|| false)
+                    )
+                    .await
+                    .is_err()
+            );
+            assert!(adapter.calls.lock().is_empty());
+        }
+        let (runtime, adapter) = recording_runtime("command");
+        runtime
+            .execute(
+                "owner",
+                &json!({"action":"custom","windowId":"external-id"}),
+                Arc::new(|| false),
+            )
+            .await
+            .unwrap();
+        assert_eq!(adapter.calls.lock()[0]["windowId"], "external-id");
+    }
+
+    #[test]
+    fn adapter_capabilities_do_not_advertise_unimplemented_controls() {
+        let browser = recording_runtime("native-browser").0;
+        let native = recording_runtime("native-desktop").0;
+        let uu = recording_runtime("uu-desktop").0;
+        let command = recording_runtime("command").0;
+        assert!(browser.supported_actions().unwrap().contains(&"navigate"));
+        assert!(!browser.supported_actions().unwrap().contains(&"key_down"));
+        assert!(
+            native
+                .supported_actions()
+                .unwrap()
+                .contains(&"list_windows")
+        );
+        assert!(!native.supported_actions().unwrap().contains(&"video_frame"));
+        assert!(
+            native
+                .supported_actions()
+                .unwrap()
+                .contains(&"focus_window")
+        );
+        assert!(action_requires_approval("focus_window"));
+        assert!(!native.supported_actions().unwrap().contains(&"navigate"));
+        assert!(uu.supported_actions().unwrap().contains(&"video_frame"));
+        assert!(!uu.supported_actions().unwrap().contains(&"list_windows"));
+        assert!(command.supported_actions().is_none());
+        for runtime in [&browser, &native, &uu] {
+            for action in runtime.human_only_actions() {
+                assert!(runtime.supported_actions().unwrap().contains(action));
+            }
+        }
+        assert_eq!(command.human_only_actions(), &["takeover", "resume_agent"]);
+        assert!(!action_requires_approval("list_windows"));
     }
 
     #[tokio::test]

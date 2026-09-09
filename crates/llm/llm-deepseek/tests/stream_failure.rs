@@ -176,6 +176,115 @@ async fn responses_cancel_interrupts_a_quiet_body() {
 }
 
 #[tokio::test]
+async fn responses_transport_failure_preserves_done_only_text_and_has_one_error_finish() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        read_request(&mut socket).await;
+        let body = "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"m0\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Received complete paragraph\"}]}}\n\n";
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len() + 128).as_bytes()).await.unwrap();
+        socket.shutdown().await.unwrap();
+    });
+    let ctx = Context::root();
+    let runtime = LlmRuntime::install(&ctx);
+    apply(
+        &ctx,
+        &runtime,
+        adapter_for_api(format!("http://{address}"), Some("openai-responses".into())),
+    )
+    .unwrap();
+    let chunks: Vec<_> =
+        tokio::time::timeout(Duration::from_secs(2), runtime.stream(options()).collect())
+            .await
+            .expect("failed stream must settle");
+    server.await.unwrap();
+    assert!(chunks.iter().any(|chunk| matches!(chunk, StreamChunk::BlockEnd {block:ContentBlock::Text{text}, ..} if text=="Received complete paragraph")));
+    let finishes = chunks
+        .iter()
+        .filter_map(|chunk| {
+            if let StreamChunk::Finish {
+                reason,
+                replay_state,
+            } = chunk
+            {
+                Some((reason, replay_state))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(finishes.len(), 1);
+    assert!(matches!(finishes[0].0, FinishReason::Error {failure} if failure.code=="TRANSPORT"));
+    assert_eq!(finishes[0].1.as_ref().unwrap()["responseStatus"], "failed");
+}
+
+#[tokio::test]
+async fn responses_token_limit_settles_before_eof_and_does_not_finalize_a_partial_call() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        read_request(&mut socket).await;
+        let body = [
+            serde_json::json!({"type":"response.output_item.added","output_index":0,"item":{"id":"f0","type":"function_call","status":"in_progress","call_id":"c0","name":"write","arguments":""}}),
+            serde_json::json!({"type":"response.function_call_arguments.delta","item_id":"f0","delta":"{\"path\":"}),
+            serde_json::json!({"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"id":"m1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Saved prefix"}]}],"usage":{"input_tokens":2,"output_tokens":32}}}),
+        ].into_iter().map(|event|format!("data: {event}\n\n")).collect::<String>();
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{body}", body.len() + 128).as_bytes()).await.unwrap();
+        let mut byte = [0];
+        let _ = socket.read(&mut byte).await;
+    });
+    let ctx = Context::root();
+    let runtime = LlmRuntime::install(&ctx);
+    apply(
+        &ctx,
+        &runtime,
+        adapter_for_api(format!("http://{address}"), Some("openai-responses".into())),
+    )
+    .unwrap();
+    let chunks: Vec<_> =
+        tokio::time::timeout(Duration::from_secs(2), runtime.stream(options()).collect())
+            .await
+            .expect("incomplete terminal event must settle before EOF");
+    server.abort();
+    assert!(chunks.iter().any(|chunk| matches!(chunk, StreamChunk::BlockEnd {block:ContentBlock::Text{text},..} if text=="Saved prefix")));
+    assert!(!chunks.iter().any(|chunk| matches!(
+        chunk,
+        StreamChunk::BlockEnd {
+            block: ContentBlock::ToolCall { .. },
+            ..
+        }
+    )));
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| matches!(chunk, StreamChunk::Usage {usage} if usage.output_tokens==32))
+    );
+    let finishes = chunks
+        .iter()
+        .filter_map(|chunk| {
+            if let StreamChunk::Finish {
+                reason,
+                replay_state,
+            } = chunk
+            {
+                Some((reason, replay_state))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(finishes.len(), 1);
+    assert_eq!(finishes[0].0, &FinishReason::MaxTokens);
+    assert_eq!(finishes[0].1.as_ref().unwrap()["truncatedToolCalls"], true);
+    assert_eq!(
+        finishes[0].1.as_ref().unwrap()["items"],
+        serde_json::json!([])
+    );
+}
+
+#[tokio::test]
 async fn truncated_response_body_emits_one_terminal_error_finish() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -320,4 +429,166 @@ async fn anthropic_cancel_interrupts_a_quiet_body() {
         .unwrap();
     assert!(chunks.iter().any(|chunk|matches!(chunk,StreamChunk::Finish{reason:FinishReason::Error{failure},..}if failure.code=="CANCELLED")));
     server.abort();
+}
+
+fn protocol_prefix(api: &str) -> Vec<u8> {
+    let events = match api {
+        "openai-responses" => vec![
+            serde_json::json!({"type":"response.output_text.delta","item_id":"m0","output_index":0,"delta":"Saved prefix"}),
+        ],
+        "anthropic-messages" => vec![
+            serde_json::json!({"type":"message_start","message":{"id":"m0","model":"test-model","usage":{"input_tokens":1,"output_tokens":1}}}),
+            serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+            serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Saved prefix"}}),
+        ],
+        _ => vec![serde_json::json!({"choices":[{"delta":{"content":"Saved prefix"}}]})],
+    };
+    events
+        .into_iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect::<String>()
+        .into_bytes()
+}
+
+fn protocol_terminal(api: &str) -> &'static [u8] {
+    match api {
+        "openai-responses" => b"data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
+        "anthropic-messages" => b"data: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n",
+        _ => b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+    }
+}
+
+async fn collect_exact_sse(api: &str, body: Vec<u8>) -> Vec<StreamChunk> {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        read_request(&mut socket).await;
+        let mut response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).into_bytes();
+        response.extend(body);
+        socket.write_all(&response).await.unwrap();
+        socket.shutdown().await.unwrap();
+    });
+    let ctx = Context::root();
+    let runtime = LlmRuntime::install(&ctx);
+    apply(
+        &ctx,
+        &runtime,
+        adapter_for_api(format!("http://{address}"), Some(api.into())),
+    )
+    .unwrap();
+    let chunks = tokio::time::timeout(Duration::from_secs(2), runtime.stream(options()).collect())
+        .await
+        .expect("SSE fixture must settle");
+    server.await.unwrap();
+    chunks
+}
+
+#[tokio::test]
+async fn all_protocols_preserve_valid_frames_before_same_body_encoding_or_json_failure() {
+    for api in [
+        "openai-completions",
+        "openai-responses",
+        "anthropic-messages",
+    ] {
+        for suffix in [
+            b"data: \xff\n\n".as_slice(),
+            b"data: \xe4\xb8".as_slice(),
+            b"data: {broken}\n\n".as_slice(),
+        ] {
+            let mut body = protocol_prefix(api);
+            body.extend_from_slice(suffix);
+            let chunks = collect_exact_sse(api, body).await;
+            let mut assembled = dsh_llm::BlockAssembler::new();
+            for chunk in &chunks {
+                assembled.push(chunk);
+            }
+            assert!(
+                assembled
+                    .interrupted_blocks()
+                    .iter()
+                    .any(|block| matches!(block,ContentBlock::Text{text}if text=="Saved prefix")),
+                "api={api}, chunks={chunks:?}"
+            );
+            assert!(
+                matches!(assembled.finish(),FinishReason::Error{failure} if failure.code=="MALFORMED_RESPONSE"),
+                "api={api}, chunks={chunks:?}"
+            );
+            assert_eq!(
+                chunks
+                    .iter()
+                    .filter(|chunk| matches!(chunk, StreamChunk::Finish { .. }))
+                    .count(),
+                1
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn all_protocols_honor_the_terminal_before_unrelated_malformed_tail_bytes() {
+    for api in [
+        "openai-completions",
+        "openai-responses",
+        "anthropic-messages",
+    ] {
+        let mut body = protocol_prefix(api);
+        body.extend_from_slice(protocol_terminal(api));
+        body.extend_from_slice(b"data: \xff\n\n");
+        let chunks = collect_exact_sse(api, body).await;
+        let mut assembled = dsh_llm::BlockAssembler::new();
+        for chunk in &chunks {
+            assembled.push(chunk);
+        }
+        assert_eq!(
+            assembled.finish(),
+            FinishReason::Stop,
+            "api={api}, chunks={chunks:?}"
+        );
+        assert_eq!(
+            chunks
+                .iter()
+                .filter(|chunk| matches!(chunk, StreamChunk::Finish { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            assembled
+                .blocks()
+                .iter()
+                .any(|block| matches!(block,ContentBlock::Text{text}if text=="Saved prefix"))
+        );
+    }
+}
+
+#[tokio::test]
+async fn all_protocols_flush_an_unterminated_valid_final_event_at_eof() {
+    for api in [
+        "openai-completions",
+        "openai-responses",
+        "anthropic-messages",
+    ] {
+        let mut body = protocol_prefix(api);
+        body.extend_from_slice(protocol_terminal(api));
+        while body.last() == Some(&b'\n') {
+            body.pop();
+        }
+        let chunks = collect_exact_sse(api, body).await;
+        let mut assembled = dsh_llm::BlockAssembler::new();
+        for chunk in &chunks {
+            assembled.push(chunk);
+        }
+        assert_eq!(
+            assembled.finish(),
+            FinishReason::Stop,
+            "api={api}, chunks={chunks:?}"
+        );
+        assert_eq!(
+            chunks
+                .iter()
+                .filter(|chunk| matches!(chunk, StreamChunk::Finish { .. }))
+                .count(),
+            1
+        );
+    }
 }

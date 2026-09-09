@@ -93,7 +93,7 @@ fn is_json_number(value: &JsonValue) -> bool {
         return false;
     }
     match value.as_f64() {
-        Some(number) => number.is_finite() && !number.is_sign_negative(),
+        Some(number) => number.is_finite() && !(number == 0.0 && number.is_sign_negative()),
         None => true, // u64/i64 forms are finite by construction
     }
 }
@@ -771,4 +771,77 @@ pub fn validate_json_schema_value(
     path: &str,
 ) -> Vec<String> {
     check_value(schema, value, path)
+}
+
+#[cfg(test)]
+mod number_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn finite_negative_numbers_validate_as_scalars_and_scroll_deltas() {
+        let scalar = json!({"type":"number"});
+        let object = json!({"type":"object","properties":{"deltaY":{"type":"number"}},"required":["deltaY"],"additionalProperties":false});
+        for value in [
+            json!(-600),
+            json!(-120),
+            json!(-0.25),
+            json!(i64::MIN),
+            json!(f64::MIN),
+            json!(-f64::from_bits(1)),
+            json!(0),
+            json!(600),
+        ] {
+            assert!(
+                validate_json_schema_value(&scalar, &value, "value").is_empty(),
+                "scalar {value}"
+            );
+            assert!(
+                validate_json_schema_value(&object, &json!({"deltaY":value}), "arguments")
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn number_validation_keeps_negative_zero_and_non_number_rejections() {
+        let scalar = json!({"type":"number"});
+        let object = json!({"type":"object","properties":{"deltaY":{"type":"number"}},"required":["deltaY"]});
+        for value in [
+            json!(-0.0),
+            json!("-120"),
+            json!(null),
+            json!(false),
+            json!([]),
+            json!({}),
+            json!(f64::NAN),
+            json!(f64::INFINITY),
+            json!(f64::NEG_INFINITY),
+        ] {
+            assert!(
+                !validate_json_schema_value(&scalar, &value, "value").is_empty(),
+                "invalid scalar {value}"
+            );
+            assert!(
+                !validate_json_schema_value(&object, &json!({"deltaY":value}), "arguments")
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            validate_json_schema_value(&scalar, &json!(-0.0), "value"),
+            ["\"value\" must be a finite JSON number"]
+        );
+    }
+
+    #[test]
+    fn accepting_negative_numbers_does_not_remove_enum_or_const_constraints() {
+        let choices = json!({"type":"number","enum":[-600,-120,-0.25]});
+        let exact = json!({"type":"number","const":-120});
+        assert_supported_json_schema(&choices).unwrap();
+        assert_supported_json_schema(&exact).unwrap();
+        assert!(validate_json_schema_value(&choices, &json!(-600), "deltaY").is_empty());
+        assert!(!validate_json_schema_value(&choices, &json!(-601), "deltaY").is_empty());
+        assert!(validate_json_schema_value(&exact, &json!(-120), "deltaY").is_empty());
+        assert!(!validate_json_schema_value(&exact, &json!(120), "deltaY").is_empty());
+    }
 }

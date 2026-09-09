@@ -38,6 +38,7 @@ const APPROVAL_OUTCOMES: &[&str] = &[
     "allowed-always",
     "rejected",
     "cancelled",
+    "timed-out",
     "unavailable",
 ];
 const APPROVAL_POLICIES: &[&str] = &["ask", "never"];

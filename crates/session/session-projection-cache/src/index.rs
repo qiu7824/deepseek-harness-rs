@@ -48,6 +48,23 @@ pub struct Config {
     pub write_interval_ms: u64,
 }
 
+fn open_domain_sync(facility: &Arc<DomainFacility>) -> Result<Arc<Domain>, String> {
+    // An external executor cannot replenish the enclosing Tokio task's
+    // cooperative budget. Populated caches must not park setup forever.
+    let open = || {
+        futures::executor::block_on(tokio::task::unconstrained(
+            facility.open(&projection_cache_domain_spec()),
+        ))
+    };
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|runtime| runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(open)
+    } else {
+        open()
+    }
+}
+
 /// Per-session write-behind bookkeeping (live sessions only; dropped at
 /// retire).
 struct DirtyState {
@@ -112,7 +129,7 @@ impl SessionProjectionCache {
                     .to_string(),
             );
         }
-        let domain = futures::executor::block_on(facility.open(&projection_cache_domain_spec()))?;
+        let domain = open_domain_sync(facility)?;
         let table = domain.table("sessions");
         let service = Arc::new(Self {
             ctx: ctx.clone(),
@@ -652,6 +669,71 @@ pub const INJECT: [&str; 4] = [
 #[cfg(test)]
 mod compatibility_tests {
     use dsh_session::{SessionHeader, SessionLogOffset, session_id};
+
+    #[test]
+    fn populated_cache_opens_inside_a_tokio_task_without_exhausting_its_budget() {
+        const CHILD: &str = "DSH_TEST_PROJECTION_WARM_START";
+        if std::env::var_os(CHILD).is_none() {
+            let mut child=std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","index::compatibility_tests::populated_cache_opens_inside_a_tokio_task_without_exhausting_its_budget","--nocapture"])
+                .env(CHILD,"1").spawn().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success());
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("populated cache initialization exceeded its deadline");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        let root = std::env::temp_dir().join(format!("dsh-warm-cache-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("session_projcache/sessions")).unwrap();
+        for id in 0..300 {
+            let row = serde_json::json!({"version":5,"record":{"identity":{"createdAt":7,"cwd":"workspace"},"rows":{"title":{"ver":1,"seq":4,"val":format!("Session {id}")}}}});
+            std::fs::write(
+                root.join(format!("session_projcache/sessions/session-{id}.json")),
+                serde_json::to_vec(&row).unwrap(),
+            )
+            .unwrap();
+        }
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let directory = root.clone();
+                tokio::spawn(async move {
+                    use dsh_storage::StorageBackend;
+                    let ctx = cordis::Context::root();
+                    let storage = dsh_storage::Storage::install(&ctx);
+                    let backend =
+                        dsh_storage_json::JsonStorageBackend::new(directory.to_string_lossy());
+                    let _registration = storage.backend.register("json", backend.clone()).unwrap();
+                    let facility = dsh_storage_domain::DomainFacility::install(
+                        &ctx,
+                        dsh_storage_domain::DomainFacilityConfig {
+                            backend: "json".into(),
+                            routes: Default::default(),
+                        },
+                    )
+                    .unwrap();
+                    let domain = super::open_domain_sync(&facility).unwrap();
+                    assert_eq!(domain.table("sessions").keys().len(), 300);
+                    domain.close().await;
+                    backend.close().await.unwrap();
+                    ctx.fiber.dispose().await;
+                })
+                .await
+                .unwrap();
+            });
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn legacy_session_list_metadata_row_is_version_mismatched() {

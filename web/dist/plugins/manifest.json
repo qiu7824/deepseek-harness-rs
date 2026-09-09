@@ -40,7 +40,7 @@
     {
       "id": "@deepseek-ai/dsh-client-connection",
       "url": "/plugins/connection.js",
-      "rev": "0f70076c5c4840d4",
+      "rev": "274f18e5fa3e6a1e",
       "inject": [],
       "immediately": true
     },
@@ -56,7 +56,7 @@
     {
       "id": "@deepseek-ai/dsh-client-runtime",
       "url": "/plugins/client-runtime.js",
-      "rev": "5000958866a426a1",
+      "rev": "1c7dd0d5d0219ba2",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-typert-registry",
@@ -92,7 +92,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-layout",
       "url": "/plugins/ui-layout.js",
-      "rev": "f79416e371db0f4c",
+      "rev": "4a28de8163fac503",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-theme"
@@ -102,7 +102,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-sidebar",
       "url": "/plugins/ui-sidebar.js",
-      "rev": "645999caa6976048",
+      "rev": "e86c3a502fda698c",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-layout",
@@ -124,7 +124,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-general",
       "url": "/plugins/ui-settings-general.js",
-      "rev": "9651b29821ef5911",
+      "rev": "361ee4e0498619e7",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
@@ -138,7 +138,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-models",
       "url": "/plugins/ui-settings-models.js",
-      "rev": "91b36d378e791f9e",
+      "rev": "a156c33497108cf5",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
@@ -162,7 +162,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-conversation",
       "url": "/plugins/ui-conversation.js",
-      "rev": "83eab728fbc0793a",
+      "rev": "0b844dad85e48444",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -187,7 +187,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-tool",
       "url": "/plugins/ui-tool.js",
-      "rev": "04f0327c15d8ba34",
+      "rev": "a48c0ad8f7f28144",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-locale",
@@ -271,7 +271,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-subagent",
       "url": "/plugins/ui-subagent.js",
-      "rev": "d1c4aa1e5a0f60b4",
+      "rev": "3b79f9c7eac44646",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
@@ -308,7 +308,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-model-selection",
       "url": "/plugins/ui-model-selection.js",
-      "rev": "bfd42be53a1830a5",
+      "rev": "9772708900bad9ec",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
@@ -320,7 +320,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-permission-presets",
       "url": "/plugins/ui-permission.js",
-      "rev": "613e408606a63fb2",
+      "rev": "9447e24df8dd64d8",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -394,7 +394,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-trajectory",
       "url": "/plugins/ui-trajectory.js",
-      "rev": "72a0a02f5eb72320",
+      "rev": "45695d10b3ec0541",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
@@ -405,7 +405,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-code-graph",
       "url": "/plugins/ui-code-graph.js",
-      "rev": "89a37943e9c12359",
+      "rev": "2a1d23cd4db82dbb",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-conversation",
@@ -416,7 +416,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-directory-picker-browse",
       "url": "/plugins/directory-picker-browse.js",
-      "rev": "4dba579a69b62c0b",
+      "rev": "ba7f099b5b2fc4f0",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-workspace",

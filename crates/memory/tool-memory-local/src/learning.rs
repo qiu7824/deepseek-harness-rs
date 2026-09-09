@@ -194,6 +194,31 @@ fn identifier(value: &str) -> String {
 }
 
 /// Rules are product-owned, not generated from an error's text or tool result.
+fn control_outcome(code: &str) -> bool {
+    matches!(
+        code,
+        "ABORTED"
+            | "ABORTED_BEFORE_DISPATCH"
+            | "CANCELLED"
+            | "CANCELED"
+            | "USER_APPROVAL_DENIED"
+            | "USER_APPROVAL_CANCELLED"
+            | "USER_APPROVAL_TIMED_OUT"
+            | "USER_APPROVAL_UNAVAILABLE"
+            | "COMPUTER_USE_MANUAL_CONTROL"
+            | "COMPUTER_USE_ABORTED"
+            | "COMPUTER_USE_HUMAN_REQUIRED"
+            | "COMPUTER_USE_SESSION_NOT_FOUND"
+            | "COMPUTER_USE_DESKTOP_DISCONNECTED"
+            | "COMPUTER_USE_BUSY"
+            | "COMPUTER_USE_FRAME_PENDING"
+            | "COMPUTER_USE_CAPTURE_INTERRUPTED"
+            | "COMPUTER_USE_DEVICE_BUSY"
+            | "COMPUTER_USE_SESSION_LIMIT"
+    )
+}
+
+/// An error identifies an observed failure, not which model or component caused it.
 pub fn rule(code: &str, source: &str) -> (&'static str, &'static str, &'static str, bool) {
     if source == "feedback" {
         return ("user-feedback", "feedback", "", false);
@@ -216,7 +241,11 @@ pub fn rule(code: &str, source: &str) -> (&'static str, &'static str, &'static s
         };
     }
     match code {
-        "TOOL_INPUT_INVALID" | "INVALID_ARGUMENTS" | "INVALID_INPUT" | "VALIDATION_ERROR" => (
+        "TOOL_INPUT_INVALID"
+        | "INVALID_ARGUMENTS"
+        | "INVALID_INPUT"
+        | "VALIDATION_ERROR"
+        | "COMPUTER_USE_INVALID_ARGUMENT" => (
             "tool-input-schema",
             "arguments",
             "调用工具前按当前工具 schema 核对必填参数、参数名与类型；修正后再执行，不能猜测旧版本参数。",
@@ -226,6 +255,12 @@ pub fn rule(code: &str, source: &str) -> (&'static str, &'static str, &'static s
             "observe-before-write",
             "filesystem-observation",
             "修改文件前先读取或检查当前目标；更换路径或文件变化后重新观察，并按当前权限策略执行。",
+            true,
+        ),
+        "FS_AMBIGUOUS_EDIT" => (
+            "unique-edit-target",
+            "filesystem-observation",
+            "编辑匹配不唯一时重新读取目标内容，补充足够的上下文以唯一定位，再执行修改并检查结果。",
             true,
         ),
         "UNKNOWN_TOOL" => (
@@ -248,6 +283,17 @@ pub fn rule(code: &str, source: &str) -> (&'static str, &'static str, &'static s
         ),
         _ => ("unclassified-tool-failure", "tool-error", "", false),
     }
+}
+
+fn reusable_rule(entry: &LearningEntry) -> bool {
+    if control_outcome(&entry.code) {
+        return false;
+    }
+    if entry.source == "feedback" {
+        return true;
+    }
+    let current = rule(&entry.code, &entry.source);
+    entry.source == "tool" && current.3 && entry.rule_id == current.0
 }
 
 impl LearningStore {
@@ -494,6 +540,7 @@ impl LearningStore {
             .iter()
             .filter(|entry| {
                 entry.enabled
+                    && reusable_rule(entry)
                     && entry.status == "verified"
                     && !entry.suggestion.is_empty()
                     && entry.workspace_key == workspace
@@ -595,15 +642,7 @@ impl LearningStore {
             _ => return Err("未知经验来源".into()),
         };
         let code = identifier(&observation.code).to_ascii_uppercase();
-        if matches!(
-            code.as_str(),
-            "ABORTED"
-                | "ABORTED_BEFORE_DISPATCH"
-                | "CANCELLED"
-                | "CANCELED"
-                | "USER_APPROVAL_DENIED"
-                | "USER_APPROVAL_CANCELLED"
-        ) {
+        if control_outcome(&code) {
             return Ok(None);
         }
         if observation.workspace_key.len() != 64
@@ -845,7 +884,7 @@ impl LearningStore {
                         .contains(&query))
             })
             .collect();
-        rows.sort_by_key(|entry| std::cmp::Reverse(entry.last_seen));
+        rows.sort_by_key(|entry| std::cmp::Reverse((reusable_rule(entry), entry.last_seen)));
         let total = rows.len();
         let limit = payload
             .get("limit")
@@ -853,7 +892,24 @@ impl LearningStore {
             .unwrap_or(100)
             .min(200) as usize;
         let memory_enabled = self.policy_enabled.load(Ordering::Acquire);
-        json!({"enabled":document.enabled,"memoryEnabled":memory_enabled,"effectiveEnabled":document.enabled && memory_enabled,"revision":document.config_revision,"lastError":self.last_error.lock().unwrap().clone(),"total":total,"items":rows.into_iter().take(limit).collect::<Vec<_>>()})
+        let diagnostic_total = rows.iter().filter(|entry| !reusable_rule(entry)).count();
+        let items = rows
+            .into_iter()
+            .take(limit)
+            .map(|entry| {
+                let mut value = serde_json::to_value(entry).expect("learning entry JSON");
+                value["disposition"] = json!(if !reusable_rule(entry) {
+                    "diagnostic"
+                } else if entry.source == "feedback" {
+                    "feedback"
+                } else {
+                    "experience"
+                });
+                value["reusableRule"] = json!(reusable_rule(entry));
+                value
+            })
+            .collect::<Vec<_>>();
+        json!({"enabled":document.enabled,"memoryEnabled":memory_enabled,"effectiveEnabled":document.enabled && memory_enabled,"revision":document.config_revision,"lastError":self.last_error.lock().unwrap().clone(),"total":total,"diagnosticTotal":diagnostic_total,"items":items})
     }
 
     pub async fn invoke(&self, method: &str, payload: Value) -> Result<Value, String> {
@@ -912,6 +968,12 @@ impl LearningStore {
                             .ok_or("enabled 必须为布尔值")?
                     }
                     "memory.learningConfirm" => {
+                        if control_outcome(&entry.code) {
+                            return Err("这是控制或连接状态，无需确认为长期修正经验；请在工作台处理当前状态".into());
+                        }
+                        if !reusable_rule(entry) {
+                            return Err("此记录属于执行或服务诊断，缺少可验证的通用修正规则；请先修复当前能力或配置，无需将其确认为模型经验。".into());
+                        }
                         if payload.get("confirmed") != Some(&Value::Bool(true)) {
                             return Err("必须明确确认经验修正建议".into());
                         }
@@ -986,6 +1048,7 @@ fn diagnostic(rule_id: &str) -> &'static str {
     match rule_id {
         "tool-input-schema" => "工具参数未通过当前 schema 校验。",
         "observe-before-write" => "目标尚未完成写入前所需的读取或观察。",
+        "unique-edit-target" => "编辑内容存在多个匹配位置，需要核对实际目标与上下文。",
         "tool-availability" => "调用的工具当前不可用。",
         "runtime-unavailable" => "工具依赖或目标不可用；需要核查当前环境。",
         "tool-preflight-denied" => "当前工具前置条件或权限检查未通过。",

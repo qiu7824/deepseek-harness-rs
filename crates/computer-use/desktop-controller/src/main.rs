@@ -30,7 +30,7 @@ fn main() {
         io::{BufRead, Read},
         sync::{
             Arc, Mutex,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU64, Ordering},
             mpsc,
         },
         time::Duration,
@@ -38,7 +38,10 @@ fn main() {
     struct Command {
         value: Value,
         cancelled: Arc<AtomicBool>,
+        input_generation: u64,
     }
+    let input_generation = Arc::new(AtomicU64::new(0));
+    let input_reader = input_generation.clone();
     let paused = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
     let cancellations = Arc::new(Mutex::new(HashMap::<u64, Arc<AtomicBool>>::new()));
@@ -82,6 +85,14 @@ fn main() {
                 && matches!(
                     action,
                     "takeover"
+                        | "resume_agent"
+                        | "focus_window"
+                        | "mouse_move"
+                        | "mouse_down"
+                        | "mouse_up"
+                        | "key_down"
+                        | "key_up"
+                        | "release_inputs"
                         | "click"
                         | "double_click"
                         | "drag"
@@ -92,7 +103,10 @@ fn main() {
                         | "input"
                 )
             {
-                pause_reader.store(true, Ordering::SeqCst)
+                input_reader.fetch_add(1, Ordering::SeqCst);
+                if action != "release_inputs" {
+                    pause_reader.store(true, Ordering::SeqCst)
+                }
             }
             let Some(id) = value["id"].as_u64() else {
                 break;
@@ -109,7 +123,14 @@ fn main() {
                 }
                 table.insert(id, cancelled.clone());
             }
-            if tx.try_send(Command { value, cancelled }).is_err() {
+            if tx
+                .try_send(Command {
+                    value,
+                    cancelled,
+                    input_generation: input_reader.load(Ordering::SeqCst),
+                })
+                .is_err()
+            {
                 cancellation_reader.lock().unwrap().remove(&id);
                 respond(
                     &json!({"id":id,"ok":false,"error":{"code":"COMPUTER_USE_BUSY","message":"控制命令队列繁忙"}}),
@@ -153,6 +174,9 @@ fn main() {
                 if engine.is_some() && requested != owner {
                     return Err("控制会话归属不匹配".into());
                 }
+                if let Some(engine) = &engine {
+                    engine.check_start_target(args)?;
+                }
                 if engine.is_none() {
                     if media.is_none() {
                         media = Some(platform::MediaPlatform::new()?);
@@ -163,6 +187,7 @@ fn main() {
                         args,
                         paused.clone(),
                         command.cancelled.clone(),
+                        input_generation.clone(),
                     )?);
                 }
                 return Ok(json!({"state":engine.as_ref().unwrap().state()}));
@@ -177,13 +202,15 @@ fn main() {
                 engine
                     .as_mut()
                     .ok_or("控制会话不存在")?
-                    .control_mode(action == "takeover");
+                    .control_mode(action == "takeover")?;
                 return Ok(json!({"state":engine.as_ref().ok_or("控制会话不存在")?.state()}));
             }
-            engine
-                .as_mut()
-                .ok_or("控制会话不存在")?
-                .act(args, human, command.cancelled.clone())
+            engine.as_mut().ok_or("控制会话不存在")?.act(
+                args,
+                human,
+                command.cancelled.clone(),
+                command.input_generation,
+            )
         })();
         cancellations.lock().unwrap().remove(&id);
         let response = match result {
@@ -193,7 +220,18 @@ fn main() {
                 json!({"id":id,"ok":true,"value":value})
             }
             Err(message) => {
-                json!({"id":id,"ok":false,"error":{"code":if message.starts_with("COMPUTER_USE_"){message.clone()}else{"COMPUTER_USE_DESKTOP_ERROR".into()},"message":message}})
+                let code = if message.starts_with("COMPUTER_USE_") {
+                    message.clone()
+                } else {
+                    "COMPUTER_USE_DESKTOP_ERROR".into()
+                };
+                let diagnostics = native::control_diagnostics();
+                let message = if code == "COMPUTER_USE_MANUAL_CONTROL" {
+                    format!("{message}; controlDiagnostics={diagnostics}")
+                } else {
+                    message
+                };
+                json!({"id":id,"ok":false,"error":{"code":code,"message":message,"controlDiagnostics":diagnostics}})
             }
         };
         if !respond(&response) {

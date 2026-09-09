@@ -585,6 +585,7 @@ impl ReactLoopAgent {
             *phase_turn = turn;
         }
         let mut turn_ends: Option<TurnEndReason> = None;
+        let mut continuation = crate::response_continuation::ResponseContinuation::default();
         let mut target = InboxTarget::NextTurn;
         let step_outcome: Result<(), LoopCancelled> = async {
             loop {
@@ -627,6 +628,13 @@ impl ReactLoopAgent {
                     *phase_step = step;
                 }
                 let step_end = async {
+                    let system_text = render_prompt(&assembly).expect("renderPrompt");
+                    let previous_system = self.session.with_events(|events| events.iter().rev().find(|event| event.type_ == "system/message").and_then(|event| event.data.pointer("/message/content/0/text")).and_then(serde_json::Value::as_str).map(str::to_owned));
+                    if previous_system.as_deref() != Some(system_text.as_str()) {
+                        let message = dsh_llm::create_message(dsh_llm::Role::System, if system_text.is_empty() { Vec::new() } else { vec![dsh_llm::ContentBlock::Text { text: system_text.clone() }] }, dsh_llm::MessageSource::Plugin { plugin: "@deepseek-ai/dsh-system-prompt".into(), form: None, sections: None, summary: None, compaction_id: None, source_command_id: None });
+                        let previous_seq = self.session.with_events(|events| events.iter().rev().find(|event| event.type_ == "system/message").map(|event| event.seq.get()));
+                        self.session.append("system/message", serde_json::json!({"turn": turn, "step": step, "message": message}), Some(match previous_seq { Some(seq) => SurfaceIntent { surface_op: SurfaceOp::Replace { start: seq, end: seq }, source_event_seqs: Some(vec![seq]) }, None => SurfaceIntent { surface_op: SurfaceOp::Append, source_event_seqs: None } })).expect("system/message");
+                    }
                     for message in &messages {
                         self.session
                             .append(
@@ -639,7 +647,7 @@ impl ReactLoopAgent {
                             )
                             .expect("user/message");
                     }
-                    self.step(&assembly).await
+                    self.step(&assembly, &mut continuation).await
                 }
                 .await;
                 self.session
@@ -650,14 +658,8 @@ impl ReactLoopAgent {
                     )
                     .expect("step/end");
                 let step_end = step_end?;
-                // max-tokens is sticky: a later completed step must not
-                // downgrade the turn outcome.
                 if let Some(step_end) = step_end {
-                    if turn_ends.is_none()
-                        || !matches!(turn_ends.as_ref(), Some(TurnEndReason::MaxTokens))
-                    {
-                        turn_ends = Some(step_end);
-                    }
+                    turn_ends = Some(step_end);
                 }
                 throw_if_aborted(&signal)?;
                 if turn_ends.is_some() && self.inbox.next_step().is_empty() {
@@ -744,6 +746,7 @@ impl ReactLoopAgent {
     async fn step(
         &self,
         assembly: &PromptAssembly,
+        continuation: &mut crate::response_continuation::ResponseContinuation,
     ) -> Result<Option<TurnEndReason>, LoopCancelled> {
         let (turn, step, signal) = match &*self.phase.lock() {
             Phase::Running {
@@ -756,7 +759,7 @@ impl ReactLoopAgent {
 
         loop {
             let boundary_messages = self.session.derive_messages().expect("deriveMessages");
-            let (request, prepared_call) = self
+            let (mut request, prepared_call) = self
                 .build_request(
                     turn,
                     step,
@@ -766,8 +769,14 @@ impl ReactLoopAgent {
                     &signal,
                 )
                 .await?;
+            // build_request may publish a V3 system/message boundary. Refresh
+            // the immutable message list after that append so the dispatch
+            // invariant and the provider receive the same durable surface.
+            request.messages = self.session.derive_messages().expect("deriveMessages").as_ref().clone();
             let mut assembler = BlockAssembler::new();
+            let mut saw_tool_call = false;
             let mut chunk_seqs = Vec::new();
+            let mut request_metrics = crate::request_metrics::RequestMetrics::new();
             let stream = match &prepared_call {
                 Some(prepared) => {
                     let request_for_stream = request.clone();
@@ -779,9 +788,11 @@ impl ReactLoopAgent {
             throw_if_aborted(&signal)?;
             let mut stream = stream;
             loop {
+                let next_wait_started = std::time::Instant::now();
                 let next = tokio::select! {
                     biased;
                     _ = signal.cancelled() => {
+                        request_metrics.waited(next_wait_started.elapsed());
                         let content = assembler.interrupted_blocks();
                         if !content.is_empty() {
                             let message = create_assistant_message(
@@ -797,6 +808,7 @@ impl ReactLoopAgent {
                                 "step": step,
                                 "message": message,
                                 "interrupted": true,
+                                "requestMetrics": request_metrics.value(),
                             });
                             if let Some(usage) = assembler.usage() {
                                 data.as_object_mut().expect("assistant message data")
@@ -818,10 +830,12 @@ impl ReactLoopAgent {
                     },
                     next = stream.next() => next,
                 };
+                request_metrics.waited(next_wait_started.elapsed());
                 let Some(chunk) = next else {
                     break;
                 };
                 throw_if_aborted(&signal)?;
+                let chunk_arrived = std::time::Instant::now();
                 let event = self
                     .session
                     .append(
@@ -831,7 +845,18 @@ impl ReactLoopAgent {
                     )
                     .expect("assistant/chunk");
                 chunk_seqs.push(event.seq.get());
+                saw_tool_call |= matches!(&chunk,
+                    dsh_llm::StreamChunk::BlockStart { block_type, .. } if block_type == "tool-call")
+                    || matches!(
+                        &chunk,
+                        dsh_llm::StreamChunk::ToolCallDelta { .. }
+                            | dsh_llm::StreamChunk::BlockEnd {
+                                block: ContentBlock::ToolCall { .. },
+                                ..
+                            }
+                    );
                 assembler.push(&chunk);
+                request_metrics.processed(&chunk, chunk_arrived);
             }
             if signal.aborted() {
                 let content = assembler.interrupted_blocks();
@@ -849,6 +874,7 @@ impl ReactLoopAgent {
                         "step": step,
                         "message": message,
                         "interrupted": true,
+                        "requestMetrics": request_metrics.value(),
                     });
                     if let Some(usage) = assembler.usage() {
                         data.as_object_mut()
@@ -885,34 +911,71 @@ impl ReactLoopAgent {
                     }
                     _ => unreachable!(),
                 };
-                let fallback: BoxFuture<'static, ArcValue> =
-                    Box::pin(async { arc(None::<RequestErrorAction>) });
-                let decision = self
-                    .dispatcher()
-                    .waterfall(
-                        "agent/request-error",
-                        |agent| {
-                            arc(AgentRequestErrorPayload {
-                                agent: Arc::clone(agent),
-                                turn,
-                                step,
+                // Provider cancellation and an explicit safety refusal are
+                // terminal even when a provider's retry mode is "always".
+                // They still follow the normal prefix persistence and
+                // agent/error notification path below.
+                let terminal_failure = matches!(finish, FinishReason::Aborted { .. })
+                    || failure.code == "CONTENT_FILTER";
+                let retry = if terminal_failure {
+                    false
+                } else {
+                    let fallback: BoxFuture<'static, ArcValue> =
+                        Box::pin(async { arc(None::<RequestErrorAction>) });
+                    let decision = self
+                        .dispatcher()
+                        .waterfall(
+                            "agent/request-error",
+                            |agent| {
+                                arc(AgentRequestErrorPayload {
+                                    agent: Arc::clone(agent),
+                                    turn,
+                                    step,
+                                    provider: request.provider.clone(),
+                                    failure: failure.clone(),
+                                    retry_policy: prepared_call
+                                        .as_ref()
+                                        .map(|prepared| prepared.retry_policy.clone()),
+                                    signal: Arc::clone(&signal),
+                                })
+                            },
+                            fallback,
+                        )
+                        .await;
+                    let action = downcast_arc::<Option<RequestErrorAction>>(&decision)
+                        .expect("agent/request-error action");
+                    action.as_ref().as_ref() == Some(&RequestErrorAction::Retry)
+                };
+                if signal.aborted() || !retry {
+                    let content = assembler.interrupted_blocks();
+                    if !content.is_empty() {
+                        let message = create_assistant_message(
+                            content,
+                            ModelMessageSource {
                                 provider: request.provider.clone(),
-                                failure: failure.clone(),
-                                retry_policy: prepared_call
-                                    .as_ref()
-                                    .map(|prepared| prepared.retry_policy.clone()),
-                                signal: Arc::clone(&signal),
-                            })
-                        },
-                        fallback,
-                    )
-                    .await;
-                throw_if_aborted(&signal)?;
-                let action = downcast_arc::<Option<RequestErrorAction>>(&decision)
-                    .expect("agent/request-error action");
-                if action.as_ref().as_ref() != Some(&RequestErrorAction::Retry) {
+                                model: request.model.clone(),
+                                replay_state: None,
+                            },
+                        );
+                        let mut data = serde_json::json!({"turn":turn,"step":step,"message":message,"interrupted":true,"requestMetrics":request_metrics.value()});
+                        if let Some(usage) = assembler.usage() {
+                            data["usage"] = serde_json::to_value(usage).expect("usage");
+                        }
+                        self.session
+                            .append(
+                                "assistant/message",
+                                data,
+                                Some(SurfaceIntent {
+                                    surface_op: SurfaceOp::Append,
+                                    source_event_seqs: Some(chunk_seqs),
+                                }),
+                            )
+                            .expect("failed assistant/message");
+                    }
+                    throw_if_aborted(&signal)?;
                     return Err(LoopCancelled::failure(failure));
                 }
+                throw_if_aborted(&signal)?;
                 continue;
             }
 
@@ -922,21 +985,32 @@ impl ReactLoopAgent {
                 .and_then(serde_json::Value::as_str)
                 .filter(|model| !model.is_empty() && model.len() <= 1024)
                 .unwrap_or(&request.model);
+            let content = assembler.blocks();
+            let unsafe_replay = finish == FinishReason::MaxTokens && (
+                saw_tool_call || assembler.replay_state().is_some_and(|state| state["truncatedToolCalls"] == true)
+                || !content.iter().any(|block| matches!(block, ContentBlock::Text { text } if !text.trim().is_empty()))
+            );
             let message = create_assistant_message(
-                assembler.blocks(),
+                content,
                 ModelMessageSource {
                     provider: request.provider.clone(),
                     model: response_model.to_string(),
-                    replay_state: assembler.replay_state().cloned(),
+                    replay_state: (!unsafe_replay)
+                        .then(|| assembler.replay_state().cloned())
+                        .flatten(),
                 },
             );
             let mut data = serde_json::json!({
                 "turn": turn,
                 "step": step,
                 "message": message,
+                "requestMetrics": request_metrics.value(),
             });
             if let Some(usage) = assembler.usage() {
                 data["usage"] = serde_json::to_value(usage).expect("usage");
+            }
+            if finish == FinishReason::MaxTokens {
+                data["truncated"] = serde_json::json!(true);
             }
             self.session
                 .append(
@@ -948,10 +1022,6 @@ impl ReactLoopAgent {
                     }),
                 )
                 .expect("assistant/message");
-            if finish == FinishReason::MaxTokens {
-                return Ok(Some(TurnEndReason::MaxTokens));
-            }
-
             let tool_calls: Vec<ToolCallBlock> = message
                 .content
                 .iter()
@@ -968,9 +1038,44 @@ impl ReactLoopAgent {
                     _ => None,
                 })
                 .collect();
-            if tool_calls.is_empty() {
+            if tool_calls.is_empty() || finish == FinishReason::MaxTokens {
+                throw_if_aborted(&signal)?;
+                if let Some(notice) = continuation
+                    .observe(
+                        &finish,
+                        assembler.replay_state(),
+                        &message.content,
+                        saw_tool_call,
+                    )
+                    .map_err(LoopCancelled::failure)?
+                {
+                    if !notice.is_empty() {
+                        self.inbox
+                            .splice(
+                                InboxTarget::NextStep,
+                                self.inbox.next_step().len() as f64,
+                                0.0,
+                                vec![dsh_llm::create_user_message(
+                                    vec![ContentBlock::Text {
+                                        text: notice.into(),
+                                    }],
+                                    dsh_llm::MessageSource::Plugin {
+                                        plugin: "agent-loop:response-recovery".into(),
+                                        form: Some(dsh_llm::ContextForm::Notice),
+                                        sections: None,
+                                        summary: Some("继续完成未结束的模型答复".into()),
+                                        compaction_id: None,
+                                        source_command_id: None,
+                                    },
+                                )],
+                            )
+                            .expect("response continuation notice");
+                    }
+                    return Ok(None);
+                }
                 return Ok(Some(TurnEndReason::Completed));
             }
+            continuation.reset();
             let weak = self.weak.clone();
             let tools = self.tools();
             let agent = self.weak.upgrade().expect("live agent");
@@ -1110,6 +1215,8 @@ impl ReactLoopAgent {
             },
         });
         let baseline = self.session.request_header();
+        let mut persisted_header = header.clone();
+        persisted_header.system = None;
         let notice = if boundary_messages.is_empty() {
             None
         } else {
@@ -1135,7 +1242,7 @@ impl ReactLoopAgent {
                 .append(
                     "request/header",
                     serde_json::json!({
-                        "header": header,
+                        "header": persisted_header,
                         "reason": if baseline.is_none() { "initial" } else { "resume" },
                     }),
                     None,
@@ -1149,7 +1256,7 @@ impl ReactLoopAgent {
             self.session
                 .append(
                     "request/header",
-                    serde_json::json!({ "header": header, "reason": "change" }),
+                    serde_json::json!({ "header": persisted_header, "reason": "change" }),
                     None,
                 )
                 .expect("request/header change");
@@ -1190,7 +1297,8 @@ impl ReactLoopAgent {
             model: header.config.model.clone(),
             reasoning_effort: header.config.reasoning_effort.clone(),
             messages: boundary_messages.to_vec(),
-            system: header.system.clone(),
+            // V3 carries system instructions exactly once in messages.
+            system: None,
             tools: header.tools.clone(),
             temperature: header.config.temperature,
             max_tokens: header.config.max_tokens,

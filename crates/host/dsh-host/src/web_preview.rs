@@ -1372,6 +1372,7 @@ impl PreviewService {
         jobs: Arc<dyn JobRegistry>,
         subprocess: Arc<dyn SubprocessRuntime>,
         sandbox: Arc<dyn SandboxProvider>,
+        code_index: BackgroundIndex,
     ) -> Arc<Self> {
         Arc::new(Self {
             registry,
@@ -1381,7 +1382,7 @@ impl PreviewService {
             subprocess,
             sandbox,
             site_token: uuid::Uuid::new_v4().to_string(),
-            code_index: BackgroundIndex::new(),
+            code_index,
             state: Mutex::new(PreviewState {
                 challenges: HashMap::new(),
                 projects: HashMap::new(),
@@ -3038,9 +3039,10 @@ pub fn register(
     jobs: Arc<dyn JobRegistry>,
     subprocess: Arc<dyn SubprocessRuntime>,
     sandbox: Arc<dyn SandboxProvider>,
+    code_index: BackgroundIndex,
     allow_remote_host: bool,
 ) -> RouteDisposer {
-    let service = PreviewService::new(registry, agents, terminals, jobs, subprocess, sandbox);
+    let service = PreviewService::new(registry, agents, terminals, jobs, subprocess, sandbox, code_index);
     web_server.register(WebRoute {
         kind: WebRouteKind::Prefix,
         path: ROUTE.to_string(),

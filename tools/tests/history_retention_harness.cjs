@@ -18,7 +18,7 @@ session.history=async payload=>({result:{ok:true,value:{events:Array.from({lengt
   assert.equal(session.hasMoreAfter,true);assert.notEqual(session.historyTargetSeq,null,'evicting the live tail must enter historical browsing');
  }
  const before=session.events;
- let release;session.history=()=>new Promise(resolve=>{release=resolve});const pending=session.loadOlder();session.openGeneration++;
+ let release;session.history=()=>new Promise(resolve=>{release=resolve});const pending=session.loadOlder();await Promise.resolve();session.openGeneration++;
  release({result:{ok:true,value:{events:Array.from({length:12},(_,i)=>entry(session.baseSeq-12+i)),hasMoreBefore:true}}});await pending;
  assert.equal(session.events,before,'stale pages cannot rewrite a new window');
  console.log(JSON.stringify({pages:85,retainedEvents:session.events.length,retainedBytes:session.historyPages.reduce((n,p)=>n+p.bytes,0),rebuilds,prepends}));

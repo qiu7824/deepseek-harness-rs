@@ -71,7 +71,6 @@ for (const required of [
   '"/xterm.js"',
   'data-terminal-engine": "xterm.js-5.5.0"',
   'action: "resize"',
-  'terminalAction(entry, "input"',
   "固定到工作区",
   "固定到全局",
 ]) {
@@ -79,3 +78,25 @@ for (const required of [
 }
 
 console.log("git and interactive terminal contract verified");
+
+(async () => {
+  const sent = [], errors = [];
+  const queue = exported.createTerminalInputQueue(async (entry, text) => {
+    sent.push({ ...entry, text }); await new Promise(resolve => setImmediate(resolve));
+  }, error => errors.push(error.message));
+  const a = {homeSessionId:'session-a',terminalId:'first'}, b = {homeSessionId:'session-b',terminalId:'second'};
+  queue.enqueue(a, 'tail-a'); queue.enqueue(b, 'tail-b');
+  a.terminalId = 'changed-after-input';
+  await queue.flush();
+  assert.deepEqual(sent, [{homeSessionId:'session-a',terminalId:'first',text:'tail-a'}, {...b,text:'tail-b'}]);
+  sent.length = 0;
+  queue.enqueue(b, 'z'.repeat(9000)); await queue.flush();
+  assert.equal(sent.map(row => row.text).join(''), 'z'.repeat(9000));
+  assert.ok(sent.every(row => row.text.length <= 4096));
+  queue.enqueue(b, 'x'.repeat(1024 * 1024 + 1)); await queue.flush();
+  assert.equal(errors.length, 1, 'oversized input is rejected visibly');
+  const failed = exported.createTerminalInputQueue(async () => { throw Error('disconnected'); }, error => errors.push(error.message));
+  failed.enqueue(b, 'a'.repeat(9000)); await failed.flush();
+  assert.equal(errors.at(-1), 'disconnected');
+  console.log('PASS terminal queue: captured owner, switch/unmount flush, serial chunking, bounded backlog and failed-stream stop');
+})().catch(error => { console.error(error); process.exitCode = 1; });

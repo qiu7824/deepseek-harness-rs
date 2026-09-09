@@ -29,7 +29,7 @@ class HistoryWindowContractTests(unittest.TestCase):
         for required in (
             "historyTargetSeq = null",
             "async loadAround(targetSeq, force = false)",
-            "this.history({ afterSeq: targetSeq, maxMessages: HISTORY_PAGE_MESSAGES })",
+            "this.fetchHistory({ afterSeq: targetSeq, maxMessages: HISTORY_PAGE_MESSAGES },",
             "eventContainsSeq(entry.event, targetSeq)",
             "async returnLatest()",
         ):
@@ -70,16 +70,15 @@ class HistoryWindowContractTests(unittest.TestCase):
         self.assertIn("const hasMoreAfter = useSession((s) => s.hasMoreAfter)", source)
         self.assertIn("const historyBrowsing = useSession((s) => s.historyBrowsing)", source)
         self.assertIn("const loadingNewer = useSession((s) => s.loadingNewer)", source)
-        self.assertIn("readerForwardIntentRef", source)
-        self.assertIn("!historyBrowsing || readerForwardIntentRef.current", source)
-        self.assertIn("if (historyBrowsing || !hasMoreAfter", source)
-        self.assertTrue("!historyBrowsing && atBottomRef.current && (appendedUser" in source, "streaming must respect reader follow state")
-        self.assertIn("Promise.resolve(loadNewer())", source)
-        self.assertIn("newerRequestRef.current", source)
-        self.assertIn("[historyBrowsing, hasMoreAfter, loadingNewer, loadNewer]", source)
-        self.assertIn("floor - el.scrollTop <= 25", source)
-        self.assertIn("el.scrollTop <= 80", source)
-        self.assertIn("Promise.resolve(loadOlder())", source)
+        for required in (
+            "class ChatScrollController",
+            "pageAtBoundary()",
+            "cancelHistoryPaging",
+            "historyNavigationRevision",
+            "returnLatest",
+            "scrollOwner.current.commit()",
+        ):
+            self.assertIn(required, source)
         self.assertNotIn("loadOlderAnchored", source)
         self.assertNotIn('t("chat.loadOlder")', source)
 
@@ -94,11 +93,11 @@ class HistoryWindowContractTests(unittest.TestCase):
 
     def test_live_history_trims_on_page_limit_before_event_limit(self):
         source = RUNTIME.read_text(encoding="utf-8")
-        self.assertIn(
-            "if (trim && (this.historyPages.length > HISTORY_WINDOW_PAGES || this.events.length > HISTORY_WINDOW_EVENTS)) this.trimHistoryWindow(\"head\")",
-            source,
-        )
-        self.assertIn("if (this.events.length > HISTORY_WINDOW_EVENTS && this.historyPages.length === 1)", source)
+        self.assertIn("this.historyPages.length > HISTORY_WINDOW_PAGES", source)
+        self.assertIn("this.events.length > HISTORY_WINDOW_EVENTS", source)
+        self.assertIn("page.bytes || 0", source)
+        self.assertIn("HISTORY_WINDOW_BYTES", source)
+        self.assertIn("this.historyPages.length === 1", source)
         self.assertIn("page.firstSeq = eventStartSeq(this.events[0])", source)
         self.assertIn("page.eventCount = this.events.length", source)
 

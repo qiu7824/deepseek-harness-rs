@@ -26,7 +26,7 @@ for plugin in ("dsh-better-sidebar",):
     client = root / "release" / "plugins" / plugin / "lib" / "client.js"
     assert package.is_file() and client.is_file(), f"bundled plugin is incomplete: {plugin}"
 better_sidebar = (root / "release" / "plugins" / "dsh-better-sidebar" / "lib" / "client.js").read_text(encoding="utf-8")
-for required in ('id: "dsh-better-sidebar"', 'conversation.session.header.utilities', 'shell.overlay', '/__dsh-preview/', '显示工作台', 'renderMarkdown', 'file-save', 'git-status', 'git-action', 'terminal-action', 'WorkbenchPanel', 'WorkbenchTerminal', 'WorkbenchBrowser', 'data-layout":"full', 'highlightCode', 'isHtml(state.file)?"preview"', 'stage-all', 'unstage-all', 'commit-push', '提交并推送', 'DocTabs', 'MAX_SESSION_STATES = 16', 'closeWorkbench'):
+for required in ('id: "dsh-better-sidebar"', 'conversation.session.header.utilities', 'shell.dock', '/__dsh-preview/', '显示工作台', 'renderMarkdown', 'file-save', 'git-status', 'git-action', 'terminal-action', 'WorkbenchPanel', 'WorkbenchTerminal', 'WorkbenchBrowser', 'data-layout":"full', 'highlightCode', 'isHtml(state.file)?"preview"', 'stage-all', 'unstage-all', 'commit-push', '提交并推送', 'DocTabs', 'MAX_SESSION_STATES = 16', 'closeWorkbench'):
     assert required in better_sidebar, f"better-sidebar Rust slice missing: {required}"
 for forbidden in ('children: "✎"', 'children: "■"', '"hero.preview": "预览版"'):
     assert forbidden not in conversation, f"retired task presentation remains: {forbidden}"
@@ -47,14 +47,15 @@ for entry in manifest_value["entries"]:
     actual = hashlib.sha256(bundle_path.read_bytes()).hexdigest()[:16]
     assert entry["rev"] == actual, f"{declared} manifest rev is stale"
 runtime_source = (root / "web" / "dist" / "plugins" / "client-runtime.js").read_text(encoding="utf-8")
-conversation_source = (root / "web" / "dist" / "plugins" / "ui-conversation.js").read_text(encoding="utf-8")
 connection_source = (root / "web" / "dist" / "plugins" / "connection.js").read_text(encoding="utf-8")
 for required in ("hasMoreBefore: boolean()", "hasMoreAfter: boolean()", "firstSeq: number().int().nullable()", "lastSeq: number().int().nullable()"):
     assert required in connection_source, f"directional history schema missing: {required}"
 for required in ("hasMoreBefore", "hasMoreAfter", "async loadNewer()", "HISTORY_PAGE_MESSAGES", "HISTORY_WINDOW_PAGES", "HISTORY_WINDOW_EVENTS", "Never cut a raw event range", "bufferLive(event, view)"):
     assert required in runtime_source, f"bounded bidirectional history contract missing: {required}"
-for required in ("hasMoreAfter", "loadingNewer", "Promise.resolve(loadNewer())", "Promise.resolve(loadOlder())"):
-    assert required in conversation_source, f"forward history scroll trigger missing: {required}"
+release_workflow = (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+for history_gate in ("chat_scroll_dom_harness.cjs", "history_transactions_harness.cjs", "history_retention_harness.cjs", "context_rail_dom_harness.cjs"):
+    assert (root / "tools" / "tests" / history_gate).is_file(), f"history behavior gate is missing: {history_gate}"
+    assert f"node tools/tests/{history_gate}" in release_workflow, f"history behavior gate is not in release validation: {history_gate}"
 for memory_tool in ("memory_probe.py", "memory_scenarios.py", "memory_fixture.py", "validate_memory_baseline.py"):
     assert (root / "tools" / memory_tool).is_file(), f"memory tool is missing: {memory_tool}"
 for memory_test in ("test_memory_probe.py", "test_memory_scenarios.py", "test_memory_fixture.py", "test_memory_baseline.py"):

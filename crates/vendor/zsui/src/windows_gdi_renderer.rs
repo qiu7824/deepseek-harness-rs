@@ -2669,7 +2669,7 @@ mod tests {
             },
             true,
         );
-        assert_eq!(high_contrast_hover, Color::rgb(189, 189, 189));
+        assert_eq!(high_contrast_hover, Color::rgb(194, 194, 194));
     }
 
     #[test]

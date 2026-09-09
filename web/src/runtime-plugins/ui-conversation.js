@@ -84,6 +84,8 @@ window.__ModuleLoader__.load({
 			blocks;
 			draftAttachments = /* @__PURE__ */ new Map();
 			imageUrls = /* @__PURE__ */ new Map();
+			imageLoaders = /* @__PURE__ */ new Map();
+			leasedImages = /* @__PURE__ */ new Map();
 			imageGenerations = /* @__PURE__ */ new Map();
 			createdImageUrls = /* @__PURE__ */ new Set();
 			disposed = false;
@@ -104,6 +106,8 @@ window.__ModuleLoader__.load({
 					this.createdImageUrls.clear();
 					this.draftAttachments.clear();
 					this.imageUrls.clear();
+					this.imageLoaders.clear();
+					this.leasedImages.clear();
 					this.imageGenerations.clear();
 				}, "conversation attachment URL cache");
 			}
@@ -146,6 +150,7 @@ window.__ModuleLoader__.load({
 			createDraftImages(files) {
 				for (const file of files) imageMediaType(file.type);
 				return files.map((file) => {
+					// Image result path: conversation.resolveImage(sessionId, attachment)
 					const attachment = browserDraftAttachment(file);
 					this.draftAttachments.set(attachment.id, attachment);
 					this.createdImageUrls.add(attachment.previewUrl);
@@ -189,6 +194,41 @@ window.__ModuleLoader__.load({
 			* @param attachment - durable image reference.
 			* @returns browser URL valid until its rendered session is released.
 			*/
+			imageLoader(sessionId) {
+				let load = this.imageLoaders.get(sessionId);
+				if (!load) { load = attachment => this.resolveImage(sessionId, attachment); load.acquire = attachment => this.acquireImage(sessionId, attachment); this.imageLoaders.set(sessionId, load); }
+				return load;
+			}
+			acquireImage(sessionId, attachment) {
+				if (this.disposed) return Promise.reject(new Error("conversation image scope is disposed"));
+				const key = `${sessionId}:${attachment.attachmentId}`;
+				let entry = this.leasedImages.get(key);
+				if (!entry) {
+					const generation = this.imageGenerations.get(sessionId) ?? 0;
+					const session = this.requireSessions().binding(sessionId)?.session;
+					if (!session) return Promise.reject(new Error("conversation image session is unavailable"));
+					entry = { sessionId, references: 0, pending: null };
+					entry.pending = session.readAttachment(attachment.attachmentId).then(result => {
+						if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
+						if (this.disposed || entry.references === 0 || (this.imageGenerations.get(sessionId) ?? 0) !== generation) throw new Error("conversation image scope was released");
+						if (typeof URL.createObjectURL !== "function") return `data:${result.value.attachment.mediaType};base64,${bytesToBase64(result.value.data)}`;
+						const bytes = Uint8Array.from(result.value.data), url = URL.createObjectURL(new Blob([bytes.buffer], { type: result.value.attachment.mediaType }));
+						this.createdImageUrls.add(url); return url;
+					});
+					this.leasedImages.set(key, entry);
+				}
+				entry.references++;
+				let released = false;
+				const release = () => {
+					if (released) return; released = true;
+					if (--entry.references !== 0) return;
+					if (this.leasedImages.get(key) === entry) this.leasedImages.delete(key);
+					entry.pending.then(url => { if (this.createdImageUrls.delete(url)) revokePreview(url); }, () => {});
+				};
+				const acquired = entry.pending.then(url => ({ url, release }), error => { release(); throw error; });
+				acquired.release = release;
+				return acquired;
+			}
 			resolveImage(sessionId, attachment) {
 				if (this.disposed) return Promise.reject(/* @__PURE__ */ new Error("conversation.resolveImage: service is disposed"));
 				const key = `${sessionId}:${attachment.attachmentId}`;
@@ -222,6 +262,13 @@ window.__ModuleLoader__.load({
 			* @param sessionId - rendered session scope.
 			*/
 			releaseSessionImages(sessionId) {
+				this.imageLoaders.delete(sessionId);
+				for (const [key, entry] of this.leasedImages) {
+					if (entry.sessionId !== sessionId) continue;
+					this.leasedImages.delete(key);
+					entry.pending.then(url => { if (this.createdImageUrls.delete(url)) revokePreview(url); }, () => {});
+				}
+
 				this.imageGenerations.set(sessionId, (this.imageGenerations.get(sessionId) ?? 0) + 1);
 				for (const [key, entry] of this.imageUrls) {
 					if (entry.sessionId !== sessionId) continue;
@@ -256,6 +303,10 @@ window.__ModuleLoader__.load({
 			/** Pull one newer page while browsing an indexed historical window. */
 			async loadNewer() {
 				await this.scopedSession("loadNewer").loadNewer();
+			}
+			/** Cancel stale directional pagination without replacing the reading window. */
+			cancelHistoryPaging() {
+				this.scopedSession("cancelHistoryPaging").cancelHistoryPaging();
 			}
 			/** Load only the history page containing one durable event sequence. */
 			async loadAround(seq) {
@@ -2354,6 +2405,53 @@ window.__ModuleLoader__.load({
 		const DEFAULT_BUSY_ENTER_BEHAVIOR = "queue";
 		Schema.object({ [BUSY_ENTER_FIELD]: Schema.union([...BUSY_ENTER_BEHAVIORS]).default(DEFAULT_BUSY_ENTER_BEHAVIOR) });
 		//#endregion
+        const HINT_DISPLAY_FIELD = "hintDisplay";
+        const HINT_DISPLAY_MODES = ["text", "icons"];
+        const HINT_DISPLAY_OWNER = Symbol.for("dsh.reply-hint-display.owner");
+        const hintDisplayCss = ".dshReplyHintIcon{display:none!important;align-items:center;justify-content:center;flex:none}.dshReplyHintStatus{display:inline-flex!important;width:auto!important;flex:none;align-items:center;gap:4px;font-size:12px;line-height:18px}html[data-reply-hint-display=icons] .dshReplyHintIcon{display:inline-flex!important}html[data-reply-hint-display=icons] .dshReplyHintLabel{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;clip-path:inset(50%)!important;white-space:nowrap!important;border:0!important}.dshTurnStatusLabel{display:inline!important;white-space:nowrap}.dshReplyHintSettingError{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}";
+        if (typeof document !== "undefined" && !document.querySelector("style[data-dsh-reply-hints]")) {
+            const style = document.createElement("style"); style.dataset.dshReplyHints = ""; style.textContent = hintDisplayCss; document.head.appendChild(style);
+        }
+        class ReplyHintPreference {
+            store = (0, _deepseek_ai_dsh_client_runtime_client.createSnapshotStore)({ mode: "text", writable: false, saving: false, error: null });
+            saving = false;
+            disposed = false;
+            constructor(host, root = document.documentElement) {
+                this.host = host; this.root = root; root[HINT_DISPLAY_OWNER] = this;
+                const style = root.ownerDocument.querySelector("style[data-dsh-reply-hints]");
+                if (style) root.ownerDocument.head.appendChild(style);
+                this.unsubscribe = host.subscribe(() => this.adopt()); this.adopt();
+            }
+            publish(value) {
+                if (this.disposed) return;
+                if (this.root[HINT_DISPLAY_OWNER] === this) this.root.dataset.replyHintDisplay = value.mode;
+                this.store.set(value);
+            }
+            adopt() {
+                if (this.disposed) return;
+                const accepted = this.host.getSnapshot(), previous = this.store.getSnapshot();
+                this.publish({ mode: this.saving ? previous.mode : accepted.value?.hintDisplay === "icons" ? "icons" : "text", writable: accepted.writable === true && accepted.mode !== "memory", saving: this.saving, error: previous.error });
+            }
+            async set(mode) {
+                if (!HINT_DISPLAY_MODES.includes(mode)) throw new Error("Invalid reply hint display mode");
+                const previous = this.store.getSnapshot();
+                if (this.disposed || this.saving || !previous.writable || previous.mode === mode) return;
+                this.saving = true; this.publish({ ...previous, mode, saving: true, error: null });
+                let failure = null;
+                try {
+                    if (typeof this.host.setChecked !== "function") throw new Error("settings.hints.unavailable");
+                    await this.host.setChecked(HINT_DISPLAY_FIELD, mode);
+                } catch (error) { failure = error instanceof Error ? error.message : String(error); }
+                finally {
+                    this.saving = false;
+                    if (!this.disposed) { this.publish({ ...this.store.getSnapshot(), error: failure, saving: false }); this.adopt(); }
+                }
+            }
+            dispose() {
+                this.disposed = true; this.unsubscribe();
+                if (this.root[HINT_DISPLAY_OWNER] === this) { delete this.root[HINT_DISPLAY_OWNER]; delete this.root.dataset.replyHintDisplay; }
+            }
+        }
 		//#region lib/types/client/input/submission-policy.js
 		/**
 		* Composer submission policy. It owns the live busy-Enter
@@ -2949,7 +3047,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-conversation\src\client\chat\StatsLine.module.css.mjs
-		const css$20 = ".puIAHG_root{text-align:center;max-width:var(--dsh-chat-content-width);box-sizing:border-box;width:100%;padding:4px calc(var(--dsh-composer-side-clearance) + 16px) 0px;color:var(--dsw-alias-label-tertiary);white-space:normal;text-overflow:clip;margin:0 auto;font-size:12px;line-height:20px;display:block;overflow:visible}.puIAHG_sep{color:var(--dsw-alias-separator-primary);margin:0 10px}";
+		const css$20 = ".puIAHG_root{text-align:center;max-width:var(--dsh-chat-content-width);box-sizing:border-box;width:100%;padding:4px calc(var(--dsh-composer-side-clearance) + 16px) 0px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:clip;margin:0 auto;font-size:12px;line-height:20px;display:block;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}.puIAHG_root::-webkit-scrollbar{display:none}.puIAHG_sep{color:var(--dsw-alias-separator-primary);margin:0 8px}";
 		const tagId$20 = "@deepseek-ai/dsh-client-ui-conversation/StatsLine.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$20) + "]") === null) {
 			const tag = document.createElement("style");
@@ -3438,6 +3536,12 @@ window.__ModuleLoader__.load({
 			if (option.value === "workspace-write") return t("permission.workspaceWrite");
 			return displayName(option.name);
 		}
+        function permissionDescription(option, t) {
+            const description = option?.description;
+            if (option?.value === "workspace-write" && description === "Write inside the workspace and permitted temporary directories; wider retries require approval.") return t("permission.description.workspaceWrite");
+            if (option?.value === "danger-full-access" && description === "Full file access without approval prompts.") return t("permission.description.fullAccess");
+            return description;
+        }
 		function PermissionSelect({ value, locked, command, t }) {
 			const [pick, setPick] = (0, react.useState)(null);
 			const [open, setOpen] = (0, react.useState)(false);
@@ -3500,7 +3604,7 @@ window.__ModuleLoader__.load({
 					type: "button",
 					className: PermissionSelect_module_css_default.trigger,
 					"aria-label": t("input.accessMode", { name: current === void 0 ? displayName(currentValue) : optionLabel(current, t) }),
-					title: current?.description,
+					title: permissionDescription(current, t),
 					disabled: locked || busy,
 					onClick: () => {
 						setOpen(!open);
@@ -4270,6 +4374,20 @@ window.__ModuleLoader__.load({
 			"selector": "Q3C_SG_selector"
 		};
 		//#endregion
+        function ReplyHintDisplayRow({ useHintDisplay, setHintDisplay, t }) {
+            const value = useHintDisplay(snapshot => snapshot), [open, setOpen] = (0, react.useState)(false);
+            const unavailable = !value.writable || value.saving;
+            return (0, react_jsx_runtime.jsxs)("div", { className: EnterBehaviorRow_module_css_default.row, "data-reply-hint-setting": true, children: [
+                (0, react_jsx_runtime.jsxs)("div", { className: EnterBehaviorRow_module_css_default.rowText, children: [
+                    (0, react_jsx_runtime.jsx)("div", { className: EnterBehaviorRow_module_css_default.title, children: t("settings.hints.title") }),
+                    (0, react_jsx_runtime.jsx)("div", { className: EnterBehaviorRow_module_css_default.desc, children: t("settings.hints.description") }),
+                    value.error && (0, react_jsx_runtime.jsx)("div", { className: "dshReplyHintSettingError", role: "alert", children: value.error.startsWith("settings.hints.") ? t(value.error) : value.error })
+                ] }),
+                (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, { open: open && !unavailable, onClose: () => setOpen(false), items: ["icons", "text"].map(id => ({ id, label: t("settings.hints." + id) })), selectedId: value.mode, onSelect: id => { setOpen(false); setHintDisplay(id); }, align: "end", portal: true,
+                    anchor: (0, react_jsx_runtime.jsxs)("button", { type: "button", className: EnterBehaviorRow_module_css_default.selector, disabled: unavailable, "aria-label": t("settings.hints.title"), "aria-haspopup": "menu", "aria-expanded": open && !unavailable, onClick: () => setOpen(current => !current), children: [t("settings.hints." + value.mode), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, { className: EnterBehaviorRow_module_css_default.chevron })] })
+                })
+            ] });
+        }
 		//#region lib/types/client/settings/EnterBehaviorRow.js
 		/** General Settings row for the Composer's busy-state Enter preference. */
 		const OPTIONS = [{
@@ -5604,7 +5722,7 @@ window.__ModuleLoader__.load({
 		});
 		//#endregion
 		//#region lib/types/client/chat/ChatView.js
-		const SCROLL_SAMPLE_INTERVAL_MS = 500;
+		const SCROLL_SAMPLE_INTERVAL_MS = 64;
 		/** Active column host when present; otherwise the view-local scroller. */
 		function scrollerOf(from) {
 			return from.closest("[data-conversation-scroll]") ?? from;
@@ -5657,6 +5775,182 @@ window.__ModuleLoader__.load({
 				scrollTop: scrollport.scrollTop
 			};
 		}
+		/** One scroll owner for the bounded Rust history window. Native gestures
+		* move the viewport; only restore/follow operations write scrollTop. */
+		class ChatScrollController {
+			constructor(list, model, publish) {
+				this.list = list; this.model = model; this.publish = publish;
+				this.mode = "following"; this.direction = 0; this.intentUntil = 0;
+				this.anchor = null; this.page = null; this.opened = false;
+				this.observedTop = 0; this.expectedTop = null;
+				this.navigationRevision = null; this.navigation = 0; this.returnReady = false;
+				this.timer = null; this.frame = null; this.disposed = false; this.lastPublished = null;
+			}
+			floor() { return Math.max(0, this.el.scrollHeight - this.el.clientHeight); }
+			liveTail() { const m = this.model(); return !m.historyBrowsing && !m.hasMoreAfter; }
+			position() { return scrollPosition(this.list(), this.el); }
+			write(top) {
+				const target = Math.max(0, Math.min(top, this.floor()));
+				if (Math.abs(this.el.scrollTop - target) > .5) {
+					this.el.scrollTop = target;
+					this.expectedTop = this.el.scrollTop;
+				}
+				this.observedTop = this.el.scrollTop;
+			}
+			save() {
+				const following = this.mode === "following" && this.liveTail();
+				if (this.lastPublished !== following) { this.lastPublished = following; this.publish(following); }
+				if (following) { this.anchor = null; this.model().chatScroll.save(null); }
+				else if (this.anchor !== null) this.model().chatScroll.save({ ...this.anchor, scrollTop: this.el.scrollTop });
+			}
+			read() {
+				const leavingFollow = this.mode !== "reading";
+				this.mode = "reading";
+				if (leavingFollow || this.anchor === null) this.anchor = this.position();
+				this.save();
+			}
+			maintain() {
+				if (this.anchor === null) { this.anchor = this.position(); return; }
+				const row = anchorElement(this.list(), this.anchor.anchorKey);
+				if (row !== null) this.write(this.el.scrollTop + flowTop(row, this.el) - this.anchor.anchorTop);
+				else this.anchor = this.position();
+			}
+			commit() {
+				if (this.disposed || !this.el) return;
+				const m = this.model(), revision = m.historyNavigationRevision ?? 0;
+				if (this.navigationRevision !== null && revision !== this.navigationRevision) {
+					this.page = null; this.direction = 0; this.intentUntil = 0;
+					if (m.historyNavigationReason !== "resync") {
+						this.anchor = null;
+						if (this.mode !== "returning") this.mode = "reading";
+					}
+				}
+				this.navigationRevision = revision;
+				if (m.openState !== "open") { this.save(); return; }
+				if (!this.opened) {
+					this.opened = true;
+					const saved = m.chatScroll.read();
+					if (saved !== null) { this.mode = "reading"; this.anchor = saved; this.write(saved.scrollTop); this.maintain(); }
+					else if (m.historyBrowsing || m.hasMoreAfter) { this.mode = "reading"; this.anchor = this.position(); }
+					else { this.mode = "following"; this.write(this.floor()); }
+				} else if (this.mode === "returning") {
+					if (this.returnReady && this.liveTail()) { this.mode = "following"; this.write(this.floor()); }
+				} else if (this.mode === "following" && this.liveTail()) {
+					this.write(this.floor());
+				} else {
+					this.mode = "reading";
+					this.maintain();
+				}
+				if (this.page?.done && !m.loadingOlder && !m.loadingNewer) this.page = null;
+				this.save();
+				this.pageAtBoundary();
+			}
+			schedule() {
+				if (this.timer !== null || this.disposed) return;
+				this.timer = window.setTimeout(() => { this.timer = null; this.sample(); }, SCROLL_SAMPLE_INTERVAL_MS);
+			}
+			input(direction) {
+				if (!direction) return;
+				this.expectedTop = null;
+				if (this.page && !this.page.cancelled && this.page.direction !== direction) {
+					this.page.cancelled = true; this.model().cancelHistoryPaging?.();
+				}
+				this.direction = direction; this.intentUntil = Date.now() + 1000;
+				if (direction < 0 || this.mode !== "following" || !this.liveTail()) this.read();
+				this.schedule();
+			}
+			pageAtBoundary() {
+				const m = this.model();
+				if (this.page || m.openState !== "open" || m.loadingOlder || m.loadingNewer || this.mode === "returning") return;
+				if (Date.now() > this.intentUntil) { this.direction = 0; return; }
+				const edge = Math.max(80, Math.min(600, this.el.clientHeight * .75));
+				const older = this.direction < 0 && this.el.scrollTop <= edge && m.hasMoreBefore;
+				const newer = this.direction > 0 && this.floor() - this.el.scrollTop <= edge && m.hasMoreAfter;
+				if (!older && !newer) return;
+				const load = older ? m.loadOlder : m.loadNewer;
+				if (typeof load !== "function") return;
+				this.read(); this.anchor = this.position() ?? this.anchor;
+				const request = { direction: older ? -1 : 1, done: false, cancelled: false };
+				this.page = request; this.direction = 0;
+				Promise.resolve().then(load).catch(() => {}).finally(() => {
+					if (this.disposed || this.page !== request) return;
+					request.done = true; if (this.direction) this.intentUntil = Date.now() + 1000; this.schedule();
+				});
+			}
+			sample() {
+				if (this.disposed || !this.el) return;
+				const m = this.model();
+				if (this.page?.done && !m.loadingOlder && !m.loadingNewer) this.page = null;
+				this.anchor = this.position() ?? this.anchor;
+				if (this.direction > 0 && Date.now() <= this.intentUntil && this.liveTail() && this.floor() - this.el.scrollTop <= 1) this.mode = "following";
+				this.pageAtBoundary(); this.save();
+			}
+			returnLatest() {
+				const m = this.model(), token = ++this.navigation;
+				m.cancelHistoryPaging?.(); this.page = null; this.direction = 0; this.intentUntil = 0;
+				this.anchor = null; this.returnReady = false; this.mode = "returning";
+				if (this.liveTail()) { this.returnReady = true; this.commit(); return; }
+				Promise.resolve().then(() => m.returnLatest?.()).then(() => {
+					if (!this.disposed && token === this.navigation && this.mode === "returning") { this.returnReady = true; this.commit(); }
+				}, () => { if (!this.disposed && token === this.navigation) { this.read(); } });
+			}
+			ownsGesture(target, direction) {
+				let node = target instanceof HTMLElement ? target : target?.parentElement;
+				while (node && node !== this.el) {
+					const range = node.scrollHeight - node.clientHeight;
+					if (range > 1) {
+						const style = window.getComputedStyle(node);
+						if (/(auto|scroll)/.test(style.overflowY) && (direction < 0 ? node.scrollTop > 1 : node.scrollTop < range - 1)) return false;
+					}
+					node = node.parentElement;
+				}
+				return true;
+			}
+			mount() {
+				this.disposed = false; this.el = scrollerOf(this.list()); this.observedTop = this.el.scrollTop;
+				this.originalAnchor = this.el.style.overflowAnchor; this.el.style.overflowAnchor = "none";
+				const onWheel = event => { const direction = Math.sign(event.deltaY); if (this.ownsGesture(event.target, direction)) this.input(direction); };
+				const onKeyDown = event => {
+					if (event.defaultPrevented || event.altKey || event.metaKey || event.target?.closest?.("input,textarea,[contenteditable=true]")) return;
+					if (["ArrowDown", "PageDown", "End"].includes(event.key)) this.input(1);
+					else if (["ArrowUp", "PageUp", "Home"].includes(event.key)) this.input(-1);
+					else if (event.key === " ") this.input(event.shiftKey ? -1 : 1);
+				};
+				let touchY = null, pointer = false;
+				const onTouchStart = event => { touchY = event.touches[0]?.clientY ?? null; };
+				const onTouchMove = event => { const y = event.touches[0]?.clientY; if (touchY !== null && y !== undefined && this.ownsGesture(event.target, touchY - y)) this.input(Math.sign(touchY - y)); touchY = y ?? null; };
+				const onPointerDown = event => { pointer = event.target === this.el; if (pointer) this.expectedTop = null; };
+				const onPointerUp = () => { pointer = false; };
+				const onScroll = () => {
+					const top = this.el.scrollTop;
+					if (this.expectedTop !== null && Math.abs(top - this.expectedTop) <= .5) { this.expectedTop = null; this.observedTop = top; return; }
+					this.expectedTop = null;
+					const delta = top - this.observedTop; this.observedTop = top;
+					if (Math.abs(delta) > .5) {
+						if (this.anchor !== null) this.anchor.anchorTop -= delta;
+						if (pointer) this.input(Math.sign(delta));
+						if (this.mode === "following" && this.floor() - top > .5) this.read();
+					}
+					this.schedule();
+				};
+				const onScrollEnd = () => { if (this.timer !== null) window.clearTimeout(this.timer); this.timer = null; this.sample(); };
+				const handlers = { wheel: onWheel, keydown: onKeyDown, touchstart: onTouchStart, touchmove: onTouchMove, pointerdown: onPointerDown, scroll: onScroll, scrollend: onScrollEnd };
+				for (const [name, handler] of Object.entries(handlers)) this.el.addEventListener(name, handler, { passive: name !== "keydown" });
+				window.addEventListener("pointerup", onPointerUp); window.addEventListener("pointercancel", onPointerUp);
+				const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+					if (this.frame === null) this.frame = window.requestAnimationFrame(() => { this.frame = null; this.commit(); });
+				});
+				if (observer) { observer.observe(this.el); observer.observe(this.list().querySelector("[data-chat-flow]") ?? this.list()); const composer = this.el.querySelector("[data-composer-seat]"); if (composer) observer.observe(composer); }
+				this.cleanup = () => { for (const [name, handler] of Object.entries(handlers)) this.el.removeEventListener(name, handler); window.removeEventListener("pointerup", onPointerUp); window.removeEventListener("pointercancel", onPointerUp); observer?.disconnect(); };
+			}
+			dispose() {
+				this.disposed = true; this.navigation++; this.cleanup?.();
+				if (this.timer !== null) window.clearTimeout(this.timer); if (this.frame !== null) window.cancelAnimationFrame(this.frame);
+				this.timer = null; this.frame = null;
+				if (this.el?.style.overflowAnchor === "none") this.el.style.overflowAnchor = this.originalAnchor;
+			}
+		}
+
 		function runningTurnStartTime(timeline) {
 			let latest = null;
 			for (const turn of timeline.turns.values()) if (turn.status === "open" && turn.start !== void 0) latest = turn.start.time;
@@ -5676,7 +5970,7 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(style);
 		}
 		/** Turn-level model activity label retained across first-token, tool, and streaming phases. */
-		function TurnStatus({ startTime, toolActive, phase, t }) {
+		function TurnStatus({ startTime, toolActive, toolName, phase, t }) {
 			const [mountedAt] = (0, react.useState)(() => Date.now());
 			const anchor = startTime ?? mountedAt;
 			const [elapsedMs, setElapsedMs] = (0, react.useState)(() => Math.max(0, Date.now() - anchor));
@@ -5696,13 +5990,14 @@ window.__ModuleLoader__.load({
 				};
 			}, [anchor]);
 			const showClock = elapsedMs >= 5e3;
-			const phaseLabel = phase === "text" ? "生成回复中" : phase === "reasoning" ? "模型推理中" : "等待模型响应";
-			const baseLabel = (toolActive ? t("turn.executingTool") : phaseLabel).replace(/[…\.]+$/, "");
+			const phaseLabel = t(phase === "text" ? "turn.generating" : phase === "reasoning" ? "turn.reasoning" : "turn.waiting");
+			const safeToolName = typeof toolName === "string" && toolName.length > 0 && toolName.length <= 96 ? toolName : null;
+			const baseLabel = (toolActive ? `${t("turn.executingTool")}${safeToolName ? ` · ${safeToolName}` : ""}` : phaseLabel).replace(/[…\.]+$/, "");
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: ChatView_module_css_default.turnStatus,
 				role: "status",
 				"aria-live": "polite",
-				children: [baseLabel, (0, react_jsx_runtime.jsx)("span", { className: "dsh-turn-dots", "aria-hidden": true, children: ".".repeat(dotCount) }), showClock && (0, react_jsx_runtime.jsx)("span", {
+				children: [(0, react_jsx_runtime.jsx)("span", { className: "dshReplyHintIcon", title: baseLabel, "aria-hidden": true, children: (0, react_jsx_runtime.jsx)(phase === "reasoning" ? _deepseek_ai_dsh_client_ui_primitives.IconThinkOutline14 : _deepseek_ai_dsh_client_ui_primitives.IconApiOutline14, { size: 14 }) }), (0, react_jsx_runtime.jsx)("span", { className: "dshTurnStatusLabel", children: baseLabel }), (0, react_jsx_runtime.jsx)("span", { className: "dsh-turn-dots", "aria-hidden": true, children: ".".repeat(dotCount) }), showClock && (0, react_jsx_runtime.jsx)("span", {
 					className: ChatView_module_css_default.turnStatusClock,
 					"aria-hidden": true,
 					children: formatRunDuration(elapsedMs, t)
@@ -5713,9 +6008,8 @@ window.__ModuleLoader__.load({
 		* The chat view slot entry: pure component over the composed props; each
 		* ordered business Node crosses the keyed renderer seat.
 		*/
-		function ChatView({ useSession, useSessions, useStore, useProjection, renderSlot, sessionId, openFile, loadOlder, loadAround, loadNewer, loadImage, inspectCall, chatScroll, forkAt, fileMentions, t }) {
+		function ChatView({ useSession, useSessions, useStore, useProjection, renderSlot, sessionId, openFile, loadOlder, loadAround, loadNewer, returnLatest, cancelHistoryPaging, loadImage, inspectCall, chatScroll, forkAt, fileMentions, t }) {
 			const order = useSession((s) => s.chat.order);
-			const nodeStore = useSession((s) => s.chat.nodes);
 			const timeline = useSession((s) => s.chat.timeline);
 			const inbox = useSession((s) => s.queue);
 			const cwd = useSessions((s) => s.byId[sessionId]?.cwd);
@@ -5727,260 +6021,27 @@ window.__ModuleLoader__.load({
 			const hasMoreAfter = useSession((s) => s.hasMoreAfter);
 			const historyBrowsing = useSession((s) => s.historyBrowsing);
 			const loadingOlder = useSession((s) => s.loadingOlder);
-			const baseSeq = useSession((s) => s.baseSeq);
 			const loadingNewer = useSession((s) => s.loadingNewer);
 			const selectedCallId = useStore((s) => s.selection?.callId);
 			const pendingSteering = (0, react.useMemo)(() => inbox.filter((item) => item.placement === "steering"), [inbox]);
 			const runningTurnStart = (0, react.useMemo)(() => runningTurnStartTime(timeline), [timeline]);
-			const runningPhase = (0, react.useMemo)(() => {
-				const active = [...nodeStore.values()].filter((node) => node.kind === "assistant" && node.status === "running").at(-1);
-				if (active === void 0) return "waiting";
-				const blocks = active.blocks ?? [];
+			const runningPhase = useSession((snapshot) => {
+				const blocks = snapshot.partial?.blocks ?? [];
 				if (blocks.some((block) => block.type === "text" && block.text?.length > 0)) return "text";
-				if (blocks.some((block) => block.type === "reasoning")) return "reasoning";
+				if (blocks.some((block) => block.type === "reasoning" && block.text?.length > 0)) return "reasoning";
 				return "waiting";
-			}, [nodeStore, order]);
+			});
 			const listRef = (0, react.useRef)(null);
 			const columnRef = (0, react.useRef)(null);
-			const atBottomRef = (0, react.useRef)(true);
 			const [atBottom, setAtBottom] = (0, react.useState)(true);
-			const scrollSamplePendingRef = (0, react.useRef)(false);
-			const [, setScrollSampleTick] = (0, react.useState)(0);
-			/** Last position delivered or written on the main thread. */
-			const observedTopRef = (0, react.useRef)(0);
-			/** Paging anchor: semantic row/position at click, updated by reader scrolls
-			* while the request is pending and restored after the prepend lands. */
-			const anchorRef = (0, react.useRef)(null);
-			const firstSeqRef = (0, react.useRef)(null);
-			const openedRef = (0, react.useRef)(false);
-			const lastKeyRef = (0, react.useRef)(null);
-			const lastSteeringIdRef = (0, react.useRef)(null);
-			/** Flow tip signature — follow-scroll only when this moves, never on a
-			*  scroll-driven at-bottom chrome re-render (which would snap inertial
-			*  scrolls the rest of the way to the floor). */
-			const followSigRef = (0, react.useRef)(null);
-			/** Explicit reader intent for paging toward newer history. Programmatic
-			* jump-centering scrolls do not set this latch and therefore cannot feed
-			* back into loadNewer while a historical target is active. */
-			const readerForwardIntentRef = (0, react.useRef)(false);
-			const readerBackwardIntentRef = (0, react.useRef)(false);
-			const firstKey = order[0];
-			const firstSeq = firstKey === void 0 ? null : nodeStore.get(firstKey)?.anchorSeq ?? null;
-			const lastKey = order.at(-1) ?? null;
-			const lastNode = lastKey === null ? void 0 : nodeStore.get(lastKey);
-			const lastSteeringId = pendingSteering[pendingSteering.length - 1]?.id ?? null;
-			const followSig = `${openState}:${firstSeq}:${lastKey}:${order.length}:${running ? 1 : 0}:${lastSteeringId ?? ""}`;
-
-			const toBottom = (el) => {
-				anchorRef.current = null;
-				scrollSamplePendingRef.current = false;
-				el.scrollTop = el.scrollHeight;
-				observedTopRef.current = el.scrollTop;
-				atBottomRef.current = true;
-				setAtBottom(true);
-				chatScroll.save(null);
-			};
-			(0, react.useLayoutEffect)(() => {
-				if (scrollSamplePendingRef.current) return;
-				const local = listRef.current;
-				/* v8 ignore next -- ref-null guard: React attaches the ref before layout effects run. */
-				if (local === null) return;
-				const el = scrollerOf(local);
-				if (openState === "open" && !openedRef.current) {
-					openedRef.current = true;
-					const saved = chatScroll.read();
-					if (saved === null) toBottom(el);
-					else {
-						el.scrollTop = saved.scrollTop;
-						const row = anchorElement(local, saved.anchorKey);
-						if (row !== null) el.scrollTop += flowTop(row, el) - saved.anchorTop;
-						observedTopRef.current = el.scrollTop;
-						const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 25;
-						atBottomRef.current = isAtBottom;
-						setAtBottom(isAtBottom);
-						const normalized = isAtBottom ? null : scrollPosition(local, el);
-						if (isAtBottom) chatScroll.save(null);
-						else if (normalized !== null) chatScroll.save(normalized);
-					}
-					firstSeqRef.current = firstSeq;
-					lastKeyRef.current = lastKey;
-					lastSteeringIdRef.current = lastSteeringId;
-					followSigRef.current = followSig;
-					return;
-				}
-				if (anchorRef.current !== null && firstSeq !== null && firstSeqRef.current !== null && firstSeq !== firstSeqRef.current) {
-					const anchor = anchorRef.current;
-					anchorRef.current = null;
-					const row = anchorElement(local, anchor.key);
-					if (row !== null) el.scrollTop += flowTop(row, el) - anchor.top;
-					observedTopRef.current = el.scrollTop;
-					firstSeqRef.current = firstSeq;
-					/* v8 ignore next -- ?? arm: a prepend adds nodes, so the flow list here is never empty. */
-					lastKeyRef.current = lastKey;
-					lastSteeringIdRef.current = lastSteeringId;
-					followSigRef.current = followSig;
-					return;
-				}
-				firstSeqRef.current = firstSeq;
-				const appendedUser = lastKey !== lastKeyRef.current && lastNode?.kind === "user";
-				const appendedSteering = lastSteeringId !== null && lastSteeringId !== lastSteeringIdRef.current;
-				const tipMoved = followSigRef.current !== followSig;
-				lastKeyRef.current = lastKey;
-				lastSteeringIdRef.current = lastSteeringId;
-				followSigRef.current = followSig;
-				if (!historyBrowsing && atBottomRef.current && (appendedUser || appendedSteering || tipMoved)) toBottom(el);
-			});
-			const newerRequestRef = (0, react.useRef)(false);
-			const onScrollRef = (0, react.useRef)(() => {});
-			onScrollRef.current = () => {
-				const local = listRef.current;
-				/* v8 ignore next -- ref-null guard: the handler only fires while mounted. */
-				if (local === null) return;
-				const el = scrollerOf(local);
-				const floor = Math.max(0, el.scrollHeight - el.clientHeight);
-				const movedByReader = Math.abs(el.scrollTop - Math.min(observedTopRef.current, floor)) > .5;
-				const isAtBottom = movedByReader ? floor - el.scrollTop <= 25 : atBottomRef.current;
-				if (el.scrollTop <= 80 && readerBackwardIntentRef.current && hasMore && !loadingOlder && !loadingNewer && anchorRef.current === null) {
-					readerBackwardIntentRef.current = false;
-					const position = scrollPosition(local, el);
-					if (position !== null) anchorRef.current = { key: position.anchorKey, top: position.anchorTop };
-					Promise.resolve(loadOlder());
-				}
-				if (isAtBottom && hasMoreAfter && !loadingNewer && !newerRequestRef.current && (!historyBrowsing || readerForwardIntentRef.current)) {
-					readerForwardIntentRef.current = false;
-					const position = scrollPosition(local, el);
-					if (position !== null) anchorRef.current = { key: position.anchorKey, top: position.anchorTop };
-					newerRequestRef.current = true;
-					Promise.resolve(loadNewer()).finally(() => {
-						newerRequestRef.current = false;
-					});
-				}
-				if (!historyBrowsing && !movedByReader && isAtBottom) {
-					toBottom(el);
-					return;
-				}
-				atBottomRef.current = isAtBottom;
-				setAtBottom(isAtBottom);
-				const position = isAtBottom ? null : scrollPosition(local, el);
-				if (isAtBottom) anchorRef.current = null;
-				else if (anchorRef.current !== null && position !== null) anchorRef.current = {
-					key: position.anchorKey,
-					top: position.anchorTop
-				};
-				if (isAtBottom) chatScroll.save(null);
-				else if (position !== null) chatScroll.save(position);
-				observedTopRef.current = el.scrollTop;
-			};
-			(0, react.useEffect)(() => {
-				const local = listRef.current;
-				/* v8 ignore next -- ref-null guard: effect runs after the list node commits. */
-				if (local === null) return;
-				const el = scrollerOf(local);
-				let sampleTimer;
-				const sample = () => {
-					if (!scrollSamplePendingRef.current) return;
-					scrollSamplePendingRef.current = false;
-					if (sampleTimer !== void 0) window.clearTimeout(sampleTimer);
-					sampleTimer = void 0;
-					onScrollRef.current();
-					setScrollSampleTick((tick) => tick + 1);
-				};
-				const onWheel = (event) => {
-					if (event.deltaY > 0) { readerForwardIntentRef.current = true; readerBackwardIntentRef.current = false; }
-					else if (event.deltaY < 0) { readerForwardIntentRef.current = false; readerBackwardIntentRef.current = true; releaseFollow(); }
-					if (event.deltaY !== 0) { scrollSamplePendingRef.current = true; sampleTimer ??= window.setTimeout(sample, SCROLL_SAMPLE_INTERVAL_MS); }
-				};
-				const releaseFollow = () => {
-					if (atBottomRef.current) { atBottomRef.current = false; setAtBottom(false); }
-				};
-				const onKeyDown = (event) => {
-					if (event.target?.closest?.("input,textarea,[contenteditable=true]")) return;
-					if (["ArrowDown", "PageDown", "End", " "].includes(event.key)) { readerForwardIntentRef.current = true; readerBackwardIntentRef.current = false; }
-					else if (["ArrowUp", "PageUp", "Home"].includes(event.key)) { readerForwardIntentRef.current = false; readerBackwardIntentRef.current = true; releaseFollow(); }
-				};
-				let touchY = null;
-				const onTouchStart = event => { touchY = event.touches[0]?.clientY ?? null; };
-				const onTouchMove = event => { const y = event.touches[0]?.clientY; if (touchY !== null && y !== undefined) { readerBackwardIntentRef.current = y > touchY; readerForwardIntentRef.current = y < touchY; if (y > touchY) releaseFollow(); } touchY = y ?? null; };
-				const onPointerDown = () => {
-					readerForwardIntentRef.current = true;
-					readerBackwardIntentRef.current = true;
-				};
-				const onScroll = () => {
-					const floor = Math.max(0, el.scrollHeight - el.clientHeight);
-					if (atBottomRef.current && !readerBackwardIntentRef.current && Math.abs(el.scrollTop - floor) <= 1) {
-						if (sampleTimer !== void 0) window.clearTimeout(sampleTimer);
-						sampleTimer = void 0;
-						scrollSamplePendingRef.current = false;
-						onScrollRef.current();
-						return;
-					}
-					if (readerForwardIntentRef.current && readerBackwardIntentRef.current) {
-						readerBackwardIntentRef.current = el.scrollTop < observedTopRef.current - .5;
-						readerForwardIntentRef.current = !readerBackwardIntentRef.current;
-					}
-					if (el.scrollTop < observedTopRef.current - .5) releaseFollow();
-					scrollSamplePendingRef.current = true;
-					sampleTimer ??= window.setTimeout(sample, SCROLL_SAMPLE_INTERVAL_MS);
-				};
-				el.addEventListener("wheel", onWheel, { passive: true });
-				el.addEventListener("touchstart", onTouchStart, { passive: true });
-				el.addEventListener("touchmove", onTouchMove, { passive: true });
-				el.addEventListener("keydown", onKeyDown);
-				el.addEventListener("pointerdown", onPointerDown);
-				el.addEventListener("scroll", onScroll, { passive: true });
-				el.addEventListener("scrollend", sample, { passive: true });
-				return () => {
-					el.removeEventListener("wheel", onWheel);
-					el.removeEventListener("touchstart", onTouchStart);
-					el.removeEventListener("touchmove", onTouchMove);
-					el.removeEventListener("keydown", onKeyDown);
-					el.removeEventListener("pointerdown", onPointerDown);
-					el.removeEventListener("scroll", onScroll);
-					el.removeEventListener("scrollend", sample);
-					if (sampleTimer !== void 0) window.clearTimeout(sampleTimer);
-					scrollSamplePendingRef.current = false;
-				};
-			}, []);
-			(0, react.useEffect)(() => {
-				if (historyBrowsing || !hasMoreAfter || loadingNewer || newerRequestRef.current) return;
-				const local = listRef.current;
-				if (local === null) return;
-				const el = scrollerOf(local);
-				const floor = Math.max(0, el.scrollHeight - el.clientHeight);
-				if (floor - el.scrollTop > 25) return;
-				newerRequestRef.current = true;
-				Promise.resolve(loadNewer()).finally(() => {
-					newerRequestRef.current = false;
-				});
-			}, [historyBrowsing, hasMoreAfter, loadingNewer, loadNewer]);
-			const followRef = (0, react.useRef)(null);
-			followRef.current = () => {
-				const local = listRef.current;
-				if (!historyBrowsing && !scrollSamplePendingRef.current && local !== null && atBottomRef.current) {
-					const el = scrollerOf(local);
-					el.scrollTop = el.scrollHeight;
-					observedTopRef.current = el.scrollTop;
-					chatScroll.save(null);
-				}
-			};
-			(0, react.useEffect)(() => {
-				const column = columnRef.current;
-				const local = listRef.current;
-				if (column === null || local === null || typeof ResizeObserver === "undefined") return;
-				const composer = scrollerOf(local).querySelector("[data-composer-seat]");
-				const observer = new ResizeObserver(() => {
-					followRef.current?.();
-				});
-				observer.observe(column);
-				observer.observe(scrollerOf(local));
-				if (composer !== null) observer.observe(composer);
-				return () => {
-					observer.disconnect();
-				};
-			}, []);
-			(0, react.useEffect)(() => {
-				if (!loadingOlder && !loadingNewer) anchorRef.current = null;
-			}, [loadingOlder, loadingNewer]);
+			const historyNavigationRevision = useSession((s) => s.historyNavigationRevision);
+			const historyNavigationReason = useSession((s) => s.historyNavigationReason);
+			const scrollModel = (0, react.useRef)(null);
+			const nextScrollModel = { openState, historyBrowsing, historyNavigationRevision, historyNavigationReason, hasMoreBefore: hasMore, hasMoreAfter, loadingOlder, loadingNewer, chatScroll, loadOlder, loadNewer, returnLatest, cancelHistoryPaging };
+			const scrollOwner = (0, react.useRef)(null);
+			if (scrollOwner.current === null) scrollOwner.current = new ChatScrollController(() => listRef.current, () => scrollModel.current, setAtBottom);
+			(0, react.useLayoutEffect)(() => { scrollOwner.current.mount(); return () => scrollOwner.current.dispose(); }, []);
+			(0, react.useLayoutEffect)(() => { scrollModel.current = nextScrollModel; scrollOwner.current.commit(); });
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: ChatView_module_css_default.root,
 				children: [(0, react_jsx_runtime.jsxs)("div", {
@@ -6017,7 +6078,8 @@ window.__ModuleLoader__.load({
 							}),
 							running && (0, react_jsx_runtime.jsx)(TurnStatus, {
 								startTime: runningTurnStart,
-								toolActive: runningCalls.length > 0,
+					toolActive: runningCalls.length > 0,
+					toolName: runningCalls[0]?.name ?? runningCalls[0]?.toolName ?? runningCalls[0]?.call?.name ?? runningCalls[0]?.call?.toolName,
 								phase: runningPhase,
 								t
 							}),
@@ -6036,7 +6098,7 @@ window.__ModuleLoader__.load({
 							onClick: () => {
 								const local = listRef.current;
 								/* v8 ignore next -- ref-null guard: the button only renders alongside the mounted list. */
-								if (local !== null) toBottom(scrollerOf(local));
+								if (local !== null) scrollOwner.current.returnLatest();
 							},
 							children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
 						})
@@ -6282,6 +6344,58 @@ window.__ModuleLoader__.load({
 		const PLAN_NEXT_ACTION_EN = "describe your task to generate plan";
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
+            "tool.title.codeContext": "代码上下文",
+            "tool.title.codeCallers": "代码调用者",
+            "tool.title.codeCallees": "代码被调用者",
+            "tool.title.codeImpact": "修改影响",
+            "tool.title.codePath": "调用路径",
+			"permission.description.workspaceWrite": "可在工作区及允许的临时目录内写入；扩大范围的重试需要审批。",
+			"permission.description.fullAccess": "可访问全部文件，不弹出审批提示。",
+			"settings.hints.title": "回复提示显示",
+			"settings.hints.description": "工具、思考、任务和运行提示的显示方式。",
+			"settings.hints.icons": "图标显示",
+			"settings.hints.text": "文字显示",
+			"settings.hints.unavailable": "当前主机暂不支持保存此设置。",
+			"turn.generating": "生成回复中",
+			"turn.reasoning": "模型推理中",
+			"turn.waiting": "等待模型响应",
+			"todo.state.pending": "待执行",
+			"todo.state.in_progress": "进行中",
+			"todo.state.completed": "已完成",
+            "image.result": "工具图片",
+			"message.partTruncated": "本段达到模型输出上限",
+			"message.thinking": "思考",
+			"tool.title.search": "搜索",
+			"tool.title.read": "读取",
+			"tool.title.shell": "命令",
+			"tool.title.pwsh": "PowerShell",
+			"tool.title.write": "写入",
+			"tool.title.edit": "编辑",
+			"tool.title.code": "代码",
+			"tool.title.call": "工具调用",
+			"tool.title.inspect": "检查",
+			"tool.title.runPlugin": "运行 Cordis 插件",
+			"tool.title.fetch": "抓取",
+			"tool.input": "输入",
+			"tool.output": "输出",
+			"tool.inspect": "调用详情",
+			"tool.action.start": "启动",
+			"tool.action.status": "查看状态",
+			"tool.action.capture": "截取画面",
+			"tool.action.click": "单击",
+			"tool.action.double_click": "双击",
+			"tool.action.type": "输入文字",
+			"tool.action.key": "按键",
+			"tool.action.drag": "拖动",
+			"tool.action.scroll": "滚动",
+			"tool.action.list_sessions": "列出连接",
+			"tool.action.close": "关闭",
+			"tool.action.navigate": "打开网页",
+			"tool.action.list_windows": "列出窗口",
+			"tool.action.focus_window": "聚焦窗口",
+			"tool.action.takeover": "人工接管",
+			"tool.action.resume": "交还控制",
+			"tool.action.release_inputs": "释放按键",
 			"view.chat": "对话",
 			"hint.plan": PLAN_NEXT_ACTION_ZH,
 			"hint.goal": "输入目标，智能体将持续执行",
@@ -6337,7 +6451,7 @@ window.__ModuleLoader__.load({
 			"stats.llm": "LLM {duration}",
 			"stats.toolCall": "工具调用 {duration}",
 			"stats.ttftAverage": "首 token 平均 {duration}",
-			"stats.tokensPerSecond": "{throughput} tok/s",
+			"stats.tokensPerSecond": "平均生成 {throughput} tok/s",
 			"stats.cacheHit": "缓存命中 {percent}%",
 			"stats.tokens": "输入 {input} tok · 输出 {output} tok",
 			"settings.enter.title": "繁忙时 Enter 键行为",
@@ -6425,7 +6539,7 @@ window.__ModuleLoader__.load({
 			"message.turnUsage.reasoning": "（其中推理 {tokens}）",
 			"message.turnTime.title": "本轮用时和速度",
 			"message.turnTime.duration": "本轮总用时",
-			"message.turnTime.speed": "输出速度（TPS）",
+			"message.turnTime.speed": "本次请求平均生成速度（含思考）",
 			"message.turnTime.ttft": "首 token 用时（TTFT）",
 			"duration.seconds": "{seconds}秒",
 			"duration.minutes": "{minutes}分{seconds}秒",
@@ -6485,6 +6599,58 @@ window.__ModuleLoader__.load({
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
+            "tool.title.codeContext": "Code context",
+            "tool.title.codeCallers": "Code callers",
+            "tool.title.codeCallees": "Code callees",
+            "tool.title.codeImpact": "Change impact",
+            "tool.title.codePath": "Call path",
+			"permission.description.workspaceWrite": "Write inside the workspace and permitted temporary directories; wider retries require approval.",
+			"permission.description.fullAccess": "Full file access without approval prompts.",
+			"settings.hints.title": "Reply hints",
+			"settings.hints.description": "Display style for tools, reasoning, tasks and activity hints.",
+			"settings.hints.icons": "Icons",
+			"settings.hints.text": "Text",
+			"settings.hints.unavailable": "This host cannot save this setting yet.",
+			"turn.generating": "Generating response",
+			"turn.reasoning": "Reasoning",
+			"turn.waiting": "Waiting for model",
+			"todo.state.pending": "Pending",
+			"todo.state.in_progress": "In progress",
+			"todo.state.completed": "Completed",
+            "image.result": "Tool image",
+			"message.partTruncated": "This segment reached the model output limit",
+			"message.thinking": "Think",
+			"tool.title.search": "Search",
+			"tool.title.read": "Read",
+			"tool.title.shell": "Shell",
+			"tool.title.pwsh": "PowerShell",
+			"tool.title.write": "Write",
+			"tool.title.edit": "Edit",
+			"tool.title.code": "Code",
+			"tool.title.call": "Tool call",
+			"tool.title.inspect": "Inspect",
+			"tool.title.runPlugin": "Run Cordis Plugin",
+			"tool.title.fetch": "Fetch",
+			"tool.input": "Input",
+			"tool.output": "Output",
+			"tool.inspect": "Inspect",
+			"tool.action.start": "Start",
+			"tool.action.status": "Status",
+			"tool.action.capture": "Capture",
+			"tool.action.click": "Click",
+			"tool.action.double_click": "Double click",
+			"tool.action.type": "Type",
+			"tool.action.key": "Key",
+			"tool.action.drag": "Drag",
+			"tool.action.scroll": "Scroll",
+			"tool.action.list_sessions": "List sessions",
+			"tool.action.close": "Close",
+			"tool.action.navigate": "Navigate",
+			"tool.action.list_windows": "List windows",
+			"tool.action.focus_window": "Focus window",
+			"tool.action.takeover": "Take over",
+			"tool.action.resume": "Resume",
+			"tool.action.release_inputs": "Release input",
 			"view.chat": "Chat",
 			"hint.plan": PLAN_NEXT_ACTION_EN,
 			"hint.goal": "describe the objective for a long-running task",
@@ -6540,7 +6706,7 @@ window.__ModuleLoader__.load({
 			"stats.llm": "LLM {duration}",
 			"stats.toolCall": "Tool call {duration}",
 			"stats.ttftAverage": "TTFT avg {duration}",
-			"stats.tokensPerSecond": "{throughput} tok/s",
+			"stats.tokensPerSecond": "Generation avg {throughput} tok/s",
 			"stats.cacheHit": "Cache hit {percent}%",
 			"stats.tokens": "Input {input} tok · Output {output} tok",
 			"settings.enter.title": "Enter behavior while busy",
@@ -6628,7 +6794,7 @@ window.__ModuleLoader__.load({
 			"message.turnUsage.reasoning": " ({tokens} reasoning)",
 			"message.turnTime.title": "Turn time and speed",
 			"message.turnTime.duration": "Total run time",
-			"message.turnTime.speed": "Tokens per second (TPS)",
+			"message.turnTime.speed": "Request generation average (including reasoning)",
 			"message.turnTime.ttft": "Time to first token (TTFT)",
 			"duration.seconds": "{seconds}s",
 			"duration.minutes": "{minutes}m {seconds}s",
@@ -6856,6 +7022,7 @@ window.__ModuleLoader__.load({
 					children: [(0, react_jsx_runtime.jsxs)("button", {
 						type: "button",
 						className: TodoPanel_module_css_default.header,
+                        title: t("todo.title"),
 						"aria-expanded": !collapsed,
 						onClick: () => {
 							setCollapsed((v) => !v);
@@ -6863,6 +7030,7 @@ window.__ModuleLoader__.load({
 						children: [
 							(0, react_jsx_runtime.jsx)("span", {
 								className: TodoPanel_module_css_default.lead,
+								title: t("todo.title"),
 								"aria-hidden": true,
 								children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChecklistOutline14, {})
 							}),
@@ -6886,9 +7054,8 @@ window.__ModuleLoader__.load({
 							className: TodoPanel_module_css_default.item,
 							"data-status": item.status,
 							children: [(0, react_jsx_runtime.jsx)("span", {
-								className: TodoPanel_module_css_default.glyph,
-								"aria-hidden": true,
-								children: (0, react_jsx_runtime.jsx)(StatusGlyph, { status: item.status })
+								className: TodoPanel_module_css_default.glyph, title: t("todo.state." + item.status),
+                                children: (0, react_jsx_runtime.jsx)(StatusGlyph, { status: item.status })
 							}), editing?.index === index ? (0, react_jsx_runtime.jsx)("input", {
 								autoFocus: true,
 								className: "dsh-todo-editor",
@@ -7255,7 +7422,7 @@ window.__ModuleLoader__.load({
 						if (conversation === void 0) throw new Error("queue dock: conversation service unavailable");
 						return {
 							updateQueue: (itemId, action) => conversation.updateQueue(itemId, action),
-							loadImage: (attachment) => conversation.resolveImage(sessionId, attachment),
+							loadImage: conversation.imageLoader(sessionId),
 							notify: (level, text) => {
 								conversation.input.for(actx).notify(level, text);
 							}
@@ -7986,6 +8153,8 @@ window.__ModuleLoader__.load({
 				turn,
 				step,
 				blocks: [],
+				messages: [],
+				settledBlocks: [],
 				firstVisibleSeq: void 0,
 				firstVisibleTime: void 0,
 				firstTokenTime: void 0,
@@ -7993,6 +8162,17 @@ window.__ModuleLoader__.load({
 				final: void 0,
 				usage: void 0
 			};
+		}
+		function settleAssistantMessage(state, match) {
+			const id = match.event.data.message.id;
+			const messages = [...(state.messages ?? [])];
+			const next = { id, blocks: (0, _deepseek_ai_dsh_client_runtime_client.toAssistantBlocks)(match.event.data.message.content) };
+			const index = messages.findIndex(message => message.id === id);
+			if (index < 0) messages.push(next); else messages[index] = next;
+			return { ...state, messages, settledBlocks: messages.flatMap(message => message.blocks), blocks: next.blocks, final: match, hidden: false, usage: match.event.data.usage ?? state.usage };
+		}
+		function visibleAssistantBlocks(state) {
+			return state.final ? state.settledBlocks : [...state.settledBlocks, ...compactBlocks(state.blocks)];
 		}
 		function compactBlocks(blocks) {
 			return blocks.filter((block) => block !== void 0);
@@ -8013,6 +8193,8 @@ window.__ModuleLoader__.load({
 		function resetForRetry(state) {
 			return {
 				...initialState(state.turn, state.step),
+				messages: state.messages,
+				settledBlocks: state.settledBlocks,
 				firstTokenTime: state.firstTokenTime,
 				hidden: true
 			};
@@ -8020,6 +8202,7 @@ window.__ModuleLoader__.load({
 		function updateChunk(state, match) {
 			if (match.event.type !== "assistant/chunk") return state;
 			const chunk = match.event.data.chunk;
+			if (state.final && ["block-start", "text-delta", "reasoning-delta", "tool-call-delta", "block-end"].includes(chunk.type)) state = { ...state, blocks: [], final: void 0 };
 			const blocks = [...state.blocks];
 			switch (chunk.type) {
 				case "block-start":
@@ -8091,10 +8274,12 @@ window.__ModuleLoader__.load({
 					kind: "assistant",
 					seq: event.seq,
 					messageId: event.data.message.id,
+					...(event.data.interrupted === true ? { interrupted: true } : {}),
+					...(event.data.truncated === true ? { truncated: true } : {}),
 					time: event.time,
 					turn: state.turn,
 					step: state.step,
-					blocks: (0, _deepseek_ai_dsh_client_runtime_client.toAssistantBlocks)(event.data.message.content),
+					blocks: state.settledBlocks,
 					usage: event.data.usage,
 					timing: {
 						stepStartTime: context.start?.event.time ?? null,
@@ -8105,7 +8290,7 @@ window.__ModuleLoader__.load({
 			}
 			const location = context.start?.location ?? context.matches.at(-1)?.location;
 			const boundary = location === void 0 ? void 0 : closedBoundary(location);
-			const blocks = compactBlocks(state.blocks);
+			const blocks = visibleAssistantBlocks(state);
 			if (boundary === void 0 || !hasInterruptionEvidence(blocks)) return void 0;
 			return {
 				kind: "assistant",
@@ -8127,13 +8312,7 @@ window.__ModuleLoader__.load({
 				}
 				if (match.event.type === "assistant/message") {
 					state ??= initialState(match.event.data.turn, match.event.data.step);
-					state = {
-						...state,
-						blocks: (0, _deepseek_ai_dsh_client_runtime_client.toAssistantBlocks)(match.event.data.message.content),
-						hidden: false,
-						final: match,
-						usage: match.event.data.usage
-					};
+					state = settleAssistantMessage(state, match);
 					continue;
 				}
 				if (match.event.type === "llm/retry" && state !== void 0) state = resetForRetry(state);
@@ -8144,7 +8323,7 @@ window.__ModuleLoader__.load({
 			const state = context.state ?? fallbackState$4(context);
 			if (state === void 0) return void 0;
 			const settled = finalNode(state, context);
-			const blocks = settled?.blocks ?? compactBlocks(state.blocks);
+			const blocks = settled?.blocks ?? visibleAssistantBlocks(state);
 			const visible = hasVisibleContent(blocks);
 			const status = settled?.interrupted === true ? "interrupted" : settled === void 0 ? "running" : "settled";
 			const anchorSeq = settled?.seq ?? state.firstVisibleSeq ?? context.matches[0]?.event.seq ?? 0;
@@ -8189,13 +8368,7 @@ window.__ModuleLoader__.load({
 			},
 			update: (context, match) => {
 				if (match.event.type === "assistant/chunk") return updateChunk(context.state, match);
-				if (match.event.type === "assistant/message") return {
-					...context.state,
-					blocks: (0, _deepseek_ai_dsh_client_runtime_client.toAssistantBlocks)(match.event.data.message.content),
-					hidden: false,
-					final: match,
-					usage: match.event.data.usage
-				};
+				if (match.event.type === "assistant/message") return settleAssistantMessage(context.state, match);
 				if (match.event.type === "llm/retry") return resetForRetry(context.state);
 				return context.state;
 			},
@@ -8914,7 +9087,7 @@ window.__ModuleLoader__.load({
 		const messageDefinition = {
 			kind: "input-message",
 			target: "chat",
-			match: (event) => event.type === "user/message" && (0, _deepseek_ai_dsh_client_runtime_client.isAppendSurfaceEvent)(event) && !isCompactionCheckpoint(event) ? {
+			match: (event) => event.type === "user/message" && (0, _deepseek_ai_dsh_client_runtime_client.isAppendSurfaceEvent)(event) && !isCompactionCheckpoint(event) && !(event.data.source.kind === "plugin" && event.data.source.plugin === "agent-loop:response-recovery") ? {
 				id: String(event.data.id),
 				role: "start"
 			} : null,
@@ -9713,7 +9886,8 @@ window.__ModuleLoader__.load({
 		* @returns the reasoning disclosure.
 		*/
 		function ReasoningRow({ text, running, t }) {
-			const [expanded, setExpanded] = (0, react.useState)(true);
+			// Keep long reasoning bodies out of the DOM until the user opens them.
+			const [expanded, setExpanded] = (0, react.useState)(false);
 			const summaryRef = (0, react.useRef)(null);
 			const summary = running ? latestLine(text) : firstLine(text);
 			const scheduleSummaryScroll = useThrottledVisualUpdate(() => {
@@ -9728,21 +9902,26 @@ window.__ModuleLoader__.load({
 				scheduleSummaryScroll,
 				summary
 			]);
+			(0, react.useEffect)(() => {
+				if (running) setExpanded(false);
+			}, [running]);
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: ReasoningRow_module_css_default.root,
+                title: t("message.thinking"),
 				"data-variant": "think",
 				"data-state": running ? "running" : "ok",
+				"data-reasoning-chars": text.length,
 				"data-expanded": expanded || void 0,
 				children: [running && (0, react_jsx_runtime.jsx)("span", {
 					className: accessibility_module_css_default.visuallyHidden,
 					children: t("row.running")
 				}), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.DisclosureRow, {
 					rowClassName: ReasoningRow_module_css_default.row,
-					leadingClassName: ReasoningRow_module_css_default.leading,
+					leadingClassName: ReasoningRow_module_css_default.leading + " dshReplyHintLeading",
 					titleClassName: ReasoningRow_module_css_default.title,
 					chevronClassName: ReasoningRow_module_css_default.chevron,
-					icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconThinkOutline14, { size: 14 }),
-					title: "Think",
+					icon: (0, react_jsx_runtime.jsx)("span", { className: "dshReplyHintIcon", title: t("message.thinking"), "aria-hidden": true, children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconThinkOutline14, { size: 14 }) }),
+					title: (0, react_jsx_runtime.jsx)("span", { className: "dshReplyHintLabel", children: t("message.thinking") }),
 					open: expanded,
 					expandable: true,
 					expandOnRowClick: true,
@@ -9761,10 +9940,10 @@ window.__ModuleLoader__.load({
 							children: summary
 						})
 					})] }),
-					children: (0, react_jsx_runtime.jsx)("div", {
+					children: expanded ? (0, react_jsx_runtime.jsx)("div", {
 						className: ReasoningRow_module_css_default.thinkBody,
 						children: text
-					})
+					}) : null
 				})]
 			});
 		}
@@ -9788,7 +9967,7 @@ window.__ModuleLoader__.load({
 		//#endregion
 		//#region lib/types/client/chat/AssistantMarkdown.js
 		/** Reasoning block as the Think variant summary row (figma 39:28304). */
-		const AssistantMarkdown = (0, react.memo)(function AssistantMarkdown({ blocks, streaming, interrupted, loadImage, mentions, t }) {
+		const AssistantMarkdown = (0, react.memo)(function AssistantMarkdown({ blocks, streaming, interrupted, truncated, loadImage, mentions, t }) {
 			const imageLoader = loadImage ?? (() => Promise.reject(new Error(t("image.serviceUnavailable"))));
 			const codeLabels = (0, react.useMemo)(() => ({
 				copyLabel: t("copy"),
@@ -9846,7 +10025,7 @@ window.__ModuleLoader__.load({
 				"data-streaming": streaming || void 0,
 				children: (0, react_jsx_runtime.jsxs)("div", {
 					className: AssistantMarkdown_module_css_default.body,
-					children: [rendered, interrupted && (0, react_jsx_runtime.jsx)("span", {
+					children: [rendered, truncated && (0, react_jsx_runtime.jsx)("span", { className: AssistantMarkdown_module_css_default.stopped, children: t("message.partTruncated") }), interrupted && (0, react_jsx_runtime.jsx)("span", {
 						className: AssistantMarkdown_module_css_default.stopped,
 						children: t("message.stopped")
 					})]
@@ -9879,6 +10058,7 @@ window.__ModuleLoader__.load({
 				blocks: data.blocks,
 				streaming: data.status === "running",
 				interrupted: data.status === "interrupted",
+				truncated: data.finalNode?.truncated === true,
 				loadImage,
 				mentions,
 				t
@@ -9917,7 +10097,7 @@ window.__ModuleLoader__.load({
 			return state === "error" ? (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.StateDot, { state: "error" }) : (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconApiOutline14, { size: 14 });
 		}
 		function GenericCommandCard({ node, t, runningSummary }) {
-			const [expanded, setExpanded] = (0, react.useState)(false);
+			const [expanded, setExpanded] = (0, react.useState)(true);
 			const text = node.outcome?.text;
 			const summary = node.outcome === null ? runningSummary ?? t("command.running") : text ?? (node.outcome.kind === "error" ? t("command.failed") : t("command.done"));
 			const title = node.name ?? t("command.title");
@@ -9926,6 +10106,7 @@ window.__ModuleLoader__.load({
 			const open = expanded && body !== null;
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: GenericCommandCard_module_css_default.root,
+                    title,
 				"data-variant": "others",
 				"data-state": state,
 				children: [
@@ -9939,11 +10120,11 @@ window.__ModuleLoader__.load({
 					}),
 					(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.DisclosureRow, {
 						rowClassName: GenericCommandCard_module_css_default.row,
-						leadingClassName: GenericCommandCard_module_css_default.leading,
+						leadingClassName: GenericCommandCard_module_css_default.leading + " dshReplyHintLeading",
 						titleClassName: GenericCommandCard_module_css_default.title,
 						chevronClassName: GenericCommandCard_module_css_default.chevron,
-						icon: leadingFor(state),
-						title,
+						icon: (0, react_jsx_runtime.jsx)("span", { className: "dshReplyHintIcon", title, "aria-hidden": true, children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconApiOutline14, { size: 14 }) }),
+						title: (0, react_jsx_runtime.jsx)("span", { className: "dshReplyHintLabel", children: title }),
 						open,
 						expandable: body !== null,
 						expandOnRowClick: true,
@@ -10377,7 +10558,11 @@ window.__ModuleLoader__.load({
 			}), "ui-conversation: dictionaries");
 			const t = ctx.locale.bind(NS);
 			const chatStore = createChatStore();
-			const submissionPolicy = new ComposerSubmissionPolicy(ctx.settingsScope.bind({ namespace: CONVERSATION_SETTINGS_NAMESPACE }));
+			const conversationSettings = ctx.settingsScope.bind({ namespace: CONVERSATION_SETTINGS_NAMESPACE });
+            const submissionPolicy = new ComposerSubmissionPolicy(conversationSettings);
+            const hintDisplay = new ReplyHintPreference(conversationSettings);
+            ctx.effect(() => () => hintDisplay.dispose(), "conversation reply hint display");
+            ctx.slots.inject("settings.general.item", () => ctx.slots.register({ name: "settings.general.item", id: "reply-hint-display", order: 21, locale: NS, inject: () => ({ hooks: { hintDisplay: hintDisplay.store }, setHintDisplay: mode => hintDisplay.set(mode) }) }, ReplyHintDisplayRow));
 			ctx.slots.inject("settings.general.item", () => ctx.slots.register({
 				name: "settings.general.item",
 				id: "composer-enter",
@@ -10657,12 +10842,12 @@ window.__ModuleLoader__.load({
 							const cwd = sessions.list.getSnapshot().byId[sessionId]?.cwd;
 							return workspaces.openPath((0, _deepseek_ai_dsh_client_runtime_client.resolveWorkspacePath)(cwd, path));
 						},
-						loadOlder: () => {
-							scoped.loadOlder();
-						},
+						loadOlder: () => scoped.loadOlder(),
 						loadAround: (seq) => scoped.loadAround(seq),
 						loadNewer: () => scoped.loadNewer(),
-						loadImage: (attachment) => conversation.resolveImage(sessionId, attachment),
+						returnLatest: () => scoped.returnLatest(),
+						cancelHistoryPaging: () => scoped.cancelHistoryPaging(),
+						loadImage: conversation.imageLoader(sessionId),
 						inspectCall: (callId) => {
 							actions.setInspect({ callId });
 							actions.setView("trajectory");

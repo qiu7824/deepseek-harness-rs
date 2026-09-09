@@ -59,6 +59,7 @@ jobs:
           node tools/tests/rust_release_ui_harness.cjs
           node tools/tests/test_history_compaction.mjs
           node tools/tests/history_retention_harness.cjs
+          node tools/tests/history_transactions_harness.cjs
           npm install --prefix "$RUNNER_TEMP/dsh-dom-tests" --ignore-scripts --no-audit --no-fund react@19.2.8 react-dom@19.2.8 react-test-renderer@19.2.8 jsdom@26.1.0
           node tools/tests/model_management_harness.cjs
           node tools/tests/model_management_react_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
@@ -70,8 +71,11 @@ jobs:
           node tools/tests/sidebar_suite_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/artifacts_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/conversation_interactions_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/chat_scroll_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/context_rail_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/ptc_tool_cards_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/response_rendering_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/reply_hint_display_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/workspace_browser_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/feedback_submission_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/session_reference_input_harness.cjs

@@ -43,6 +43,59 @@ def binary_name(platform: str, stem: str) -> str:
     return f"{stem}.exe" if platform == "windows" else stem
 
 
+def verify_staged_web(source: pathlib.Path, staged: pathlib.Path) -> None:
+    instruction = "Run python tools/stage_release_web.py before packaging."
+    if not staged.is_dir():
+        raise ValueError(f"missing staged web distribution: {staged}. {instruction}")
+
+    def inventory(directory: pathlib.Path, label: str) -> dict[str, tuple[str, str]]:
+        if not directory.is_dir():
+            raise ValueError(f"missing {label} web distribution: {directory}. {instruction}")
+        entries = {}
+        for path in [directory, *directory.rglob("*")]:
+            relative = path.relative_to(directory).as_posix()
+            if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+                raise ValueError(f"linked {label} web entry is not supported: {relative}. {instruction}")
+            if path.is_dir():
+                entries[relative] = ("directory", "")
+            elif path.is_file() and stat.S_ISREG(path.stat().st_mode):
+                digest = hashlib.sha256()
+                with path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                entries[relative] = ("file", digest.hexdigest())
+            else:
+                raise ValueError(f"invalid {label} web entry: {relative}. {instruction}")
+        return entries
+
+    expected, actual = inventory(source, "source"), inventory(staged, "staged")
+    missing, extra = sorted(expected.keys() - actual.keys()), sorted(actual.keys() - expected.keys())
+    changed = sorted(name for name in expected.keys() & actual.keys() if expected[name] != actual[name])
+    if missing or extra or changed:
+        raise ValueError(
+            f"stale staged web distribution: missing={missing}, extra={extra}, changed={changed}. {instruction}"
+        )
+    try:
+        manifest = json.loads((source / "plugins" / "manifest.json").read_text(encoding="utf-8"))
+        entries = manifest["entries"]
+        if not isinstance(entries, list) or not entries:
+            raise ValueError("manifest entries must be a nonempty list")
+        for entry in entries:
+            url = entry["url"]
+            if not isinstance(url, str) or "\\" in url or ":" in url:
+                raise ValueError("invalid manifest bundle URL")
+            relative = pathlib.PurePosixPath(url.lstrip("/"))
+            if ".." in relative.parts:
+                raise ValueError("manifest bundle URL leaves the web distribution")
+            bundle = expected.get(relative.as_posix())
+            if bundle is None or bundle[0] != "file" or entry.get("rev") != bundle[1][:16]:
+                raise ValueError(f"missing bundle or stale manifest revision: {url}")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError(
+            f"invalid web manifest: {error}. Rebuild web/dist and run python tools/stage_release_web.py before packaging."
+        ) from error
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--platform", choices=["windows", "linux", "macos"], required=True)
@@ -55,6 +108,8 @@ def main() -> None:
     version = validated_release_component("version", args.version)
     free_verification = verified_free_model(args.free_verification) if args.variant == "free" else None
 
+    staged_web = ROOT / "target" / "release" / "web" / "dist"
+    verify_staged_web(ROOT / "web" / "dist", staged_web)
     core_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh")
     verify_release_version(version, core_source)
     if free_verification is not None and free_verification["binarySha256"] != hashlib.sha256(core_source.read_bytes()).hexdigest():
@@ -91,9 +146,6 @@ def main() -> None:
     copy_tree(ROOT / "release" / "plugins", stage / "plugins")
     if args.variant != "skin":
         shutil.rmtree(stage / "plugins" / "dsh-skin-center", ignore_errors=True)
-    staged_web = ROOT / "target" / "release" / "web" / "dist"
-    if not staged_web.is_dir():
-        raise SystemExit(f"missing staged web distribution: {staged_web}")
     copy_tree(staged_web, stage / "web" / "dist")
     shutil.rmtree(stage / "web" / "dist" / "skins", ignore_errors=True)
     copy_tree(ROOT / "config" / "agent-presets", stage / "config" / "agent-presets")
@@ -104,7 +156,9 @@ def main() -> None:
     shutil.copy2(ROOT / "docs" / "browser-control-and-model-tools.zh.md", stage / "docs" / "browser-control-and-model-tools.zh.md")
     shutil.copy2(ROOT / "docs" / "sidebar-extension-api.md", stage / "docs" / "sidebar-extension-api.md")
     shutil.copy2(ROOT / "docs" / "sidebar-workbench-suite.md", stage / "docs" / "sidebar-workbench-suite.md")
-    for name in ["workspace-scratch-policy-design.zh.md", "workspace-scratch-open-source-study.zh.md", "ultra-codex-usage-reset-plan.zh.md"]:
+    shutil.copy2(ROOT / "docs" / "rust-conversation-scrolling.zh.md", stage / "docs" / "rust-conversation-scrolling.zh.md")
+    shutil.copy2(ROOT / "docs" / "response-completeness.zh.md", stage / "docs" / "response-completeness.zh.md")
+    for name in ["workspace-scratch-policy-design.zh.md", "workspace-scratch-open-source-study.zh.md", "ultra-codex-usage-reset-plan.zh.md", "upstream-v0.1.5-alpha.1-evaluation.zh.md", "uu-self-connect-probe.zh.md"]:
         shutil.copy2(ROOT / "docs" / name, stage / "docs" / name)
     for name in ["README.md", "README.zh.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]:
         if (ROOT / name).exists():

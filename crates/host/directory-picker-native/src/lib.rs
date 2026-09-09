@@ -3,13 +3,11 @@
 //! OS directory chooser on the host's display. Rust port of
 //! `packages/host/directory-picker-native` (macOS `osascript`, Linux
 //! `zenity` with `kdialog` fallback; the Windows `IFileOpenDialog` COM
-//! dialog arrives with the win32-dialog milestone).
+//! folder dialog is provided by the installed Windows desktop runtime).
 //!
 //! # Deviations
 //!
-//! - Windows picks answer `None` until the COM dialog milestone (a
-//!   picker-unavailable posture would be wrong — the capability advertises
-//!   native, the dialog itself is the deferred half).
+//! - Windows uses the OS common folder dialog in a cancellable native helper.
 //! - The TS injectable runner seam collapses to the
 //!   [`dsh_native_command::run_native_command`] boundary.
 
@@ -21,6 +19,7 @@ use dsh_host_directory_picker::{
     AbortSignal, DirectoryPicker, DirectoryPickerCapability, DirectoryPickerNativeCapability,
     register,
 };
+use dsh_host_directory_picker_browse::{BrowseDirectoryPicker, Config as BrowseConfig};
 use futures::future::BoxFuture;
 
 /// Cordis plugin name.
@@ -52,38 +51,14 @@ async fn pick_macos(signal: &AbortSignal) -> Option<String> {
     }
 }
 
-/// Open the Windows folder chooser through PowerShell's native WinForms dialog.
 #[cfg(windows)]
-fn windows_picker_script() -> &'static str {
-    r#"[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='Select workspace directory'; $d.RootFolder=[System.Environment+SpecialFolder]::MyComputer; $d.ShowNewFolderButton=$true; if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){$d.SelectedPath}"#
-}
-
+mod windows;
+#[cfg(windows)]
+pub use windows::{register_embedded_windows_picker, run_windows_picker};
 #[cfg(windows)]
 async fn pick_windows(signal: &AbortSignal) -> Option<String> {
-    let abort = signal.clone();
-    let signal_flag: dsh_native_command::NativeCommandAbort = Arc::new(move || abort.aborted());
-    let script = windows_picker_script();
-    match dsh_native_command::run_native_command(
-        "powershell.exe",
-        vec![
-            "-NoProfile".to_string(),
-            "-STA".to_string(),
-            "-Command".to_string(),
-            script.to_string(),
-        ]
-        .as_slice(),
-        Some(signal_flag),
-    )
-    .await
-    {
-        Ok(output) => {
-            let path = output.stdout.trim();
-            (!path.is_empty()).then(|| path.to_string())
-        }
-        Err(_) => None,
-    }
+    windows::pick(signal).await
 }
-
 #[cfg(not(windows))]
 async fn pick_windows(_signal: &AbortSignal) -> Option<String> {
     None
@@ -149,10 +124,14 @@ impl NativeDirectoryPicker {
                     }
                 })
             });
+        let native = DirectoryPickerNativeCapability::new(pick);
+        let browse_picker = BrowseDirectoryPicker::new(BrowseConfig::default());
+        let browse = match browse_picker.capability() {
+            DirectoryPickerCapability::Browse(value) => value,
+            _ => unreachable!("browse backend must expose browse capability"),
+        };
         Arc::new(Self {
-            capability: DirectoryPickerCapability::Native(DirectoryPickerNativeCapability::new(
-                pick,
-            )),
+            capability: DirectoryPickerCapability::Hybrid { native, browse },
         })
     }
 
@@ -187,20 +166,4 @@ impl Plugin for NativeDirectoryPickerPlugin {
 #[allow(unused)]
 fn _vocab() {
     let _ = arc(());
-}
-
-#[cfg(all(test, windows))]
-mod tests {
-    use super::windows_picker_script;
-
-    #[test]
-    fn windows_picker_forces_utf8_before_emitting_selected_path() {
-        let script = windows_picker_script();
-        assert!(
-            script.starts_with(
-                "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
-            ),
-            "PowerShell 5.1 otherwise emits selected paths in the active OEM code page"
-        );
-    }
 }

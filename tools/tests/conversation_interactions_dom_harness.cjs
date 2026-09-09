@@ -58,7 +58,7 @@ const render = () => React.act(async () => root.render(React.createElement(conte
   await render(); assert.equal(top, 800);
   await React.act(async () => scroll.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -80, bubbles: true })));
   height = 1200;
-  await React.act(async () => observers.filter(o => !o.dead).forEach(o => o.fn()));
+  await React.act(async () => { observers.filter(o => !o.dead).forEach(o => o.fn()); await new Promise(resolve=>setTimeout(resolve,25)); });
   assert.equal(top, 800, 'stream resize must honor upward intent before the first scroll sample');
   await React.act(async () => { scroll.scrollTop = 400; scroll.dispatchEvent(new window.Event('scroll')); });
   state.chat.order = ['new-user']; state.chat.nodes.set('new-user', { kind: 'user', anchorSeq: 1 });
@@ -67,7 +67,7 @@ const render = () => React.act(async () => root.render(React.createElement(conte
   assert.equal(top, 1000);
   await React.act(async () => { scroll.dispatchEvent(new window.Event('scrollend')); });
   height = 1400;
-  await React.act(async () => observers.filter(o => !o.dead).forEach(o => o.fn()));
+  await React.act(async () => { observers.filter(o => !o.dead).forEach(o => o.fn()); await new Promise(resolve=>setTimeout(resolve,25)); });
   assert.equal(top, 1200, 'explicit return-to-bottom restores follow mode');
   let older=0,newer=0;
   props.loadOlder=async()=>{older++};props.loadNewer=async()=>{newer++};

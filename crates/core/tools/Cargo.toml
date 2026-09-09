@@ -21,4 +21,5 @@ serde_json = { workspace = true }
 indexmap = { workspace = true }
 
 [dev-dependencies]
+dsh-session = { path = "../session" }
 tokio = { workspace = true, features = ["test-util"] }

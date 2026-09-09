@@ -27,6 +27,19 @@ fn respond(value: &serde_json::Value) -> bool {
         .is_ok()
 }
 
+fn worker_error_code(message: &str) -> &str {
+    let code = message.split([';', ':']).next().unwrap_or("");
+    if code.starts_with("COMPUTER_USE_")
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        code
+    } else {
+        "COMPUTER_USE_UU_ERROR"
+    }
+}
+
 #[cfg(windows)]
 fn main() {
     if std::env::args().any(|arg| arg == "--check-engine") {
@@ -101,6 +114,7 @@ fn main() {
                         | "key_up"
                         | "release_inputs"
                         | "takeover"
+                        | "resume_agent"
                         | "click"
                         | "double_click"
                         | "drag"
@@ -113,7 +127,14 @@ fn main() {
             {
                 input_reader.fetch_add(1, Ordering::SeqCst);
                 if action != "release_inputs" {
-                    pause_reader.store(true, Ordering::SeqCst)
+                    sdk::set_pause_state(
+                        &pause_reader,
+                        match action {
+                            "takeover" => sdk::PauseReason::GuiTakeover,
+                            "resume_agent" => sdk::PauseReason::ResumePending,
+                            _ => sdk::PauseReason::GuiInput,
+                        },
+                    );
                 }
             }
             let Some(id) = value["id"].as_u64() else {
@@ -146,10 +167,10 @@ fn main() {
             }
         }
         stop_reader.store(true, Ordering::SeqCst);
-        pause_reader.store(true, Ordering::SeqCst);
         for flag in cancellation_reader.lock().unwrap().values() {
             flag.store(true, Ordering::SeqCst)
         }
+        sdk::set_pause_state(&pause_reader, sdk::PauseReason::ReaderShutdown);
     });
     let mut media = None;
     let mut engine: Option<sdk::Engine> = None;
@@ -198,7 +219,14 @@ fn main() {
                         return Err("COMPUTER_USE_ABORTED".into());
                     }
                     owner = requested.to_string();
-                    paused.store(human, Ordering::SeqCst);
+                    sdk::set_pause_state(
+                        &paused,
+                        if human {
+                            sdk::PauseReason::StartHuman
+                        } else {
+                            sdk::PauseReason::Agent
+                        },
+                    );
                     engine = Some(sdk::Engine::open(
                         room,
                         &account.device_id,
@@ -238,7 +266,7 @@ fn main() {
                 json!({"id":id,"ok":true,"value":value})
             }
             Err(message) => {
-                json!({"id":id,"ok":false,"error":{"code":if message.starts_with("COMPUTER_USE_"){message.clone()}else{"COMPUTER_USE_UU_ERROR".into()},"message":message}})
+                json!({"id":id,"ok":false,"error":{"code":worker_error_code(&message),"message":message}})
             }
         };
         if !respond(&response) {
@@ -246,4 +274,29 @@ fn main() {
         }
     }
     drop(engine);
+}
+
+#[cfg(test)]
+mod error_tests {
+    #[test]
+    fn diagnostic_suffixes_do_not_change_error_identity() {
+        assert_eq!(
+            super::worker_error_code(
+                "COMPUTER_USE_MANUAL_CONTROL; controlDiagnostics={\"pauseReason\":\"escape-hotkey\"}"
+            ),
+            "COMPUTER_USE_MANUAL_CONTROL"
+        );
+        assert_eq!(
+            super::worker_error_code("COMPUTER_USE_DESKTOP_DISCONNECTED"),
+            "COMPUTER_USE_DESKTOP_DISCONNECTED"
+        );
+        assert_eq!(
+            super::worker_error_code("COMPUTER_USE_ABORTED"),
+            "COMPUTER_USE_ABORTED"
+        );
+        assert_eq!(
+            super::worker_error_code("COMPUTER_USE_ PRIVATE_TEXT"),
+            "COMPUTER_USE_UU_ERROR"
+        );
+    }
 }

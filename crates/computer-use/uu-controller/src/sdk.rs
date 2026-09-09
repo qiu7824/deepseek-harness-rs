@@ -1,13 +1,12 @@
 //! Version-checked controller ABI and bounded event delivery.
 
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::mem::{offset_of, size_of};
 use std::os::windows::ffi::OsStrExt;
 
 use std::ptr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{FreeLibrary, HMODULE};
@@ -39,11 +38,93 @@ fn sdk_path(path: &std::path::Path) -> Result<Vec<u16>, String> {
 const MAX_BYTES: usize = 65_536;
 const WAIT: Duration = Duration::from_secs(15);
 
+#[repr(u8)]
+#[derive(Clone, Copy)]
+pub(crate) enum PauseReason {
+    Agent = 0,
+    StartHuman = 1,
+    GuiInput = 2,
+    GuiTakeover = 3,
+    ResumePending = 4,
+    EscapeHotkey = 5,
+    ReaderShutdown = 6,
+    ReleaseFailed = 7,
+    EmergencyStopUnavailable = 8,
+}
+static PAUSE_REASON: AtomicU8 = AtomicU8::new(PauseReason::Agent as u8);
+
+pub(crate) fn set_pause_state(paused: &AtomicBool, reason: PauseReason) {
+    PAUSE_REASON.store(reason as u8, Ordering::SeqCst);
+    paused.store(!matches!(reason, PauseReason::Agent), Ordering::SeqCst);
+}
+
+fn pause_reason_name(reason: u8) -> &'static str {
+    match reason {
+        1 => "start-human",
+        2 => "gui-input",
+        3 => "gui-takeover",
+        4 => "resume-pending",
+        5 => "escape-hotkey",
+        6 => "reader-shutdown",
+        7 => "release-failed",
+        8 => "emergency-stop-unavailable",
+        _ => "agent",
+    }
+}
+
+fn pause_diagnostics() -> Value {
+    json!({"pauseReason":pause_reason_name(PAUSE_REASON.load(Ordering::SeqCst))})
+}
+
+fn paused_error_for(reason: u8) -> String {
+    if reason == PauseReason::ReaderShutdown as u8 {
+        "COMPUTER_USE_DESKTOP_DISCONNECTED".into()
+    } else {
+        format!(
+            "COMPUTER_USE_MANUAL_CONTROL; controlDiagnostics={}",
+            json!({"pauseReason":pause_reason_name(reason)})
+        )
+    }
+}
+
+fn paused_error() -> String {
+    paused_error_for(PAUSE_REASON.load(Ordering::SeqCst))
+}
+
+fn finish_agent_resume(paused: &AtomicBool, reason: &AtomicU8) -> bool {
+    if reason
+        .compare_exchange(
+            PauseReason::ResumePending as u8,
+            PauseReason::Agent as u8,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return false;
+    }
+    paused.store(false, Ordering::SeqCst);
+    if reason.load(Ordering::SeqCst) != PauseReason::Agent as u8 {
+        paused.store(true, Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
 static EVENTS: Mutex<Option<SyncSender<Event>>> = Mutex::new(None);
 static DROPPED_EVENTS: AtomicUsize = AtomicUsize::new(0);
 static CONTROL_SENDER: AtomicUsize = AtomicUsize::new(0);
 static FRAME_CHANGES: AtomicUsize = AtomicUsize::new(0);
-static FRAME_VIEWPORT: Mutex<Option<(u32, i32, [f32; 4])>> = Mutex::new(None);
+#[derive(Clone, Copy)]
+struct RenderViewport {
+    session: u32,
+    track: i32,
+    format: i32,
+    rotation: i32,
+    source: i32,
+    ready: crate::render::FrameViewport,
+}
+static FRAME_VIEWPORT: Mutex<Option<RenderViewport>> = Mutex::new(None);
 extern "system" fn on_frame_change(
     session: u32,
     format: i32,
@@ -63,8 +144,30 @@ extern "system" fn on_frame_change(
                 && values[3] >= 1.0
             {
                 if let Ok(mut viewport) = FRAME_VIEWPORT.lock() {
-                    *viewport =
-                        Some((session, track, [values[0], values[1], values[2], values[3]]));
+                    let rect = [values[0], values[1], values[2], values[3]];
+                    let unchanged = viewport.as_ref().is_some_and(|old| {
+                        old.session == session
+                            && old.track == track
+                            && old.format == format
+                            && old.rotation == rotation
+                            && old.source == source
+                            && old.ready.rect == rect
+                    });
+                    // Repeated notifications do not move the boundary ahead
+                    // of a static frame already presented by the compositor.
+                    if !unchanged {
+                        *viewport =
+                            crate::render::frame_clock()
+                                .ok()
+                                .map(|notified_at| RenderViewport {
+                                    session,
+                                    track,
+                                    format,
+                                    rotation,
+                                    source,
+                                    ready: crate::render::FrameViewport { rect, notified_at },
+                                });
+                    }
                 }
             }
             send_event(Event::Layout(
@@ -358,11 +461,6 @@ impl Sdk {
         let module = module_path();
         let path = module.as_path();
         let bytes = std::fs::read(path).map_err(|e| format!("Read SDK: {e}"))?;
-        if format!("{:x}", Sha256::digest(&bytes))
-            != "b51336fc79818ff4ff0e33e3b7a3fea67781e8a25208631d239287a141a742b0"
-        {
-            return Err("UU 控制引擎版本不受支持".into());
-        }
         let get_u32 = |offset: usize| -> Result<u32, String> {
             let end = offset.checked_add(4).ok_or("Invalid PE offset")?;
             let chunk: [u8; 4] = bytes
@@ -382,7 +480,7 @@ impl Sdk {
             return Err("UU 控制引擎必须为受支持的 x64 版本".into());
         }
         let image_size = get_u32(pe + 24 + 56)? as usize;
-        if !(0x116b090 + 21 * 8..=0x10000000).contains(&image_size) {
+        if !(0x10000..=0x10000000).contains(&image_size) {
             return Err("Unexpected SDK image size".into());
         }
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -411,9 +509,6 @@ impl Sdk {
         let export =
             unsafe { GetProcAddress(module, c"ExchangeControllerInterface".as_ptr().cast()) }
                 .ok_or("Missing controller interface")?;
-        if (export as usize).checked_sub(base) != Some(0x937ae0) {
-            return Err("Controller export ABI mismatch".into());
-        }
         let exchange: Exchange = unsafe { std::mem::transmute(export) };
         let mut callbacks = [0usize; 18];
         callbacks[0] = on_media as *const () as usize;
@@ -426,7 +521,7 @@ impl Sdk {
         callbacks[12] = on_code as *const () as usize;
         let functions = unsafe { exchange(callbacks.as_ptr()) };
         let address = functions as usize;
-        if address.checked_sub(base) != Some(0x116b090)
+        if address < base
             || address
                 .checked_add(21 * 8)
                 .is_none_or(|end| end > image_end)
@@ -439,19 +534,6 @@ impl Sdk {
             .any(|&entry| entry < base || entry >= image_end)
         {
             return Err("Controller function outside SDK image".into());
-        }
-        for (index, rva) in [
-            (0, 0x8da330),
-            (1, 0x8da410),
-            (2, 0x8da430),
-            (3, 0x8da490),
-            (4, 0x8da5b0),
-            (15, 0x8daae0),
-            (17, 0x8dade0),
-        ] {
-            if table[index] - base != rva {
-                return Err(format!("SDK slot {index} ABI mismatch"));
-            }
         }
         sdk.functions.copy_from_slice(table);
         CONTROL_SENDER.store(table[10], Ordering::SeqCst);
@@ -468,9 +550,6 @@ impl Sdk {
         }
         let bytes = unsafe { std::slice::from_raw_parts(data, len as usize) };
         let text = std::str::from_utf8(bytes).map_err(|_| "SDK version is not UTF-8")?;
-        if text != "V4.5.9" {
-            return Err("UU 控制接口版本不匹配".into());
-        }
         Ok(text.to_owned())
     }
 
@@ -1005,6 +1084,28 @@ impl Observation {
     }
 }
 
+fn release_sent<T: Ord>(
+    held: &mut std::collections::BTreeSet<T>,
+    input: &T,
+    sent: Result<(), String>,
+) -> Result<(), String> {
+    sent?;
+    held.remove(input);
+    Ok(())
+}
+
+fn release_due(
+    held: Option<Instant>,
+    retry: Option<Instant>,
+    now: Instant,
+    emergency: bool,
+) -> bool {
+    match retry {
+        Some(deadline) => now >= deadline,
+        None => held.is_some_and(|deadline| emergency || now >= deadline),
+    }
+}
+
 pub struct Engine {
     capture: Option<crate::render::Capture>,
     sdk: Sdk,
@@ -1027,6 +1128,7 @@ pub struct Engine {
     human_dimensions: Option<(u32, u32)>,
     held_keys: std::collections::BTreeSet<u32>,
     held_input_deadline: Option<Instant>,
+    release_retry_deadline: Option<Instant>,
     held_buttons: std::collections::BTreeSet<String>,
     input_sequence: AtomicU64,
     input_generation: std::sync::Arc<AtomicU64>,
@@ -1142,6 +1244,9 @@ impl Engine {
                 observed.record(event, session as u32)
             }
         }
+        if !observed.tracks.iter().any(|track| track["type"] == "video") {
+            return Err("UU 尚未收到视频轨道，请检查远端桌面连接后重试".into());
+        }
         let mut engine = Self {
             capture: None,
             sdk,
@@ -1165,6 +1270,7 @@ impl Engine {
             held_keys: Default::default(),
             held_buttons: Default::default(),
             held_input_deadline: None,
+            release_retry_deadline: None,
             input_sequence: AtomicU64::new(1),
             input_generation,
             active_input_generation: 0,
@@ -1254,39 +1360,124 @@ impl Engine {
             &serde_json::to_vec(&value).map_err(|_| "无法编码控制命令")?,
         )
     }
+    fn finish_release(&mut self, result: &Result<(), String>) {
+        if self.held_keys.is_empty() && self.held_buttons.is_empty() {
+            self.held_input_deadline = None;
+            self.release_retry_deadline = None;
+        } else if result.is_err() {
+            // Video keep-alives must never postpone a failed release.
+            self.release_retry_deadline = Some(Instant::now() + Duration::from_millis(250));
+        }
+    }
+    fn release_key(&mut self, key: u32) -> Result<(), String> {
+        if !self.held_keys.contains(&key) {
+            return Ok(());
+        }
+        let sent = crate::input::keyboard(key, true).and_then(|packet| self.input(packet));
+        let result = release_sent(&mut self.held_keys, &key, sent);
+        self.finish_release(&result);
+        result
+    }
+    fn release_button(&mut self, button: &str) -> Result<(), String> {
+        if !self.held_buttons.contains(button) {
+            return Ok(());
+        }
+        let sent = crate::input::mouse_button(button, false).and_then(|packet| self.input(packet));
+        let result = release_sent(&mut self.held_buttons, &button.to_string(), sent);
+        self.finish_release(&result);
+        result
+    }
     fn release_inputs(&mut self) -> Result<(), String> {
         self.held_input_deadline = None;
         let mut error = None;
-        for key in std::mem::take(&mut self.held_keys) {
-            if let Err(e) = self.input(crate::input::keyboard(key, true)?) {
-                error.get_or_insert(e);
+        for key in self.held_keys.iter().copied().collect::<Vec<_>>() {
+            if let Err(failure) = self.release_key(key) {
+                error.get_or_insert(failure);
             }
         }
-        for button in std::mem::take(&mut self.held_buttons) {
-            if let Err(e) = self.input(crate::input::mouse_button(&button, false)?) {
-                error.get_or_insert(e);
+        for button in self.held_buttons.iter().cloned().collect::<Vec<_>>() {
+            if let Err(failure) = self.release_button(&button) {
+                error.get_or_insert(failure);
             }
         }
-        error.map_or(Ok(()), Err)
+        let result = error.map_or(Ok(()), Err);
+        self.finish_release(&result);
+        result
+    }
+    fn press_key(&mut self, key: u32) -> Result<(), String> {
+        let packet = crate::input::keyboard(key, false)?;
+        if self.release_retry_deadline.is_some() {
+            self.release_inputs()?;
+        }
+        if self.held_keys.len() >= 16 && !self.held_keys.contains(&key) {
+            return Err("同时按住的按键过多".into());
+        }
+        self.held_keys.insert(key);
+        self.held_input_deadline = Some(Instant::now() + Duration::from_secs(5));
+        let result = self.input(packet);
+        if result.is_err() {
+            let _ = self.release_inputs();
+        }
+        result
+    }
+    fn press_button(&mut self, button: &str) -> Result<(), String> {
+        let packet = crate::input::mouse_button(button, true)?;
+        if self.release_retry_deadline.is_some() {
+            self.release_inputs()?;
+        }
+        self.held_buttons.insert(button.to_string());
+        self.held_input_deadline = Some(Instant::now() + Duration::from_secs(5));
+        let result = self.input(packet);
+        if result.is_err() {
+            let _ = self.release_inputs();
+        }
+        result
     }
     pub fn control_mode(&mut self, manual: bool) -> Result<(), String> {
-        self.paused.store(true, Ordering::SeqCst);
-        self.window.control_changed();
-        self.release_inputs()?;
-        self.paused.store(manual, Ordering::SeqCst);
-        self.window.control_changed();
+        set_pause_state(
+            &self.paused,
+            if manual {
+                PauseReason::GuiTakeover
+            } else {
+                PauseReason::ResumePending
+            },
+        );
+        self.dimensions = None;
+        let released_hotkey = self.window.control_changed(false);
+        if let Err(error) = self.release_inputs() {
+            set_pause_state(&self.paused, PauseReason::ReleaseFailed);
+            return Err(error);
+        }
+        if let Err(error) = released_hotkey.and_then(|_| {
+            if manual {
+                Ok(())
+            } else {
+                self.window.control_changed(true)
+            }
+        }) {
+            set_pause_state(&self.paused, PauseReason::EmergencyStopUnavailable);
+            return Err(error);
+        }
+        if !manual && !finish_agent_resume(&self.paused, &PAUSE_REASON) {
+            return Err(paused_error());
+        }
         Ok(())
     }
     fn mark_human_control(&self) {
-        if !self.paused.swap(true, Ordering::SeqCst) {
-            self.window.control_changed();
+        if !self.paused.load(Ordering::SeqCst) {
+            set_pause_state(&self.paused, PauseReason::GuiInput);
+        }
+        if self.window.escape_available.load(Ordering::SeqCst) {
+            let _ = self.window.control_changed(false);
         }
     }
     pub fn poll(&mut self) {
-        if self
-            .held_input_deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
-        {
+        if release_due(
+            self.held_input_deadline,
+            self.release_retry_deadline,
+            Instant::now(),
+            PAUSE_REASON.load(Ordering::SeqCst) == PauseReason::EscapeHotkey as u8,
+        ) {
             let _ = self.release_inputs();
         }
         for event in self.rx.try_iter().take(128) {
@@ -1306,14 +1497,21 @@ impl Engine {
     pub(crate) fn state_for(&self, human: bool) -> Value {
         let dimensions = self.dimensions_for(human);
         let (width, height) = dimensions.unwrap_or((0, 0));
-        json!({"title":self.name,"connected":self.observed.login_completed&&!self.observed.terminal_room_state,"interactive":dimensions.is_some()&&!self.observed.terminal_room_state,"phase":if self.observed.terminal_room_state{"disconnected"}else if dimensions.is_some(){"ready"}else{"waiting-for-frame"},"viewport":{"width":width,"height":height},"escapeAvailable":self.window.escape_available.load(Ordering::SeqCst),"controlId":self.control_id})
+        json!({"title":self.name,"connected":self.observed.login_completed&&!self.observed.terminal_room_state,"interactive":dimensions.is_some()&&!self.observed.terminal_room_state,"phase":if self.observed.terminal_room_state{"disconnected"}else if dimensions.is_some(){"ready"}else{"waiting-for-frame"},"viewport":{"width":width,"height":height},"escapeAvailable":self.window.escape_available.load(Ordering::SeqCst),"emergencyStopShortcut":crate::render::STOP_SHORTCUT,"controlId":self.control_id,"controlDiagnostics":pause_diagnostics()})
     }
     fn allowed(&self, human: bool) -> Result<(), String> {
         if self.cancelled.load(Ordering::SeqCst) {
             return Err("COMPUTER_USE_ABORTED".into());
         }
         if !human && self.paused.load(Ordering::SeqCst) {
-            return Err("COMPUTER_USE_MANUAL_CONTROL".into());
+            return Err(paused_error());
+        }
+        if !human && !self.window.escape_available.load(Ordering::SeqCst) {
+            set_pause_state(&self.paused, PauseReason::EmergencyStopUnavailable);
+            return Err(format!(
+                "COMPUTER_USE_EMERGENCY_STOP_UNAVAILABLE: {} 全局急停键不可用，智能体保持暂停",
+                crate::render::STOP_SHORTCUT
+            ));
         }
         if self.observed.terminal_room_state {
             return Err("UU 连接已断开，请重新连接设备".into());
@@ -1347,8 +1545,10 @@ impl Engine {
                 },
                 || {
                     FRAME_VIEWPORT.lock().ok().and_then(|v| {
-                        v.filter(|(id, index, _)| *id == session as u32 && Some(*index) == track)
-                            .map(|(_, _, rect)| rect)
+                        v.filter(|viewport| {
+                            viewport.session == session as u32 && Some(viewport.track) == track
+                        })
+                        .map(|viewport| viewport.ready)
                     })
                 },
                 Duration::from_secs(3),
@@ -1359,7 +1559,7 @@ impl Engine {
                 } else if input_generation.load(Ordering::SeqCst) != generation {
                     "COMPUTER_USE_CAPTURE_INTERRUPTED".to_string()
                 } else if !human && paused.load(Ordering::SeqCst) {
-                    "COMPUTER_USE_MANUAL_CONTROL".to_string()
+                    paused_error()
                 } else {
                     message
                 }
@@ -1410,8 +1610,10 @@ impl Engine {
             },
             || {
                 FRAME_VIEWPORT.lock().ok().and_then(|v| {
-                    v.filter(|(id, index, _)| *id == session as u32 && Some(*index) == track)
-                        .map(|(_, _, rect)| rect)
+                    v.filter(|viewport| {
+                        viewport.session == session as u32 && Some(viewport.track) == track
+                    })
+                    .map(|viewport| viewport.ready)
                 })
             },
             Duration::from_millis(250),
@@ -1497,7 +1699,7 @@ impl Engine {
                     }
                 }
                 return Ok(
-                    json!({"state":self.state(),"diagnostics":{"window":self.window.metrics(),"layout":self.observed.layout,"frameNotifications":FRAME_CHANGES.load(Ordering::Relaxed),"tracks":self.observed.tracks,"connectionCodes":self.observed.codes,"stats":self.observed.messages.iter().filter(|m|m.get("mediaStreamCount").is_some()).collect::<Vec<_>>()}}),
+                    json!({"state":self.state(),"diagnostics":{"window":self.window.metrics(),"layout":self.observed.layout,"frameNotifications":FRAME_CHANGES.load(Ordering::Relaxed),"capture":self.capture.as_ref().map(|capture|capture.diagnostics()),"tracks":self.observed.tracks,"connectionCodes":self.observed.codes,"stats":self.observed.messages.iter().filter(|m|m.get("mediaStreamCount").is_some()).collect::<Vec<_>>()}}),
                 );
             }
             return Ok(json!({"state":self.state_for(human)}));
@@ -1530,29 +1732,21 @@ impl Engine {
             self.held_input_deadline = Some(Instant::now() + Duration::from_secs(5));
             if action == "key_up" {
                 let code = crate::input::key_code(args["key"].as_str().ok_or("缺少按键")?)?;
-                if self.held_keys.remove(&code) {
-                    self.input(crate::input::keyboard(code, true)?)?;
-                }
+                self.release_key(code)?;
                 return Ok(json!({"state":self.state()}));
             }
             if action == "mouse_up" {
                 let button = args["button"].as_str().unwrap_or("left");
-                if self.held_buttons.remove(button) {
-                    self.input(crate::input::mouse_button(button, false)?)?;
-                }
+                self.release_button(button)?;
                 return Ok(json!({"state":self.state()}));
+            }
+            if self.release_retry_deadline.is_some() {
+                self.release_inputs()?;
             }
             let (width, height) = self.dimensions_for(true).ok_or("请先等待桌面画面")?;
             if action == "key_down" {
                 let code = crate::input::key_code(args["key"].as_str().ok_or("缺少按键")?)?;
-                if self.held_keys.len() >= 16 && !self.held_keys.contains(&code) {
-                    return Err("同时按住的按键过多".into());
-                }
-                self.held_keys.insert(code);
-                if let Err(error) = self.input(crate::input::keyboard(code, false)?) {
-                    let _ = self.release_inputs();
-                    return Err(error);
-                }
+                self.press_key(code)?;
             } else {
                 self.input(crate::input::mouse_move(
                     args["x"].as_f64().ok_or("缺少横坐标")?,
@@ -1562,18 +1756,16 @@ impl Engine {
                 )?)?;
                 if action == "mouse_down" {
                     let button = args["button"].as_str().unwrap_or("left");
-                    let packet = crate::input::mouse_button(button, true)?;
-                    self.held_buttons.insert(button.to_string());
-                    if let Err(error) = self.input(packet) {
-                        let _ = self.release_inputs();
-                        return Err(error);
-                    }
+                    self.press_button(button)?;
                 }
             }
             return Ok(json!({"state":self.state()}));
         }
         if human {
             self.mark_human_control();
+        }
+        if self.release_retry_deadline.is_some() {
+            self.release_inputs()?;
         }
         let (width, height) = self
             .dimensions_for(human)
@@ -1595,8 +1787,8 @@ impl Engine {
                 let button = args["button"].as_str().unwrap_or("left");
                 for _ in 0..if action == "double_click" { 2 } else { 1 } {
                     self.allowed(human)?;
-                    let pressed = self.input(crate::input::mouse_button(button, true)?);
-                    let released = self.input(crate::input::mouse_button(button, false)?);
+                    let pressed = self.press_button(button);
+                    let released = self.release_button(button);
                     pressed?;
                     released?;
                     std::thread::sleep(Duration::from_millis(50));
@@ -1622,13 +1814,13 @@ impl Engine {
                     for key in keys {
                         self.allowed(human)?;
                         held.push(key);
-                        self.input(crate::input::keyboard(key, false)?)?;
+                        self.press_key(key)?;
                     }
                     Ok::<(), String>(())
                 })();
                 let mut release_error = None;
                 for key in held.into_iter().rev() {
-                    if let Err(error) = self.input(crate::input::keyboard(key, true)?) {
+                    if let Err(error) = self.release_key(key) {
                         release_error.get_or_insert(error);
                     }
                 }
@@ -1651,7 +1843,7 @@ impl Engine {
                 let end_y = coord("endY")?;
                 crate::input::mouse_move(end_x, end_y, width, height)?;
                 self.input(crate::input::mouse_move(x, y, width, height)?)?;
-                let pressed = self.input(crate::input::mouse_button("left", true)?);
+                let pressed = self.press_button("left");
                 let result = (|| {
                     pressed?;
                     for step in 1..=12 {
@@ -1667,7 +1859,7 @@ impl Engine {
                     }
                     Ok::<(), String>(())
                 })();
-                let released = self.input(crate::input::mouse_button("left", false)?);
+                let released = self.release_button("left");
                 result?;
                 released?;
             }
@@ -1696,5 +1888,112 @@ impl Drop for Engine {
         // containing its window procedure is still loaded.
         self.window.close();
         self.sdk.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+
+    #[test]
+    fn completing_hotkey_registration_does_not_override_a_new_takeover() {
+        let paused = AtomicBool::new(true);
+        for reason in [
+            PauseReason::EscapeHotkey,
+            PauseReason::GuiInput,
+            PauseReason::EmergencyStopUnavailable,
+        ] {
+            let reason = AtomicU8::new(reason as u8);
+            assert!(!finish_agent_resume(&paused, &reason));
+            assert!(paused.load(Ordering::SeqCst));
+        }
+        let reason = AtomicU8::new(PauseReason::ResumePending as u8);
+        assert!(finish_agent_resume(&paused, &reason));
+        assert!(!paused.load(Ordering::SeqCst));
+        assert_eq!(reason.load(Ordering::SeqCst), PauseReason::Agent as u8);
+    }
+
+    #[test]
+    fn shutdown_is_not_reported_as_human_takeover() {
+        assert_eq!(
+            paused_error_for(PauseReason::ReaderShutdown as u8),
+            "COMPUTER_USE_DESKTOP_DISCONNECTED"
+        );
+        for reason in [
+            PauseReason::StartHuman,
+            PauseReason::GuiInput,
+            PauseReason::GuiTakeover,
+            PauseReason::ResumePending,
+            PauseReason::EscapeHotkey,
+            PauseReason::ReleaseFailed,
+        ] {
+            let message = paused_error_for(reason as u8);
+            let (code, data) = message.split_once("; controlDiagnostics=").unwrap();
+            assert_eq!(code, "COMPUTER_USE_MANUAL_CONTROL");
+            let data: Value = serde_json::from_str(data).unwrap();
+            assert_eq!(data, json!({"pauseReason":pause_reason_name(reason as u8)}));
+        }
+    }
+
+    #[test]
+    fn failed_key_and_button_releases_remain_available_for_retry() {
+        let mut keys = std::collections::BTreeSet::from([17_u32, 65]);
+        let mut buttons =
+            std::collections::BTreeSet::from(["left".to_string(), "right".to_string()]);
+        assert!(release_sent(&mut keys, &17, Err("send failed".into())).is_err());
+        assert!(release_sent(&mut buttons, &"left".into(), Err("send failed".into())).is_err());
+        release_sent(&mut keys, &65, Ok(())).unwrap();
+        release_sent(&mut buttons, &"right".into(), Ok(())).unwrap();
+        assert_eq!(keys.iter().copied().collect::<Vec<_>>(), vec![17]);
+        assert_eq!(buttons.iter().cloned().collect::<Vec<_>>(), vec!["left"]);
+        release_sent(&mut buttons, &"left".into(), Ok(())).unwrap();
+        release_sent(&mut keys, &17, Ok(())).unwrap();
+        assert!(keys.is_empty());
+        assert!(buttons.is_empty());
+    }
+
+    #[test]
+    fn video_keepalive_cannot_postpone_a_failed_release() {
+        let now = Instant::now();
+        let retry = Some(now + Duration::from_millis(250));
+        let refreshed_hold = Some(now + Duration::from_secs(5));
+        assert!(!release_due(
+            refreshed_hold,
+            retry,
+            now + Duration::from_millis(249),
+            false
+        ));
+        assert!(release_due(
+            refreshed_hold,
+            retry,
+            now + Duration::from_millis(250),
+            false
+        ));
+        assert!(!release_due(
+            None,
+            None,
+            now + Duration::from_secs(60),
+            false
+        ));
+    }
+
+    #[test]
+    fn emergency_stop_releases_held_input_without_waiting_for_the_hold_timeout() {
+        let now = Instant::now();
+        let held = Some(now + Duration::from_secs(5));
+        assert!(
+            !release_due(held, None, now, false),
+            "manual drag can remain held"
+        );
+        assert!(release_due(held, None, now, true));
+        let retry = Some(now + Duration::from_millis(250));
+        assert!(!release_due(held, retry, now, true));
+        assert!(release_due(
+            held,
+            retry,
+            now + Duration::from_millis(250),
+            true
+        ));
+        assert!(!release_due(None, None, now, true));
     }
 }

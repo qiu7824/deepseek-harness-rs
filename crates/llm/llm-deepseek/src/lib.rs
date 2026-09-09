@@ -315,7 +315,10 @@ pub fn resolve_adapter_options(
     })
 }
 
-fn request_headers(connection: &ResolvedDeepSeekOptions) -> Vec<(String, String)> {
+fn request_headers(
+    connection: &ResolvedDeepSeekOptions,
+    session_id: Option<&str>,
+) -> Vec<(String, String)> {
     let mut values: Vec<_> = connection
         .headers
         .iter()
@@ -326,6 +329,29 @@ fn request_headers(connection: &ResolvedDeepSeekOptions) -> Vec<(String, String)
         .cloned()
         .collect();
     values.extend(attribution_headers(&app_identity()));
+    // OpenCode routes a conversation to a stable backend through this header.
+    // Keep our own client identity; account/tier restrictions still apply.
+    if reqwest::Url::parse(&connection.base_url)
+        .ok()
+        .is_some_and(|url| {
+            url.scheme() == "https"
+                && url.host_str() == Some("opencode.ai")
+                && ["/zen/", "/go/"]
+                    .iter()
+                    .any(|prefix| url.path().starts_with(prefix))
+        })
+        && !values
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("x-opencode-session"))
+    {
+        if let Some(session) = session_id.filter(|value| !value.is_empty()) {
+            use sha2::{Digest, Sha256};
+            values.push((
+                "x-opencode-session".into(),
+                format!("dsh-{:x}", Sha256::digest(session.as_bytes())),
+            ));
+        }
+    }
     values
 }
 
@@ -1208,7 +1234,7 @@ async fn request_chunks(
             &connection,
             &api_key,
             provider_name,
-            &request_headers(&connection),
+            &request_headers(&connection, options.session_id.as_deref()),
             sender,
             cancelled.clone(),
             options.session_id.as_deref(),
@@ -1274,7 +1300,7 @@ async fn request_chunks(
             &url,
             (!connection.keyless).then_some(api_key.as_str()),
             encoded,
-            &request_headers(&connection),
+            &request_headers(&connection, options.session_id.as_deref()),
             cancelled.clone(),
         )
         .await
@@ -1345,7 +1371,7 @@ async fn request_chunks(
                 &connection,
                 &api_key,
                 provider_name,
-                &request_headers(&connection),
+                &request_headers(&connection, options.session_id.as_deref()),
                 sender,
                 cancelled.clone(),
                 options.session_id.as_deref(),
@@ -1394,7 +1420,8 @@ async fn request_chunks(
                 "RESPONSE_TOO_LARGE",
             ));
         }
-        for payload in parser.push(&bytes)? {
+        for payload in parser.push(&bytes) {
+            let payload = payload?;
             let done = payload == sse::DONE;
             let translated = translator.consume(&payload)?;
             emitted_chunks = emitted_chunks
@@ -1422,7 +1449,9 @@ async fn request_chunks(
             }
         }
     }
-    for payload in parser.finish_at_eof()? {
+    for payload in parser.finish_at_eof() {
+        let payload = payload?;
+        let done = payload == sse::DONE;
         let translated = translator.consume(&payload)?;
         emitted_chunks = emitted_chunks
             .checked_add(translated.len())
@@ -1443,6 +1472,9 @@ async fn request_chunks(
                 .send(chunk)
                 .await
                 .map_err(|_| failure("DeepSeek stream consumer closed", "CANCELLED"))?;
+        }
+        if done {
+            return Ok(());
         }
     }
     for chunk in translator.close_after_explicit_finish()? {
@@ -1472,6 +1504,7 @@ async fn request_responses_chunks(
         provider_name,
     )?;
     responses::apply_session_cache_key(&mut body, session_id, &connection.base_url);
+    responses::apply_cache_breakpoint(&mut body, &connection.base_url);
     let model = chat_body.get("model").and_then(serde_json::Value::as_str);
     crate::compat::apply_responses(&mut body, connection, model)?;
     if !connection
@@ -1519,6 +1552,7 @@ async fn request_responses_chunks(
     let mut translator = responses::ResponsesTranslator::default();
     let mut emitted_chunks = 0_usize;
     let mut received_bytes = 0_usize;
+    let outcome: Result<(), LlmFailure> = async {
     loop {
         let bytes = tokio::select! {
             bytes = tokio::time::timeout(connection.stream_idle_timeout, response.next_data()) =>
@@ -1540,15 +1574,10 @@ async fn request_responses_chunks(
                 "RESPONSE_TOO_LARGE",
             ));
         }
-        for payload in parser.push(&bytes)? {
-            let translated = translator.consume(&payload)?;
+        for payload in parser.push(&bytes) {
+        let payload = payload?;
+            let translated = translator.consume_limited(&payload, MAX_SUCCESS_STREAM_CHUNKS.saturating_sub(emitted_chunks))?;
             emitted_chunks = emitted_chunks.saturating_add(translated.len());
-            if emitted_chunks > MAX_SUCCESS_STREAM_CHUNKS {
-                return Err(failure(
-                    "Responses success response emitted too many chunks",
-                    "RESPONSE_TOO_LARGE",
-                ));
-            }
             for mut chunk in translated {
                 responses::bind_replay_metadata(
                     &mut chunk,
@@ -1560,16 +1589,35 @@ async fn request_responses_chunks(
                     .await
                     .map_err(|_| failure("Responses stream consumer closed", "CANCELLED"))?;
             }
-            // response.completed is authoritative. Waiting for HTTP EOF after
-            // it can hang on keep-alive or turn a successful turn into a tail
-            // transport/decode error when an intermediary closes the body.
-            if translator.completed() {
+            // Every explicit Responses terminal event settles the stream. Waiting
+            // for HTTP EOF can hang or turn its known outcome into a tail error.
+            if translator.finished() {
                 return Ok(());
             }
         }
     }
-    for payload in parser.finish_at_eof()? {
-        for mut chunk in translator.consume(&payload)? {
+    for payload in parser.finish_at_eof() {
+        let payload = payload?;
+        let translated = translator.consume_limited(&payload, MAX_SUCCESS_STREAM_CHUNKS.saturating_sub(emitted_chunks))?;
+        emitted_chunks = emitted_chunks.saturating_add(translated.len());
+        for mut chunk in translated {
+            responses::bind_replay_metadata(&mut chunk, &connection.base_url, model.unwrap_or(""));
+            sender
+                .send(chunk)
+                .await
+                .map_err(|_| failure("Responses stream consumer closed", "CANCELLED"))?;
+        }
+        if translator.finished() {
+            return Ok(());
+        }
+    }
+    translator.finish()?;
+    Ok(())
+    }.await;
+    if let Err(error) = outcome {
+        // Preserve completed/coalesced text items even when the transport
+        // breaks before the terminal event; no tool call is finalized here.
+        for mut chunk in translator.fail(error) {
             responses::bind_replay_metadata(&mut chunk, &connection.base_url, model.unwrap_or(""));
             sender
                 .send(chunk)
@@ -1577,7 +1625,6 @@ async fn request_responses_chunks(
                 .map_err(|_| failure("Responses stream consumer closed", "CANCELLED"))?;
         }
     }
-    translator.finish()?;
     Ok(())
 }
 
@@ -1928,6 +1975,31 @@ pub fn apply(
 #[cfg(test)]
 mod endpoint_tests {
     use super::{endpoint_url, inferred_model_max_tokens};
+
+    #[test]
+    fn opencode_conversation_routing_is_stable_private_and_host_scoped() {
+        let mut connection = super::resolve_adapter_options(&super::DeepSeekConfig::default()).unwrap();
+        let routing = |connection: &super::ResolvedDeepSeekOptions, session: &str| {
+            super::request_headers(connection, Some(session)).into_iter()
+                .filter(|(key, _)| key.eq_ignore_ascii_case("x-opencode-session"))
+                .map(|(_, value)| value).collect::<Vec<_>>()
+        };
+        connection.base_url = "https://opencode.ai/zen/v1".into();
+        let first = routing(&connection, "private-session-one");
+        assert_eq!(first.len(), 1);
+        assert!(!first[0].contains("private-session-one"));
+        assert_eq!(first, routing(&connection, "private-session-one"));
+        assert_ne!(first, routing(&connection, "private-session-two"));
+        connection.base_url = "https://opencode.ai/go/v1".into();
+        assert_eq!(first, routing(&connection, "private-session-one"));
+        for url in ["https://opencode.ai.attacker.test/zen/v1", "http://opencode.ai/zen/v1", "https://elsewhere.test/v1", "https://opencode.ai/unrelated"] {
+            connection.base_url = url.into();
+            assert!(routing(&connection, "private-session-one").is_empty());
+        }
+        connection.base_url = "https://opencode.ai/zen/v1".into();
+        connection.headers.push(("X-OpenCode-Session".into(), "explicit-routing".into()));
+        assert_eq!(routing(&connection, "private-session-one"), vec!["explicit-routing"]);
+    }
 
     #[test]
     fn completions_replaces_responses_endpoint_suffix() {

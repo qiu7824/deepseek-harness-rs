@@ -24,6 +24,9 @@ mod links;
 mod migration;
 #[path = "runtime_paths_node.rs"]
 mod node;
+#[cfg(windows)]
+#[path = "runtime_paths_python.rs"]
+mod python;
 use links::ManagedModuleLinks;
 
 #[derive(Default)]
@@ -382,6 +385,11 @@ impl RuntimePaths {
     }
     pub fn node_command(&self) -> String {
         self.selected_node_command.clone()
+    }
+
+    pub fn python_command(&self) -> Option<PathBuf> {
+        #[cfg(windows)] {python::command(&self.paths["environmentDirectory"])}
+        #[cfg(not(windows))] {None}
     }
 
     pub(crate) async fn node_status(

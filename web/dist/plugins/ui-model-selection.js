@@ -315,6 +315,12 @@ window.__ModuleLoader__.load({
 		* store/verbs) + the standard locale seat.
 		* @returns the trigger and, while open, the two-level menu.
 		*/
+        function reasoningEffortLabel(effort, t) {
+            const id = typeof effort === "string" ? effort : effort?.id;
+            const name = typeof effort === "string" ? effort : effort?.name ?? id ?? "";
+            const aliases = { none:["none"], off:["off","disabled"], minimal:["minimal"], low:["low"], medium:["medium"], high:["high"], xhigh:["xhigh","extrahigh"], max:["max","maximum"] };
+            return aliases[id]?.includes(String(name).toLowerCase().replace(/[ -]/g, "")) ? t("effort.level." + id) : name;
+        }
 		function ModelSelect({ locked, available, directory, load, select, t }) {
 			const state = (0, react.useSyncExternalStore)((fn) => directory.subscribe(fn), () => directory.getSnapshot());
 			const [open, setOpen] = (0, react.useState)(false);
@@ -339,7 +345,7 @@ window.__ModuleLoader__.load({
 			const reasoning = currentChoice?.model.reasoning;
 			const ultra = state.current?.executionMode === "ultra";
             const effectiveEffort = ultra ? "ultra" : state.current?.reasoningEffort ?? reasoning?.defaultEffort;
-			const effortLabel = ultra ? "Ultra · 自动分工" : reasoning === void 0 ? void 0 : effectiveEffort === void 0 ? t("effort.providerDefault") : reasoning.efforts.find((level) => level.id === effectiveEffort)?.name ?? effectiveEffort;
+			const effortLabel = ultra ? t("effort.ultra") : reasoning === void 0 ? void 0 : effectiveEffort === void 0 ? t("effort.providerDefault") : reasoningEffortLabel(reasoning.efforts.find((level) => level.id === effectiveEffort) ?? effectiveEffort, t);
 			const effortChoices = (0, react.useMemo)(() => reasoning === void 0 ? [] : [...reasoning.defaultEffort === void 0 ? [{
 				key: "provider-default",
 				effort: void 0,
@@ -347,9 +353,9 @@ window.__ModuleLoader__.load({
 			}] : [], ...reasoning.efforts.map((effort) => ({
 				key: `effort:${effort.id}`,
 				effort: effort.id,
-				label: effort.name,
+				label: reasoningEffortLabel(effort, t),
 				...effort.description === void 0 ? {} : { description: effort.description }
-			})), ...(currentChoice?.model.executionModes?.includes("ultra") ? [{key:"mode:ultra", effort:"ultra", label:"Ultra · 自动分工", description:"最高支持推理与有界子任务并行"}] : [])], [reasoning, currentChoice, t]);
+			})), ...(currentChoice?.model.executionModes?.includes("ultra") ? [{key:"mode:ultra", effort:"ultra", label:t("effort.ultra"), description:t("effort.ultraDescription")}] : [])], [reasoning, currentChoice, t]);
 			const busy = state.status === "selecting";
 			const reload = () => {
 				lastActionRef.current = "load";
@@ -677,6 +683,16 @@ window.__ModuleLoader__.load({
 		*/
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
+			"effort.level.none": "不推理",
+			"effort.level.off": "关闭",
+			"effort.level.minimal": "极低",
+			"effort.level.low": "低",
+			"effort.level.medium": "中",
+			"effort.level.high": "高",
+			"effort.level.xhigh": "极高",
+			"effort.level.max": "最高",
+			"effort.ultra": "Ultra · 自动分工",
+			"effort.ultraDescription": "最高支持推理与有界子任务并行",
 			"command.description": "选择本会话使用的模型",
 			"option.loadError": "目录加载失败：{message}",
 			"trigger.fallback": "选择模型",
@@ -688,7 +704,7 @@ window.__ModuleLoader__.load({
 			"menu.aria": "模型与推理等级",
 			"menu.model": "模型",
 			"menu.effort": "推理等级",
-			"effort.providerDefault": "Default",
+			"effort.providerDefault": "提供方默认",
 			"status.loading": "正在刷新模型列表…",
 			"error.action": "模型操作失败：{message}",
 			"action.reload": "重新加载",
@@ -699,6 +715,16 @@ window.__ModuleLoader__.load({
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
+			"effort.level.none": "None",
+			"effort.level.off": "Off",
+			"effort.level.minimal": "Minimal",
+			"effort.level.low": "Low",
+			"effort.level.medium": "Medium",
+			"effort.level.high": "High",
+			"effort.level.xhigh": "Extra high",
+			"effort.level.max": "Max",
+			"effort.ultra": "Ultra · Auto delegation",
+			"effort.ultraDescription": "Highest supported reasoning with bounded parallel subtasks",
 			"command.description": "Select the model for this conversation",
 			"option.loadError": "Catalog failed to load: {message}",
 			"trigger.fallback": "Select model",

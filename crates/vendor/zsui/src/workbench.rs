@@ -243,6 +243,21 @@ pub enum ZsWorkbenchContentBlock {
     Paragraph {
         text: String,
     },
+    /// A Markdown heading rendered with the native content title ramp.
+    Heading {
+        level: u8,
+        text: String,
+    },
+    /// A Markdown unordered-list item rendered with a native bullet marker.
+    ListItem {
+        text: String,
+    },
+    /// A quoted Markdown block with a semantic leading rule.
+    Quote {
+        text: String,
+    },
+    /// A horizontal Markdown separator.
+    Divider,
     Code {
         language: String,
         code: String,
@@ -263,6 +278,22 @@ pub enum ZsWorkbenchContentBlock {
 impl ZsWorkbenchContentBlock {
     pub fn paragraph(text: impl Into<String>) -> Self {
         Self::Paragraph { text: text.into() }
+    }
+
+    pub fn heading(level: u8, text: impl Into<String>) -> Self {
+        Self::Heading { level: level.clamp(1, 6), text: text.into() }
+    }
+
+    pub fn list_item(text: impl Into<String>) -> Self {
+        Self::ListItem { text: text.into() }
+    }
+
+    pub fn quote(text: impl Into<String>) -> Self {
+        Self::Quote { text: text.into() }
+    }
+
+    pub const fn divider() -> Self {
+        Self::Divider
     }
 
     pub fn code(language: impl Into<String>, code: impl Into<String>) -> Self {
@@ -1881,6 +1912,40 @@ fn block_height(
             typography_scale,
             measurements,
         ),
+        ZsWorkbenchContentBlock::Heading { level, text } => measured_text_height(
+            text,
+            width,
+            if *level <= 1 { TextRole::Title } else { TextRole::Subtitle },
+            ColorRole::PrimaryText,
+            TextWeight::Semibold,
+            TextWrap::Word,
+            dpi,
+            typography_scale,
+            measurements,
+        ) + scale(4, dpi),
+        ZsWorkbenchContentBlock::ListItem { text } => measured_text_height(
+            &format!("• {text}"),
+            width,
+            TextRole::Body,
+            ColorRole::PrimaryText,
+            TextWeight::Regular,
+            TextWrap::Word,
+            dpi,
+            typography_scale,
+            measurements,
+        ),
+        ZsWorkbenchContentBlock::Quote { text } => measured_text_height(
+            text,
+            (width - scale(20, dpi)).max(1),
+            TextRole::Body,
+            ColorRole::SecondaryText,
+            TextWeight::Regular,
+            TextWrap::Word,
+            dpi,
+            typography_scale,
+            measurements,
+        ) + scale(12, dpi),
+        ZsWorkbenchContentBlock::Divider => scale(12, dpi),
         ZsWorkbenchContentBlock::Code { code, .. } => {
             scale(42, dpi)
                 + measured_text_height(
@@ -2408,6 +2473,62 @@ fn paint_message_block(
             TextWeight::Regular,
             HorizontalAlign::Start,
             TextWrap::Word,
+        )),
+        ZsWorkbenchContentBlock::Heading { level, text } => commands.push(text_command(
+            text,
+            bounds,
+            if *level <= 1 { TextRole::Title } else { TextRole::Subtitle },
+            ColorRole::PrimaryText,
+            TextWeight::Semibold,
+            HorizontalAlign::Start,
+            TextWrap::Word,
+        )),
+        ZsWorkbenchContentBlock::ListItem { text } => {
+            let label = format!("• {text}");
+            commands.push(text_command(
+                &label,
+                bounds,
+                TextRole::Body,
+                ColorRole::PrimaryText,
+                TextWeight::Regular,
+                HorizontalAlign::Start,
+                TextWrap::Word,
+            ));
+        }
+        ZsWorkbenchContentBlock::Quote { text } => {
+            commands.push(round_fill(
+                Rect {
+                    x: bounds.x,
+                    y: bounds.y + scale(4, dpi),
+                    width: scale(3, dpi),
+                    height: (bounds.height - scale(8, dpi)).max(1),
+                },
+                NativeDrawFill::role(ColorRole::Accent),
+                scale(2, dpi),
+            ));
+            commands.push(text_command(
+                text,
+                Rect {
+                    x: bounds.x + scale(12, dpi),
+                    y: bounds.y + scale(4, dpi),
+                    width: (bounds.width - scale(12, dpi)).max(0),
+                    height: (bounds.height - scale(8, dpi)).max(0),
+                },
+                TextRole::Body,
+                ColorRole::SecondaryText,
+                TextWeight::Regular,
+                HorizontalAlign::Start,
+                TextWrap::Word,
+            ));
+        }
+        ZsWorkbenchContentBlock::Divider => commands.push(fill(
+            Rect {
+                x: bounds.x,
+                y: bounds.y + (bounds.height / 2).max(0),
+                width: bounds.width,
+                height: scale(1, dpi),
+            },
+            NativeDrawFill::role(ColorRole::Border),
         )),
         ZsWorkbenchContentBlock::Code { language, code } => {
             commands.push(round_rect(

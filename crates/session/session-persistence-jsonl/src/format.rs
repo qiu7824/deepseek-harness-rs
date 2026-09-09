@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use dsh_session::{
-    SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionId, SessionLogOffset,
+    LEGACY_SESSION_FORMAT_VERSION, SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionId, SessionLogOffset,
     decode_storage_record, pack_chunk_runs,
 };
 use dsh_session_persistence::{SessionStorageMetadata, session_format_version_refusal};
@@ -106,9 +106,12 @@ pub fn to_header_line(
 
 /// Translate a version-0 physical header into logical metadata and its cut.
 pub fn from_header_line(line: &HeaderLine) -> Result<SessionStorageMetadata, String> {
+    if line.version != SESSION_FORMAT_VERSION && line.version != LEGACY_SESSION_FORMAT_VERSION {
+        return Err(session_format_version_refusal(&line.id, line.version));
+    }
     Ok(SessionStorageMetadata {
         meta: SessionHeader {
-            version: line.version,
+            version: SESSION_FORMAT_VERSION,
             id: line.id.clone(),
             created_at: line.created_at,
             cwd: line.cwd.clone(),
@@ -287,7 +290,7 @@ fn refuse_foreign_format_version(parsed: &serde_json::Value) -> Result<(), Strin
     let Some(version) = record.get("version").and_then(|v| v.as_u64()) else {
         return Ok(());
     };
-    if version == SESSION_FORMAT_VERSION {
+    if version == SESSION_FORMAT_VERSION || version == LEGACY_SESSION_FORMAT_VERSION {
         return Ok(());
     }
     let id = record
@@ -311,6 +314,7 @@ pub struct SessionLogScanner {
     event_line: usize,
     issue: Option<String>,
     finished: bool,
+    legacy_v0: bool,
 }
 
 impl SessionLogScanner {
@@ -318,6 +322,9 @@ impl SessionLogScanner {
     /// record.
     pub fn new(header_record: &[u8]) -> Result<Self, String> {
         let storage = parse_header_record(header_record)?;
+        let legacy_v0 = serde_json::from_slice::<serde_json::Value>(&header_record[..header_record.len()-1])
+            .ok().and_then(|value| value.get("version").and_then(|v| v.as_u64()))
+            == Some(LEGACY_SESSION_FORMAT_VERSION);
         Ok(Self {
             meta: storage.meta,
             inherited_event_count: storage.inherited_event_count,
@@ -329,6 +336,7 @@ impl SessionLogScanner {
             event_line: 0,
             issue: None,
             finished: false,
+            legacy_v0,
         })
     }
 
@@ -378,10 +386,18 @@ impl SessionLogScanner {
     /// tail.
     pub fn finish(mut self) -> SessionLogScan {
         self.finished = true;
+        let mut events = self.events;
+        if self.legacy_v0 {
+            let mut legacy = self.meta.clone();
+            legacy.version = LEGACY_SESSION_FORMAT_VERSION;
+            if let Ok(report) = dsh_session::migrate_v0_to_v3(legacy, &events) {
+                events = report.events;
+            }
+        }
         SessionLogScan {
             meta: self.meta,
             inherited_event_count: self.inherited_event_count,
-            events: self.events,
+            events,
             committed_bytes: self.committed_bytes,
         }
     }

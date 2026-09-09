@@ -119,7 +119,7 @@ async fn recovery_is_reused_cross_model_only_in_matching_workspace_without_count
 }
 
 #[tokio::test]
-async fn provider_lessons_require_the_same_provider_and_model_and_explicit_confirmation() {
+async fn provider_rate_limits_remain_diagnostics_without_entering_prompt_context() {
     let (store, root) = fixture().await;
     let workspace = root.to_string_lossy();
     let entry = store
@@ -145,29 +145,24 @@ async fn provider_lessons_require_the_same_provider_and_model_and_explicit_confi
             .unwrap()
             .is_empty()
     );
-    store
-        .invoke(
-            "memory.learningConfirm",
-            json!({"id":entry.id,"confirmed":true}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        preview(&store, &matching, CONTEXT_BUDGET)["items"][0]["id"],
-        entry.id
-    );
     assert!(
-        preview(&store, &context(&workspace), CONTEXT_BUDGET)["items"]
-            .as_array()
-            .unwrap()
-            .is_empty()
+        store
+            .invoke(
+                "memory.learningConfirm",
+                json!({"id":entry.id,"confirmed":true})
+            )
+            .await
+            .is_err()
     );
-    matching.model = Some("different-model".into());
     assert!(
         preview(&store, &matching, CONTEXT_BUDGET)["items"]
             .as_array()
             .unwrap()
             .is_empty()
+    );
+    assert_eq!(
+        store.list(&json!({}))["items"][0]["disposition"],
+        "diagnostic"
     );
     store
         .invoke("memory.learningConfigure", json!({"enabled":false}))
@@ -424,9 +419,9 @@ async fn selected_provider_experience_is_injected_and_counted_for_the_final_requ
                 session_id: format!("prior-{suffix}"),
                 provider: format!("provider-{suffix}"),
                 model: format!("model-{suffix}"),
-                source: "provider".into(),
-                code: "RATE_LIMIT".into(),
-                call_id: "limited".into(),
+                source: "feedback".into(),
+                code: "USER_FEEDBACK".into(),
+                call_id: "feedback".into(),
                 ..Default::default()
             })
             .await
@@ -435,7 +430,7 @@ async fn selected_provider_experience_is_injected_and_counted_for_the_final_requ
         store
             .invoke(
                 "memory.learningConfirm",
-                json!({"id":entry.id,"confirmed":true}),
+                json!({"id":entry.id,"confirmed":true,"suggestion":"Preserve file references in the response."}),
             )
             .await
             .unwrap();

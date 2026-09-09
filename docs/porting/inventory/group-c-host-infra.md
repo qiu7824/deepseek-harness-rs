@@ -249,7 +249,7 @@
 **src 顶层模块文件列表**:`src/index.ts`、`src/invariant.ts`。
 
 **导出面**:
-- 抽象服务:`abstract class DirectoryPicker extends Service`(注册 `ctx.directoryPicker`,一个 context 一个实现;`abstract capability(): DirectoryPickerCapability`)。
+- 抽象服务:`abstract class DirectoryPicker extends Service`(注册 `ctx.directoryPicker`,一个 context 一个实现;`abstract capability(): DirectoryPickerCapability`)。能力包括 `native`、`browse` 和 Rust 的 `hybrid`；Windows 桌面宿主用 `hybrid` 同时提供系统资源管理器选择和网页目录浏览，远程/无桌面宿主仍使用 `browse`。
 - 类型:`DirectoryPickerNativeCapability { kind:'native'; pick(signal): Promise<string|null> }`、`DirectoryPickerBrowseCapability { kind:'browse'; list(path?,signal?); createDirectory(path,name) }`、`DirectoryEntry`、`DirectoryListing`、`DirectoryPickerCapabilities`/`DirectoryPickerCapability`。
 - 错误:`DirectoryPickerError(code: 'directory-unreadable'|'directory-exists'|'directory-create-failed', path, message)`。
 

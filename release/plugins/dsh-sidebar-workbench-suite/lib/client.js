@@ -6,7 +6,7 @@ window.__ModuleLoader__.load({
   factory: (require) => {
     const module = { exports: {} }, exports = module.exports;
     const React = require("react"), h = React.createElement;
-    const Button=require("@deepseek-ai/dsh-client-ui-primitives").Button;
+    const {Button,Menu}=require("@deepseek-ai/dsh-client-ui-primitives");
     let SettingsSwitch;
     const inject = ["betterSidebar", "connection", "sessions", "settingsScope", "slots"];
     const assetBase = suiteAssetBase;
@@ -91,8 +91,9 @@ window.__ModuleLoader__.load({
       if (document.querySelector('style[data-plugin-css="dsh-sidebar-workbench-suite"]')) return;
       const style = document.createElement("style");
       style.dataset.pluginCss = "dsh-sidebar-workbench-suite";
-      style.textContent = ".dswSuite{box-sizing:border-box;min-width:0;min-height:0;height:100%;display:flex;flex-direction:column;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base)}.dswSuite *{box-sizing:border-box}.dswSuiteBar{min-height:42px;display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);flex-wrap:wrap}.dswSuiteBar input,.dswSuiteBar select,.dswSuiteBar button,.dswSuiteBar button:disabled,.dswSuiteTitle{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:auto}.dswSuiteEditor{min-height:0;flex:1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.dswSuiteSource{min-width:0;min-height:0;display:flex;border-right:1px solid var(--dsw-alias-border-l2)}.dswSuiteSource textarea{width:100%;min-height:0;resize:none;border:0;outline:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:14px;font:12.5px/1.65 var(--ds-font-family-code);tab-size:2}.dswSuitePreview{min-width:0;min-height:0;overflow:auto;padding:16px 20px;line-height:1.7;overflow-wrap:anywhere}.dswSuitePreview pre{overflow:auto;padding:12px;border-radius:8px;background:var(--dsw-alias-markdown-code-block);font:12px/1.6 var(--ds-font-family-code)}.dswSuiteHtml{display:block;width:100%;height:100%;min-height:0;border:0;background:white}.dswSuiteOutline{max-width:240px;max-height:160px;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px}.dswSuiteOutline button{width:100%;display:block;text-align:left;border:0;background:none;color:var(--dsw-alias-label-secondary);padding:4px 6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dswSuiteDiagram{width:100%;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px;margin:10px 0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDiagram svg{display:block;min-width:420px;max-width:100%;height:auto}.dswSuiteStatus{padding:8px 12px;color:var(--dsw-alias-label-tertiary);font-size:12px}.dswSuiteError{color:var(--dsw-alias-state-error-primary)}.dswSuiteList{min-height:0;flex:1;overflow:auto;padding:8px}.dswSuiteRow{width:100%;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:start;text-align:left;border:1px solid transparent;border-radius:8px;background:none;color:inherit;padding:9px;cursor:pointer}.dswSuiteRow:hover,.dswSuiteRow[data-active=true]{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l2)}.dswSuiteDot{width:8px;height:8px;margin-top:5px;border-radius:50%;background:var(--dsw-alias-label-caption)}.dswSuiteDot[data-live=true]{background:var(--dsw-alias-state-business-primary)}.dswSuiteDot[data-error=true]{background:var(--dsw-alias-state-error-primary)}.dswSuiteMeta{font-size:11px;color:var(--dsw-alias-label-tertiary)}.dswSuiteSplit{min-height:0;flex:1;display:grid;grid-template-columns:240px minmax(0,1fr)}.dswSuiteDetail{min-width:0;min-height:0;overflow:auto;padding:12px;border-left:1px solid var(--dsw-alias-border-l2);white-space:pre-wrap}.dswSuiteTableWrap{min-height:0;flex:1;overflow:auto}.dswSuiteTable{border-collapse:collapse;width:max-content;min-width:100%;font:12px/1.5 var(--ds-font-family-code)}.dswSuiteTable th,.dswSuiteTable td{padding:7px 9px;border:1px solid var(--dsw-alias-border-l2);text-align:left;max-width:420px;overflow-wrap:anywhere}.dswSuiteTable th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDownload{margin:auto;max-width:420px;text-align:center;padding:24px}.dswSuiteDownload a{display:inline-block;padding:8px 12px;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-link)}.dswSuiteBrowser{min-height:0;flex:1;display:grid;place-items:center;overflow:hidden;background:#111}.dswSuiteBrowser img{display:block;max-width:100%;max-height:100%;cursor:crosshair;user-select:none}.dswDesktopVideo{position:relative;min-height:0;flex:1;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base)}.dswDesktopCanvas{min-height:0;flex:1;display:grid;place-items:center;overflow:hidden;position:relative;background:#111}.dswDesktopCanvas canvas{display:block;max-width:100%;max-height:100%;outline:none;touch-action:none;cursor:default}.dswDesktopWaiting{position:absolute;color:#aaa;font-size:12px}.dswDesktopKeyboard{position:absolute;opacity:0;width:1px;height:1px;padding:0;border:0;resize:none;pointer-events:none;left:50%;top:50%}.dswDesktopStatus{min-height:34px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 10px;border-top:1px solid var(--dsw-alias-border-l2);font-size:11px;color:var(--dsw-alias-label-tertiary)}.dswDesktopVideo:fullscreen{width:100vw;height:100vh}.dswDesktopVideo:fullscreen .dswDesktopCanvas{width:100%;height:100%}.dswSuiteBrowserEmpty{color:#ccc;text-align:center;padding:24px}@media(max-width:768px){.dswSuiteEditor,.dswSuiteSplit{grid-template-columns:minmax(0,1fr)}.dswSuiteSource{border-right:0;border-bottom:1px solid var(--dsw-alias-border-l2);min-height:240px}.dswSuitePreview{min-height:240px}.dswSuiteSplit>.dswSuiteList{max-height:180px}.dswSuiteDetail{border-left:0;border-top:1px solid var(--dsw-alias-border-l2)}.dswSuiteBar input{min-width:0;flex:1}.dswSuiteOutline{max-width:100%;width:100%}}";
+      style.textContent = ".dswSuite{box-sizing:border-box;min-width:0;min-height:0;height:100%;display:flex;flex-direction:column;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base)}.dswSuite *{box-sizing:border-box}.dswSuiteBar{min-height:42px;display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);flex-wrap:wrap}.dswSuiteTitle{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:auto}.dswSuiteEditor{min-height:0;flex:1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.dswSuiteSource{min-width:0;min-height:0;display:flex;border-right:1px solid var(--dsw-alias-border-l2)}.dswSuiteSource textarea{width:100%;min-height:0;resize:none;border:0;outline:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:14px;font:12.5px/1.65 var(--ds-font-family-code);tab-size:2}.dswSuitePreview{min-width:0;min-height:0;overflow:auto;padding:16px 20px;line-height:1.7;overflow-wrap:anywhere}.dswSuitePreview pre{overflow:auto;padding:12px;border-radius:8px;background:var(--dsw-alias-markdown-code-block);font:12px/1.6 var(--ds-font-family-code)}.dswSuiteHtml{display:block;width:100%;height:100%;min-height:0;border:0;background:white}.dswSuiteOutline{max-width:240px;max-height:160px;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px}.dswSuiteOutline button{width:100%;display:block;text-align:left;border:0;background:none;color:var(--dsw-alias-label-secondary);padding:4px 6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dswSuiteDiagram{width:100%;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px;margin:10px 0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDiagram svg{display:block;min-width:420px;max-width:100%;height:auto}.dswSuiteStatus{padding:8px 12px;color:var(--dsw-alias-label-tertiary);font-size:12px}.dswSuiteError{color:var(--dsw-alias-state-error-primary)}.dswSuiteList{min-height:0;flex:1;overflow:auto;padding:8px}.dswSuiteRow{width:100%;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:start;text-align:left;border:1px solid transparent;border-radius:8px;background:none;color:inherit;padding:9px;cursor:pointer}.dswSuiteRow:hover,.dswSuiteRow[data-active=true]{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l2)}.dswSuiteDot{width:8px;height:8px;margin-top:5px;border-radius:50%;background:var(--dsw-alias-label-caption)}.dswSuiteDot[data-live=true]{background:var(--dsw-alias-state-business-primary)}.dswSuiteDot[data-error=true]{background:var(--dsw-alias-state-error-primary)}.dswSuiteMeta{font-size:11px;color:var(--dsw-alias-label-tertiary)}.dswSuiteSplit{min-height:0;flex:1;display:grid;grid-template-columns:240px minmax(0,1fr)}.dswSuiteDetail{min-width:0;min-height:0;overflow:auto;padding:12px;border-left:1px solid var(--dsw-alias-border-l2);white-space:pre-wrap}.dswSuiteTableWrap{min-height:0;flex:1;overflow:auto}.dswSuiteTable{border-collapse:collapse;width:max-content;min-width:100%;font:12px/1.5 var(--ds-font-family-code)}.dswSuiteTable th,.dswSuiteTable td{padding:7px 9px;border:1px solid var(--dsw-alias-border-l2);text-align:left;max-width:420px;overflow-wrap:anywhere}.dswSuiteTable th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDownload{margin:auto;max-width:420px;text-align:center;padding:24px}.dswSuiteDownload a{display:inline-block;padding:8px 12px;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-link)}.dswSuiteBrowser{min-height:0;flex:1;display:grid;place-items:center;overflow:hidden;background:#111}.dswSuiteBrowser img{display:block;max-width:100%;max-height:100%;cursor:crosshair;user-select:none}.dswDesktopVideo{position:relative;min-height:0;flex:1;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base)}.dswDesktopCanvas{min-height:0;flex:1;display:grid;place-items:center;overflow:hidden;position:relative;background:#111}.dswDesktopCanvas canvas{display:block;max-width:100%;max-height:100%;outline:none;touch-action:none;cursor:default}.dswDesktopCanvas[data-actual-size=true]{display:block;overflow:auto}.dswDesktopCanvas[data-actual-size=true] canvas{max-width:none;max-height:none;margin:auto}.dswDesktopCanvas:focus-within{outline:1px solid var(--dsw-alias-border-l2);outline-offset:-1px}.dswDesktopWaiting{position:absolute;color:#aaa;font-size:12px}.dswDesktopKeyboard{position:absolute;opacity:0;width:1px;height:1px;padding:0;border:0;resize:none;pointer-events:none;left:50%;top:50%}.dswDesktopStatus{min-height:34px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 10px;border-top:1px solid var(--dsw-alias-border-l2);font-size:11px;color:var(--dsw-alias-label-tertiary)}.dswDesktopVideo:fullscreen{width:100vw;height:100vh}.dswDesktopVideo:fullscreen .dswDesktopCanvas{width:100%;height:100%}.dswSuiteBrowserEmpty{color:#ccc;text-align:center;padding:24px}@media(max-width:768px){.dswSuiteEditor,.dswSuiteSplit{grid-template-columns:minmax(0,1fr)}.dswSuiteSource{border-right:0;border-bottom:1px solid var(--dsw-alias-border-l2);min-height:240px}.dswSuitePreview{min-height:240px}.dswSuiteSplit>.dswSuiteList{max-height:180px}.dswSuiteDetail{border-left:0;border-top:1px solid var(--dsw-alias-border-l2)}.dswSuiteBar input{min-width:0;flex:1}.dswSuiteOutline{max-width:100%;width:100%}}";
       style.textContent += ".dswSuiteSettings{border:1px solid var(--dsw-alias-border-l2);border-radius:14px;padding:16px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1)}.dswSuiteSettings h3{margin:0 0 6px;font-size:14px}.dswSuiteSettings>p{margin:0 0 10px;color:var(--dsw-alias-label-tertiary);font-size:12px}.dswSuiteSetting{display:grid;grid-template-columns:minmax(0,1fr) minmax(120px,220px);gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--dsw-alias-border-l2)}.dswSuiteSetting span{font-size:13px}.dswSuiteSetting input,.dswSuiteSetting select{font:inherit;min-height:32px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;color:inherit;background:var(--dsw-alias-bg-base);padding:4px 8px}.dswSuiteSettingControl{display:flex;gap:6px;justify-content:flex-end}.dswSuiteSettingControl input{min-width:0;width:100%}@media(max-width:520px){.dswSuiteSetting{grid-template-columns:minmax(0,1fr)}.dswSuiteSettingControl{justify-content:stretch}}";
+      style.textContent += ".dswSuiteDiagnostics{margin:0 10px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);overflow:hidden}.dswSuiteDiagnostics>summary{cursor:pointer;padding:8px 10px;font-size:12px;font-weight:600;list-style:none}.dswSuiteDiagnostics>summary::-webkit-details-marker{display:none}.dswSuiteDiagnostics>summary:before{content:'›';display:inline-block;margin-right:6px;transition:transform .15s}.dswSuiteDiagnostics[open]>summary:before{transform:rotate(90deg)}.dswSuiteDiagnosticBody{padding:0 10px 10px}.dswSuiteDiagnosticGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:7px;margin:0 0 8px}.dswSuiteDiagnosticCard{min-width:0;padding:8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base)}.dswSuiteDiagnosticCard small{display:block;color:var(--dsw-alias-label-tertiary);font-size:10px;margin-bottom:3px}.dswSuiteDiagnosticCard strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.dswSuiteDiagnosticCard[data-state=ok]{border-color:var(--dsw-alias-state-business-primary)}.dswSuiteDiagnosticCard[data-state=error]{border-color:var(--dsw-alias-state-error-primary)}.dswSuiteDiagnosticDetails{display:grid;grid-template-columns:minmax(90px,150px) minmax(0,1fr);gap:4px 10px;margin:0;font-size:11px}.dswSuiteDiagnosticDetails dt{color:var(--dsw-alias-label-tertiary)}.dswSuiteDiagnosticDetails dd{margin:0;overflow-wrap:anywhere}.dswSuiteDiagnosticRaw{max-height:140px;overflow:auto;margin:8px 0 0;padding:7px;border-radius:6px;background:var(--dsw-alias-markdown-code-block);font:10px/1.45 var(--ds-font-family-code);white-space:pre-wrap}.dswSuiteAnnotationToolbar{position:absolute;top:8px;right:8px;z-index:4;display:flex;gap:4px}.dswSuiteAnnotationToolbar input{width:150px;min-width:0;padding:3px 6px;border:1px solid rgba(255,255,255,.35);border-radius:6px;background:rgba(20,20,20,.78);color:#fff;font-size:11px}.dswSuiteAnnotationToolbar input::placeholder{color:#ccc}.dswSuiteAnnotationToolbar button{font-size:11px;padding:3px 7px;border:1px solid rgba(255,255,255,.35);border-radius:6px;background:rgba(20,20,20,.78);color:#fff;cursor:pointer}.dswSuiteAnnotationToolbar button:disabled{opacity:.5;cursor:default}@media(max-width:520px){.dswSuiteDiagnosticDetails{grid-template-columns:1fr}.dswSuiteDiagnosticDetails dd{margin-bottom:3px}}";
       document.head.appendChild(style);
     }
     function inlineNodes(text, key) {
@@ -428,13 +429,36 @@ window.__ModuleLoader__.load({
     function JobsTab(props) {
       return h(JobsSessionTab, { ...props, key: props.scope.sessionId + "\u0000" + props.tab.id });
     }
-    function DesktopVideo({ ownerId, sessionId, state, control, visible, playing, send, updateState, updateControl, reportError, api }) {
+    /** Lightweight review annotations stay local to the tab and never enter
+     * model input or the remote-control protocol. Coordinates are normalized
+     * to the displayed frame, so browser and UU frames share the same layer. */
+    function ScreenAnnotation({ enabled, onChange, onSubmit, storageKey = "dsh-screen-annotations" }) {
+      const readStored = () => { try { const value = JSON.parse(sessionStorage.getItem(storageKey) || "{}"); return { strokes: Array.isArray(value.strokes) ? value.strokes : [], notes: Array.isArray(value.notes) ? value.notes : [] }; } catch { return { strokes: [], notes: [] }; } };
+      const stored = React.useMemo(readStored, [storageKey]);
+      const [strokes, setStrokes] = React.useState(stored.strokes), [notes, setNotes] = React.useState(stored.notes), [note,setNote] = React.useState(""), [draft,setDraft] = React.useState(null), active = React.useRef(null);
+      const publish = (nextStrokes = strokes, nextNotes = notes) => { const value = { strokes: nextStrokes, notes: nextNotes }; try { sessionStorage.setItem(storageKey, JSON.stringify(value)); } catch {} onChange?.(value); };
+      React.useEffect(() => { publish(strokes, notes); }, [strokes, notes, storageKey]);
+      const point = event => { const rect = event.currentTarget.getBoundingClientRect(); return { x: rect.width ? Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) : 0, y: rect.height ? Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) : 0 }; };
+      const start = event => { if (!enabled || event.button !== 0) return; const p = point(event); active.current = [p]; setDraft([p]); event.preventDefault(); event.stopPropagation(); event.currentTarget.setPointerCapture?.(event.pointerId); };
+      const move = event => { if (!active.current) return; active.current.push(point(event)); setDraft([...active.current]); event.preventDefault(); };
+      const end = event => { if (active.current) { const completed=active.current; setStrokes(value => [...value.slice(-63), completed]); active.current = null; setDraft(null); event?.currentTarget?.releasePointerCapture?.(event.pointerId); } };
+      const clear = () => { setStrokes([]); setNotes([]); setDraft(null); setNote(""); };
+      const undo = () => setStrokes(value => value.slice(0, -1));
+      const addNote = () => { const text = note.trim(); if (!text) return; setNotes(value => [...value.slice(-63), { text, at: Date.now() }]); setNote(""); };
+      const copy = async () => { try { await navigator.clipboard?.writeText(JSON.stringify({ strokes, notes }, null, 2)); } catch {} };
+      const submit = () => onSubmit?.({ strokes, notes });
+      return h("div", { className: "dswAnnotationLayer", "data-enabled": enabled || undefined, "data-stroke-count": strokes.length, "data-note-count": notes.length, "aria-label": enabled ? "画面注释层，拖动画线或添加文字批注" : undefined, style: { position: "absolute", inset: 0, pointerEvents: enabled ? "auto" : "none", zIndex: 3 } }, h("svg", { viewBox: "0 0 1 1", preserveAspectRatio: "none", "aria-hidden": true, style: { width: "100%", height: "100%", pointerEvents: "none" } }, (draft?[...strokes,draft]:strokes).map((stroke, i) => h("polyline", { key: i, points: stroke.map(p => `${p.x},${p.y}`).join(" "), fill: "none", stroke: "#ff3b30", strokeWidth: .004, strokeLinecap: "round", strokeLinejoin: "round" }))), enabled && h("div", { className: "dswAnnotationCapture", style: { position: "absolute", inset: 0, cursor: "crosshair" }, onPointerDown: start, onPointerMove: move, onPointerUp: end, onPointerCancel: end }), (enabled || strokes.length > 0 || notes.length > 0) && h("div", { className: "dswSuiteAnnotationToolbar", style: { pointerEvents: "auto" } }, enabled && h("input", { value: note, onChange: event => setNote(event.target.value), onKeyDown: event => { if (event.key === "Enter") addNote(); }, placeholder: "批注内容", "aria-label": "批注内容", maxLength: 500 }), enabled && h("button", { type: "button", onClick: addNote, disabled: !note.trim() }, "添加批注"), strokes.length > 0 && h("button", { type: "button", onClick: undo, "aria-label": "撤销注释" }, "撤销"), (strokes.length > 0 || notes.length > 0) && h("button", { type: "button", onClick: clear, "aria-label": "清除注释" }, "清除"), (strokes.length > 0 || notes.length > 0) && h("button", { type: "button", onClick: copy }, "复制批注"), (strokes.length > 0 || notes.length > 0) && h("button", { type: "button", onClick: submit }, "提交批注"), enabled && h("span", { className: "dswSuiteMeta", style: { color: "#fff", padding: "3px 4px" } }, `${strokes.length} 条线 · ${notes.length} 条文字`)));
+    }
+
+    function DesktopVideo({ ownerId, sessionId, state, control, visible, playing, send, updateState, updateControl, reportError, api, video = true, snapshot = "", canActivate = false, annotate = false, onSubmit }) {
       const canvas = React.useRef(null), keyboard = React.useRef(null), root = React.useRef(null);
-      const current = React.useRef(null); current.current = { state, control, send, updateState, updateControl, reportError };
+      const current = React.useRef(null); current.current = { state, control, send, updateState, updateControl, reportError, video, canActivate };
       const ready = React.useRef(false), alive = React.useRef(true), composing = React.useRef(false);
+      const activating = React.useRef(false);
       const keys = React.useRef(new Set()), buttons = React.useRef(new Set()), queue = React.useRef([]), pumping = React.useRef(false), drain = React.useRef([]);
       const lastMove = React.useRef(0), pendingMove = React.useRef(null), moveTimer = React.useRef(null);
-      const [hasFrame, setHasFrame] = React.useState(false), [fps, setFps] = React.useState(0), [focused, setFocused] = React.useState(false);
+      const [hasFrame, setHasFrame] = React.useState(false), [fps, setFps] = React.useState(0), [focused, setFocused] = React.useState(false), [actualSize, setActualSize] = React.useState(false);
+      const [activation,setActivation]=React.useState("");
       const connected = state?.connected === true;
       const updateMode = value => current.current.updateControl(previous => !previous || (value.generation ?? 0) >= (previous.generation ?? 0) ? value : previous);
       const pump = async () => {
@@ -460,12 +484,24 @@ window.__ModuleLoader__.load({
       const release = () => {
         if (moveTimer.current) clearTimeout(moveTimer.current);
         moveTimer.current = null; pendingMove.current = null;
+        composing.current = false;
+        if (keyboard.current) keyboard.current.value = "";
         if (keys.current.size || buttons.current.size) { keys.current.clear(); buttons.current.clear(); enqueue("release_inputs"); }
         if (alive.current) setFocused(false);
       };
       const releaseAndFlush = () => { release(); return pumping.current || queue.current.length ? new Promise(resolve => drain.current.push(resolve)) : Promise.resolve(); };
+      const needsActivation = () => !current.current.video && Number.isSafeInteger(current.current.state?.windowId) && current.current.state.foreground === false;
+      const activateWindow = async () => {
+        if(activating.current||current.current.video||!current.current.state?.windowId)return;
+        if(!current.current.canActivate){current.current.reportError("请在 Host 电脑将目标窗口置于前台后重试");return;}
+        activating.current=true;ready.current=false;setActivation("pending");
+        await releaseAndFlush();
+        const value=await current.current.send("focus_window",{controlId:current.current.state?.controlId,includeScreenshot:true});
+        activating.current=false;
+        if(alive.current)setActivation(value?.state?.foreground===true?"ready":"");
+      };
       React.useEffect(() => {
-        alive.current = true; api.current = { releaseAndFlush };
+        alive.current = true; api.current = { releaseAndFlush, activateWindow };
         const blur = () => release(); window.addEventListener("blur", blur);
         const unload = () => {
           const controlId = current.current.state?.controlId;
@@ -477,8 +513,26 @@ window.__ModuleLoader__.load({
         window.addEventListener("pagehide", unload);
         return () => { unload(); alive.current = false; window.removeEventListener("blur", blur); window.removeEventListener("pagehide", unload); window.navigator.keyboard?.unlock?.(); api.current = null; };
       }, []);
-      React.useEffect(() => { if (!visible) release(); }, [visible]);
+      React.useEffect(() => { if (!visible || !playing || !connected || state?.interactive === false) { ready.current = false; release(); } }, [visible, playing, connected, state?.interactive]);
       React.useEffect(() => {
+        if (video) return;
+        if (activation === "pending") { ready.current = false; return; }
+        if (!visible || !connected || state?.interactive === false || !snapshot) { ready.current = false; setHasFrame(false); return; }
+        let cancelled = false;
+        const image = new window.Image();
+        image.onload = () => {
+          if (cancelled || !canvas.current) return;
+          const context = canvas.current.getContext("2d", { alpha: false, desynchronized: true });
+          if (!context) { ready.current = false; setHasFrame(false); reportError("无法创建桌面显示区域"); return; }
+          canvas.current.width = image.naturalWidth; canvas.current.height = image.naturalHeight;
+          context.drawImage(image, 0, 0); ready.current = playing; setHasFrame(true);
+        };
+        image.onerror = () => { if (!cancelled) { ready.current = false; setHasFrame(false); release(); reportError("桌面画面不可用，请重新连接"); } };
+        image.src = snapshot;
+        return () => { cancelled = true; image.onload = null; image.onerror = null; image.src = ""; };
+      }, [video, snapshot, visible, connected, playing, state?.interactive, state?.foreground, activation]);
+      React.useEffect(() => {
+        if (!video) return;
         ready.current = false; setHasFrame(false); setFps(0);
         if (!visible || !connected || !playing) { release(); return; }
         let cancelled = false, socket = null, decoder = null, configuration = null, needKey = true, stopRequested = false;
@@ -547,23 +601,27 @@ window.__ModuleLoader__.load({
         };
         open(); document.addEventListener("visibilitychange", visibility);
         return () => { cancelled = true; ready.current = false; document.removeEventListener("visibilitychange", visibility); const old = socket; socket = null; old?.close(); closeDecoder(); };
-      }, [ownerId, sessionId, visible, connected, playing]);
+      }, [ownerId, sessionId, visible, connected, playing, video]);
       const point = event => {
         const rect = canvas.current.getBoundingClientRect(), viewport = current.current.state?.viewport;
         if (!viewport || !rect.width || !rect.height) return null;
         return { x: Math.max(0, Math.min(viewport.width - 1, (event.clientX - rect.left) * viewport.width / rect.width)), y: Math.max(0, Math.min(viewport.height - 1, (event.clientY - rect.top) * viewport.height / rect.height)) };
       };
       const mouseName = button => ["left", "middle", "right"][button];
+      const focusKeyboard = () => { if (ready.current && keyboard.current) { keyboard.current.focus({ preventScroll: true }); setFocused(true); } };
+      React.useEffect(() => { if (hasFrame && document.activeElement === canvas.current) focusKeyboard(); }, [hasFrame]);
       const flushMove = () => { if (pendingMove.current) { enqueue("mouse_move", pendingMove.current); pendingMove.current = null; } lastMove.current = window.performance.now(); moveTimer.current = null; };
       const move = event => {
-        if (!ready.current || (current.current.control?.mode !== "manual" && !buttons.current.size && !focused)) return;
+        if (!ready.current || needsActivation() || activating.current || (current.current.control?.mode !== "manual" && !buttons.current.size && !focused)) return;
         pendingMove.current = point(event);
         if (!moveTimer.current) { const delay = Math.max(0, 16 - (window.performance.now() - lastMove.current)); moveTimer.current = setTimeout(flushMove, delay); }
       };
       const down = event => {
-        if (!ready.current || !mouseName(event.button)) return;
+        if(needsActivation()&&connected&&playing&&hasFrame){event.preventDefault();event.stopPropagation();void activateWindow();return;}
+        if (!ready.current || activating.current || !mouseName(event.button)) return;
+        setActivation("");
         event.preventDefault(); event.currentTarget.setPointerCapture?.(event.pointerId);
-        keyboard.current.focus({ preventScroll: true }); setFocused(true);
+        focusKeyboard();
         flushMove(); const position = point(event); if (!position) return;
         const button = mouseName(event.button); buttons.current.add(button); enqueue("mouse_down", { ...position, button });
       };
@@ -574,21 +632,101 @@ window.__ModuleLoader__.load({
       };
       const keyName = event => event.code || event.key;
       const keyDown = event => {
-        if (!ready.current || composing.current || event.nativeEvent?.isComposing || event.key === "Process" || event.keyCode === 229) return;
+        if (event.key === "Escape") { event.preventDefault();event.stopPropagation();release(); window.navigator.keyboard?.unlock?.(); keyboard.current.blur(); if (document.fullscreenElement) void document.exitFullscreen?.(); void releaseAndFlush().then(() => current.current.send("takeover", { includeScreenshot: false })); return; }
+        if (activating.current || !ready.current) { event.preventDefault();event.stopPropagation();composing.current=false;if(keyboard.current)keyboard.current.value="";return; }
+        if (composing.current || event.nativeEvent?.isComposing || event.key === "Process" || event.keyCode === 229) return;
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") return;
         event.preventDefault(); event.stopPropagation();
-        if (event.key === "Escape") { release(); window.navigator.keyboard?.unlock?.(); keyboard.current.blur(); if (document.fullscreenElement) void document.exitFullscreen?.(); void releaseAndFlush().then(() => current.current.send("takeover", { includeScreenshot: false })); return; }
+        if(needsActivation()){void activateWindow();return;}
+        setActivation("");
         const key = keyName(event); keys.current.add(key); enqueue("key_down", { key });
       };
       const keyUp = event => { const key = keyName(event); if (keys.current.delete(key)) { event.preventDefault(); event.stopPropagation(); enqueue("key_up", { key }); } };
-      const paste = event => { const text = event.clipboardData?.getData("text/plain"); if (!text) return; event.preventDefault(); release(); enqueue("type", { text: text.slice(0, 8192) }); keyboard.current.value = ""; };
+      const paste = event => { const text = event.clipboardData?.getData("text/plain"); if (!text) return; event.preventDefault();if(!ready.current||activating.current){composing.current=false;keyboard.current.value="";return;}if(needsActivation()){void activateWindow();return;}release(); enqueue("type", { text: text.slice(0, 8192) }); keyboard.current.value = ""; focusKeyboard(); };
+      const compositionStart = event => {
+        composing.current=ready.current&&!activating.current&&!needsActivation();
+        if(!composing.current){event.currentTarget.value="";if(ready.current&&needsActivation())void activateWindow();}
+      };
+      const compositionEnd = event => {
+        const active=composing.current;composing.current=false;event.currentTarget.value="";
+        if(!active||!ready.current||activating.current)return;
+        if(needsActivation()){void activateWindow();return;}
+        if(event.data)enqueue("type",{text:event.data.slice(0,8192)});
+      };
+      React.useEffect(() => {
+        const element = canvas.current;
+        const wheel = event => {
+          if (!ready.current || activating.current) return;
+          event.preventDefault(); event.stopPropagation();
+          if(needsActivation()){void activateWindow();return;}
+          if(moveTimer.current)clearTimeout(moveTimer.current);moveTimer.current=null;pendingMove.current=null;
+          const position = point(event), atomicPosition = !current.current.video && current.current.canActivate;
+          if (position && !atomicPosition) enqueue("mouse_move", position);
+          const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.getBoundingClientRect().height : 1;
+          enqueue("scroll", { ...(atomicPosition&&position?position:{}), deltaX: Math.max(-10000, Math.min(10000, event.deltaX * unit)), deltaY: Math.max(-10000, Math.min(10000, event.deltaY * unit)) });
+        };
+        element.addEventListener("wheel", wheel, { passive: false });
+        return () => element.removeEventListener("wheel", wheel);
+      }, []);
       const fullscreen = async () => { try { if (document.fullscreenElement) { window.navigator.keyboard?.unlock?.(); await document.exitFullscreen(); return; } await root.current.requestFullscreen?.(); if (document.fullscreenElement && window.navigator.keyboard?.lock) await window.navigator.keyboard.lock(); keyboard.current.focus({ preventScroll: true }); setFocused(true); } catch { current.current.reportError("浏览器未开启全屏键盘捕获"); } };
       return h("div", { className: "dswDesktopVideo", ref: root, "data-video-ready": hasFrame || undefined },
-        h("div", { className: "dswDesktopCanvas" }, h("canvas", { ref: canvas, width: 1920, height: 1080, tabIndex: 0, role: "application", "aria-label": "远程桌面：点击后直接使用键盘和鼠标", style: { visibility: hasFrame ? "visible" : "hidden" }, onPointerDown: down, onPointerUp: up, onPointerMove: move, onPointerCancel: release, onContextMenu: event => event.preventDefault(), onWheel: event => { if (!ready.current) return; event.preventDefault(); event.stopPropagation(); const position = point(event); if (position) enqueue("mouse_move", position); const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 540 : 1; enqueue("scroll", { deltaX: Math.max(-10000, Math.min(10000, event.deltaX * unit)), deltaY: Math.max(-10000, Math.min(10000, event.deltaY * unit)) }); } }), !hasFrame && h("div", { className: "dswDesktopWaiting", role: "status" }, connected ? "正在连接实时视频…" : "连接桌面后显示画面")),
-        h("textarea", { ref: keyboard, tabIndex: -1, "aria-hidden": true, className: "dswDesktopKeyboard", autoComplete: "off", spellCheck: false, onKeyDown: keyDown, onKeyUp: keyUp, onBlur: release, onPaste: paste, onCompositionStart: () => { composing.current = true; }, onCompositionEnd: event => { composing.current = false; if (event.data) enqueue("type", { text: event.data }); event.currentTarget.value = ""; } }),
-        h("div", { className: "dswDesktopStatus" }, h("span", null, focused ? "正在操作远端 · Esc 释放键鼠" : "点击画面后直接使用键盘和鼠标"), h("span", null, hasFrame ? `${state?.viewport?.width || 0}×${state?.viewport?.height || 0} · ${fps} 帧/秒` : ""), h(Button, { variant: "ghost", size: "sm", onClick: fullscreen }, "全屏")));
+        h("div", { className: "dswDesktopCanvas", "data-actual-size": actualSize || undefined }, h("canvas", { ref: canvas, width: 1920, height: 1080, tabIndex: 0, role: "application", "aria-label": (video ? "远程桌面" : "本机窗口") + "：点击后直接使用键盘和鼠标", style: { visibility: hasFrame ? "visible" : "hidden" }, onFocus: focusKeyboard, onPointerDown: down, onPointerUp: up, onPointerMove: move, onPointerCancel: release, onLostPointerCapture: () => { if (buttons.current.size) release(); }, onContextMenu: event => event.preventDefault() }), !hasFrame && h("div", { className: "dswDesktopWaiting", role: "status" }, connected ? video ? "正在连接实时视频…" : "正在获取桌面画面…" : "连接桌面后显示画面"), h(ScreenAnnotation, { enabled: annotate, onSubmit, storageKey: `dsh-screen-annotations:${sessionId}:desktop` })),
+        h("textarea", { ref: keyboard, tabIndex: -1, "aria-label": "桌面键盘输入", className: "dswDesktopKeyboard", autoComplete: "off", spellCheck: false, onKeyDown: keyDown, onKeyUp: keyUp, onBlur: release, onPaste: paste, onCompositionStart: compositionStart, onCompositionEnd: compositionEnd }),
+        h("div", { className: "dswDesktopStatus" }, h("span", null, !playing?"画面已暂停，恢复后可操作":activation==="pending"?"正在激活目标窗口…":needsActivation()?"目标窗口在后台，点击画面激活":activation==="ready"?"目标窗口已激活，请继续操作":focused ? "正在操作桌面 · Esc 释放键鼠" : "点击画面后直接使用键盘和鼠标"), h("span", null, hasFrame ? `${state?.viewport?.width || 0}×${state?.viewport?.height || 0}` + (video ? ` · ${fps} 帧/秒` : "") : ""), h(Button, { variant: "ghost", size: "sm", "aria-pressed": actualSize, onClick: () => setActualSize(value => !value) }, actualSize ? "适应窗口" : "100%"), h(Button, { variant: "ghost", size: "sm", onClick: fullscreen }, "全屏")));
     }
 
+    function controlPauseText(control, state) {
+      const reason = control?.pauseReason || state?.controlDiagnostics?.pauseReason;
+      return ({
+        "local-physical-input": "检测到本机键鼠输入（包括其他窗口）",
+        "external-injected-input": "检测到其他程序注入键鼠输入",
+        "escape-hotkey": "已触发全局急停快捷键",
+        "gui-input": "控制画面收到人工输入",
+        "gui-takeover": "已在控制面板选择人工接管",
+        "start-human": "连接以人工控制模式启动",
+        "resume-pending": "控制权尚未交还",
+        "release-failed": "键鼠释放未完成",
+        "emergency-stop-unavailable": "全局急停快捷键不可用",
+        "reader-shutdown": "控制进程已断开",
+        "connection-closing": "控制连接正在关闭"
+      })[reason] || "暂停来源尚未确认";
+    }
+    function RuntimeDiagnostics({ meta, state, control, error, image, desktop, sdkDesktop, annotate, liveDesktop }) {
+      const [copied, setCopied] = React.useState(false);
+      const connected = state?.connected === true;
+      const phase = state?.phase || (state ? "unknown" : "idle");
+      const status = error ? "error" : connected && state?.interactive !== false ? "ok" : state ? "warn" : "idle";
+      const statusText = error ? "错误" : connected && state?.interactive !== false ? "正常" : state ? "等待" : "未连接";
+      const diagnostic = { adapter: meta?.adapter || null, phase, connected, interactive: state?.interactive !== false, control: control || null, viewport: state?.viewport || null, windowId: state?.windowId ?? null, foreground: state?.foreground ?? null, frame: { available: !!image, live: !!(desktop && sdkDesktop && liveDesktop), annotated: !!annotate }, error: error || null, capabilities: Array.isArray(meta?.actions) ? meta.actions : [] };
+      const copy = async () => {
+        try { await window.navigator?.clipboard?.writeText(JSON.stringify(diagnostic, null, 2)); setCopied(true); setTimeout(() => setCopied(false), 1600); }
+        catch { setCopied(false); }
+      };
+      return h("details", { className: "dswSuiteDiagnostics", "data-status": status },
+        h("summary", { "aria-label": "运行诊断" }, "运行诊断", h("span", { className: "dswSuiteMeta", style: { marginLeft: 8 } }, statusText)),
+        h("div", { className: "dswSuiteDiagnosticBody" },
+          h("div", { className: "dswSuiteDiagnosticGrid" },
+            h("div", { className: "dswSuiteDiagnosticCard", "data-state": status === "ok" ? "ok" : status === "error" ? "error" : undefined }, h("small", null, "连接"), h("strong", null, connected ? "已连接" : state ? "连接中" : "未连接")),
+            h("div", { className: "dswSuiteDiagnosticCard" }, h("small", null, "适配器"), h("strong", null, meta?.adapter || "未选择")),
+            h("div", { className: "dswSuiteDiagnosticCard" }, h("small", null, "控制权"), h("strong", null, control?.mode === "manual" ? "人工接管" : control?.mode === "agent" ? "智能体" : "未建立")),
+            h("div", { className: "dswSuiteDiagnosticCard" }, h("small", null, "画面"), h("strong", null, state?.viewport ? `${state.viewport.width}×${state.viewport.height}` : "未收到"))
+          ),
+          h("dl", { className: "dswSuiteDiagnosticDetails" },
+            h("dt", null, "连接阶段"), h("dd", null, phase),
+            h("dt", null, "交互状态"), h("dd", null, state?.interactive === false ? "已暂停" : connected ? "可操作" : "不可操作"),
+            h("dt", null, "窗口焦点"), h("dd", null, state?.foreground === true ? "前台" : state?.foreground === false ? "后台" : "不适用"),
+            h("dt", null, "暂停原因"), h("dd", null, controlPauseText(control, state)),
+            h("dt", null, "控制代次"), h("dd", null, Number.isSafeInteger(control?.generation) ? String(control.generation) : "未提供"),
+            h("dt", null, "急停快捷键"), h("dd", null, state?.emergencyStopShortcut || "未提供"),
+            h("dt", null, "能力"), h("dd", null, Array.isArray(meta?.actions) && meta.actions.length ? meta.actions.join("、") : "未声明"),
+            h("dt", null, "注释层"), h("dd", null, annotate ? "已启用（本地）" : "关闭")
+          ),
+          error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error),
+          h("div", { className: "dswSuiteToolbar", style: { justifyContent: "flex-end", marginTop: 8 } }, h(Button, { variant: "outline", size: "sm", onClick: copy }, copied ? "已复制" : "复制诊断")),
+          h("pre", { className: "dswSuiteDiagnosticRaw" }, JSON.stringify(diagnostic, null, 2))
+        )
+      );
+    }
     function ControlledBrowserSession(props) {
       const browserSessionId = props.browserSessionId;
       const desktopInput=React.useRef(null);
@@ -597,7 +735,9 @@ window.__ModuleLoader__.load({
       const lifetime = React.useRef(null); if (!lifetime.current) lifetime.current = new AbortController();
       const requestSequence = React.useRef(0), appliedSequence = React.useRef(0), foregroundRequests = React.useRef(0);
       React.useEffect(() => { alive.current = true; if (lifetime.current.signal.aborted) lifetime.current = new AbortController(); return () => { alive.current = false; lifetime.current.abort(); }; }, []);
-      const [url, setUrl] = React.useState(props.tab.path || "about:blank"), [state, setState] = React.useState(null), [image, setImage] = React.useState(""), [typing, setTyping] = React.useState(""), [busy, setBusy] = React.useState(false), [error, setError] = React.useState(""), [meta, setMeta] = React.useState(null),[control,setControl]=React.useState(null),[privateInput,setPrivateInput]=React.useState(false),[liveDesktop,setLiveDesktop]=React.useState(true);
+      const [url, setUrl] = React.useState(props.tab.path || "about:blank"), [state, setState] = React.useState(null), [image, setImage] = React.useState(""), [typing, setTyping] = React.useState(""), [busy, setBusy] = React.useState(false), [error, setError] = React.useState(""), [meta, setMeta] = React.useState(null),[control,setControl]=React.useState(null),[privateInput,setPrivateInput]=React.useState(false),[liveDesktop,setLiveDesktop]=React.useState(true),[annotate,setAnnotate]=React.useState(false);
+      const [windowsOpen,setWindowsOpen]=React.useState(false),[windows,setWindows]=React.useState(null),[selectedWindow,setSelectedWindow]=React.useState(null);
+      const submitAnnotation = async annotations => { try { await json("/__dsh-computer-use/annotation", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: props.scope.sessionId, annotations, screenshot: image && image.startsWith("data:") ? (() => { const split = image.indexOf(","); return { mediaType: image.slice(5, split).split(";")[0] || "image/jpeg", base64: split >= 0 ? image.slice(split + 1) : "" }; })() : undefined }) }); } catch (reason) { if (alive.current) setError(reason.message || String(reason)); } };
       const sdkDesktop=meta?.adapter==="uu-desktop";
       const desktop=["native-desktop","uu-desktop"].includes(meta?.adapter),interactive=!!state&&state.interactive!==false&&state.connected!==false;
       const action = async (name, extra, options) => {
@@ -614,7 +754,7 @@ window.__ModuleLoader__.load({
             if (name === "close") { setState(null); setImage("");setControl(null);setTyping(""); }
           }
           return value;
-        } catch (reason) { if(quiet&&!options?.input&&reason?.code==="COMPUTER_USE_MANUAL_CONTROL")return {};if (alive.current && sequence >= appliedSequence.current && reason?.name !== "AbortError") {appliedSequence.current=sequence;setError(reason.message || String(reason));if(desktop&&["start","capture"].includes(name)){setImage("");setLiveDesktop(false);setState(previous=>previous?{...previous,interactive:false}:previous);}} return null; }
+        } catch (reason) { if(name==="capture"&&reason?.code==="COMPUTER_USE_CAPTURE_INTERRUPTED")return {};if(quiet&&!options?.input&&reason?.code==="COMPUTER_USE_MANUAL_CONTROL")return {};if (alive.current && sequence >= appliedSequence.current && reason?.name !== "AbortError") {appliedSequence.current=sequence;setError(String(reason.message || reason).split("; controlDiagnostics=")[0]);if(reason?.code==="COMPUTER_USE_EMERGENCY_STOP_UNAVAILABLE")setControl(previous=>({...previous,mode:"manual",pauseReason:"emergency-stop-unavailable"}));if(meta?.adapter==="native-desktop"&&String(reason.code||reason.message).startsWith("COMPUTER_USE_WINDOW_NOT_FOCUSED"))setState(previous=>previous?{...previous,foreground:false}:previous);if(desktop&&["start","capture"].includes(name)){setImage("");setLiveDesktop(false);setState(previous=>previous?{...previous,interactive:false}:previous);}} return null; }
         finally {
           if (!quiet) foregroundRequests.current = Math.max(0, foregroundRequests.current - 1);
           if (alive.current && !quiet && foregroundRequests.current === 0) setBusy(false);
@@ -639,10 +779,23 @@ window.__ModuleLoader__.load({
         if(meta?.adapter!=="native-desktop"||!props.visible||!state?.connected||!liveDesktop||busy)return;
         return visiblePoll(async signal=>{if(closed.current)return null;const value=await action("capture",null,{quiet:true,signal});return value?500:null},500);
       },[desktop,props.visible,state?.connected,liveDesktop,busy]);
-      const reconnect=async()=>{await desktopInput.current?.releaseAndFlush();if(state){const value=await action("close",{includeScreenshot:false});if(!value)return;}await action("start");};
+      const reconnect=async()=>{const target=selectedWindow===null?state?.windowId:selectedWindow.windowId;await desktopInput.current?.releaseAndFlush();if(state){const value=await action("close",{includeScreenshot:false});if(!value)return;}await action("start",meta?.adapter==="native-desktop"&&Number.isSafeInteger(target)&&target>0?{windowId:target}:{});};
+      const openWindows=async()=>{
+        if(windowsOpen){setWindowsOpen(false);return;}
+        setWindowsOpen(true);setWindows(null);
+        const result=await action("list_windows",{includeScreenshot:false});
+        if(alive.current)setWindows((Array.isArray(result?.windows)?result.windows:[]).filter(row=>Number.isSafeInteger(row.windowId)&&row.windowId>0&&typeof row.title==="string").slice(0,256));
+      };
+      React.useEffect(()=>{if(!props.visible)setWindowsOpen(false)},[props.visible]);
+      const windowMenu=meta?.adapter==="native-desktop"&&meta.actions?.includes("list_windows")&&h(Menu,{
+        open:windowsOpen,onClose:()=>setWindowsOpen(false),portal:true,
+        anchor:h(Button,{variant:"outline",size:"sm",disabled:busy||!state?.connected,"aria-label":"选择本机窗口",onClick:openWindows},"选择窗口"),
+        items:windows===null?[{id:"loading",label:"正在读取窗口…",disabled:true}]:[{id:"desktop",label:"主显示器"},...windows.map(row=>({id:String(row.windowId),label:row.title.slice(0,512)+(row.windowId===state?.windowId?" · 当前":"")})),...(windows.length?[]:[{id:"empty",label:"没有可用窗口",disabled:true}])],
+        onSelect:id=>{const target=id==="desktop"?{windowId:null,title:"主显示器"}:windows?.find(row=>String(row.windowId)===id);if(target){setSelectedWindow(target);setWindowsOpen(false);}}
+      });
       const navigate = () => {
         let target = url.trim();
-        if (target && !/^https?:\/\//i.test(target)) target = "https://" + target;
+        if (target && !/^https?:\/\//i.test(target)) target = (/^(?:localhost|127\.\d+\.\d+\.\d+|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(target) ? "http://" : "https://") + target;
         if (target) action("navigate", { url: target });
       };
       const point = event => {
@@ -652,15 +805,17 @@ window.__ModuleLoader__.load({
         const y = Math.max(0, Math.min(Math.max(0,state.viewport.height-1), (event.clientY - rect.top) * state.viewport.height / rect.height));
         action(event.detail > 1 ? "double_click" : "click", { x, y });
       };
-      const sendText=()=>{if(!typing||busy||!interactive)return;const text=typing;setTyping("");void action("type",{text});};
+      const sendText=async()=>{if(!typing||busy||!interactive)return;const text=typing;const value=await action("type",{text});if(value)setTyping(current=>current===text?"":current);};
       const key=keys=>action("key",{keys});
       const dragStart=React.useRef(null),dragged=React.useRef(false);
       const pointerPoint=event=>{const rect=event.currentTarget.getBoundingClientRect();return {x:Math.max(0,Math.min(Math.max(0,state.viewport.width-1),(event.clientX-rect.left)*state.viewport.width/rect.width)),y:Math.max(0,Math.min(Math.max(0,state.viewport.height-1),(event.clientY-rect.top)*state.viewport.height/rect.height))}};
       return h("section", { className: "dswSuite", "data-tab": "controlled-browser", "data-browser-session": browserSessionId },
-        h("div", { className: "dswSuiteBar" }, h(Button,{variant:"outline",size:"sm",disabled:busy,onClick:reconnect},state?"重新连接":"连接"),h(Button,{variant:"outline",size:"sm",disabled:!state,onClick:async()=>{await desktopInput.current?.releaseAndFlush();await action(control?.mode==="manual"?"resume_agent":"takeover",{includeScreenshot:false})}},control?.mode==="manual"?"交还智能体":"人工接管"),h("span",{className:"dswSuiteMeta",role:"status"},!interactive?state?.connected===false?"连接已断开":state?"等待桌面画面":"未连接":control?.mode==="manual"?"人工接管中 · 智能体控制暂停":"智能体可操作"),!desktop&&h(Button, { variant: "outline", size: "sm", disabled: busy||!state, onClick: () => action("click", { x: 0, y: 0, button: "back" }) }, "后退"), !desktop&&h("input", { value: url, "aria-label": "受控浏览器地址", onChange: event => setUrl(event.target.value), onKeyDown: event => { if (event.key === "Enter") navigate(); } }), !desktop&&h(Button, { variant: "outline", size: "sm", disabled: busy || !url.trim(), onClick: navigate }, "转到"),desktop&&h("strong",{className:"dswSuiteTitle"},state?.title||(meta?.adapter==="uu-desktop"?"远程设备":"本机桌面")),desktop&&h(Button,{variant:"outline",size:"sm","aria-pressed":liveDesktop,disabled:!state?.connected,onClick:()=>setLiveDesktop(v=>!v)},"实时画面"), !sdkDesktop&&h(Button, { variant: "outline", size: "sm", disabled: busy, onClick: () => action("capture") }, "刷新画面"), h(Button, { variant: "outline", size: "sm", onClick: async () => {await desktopInput.current?.releaseAndFlush();await action("close", { includeScreenshot: false })} }, "关闭会话")),
-        error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error),
-        sdkDesktop ? h(DesktopVideo,{ownerId:props.scope.sessionId,sessionId:browserSessionId,state,control,visible:props.visible,playing:liveDesktop,send:action,updateState:setState,updateControl:setControl,reportError:setError,api:desktopInput}) : h("div", { className: "dswSuiteBrowser" }, image ? h("img", { src: image, alt: state?.title || "受控浏览器画面", draggable: false, tabIndex:0,onClick:event=>{if(dragged.current){dragged.current=false;return}point(event)}, "aria-label":"控制画面，操作即接管；画面聚焦时 Esc 暂停智能体",onKeyDown:event=>{if(event.key==="Escape"){event.preventDefault();void action("takeover",{includeScreenshot:false})}},onPointerDown:event=>{if(event.button!==0||busy||!interactive||!state?.viewport)return;dragStart.current=pointerPoint(event);event.currentTarget.setPointerCapture?.(event.pointerId)},onPointerUp:event=>{const start=dragStart.current;dragStart.current=null;if(!start||!state?.viewport)return;const end=pointerPoint(event);if(Math.hypot(end.x-start.x,end.y-start.y)>6){dragged.current=true;void action("drag",{...start,endX:end.x,endY:end.y});}},onPointerCancel:()=>{dragStart.current=null} }) : h("div", { className: "dswSuiteBrowserEmpty" }, closed.current?"连接已关闭。点击连接重新打开。":error?"暂时无法显示画面":"正在连接并获取画面…")),
-        !sdkDesktop&&h("div", { className: "dswSuiteBar" }, h("input", { type:privateInput?"password":"text",autoComplete:"off",maxLength:8192,value: typing, placeholder: "输入到当前焦点", "aria-label": "发送到受控浏览器", onFocus:()=>{if(state&&control?.mode!=="manual")void action("takeover",{includeScreenshot:false})}, onChange: event => setTyping(event.target.value), onKeyDown: event => { if(event.key==="Enter")sendText(); } }), h(Button, { variant: "outline", size: "sm", disabled: !typing||busy||!interactive, onClick: sendText }, "输入"),h(Button,{variant:"outline",size:"sm","aria-pressed":privateInput,onClick:()=>{setPrivateInput(v=>!v);if(state&&control?.mode!=="manual")void action("takeover",{includeScreenshot:false})}},"私密输入"),...["Enter","Tab","Backspace","Escape"].map(name=>h(Button,{key:name,variant:"outline",size:"sm",disabled:busy||!interactive,onClick:()=>key([name])},name)), h(Button, { variant: "outline", size: "sm", disabled:busy||!interactive,onClick: () => action("scroll", { deltaY: -540 }) }, "向上"), h(Button, { variant: "outline", size: "sm", disabled:busy||!interactive,onClick: () => action("scroll", { deltaY: 540 }) }, "向下"), h("span", { className: "dswSuiteMeta" }, (meta?.adapter || "未连接") + " · " + (state ? (state.title || state.url) + " · " + state.viewport.width + "×" + state.viewport.height : "会话 " + browserSessionId))));
+        h("div", { className: "dswSuiteBar" }, h(Button,{variant:"outline",size:"sm",disabled:busy,onClick:reconnect},state?"重新连接":"连接"),h(Button,{variant:"outline",size:"sm","aria-pressed":annotate,onClick:()=>setAnnotate(v=>!v)},annotate?"关闭注释":"注释画面"),windowMenu,windowMenu&&selectedWindow&&h("span",{className:"dswSuiteMeta"},selectedWindow.title.slice(0,512),(selectedWindow.windowId??null)===(state?.windowId??null)?"":" · 重新连接后切换"),h(Button,{variant:"outline",size:"sm",disabled:busy||!state,onClick:async()=>{await desktopInput.current?.releaseAndFlush();await action(control?.mode==="manual"?"resume_agent":"takeover",{includeScreenshot:false})}},control?.mode==="manual"?"交还智能体":"人工接管"),h("span",{className:"dswSuiteMeta",role:"status"},!interactive?state?.connected===false?"连接已断开":state?"等待桌面画面":"未连接":control?.mode==="manual"?"人工接管中 · 智能体控制暂停":"智能体可操作"),!desktop&&h(Button, { variant: "outline", size: "sm", disabled: busy||!state, onClick: () => action("click", { x: 0, y: 0, button: "back" }) }, "后退"), !desktop&&h("input", { value: url, "aria-label": "受控浏览器地址", onChange: event => setUrl(event.target.value), onKeyDown: event => { if (event.key === "Enter") navigate(); } }), !desktop&&h(Button, { variant: "outline", size: "sm", disabled: busy || !url.trim(), onClick: navigate }, "转到"),meta?.adapter==="native-desktop"&&state?.windowId&&meta.actions?.includes("focus_window")&&h(Button,{variant:"outline",size:"sm",disabled:busy||!state?.connected,onClick:()=>desktopInput.current?.activateWindow()},"激活窗口"),desktop&&h("strong",{className:"dswSuiteTitle"},state?.targetTitle||state?.title||(meta?.adapter==="uu-desktop"?"远程设备":"本机桌面")),desktop&&h(Button,{variant:"outline",size:"sm","aria-pressed":liveDesktop,disabled:!state?.connected,onClick:()=>setLiveDesktop(v=>!v)},sdkDesktop?"实时画面":"自动刷新"), !sdkDesktop&&h(Button, { variant: "outline", size: "sm", disabled: busy, onClick: () => action("capture") }, "刷新画面"), h(Button, { variant: "outline", size: "sm", disabled:busy, onClick: async () => {await desktopInput.current?.releaseAndFlush();await action("close", { includeScreenshot: false })} }, "关闭会话")),
+        desktop && h("div", { className: "dswSuiteStatus", "data-control-scope": sdkDesktop ? "remote" : "local" }, sdkDesktop ? "UU 远程 · 全局急停 " + (state?.emergencyStopShortcut || "尚未确认") + "；画面内 Esc 释放键鼠。" : "本机桌面 · 与本机共用键鼠；操作其他窗口也会暂停智能体，避免争抢鼠标或将内容输入错误窗口。"),
+        control?.mode === "manual" && h("div", { className: "dswSuiteStatus", role: "status", "data-control-pause": control.pauseReason || "unknown" }, "智能体控制暂停 · " + controlPauseText(control, state)),
+        error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error), h(RuntimeDiagnostics, { meta, state, control, error, image, desktop, sdkDesktop, annotate, liveDesktop }),
+        desktop ? h(DesktopVideo,{video:sdkDesktop,snapshot:image,canActivate:meta?.actions?.includes("focus_window"),ownerId:props.scope.sessionId,sessionId:browserSessionId,state,control,visible:props.visible,playing:liveDesktop,send:action,updateState:setState,updateControl:setControl,reportError:setError,api:desktopInput,annotate,onSubmit:submitAnnotation}) : h("div", { className: "dswSuiteBrowser" }, image ? h("div", { className: "dswBrowserFrame", style: { position: "relative" } }, h("img", { src: image, alt: state?.title || "受控浏览器画面", draggable: false, tabIndex:0,onClick:event=>{if(dragged.current){dragged.current=false;return}point(event)}, "aria-label":"控制画面，操作即接管；画面聚焦时 Esc 暂停智能体",onKeyDown:event=>{if(event.key==="Escape"){event.preventDefault();void action("takeover",{includeScreenshot:false})}},onPointerDown:event=>{if(event.button!==0||busy||!interactive||!state?.viewport)return;dragStart.current=pointerPoint(event);event.currentTarget.setPointerCapture?.(event.pointerId)},onPointerUp:event=>{const start=dragStart.current;dragStart.current=null;if(!start||!state?.viewport)return;const end=pointerPoint(event);if(Math.hypot(end.x-start.x,end.y-start.y)>6){dragged.current=true;void action("drag",{...start,endX:end.x,endY:end.y});}},onPointerCancel:()=>{dragStart.current=null} }), h(ScreenAnnotation, { enabled: annotate, onSubmit: submitAnnotation, storageKey: `dsh-screen-annotations:${props.scope.sessionId}:${browserSessionId}` })) : h("div", { className: "dswSuiteBrowserEmpty" }, closed.current?"连接已关闭。点击连接重新打开。":error?"暂时无法显示画面":"正在连接并获取画面…")),
+        !desktop&&h("div", { className: "dswSuiteBar" }, h("input", { type:privateInput?"password":"text",autoComplete:"off",maxLength:8192,value: typing, placeholder: "输入到当前焦点", "aria-label": "发送到受控浏览器", onFocus:()=>{if(state&&control?.mode!=="manual")void action("takeover",{includeScreenshot:false})}, onChange: event => setTyping(event.target.value), onKeyDown: event => { if(event.key==="Enter")sendText(); } }), h(Button, { variant: "outline", size: "sm", disabled: !typing||busy||!interactive, onClick: sendText }, "输入"),h(Button,{variant:"outline",size:"sm","aria-pressed":privateInput,onClick:()=>{setPrivateInput(v=>!v);if(state&&control?.mode!=="manual")void action("takeover",{includeScreenshot:false})}},"私密输入"),...["Enter","Tab","Backspace","Escape"].map(name=>h(Button,{key:name,variant:"outline",size:"sm",disabled:busy||!interactive,onClick:()=>key([name])},name)), h(Button, { variant: "outline", size: "sm", disabled:busy||!interactive,onClick: () => action("scroll", { deltaY: -540 }) }, "向上"), h(Button, { variant: "outline", size: "sm", disabled:busy||!interactive,onClick: () => action("scroll", { deltaY: 540 }) }, "向下"), h("span", { className: "dswSuiteMeta" }, (meta?.adapter || "未连接") + " · " + (state ? (state.title || state.url) + " · " + state.viewport.width + "×" + state.viewport.height : "会话 " + browserSessionId))));
     }
     function ControlledBrowserTab(props) {
       const sidebar=props.sidebar;
@@ -711,7 +866,7 @@ window.__ModuleLoader__.load({
         { key: "timeoutSeconds", label: "操作超时（秒）", type: "number", min: 5, max: 300, defaultValue: 60 },
         { key: "command", label: "外部控制命令", type: "text", defaultValue: "" }
       ];
-      return h("section", { className: "dswSuiteSettings", "data-settings": "computer-use" }, h(DeviceSettings, {}), h("h3", null, "控制环境"), h("p", null, "模型与工作台共用控制环境，支持人工接管。更换执行适配器后重启生效。"), snapshot.status !== "ready" ? h("div", { className: "dswSuiteStatus" }, snapshot.status === "error" ? (snapshot.error || "设置读取失败") : "正在读取设置…") : fields.map(field => h(SettingRow, { key: field.key, scope, snapshot, field, error: setError })), error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error));
+      return h("section", { className: "dswSuiteSettings", "data-settings": "computer-use" }, h(DeviceSettings, {}), h("h3", null, "控制环境"), h("p", null, "模型与工作台共用控制环境。Windows 原生桌面和 UU 自连本机均共享这台电脑的桌面；需要同时使用本机其他软件时，可选择另一台 UU 设备或隔离浏览器。更换执行适配器后重启生效。"), snapshot.status !== "ready" ? h("div", { className: "dswSuiteStatus" }, snapshot.status === "error" ? (snapshot.error || "设置读取失败") : "正在读取设置…") : fields.map(field => h(SettingRow, { key: field.key, scope, snapshot, field, error: setError })), error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error));
     }
     function apply(ctx) {
       installStyle();
@@ -732,7 +887,7 @@ window.__ModuleLoader__.load({
     }
     exports.apply = apply;
     exports.inject = inject;
-    exports.test = { parseCsv, renderMarkdown, visiblePoll, MermaidDiagram, MarkdownWorkbench, CodeWorkbench, StructuredViewer, JobsTab, ControlledBrowserTab, ComputerUseSettings, DeviceSettings, rememberFileDraft, fileDraftCacheSnapshot: () => ({ keys: [...fileDrafts.keys()], bytes: fileDraftBytes }), clearFileDrafts };
+    exports.test = { parseCsv, renderMarkdown, visiblePoll, MermaidDiagram, MarkdownWorkbench, CodeWorkbench, StructuredViewer, JobsTab, ControlledBrowserTab, RuntimeDiagnostics, ScreenAnnotation, ComputerUseSettings, DeviceSettings, rememberFileDraft, fileDraftCacheSnapshot: () => ({ keys: [...fileDrafts.keys()], bytes: fileDraftBytes }), clearFileDrafts };
     return module.exports;
   }
 });

@@ -49,7 +49,21 @@ class FreeEvidenceTests(unittest.TestCase):
             verifier.streamed_completion(evidence.BASE_URL + "/chat/completions", {"model": "fixture"}, 2)
         headers={key.lower():value for key,value in captured[0].header_items()}
         self.assertEqual(headers["user-agent"], "deepseek-harness-rs-release-verifier")
-        self.assertFalse(any("session" in key or "client" in key or "authorization" in key for key in headers))
+        self.assertRegex(headers["x-opencode-session"], r"^dsh-verifier-[0-9a-f]{32}$")
+        self.assertFalse(any("client" in key or "authorization" in key or "cookie" in key for key in headers))
+
+    def test_tool_round_trip_keeps_one_opaque_routing_key(self):
+        routing=[]
+        def completion(_endpoint,_body,_timeout,session):
+            routing.append(session)
+            if len(routing)==1:
+                return {"role":"assistant","content":"","tool_calls":[{"id":"call-1","type":"function","function":{"name":"connectivity_check","arguments":'{"status":"ok"}'}}]}
+            return {"role":"assistant","content":"OK"}
+        with patch.object(verifier,"streamed_completion",side_effect=completion):
+            value=verifier.inference_probe("fixture",evidence.CATALOG_URL)
+        self.assertTrue(value["toolResult"])
+        self.assertEqual(len(routing),2)
+        self.assertEqual(routing[0],routing[1])
 
     def test_catalog_failure_keeps_a_structured_failure_report(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -170,6 +170,12 @@ fn reference(id: &str) -> dsh_credentials::CredentialRef {
         id.replace('-', "_").to_ascii_uppercase()
     ))
 }
+fn accounts_reference(id: &str) -> dsh_credentials::CredentialRef {
+    dsh_credentials::credential_ref(&format!(
+        "DSH_OAUTH_{}_ACCOUNTS",
+        id.replace('-', "_").to_ascii_uppercase()
+    ))
+}
 fn string(value: &Value, key: &str) -> Result<String, String> {
     value
         .get(key)
@@ -191,7 +197,7 @@ fn jwt(token: &str) -> Option<Value> {
         .ok()?;
     serde_json::from_slice(&decoded).ok()
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Session {
     access_token: String,
     refresh_token: Option<String>,
@@ -204,6 +210,24 @@ struct Session {
     base_url: Option<String>,
     #[serde(default)]
     account_scope: String,
+}
+
+fn codex_refresh_requires_login(status: u16, value: &Value) -> bool {
+    let code = value
+        .get("error")
+        .and_then(Value::as_str)
+        .or_else(|| value.pointer("/error/code").and_then(Value::as_str));
+    matches!(status, 400 | 401)
+        && matches!(
+            code,
+            Some(
+                "invalid_grant"
+                    | "refresh_token_expired"
+                    | "refresh_token_reused"
+                    | "refresh_token_invalidated"
+                    | "refresh_token_revoked"
+            )
+        )
 }
 impl Session {
     fn from_tokens(value: &Value, previous: Option<&Session>) -> Result<Self, String> {
@@ -375,25 +399,39 @@ impl AccountAuth {
             })
             .transpose()
     }
+    async fn saved_sessions(&self, id: &str) -> Result<Vec<Session>, String> {
+        let Some(value) = self.credentials.resolve(&accounts_reference(id)).await else { return Ok(Vec::new()); };
+        serde_json::from_str(&value.value).map_err(|_| "账号目录凭据无效，请重新登录".to_string())
+    }
     async fn save(&self, id: &str, session: &Session) -> Result<(), String> {
-        self.credentials
-            .set(
-                &reference(id),
-                &serde_json::to_string(session).map_err(|e| e.to_string())?,
-            )
-            .await
+        self.credentials.set(&reference(id), &serde_json::to_string(session).map_err(|e| e.to_string())?).await?;
+        let mut accounts = self.saved_sessions(id).await.unwrap_or_default();
+        accounts.retain(|item| item.account_scope != session.account_scope);
+        accounts.push(session.clone());
+        self.credentials.set(&accounts_reference(id), &serde_json::to_string(&accounts).map_err(|e| e.to_string())?).await
     }
     pub(crate) async fn resolve_token(&self, id: &str) -> Result<Option<String>, String> {
-        let p = provider(id)?;
         let _guard = self.refresh.lock().await;
+        self.resolve_token_locked(id, false, true).await
+    }
+    /// The caller retains the refresh lock, including any account RPC refresh callback.
+    async fn resolve_token_locked(
+        &self,
+        id: &str,
+        force: bool,
+        update_profile: bool,
+    ) -> Result<Option<String>, String> {
+        let p = provider(id)?;
         let Some(mut session) = self.session(id).await? else {
             return Err("账号尚未登录，请在模型设置中登录".to_string());
         };
         if session.invalid {
             return Err("账号授权已失效，请重新登录".to_string());
         }
-        if session.expires_at > now() + 120 {
-            self.repair_profile(p, &session).await?;
+        if !force && session.expires_at > now() + 120 {
+            if update_profile {
+                self.repair_profile(p, &session).await?;
+            }
             return Ok(Some(session.access_token));
         }
         let refresh = session
@@ -403,7 +441,9 @@ impl AccountAuth {
         if id == "copilot" {
             let renewed = self.exchange_copilot(refresh).await?;
             self.save(id, &renewed).await?;
-            self.repair_profile(p, &renewed).await?;
+            if update_profile {
+                self.repair_profile(p, &renewed).await?;
+            }
             return Ok(Some(renewed.access_token));
         }
         let request = self.client.post(p.token);
@@ -422,20 +462,31 @@ impl AccountAuth {
             .await
             .map_err(|_| "账号刷新服务返回无效数据".to_string())?;
         if !status.is_success() {
-            if matches!(status.as_u16(), 400 | 401 | 403) {
+            let invalid = if id == "openai-codex" {
+                codex_refresh_requires_login(status.as_u16(), &tokens)
+            } else {
+                matches!(status.as_u16(), 400 | 401 | 403)
+            };
+            if invalid {
                 session.invalid = true;
                 session.refresh_token = None;
                 session.access_token.clear();
                 self.save(id, &session).await?;
             }
-            return Err(format!(
-                "账号刷新失败（HTTP {}），请检查订阅或重新登录",
-                status.as_u16()
-            ));
+            return Err(if invalid {
+                format!("账号刷新凭据已失效（HTTP {}），请重新登录", status.as_u16())
+            } else {
+                format!(
+                    "账号刷新暂未完成（HTTP {}），已保留登录状态，请稍后重试",
+                    status.as_u16()
+                )
+            });
         }
         session = Session::from_tokens(&tokens, Some(&session))?;
         self.save(id, &session).await?;
-        self.repair_profile(p, &session).await?;
+        if update_profile {
+            self.repair_profile(p, &session).await?;
+        }
         Ok(Some(session.access_token))
     }
     async fn repair_profile(&self, p: Provider, session: &Session) -> Result<(), String> {
@@ -864,7 +915,7 @@ impl AccountAuth {
             ),
         })
     }
-    async fn handle(&self, action: &str, body: &Value) -> Result<Value, String> {
+    async fn handle(self: &Arc<Self>, action: &str, body: &Value) -> Result<Value, String> {
         if matches!(
             action,
             "usage"
@@ -879,6 +930,10 @@ impl AccountAuth {
             }
             // Keep account changes and the whole operation serialized, including reset settlement.
             let _guard = self.refresh.lock().await;
+            if action != "reset-status" {
+                self.resolve_token_locked("openai-codex", false, false)
+                    .await?;
+            }
             let session = self
                 .session("openai-codex")
                 .await?
@@ -888,10 +943,63 @@ impl AccountAuth {
                 .account_id
                 .as_deref()
                 .ok_or("Codex 账号缺少可核验身份，请重新登录")?;
-            return self
+            let expected_id = account_id.to_string();
+            let expected_scope = session.account_scope.clone();
+            let weak = Arc::downgrade(self);
+            let refresh: crate::codex_account::TokenRefresher = Arc::new(move || {
+                let weak = weak.clone();
+                let expected_id = expected_id.clone();
+                let expected_scope = expected_scope.clone();
+                Box::pin(async move {
+                    let auth = weak.upgrade().ok_or("模型账号服务已退出")?;
+                    let before = auth
+                        .session("openai-codex")
+                        .await?
+                        .ok_or("模型账号尚未登录")?;
+                    if before.account_id.as_deref() != Some(&expected_id)
+                        || before.account_scope != expected_scope
+                        || before.invalid
+                    {
+                        return Err("模型账号已变化，拒绝向旧用量连接提供凭据".into());
+                    }
+                    auth.resolve_token_locked("openai-codex", true, false)
+                        .await?;
+                    let refreshed = auth
+                        .session("openai-codex")
+                        .await?
+                        .ok_or("模型账号尚未登录")?;
+                    if refreshed.account_id.as_deref() != Some(&expected_id)
+                        || refreshed.account_scope != expected_scope
+                        || refreshed.invalid
+                    {
+                        return Err("刷新后的模型账号身份不一致".into());
+                    }
+                    Ok(crate::codex_account::AccountTokens {
+                        access_token: refreshed.access_token,
+                        account_id: expected_id,
+                    })
+                })
+            });
+            let result = self
                 .account_usage
-                .handle(&session.account_scope, account_id, action, body)
+                .handle_authenticated(
+                    &session.account_scope,
+                    account_id,
+                    &session.access_token,
+                    action,
+                    body,
+                    Some(refresh),
+                )
                 .await;
+            let current = self.session("openai-codex").await?;
+            if current.as_ref().is_none_or(|current| {
+                current.invalid
+                    || current.account_id.as_deref() != Some(account_id)
+                    || current.account_scope != session.account_scope
+            }) {
+                return Err("模型登录身份已变化，已停止显示旧账号用量；请重新读取当前账号".into());
+            }
+            return result;
         }
         let cli = self.cli.read().clone();
         if let Some(cli) = &cli {
@@ -919,15 +1027,23 @@ impl AccountAuth {
                 let mut values = Vec::new();
                 for p in PROVIDERS {
                     let session = self.session(p.id).await.ok().flatten();
+                    let mut saved = self.saved_sessions(p.id).await.unwrap_or_default();
+                    if let Some(current) = session.as_ref() {
+                        if !saved.iter().any(|item| item.account_scope == current.account_scope) {
+                            saved.push(current.clone());
+                        }
+                    }
                     let scope = session
                         .as_ref()
                         .filter(|s| !s.invalid)
                         .map(|s| s.account_scope.as_str())
                         .unwrap_or("signed-out");
                     let catalog = self.catalogs.get(p.id, scope);
-                    values.push(json!({"id":p.id,"name":p.name,"signedIn":session.as_ref().is_some_and(|s| !s.invalid),
+                    let accounts = saved.iter().filter(|item| !item.invalid).map(|item| json!({"accountScope":item.account_scope,"accountId":item.account_id,"expiresAt":item.expires_at,"active":session.as_ref().is_some_and(|current| current.account_scope == item.account_scope)})).collect::<Vec<_>>();
+                    let account_count = accounts.len();
+                    values.push(json!({"id":p.id,"name":p.name,"signedIn":session.as_ref().is_some_and(|s| !s.invalid) || account_count > 0,
                         "expiresAt":session.as_ref().map(|s|s.expires_at),"settingsNs":"llm-pi-ai","settingsPath":["providers",p.id],
-                        "accountScope":scope,"catalog":catalog.status_value()}));
+                        "accountScope":scope,"accounts":accounts,"accountCount":account_count,"catalog":catalog.status_value()}));
                 }
                 if let Some(cli) = cli {
                     values.push(cli.status().await);
@@ -935,6 +1051,21 @@ impl AccountAuth {
                 Ok(json!({"providers":values}))
             }
             "models" => self.model_view(&string(body, "provider")?).await,
+            "switch" => {
+                let id = string(body, "provider")?;
+                let scope = string(body, "accountScope")?;
+                let p = provider(&id)?;
+                let current = self.session(&id).await?;
+                let selected = self.saved_sessions(&id).await?.into_iter().find(|item| item.account_scope == scope && !item.invalid)
+                    .or_else(|| current.filter(|item| item.account_scope == scope && !item.invalid))
+                    .ok_or("未找到可切换的登录账号")?;
+                let _guard = self.refresh.lock().await;
+                self.credentials.set(&reference(&id), &serde_json::to_string(&selected).map_err(|e| e.to_string())?).await?;
+                self.repair_profile(p, &selected).await?;
+                if id == "openai-codex" { self.account_usage.disconnect().await; }
+                self.catalogs.unbind(&id);
+                Ok(json!({"status":"switched","provider":id,"accountScope":selected.account_scope,"accountId":selected.account_id,"expiresAt":selected.expires_at}))
+            }
             "refresh" => self.refresh_catalog(&string(body, "provider")?).await,
             "start" => self.start(&string(body, "provider")?).await,
             "connect" => {
@@ -1020,6 +1151,31 @@ impl AccountAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn codex_refresh_rejects_only_confirmed_revoked_grants_and_preserves_service_failures() {
+        assert!(codex_refresh_requires_login(
+            400,
+            &json!({"error":"invalid_grant"})
+        ));
+        assert!(codex_refresh_requires_login(
+            401,
+            &json!({"error":{"code":"refresh_token_reused"}})
+        ));
+        for status in [400, 401, 403, 429, 500, 503] {
+            assert!(!codex_refresh_requires_login(
+                status,
+                &json!({"error":"service_unavailable"})
+            ));
+        }
+        assert!(!codex_refresh_requires_login(
+            403,
+            &json!({"error":"invalid_grant"})
+        ));
+        assert!(!codex_refresh_requires_login(
+            400,
+            &json!({"error":"invalid_request"})
+        ));
+    }
     #[test]
     fn credentials_cannot_follow_a_profile_to_an_arbitrary_endpoint() {
         assert!(valid_profile(

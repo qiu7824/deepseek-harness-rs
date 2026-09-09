@@ -43,7 +43,7 @@ pub fn approval_request_id(id: impl Into<String>) -> ApprovalRequestId {
 }
 
 /// Closed approval outcomes: a one-shot grant, explicit rejection, withdrawn
-/// request, or unavailable answerer. Callers fail closed on `unavailable`.
+/// or expired request, or unavailable answerer. Non-grant outcomes fail closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ApprovalOutcome {
@@ -51,6 +51,7 @@ pub enum ApprovalOutcome {
     AllowedAlways,
     Rejected,
     Cancelled,
+    TimedOut,
     Unavailable,
 }
 
@@ -61,6 +62,7 @@ impl ApprovalOutcome {
             ApprovalOutcome::AllowedAlways => "allowed-always",
             ApprovalOutcome::Rejected => "rejected",
             ApprovalOutcome::Cancelled => "cancelled",
+            ApprovalOutcome::TimedOut => "timed-out",
             ApprovalOutcome::Unavailable => "unavailable",
         }
     }
@@ -72,6 +74,7 @@ impl ApprovalOutcome {
             "allowed-always" => Some(ApprovalOutcome::AllowedAlways),
             "rejected" => Some(ApprovalOutcome::Rejected),
             "cancelled" => Some(ApprovalOutcome::Cancelled),
+            "timed-out" => Some(ApprovalOutcome::TimedOut),
             "unavailable" => Some(ApprovalOutcome::Unavailable),
             _ => None,
         }
@@ -207,6 +210,99 @@ mod policy_tests {
         assert_eq!(
             ApprovalOutcome::from_str("allowed-always"),
             Some(ApprovalOutcome::AllowedAlways)
+        );
+        assert_eq!(ApprovalOutcome::TimedOut.as_str(), "timed-out");
+        assert_eq!(
+            ApprovalOutcome::from_str("timed-out"),
+            Some(ApprovalOutcome::TimedOut)
+        );
+        assert_eq!(
+            serde_json::to_string(&ApprovalOutcome::TimedOut).unwrap(),
+            "\"timed-out\""
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn deadline_keeps_its_outcome_and_closes_the_audit_pair() {
+        let ctx = Context::root();
+        let service = ApprovalService::install(&ctx, Config::default());
+        let listener: Arc<cordis::Listener> = Arc::new(|_, _| Box::pin(futures::future::pending()));
+        ctx.events.register(
+            &ctx,
+            "pending approval",
+            "approval/request",
+            listener,
+            &cordis::EventOptions::default(),
+        );
+        let owner = agent(&ctx, "approval-deadline").await;
+        let started = tokio::time::Instant::now();
+        let request = ApprovalRequest {
+            agent: owner.clone(),
+            tool_name: "approval-probe".into(),
+            call_id: Some("call-1".into()),
+            reason: None,
+            grant_key: Some("probe".into()),
+            rememberable: false,
+            signal: None,
+        };
+        assert_eq!(
+            service.request(&request).await.unwrap(),
+            ApprovalOutcome::TimedOut
+        );
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(started),
+            std::time::Duration::from_secs(30)
+        );
+        let traces = super::invariant::Traces::default();
+        let events = owner.session().events();
+        for event in events.iter() {
+            super::invariant::apply_turn(&traces, owner.id().as_str(), event);
+            super::invariant::validate_event(&traces, owner.id().as_str(), event).unwrap();
+        }
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.type_ == "approval/asked")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.type_ == "approval/decided")
+                .count(),
+            1
+        );
+        assert_eq!(events.last().unwrap().data["outcome"], "timed-out");
+        assert!(!service.grants.is_granted(owner.id().as_str(), "probe"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn explicit_unattended_policy_keeps_its_existing_timeout_behavior() {
+        let ctx = Context::root();
+        let service = ApprovalService::install(&ctx, Config::default());
+        service.set_runtime_options(30_000, super::UnattendedPolicy::AllowAll);
+        let listener: Arc<cordis::Listener> = Arc::new(|_, _| Box::pin(futures::future::pending()));
+        ctx.events.register(
+            &ctx,
+            "pending approval",
+            "approval/request",
+            listener,
+            &cordis::EventOptions::default(),
+        );
+        let owner = agent(&ctx, "approval-unattended").await;
+        let request = ApprovalRequest {
+            agent: owner,
+            tool_name: "approval-probe".into(),
+            call_id: Some("call-1".into()),
+            reason: None,
+            grant_key: None,
+            rememberable: false,
+            signal: None,
+        };
+        assert_eq!(
+            service.request(&request).await.unwrap(),
+            ApprovalOutcome::AllowedOnce
         );
     }
 
@@ -513,11 +609,11 @@ impl ApprovalService {
         );
     }
 
-    fn unattended_outcome(&self) -> ApprovalOutcome {
+    fn unattended_outcome(&self, failure: ApprovalOutcome) -> ApprovalOutcome {
         if self.unattended.load(std::sync::atomic::Ordering::Acquire) == 2 {
             ApprovalOutcome::AllowedOnce
         } else {
-            ApprovalOutcome::Rejected
+            failure
         }
     }
 
@@ -629,6 +725,7 @@ impl ApprovalService {
         let payload = arc(req.clone());
         let answer = async move {
             let dispatch = dispatch_ctx.waterfall("approval/request", vec![payload], fallback);
+            // Fail-closed fallback: Ok(ApprovalOutcome::Unavailable) | Err(_) => unattended.
             // Contain a throwing answerer (sync or async): the question fails
             // closed, never the caller's tool call.
             match futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(dispatch)).await {
@@ -642,10 +739,12 @@ impl ApprovalService {
             }
         };
         let timeout_ms = self.timeout_ms.load(std::sync::atomic::Ordering::Acquire);
-        let unattended = self.unattended_outcome();
+        let unavailable = self.unattended_outcome(ApprovalOutcome::Unavailable);
+        let timed_out = self.unattended_outcome(ApprovalOutcome::TimedOut);
         let timed_answer = async move {
             match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), answer).await {
-                Ok(ApprovalOutcome::Unavailable) | Err(_) => unattended,
+                Ok(ApprovalOutcome::Unavailable) => unavailable,
+                Err(_) => timed_out,
                 Ok(outcome) => outcome,
             }
         };

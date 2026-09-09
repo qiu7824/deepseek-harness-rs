@@ -166,8 +166,13 @@ pub trait ComputerUseAdapter: Send + Sync + 'static {
         false
     }
 
-    /// Remove persistent sessions whose backing process disappeared and
-    /// return owners that transitioned to idle.
+    /// Count the owning agent's running turn as activity for an existing,
+    /// ready connection. This must be local bookkeeping only: no launch,
+    /// transport heartbeat, or control-ownership changes.
+    fn mark_owner_active(&self, _owner_id: &str) {}
+
+    /// Remove persistent sessions whose backing process disappeared or idle
+    /// lifetime elapsed, and return owners that transitioned to idle.
     async fn reap_inactive(&self) -> Vec<String> {
         Vec::new()
     }

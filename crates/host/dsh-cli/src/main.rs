@@ -41,6 +41,34 @@ fn main() {
         eprintln!("dsh: cannot register embedded sandbox runner: {error}");
         std::process::exit(1);
     }
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("__dsh-sandbox-windows") {
+        match dsh_sandbox_local::run_windows_sandbox(std::env::args().skip(2)) {
+            Ok(exit_code) => std::process::exit(exit_code),
+            Err(error) => {
+                eprintln!("dsh-sandbox-windows: {error}");
+                std::process::exit(125);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        if std::env::args().nth(1).as_deref() == Some("__dsh-directory-picker") {
+            match dsh_host::run_windows_picker() {
+                Ok(Some(path)) => println!("{path}"),
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("dsh-directory-picker: {error}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        if let Err(error) = dsh_host::register_embedded_windows_picker() {
+            eprintln!("dsh: cannot register directory picker: {error}");
+            std::process::exit(1);
+        }
+    }
     let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
     #[cfg(windows)]
     runtime_builder.on_thread_park(dsh_host::collect_allocator_on_park);
@@ -70,19 +98,6 @@ async fn async_main() {
             std::process::exit(1);
         }
         return;
-    }
-    #[cfg(windows)]
-    if args
-        .first()
-        .is_some_and(|arg| arg == "__dsh-sandbox-windows")
-    {
-        match dsh_sandbox_local::run_windows_sandbox(args.into_iter().skip(1)) {
-            Ok(exit_code) => std::process::exit(exit_code),
-            Err(error) => {
-                eprintln!("dsh-sandbox-windows: {error}");
-                std::process::exit(125);
-            }
-        }
     }
     let version = env!("CARGO_PKG_VERSION");
     let invocation = match parse_dsh_args(&args, version) {

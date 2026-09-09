@@ -103,6 +103,31 @@ impl std::fmt::Display for ToolBodyError {
 
 impl std::error::Error for ToolBodyError {}
 
+/// A settled approval is never still waiting for the original question's answer.
+fn approval_failure(outcome: dsh_user_approval::ApprovalOutcome) -> Option<ToolBodyError> {
+    use dsh_user_approval::ApprovalOutcome;
+    let (code, message) = match outcome {
+        ApprovalOutcome::AllowedOnce | ApprovalOutcome::AllowedAlways => return None,
+        ApprovalOutcome::Rejected => (
+            "USER_APPROVAL_DENIED",
+            "Approval was denied. This request has ended and the tool did not run. Do not retry or bypass the denial with another tool; wait for the user to authorize a new attempt.",
+        ),
+        ApprovalOutcome::Cancelled => (
+            "USER_APPROVAL_CANCELLED",
+            "Approval was cancelled. This request has ended and the tool did not run. Its approval controls are no longer active. Wait for the user to resume before requesting approval again.",
+        ),
+        ApprovalOutcome::TimedOut => (
+            "USER_APPROVAL_TIMED_OUT",
+            "Approval timed out before a decision. This request has ended and the tool did not run. Its approval controls are no longer active; do not ask the user to approve the expired request. If the user confirms they want to retry, issue a new tool call to create a fresh approval request.",
+        ),
+        ApprovalOutcome::Unavailable => (
+            "USER_APPROVAL_UNAVAILABLE",
+            "No approval answerer was available. This request has ended and the tool did not run. Restore the approval interface before requesting approval again; do not treat the missing interface as permission or ask the user to approve a closed request.",
+        ),
+    };
+    Some(ToolBodyError::coded(message, "UserApprovalError", code))
+}
+
 /// The model requests a tool that isn't registered (or only reachable
 /// through the Code Mode transport); code `UNKNOWN_TOOL`.
 #[derive(Debug, Clone, PartialEq)]
@@ -948,24 +973,37 @@ impl ToolRuntime {
                 .await;
             let gate = downcast_arc::<PreToolDecision>(&gate)
                 .unwrap_or_else(|| panic!("tools/pre-execute listener returned no decision"));
-            let (decision, approval_cancelled, approval_declined) = match &*gate {
+            let (decision, approval_error) = match &*gate {
                 PreToolDecision::Ask {
                     reason,
                     grant_key,
                     rememberable,
                 } => {
-                    self.service_ask(&run_ctx, reason.clone(), grant_key.clone(), *rememberable)
+                    match self
+                        .service_ask(&run_ctx, reason.clone(), grant_key.clone(), *rememberable)
                         .await
+                    {
+                        Ok(()) => (PreToolDecision::Allow, None),
+                        Err(error) => (
+                            PreToolDecision::Deny {
+                                reason: error.message.clone(),
+                            },
+                            Some(error),
+                        ),
+                    }
                 }
-                PreToolDecision::Allow => (PreToolDecision::Allow, false, false),
+                PreToolDecision::Allow => (PreToolDecision::Allow, None),
                 PreToolDecision::Deny { reason } => (
                     PreToolDecision::Deny {
                         reason: reason.clone(),
                     },
-                    false,
-                    false,
+                    None,
                 ),
             };
+            let approval_cancelled = approval_error
+                .as_ref()
+                .and_then(|error| error.info.as_ref())
+                .is_some_and(|info| info.code == "USER_APPROVAL_CANCELLED");
             if self.caller_cancelled(&run_ctx) && approval_cancelled {
                 return Preparation::PostResult {
                     run_ctx: Arc::clone(&run_ctx),
@@ -985,16 +1023,11 @@ impl ToolRuntime {
                     is_error: true,
                     error: Some(ToolFailure {
                         message: reason,
-                        info: Some(ToolErrorInfo {
-                            name: "ToolPreflightError".to_string(),
-                            code: if approval_cancelled {
-                                "USER_APPROVAL_CANCELLED"
-                            } else if approval_declined {
-                                "USER_APPROVAL_DENIED"
-                            } else {
-                                "TOOL_PREFLIGHT_DENIED"
-                            }
-                            .to_string(),
+                        info: approval_error.and_then(|error| error.info).or_else(|| {
+                            Some(ToolErrorInfo {
+                                name: "ToolPreflightError".to_string(),
+                                code: "TOOL_PREFLIGHT_DENIED".to_string(),
+                            })
                         }),
                     }),
                     value: None,
@@ -1327,27 +1360,22 @@ impl ToolRuntime {
         reason: Option<String>,
         grant_key: Option<String>,
         rememberable: bool,
-    ) -> (PreToolDecision, bool, bool) {
+    ) -> Result<(), ToolBodyError> {
         let Some(agent) = run_ctx.agent.clone() else {
-            return (
-                PreToolDecision::Deny {
-                    reason: "approval requires an agent-owned tool call".to_string(),
-                },
-                false,
-                false,
-            );
+            return Err(ToolBodyError::coded(
+                "Approval requires an agent-owned tool call. The tool did not run and no approval request is pending.",
+                "UserApprovalError",
+                "USER_APPROVAL_UNAVAILABLE",
+            ));
         };
         let Some(approval) = self
             .ctx
             .get_typed::<Arc<dsh_user_approval::ApprovalService>>("approval", false)
             .map(|slot| slot.as_ref().clone())
         else {
-            return (
-                PreToolDecision::Deny {
-                    reason: "approval service is unavailable".to_string(),
-                },
-                false,
-                false,
+            return Err(
+                approval_failure(dsh_user_approval::ApprovalOutcome::Unavailable)
+                    .expect("unavailable denies"),
             );
         };
         let signal = run_ctx.signal.lock().clone();
@@ -1355,33 +1383,18 @@ impl ToolRuntime {
             agent,
             tool_name: run_ctx.name.clone(),
             call_id: Some(run_ctx.call_id.as_str().to_string()),
-            reason: reason.clone(),
+            reason,
             grant_key,
             rememberable,
             signal: Some(signal),
         };
-        match approval.request(&request).await {
-            Ok(
-                dsh_user_approval::ApprovalOutcome::AllowedOnce
-                | dsh_user_approval::ApprovalOutcome::AllowedAlways,
-            ) => (PreToolDecision::Allow, false, false),
-            Ok(dsh_user_approval::ApprovalOutcome::Cancelled) => (
-                PreToolDecision::Deny {
-                    reason: "approval request was cancelled".to_string(),
-                },
-                true,
-                false,
-            ),
-            Ok(outcome) => (
-                PreToolDecision::Deny {
-                    reason: reason.unwrap_or_else(|| {
-                        format!("approval request resolved {}", outcome.as_str())
-                    }),
-                },
-                false,
-                true,
-            ),
-            Err(error) => (PreToolDecision::Deny { reason: error }, false, false),
+        let outcome = approval.request(&request).await.map_err(|error| ToolBodyError::coded(
+            format!("Approval could not be requested; the tool did not run and no approval is pending: {error}"),
+            "UserApprovalError", "USER_APPROVAL_UNAVAILABLE",
+        ))?;
+        match approval_failure(outcome) {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 
@@ -1810,6 +1823,10 @@ pub(crate) struct ToolRuntimeSchedulerMarker;
 #[cfg(test)]
 #[path = "input_preflight_tests.rs"]
 mod input_preflight_tests;
+
+#[cfg(test)]
+#[path = "approval_tests.rs"]
+mod approval_tests;
 
 #[cfg(test)]
 mod execution_lifetime_tests {

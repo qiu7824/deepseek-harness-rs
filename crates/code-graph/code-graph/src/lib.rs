@@ -4,6 +4,7 @@
 //! dependency analysis, and cache invalidation stay in the Rust Host.
 
 pub mod background;
+pub mod agent_queries;
 pub mod graph;
 mod imports;
 pub mod index;

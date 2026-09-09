@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import pathlib
+import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -21,6 +24,83 @@ def load_tool(name: str):
 
 
 class ReleaseIntegrityTests(unittest.TestCase):
+    def web_fixture(self, root):
+        source = root / "web" / "dist"
+        (source / "plugins").mkdir(parents=True)
+        (source / "empty-directory").mkdir()
+        bundle = b"globalThis.releaseUi = 'current';"
+        (source / "plugins" / "ui-settings-general.js").write_bytes(bundle)
+        (source / "index.html").write_bytes(b"<html>current</html>")
+        (source / "plugins" / "manifest.json").write_text(json.dumps({"entries": [{
+            "url": "/plugins/ui-settings-general.js", "rev": hashlib.sha256(bundle).hexdigest()[:16],
+        }]}), encoding="utf-8")
+        staged = root / "target" / "release" / "web" / "dist"
+        shutil.copytree(source, staged)
+        return source, staged
+
+    def assert_rejected_without_packaging_side_effects(self, package, root, message):
+        suffix = "deepseek-harness-rs-v0.1.3-test-linux-x86_64-core"
+        previous = root / "dist" / suffix
+        previous.mkdir(parents=True, exist_ok=True)
+        marker = previous / "previous-package.txt"
+        marker.write_bytes(b"keep previous package")
+        archive = root / "dist" / f"{suffix}-portable.tar.gz"
+        archive.write_bytes(b"keep previous archive")
+        with mock.patch.object(package, "ROOT", root), mock.patch.object(package, "verify_release_version") as version_check, mock.patch.object(package.sys, "argv", [
+            "package_release.py", "--platform", "linux", "--arch", "x86_64", "--version", "0.1.3-test",
+        ]):
+            with self.assertRaisesRegex(ValueError, message) as failure:
+                package.main()
+            self.assertIn("stage_release_web.py", str(failure.exception))
+            version_check.assert_not_called()
+        self.assertEqual(marker.read_bytes(), b"keep previous package")
+        self.assertEqual(archive.read_bytes(), b"keep previous archive")
+
+    def test_packaging_accepts_identical_staged_files_directories_and_manifest(self):
+        package = load_tool("package_release")
+        with tempfile.TemporaryDirectory(dir=os.environ.get("DSH_TEST_TEMP_DIR")) as directory:
+            source, staged = self.web_fixture(pathlib.Path(directory))
+            package.verify_staged_web(source, staged)
+            self.assertEqual((source / "plugins/manifest.json").read_bytes(), (staged / "plugins/manifest.json").read_bytes())
+
+    def test_stale_web_is_rejected_before_replacing_existing_package_or_archive(self):
+        package = load_tool("package_release")
+        for change in ("missing", "extra", "changed", "manifest", "empty-directory", "missing-stage"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory(dir=os.environ.get("DSH_TEST_TEMP_DIR")) as directory:
+                root = pathlib.Path(directory)
+                _, staged = self.web_fixture(root)
+                if change == "missing":
+                    (staged / "index.html").unlink()
+                elif change == "extra":
+                    (staged / "old-plugin.js").write_bytes(b"obsolete")
+                elif change == "changed":
+                    (staged / "plugins/ui-settings-general.js").write_bytes(b"globalThis.releaseUi = 'old-ui!';")
+                elif change == "manifest":
+                    (staged / "plugins/manifest.json").write_bytes(b"{}")
+                elif change == "empty-directory":
+                    (staged / "empty-directory").rmdir()
+                else:
+                    shutil.rmtree(staged)
+                self.assert_rejected_without_packaging_side_effects(package, root, "staged web distribution")
+
+    def test_equal_web_trees_still_require_valid_manifest_revisions(self):
+        package = load_tool("package_release")
+        for change in ("stale-revision", "missing-manifest", "malformed-manifest"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory(dir=os.environ.get("DSH_TEST_TEMP_DIR")) as directory:
+                root = pathlib.Path(directory)
+                source, staged = self.web_fixture(root)
+                for distribution in (source, staged):
+                    manifest = distribution / "plugins/manifest.json"
+                    if change == "missing-manifest":
+                        manifest.unlink()
+                    elif change == "malformed-manifest":
+                        manifest.write_text("{broken", encoding="utf-8")
+                    else:
+                        value = json.loads(manifest.read_text(encoding="utf-8"))
+                        value["entries"][0]["rev"] = "0" * 16
+                        manifest.write_text(json.dumps(value), encoding="utf-8")
+                self.assert_rejected_without_packaging_side_effects(package, root, "invalid web manifest")
+
     def test_free_package_requires_recent_complete_inference_evidence(self):
         from datetime import datetime, timezone, timedelta
         package = load_tool("package_release")

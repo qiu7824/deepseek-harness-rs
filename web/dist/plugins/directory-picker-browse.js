@@ -279,7 +279,7 @@ window.__ModuleLoader__.load({
 		* @param props - owner-controlled browser props.
 		* @returns the dialog element (null while closed, via Modal).
 		*/
-		function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen, onClose, busy, t }) {
+		function DirectoryBrowser({ open, listDirectory, createDirectory, pickDirectory, onOpen, onClose, busy, t }) {
 			const [parent, setParent] = (0, react.useState)(null);
 			const [selected, setSelected] = (0, react.useState)(null);
 			const [child, setChild] = (0, react.useState)(null);
@@ -292,6 +292,8 @@ window.__ModuleLoader__.load({
 			const [folderDraft, setFolderDraft] = (0, react.useState)(null);
 			const [creatingFolder, setCreatingFolder] = (0, react.useState)(false);
 			const [createError, setCreateError] = (0, react.useState)(null);
+			const [nativeOpening, setNativeOpening] = (0, react.useState)(false);
+			const nativeAttempt = (0, react.useRef)(false);
 			const requestSeq = (0, react.useRef)(0);
 			const scanController = (0, react.useRef)(null);
 			const openGeneration = (0, react.useRef)(0);
@@ -667,7 +669,23 @@ window.__ModuleLoader__.load({
 					zone.focus();
 				}
 			});
-			if (!open) return null;
+			(0, react.useEffect)(() => {
+				if (!open) { nativeAttempt.current = false; return; }
+				let mode = "browse";
+				try { mode = localStorage.getItem("dsh.directory-picker-mode") || "browse"; } catch {}
+				if (mode !== "native" || typeof pickDirectory !== "function" || nativeAttempt.current) return;
+				nativeAttempt.current = true;
+				setNativeOpening(true);
+				pickDirectory().then((path) => {
+					if (path) onOpen(path);
+					else { nativeAttempt.current = false; onClose(); }
+				}, (reason) => {
+					nativeAttempt.current = false;
+					setError(failureText(reason));
+					onClose();
+				}).finally(() => setNativeOpening(false));
+			}, [open, pickDirectory, onOpen]);
+			if (!open || nativeOpening) return null;
 			const twoPane = selected !== null;
 			const parentInert = busy || folderDraft !== null;
 			const draftPending = pathDraft !== null;
@@ -830,7 +848,7 @@ window.__ModuleLoader__.load({
 										setFolderDraft("");
 										setCreateError(null);
 									},
-									children: t("browser.newFolder")
+								children: t("browser.newFolder")
 								}),
 								(0, react_jsx_runtime.jsxs)("button", {
 									type: "button",
@@ -955,6 +973,7 @@ window.__ModuleLoader__.load({
 				busy: props.busy,
 				listDirectory: props.listDirectory,
 				createDirectory: props.createDirectory,
+				pickDirectory: props.pickDirectory,
 				t: props.t,
 				onOpen: props.onPicked,
 				onClose: props.onCancel
@@ -968,6 +987,7 @@ window.__ModuleLoader__.load({
 		const inject = [
 			"slots",
 			"workspaces",
+			"connection",
 			"locale"
 		];
 		/**
@@ -990,6 +1010,7 @@ window.__ModuleLoader__.load({
 					"browser.cancel": "取消",
 					"browser.open": "打开",
 					"browser.editPath": "编辑路径",
+					"browser.systemPicker": "使用系统资源管理器选择",
 					"browser.loading": "加载中…",
 					"browser.truncated": "文件夹过多，仅显示开头部分。",
 					"browser.showHidden": "显示隐藏文件"
@@ -1004,6 +1025,7 @@ window.__ModuleLoader__.load({
 					"browser.cancel": "Cancel",
 					"browser.open": "Open",
 					"browser.editPath": "Edit path",
+					"browser.systemPicker": "Choose with File Explorer",
 					"browser.loading": "Loading…",
 					"browser.truncated": "Too many folders to list; only the beginning is shown.",
 					"browser.showHidden": "Show hidden files"
@@ -1021,6 +1043,7 @@ window.__ModuleLoader__.load({
 			const injected = () => ({
 				listDirectory: (path, signal) => ctx.workspaces.listDirectory(path, signal),
 				createDirectory: (path, name) => ctx.workspaces.createDirectory(path, name),
+				pickDirectory: () => ctx.connection.api.host.pickDirectory({}),
 				t: ctx.locale.bind(LOCALE_NS)
 			});
 			ctx.slots.inject("conversation.hero.workspace.directoryFlow", () => ctx.slots.inject("sidebar.workspaces.directoryFlow", function* () {

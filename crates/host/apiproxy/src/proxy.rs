@@ -1518,19 +1518,23 @@ impl ApiProxyService {
                 }),
             );
         };
-        let DirectoryPickerCapability::Native(native) = picker.capability() else {
-            let kind = picker.capability().kind();
-            return err(
-                request.rpc_id,
-                RpcError::DirectoryPickerUnavailable(RpcErrorBody {
-                    message: format!(
-                        "host.pickDirectory needs the native capability; the composed picker serves \"{kind}\""
-                    ),
-                    details: crate::api::rpc::CapabilityDetails {
-                        capability: kind.to_string(),
-                    },
-                }),
-            );
+        let native = match picker.capability() {
+            DirectoryPickerCapability::Native(native)
+            | DirectoryPickerCapability::Hybrid { native, .. } => native,
+            other => {
+                let kind = other.kind();
+                return err(
+                    request.rpc_id,
+                    RpcError::DirectoryPickerUnavailable(RpcErrorBody {
+                        message: format!(
+                            "host.pickDirectory needs the native capability; the composed picker serves \"{kind}\""
+                        ),
+                        details: crate::api::rpc::CapabilityDetails {
+                            capability: kind.to_string(),
+                        },
+                    }),
+                );
+            }
         };
         // The picker signal is the caller's connection lifetime.
         let picker_signal = PickerAbort::new();
@@ -1601,7 +1605,8 @@ impl ApiProxyService {
     fn browse_capability(&self) -> Option<DirectoryPickerBrowseCapability> {
         let picker = self.directory_picker()?;
         match picker.capability() {
-            DirectoryPickerCapability::Browse(browse) => Some(browse),
+            DirectoryPickerCapability::Browse(browse)
+            | DirectoryPickerCapability::Hybrid { browse, .. } => Some(browse),
             _ => None,
         }
     }
@@ -4280,19 +4285,19 @@ impl ApiProxyService {
         {
             Some(session) => {
                 live_session = Some(session.clone());
-                let selected = if let Some(after_seq) = request.payload.after_seq {
+                let selected = session.with_events(|events| if let Some(after_seq) = request.payload.after_seq {
                     Self::paginate_forward(
-                        session.events().as_slice(),
+                        events,
                         after_seq,
                         requested_messages,
                     )
                 } else {
                     Self::paginate(
-                        session.events().as_slice(),
+                        events,
                         request.payload.before_seq,
                         requested_messages,
                     )
-                };
+                });
                 match selected {
                     Ok(page) => page,
                     Err(required) => {

@@ -56,13 +56,14 @@ members = [
   "crates/host/apiproxy",
   "crates/host/dsh-cli",
   "crates/host/dsh-launcher",
+  "crates/host/dsh-desktop",
   "crates/host/dsh-skin-installer",
   # "crates/app/*",
   # "apps/*",
 ]
 
 [workspace.package]
-version = "0.1.3-alpha.9"
+version = "0.1.3-alpha.10"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/deepseek-ai/deepseek-harness"

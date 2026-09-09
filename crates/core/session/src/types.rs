@@ -125,7 +125,10 @@ session_position!(
 
 /// The on-disk session format version, stamped into every newly-written
 /// [`SessionHeader`] and enforced by every persistence backend on load.
-pub const SESSION_FORMAT_VERSION: u64 = 0;
+pub const SESSION_FORMAT_VERSION: u64 = 3;
+/// The Rust alpha.10 layout. It is accepted only by the explicit migration
+/// entry point; new logs are always stamped V3.
+pub const LEGACY_SESSION_FORMAT_VERSION: u64 = 0;
 
 /// Immutable validated storage metadata, kept outside the conversation
 /// event log.

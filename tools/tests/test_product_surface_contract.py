@@ -50,7 +50,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
         start = conversation.index("function ReasoningRow({ text, running, t })")
         end = conversation.index("//#endregion", start)
         reasoning_row = conversation[start:end]
-        self.assertIn("react.useState)(true)", reasoning_row)
+        self.assertIn("react.useState)(false)", reasoning_row)
         self.assertIn("open: expanded", reasoning_row)
         self.assertIn("expandable: true", reasoning_row)
         self.assertIn("setExpanded((value) => !value)", reasoning_row)

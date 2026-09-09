@@ -609,23 +609,62 @@ window.__ModuleLoader__.load({
     }
 
     function terminalKey(entry) { return `${entry.homeSessionId}:${entry.terminalId}`; }
+    const activeTerminals = new Map();
+    function rememberTerminal(sessionId, key) {
+      activeTerminals.delete(sessionId);
+      if (key) activeTerminals.set(sessionId, key);
+      while (activeTerminals.size > 64) activeTerminals.delete(activeTerminals.keys().next().value);
+    }
+
+    // Every chunk owns its destination. Tab changes cannot redirect queued keys.
+    function createTerminalInputQueue(send, onError) {
+      let items = [], buffered = 0, timer = 0, flight = null;
+      const flush = () => {
+        clearTimeout(timer); timer = 0;
+        if (flight) return flight;
+        flight = (async () => {
+          while (items.length) {
+            const item = items.shift();
+            try { await send(item.entry, item.text); }
+            catch (error) { items = []; buffered = 0; onError(error); break; }
+            buffered -= item.text.length;
+          }
+        })().finally(() => { flight = null; if (items.length) void flush(); });
+        return flight;
+      };
+      return {flush, enqueue(entry, text) {
+        if (!entry || !text) return;
+        if (buffered + text.length > 1024 * 1024) {
+          onError(new Error("终端输入积压，请等待已输入内容发送后再粘贴。")); return;
+        }
+        const owner = { homeSessionId: entry.homeSessionId, terminalId: entry.terminalId };
+        buffered += text.length;
+        for (let start = 0; start < text.length; start += 4096) items.push({entry: owner, text: text.slice(start, start + 4096)});
+        if (buffered >= 4096) void flush();
+        else if (!timer) timer = setTimeout(flush, 12);
+      }};
+    }
 
     function WorkbenchTerminal({ sessionId }) {
       useInstalledStyles();
       const [meta, setMeta] = React.useState(null);
       const [entries, setEntries] = React.useState([]);
       const [pins, savePins] = usePins();
-      const [active, setActive] = React.useState("");
+      const [active, setActive] = React.useState(() => activeTerminals.get(sessionId) || "");
       const [text, setText] = React.useState("");
       const [error, setError] = React.useState("");
       const [size, setSize] = React.useState({ rows: 30, cols: 120 });
       const [busy, setBusy] = React.useState("");
       const terminalRef = React.useRef(null);
-      const inputQueue = React.useRef(Promise.resolve());
-      const inputBuffer = React.useRef("");
-      const inputTimer = React.useRef(0);
+      const inputQueue = React.useRef(null);
+      const mounted = React.useRef(false);
       const selectedRef = React.useRef(null);
       const ownerSession = React.useRef(sessionId);
+      if (!inputQueue.current) inputQueue.current = createTerminalInputQueue(
+        (entry, text) => post("/__dsh-preview/terminal-action", {sessionId:entry.homeSessionId, terminalId:entry.terminalId, action:"input", text}),
+        failure => { if (mounted.current) setError(failure.message); }
+      );
+      React.useEffect(() => { mounted.current = true; return () => { mounted.current = false; void inputQueue.current.flush(); }; }, []);
       const refreshSequence = React.useRef(0);
       if (ownerSession.current !== sessionId) {
         ownerSession.current = sessionId;
@@ -657,12 +696,12 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         const owner = sessionId;
-        setMeta(null); setEntries([]); setActive(""); setText(""); setError("");
+        setMeta(null); setEntries([]); setActive(activeTerminals.get(sessionId) || ""); setText(""); setError("");
         refresh().catch(failure => { if (ownerSession.current === owner) setError(failure.message); });
         return () => { refreshSequence.current += 1; };
       }, [sessionId]);
-      React.useEffect(() => { if (selected && active !== terminalKey(selected)) setActive(terminalKey(selected)); }, [selected && terminalKey(selected)]);
-      React.useEffect(() => () => { clearTimeout(inputTimer.current); inputBuffer.current = ""; }, [selected && terminalKey(selected)]);
+      React.useEffect(() => { if (selected) { const key = terminalKey(selected); rememberTerminal(sessionId, key); if (active !== key) setActive(key); } }, [sessionId, selected && terminalKey(selected)]);
+      React.useEffect(() => () => { void inputQueue.current.flush(); }, [sessionId, selected && terminalKey(selected)]);
 
       React.useEffect(() => {
         if (!selected) { setText(""); return; }
@@ -710,33 +749,16 @@ window.__ModuleLoader__.load({
         if (!entry || !window.confirm(`关闭 ${entry.name} 并终止其 PTY 进程？`)) return;
         const owner = sessionId;
         try {
-          setBusy("close"); await terminalAction(entry, "close");
+          setBusy("close"); await inputQueue.current.flush(); await terminalAction(entry, "close");
           if (ownerSession.current !== owner) return;
           savePins(pins.filter(pin => terminalKey(pin) !== terminalKey(entry)));
           if (entry.homeSessionId === sessionId) await refresh();
           if (ownerSession.current !== owner) return;
-          setActive(""); setText("");
+          rememberTerminal(sessionId, ""); setActive(""); setText("");
         } catch (failure) { if (ownerSession.current === owner) setError(failure.message); }
         finally { if (ownerSession.current === owner) setBusy(""); }
       };
-      const flushInput = () => {
-        clearTimeout(inputTimer.current); inputTimer.current = 0;
-        const entry = selectedRef.current;
-        const data = inputBuffer.current.slice(0, 4096);
-        inputBuffer.current = inputBuffer.current.slice(data.length);
-        if (!entry || !data) return;
-        inputQueue.current = inputQueue.current
-          .catch(() => {})
-          .then(() => terminalAction(entry, "input", { text: data }))
-          .catch(failure => { if (ownerSession.current === sessionId) setError(failure.message); });
-        if (inputBuffer.current) inputTimer.current = setTimeout(flushInput, 12);
-      };
-      const sendInput = data => {
-        if (!selectedRef.current || !data) return;
-        inputBuffer.current += data;
-        if (inputBuffer.current.length >= 4096) flushInput();
-        else if (!inputTimer.current) inputTimer.current = setTimeout(flushInput, 12);
-      };
+      const sendInput = data => inputQueue.current.enqueue(selectedRef.current, data);
       const setPin = scope => {
         if (!selected || !meta) return;
         const without = pins.filter(pin => terminalKey(pin) !== terminalKey(selected));
@@ -768,6 +790,7 @@ window.__ModuleLoader__.load({
     exports.AnsiTerminalModel = AnsiTerminalModel;
     exports.safePins = safePins;
     exports.PIN_KEY = PIN_KEY;
+    exports.createTerminalInputQueue = createTerminalInputQueue;
     return module.exports;
   },
 });

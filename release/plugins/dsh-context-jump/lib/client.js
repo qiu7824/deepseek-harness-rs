@@ -176,7 +176,12 @@ window.__ModuleLoader__.load({
 		* arrives through the props shares (the framework session hooks and the
 		* locale seat); the component touches no ctx.
 		*/
-		function UserRail({ useSession, t, railFace, ensureTarget }) {
+		function UserRail({ useSession, t, railFace, ensureTarget, navigationOwner }) {
+			const activationGeneration = (0, react.useRef)(0);
+			(0, react.useLayoutEffect)(() => {
+				activationGeneration.current++;
+				return () => { activationGeneration.current++; };
+			}, [navigationOwner]);
 			const order = useSession((s) => s.chat.order);
 			const nodes = useSession((s) => s.chat.nodes);
 			const indexed = (0, react.useSyncExternalStore)(
@@ -333,6 +338,7 @@ window.__ModuleLoader__.load({
 			]);
 			/** Scroll the conversation to center the activated message. */
 			const activate = (0, react.useCallback)(async (index) => {
+				const generation = ++activationGeneration.current;
 				const entry = entriesRef.current[index];
 				if (entry === void 0) return;
 				setTargetError(null);
@@ -340,14 +346,17 @@ window.__ModuleLoader__.load({
 				if (current === null || !current.port.isConnected || !current.flow.isConnected) return;
 				let targetKey = entry.key;
 				let row = findRow(current.flow, targetKey);
-				if (row === null && Number.isSafeInteger(entry.seq)) {
-					targetKey = await ensureTarget(entry.seq, entry.key);
+				if (Number.isSafeInteger(entry.seq)) {
+					try { targetKey = await ensureTarget(entry.seq, entry.key); }
+					catch { if (generation === activationGeneration.current) setTargetError(t("rail.targetError")); return; }
+					if (generation !== activationGeneration.current) return;
 					if (targetKey === null) {
 						setTargetError(t("rail.targetError"));
 						return;
 					}
 					for (let frame = 0; frame < 12; frame++) {
 						await new Promise((resolve) => requestAnimationFrame(resolve));
+						if (generation !== activationGeneration.current) return;
 						current = conversationBox();
 						if (current === null) continue;
 						boxRef.current = current;
@@ -500,11 +509,15 @@ window.__ModuleLoader__.load({
 					};
 					return {
 						railFace,
+						navigationOwner: sessionId,
 						ensureTarget: async (seq, key) => {
 							const session = currentSession();
 							if (session === void 0) return null;
 							const existing = nodeKeyAt(session, seq, key);
-							if (existing !== null) return existing;
+							if (existing !== null) {
+								const selected = await session.loadAround(seq, false);
+								return selected ? nodeKeyAt(session, seq, key) : null;
+							}
 							const loaded = await session.loadAround(seq, true);
 							await new Promise((resolve) => setTimeout(resolve, 0));
 							const found = loaded ? nodeKeyAt(session, seq, key) : null;

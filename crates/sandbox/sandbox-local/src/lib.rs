@@ -58,17 +58,37 @@ pub struct Config {
 
 pub struct LocalSandboxProvider {
     platform: String,
+    runtime_roots: Vec<std::path::PathBuf>,
+    runtime_cache: Option<std::path::PathBuf>,
 }
 
 impl LocalSandboxProvider {
     pub fn new(config: Config) -> Arc<Self> {
         Arc::new(Self {
             platform: config.platform.unwrap_or_else(host_platform),
+            runtime_roots: Vec::new(),
+            runtime_cache: None,
         })
     }
 
     pub fn install(ctx: &Context, config: Config) -> Arc<Self> {
         let provider = Self::new(config);
+        let erased: Arc<dyn SandboxProvider> = provider.clone();
+        ctx.register_service(erased);
+        provider
+    }
+
+    pub fn install_with_runtimes(
+        ctx: &Context,
+        config: Config,
+        roots: Vec<std::path::PathBuf>,
+        cache: std::path::PathBuf,
+    ) -> Arc<Self> {
+        let provider = Arc::new(Self {
+            platform: config.platform.unwrap_or_else(host_platform),
+            runtime_roots: roots,
+            runtime_cache: Some(cache),
+        });
         let erased: Arc<dyn SandboxProvider> = provider.clone();
         ctx.register_service(erased);
         provider
@@ -93,7 +113,7 @@ impl LocalSandboxProvider {
         self.confine(
             argv,
             &SandboxPolicy {
-                read_only_roots: Vec::new(),
+                read_only_roots: policy.read_only_roots.clone(),
                 mode,
                 workspace_root: policy.workspace_root.clone(),
                 session_id: policy.session_id.clone(),
@@ -143,6 +163,17 @@ impl SandboxProvider for LocalSandboxProvider {
             ),
             _ => return Err(SandboxUnavailableError::new(policy.mode, None)),
         };
+        if self.platform == "win32" && !self.runtime_roots.is_empty() {
+            if let Some(cache) = &self.runtime_cache {
+                wrapped.extend([
+                    "--runtime-cache".into(),
+                    cache.to_string_lossy().into_owned(),
+                ]);
+                for root in &self.runtime_roots {
+                    wrapped.extend(["--runtime-root".into(), root.to_string_lossy().into_owned()]);
+                }
+            }
+        }
         wrapped.push("--".to_string());
         wrapped.extend_from_slice(argv);
         Ok(ConfinedArgv {

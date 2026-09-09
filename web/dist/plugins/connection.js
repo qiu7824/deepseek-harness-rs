@@ -5498,6 +5498,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					literal("allowed-always"),
 					literal("rejected"),
 					literal("cancelled"),
+					literal("timed-out"),
 					literal("unavailable")
 				])
 			}),

@@ -14,7 +14,7 @@ use serde_json::Value as JsonValue;
 use crate::types::{SessionEvent, SurfaceOp};
 
 /// Runtime counterpart of the message-producing event union.
-pub const SURFACE_EVENT_TYPES: [&str; 3] = ["user/message", "assistant/message", "tool/result"];
+pub const SURFACE_EVENT_TYPES: [&str; 4] = ["system/message", "user/message", "assistant/message", "tool/result"];
 
 /// Whether an event type can join the model-visible surface.
 pub fn is_surface_eligible_type(type_: &str) -> bool {
@@ -45,6 +45,7 @@ pub fn is_replacement_surface_event(event: &SessionEvent) -> bool {
 /// when it produces none (TS `deriveEventMessage`).
 pub fn derive_event_message(event: &SessionEvent) -> Option<Message> {
     match event.type_.as_str() {
+        "system/message" => serde_json::from_value::<Message>(event.data.get("message")?.clone()).ok(),
         "user/message" => serde_json::from_value::<Message>(event.data.clone()).ok(),
         "assistant/message" => {
             let message: Message =

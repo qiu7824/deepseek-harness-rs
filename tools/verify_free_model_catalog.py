@@ -15,6 +15,7 @@ import time
 import urllib.error
 from pathlib import Path
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -150,10 +151,11 @@ def fetch_model_ids(url: str, timeout: float = 20.0) -> set[str]:
     return ids
 
 
-def streamed_completion(endpoint: str, body: dict, timeout: float) -> dict:
+def streamed_completion(endpoint: str, body: dict, timeout: float, session: str | None = None) -> dict:
     request = urllib.request.Request(endpoint, data=json.dumps(body).encode("utf-8"), headers={
         "Accept": "text/event-stream", "Content-Type": "application/json",
         "User-Agent": "deepseek-harness-rs-release-verifier",
+        "x-opencode-session": session or "dsh-verifier-" + uuid.uuid4().hex,
     })
     with open_with_retry(request, timeout=timeout) as response:
         message = {"role": "assistant", "content": ""}
@@ -204,6 +206,7 @@ def inference_probe(model_id: str, url: str, timeout: float = 90.0, api: str = "
     if api == "openai-responses":
         return responses_probe(model_id, url, timeout)
     endpoint = url.rsplit("/", 1)[0] + "/chat/completions"
+    session = "dsh-verifier-" + uuid.uuid4().hex
     body = {
         "model": model_id,
         "messages": [{"role": "user", "content": "Call the connectivity_check tool with status set to ok."}],
@@ -214,7 +217,7 @@ def inference_probe(model_id: str, url: str, timeout: float = 90.0, api: str = "
         "tool_choice": "auto", "max_tokens": 1024, "stream": True,
     }
     started = time.monotonic()
-    message = streamed_completion(endpoint, body, timeout)
+    message = streamed_completion(endpoint, body, timeout, session)
     calls = message.get("tool_calls") or []
     if not any(call.get("function", {}).get("name") == "connectivity_check" and
                json.loads(call["function"].get("arguments", "{}")) == {"status": "ok"}
@@ -224,7 +227,7 @@ def inference_probe(model_id: str, url: str, timeout: float = 90.0, api: str = "
     body["messages"].append({"role": "user", "content": "Reply with the single word OK."})
     body.pop("tools")
     body.pop("tool_choice")
-    content = streamed_completion(endpoint, body, timeout).get("content")
+    content = streamed_completion(endpoint, body, timeout, session).get("content")
     if not isinstance(content, str) or not content.strip() or "OK" not in content.upper():
         raise ValueError("free model did not complete the tool-result conversation")
     return {"inference": True, "streaming": True, "toolCall": True, "toolResult": True, "anonymous": True,
@@ -242,9 +245,10 @@ def verify(model_id: str, url: str = DEFAULT_CATALOG_URL) -> dict:
             "verifiedAt": datetime.now(timezone.utc).isoformat(), **pricing, **inference_probe(model_id, url, api=pricing["api"])}
 
 
-def responses_completion(endpoint: str, body: dict, timeout: float) -> dict:
+def responses_completion(endpoint: str, body: dict, timeout: float, session: str | None = None) -> dict:
     request = urllib.request.Request(endpoint, data=json.dumps(body).encode("utf-8"), headers={
-        "Accept": "text/event-stream", "Content-Type": "application/json", "User-Agent": "deepseek-harness-rs-release-verifier"})
+        "Accept": "text/event-stream", "Content-Type": "application/json", "User-Agent": "deepseek-harness-rs-release-verifier",
+        "x-opencode-session": session or "dsh-verifier-" + uuid.uuid4().hex})
     text, calls, finished, received = "", {}, False, 0
     with open_with_retry(request, timeout) as response:
         for raw in response:
@@ -284,20 +288,21 @@ def responses_completion(endpoint: str, body: dict, timeout: float) -> dict:
 
 
 def responses_probe(model_id: str, url: str, timeout: float) -> dict:
+    session = "dsh-verifier-" + uuid.uuid4().hex
     endpoint = url.rsplit("/", 1)[0] + "/responses"
     body = {"model": model_id, "instructions": "Follow the user's connectivity check exactly.",
             "input": [{"role": "user", "content": "Call connectivity_check with status set to ok."}],
             "tools": [{"type": "function", "name": "connectivity_check", "description": "Confirm connection", "parameters": {"type": "object", "properties": {"status": {"type": "string", "enum": ["ok"]}}, "required": ["status"]}}],
             "stream": True, "max_output_tokens": 1024}
     started = time.monotonic()
-    first = responses_completion(endpoint, body, timeout)
+    first = responses_completion(endpoint, body, timeout, session)
     calls = first["calls"]
     if not calls or any(call["name"] != "connectivity_check" or json.loads(call["arguments"]) != {"status": "ok"} for call in calls):
         raise ValueError("free Responses model did not return the requested tool call")
     body["input"] += calls + [{"type": "function_call_output", "call_id": call["call_id"], "output": "ok"} for call in calls]
     body["input"].append({"role": "user", "content": "Reply with the single word OK."})
     body.pop("tools")
-    if "OK" not in responses_completion(endpoint, body, timeout)["text"].upper():
+    if "OK" not in responses_completion(endpoint, body, timeout, session)["text"].upper():
         raise ValueError("free Responses tool-result conversation did not complete")
     return {"inference": True, "streaming": True, "toolCall": True, "toolResult": True, "anonymous": True,
             "latencyMs": round((time.monotonic() - started) * 1000)}

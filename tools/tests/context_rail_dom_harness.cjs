@@ -19,10 +19,10 @@ window.__ModuleLoader__ = { load: definition => { exported = definition.factory(
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../release/plugins/dsh-context-jump/lib/client.js'), 'utf8'), context);
 const listeners = new Set(), snapshotListeners = new Set();
 let index = Array.from({ length: 120 }, (_, seq) => ({ key: `user:${seq}`, seq, text: `Message ${seq}`, images: 0 }));
-const state = { chat: { order: [], nodes: new Map() } }, loaded = [];
+const state = { chat: { order: [], nodes: new Map() } }, loaded = [], navigationCalls = [];
 const session = { projections: { faceOf: () => ({ getSnapshot: () => index, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } }) },
   subscribe: fn => { snapshotListeners.add(fn); return () => snapshotListeners.delete(fn); }, getSnapshot: () => state,
-  loadAround: async seq => { loaded.push(seq); state.chat.order = [`user:${seq}`]; state.chat.nodes = new Map([[`user:${seq}`, { kind: 'user', anchorSeq: seq }]]); const row = document.createElement('div'); row.dataset.chatAnchorKey = `user:${seq}`; document.querySelector('[data-chat-flow]').append(row); return true; } };
+  loadAround: async (seq, force) => { navigationCalls.push({seq,force});if(!force&&state.chat.nodes.has(`user:${seq}`))return true;loaded.push(seq); state.chat.order = [`user:${seq}`]; state.chat.nodes = new Map([[`user:${seq}`, { kind: 'user', anchorSeq: seq }]]); const row = document.createElement('div'); row.dataset.chatAnchorKey = `user:${seq}`; document.querySelector('[data-chat-flow]').append(row); return true; } };
 exported.apply({ effect: fn => fn(), locale: { register: () => () => {} }, sessions: { binding: () => ({ session }) },
   slots: { inject: (_name, fn) => fn(), register: (definition, component) => { Component = component; inject = definition.inject; } } });
 const root = Client.createRoot(document.getElementById('root'));
@@ -42,6 +42,26 @@ function assertBodyBounds() { const rail=document.querySelector('._6bmela_layer'
   const first = document.querySelector('._6bmela_tick');
   await act(() => first.click());
   assert.equal(loaded.length, 1, 'an evicted target loads only its containing history page');
+  await act(() => first.click());
+  assert.equal(loaded.length,1,'an existing target keeps the current bounded window');
+  assert.deepEqual(navigationCalls.map(call=>call.force),[true,false],'an existing target still enters the navigation transaction to cancel old pagination');
+  const port=document.querySelector('[data-conversation-scroll]');let navigationTop=0;
+  Object.defineProperties(port,{scrollHeight:{get:()=>2000},scrollTop:{get:()=>navigationTop,set:value=>{navigationTop=value}}});
+  const flow=port.querySelector('[data-chat-flow]');flow.innerHTML='';
+  for(const [seq,offset]of[[5,100],[6,900]]){const row=document.createElement('div');row.dataset.chatAnchorKey=`user:${seq}`;row.getBoundingClientRect=()=>({top:bodyTop+offset-navigationTop,bottom:bodyTop+offset-navigationTop+20,height:20,left:100,right:700,width:600});flow.append(row)}
+  await act(()=>{index=[5,6].map(seq=>({key:`user:${seq}`,seq,text:`message ${seq}`,images:0}));listeners.forEach(fn=>fn())});
+  for(const staleResult of ['user:5',null]){
+    let finishOld;
+    const pendingOld=new Promise(resolve=>{finishOld=resolve});
+    await act(()=>root.render(React.createElement(Component,{...props,ensureTarget:seq=>seq===5?pendingOld:Promise.resolve('user:6')})));
+    const ticks=[...document.querySelectorAll('._6bmela_tick')];
+    await act(()=>ticks[0].click());await act(()=>ticks[1].click());
+    assert.equal(navigationTop,660,'the latest navigation reaches its selected row');
+    await act(()=>finishOld(staleResult));
+    assert.equal(navigationTop,660,'a stale target resolution cannot scroll over a newer jump');
+    assert.equal(document.querySelector('[role=alert]'),null,'a stale failed jump cannot replace the latest navigation status');
+  }
+  await act(()=>root.render(React.createElement(Component,props)));
   await act(() => { index = [{ key: 'user:0', seq: 0, text: 'retained', images: 0 }]; listeners.forEach(fn => fn()); });
   assert.equal(document.querySelectorAll('._6bmela_tick').length, 1, 'shrinking projection never leaves the rail window empty');
   await act(() => document.querySelector('[data-conversation-scroll]').remove());

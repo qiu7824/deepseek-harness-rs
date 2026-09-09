@@ -289,10 +289,9 @@ class ReleaseProductContractTests(unittest.TestCase):
             "hasMoreAfter",
         ):
             self.assertIn(marker, conversation)
+        # Scroll behavior is covered by chat_scroll_dom_harness.cjs. A fixed
+        # sampling interval or retired ref name is not a product requirement.
         for marker in (
-            "const SCROLL_SAMPLE_INTERVAL_MS = 500",
-            "scrollSamplePendingRef",
-            'addEventListener("scrollend"',
             "const ChatNodeList = (0, react.memo)",
             '(0, react_jsx_runtime.jsx)(ChatNodeList, {',
             "contain:size layout",

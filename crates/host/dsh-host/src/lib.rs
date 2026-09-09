@@ -8,6 +8,9 @@
 //! service, the SPA dist server (fallback seat), the directory-picker seam
 //! (browse backend), the plugin inventory, and the apiproxy gateway.
 
+#[cfg(windows)]
+pub use dsh_host_directory_picker_native::{register_embedded_windows_picker, run_windows_picker};
+
 use std::sync::Arc;
 
 use futures::FutureExt;
@@ -33,10 +36,13 @@ mod provider_auth;
 mod provider_auth_catalog;
 mod provider_compatibility;
 pub mod runtime_paths;
+mod code_intelligence;
 mod sidebar_settings;
 #[cfg(test)]
 mod ultra_control_tests;
+mod uu_cli;
 mod uu_devices;
+mod uu_terminal;
 mod web_preview;
 mod workspace_copy;
 mod workspace_resources;
@@ -1991,12 +1997,17 @@ fn compose_host_in_fiber(
     let subprocess = LocalSubprocessRuntime::install(ctx);
     let node_command = runtime_paths.node_command();
     let node_path = std::path::Path::new(&node_command);
+    let python_command = runtime_paths.python_command();
+    let mut path_prefixes=Vec::new();
     if node_path.is_absolute() && node_path.is_file() {
         if let Some(directory) = node_path.parent() {
-            subprocess.set_path_prefixes(vec![directory.to_path_buf()]);
+            path_prefixes.push(directory.to_path_buf());
         }
     }
-    let sandbox = LocalSandboxProvider::install(ctx, Default::default());
+    let runtime_roots=python_command.as_ref().and_then(|path|path.parent()).map(|path|path.to_path_buf()).into_iter().collect::<Vec<_>>();
+    path_prefixes.extend(runtime_roots.iter().cloned());
+    subprocess.set_path_prefixes(path_prefixes);
+    let sandbox = LocalSandboxProvider::install_with_runtimes(ctx, Default::default(),runtime_roots,runtime_paths.paths["cacheDirectory"].join("runtime-read-permissions"));
     let _sandbox_policy = SandboxPolicyService::install(
         ctx,
         dsh_sandbox_policy::Config {
@@ -2512,15 +2523,29 @@ fn compose_host_in_fiber(
             }
             None => choice_schema,
         };
+        let mut fields = indexmap::IndexMap::from([(field.to_string(), choice_schema)]);
+        if namespace == "ui-conversation" {
+            fields.insert(
+                "hintDisplay".to_string(),
+                dsh_schemastery::Schema::union(
+                    ["text", "icons"]
+                        .into_iter()
+                        .map(|choice| {
+                            dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                                choice.to_string(),
+                            ))
+                        })
+                        .collect(),
+                )
+                .default(dsh_schemastery::Data::String("text".to_string())),
+            );
+        }
         settings
             .register(
                 ctx,
                 dsh_settings::settings_namespace(namespace)
                     .map_err(|error| format!("settings namespace: {error}"))?,
-                dsh_schemastery::Schema::object(indexmap::IndexMap::from([(
-                    field.to_string(),
-                    choice_schema,
-                )])),
+                dsh_schemastery::Schema::object(fields),
                 dsh_settings::SettingsRegisterOptions::default(),
             )
             .map_err(|error| format!("settings {namespace}: {error}"))?;
@@ -3841,7 +3866,8 @@ fn compose_host_in_fiber(
         Vec::new()
     };
     let provider_auth_route = account_auth.register(&web_server);
-    uu_devices::register(ctx, &web_server, settings.clone())?;
+    let uu_bridge = uu_devices::register(ctx, &web_server, settings.clone())?;
+    uu_terminal::install(ctx, uu_bridge)?;
     account_auth.register_usage_tool(ctx)?;
     let free_catalog_route = free_catalog::register(
         &web_server,
@@ -3850,6 +3876,8 @@ fn compose_host_in_fiber(
         settings.clone(),
         variant == "free" || variant == "development",
     )?;
+    let code_index = dsh_code_graph::BackgroundIndex::new();
+    code_intelligence::install(ctx, tools.clone(), code_index.clone())?;
     let web_preview_route = web_preview::register(
         &web_server,
         workspace_registry.clone(),
@@ -3858,6 +3886,7 @@ fn compose_host_in_fiber(
         jobs.clone(),
         subprocess.clone(),
         sandbox.clone(),
+        code_index,
         bind_host == BindHost::AllInterfaces,
     );
     let boot_profile = profile.map(|profile| data_root.join("profiles").join(profile));
@@ -3873,8 +3902,29 @@ fn compose_host_in_fiber(
         );
         html.replacen("</head>", &format!("{boot_script}</head>"), 1)
     }));
-    // The directory-picker seam serves the browse interaction.
-    BrowseDirectoryPicker::install(ctx, PickerConfig::default());
+    // Local desktop users keep the OS chooser; remote and headless users use
+    // the browser chooser so a dialog is never stranded on another display.
+    let picker_facts = dsh_host_directory_picker_auto::DirectoryPickerHostFacts {
+        bind_host: if bind_host == BindHost::Loopback {
+            dsh_host_directory_picker_auto::BindHost::Loopback
+        } else {
+            dsh_host_directory_picker_auto::BindHost::AllInterfaces
+        },
+        platform: if cfg!(windows) { "win32" } else if cfg!(target_os = "macos") { "darwin" } else { std::env::consts::OS }.into(),
+        env: ["SSH_CONNECTION", "SSH_TTY", "DISPLAY", "WAYLAND_DISPLAY"].into_iter()
+            .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_owned(),value))).collect(),
+        linux_chooser: cfg!(target_os = "linux") && dsh_host_directory_picker_auto::has_linux_chooser_binary(
+            std::env::var("PATH").ok().as_deref(),
+            &dsh_host_directory_picker_auto::can_execute,
+        ),
+    };
+    if dsh_host_directory_picker_auto::resolve_directory_picker_backend(&picker_facts)
+        == dsh_host_directory_picker_auto::DirectoryPickerBackendKind::Native
+    {
+        dsh_host_directory_picker_native::NativeDirectoryPicker::install(ctx);
+    } else {
+        BrowseDirectoryPicker::install(ctx, PickerConfig::default());
+    }
     // Ensure the inventory service exists even when no profile entry mounted it.
     if ctx.get("pluginInventory", false).is_none() {
         let _ = PluginInventoryGateway::install(ctx);

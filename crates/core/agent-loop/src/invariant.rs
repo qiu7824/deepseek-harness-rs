@@ -94,7 +94,7 @@ pub fn installer() -> InvariantInstaller {
                                     ));
                                 }
                                 let header_matches = options.model == header.config.model
-                                    && options.system == header.system
+                                    && options.system.is_none()
                                     && options.temperature == header.config.temperature
                                     && options.max_tokens == header.config.max_tokens
                                     && serde_json::to_value(&options.stop).expect("stop")

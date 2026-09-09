@@ -25,5 +25,6 @@ tokio-tungstenite = "0.29"
 uuid = { workspace = true }
 
 [dev-dependencies]
+dsh-scope = { path = "../../core/scope" }
 dsh-system-prompt = { path = "../../core/system-prompt" }
 tokio = { workspace = true }

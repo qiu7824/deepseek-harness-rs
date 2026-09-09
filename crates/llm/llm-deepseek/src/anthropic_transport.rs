@@ -29,7 +29,7 @@ pub(crate) async fn request(
     let body = anthropic::request_from_chat(&chat)?;
     let encoded = serde_json::to_vec(&body)
         .map_err(|_| failure("Anthropic request encode failed", "INVALID_REQUEST"))?;
-    let mut headers = request_headers(connection);
+    let mut headers = request_headers(connection, options.session_id.as_deref());
     headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
     let official = reqwest::Url::parse(&connection.base_url)
         .ok()
@@ -86,7 +86,8 @@ pub(crate) async fn request(
                 "RESPONSE_TOO_LARGE",
             ));
         }
-        for payload in parser.push(&bytes)? {
+        for payload in parser.push(&bytes) {
+            let payload = payload?;
             let chunks = translator.consume(&payload)?;
             chunks_read = chunks_read.saturating_add(chunks.len());
             if chunks_read > MAX_SUCCESS_STREAM_CHUNKS {
@@ -106,12 +107,24 @@ pub(crate) async fn request(
             }
         }
     }
-    for payload in parser.finish_at_eof()? {
-        for chunk in translator.consume(&payload)? {
+    for payload in parser.finish_at_eof() {
+        let payload = payload?;
+        let chunks = translator.consume(&payload)?;
+        chunks_read = chunks_read.saturating_add(chunks.len());
+        if chunks_read > MAX_SUCCESS_STREAM_CHUNKS {
+            return Err(failure(
+                "Anthropic response emitted too many chunks",
+                "RESPONSE_TOO_LARGE",
+            ));
+        }
+        for chunk in chunks {
             sender
                 .send(chunk)
                 .await
                 .map_err(|_| failure("Anthropic consumer closed", "CANCELLED"))?;
+        }
+        if translator.is_finished() {
+            return Ok(());
         }
     }
     translator.finish()

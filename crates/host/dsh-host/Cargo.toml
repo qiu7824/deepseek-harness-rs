@@ -61,6 +61,8 @@ dsh-tool-fs = { path = "../../fs/tool-fs" }
 dsh-tool-fs-search = { path = "../../fs/tool-fs-search" }
 dsh-host-apiproxy = { path = "../apiproxy" }
 dsh-host-directory-picker-browse = { path = "../directory-picker-browse" }
+dsh-host-directory-picker-auto = { path = "../directory-picker-auto" }
+dsh-host-directory-picker-native = { path = "../directory-picker-native" }
 dsh-host-frontend-static = { path = "../frontend-static" }
 dsh-host-plugin-inventory = { path = "../plugin-inventory" }
 dsh-host-webserver = { path = "../webserver" }

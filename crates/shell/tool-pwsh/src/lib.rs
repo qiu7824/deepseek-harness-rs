@@ -190,7 +190,8 @@ impl ToolPwshService {
                         "command": { "type": "string" },
                         "workdir": { "type": "string", "description": "Working directory; managed execution copies preserve the source project as read-only." },
                         "description": { "type": "string" },
-                        "run_in_background": { "type": "boolean" }
+                        "run_in_background": { "type": "boolean" },
+                        "allow_nonzero": { "type": "boolean", "description": "Return read-only diagnostic output even when a probe exits nonzero; the exitCode remains visible." }
                     },
                     "required": ["command", "description"]
                 }),
@@ -306,19 +307,20 @@ impl ToolPwshService {
                             .run(shell.resolve(request))
                             .await
                             .map_err(ToolBodyError::plain)?;
+                        let allow_nonzero = args.get("allow_nonzero") == Some(&serde_json::Value::Bool(true));
                         let output = if result.stderr.text.is_empty() { result.stdout.text.clone() } else {
                             format!("{}\n[stderr]\n{}", result.stdout.text, result.stderr.text)
                         };
                         if result.timed_out {
                             return Err(ToolBodyError::coded(format!("PowerShell command timed out after {} ms\n{output}", result.timeout_ms), "ShellError", "SHELL_TIMEOUT"));
                         }
-                        if result.exit_code.is_some_and(|code| code != 0) || result.signal.is_some() {
+                        if (result.exit_code.is_some_and(|code| code != 0) || result.signal.is_some()) && !allow_nonzero {
                             return Err(ToolBodyError::coded(format!("PowerShell command failed (exit: {:?}, signal: {:?})\n{output}", result.exit_code, result.signal), "ShellError", "SHELL_FAILED"));
                         }
                         Ok(serde_json::json!({
                             "kind": "foreground",
                             "exitCode": result.exit_code,
-                            "stdout": output,
+                            "stdout": if allow_nonzero && (result.exit_code.is_some_and(|code| code != 0) || result.signal.is_some()) { format!("[diagnostic exit: {:?}, signal: {:?}]\n{output}", result.exit_code, result.signal) } else { output },
                         }))
                     })
                 }),

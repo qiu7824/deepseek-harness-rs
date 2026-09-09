@@ -36,7 +36,7 @@ class ClientPerformanceContractTests(unittest.TestCase):
 
     def test_oversized_live_stream_compacts_without_cutting_its_prefix(self) -> None:
         result = self.run_contract("test_history_compaction.mjs")
-        self.assertEqual(result, {"rawEvents": 5000, "compactedEvents": 1})
+        self.assertEqual(result, {"rawEvents": 5000, "compactedEvents": 1, "completedEvents": 1})
 
 
 if __name__ == "__main__":

@@ -542,7 +542,10 @@ impl AnthropicTranslator {
                 let reason = match self.stop.as_deref() {
                     Some("tool_use") => FinishReason::ToolCalls,
                     Some("max_tokens" | "model_context_window_exceeded") => FinishReason::MaxTokens,
-                    Some("end_turn" | "stop_sequence" | "refusal") => FinishReason::Stop,
+                    Some("end_turn" | "stop_sequence") => FinishReason::Stop,
+                    Some("refusal") => FinishReason::Error {
+                        failure: failure("Anthropic returned a safety refusal", "CONTENT_FILTER"),
+                    },
                     Some("pause_turn") => {
                         return Err(failure(
                             "Anthropic paused a server-tool turn; server tools are not configured",
@@ -641,6 +644,65 @@ fn append(value: &mut Value, key: &str, delta: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_refusals_are_terminal_with_or_without_visible_text() {
+        for stop in ["refusal", "end_turn", "stop_sequence"] {
+            for text in [None, Some(""), Some("Received text")] {
+                let mut translator = AnthropicTranslator::default();
+                let mut events = vec![
+                    json!({"type":"message_start","message":{"usage":{"input_tokens":7,"output_tokens":1}}}),
+                ];
+                if let Some(text) = text {
+                    events.extend([
+                        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":text}}),
+                        json!({"type":"content_block_stop","index":0}),
+                    ]);
+                }
+                events.extend([
+                    json!({"type":"message_delta","delta":{"stop_reason":stop},"usage":{"output_tokens":3}}),
+                    json!({"type":"message_stop"}),
+                ]);
+                let mut chunks = Vec::new();
+                for event in events {
+                    chunks.extend(translator.consume(&event.to_string()).unwrap());
+                }
+                translator.finish().unwrap();
+                let mut assembled = dsh_llm::BlockAssembler::new();
+                for chunk in &chunks {
+                    assembled.push(chunk);
+                }
+                if stop == "refusal" {
+                    assert!(
+                        matches!(assembled.finish(), FinishReason::Error {failure} if failure.code=="CONTENT_FILTER")
+                    );
+                } else {
+                    assert_eq!(assembled.finish(), FinishReason::Stop);
+                }
+                assert_eq!(assembled.usage().unwrap().input_tokens, 7);
+                assert_eq!(assembled.usage().unwrap().output_tokens, 3);
+                let actual_text = assembled
+                    .blocks()
+                    .iter()
+                    .filter_map(|block| {
+                        if let ContentBlock::Text { text } = block {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<String>();
+                assert_eq!(actual_text, text.unwrap_or_default());
+                assert_eq!(
+                    chunks
+                        .iter()
+                        .filter(|chunk| matches!(chunk, StreamChunk::Finish { .. }))
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
+
     #[test]
     fn maps_system_tools_images_and_parallel_results() {
         let body=request_from_chat(&json!({"model":"claude-sonnet-4-6","reasoning_effort":"medium","messages":[{"role":"system","content":"Be precise"},{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]},{"role":"assistant","content":"","tool_calls":[{"id":"a","function":{"name":"read","arguments":"{\"path\":\"x\"}"}},{"id":"b","function":{"name":"read","arguments":"{}"}}]},{"role":"tool","tool_call_id":"a","content":"one"},{"role":"tool","tool_call_id":"b","content":"two"}],"tools":[{"type":"function","function":{"name":"read","description":"Read","parameters":{"type":"object"}}}]})).unwrap();

@@ -8,6 +8,7 @@
 pub mod chunk_rows;
 pub mod invariant;
 pub mod json;
+pub mod migration;
 pub mod known_event_types;
 pub mod preparation;
 pub mod repair;
@@ -22,6 +23,7 @@ pub use chunk_rows::{
     visit_owned_storage_record_events, visit_storage_record_events,
 };
 pub use json::{JsonValue, is_json_value, snapshot_json_value};
+pub use migration::{SessionMigrationReport, migrate_v0_to_v3};
 pub use known_event_types::{KNOWN_SESSION_EVENT_TYPES, is_known_session_event_type};
 pub use preparation::{SessionPreparation, SessionPreparationOptions};
 pub use repair::{TOOL_NOT_STARTED, TOOL_OUTCOME_UNKNOWN, interrupted_turn_closers};
@@ -38,7 +40,7 @@ pub use surface::{
 };
 pub use types::{
     AgentCancelCause, CreateSessionMeta, CreateSessionOptions, EpochHeader, RequestContext,
-    RequestHeaderReason, SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionId,
+    LEGACY_SESSION_FORMAT_VERSION, RequestHeaderReason, SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionId,
     SessionIdTag, SessionLogOffset, SessionSeq, SurfaceIntent, SurfaceOp, TodoItem, TodoStatus,
     TurnEndCancelCause, TurnEndReason, assistant_chunk_data, assistant_message_data, end_seed_data,
     request_header_data, session_id, snapshot_session_header, step_data, todo_write_data,

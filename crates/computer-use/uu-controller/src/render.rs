@@ -23,7 +23,9 @@ use windows::{
     core::{Interface, factory},
 };
 use windows_sys::Win32::UI::{
-    Input::KeyboardAndMouse::{MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey, VK_ESCAPE},
+    Input::KeyboardAndMouse::{
+        MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey, VK_ESCAPE,
+    },
     WindowsAndMessaging::*,
 };
 pub struct Frame {
@@ -31,14 +33,59 @@ pub struct Frame {
     pub height: u32,
     pub jpeg: Vec<u8>,
 }
+#[derive(Clone, Copy)]
+pub struct FrameViewport {
+    pub rect: [f32; 4],
+    pub notified_at: i64,
+}
+
+pub fn frame_clock() -> Result<i64, String> {
+    use windows_sys::Win32::System::Performance::{
+        QueryPerformanceCounter, QueryPerformanceFrequency,
+    };
+    let mut counter = 0;
+    let mut frequency = 0;
+    if unsafe { QueryPerformanceCounter(&mut counter) } == 0
+        || unsafe { QueryPerformanceFrequency(&mut frequency) } == 0
+        || frequency <= 0
+    {
+        return Err("无法校验远端画面时间，请重新连接".into());
+    }
+    Ok((i128::from(counter) * 10_000_000 / i128::from(frequency)) as i64)
+}
+
+fn frame_matches_viewport(timestamp: i64, viewport: FrameViewport) -> bool {
+    timestamp >= viewport.notified_at
+}
 pub struct RenderWindow {
     pub hwnd: usize,
     join: Option<std::thread::JoinHandle<()>>,
     pub escape_available: Arc<AtomicBool>,
+    hotkey_requests: mpsc::SyncSender<(bool, mpsc::SyncSender<bool>)>,
 }
+
+const STOP_MODIFIERS: u32 = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT;
+pub const STOP_SHORTCUT: &str = "Ctrl+Alt+Esc";
+
+fn update_hotkey(
+    registered: &mut bool,
+    enabled: bool,
+    mut change: impl FnMut(bool) -> bool,
+) -> bool {
+    if *registered == enabled {
+        return true;
+    }
+    if !change(enabled) {
+        return false;
+    }
+    *registered = enabled;
+    true
+}
+
 impl RenderWindow {
     pub fn new(paused: Arc<AtomicBool>) -> Result<Self, String> {
         let (tx, rx) = mpsc::sync_channel(1);
+        let (hotkey_requests, changes) = mpsc::sync_channel::<(bool, mpsc::SyncSender<bool>)>(4);
         let available = Arc::new(AtomicBool::new(false));
         let available_thread = available.clone();
         let join = std::thread::spawn(move || unsafe {
@@ -71,8 +118,19 @@ impl RenderWindow {
                 SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
             );
             let mut registered = !paused.load(Ordering::SeqCst)
-                && RegisterHotKey(hwnd, 1, MOD_NOREPEAT, VK_ESCAPE as u32) != 0;
+                && RegisterHotKey(hwnd, 1, STOP_MODIFIERS, VK_ESCAPE as u32) != 0;
             available_thread.store(registered, Ordering::SeqCst);
+            if !paused.load(Ordering::SeqCst) && !registered {
+                crate::sdk::set_pause_state(
+                    &paused,
+                    crate::sdk::PauseReason::EmergencyStopUnavailable,
+                );
+                DestroyWindow(hwnd);
+                let _ = tx.send(Err(format!(
+                    "COMPUTER_USE_EMERGENCY_STOP_UNAVAILABLE: 无法注册 {STOP_SHORTCUT} 全局急停键；请释放快捷键占用后重试"
+                )));
+                return;
+            }
             let _ = tx.send(Ok((hwnd as usize, registered)));
             let mut message = std::mem::zeroed();
             while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
@@ -80,19 +138,21 @@ impl RenderWindow {
                     break;
                 }
                 if message.message == WM_APP + 2 {
-                    if paused.load(Ordering::SeqCst) {
-                        if registered {
-                            UnregisterHotKey(hwnd, 1);
-                            registered = false;
-                        }
-                    } else if !registered {
-                        registered = RegisterHotKey(hwnd, 1, MOD_NOREPEAT, VK_ESCAPE as u32) != 0;
+                    while let Ok((enabled, reply)) = changes.try_recv() {
+                        let success = update_hotkey(&mut registered, enabled, |enabled| {
+                            if enabled {
+                                RegisterHotKey(hwnd, 1, STOP_MODIFIERS, VK_ESCAPE as u32) != 0
+                            } else {
+                                UnregisterHotKey(hwnd, 1) != 0
+                            }
+                        });
+                        available_thread.store(registered, Ordering::SeqCst);
+                        let _ = reply.send(success);
                     }
-                    available_thread.store(registered, Ordering::SeqCst);
                     continue;
                 }
                 if message.message == WM_HOTKEY && message.wParam == 1 {
-                    paused.store(true, Ordering::SeqCst);
+                    crate::sdk::set_pause_state(&paused, crate::sdk::PauseReason::EscapeHotkey);
                     UnregisterHotKey(hwnd, 1);
                     registered = false;
                     available_thread.store(false, Ordering::SeqCst);
@@ -113,11 +173,26 @@ impl RenderWindow {
             hwnd,
             join: Some(join),
             escape_available: available,
+            hotkey_requests,
         })
     }
-    pub fn control_changed(&self) {
-        unsafe {
-            PostMessageW(self.hwnd as _, WM_APP + 2, 0, 0);
+    pub fn control_changed(&self, agent: bool) -> Result<(), String> {
+        let failure = || {
+            format!(
+                "COMPUTER_USE_EMERGENCY_STOP_UNAVAILABLE: 未能确认 {STOP_SHORTCUT} 全局急停键状态，智能体保持暂停"
+            )
+        };
+        let (reply, result) = mpsc::sync_channel(1);
+        self.hotkey_requests
+            .try_send((agent, reply))
+            .map_err(|_| failure())?;
+        if unsafe { PostMessageW(self.hwnd as _, WM_APP + 2, 0, 0) } == 0 {
+            return Err(failure());
+        }
+        if result.recv_timeout(Duration::from_secs(1)).unwrap_or(false) {
+            Ok(())
+        } else {
+            Err(failure())
         }
     }
     pub fn refresh_size(&self) {
@@ -168,6 +243,10 @@ pub struct Capture {
     staging: Option<ID3D11Texture2D>,
     staging_size: (u32, u32),
     latest: Option<Frame>,
+    accepted_frames: u64,
+    discarded_before_viewport: u64,
+    last_frame_time: Option<i64>,
+    last_viewport_time: Option<i64>,
 }
 impl Capture {
     pub fn new(hwnd: usize) -> Result<Self, String> {
@@ -212,13 +291,17 @@ impl Capture {
                 staging: None,
                 staging_size: (0, 0),
                 latest: None,
+                accepted_frames: 0,
+                discarded_before_viewport: 0,
+                last_frame_time: None,
+                last_viewport_time: None,
             })
         }
     }
     pub fn read(
         &mut self,
         tick: impl FnMut() -> bool,
-        viewport: impl Fn() -> Option<[f32; 4]>,
+        viewport: impl Fn() -> Option<FrameViewport>,
         wait: Duration,
     ) -> Result<&Frame, String> {
         let image = self.read_pixels(tick, viewport, wait)?;
@@ -228,13 +311,16 @@ impl Capture {
     pub fn read_pixels(
         &mut self,
         mut tick: impl FnMut() -> bool,
-        viewport: impl Fn() -> Option<[f32; 4]>,
+        viewport: impl Fn() -> Option<FrameViewport>,
         wait: Duration,
     ) -> Result<image::RgbImage, String> {
         let start = Instant::now();
         loop {
             if !tick() {
                 return Err("控制操作已暂停或取消".into());
+            }
+            if start.elapsed() >= wait {
+                return Err("尚未收到桌面视频帧，请检查远端连接".into());
             }
             if let Ok(mut frame) = self.pool.TryGetNextFrame() {
                 for _ in 0..2 {
@@ -246,17 +332,40 @@ impl Capture {
                     }
                 }
                 if let Some(viewport) = viewport() {
-                    let image = self.copy_pixels(&frame, viewport);
+                    let timestamp = frame.SystemRelativeTime().map(|time| time.Duration);
+                    let timestamp = match timestamp {
+                        Ok(timestamp) => timestamp,
+                        Err(error) => {
+                            let _ = frame.Close();
+                            return Err(format!("无法读取远端视频帧时间：{error}"));
+                        }
+                    };
+                    if !frame_matches_viewport(timestamp, viewport) {
+                        self.discarded_before_viewport += 1;
+                        let _ = frame.Close();
+                        continue;
+                    }
+                    let image = self.copy_pixels(&frame, viewport.rect);
                     let _ = frame.Close();
-                    return image.map_err(|e| format!("无法读取远端视频帧：{e}"));
+                    let image = image.map_err(|e| format!("无法读取远端视频帧：{e}"))?;
+                    self.accepted_frames += 1;
+                    self.last_frame_time = Some(timestamp);
+                    self.last_viewport_time = Some(viewport.notified_at);
+                    return Ok(image);
                 }
                 let _ = frame.Close();
             }
-            if start.elapsed() >= wait {
-                return Err("尚未收到桌面视频帧，请检查远端连接".into());
-            }
             std::thread::sleep(Duration::from_millis(8));
         }
+    }
+    pub fn diagnostics(&self) -> serde_json::Value {
+        serde_json::json!({
+            "acceptedFrames": self.accepted_frames,
+            "discardedBeforeViewport": self.discarded_before_viewport,
+            "lastFrameTimestamp100ns": self.last_frame_time,
+            "lastViewportTimestamp100ns": self.last_viewport_time,
+            "source": "sdk-render-window"
+        })
     }
     fn copy_pixels(
         &mut self,
@@ -354,5 +463,48 @@ impl Drop for Capture {
     fn drop(&mut self) {
         let _ = self.session.Close();
         let _ = self.pool.Close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_stop_requires_modifiers_and_registration_confirmation() {
+        assert_eq!(
+            STOP_MODIFIERS & (MOD_CONTROL | MOD_ALT),
+            MOD_CONTROL | MOD_ALT
+        );
+        let mut registered = false;
+        assert!(!update_hotkey(&mut registered, true, |_| false));
+        assert!(
+            !registered,
+            "failed registration must not enable agent control"
+        );
+        assert!(update_hotkey(&mut registered, true, |_| true));
+        assert!(registered);
+        assert!(update_hotkey(&mut registered, true, |_| panic!(
+            "already registered"
+        )));
+        assert!(update_hotkey(&mut registered, false, |_| true));
+        assert!(!registered);
+    }
+
+    #[test]
+    fn compositor_frames_before_sdk_layout_are_not_remote_frames() {
+        let viewport = FrameViewport {
+            rect: [0.0, 0.0, 1920.0, 1080.0],
+            notified_at: 500,
+        };
+        assert!(!frame_matches_viewport(499, viewport));
+        assert!(frame_matches_viewport(500, viewport));
+        assert!(frame_matches_viewport(510, viewport));
+        let resized = FrameViewport {
+            notified_at: 600,
+            rect: [0.0, 0.0, 1280.0, 720.0],
+        };
+        assert!(!frame_matches_viewport(510, resized));
+        assert!(frame_matches_viewport(601, resized));
     }
 }

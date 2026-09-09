@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
 		let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
 		let _deepseek_ai_dsh_client_runtime_client = require("@deepseek-ai/dsh-client-runtime/client");
 		//#region lib/types/client/tool/models/tool-call-model.js
-		/** Figma row titles per variant (design literals, not translatable copy). */
+		/** Internal fallback titles; ToolRow resolves these UI labels through the active locale. */
 		const VARIANT_TITLES = {
 			search: "Search",
 			read: "Read",
@@ -29,6 +29,7 @@ window.__ModuleLoader__.load({
 		* same call would be a second answer to a question the card already owns.
 		*/
 		const TOOL_VARIANTS = {
+            code_context:"search",code_callers:"search",code_callees:"search",code_impact:"search",code_path:"search",
 			bash: "bash",
 			pwsh: "bash",
 			read: "read",
@@ -48,6 +49,7 @@ window.__ModuleLoader__.load({
 		};
 		/** Tool-owned titles that refine a generic row variant without replacing it. */
 		const TOOL_TITLES = {
+            code_context:"Code context",code_callers:"Code callers",code_callees:"Code callees",code_impact:"Code impact",code_path:"Code path",
 			cordis_package_inspect: "Inspect",
 			cordis_runtime_inspect: "Inspect",
 			cordis_run: "Run Cordis Plugin",
@@ -669,6 +671,17 @@ window.__ModuleLoader__.load({
 			}
 			return { added, removed };
 		}
+		function toolDisplayTitle(toolName, title, t) {
+			const key = ({ "Code context":"tool.title.codeContext","Code callers":"tool.title.codeCallers","Code callees":"tool.title.codeCallees","Code impact":"tool.title.codeImpact","Code path":"tool.title.codePath", Search:"tool.title.search", Read:"tool.title.read", Bash:"tool.title.shell", Pwsh:"tool.title.pwsh", Write:"tool.title.write", Edit:"tool.title.edit", Code:"tool.title.code", "Tool call":"tool.title.call", Inspect:"tool.title.inspect", "Run Cordis Plugin":"tool.title.runPlugin", Fetch:"tool.title.fetch" })[title];
+			return key ? t(key) : title;
+		}
+		const COMPUTER_ACTIONS = new Set(["start", "status", "capture", "click", "double_click", "type", "key", "drag", "scroll", "list_sessions", "close", "navigate", "list_windows", "focus_window", "takeover", "resume", "release_inputs"]);
+		function toolDisplaySummary(toolName, summary, t) {
+			if (toolName !== "computer_use") return summary;
+			const prefix = toolName + " · ";
+			const action = summary.startsWith(prefix) ? summary.slice(prefix.length) : "";
+			return COMPUTER_ACTIONS.has(action) ? `${toolName} · ${t("tool.action." + action)}` : summary;
+		}
 		function ToolRow({ t, variant, toolName, icon, title, summary, summarySuffix, body, output, errorSummary, terminal, diff, read, search, web, image, state, filePath, onOpenFile, inspect }) {
 			const [expanded, setExpanded] = (0, react.useState)(false);
 			const terminalBody = terminal ?? null;
@@ -682,7 +695,7 @@ window.__ModuleLoader__.load({
 			const open = expanded && expandable;
 			const status = stateStatus$1(state, t);
 			const failureLine = state === "error" ? errorSummary ?? null : null;
-			const summaryText = failureLine ?? summary;
+			const summaryText = failureLine ?? toolDisplaySummary(toolName, summary, t);
 			const diffStat = (0, react.useMemo)(() => {
 				if (diffBody === null) return null;
 				const { added, removed } = diffTotals(diffBody.card.diffs);
@@ -703,6 +716,7 @@ window.__ModuleLoader__.load({
 			const cardBody = variant === "code" ? null : body;
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: ToolRow_module_css_default.root,
+                title: toolDisplayTitle(toolName, title, t),
 				"data-variant": variant,
 				"data-tool": toolName,
 				"data-state": state,
@@ -711,11 +725,11 @@ window.__ModuleLoader__.load({
 					children: status
 				}), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.DisclosureRow, {
 					rowClassName: ToolRow_module_css_default.row,
-					leadingClassName: ToolRow_module_css_default.leading,
+					leadingClassName: ToolRow_module_css_default.leading + " dshReplyHintLeading",
 					titleClassName: ToolRow_module_css_default.title,
 					chevronClassName: ToolRow_module_css_default.chevron,
-					icon: leadingFor$1(state, icon),
-					title,
+					icon: (0, react_jsx_runtime.jsx)("span", { className: toolName === "todo_write" ? void 0 : "dshReplyHintIcon", title: toolDisplayTitle(toolName, title, t), "aria-hidden": true, children: icon ?? (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconApiOutline14, { size: 14 }) }),
+					title: (0, react_jsx_runtime.jsx)("span", { className: toolName === "todo_write" ? void 0 : "dshReplyHintLabel", children: toolDisplayTitle(toolName, title, t) }),
 					open,
 					expandable,
 					expandOnRowClick: true,
@@ -782,7 +796,7 @@ window.__ModuleLoader__.load({
 									className: ToolRow_module_css_default.ioSection,
 									children: [(0, react_jsx_runtime.jsx)("span", {
 										className: ToolRow_module_css_default.ioLabel,
-										children: "IN"
+										children: t("tool.input")
 									}), (0, react_jsx_runtime.jsx)("span", {
 										className: ToolRow_module_css_default.ioText,
 										children: cardBody
@@ -796,7 +810,7 @@ window.__ModuleLoader__.load({
 									className: ToolRow_module_css_default.ioSection,
 									children: [(0, react_jsx_runtime.jsx)("span", {
 										className: ToolRow_module_css_default.ioLabel,
-										children: "OUT"
+										children: t("tool.output")
 									}), (0, react_jsx_runtime.jsx)("span", {
 										className: ToolRow_module_css_default.ioText,
 										"data-error": state === "error" || void 0,
@@ -808,7 +822,7 @@ window.__ModuleLoader__.load({
 							type: "button",
 							className: ToolRow_module_css_default.inspectButton,
 							onClick: inspect,
-							children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconInspectOutline12, {}), "Inspect"]
+							children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconInspectOutline12, {}), t("tool.inspect")]
 						})]
 					})
 				})]
@@ -828,8 +842,8 @@ window.__ModuleLoader__.load({
 		};
 
         function imageCardModel(toolName, block) {
-            if (toolName !== "read_image" || !("kind" in block) || block.isError || !Array.isArray(block.content)) return null;
-            const images = block.content.filter((item) => item?.type === "image" && typeof item.attachment?.attachmentId === "string" && item.attachment.attachmentId.length > 0).map((item) => item.attachment);
+            if (!("kind" in block) || !Array.isArray(block.content)) return null;
+            const images = [...new Map(block.content.filter((item) => item?.type === "image" && typeof item.attachment?.attachmentId === "string" && item.attachment.attachmentId.length > 0).map((item) => [item.attachment.attachmentId, item.attachment])).values()];
             if (!images.length) return null;
             return { images, text: block.content.filter((item) => item?.type === "text").map((item) => item.text).join("\n") };
         }
@@ -837,16 +851,21 @@ window.__ModuleLoader__.load({
             const [image, setImage] = (0, react.useState)(null);
             const [failed, setFailed] = (0, react.useState)(false);
             (0, react.useEffect)(() => {
-                let active = true;
-                setImage(null);
-                setFailed(false);
-                Promise.resolve().then(() => loadImage(attachment)).then((url) => {
-                    if (active) setImage(url);
+                let active = true, resource, request;
+                setImage(null); setFailed(false);
+                Promise.resolve().then(() => {
+                    if (!active) return null;
+                    request = typeof loadImage.acquire === "function" ? loadImage.acquire(attachment) : loadImage(attachment).then(url => ({ url, release() {} }));
+                    return request;
+                }).then(value => {
+                    if (!value) return;
+                    if (!active) { value.release(); return; }
+                    resource = value; setImage(value.url);
                 }, () => { if (active) setFailed(true); });
-                return () => { active = false; };
+                return () => { active = false; request?.release?.(); resource?.release(); };
             }, [attachment, loadImage]);
             if (image === null) return failed ? (0, react_jsx_runtime.jsx)("span", { role: "status", children: t("image.serviceUnavailable") }) : null;
-            return (0, react_jsx_runtime.jsx)("a", { href: image, target: "_blank", rel: "noopener noreferrer", children: (0, react_jsx_runtime.jsx)("img", { src: image, alt: attachment.name ?? "Image", loading: "lazy", style: { maxWidth: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 8 } }) });
+            return (0, react_jsx_runtime.jsx)("a", { href: image, target: "_blank", rel: "noopener noreferrer", children: (0, react_jsx_runtime.jsx)("img", { src: image, alt: attachment.name ?? t("image.result"), loading: "lazy", style: { maxWidth: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 8 } }) });
         }
         function ToolImages({ model, loadImage, t }) {
             return (0, react_jsx_runtime.jsxs)("div", { "data-tool-images": true, children: [
@@ -1288,7 +1307,7 @@ window.__ModuleLoader__.load({
 						type: "button",
 						className: bash_sample_module_css_default.inspectButton,
 						onClick: inspect,
-						children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconInspectOutline12, {}), "Inspect"]
+						children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconInspectOutline12, {}), t("tool.inspect")]
 					})]
 				})]
 			});

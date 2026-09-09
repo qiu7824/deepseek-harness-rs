@@ -24,6 +24,7 @@ use tokio::{
 };
 
 const MAX_REPLY: usize = 4 * 1024 * 1024;
+const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 #[derive(Clone)]
 pub struct DesktopBinding {
     pub device_id: String,
@@ -34,6 +35,117 @@ pub struct DesktopBinding {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    async fn fixture_slot(owner: &str, ready: bool) -> Arc<Slot> {
+        // An inert child supplies the real process cleanup path without
+        // starting a desktop worker or accessing a user's desktop.
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .arg("--help")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .creation_flags(0x08000000);
+        let child = command.spawn().unwrap();
+        let (writer, _) = mpsc::channel(8);
+        let (signals, _) = mpsc::channel(32);
+        let old = Instant::now() - IDLE_TIMEOUT - Duration::from_secs(1);
+        let client = Arc::new(Client {
+            child: Arc::new(Mutex::new(child)),
+            writer,
+            signals,
+            rpc: Arc::new(RpcState {
+                pending: SyncMutex::new(HashMap::new()),
+                alive: AtomicBool::new(true),
+            }),
+            serial: AtomicU64::new(1),
+            last_used: SyncMutex::new(old),
+        });
+        let slot = Arc::new(Slot {
+            owner: owner.into(),
+            binding: DesktopBinding {
+                device_id: "fixture-device".into(),
+                install_dir: None,
+                account: None,
+            },
+            client: OnceCell::new(),
+            closed: AtomicBool::new(false),
+            ready: AtomicBool::new(ready),
+            created: old,
+        });
+        assert!(slot.client.set(client).is_ok());
+        slot
+    }
+
+    fn fixture_adapter(backend: Backend) -> DesktopAdapter {
+        let mut adapter = DesktopAdapter::new(
+            PathBuf::from("unused-worker"),
+            PathBuf::new(),
+            Arc::new(|| panic!("activity and cleanup must not connect a device")),
+        );
+        adapter.backend = backend;
+        adapter
+    }
+
+    #[tokio::test]
+    async fn running_activity_preserves_ready_desktops_until_they_are_idle() {
+        for backend in [Backend::Native, Backend::Uu] {
+            let adapter = fixture_adapter(backend);
+            let slot = fixture_slot("owner", true).await;
+            adapter.sessions.lock().insert("owner".into(), slot.clone());
+            assert!(slot.inactive_at(Instant::now()));
+            adapter.mark_owner_active("unknown");
+            assert_eq!(adapter.sessions.lock().len(), 1);
+            adapter.mark_owner_active("owner");
+            assert!(adapter.reap_inactive().await.is_empty());
+            assert!(adapter.has_owner_activity("owner"));
+            assert!(!slot.inactive_at(Instant::now() + Duration::from_secs(105)));
+
+            *slot.client.get().unwrap().last_used.lock() =
+                Instant::now() - IDLE_TIMEOUT - Duration::from_secs(1);
+            assert_eq!(adapter.reap_inactive().await, vec!["owner"]);
+            assert!(slot.closed.load(Ordering::SeqCst));
+            assert!(!adapter.has_owner_activity("owner"));
+            adapter.mark_owner_active("owner");
+            assert!(adapter.sessions.lock().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_cannot_keep_starting_dead_or_closed_desktops_alive() {
+        for state in ["starting", "dead", "closed"] {
+            let adapter = fixture_adapter(Backend::Native);
+            let slot = fixture_slot("owner", state != "starting").await;
+            let client = slot.client.get().unwrap();
+            // A startup request must not reset the independent startup limit.
+            *client.last_used.lock() = Instant::now();
+            if state == "dead" {
+                client.rpc.alive.store(false, Ordering::SeqCst);
+            } else if state == "closed" {
+                slot.closed.store(true, Ordering::SeqCst);
+            }
+            let before = *client.last_used.lock();
+            adapter.sessions.lock().insert("owner".into(), slot.clone());
+            adapter.mark_owner_active("owner");
+            assert_eq!(*client.last_used.lock(), before, "{state}");
+            assert_eq!(adapter.reap_inactive().await, vec!["owner"], "{state}");
+            assert!(adapter.sessions.lock().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_close_releases_an_active_desktop_without_reconnecting() {
+        let adapter = fixture_adapter(Backend::Native);
+        let slot = fixture_slot("owner", true).await;
+        adapter.sessions.lock().insert("owner".into(), slot.clone());
+        adapter.mark_owner_active("owner");
+        adapter.close_owner("owner").await.unwrap();
+        adapter.mark_owner_active("owner");
+        assert!(slot.closed.load(Ordering::SeqCst));
+        assert!(!slot.client.get().unwrap().rpc.alive.load(Ordering::SeqCst));
+        assert!(adapter.sessions.lock().is_empty());
+    }
 
     #[tokio::test]
     async fn failed_worker_launch_releases_device_and_close_does_not_launch() {
@@ -109,7 +221,27 @@ struct Slot {
     binding: DesktopBinding,
     client: OnceCell<Arc<Client>>,
     closed: AtomicBool,
+    ready: AtomicBool,
     created: Instant,
+}
+impl Slot {
+    fn inactive_at(&self, now: Instant) -> bool {
+        if self.closed.load(Ordering::SeqCst) {
+            return true;
+        }
+        let Some(client) = self.client.get() else {
+            return now.saturating_duration_since(self.created) > IDLE_TIMEOUT;
+        };
+        if !client.rpc.alive.load(Ordering::SeqCst) {
+            return true;
+        }
+        let last_used = if self.ready.load(Ordering::SeqCst) {
+            *client.last_used.lock()
+        } else {
+            self.created
+        };
+        now.saturating_duration_since(last_used) > IDLE_TIMEOUT
+    }
 }
 struct RpcState {
     pending: SyncMutex<HashMap<u64, oneshot::Sender<Result<Value, AdapterError>>>>,
@@ -405,6 +537,7 @@ impl DesktopAdapter {
             binding,
             client: OnceCell::new(),
             closed: AtomicBool::new(false),
+            ready: AtomicBool::new(false),
             created: Instant::now(),
         });
         sessions.insert(key, slot.clone());
@@ -510,6 +643,9 @@ impl ComputerUseAdapter for DesktopAdapter {
             self.close_owner(&slot.owner).await?;
         }
         let mut value = result?;
+        if request.action == "start" {
+            slot.ready.store(true, Ordering::SeqCst);
+        }
         let screenshot = value.as_object_mut().and_then(|v| v.remove("screenshot"));
         let screenshot = if let Some(screenshot) = screenshot {
             let encoded = screenshot["base64"]
@@ -575,20 +711,24 @@ impl ComputerUseAdapter for DesktopAdapter {
                     .is_none_or(|c| c.rpc.alive.load(Ordering::SeqCst))
         })
     }
+    fn mark_owner_active(&self, owner: &str) {
+        let sessions = self.sessions.lock();
+        if let Some(slot) = sessions.get(owner)
+            && !slot.closed.load(Ordering::SeqCst)
+            && slot.ready.load(Ordering::SeqCst)
+            && let Some(client) = slot.client.get()
+            && client.rpc.alive.load(Ordering::SeqCst)
+        {
+            *client.last_used.lock() = Instant::now();
+        }
+    }
     async fn reap_inactive(&self) -> Vec<String> {
+        let now = Instant::now();
         let owners = self
             .sessions
             .lock()
             .values()
-            .filter(|s| {
-                s.client.get().map_or_else(
-                    || s.created.elapsed() > Duration::from_secs(120),
-                    |c| {
-                        !c.rpc.alive.load(Ordering::SeqCst)
-                            || c.last_used.lock().elapsed() > Duration::from_secs(120)
-                    },
-                )
-            })
+            .filter(|s| s.inactive_at(now))
             .map(|s| s.owner.clone())
             .collect::<Vec<_>>();
         for owner in &owners {

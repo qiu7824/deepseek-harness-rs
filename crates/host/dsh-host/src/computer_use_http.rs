@@ -16,6 +16,7 @@ use serde_json::{Map, Value, json};
 
 const ROUTE: &str = "/__dsh-computer-use";
 const MAX_CONTROL_BYTES: usize = 64 * 1024;
+const MAX_ANNOTATION_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_BROWSER_SESSION_ID: &str = "default";
 
 #[derive(Serialize)]
@@ -103,8 +104,8 @@ pub(super) async fn valid_owner(
     })
 }
 
-async fn parse_body(request: WebRequest) -> Result<Value, WebResponse> {
-    let bytes = to_bytes(Body::new(request.into_body()), MAX_CONTROL_BYTES)
+async fn parse_body(request: WebRequest, limit: usize) -> Result<Value, WebResponse> {
+    let bytes = to_bytes(Body::new(request.into_body()), limit)
         .await
         .map_err(|_| {
             error(
@@ -181,7 +182,8 @@ async fn handle(
         .unwrap_or_default()
         .trim_matches('/')
         .to_string();
-    let body = match parse_body(request).await {
+    let body_limit = if operation == "annotation" { MAX_ANNOTATION_BYTES } else { MAX_CONTROL_BYTES };
+    let body = match parse_body(request, body_limit).await {
         Ok(value) => value,
         Err(response) => return response,
     };
@@ -198,6 +200,11 @@ async fn handle(
                 "message": failure.message
             })
         });
+        let actions = runtime.as_ref().map_or(&[][..], |runtime| {
+            runtime
+                .supported_actions()
+                .unwrap_or_else(|| runtime.human_only_actions())
+        });
         return json_response(
             StatusCode::OK,
             &json!({
@@ -207,9 +214,60 @@ async fn handle(
                 "adapter": runtime.as_ref().map(|runtime| runtime.adapter_id()),
                 "ownerSessionId": owner.id,
                 "defaultBrowserSessionId": DEFAULT_BROWSER_SESSION_ID,
-                "actions": ["start","status","capture","navigate","click","double_click","type","scroll","list_sessions","close","key","keypress","drag","takeover","resume_agent"]
+                "actions": actions,
+                "humanOnlyActions": runtime.as_ref().map_or(&[][..], |runtime| runtime.human_only_actions()),
+                "capabilitiesKnown": runtime.as_ref().is_some_and(|runtime| runtime.supported_actions().is_some())
             }),
         );
+    }
+    if operation == "annotation" {
+        let Some(agent) = owner.agent else {
+            return error(StatusCode::CONFLICT, "annotation-agent-unavailable", "当前会话没有可接收批注的智能体");
+        };
+        let annotations = body.get("annotations").cloned().unwrap_or_else(|| json!({}));
+        let raw = serde_json::to_string(&annotations).unwrap_or_default();
+        if raw.len() > 48 * 1024 {
+            return error(StatusCode::PAYLOAD_TOO_LARGE, "annotation-too-large", "批注内容超过大小限制");
+        }
+        let mut text = String::from("画面批注（已提交给智能体）：\n");
+        if let Some(notes) = annotations.get("notes").and_then(Value::as_array) {
+            for note in notes.iter().filter_map(|item| item.get("text").and_then(Value::as_str)) {
+                text.push_str("- ");
+                text.push_str(note);
+                text.push('\n');
+            }
+        }
+        if let Some(strokes) = annotations.get("strokes").and_then(Value::as_array) {
+            text.push_str(&format!("标注线条：{} 条（坐标已按当前画面归一化）\n", strokes.len()));
+        }
+        let mut content = vec![dsh_llm::ContentBlock::Text { text }];
+        if let Some(screenshot) = body.get("screenshot").and_then(Value::as_object) {
+            let media_type = match screenshot.get("mediaType").and_then(Value::as_str).unwrap_or("image/jpeg") {
+                "image/png" => dsh_attachment::ImageMediaType::Png,
+                "image/webp" => dsh_attachment::ImageMediaType::Webp,
+                "image/gif" => dsh_attachment::ImageMediaType::Gif,
+                _ => dsh_attachment::ImageMediaType::Jpeg,
+            };
+            let encoded = screenshot.get("base64").and_then(Value::as_str).unwrap_or("");
+            let data = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| error(StatusCode::BAD_REQUEST, "annotation-image-invalid", "批注截图编码无效"));
+            let data = match data { Ok(data) => data, Err(response) => return response };
+            if data.len() > 3 * 1024 * 1024 { return error(StatusCode::PAYLOAD_TOO_LARGE, "annotation-image-too-large", "批注截图超过大小限制"); }
+            let Some(store) = agent.ctx().get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false).map(|slot| slot.as_ref().clone()) else { return error(StatusCode::CONFLICT, "annotation-attachments-unavailable", "当前主机没有可用的图片附件存储"); };
+            let reference = match store.save_image(&dsh_attachment::SaveImageAttachment { data, media_type, name: Some("screen-annotation.jpg".into()) }).await {
+                Ok(reference) => reference,
+                Err(failure) => return error(StatusCode::BAD_REQUEST, "annotation-image-invalid", failure.to_string()),
+            };
+            content.push(dsh_llm::ContentBlock::Image { attachment: dsh_llm::ImageAttachmentRef {
+                attachment_id: reference.attachment_id.to_string(),
+                media_type: Some(reference.media_type.as_str().to_string()),
+                bytes: Some(reference.bytes),
+                width: Some(reference.width),
+                height: Some(reference.height),
+                name: reference.name,
+            } });
+        }
+        agent.followup(dsh_llm::create_user_message(content, dsh_llm::MessageSource::User { rpc_id: None, client_time_zone: None }));
+        return json_response(StatusCode::OK, &json!({"submitted":true,"ownerSessionId":owner.id,"annotation":annotations,"hasScreenshot":body.get("screenshot").is_some()}));
     }
     if operation != "action" {
         return error(

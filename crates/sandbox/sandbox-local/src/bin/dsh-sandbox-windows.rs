@@ -1,3 +1,7 @@
+#[cfg(windows)]
+#[path = "../runtime_read_access.rs"]
+mod runtime_read_access;
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("dsh-sandbox-windows: Windows only");
@@ -20,9 +24,7 @@ pub mod windows_runner {
     use std::ffi::{OsStr, c_void};
     use std::mem::{size_of, zeroed};
     use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::process::CommandExt;
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Stdio};
     use std::ptr::{null, null_mut};
 
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_OBJECT_0};
@@ -443,6 +445,15 @@ pub mod windows_runner {
         }
     }
     fn update_ancestor_access(handle: HANDLE, sid: PSID, grant: bool) -> Result<(), String> {
+        update_access(handle, sid, grant, 0x001200a0, 0)
+    }
+    fn update_access(
+        handle: HANDLE,
+        sid: PSID,
+        grant: bool,
+        rights: u32,
+        inheritance: u32,
+    ) -> Result<(), String> {
         use windows_sys::Win32::Foundation::LocalFree;
         use windows_sys::Win32::Security::Authorization::*;
         use windows_sys::Win32::Security::*;
@@ -464,9 +475,9 @@ pub mod windows_runner {
                 return Err(format!("read ancestor permissions: Windows error {status}"));
             }
             let entry = EXPLICIT_ACCESS_W {
-                grfAccessPermissions: 0x001200a0, // attributes, traverse, read ACL, synchronize
+                grfAccessPermissions: rights,
                 grfAccessMode: if grant { GRANT_ACCESS } else { REVOKE_ACCESS },
-                grfInheritance: 0,
+                grfInheritance: inheritance,
                 Trustee: TRUSTEE_W {
                     pMultipleTrustee: null_mut(),
                     MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
@@ -556,17 +567,19 @@ pub mod windows_runner {
             })
         }
 
-        fn revoke(&mut self) {
-            if !self.armed {
-                return;
+        fn revoke(&mut self) -> Result<(), String> {
+            if self.armed {
+                update_workspace_acl(&self.workspace, &self.sid, false, false)?;
+                self.armed = false;
             }
-            let _ = update_workspace_acl(&self.workspace, &self.sid, false, false);
-            self.armed = false;
+            Ok(())
         }
     }
     impl Drop for AclGrant {
         fn drop(&mut self) {
-            self.revoke();
+            if let Err(error) = self.revoke() {
+                eprintln!("dsh-sandbox-windows: permission cleanup failed: {error}");
+            }
         }
     }
 
@@ -585,173 +598,67 @@ pub mod windows_runner {
         normalize(workspace.as_os_str()) == normalize(profile)
     }
 
-    fn should_update_direct_files(workspace: &Path, profile: Option<&OsStr>) -> bool {
-        !is_user_profile_root(workspace, profile)
+    fn update_workspace_acl_native(
+        workspace: &Path,
+        sid: PSID,
+        grant: bool,
+        writable: bool,
+    ) -> Result<(), String> {
+        use windows_sys::Win32::Security::*;
+        use windows_sys::Win32::Storage::FileSystem::*;
+        let name = wide(workspace.as_os_str());
+        // Explicit ACL access retains Win32's normal inheritance propagation.
+        // MAXIMUM_ALLOWED would suppress it and leave existing files unusable.
+        let raw = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                READ_CONTROL | WRITE_DAC,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                null_mut(),
+            )
+        };
+        if raw == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+            return Err(format!(
+                "{}: {}",
+                workspace.display(),
+                last_error("open sandbox root ACL")
+            ));
+        }
+        let handle = Handle::new(raw, "open sandbox root ACL")?;
+        let rights = if writable {
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE
+        } else {
+            FILE_GENERIC_READ | FILE_GENERIC_EXECUTE
+        };
+        let inheritance =
+            if is_user_profile_root(workspace, std::env::var_os("USERPROFILE").as_deref()) {
+                0
+            } else {
+                OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+            };
+        update_access(handle.0, sid, grant, rights, inheritance)
     }
-
     fn update_workspace_acl(
         workspace: &Path,
         sid: &str,
         grant: bool,
         writable: bool,
     ) -> Result<(), String> {
-        let _lock = lock_acl_updates()?;
-        const SCRIPT: &str = r#"
-$ErrorActionPreference='Stop'
-$path=$env:DSH_SANDBOX_ACL_PATH
-$sid=$env:DSH_SANDBOX_ACL_SID
-$action=$env:DSH_SANDBOX_ACL_ACTION
-$updateDirectFiles=$env:DSH_SANDBOX_ACL_DIRECT_FILES -eq '1'
-$profileRoot=$env:DSH_SANDBOX_ACL_PROFILE_ROOT -eq '1'
-$rights=if ($env:DSH_SANDBOX_ACL_WRITABLE -eq '1') {
-  [Security.AccessControl.FileSystemRights]::Modify
-} else {
-  [Security.AccessControl.FileSystemRights]::ReadAndExecute
-}
-$identity=[Security.Principal.SecurityIdentifier]::new($sid)
-$inheritance=if ($profileRoot) {
-  [Security.AccessControl.InheritanceFlags]::None
-} else {
-  [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'
-}
-$rule=[Security.AccessControl.FileSystemAccessRule]::new(
-  $identity,
-  $rights,
-  $inheritance,
-  [Security.AccessControl.PropagationFlags]::None,
-  [Security.AccessControl.AccessControlType]::Allow)
-$acl=Get-Acl -LiteralPath $path
-if ($action -eq 'grant') { $acl.AddAccessRule($rule) | Out-Null }
-else { $acl.RemoveAccessRuleAll($rule) }
-Set-Acl -LiteralPath $path -AclObject $acl
-# Adding an inheritable ACE does not retroactively update existing children.
-# The Node sidecar root is deliberately tiny, so update its direct files in
-# the same PowerShell process without broad recursive host access.
-if ($updateDirectFiles) {
-  Get-ChildItem -LiteralPath $path -File | ForEach-Object {
-    $childAcl=Get-Acl -LiteralPath $_.FullName
-    $childRule=[Security.AccessControl.FileSystemAccessRule]::new(
-      $identity, $rights, [Security.AccessControl.AccessControlType]::Allow)
-    if ($action -eq 'grant') { $childAcl.AddAccessRule($childRule) | Out-Null }
-    else { $childAcl.RemoveAccessRuleAll($childRule) }
-    Set-Acl -LiteralPath $_.FullName -AclObject $childAcl
-  }
-}
-"#;
-        let profile = std::env::var_os("USERPROFILE");
-        let profile_root = is_user_profile_root(workspace, profile.as_deref());
-        let shell = acl_powershell()?;
-        let modules = shell.parent().map(|parent| parent.join("Modules"));
-        let mut command = Command::new(shell);
-        if let Some(modules) = modules.filter(|path| path.is_dir()) {
-            command.env("PSModulePath", modules);
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+        let value = wide(sid);
+        let mut identity = null_mut();
+        if unsafe { ConvertStringSidToSidW(value.as_ptr(), &mut identity) } == 0 {
+            return Err(last_error("parse sandbox SID"));
         }
-        let mut child = command
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                SCRIPT,
-            ])
-            .env("DSH_SANDBOX_ACL_PATH", workspace)
-            .env("DSH_SANDBOX_ACL_SID", sid)
-            .env(
-                "DSH_SANDBOX_ACL_ACTION",
-                if grant { "grant" } else { "revoke" },
-            )
-            .env("DSH_SANDBOX_ACL_WRITABLE", if writable { "1" } else { "0" })
-            .env(
-                "DSH_SANDBOX_ACL_DIRECT_FILES",
-                if should_update_direct_files(workspace, profile.as_deref()) {
-                    "1"
-                } else {
-                    "0"
-                },
-            )
-            .env(
-                "DSH_SANDBOX_ACL_PROFILE_ROOT",
-                if profile_root { "1" } else { "0" },
-            )
-            // ACL preparation is runner-internal setup. Letting this helper
-            // inherit the user's PTY leaks its title/mode escape sequences
-            // into the terminal and can consume keystrokes before the real
-            // sandboxed shell starts.
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .creation_flags(0x08000000)
-            .spawn()
-            .map_err(|error| format!("launch ACL updater: {error}"))?;
-        let stderr = child.stderr.take().map(|mut pipe| {
-            std::thread::spawn(move || {
-                use std::io::Read;
-                let mut kept = Vec::new();
-                let mut buffer = [0u8; 4096];
-                while let Ok(count) = pipe.read(&mut buffer) {
-                    if count == 0 {
-                        break;
-                    }
-                    let take = count.min(16384usize.saturating_sub(kept.len()));
-                    kept.extend_from_slice(&buffer[..take]);
-                }
-                String::from_utf8_lossy(&kept).into_owned()
-            })
-        });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        let status = loop {
-            if let Some(status) = child
-                .try_wait()
-                .map_err(|error| format!("wait for ACL updater: {error}"))?
-            {
-                break status;
-            }
-            if std::time::Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(
-                    "ACL updater timed out after 15 seconds; select a narrower project workspace"
-                        .to_string(),
-                );
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        };
-        let diagnostic = stderr
-            .and_then(|reader| reader.join().ok())
-            .unwrap_or_default();
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "ACL updater for {} exited with {status}: {diagnostic}. This is a Windows filesystem permission failure; repeating an application approval cannot grant Windows ACL rights.",
-                workspace.display()
-            ))
+        let result = update_workspace_acl_native(workspace, identity, grant, writable);
+        unsafe {
+            LocalFree(identity);
         }
-    }
-
-    fn acl_powershell() -> Result<PathBuf, String> {
-        if let Some(configured) = std::env::var_os("DSH_SANDBOX_ACL_POWERSHELL") {
-            let configured = PathBuf::from(configured);
-            return configured
-                .is_file()
-                .then_some(configured)
-                .ok_or_else(|| "configured ACL PowerShell does not exist".to_string());
-        }
-        let mut candidates = Vec::new();
-        if let Some(program_files) = std::env::var_os("ProgramFiles") {
-            candidates.push(PathBuf::from(program_files).join(r"PowerShell\7\pwsh.exe"));
-        }
-        if let Some(system_root) = std::env::var_os("SystemRoot") {
-            candidates.push(
-                PathBuf::from(system_root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe"),
-            );
-        }
-        candidates
-            .into_iter()
-            .find(|path| path.is_file())
-            .ok_or_else(|| {
-                "no trusted PowerShell executable is available for ACL updates".to_string()
-            })
+        result
     }
 
     pub fn run() -> Result<i32, String> {
@@ -759,7 +666,10 @@ if ($updateDirectFiles) {
     }
 
     pub fn run_args(args: impl Iterator<Item = String>) -> Result<i32, String> {
-        let (mode, workspace, temp_roots, read_roots, argv) = parse_args(args)?;
+        let (mode, workspace, temp_roots, read_roots, runtime_roots, runtime_cache, argv) =
+            parse_args(args)?;
+        let workspace = std::fs::canonicalize(workspace)
+            .map_err(|error| format!("resolve sandbox workspace: {error}"))?;
         if is_user_profile_root(&workspace, std::env::var_os("USERPROFILE").as_deref()) {
             return Err(
                 "the sandbox cannot use the whole user profile as a workspace; select a specific project directory"
@@ -776,11 +686,13 @@ if ($updateDirectFiles) {
         let mut ancestor_roots = vec![workspace.as_path()];
         ancestor_roots.extend(temp_roots.iter().map(PathBuf::as_path));
         ancestor_roots.extend(read_roots.iter().map(PathBuf::as_path));
+        ancestor_roots.extend(runtime_roots.iter().map(PathBuf::as_path));
         if let Some(redirect) = _temporary_redirect.as_ref() {
             ancestor_roots.push(&redirect.link);
         }
         let _ancestor_access = AncestorAccess::grant(&ancestor_roots, profile.sid.0)?;
-        let _acl = AclGrant::grant(&workspace, &sid_text, mode == "workspace-write")?;
+        let mut workspace_grant =
+            AclGrant::grant(&workspace, &sid_text, mode == "workspace-write")?;
         let mut temporary_grants = Vec::new();
         for root in temp_roots {
             if mode != "workspace-write" || !root.is_absolute() || !root.is_dir() {
@@ -801,16 +713,70 @@ if ($updateDirectFiles) {
             }
             read_grants.push(AclGrant::grant(&root, &sid_text, false)?);
         }
+        let mut runtime_access = Vec::new();
+        for root in &runtime_roots {
+            if !root.is_absolute()
+                || is_user_profile_root(root, std::env::var_os("USERPROFILE").as_deref())
+            {
+                return Err("invalid installed runtime root".into());
+            }
+            let cache = runtime_cache
+                .as_ref()
+                .ok_or("runtime permission state is not configured")?;
+            runtime_access.push(super::runtime_read_access::RuntimeReadAccess::acquire(
+                root,
+                cache,
+                |root, sid| update_workspace_acl_native(root, sid, true, false),
+            )?);
+        }
         // The policy root is an authorization boundary, not a cwd override.
         let cwd =
             std::env::current_dir().map_err(|e| format!("execution working directory: {e}"))?;
-        let exit = spawn_appcontainer(profile.sid.0, &cwd, &argv)?;
+        // SandboxMode defines file effects. Package downloads need outbound
+        // Internet access without granting any additional filesystem rights.
+        let mut internet_sid = [0u32; 17];
+        let mut sid_size = std::mem::size_of_val(&internet_sid) as u32;
+        if unsafe {
+            windows_sys::Win32::Security::CreateWellKnownSid(
+                windows_sys::Win32::Security::WinCapabilityInternetClientSid,
+                null_mut(),
+                internet_sid.as_mut_ptr().cast(),
+                &mut sid_size,
+            )
+        } == 0
+        {
+            return Err(last_error("create Internet client capability"));
+        }
+        let mut capabilities = vec![SID_AND_ATTRIBUTES {
+            Sid: internet_sid.as_mut_ptr().cast(),
+            Attributes: 4, // SE_GROUP_ENABLED (winnt.h)
+        }];
+        capabilities.extend(runtime_access.iter().map(|access| SID_AND_ATTRIBUTES {
+            Sid: access.raw(),
+            Attributes: 4,
+        }));
+        let exit = spawn_appcontainer(profile.sid.0, &capabilities, &cwd, &argv)?;
+        workspace_grant.revoke()?;
+        for grant in temporary_grants.iter_mut().chain(read_grants.iter_mut()) {
+            grant.revoke()?;
+        }
         Ok(exit as i32)
     }
 
     fn parse_args(
         mut args: impl Iterator<Item = String>,
-    ) -> Result<(String, PathBuf, Vec<PathBuf>, Vec<PathBuf>, Vec<String>), String> {
+    ) -> Result<
+        (
+            String,
+            PathBuf,
+            Vec<PathBuf>,
+            Vec<PathBuf>,
+            Vec<PathBuf>,
+            Option<PathBuf>,
+            Vec<String>,
+        ),
+        String,
+    > {
         if args.next().as_deref() != Some("--mode") {
             return Err("expected --mode".to_string());
         }
@@ -824,13 +790,25 @@ if ($updateDirectFiles) {
         let workspace = PathBuf::from(args.next().ok_or_else(|| "missing workspace".to_string())?);
         let mut temp_roots = Vec::new();
         let mut read_roots = Vec::new();
+        let mut runtime_roots = Vec::new();
+        let mut runtime_cache = None;
         let mut separator = args.next();
-        while matches!(separator.as_deref(), Some("--temp-root" | "--read-root")) {
-            if temp_roots.len() + read_roots.len() >= 32 {
+        while matches!(
+            separator.as_deref(),
+            Some("--temp-root" | "--read-root" | "--runtime-root" | "--runtime-cache")
+        ) {
+            if temp_roots.len() + read_roots.len() + runtime_roots.len() >= 32 {
                 return Err("too many sandbox roots".into());
             }
             let path = PathBuf::from(args.next().ok_or("missing sandbox root")?);
-            if separator.as_deref() == Some("--temp-root") {
+            if separator.as_deref() == Some("--runtime-cache") {
+                if runtime_cache.is_some() || !path.is_absolute() {
+                    return Err("invalid runtime permission state directory".into());
+                }
+                runtime_cache = Some(path);
+            } else if separator.as_deref() == Some("--runtime-root") {
+                runtime_roots.push(path);
+            } else if separator.as_deref() == Some("--temp-root") {
                 temp_roots.push(path)
             } else {
                 read_roots.push(path)
@@ -844,15 +822,28 @@ if ($updateDirectFiles) {
         if argv.is_empty() {
             return Err("missing command".to_string());
         }
-        Ok((mode, workspace, temp_roots, read_roots, argv))
+        Ok((
+            mode,
+            workspace,
+            temp_roots,
+            read_roots,
+            runtime_roots,
+            runtime_cache,
+            argv,
+        ))
     }
 
-    fn spawn_appcontainer(sid: PSID, cwd: &Path, argv: &[String]) -> Result<u32, String> {
+    fn spawn_appcontainer(
+        sid: PSID,
+        file_capabilities: &[SID_AND_ATTRIBUTES],
+        cwd: &Path,
+        argv: &[String],
+    ) -> Result<u32, String> {
         let mut attributes = AttributeList::new()?;
         let capabilities = SECURITY_CAPABILITIES {
             AppContainerSid: sid,
-            Capabilities: null_mut(),
-            CapabilityCount: 0,
+            Capabilities: file_capabilities.as_ptr().cast_mut(),
+            CapabilityCount: file_capabilities.len() as u32,
             Reserved: 0,
         };
         attributes.set_security_capabilities(&capabilities)?;
@@ -892,6 +883,7 @@ if ($updateDirectFiles) {
             environment.push(0);
         }
         environment.push(0);
+        let job = create_kill_job()?;
         let ok = unsafe {
             CreateProcessW(
                 null(),
@@ -911,9 +903,13 @@ if ($updateDirectFiles) {
         }
         let process_handle = Handle(process.hProcess);
         let thread_handle = Handle(process.hThread);
-        let job = create_kill_job()?;
         if unsafe { AssignProcessToJobObject(job.0, process_handle.0) } == 0 {
-            return Err(last_error("AssignProcessToJobObject"));
+            let error = last_error("AssignProcessToJobObject");
+            unsafe {
+                windows_sys::Win32::System::Threading::TerminateProcess(process_handle.0, 125);
+                WaitForSingleObject(process_handle.0, 5000);
+            }
+            return Err(error);
         }
         if unsafe { ResumeThread(thread_handle.0) } == u32::MAX {
             return Err(last_error("ResumeThread"));

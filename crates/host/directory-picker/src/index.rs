@@ -219,6 +219,12 @@ impl DirectoryPickerBrowseCapability {
 pub enum DirectoryPickerCapability {
     Native(DirectoryPickerNativeCapability),
     Browse(DirectoryPickerBrowseCapability),
+    /// A host-visible chooser plus a remote-safe browse surface. Windows
+    /// desktop sessions need both capabilities at the same time.
+    Hybrid {
+        native: DirectoryPickerNativeCapability,
+        browse: DirectoryPickerBrowseCapability,
+    },
 }
 
 impl DirectoryPickerCapability {
@@ -227,6 +233,7 @@ impl DirectoryPickerCapability {
         match self {
             Self::Native(_) => "native",
             Self::Browse(_) => "browse",
+            Self::Hybrid { .. } => "hybrid",
         }
     }
 }

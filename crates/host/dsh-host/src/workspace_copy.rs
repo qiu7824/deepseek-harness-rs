@@ -319,6 +319,11 @@ mod tests {
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn worktree_copy_preserves_local_edits_and_recovers_its_git_link() {
+        tokio::task::spawn_blocking(worktree_copy_fixture)
+            .await
+            .expect("workspace copy fixture");
+    }
+    fn worktree_copy_fixture() {
         let root = fixture();
         let project = root.join("project");
         std::fs::create_dir(&project).unwrap();
@@ -453,6 +458,11 @@ mod tests {
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn plain_copy_excludes_build_cache_and_new_delivery_does_not_alias_source() {
+        tokio::task::spawn_blocking(plain_copy_fixture)
+            .await
+            .expect("plain copy fixture");
+    }
+    fn plain_copy_fixture() {
         let root = fixture();
         let project = root.join("project");
         std::fs::create_dir_all(project.join("node_modules")).unwrap();
