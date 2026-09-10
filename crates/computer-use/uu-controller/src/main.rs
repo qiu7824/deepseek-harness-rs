@@ -1,6 +1,7 @@
 #[cfg(windows)]
 mod business;
 mod input;
+mod profile;
 #[cfg(windows)]
 mod render;
 #[cfg(windows)]
@@ -42,6 +43,14 @@ fn worker_error_code(message: &str) -> &str {
 
 #[cfg(windows)]
 fn main() {
+    if std::env::args().any(|arg| arg == "--check-client") {
+        let result = std::env::var_os("DSH_UU_INSTALL_DIR")
+            .ok_or_else(|| "未找到 UU 安装目录".to_string())
+            .and_then(|dir| profile::load(&std::path::PathBuf::from(dir).join("GameViewer.exe")))
+            .map(|profile| serde_json::json!({"clientVersion":profile.version,"requestBuild":profile.build,"clientSha256":profile.hash,"signingDataRva":format!("0x{:x}",profile.signing_key_rva),"exactProfile":profile.exact_profile}));
+        respond(&serde_json::json!({"ok":result.is_ok(),"result":result}));
+        return;
+    }
     if std::env::args().any(|arg| arg == "--check-engine") {
         let result = platform::MediaPlatform::new().and_then(|_media| sdk::check_engine());
         respond(&serde_json::json!({"ok":result.is_ok(),"result":result}));

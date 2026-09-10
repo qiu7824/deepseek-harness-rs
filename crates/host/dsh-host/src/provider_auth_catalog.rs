@@ -134,12 +134,19 @@ impl CatalogStore {
     /// Transfer a legacy login's cached metadata only when its verified local
     /// identity acquires a more precise scope. Never replace a newer catalog.
     pub async fn migrate_login_scope(&self, provider: &str, old_scope: &str, new_scope: &str) {
-        if old_scope == new_scope { return; }
+        if old_scope == new_scope {
+            return;
+        }
         let _write = self.writes.lock().await;
         let current = self.get(provider, new_scope);
-        if current.status == "synced" || current.updated_at.is_some() || !current.models.is_empty() { return; }
+        if current.status == "synced" || current.updated_at.is_some() || !current.models.is_empty()
+        {
+            return;
+        }
         let mut legacy = self.get(provider, old_scope);
-        if legacy.updated_at.is_none() && legacy.models.is_empty() { return; }
+        if legacy.updated_at.is_none() && legacy.models.is_empty() {
+            return;
+        }
         legacy.account_scope = new_scope.into();
         // A failed refresh may coexist with previously usable metadata.
         if current.status == "error" {
@@ -149,7 +156,9 @@ impl CatalogStore {
         if self.store_locked(legacy.clone()).await.is_err() {
             // Cache persistence failure must not turn a valid login into a
             // disconnected account. Keep metadata usable and retry on restart.
-            self.records.lock().insert((provider.into(), new_scope.into()), legacy);
+            self.records
+                .lock()
+                .insert((provider.into(), new_scope.into()), legacy);
         }
     }
     pub fn mark_syncing(&self, provider: &str, scope: &str) {

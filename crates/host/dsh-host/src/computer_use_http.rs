@@ -19,6 +19,9 @@ const MAX_CONTROL_BYTES: usize = 64 * 1024;
 const MAX_ANNOTATION_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_BROWSER_SESSION_ID: &str = "default";
 
+#[path = "computer_use_annotation.rs"]
+mod annotation;
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorBody {
@@ -111,7 +114,7 @@ async fn parse_body(request: WebRequest, limit: usize) -> Result<Value, WebRespo
             error(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "request-too-large",
-                "浏览器控制请求超过 64 KiB",
+                format!("画面控制请求超过 {} KiB", limit / 1024),
             )
         })?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
@@ -182,7 +185,11 @@ async fn handle(
         .unwrap_or_default()
         .trim_matches('/')
         .to_string();
-    let body_limit = if operation == "annotation" { MAX_ANNOTATION_BYTES } else { MAX_CONTROL_BYTES };
+    let body_limit = if operation == "annotation" {
+        MAX_ANNOTATION_BYTES
+    } else {
+        MAX_CONTROL_BYTES
+    };
     let body = match parse_body(request, body_limit).await {
         Ok(value) => value,
         Err(response) => return response,
@@ -222,52 +229,33 @@ async fn handle(
     }
     if operation == "annotation" {
         let Some(agent) = owner.agent else {
-            return error(StatusCode::CONFLICT, "annotation-agent-unavailable", "当前会话没有可接收批注的智能体");
+            return error(
+                StatusCode::CONFLICT,
+                "annotation-agent-unavailable",
+                "当前会话没有可接收批注的智能体",
+            );
         };
-        let annotations = body.get("annotations").cloned().unwrap_or_else(|| json!({}));
-        let raw = serde_json::to_string(&annotations).unwrap_or_default();
-        if raw.len() > 48 * 1024 {
-            return error(StatusCode::PAYLOAD_TOO_LARGE, "annotation-too-large", "批注内容超过大小限制");
-        }
-        let mut text = String::from("画面批注（已提交给智能体）：\n");
-        if let Some(notes) = annotations.get("notes").and_then(Value::as_array) {
-            for note in notes.iter().filter_map(|item| item.get("text").and_then(Value::as_str)) {
-                text.push_str("- ");
-                text.push_str(note);
-                text.push('\n');
-            }
-        }
-        if let Some(strokes) = annotations.get("strokes").and_then(Value::as_array) {
-            text.push_str(&format!("标注线条：{} 条（坐标已按当前画面归一化）\n", strokes.len()));
-        }
-        let mut content = vec![dsh_llm::ContentBlock::Text { text }];
-        if let Some(screenshot) = body.get("screenshot").and_then(Value::as_object) {
-            let media_type = match screenshot.get("mediaType").and_then(Value::as_str).unwrap_or("image/jpeg") {
-                "image/png" => dsh_attachment::ImageMediaType::Png,
-                "image/webp" => dsh_attachment::ImageMediaType::Webp,
-                "image/gif" => dsh_attachment::ImageMediaType::Gif,
-                _ => dsh_attachment::ImageMediaType::Jpeg,
-            };
-            let encoded = screenshot.get("base64").and_then(Value::as_str).unwrap_or("");
-            let data = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| error(StatusCode::BAD_REQUEST, "annotation-image-invalid", "批注截图编码无效"));
-            let data = match data { Ok(data) => data, Err(response) => return response };
-            if data.len() > 3 * 1024 * 1024 { return error(StatusCode::PAYLOAD_TOO_LARGE, "annotation-image-too-large", "批注截图超过大小限制"); }
-            let Some(store) = agent.ctx().get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false).map(|slot| slot.as_ref().clone()) else { return error(StatusCode::CONFLICT, "annotation-attachments-unavailable", "当前主机没有可用的图片附件存储"); };
-            let reference = match store.save_image(&dsh_attachment::SaveImageAttachment { data, media_type, name: Some("screen-annotation.jpg".into()) }).await {
-                Ok(reference) => reference,
-                Err(failure) => return error(StatusCode::BAD_REQUEST, "annotation-image-invalid", failure.to_string()),
-            };
-            content.push(dsh_llm::ContentBlock::Image { attachment: dsh_llm::ImageAttachmentRef {
-                attachment_id: reference.attachment_id.to_string(),
-                media_type: Some(reference.media_type.as_str().to_string()),
-                bytes: Some(reference.bytes),
-                width: Some(reference.width),
-                height: Some(reference.height),
-                name: reference.name,
-            } });
-        }
-        agent.followup(dsh_llm::create_user_message(content, dsh_llm::MessageSource::User { rpc_id: None, client_time_zone: None }));
-        return json_response(StatusCode::OK, &json!({"submitted":true,"ownerSessionId":owner.id,"annotation":annotations,"hasScreenshot":body.get("screenshot").is_some()}));
+        let Some(store) = agent
+            .ctx()
+            .get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false)
+            .map(|slot| slot.as_ref().clone())
+        else {
+            return error(
+                StatusCode::CONFLICT,
+                "annotation-attachments-unavailable",
+                "当前主机没有可用的图片附件存储",
+            );
+        };
+        let message = match annotation::message(&body, store.as_ref()).await {
+            Ok(message) => message,
+            Err(response) => return response,
+        };
+        let message_id = message.id.to_string();
+        agent.followup(message);
+        return json_response(
+            StatusCode::OK,
+            &json!({"submitted":true,"ownerSessionId":owner.id,"messageId":message_id,"hasScreenshot":true}),
+        );
     }
     if operation != "action" {
         return error(
@@ -383,6 +371,27 @@ pub fn register(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn screen_annotations_cannot_target_an_unknown_or_invalid_owner() {
+        let registry = AgentRegistry::install(&cordis::Context::root());
+        for body in [
+            json!({}),
+            json!({"ownerSessionId":""}),
+            json!({"ownerSessionId":"bad\nowner"}),
+        ] {
+            let result = valid_owner(&registry, &None, &None, &body).await;
+            assert_eq!(result.err().unwrap().status(), StatusCode::BAD_REQUEST);
+        }
+        let result = valid_owner(
+            &registry,
+            &None,
+            &None,
+            &json!({"ownerSessionId":"someone-elses-session"}),
+        )
+        .await;
+        assert_eq!(result.err().unwrap().status(), StatusCode::FORBIDDEN);
+    }
 
     #[test]
     fn gui_arguments_bind_browser_session_without_exposing_owner_override() {

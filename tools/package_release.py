@@ -158,7 +158,7 @@ def main() -> None:
     shutil.copy2(ROOT / "docs" / "sidebar-workbench-suite.md", stage / "docs" / "sidebar-workbench-suite.md")
     shutil.copy2(ROOT / "docs" / "rust-conversation-scrolling.zh.md", stage / "docs" / "rust-conversation-scrolling.zh.md")
     shutil.copy2(ROOT / "docs" / "response-completeness.zh.md", stage / "docs" / "response-completeness.zh.md")
-    for name in ["workspace-scratch-policy-design.zh.md", "workspace-scratch-open-source-study.zh.md", "ultra-codex-usage-reset-plan.zh.md", "upstream-v0.1.5-alpha.1-evaluation.zh.md", "uu-self-connect-probe.zh.md"]:
+    for name in ["workspace-scratch-policy-design.zh.md", "workspace-scratch-open-source-study.zh.md", "ultra-codex-usage-reset-plan.zh.md", "upstream-v0.1.5-alpha.1-evaluation.zh.md", "upstream-v0.1.5-alpha.2-evaluation.zh.md", "uu-self-connect-probe.zh.md"]:
         shutil.copy2(ROOT / "docs" / name, stage / "docs" / name)
     for name in ["README.md", "README.zh.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]:
         if (ROOT / name).exists():

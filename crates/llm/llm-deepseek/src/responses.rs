@@ -166,7 +166,10 @@ mod tests {
     }
     #[test]
     fn cache_breakpoint_serializes_as_object_after_complete_stable_instructions() {
-        for endpoint in ["https://api.openai.com/v1", "https://api.openai.com/v1/responses"] {
+        for endpoint in [
+            "https://api.openai.com/v1",
+            "https://api.openai.com/v1/responses",
+        ] {
             let chat = json!({"model":"gpt-6-astra","messages":[
                 {"role":"system","content":"Stable instructions"},
                 {"role":"developer","content":[{"type":"text","text":"Shared rules"},{"type":"text","text":"More shared rules"}]},
@@ -175,34 +178,62 @@ mod tests {
             let mut first = super::request_for_endpoint(&chat, endpoint).unwrap();
             super::apply_session_cache_key(&mut first, Some("session-cache"), endpoint);
             super::apply_cache_breakpoint(&mut first, endpoint);
-            let first: serde_json::Value = serde_json::from_slice(&serde_json::to_vec(&first).unwrap()).unwrap();
+            let first: serde_json::Value =
+                serde_json::from_slice(&serde_json::to_vec(&first).unwrap()).unwrap();
             assert_eq!(first["instructions"], "");
-            assert_eq!(first["input"][0]["content"][0]["text"], "Stable instructions");
-            assert!(first["input"][0]["content"][0].get("prompt_cache_breakpoint").is_none());
-            assert!(first["input"][1]["content"][0].get("prompt_cache_breakpoint").is_none());
-            assert_eq!(first["input"][1]["content"][1]["prompt_cache_breakpoint"], json!({"mode":"explicit"}));
-            assert!(first["input"][2]["content"][0].get("prompt_cache_breakpoint").is_none());
+            assert_eq!(
+                first["input"][0]["content"][0]["text"],
+                "Stable instructions"
+            );
+            assert!(
+                first["input"][0]["content"][0]
+                    .get("prompt_cache_breakpoint")
+                    .is_none()
+            );
+            assert!(
+                first["input"][1]["content"][0]
+                    .get("prompt_cache_breakpoint")
+                    .is_none()
+            );
+            assert_eq!(
+                first["input"][1]["content"][1]["prompt_cache_breakpoint"],
+                json!({"mode":"explicit"})
+            );
+            assert!(
+                first["input"][2]["content"][0]
+                    .get("prompt_cache_breakpoint")
+                    .is_none()
+            );
             let mut changed = chat.clone();
             changed["messages"][2]["content"] = json!("Different question");
             let mut changed = super::request_for_endpoint(&changed, endpoint).unwrap();
             super::apply_session_cache_key(&mut changed, Some("session-cache"), endpoint);
             super::apply_cache_breakpoint(&mut changed, endpoint);
             assert_eq!(first["prompt_cache_key"], changed["prompt_cache_key"]);
-            assert_eq!(&first["input"].as_array().unwrap()[..2], &changed["input"].as_array().unwrap()[..2]);
+            assert_eq!(
+                &first["input"].as_array().unwrap()[..2],
+                &changed["input"].as_array().unwrap()[..2]
+            );
             let unchanged = changed.clone();
             super::apply_cache_breakpoint(&mut changed, endpoint);
-            assert_eq!(unchanged, changed, "applying cache policy twice must not duplicate instructions");
+            assert_eq!(
+                unchanged, changed,
+                "applying cache policy twice must not duplicate instructions"
+            );
         }
     }
     #[test]
     fn cache_breakpoints_preserve_legacy_and_third_party_contracts() {
-        for (model,endpoint) in [
+        for (model, endpoint) in [
             ("gpt-5.5", "https://api.openai.com/v1"),
             ("gpt-5.4", "https://chatgpt.com/backend-api/codex"),
             ("gpt-5.3-codex", "https://chatgpt.com/backend-api/codex"),
             ("gpt-5.6-sol", "https://chatgpt.com/backend-api/codex"),
             ("gpt-6-astra", "https://chatgpt.com/backend-api/codex"),
-            ("gpt-6-astra", "https://chatgpt.com/backend-api/codex/responses"),
+            (
+                "gpt-6-astra",
+                "https://chatgpt.com/backend-api/codex/responses",
+            ),
             ("o3", "https://api.openai.com/v1"),
             ("custom-alias", "https://api.openai.com/v1"),
             ("gpt-6-astra", "https://example.test/v1"),
@@ -211,30 +242,50 @@ mod tests {
         ] {
             let mut body = json!({"model":model,"instructions":"Instructions","input":[{"role":"user","content":[{"type":"input_text","text":"Question"}]}]});
             let before = body.clone();
-            super::apply_cache_breakpoint(&mut body,endpoint);
-            assert_eq!(before,body,"{model} {endpoint}");
+            super::apply_cache_breakpoint(&mut body, endpoint);
+            assert_eq!(before, body, "{model} {endpoint}");
         }
         for model in ["gpt-5.6", "gpt-5.6-sol", "gpt-6-astra"] {
             let mut body = json!({"model":model,"input":[{"role":"user","content":[{"type":"input_text","text":"Changing user input"}]}]});
             let before = body.clone();
-            super::apply_cache_breakpoint(&mut body,"https://api.openai.com/v1");
-            assert_eq!(before,body,"no user/assistant fallback breakpoint");
+            super::apply_cache_breakpoint(&mut body, "https://api.openai.com/v1");
+            assert_eq!(before, body, "no user/assistant fallback breakpoint");
         }
     }
     #[test]
     fn account_refresh_keeps_cache_and_replay_but_account_switch_does_not() {
         use dsh_llm::{ContentBlock, ModelMessageSource, StreamChunk, create_assistant_message};
         let endpoint = "https://chatgpt.com/backend-api/codex";
-        let headers = |account: &str, token: &str| vec![("ChatGPT-Account-Id".to_string(),account.to_string()),("Authorization".to_string(),token.to_string())];
-        let alice = super::account_scope_hash(&headers("shared-workspace", "token-v1"), Some("alice-scope")).unwrap();
-        let renewed = super::account_scope_hash(&headers("shared-workspace", "token-v2"), Some("alice-scope")).unwrap();
-        let bob = super::account_scope_hash(&headers("shared-workspace", "token-v1"), Some("bob-scope")).unwrap();
+        let headers = |account: &str, token: &str| {
+            vec![
+                ("ChatGPT-Account-Id".to_string(), account.to_string()),
+                ("Authorization".to_string(), token.to_string()),
+            ]
+        };
+        let alice = super::account_scope_hash(
+            &headers("shared-workspace", "token-v1"),
+            Some("alice-scope"),
+        )
+        .unwrap();
+        let renewed = super::account_scope_hash(
+            &headers("shared-workspace", "token-v2"),
+            Some("alice-scope"),
+        )
+        .unwrap();
+        let bob =
+            super::account_scope_hash(&headers("shared-workspace", "token-v1"), Some("bob-scope"))
+                .unwrap();
         assert_eq!(alice, renewed);
         assert_ne!(alice, bob);
         let mut keys = vec![];
         for scope in [&alice, &renewed, &bob] {
             let mut body = json!({});
-            super::apply_session_cache_key_for_account(&mut body,Some("same-session"),endpoint,Some(scope));
+            super::apply_session_cache_key_for_account(
+                &mut body,
+                Some("same-session"),
+                endpoint,
+                Some(scope),
+            );
             keys.push(body["prompt_cache_key"].clone());
         }
         assert_eq!(keys[0], keys[1]);
@@ -244,14 +295,42 @@ mod tests {
             {"type":"reasoning","id":"rs-fixture","encrypted_content":"opaque-alice","summary":[]},
             {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]}
         ]}}).to_string()).unwrap().into_iter().find(|chunk|matches!(chunk,StreamChunk::Finish{..})).unwrap();
-        super::bind_replay_metadata_for_account(&mut finish, endpoint,"gpt-6-astra",Some(&alice));
-        let StreamChunk::Finish { replay_state, .. } = finish else { unreachable!() };
-        let history = [create_assistant_message(vec![ContentBlock::Text{text:"Done".into()}],ModelMessageSource{provider:"openai-codex".into(),model:"gpt-6-astra".into(),replay_state})];
+        super::bind_replay_metadata_for_account(&mut finish, endpoint, "gpt-6-astra", Some(&alice));
+        let StreamChunk::Finish { replay_state, .. } = finish else {
+            unreachable!()
+        };
+        let history = [create_assistant_message(
+            vec![ContentBlock::Text {
+                text: "Done".into(),
+            }],
+            ModelMessageSource {
+                provider: "openai-codex".into(),
+                model: "gpt-6-astra".into(),
+                replay_state,
+            },
+        )];
         let chat = json!({"model":"gpt-6-astra","messages":[{"role":"assistant","content":"Done"},{"role":"user","content":"Continue"}]});
-        for (scope, expected) in [(Some(renewed.as_str()),true),(Some(bob.as_str()),false),(None,false)] {
-            let body = super::request_for_endpoint_with_history_for_account(&chat,endpoint,&history,"openai-codex",scope).unwrap();
-            assert_eq!(body["input"][0]["encrypted_content"] == "opaque-alice", expected);
-            assert!(body.to_string().contains("Done"), "visible conversation survives switching");
+        for (scope, expected) in [
+            (Some(renewed.as_str()), true),
+            (Some(bob.as_str()), false),
+            (None, false),
+        ] {
+            let body = super::request_for_endpoint_with_history_for_account(
+                &chat,
+                endpoint,
+                &history,
+                "openai-codex",
+                scope,
+            )
+            .unwrap();
+            assert_eq!(
+                body["input"][0]["encrypted_content"] == "opaque-alice",
+                expected
+            );
+            assert!(
+                body.to_string().contains("Done"),
+                "visible conversation survives switching"
+            );
         }
     }
     #[test]
@@ -399,16 +478,29 @@ pub(crate) fn apply_session_cache_key(body: &mut Value, session_id: Option<&str>
     apply_session_cache_key_for_account(body, session_id, endpoint, None);
 }
 
-pub(crate) fn account_scope_hash(headers: &[(String, String)], login_scope: Option<&str>) -> Option<String> {
+pub(crate) fn account_scope_hash(
+    headers: &[(String, String)],
+    login_scope: Option<&str>,
+) -> Option<String> {
     use sha2::{Digest, Sha256};
     if let Some(scope) = login_scope.filter(|scope| !scope.is_empty()) {
-        return Some(format!("{:x}", Sha256::digest(format!("dsh-login-v2\0{scope}").as_bytes())));
+        return Some(format!(
+            "{:x}",
+            Sha256::digest(format!("dsh-login-v2\0{scope}").as_bytes())
+        ));
     }
-    headers.iter().find(|(name, value)| name.eq_ignore_ascii_case("chatgpt-account-id") && !value.is_empty())
+    headers
+        .iter()
+        .find(|(name, value)| name.eq_ignore_ascii_case("chatgpt-account-id") && !value.is_empty())
         .map(|(_, value)| format!("{:x}", Sha256::digest(value.as_bytes())))
 }
 
-pub(crate) fn apply_session_cache_key_for_account(body: &mut Value, session_id: Option<&str>, endpoint: &str, account_scope: Option<&str>) {
+pub(crate) fn apply_session_cache_key_for_account(
+    body: &mut Value,
+    session_id: Option<&str>,
+    endpoint: &str,
+    account_scope: Option<&str>,
+) {
     if !official_responses_endpoint(endpoint) || body.get("prompt_cache_key").is_some() {
         return;
     }
@@ -433,8 +525,14 @@ fn official_responses_endpoint(endpoint: &str) -> bool {
             && url.username().is_empty()
             && url.password().is_none()
             && match url.host_str() {
-                Some("api.openai.com") => matches!(url.path().trim_end_matches('/'), "" | "/v1" | "/v1/responses"),
-                Some("chatgpt.com") => matches!(url.path().trim_end_matches('/'), "/backend-api/codex" | "/backend-api/codex/responses"),
+                Some("api.openai.com") => matches!(
+                    url.path().trim_end_matches('/'),
+                    "" | "/v1" | "/v1/responses"
+                ),
+                Some("chatgpt.com") => matches!(
+                    url.path().trim_end_matches('/'),
+                    "/backend-api/codex" | "/backend-api/codex/responses"
+                ),
                 _ => false,
             }
     })
@@ -443,9 +541,14 @@ fn official_responses_endpoint(endpoint: &str) -> bool {
 /// Explicit cache breakpoints were introduced with GPT-5.6. Unknown aliases
 /// and earlier models keep their endpoint's default implicit caching.
 fn supports_cache_breakpoints(model: &str) -> bool {
-    let Some(version) = model.strip_prefix("gpt-").and_then(|s| s.split('-').next()) else { return false; };
+    let Some(version) = model.strip_prefix("gpt-").and_then(|s| s.split('-').next()) else {
+        return false;
+    };
     let mut parts = version.split('.');
-    let (Ok(major), Some(minor)) = (parts.next().unwrap_or("").parse::<u32>(), parts.next().map(str::parse::<u32>)) else {
+    let (Ok(major), Some(minor)) = (
+        parts.next().unwrap_or("").parse::<u32>(),
+        parts.next().map(str::parse::<u32>),
+    ) else {
         return version.parse::<u32>().is_ok_and(|major| major >= 6);
     };
     parts.next().is_none() && minor.is_ok_and(|minor| major >= 6 || major == 5 && minor >= 6)
@@ -460,27 +563,51 @@ pub(crate) fn apply_cache_breakpoint(body: &mut Value, endpoint: &str) {
         // implicit caching and the stable prompt_cache_key instead.
         || !reqwest::Url::parse(endpoint).is_ok_and(|url| url.host_str() == Some("api.openai.com"))
         || !body.get("model").and_then(Value::as_str).is_some_and(supports_cache_breakpoints)
-    { return; }
+    {
+        return;
+    }
     // Top-level instructions cannot carry a content breakpoint. Represent
     // the same instructions once as the leading developer message instead.
     // Do not duplicate the text in both instructions and the input prefix.
-    let instructions = body.get("instructions").and_then(Value::as_str)
-        .filter(|text| !text.is_empty()).map(str::to_string);
-    if !body.get("input").is_some_and(Value::is_array) { return; }
+    let instructions = body
+        .get("instructions")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string);
+    if !body.get("input").is_some_and(Value::is_array) {
+        return;
+    }
     if let Some(instructions) = instructions {
         body["instructions"] = json!("");
-        body["input"].as_array_mut().unwrap().insert(0, json!({
-            "role":"developer", "content":[{"type":"input_text", "text":instructions}]
-        }));
+        body["input"].as_array_mut().unwrap().insert(
+            0,
+            json!({
+                "role":"developer", "content":[{"type":"input_text", "text":instructions}]
+            }),
+        );
     }
-    let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else { return; };
-    let boundary = items.iter().take_while(|item| matches!(item["role"].as_str(), Some("system" | "developer")))
-        .enumerate().filter_map(|(index,item)| item["content"].as_array().and_then(|parts| {
-            parts.iter().rposition(|part| part["type"] == "input_text").map(|part| (index,part))
-        })).last();
-    if let Some((item,part)) = boundary {
-        items[item]["content"][part].as_object_mut().unwrap()
-            .entry("prompt_cache_breakpoint").or_insert_with(|| json!({"mode":"explicit"}));
+    let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let boundary = items
+        .iter()
+        .take_while(|item| matches!(item["role"].as_str(), Some("system" | "developer")))
+        .enumerate()
+        .filter_map(|(index, item)| {
+            item["content"].as_array().and_then(|parts| {
+                parts
+                    .iter()
+                    .rposition(|part| part["type"] == "input_text")
+                    .map(|part| (index, part))
+            })
+        })
+        .last();
+    if let Some((item, part)) = boundary {
+        items[item]["content"][part]
+            .as_object_mut()
+            .unwrap()
+            .entry("prompt_cache_breakpoint")
+            .or_insert_with(|| json!({"mode":"explicit"}));
     }
 }
 
@@ -558,7 +685,12 @@ pub(crate) fn bind_replay_metadata(chunk: &mut StreamChunk, endpoint: &str, mode
     bind_replay_metadata_for_account(chunk, endpoint, model, None);
 }
 
-pub(crate) fn bind_replay_metadata_for_account(chunk: &mut StreamChunk, endpoint: &str, model: &str, account_scope: Option<&str>) {
+pub(crate) fn bind_replay_metadata_for_account(
+    chunk: &mut StreamChunk,
+    endpoint: &str,
+    model: &str,
+    account_scope: Option<&str>,
+) {
     if let StreamChunk::Finish {
         replay_state: Some(state),
         ..
@@ -567,7 +699,9 @@ pub(crate) fn bind_replay_metadata_for_account(chunk: &mut StreamChunk, endpoint
         if state["format"] == "openai-responses-v1" {
             state["endpointHash"] = json!(endpoint_key(endpoint));
             state["requestedModel"] = json!(model);
-            if let Some(scope) = account_scope { state["accountScopeHash"] = json!(scope); }
+            if let Some(scope) = account_scope {
+                state["accountScopeHash"] = json!(scope);
+            }
         }
     }
 }
@@ -735,7 +869,8 @@ pub(crate) fn request_for_endpoint_with_history_for_account(
     provider: &str,
     account_scope: Option<&str>,
 ) -> Result<Value, LlmFailure> {
-    let mut body = request_from_chat_with_history(chat, history, provider, base_url, account_scope)?;
+    let mut body =
+        request_from_chat_with_history(chat, history, provider, base_url, account_scope)?;
     if reqwest::Url::parse(base_url).ok().is_some_and(|url| {
         url.scheme() == "https" && matches!(url.host_str(), Some("api.openai.com" | "chatgpt.com"))
     }) {

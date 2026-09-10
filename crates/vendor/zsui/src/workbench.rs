@@ -281,7 +281,10 @@ impl ZsWorkbenchContentBlock {
     }
 
     pub fn heading(level: u8, text: impl Into<String>) -> Self {
-        Self::Heading { level: level.clamp(1, 6), text: text.into() }
+        Self::Heading {
+            level: level.clamp(1, 6),
+            text: text.into(),
+        }
     }
 
     pub fn list_item(text: impl Into<String>) -> Self {
@@ -1912,17 +1915,23 @@ fn block_height(
             typography_scale,
             measurements,
         ),
-        ZsWorkbenchContentBlock::Heading { level, text } => measured_text_height(
-            text,
-            width,
-            if *level <= 1 { TextRole::Title } else { TextRole::Subtitle },
-            ColorRole::PrimaryText,
-            TextWeight::Semibold,
-            TextWrap::Word,
-            dpi,
-            typography_scale,
-            measurements,
-        ) + scale(4, dpi),
+        ZsWorkbenchContentBlock::Heading { level, text } => {
+            measured_text_height(
+                text,
+                width,
+                if *level <= 1 {
+                    TextRole::Title
+                } else {
+                    TextRole::Subtitle
+                },
+                ColorRole::PrimaryText,
+                TextWeight::Semibold,
+                TextWrap::Word,
+                dpi,
+                typography_scale,
+                measurements,
+            ) + scale(4, dpi)
+        }
         ZsWorkbenchContentBlock::ListItem { text } => measured_text_height(
             &format!("• {text}"),
             width,
@@ -1934,17 +1943,19 @@ fn block_height(
             typography_scale,
             measurements,
         ),
-        ZsWorkbenchContentBlock::Quote { text } => measured_text_height(
-            text,
-            (width - scale(20, dpi)).max(1),
-            TextRole::Body,
-            ColorRole::SecondaryText,
-            TextWeight::Regular,
-            TextWrap::Word,
-            dpi,
-            typography_scale,
-            measurements,
-        ) + scale(12, dpi),
+        ZsWorkbenchContentBlock::Quote { text } => {
+            measured_text_height(
+                text,
+                (width - scale(20, dpi)).max(1),
+                TextRole::Body,
+                ColorRole::SecondaryText,
+                TextWeight::Regular,
+                TextWrap::Word,
+                dpi,
+                typography_scale,
+                measurements,
+            ) + scale(12, dpi)
+        }
         ZsWorkbenchContentBlock::Divider => scale(12, dpi),
         ZsWorkbenchContentBlock::Code { code, .. } => {
             scale(42, dpi)
@@ -2477,7 +2488,11 @@ fn paint_message_block(
         ZsWorkbenchContentBlock::Heading { level, text } => commands.push(text_command(
             text,
             bounds,
-            if *level <= 1 { TextRole::Title } else { TextRole::Subtitle },
+            if *level <= 1 {
+                TextRole::Title
+            } else {
+                TextRole::Subtitle
+            },
             ColorRole::PrimaryText,
             TextWeight::Semibold,
             HorizontalAlign::Start,

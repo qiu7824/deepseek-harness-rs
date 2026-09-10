@@ -23,7 +23,9 @@ const button=text=>{const result=[...document.querySelectorAll('button')].find(n
  const View=slots.get('conversation.view').component;await act(()=>root.render(React.createElement(View,{sessionId:'session-a',ctx})));
  assert.match(document.body.textContent,/输出\/report.html/);await act(()=>document.querySelector('.dsa-file').click());assert.equal(opened[0].scope.sessionId,'session-a');
  await act(()=>document.querySelector('.dsa-files li').dispatchEvent(new window.MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:30,clientY:30})));
- assert.equal(document.querySelectorAll('[role=menuitem]').length,6);await act(()=>button('移入垃圾槽').click());
+ assert.deepEqual([...document.querySelectorAll('[role=menuitem]')].map(node=>node.textContent),['预览','复制路径','在资源管理器中显示','使用本地工具打开','在编辑器中打开','重命名','移入垃圾槽']);
+ await act(()=>button('在编辑器中打开').click());assert.ok(requests.some(request=>request.operation==='file-action'&&request.args.sessionId==='session-a'&&request.args.path==='输出/report.html'&&request.args.intent==='editor'));
+ await act(()=>document.querySelector('.dsa-files li').dispatchEvent(new window.MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:30,clientY:30})));await act(()=>button('移入垃圾槽').click());
  assert.ok(requests.some(request=>request.operation==='file-action'&&request.args.etag==='50:1'&&request.args.action==='trash'));
  await act(()=>button('查看产生的垃圾列表').click());assert.match(document.body.textContent,/正在使用/);assert.equal(button('移入恢复队列').disabled,true);
  await act(()=>root.render(React.createElement(View,{sessionId:'session-b',ctx})));

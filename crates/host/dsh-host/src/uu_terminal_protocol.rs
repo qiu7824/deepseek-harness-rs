@@ -104,7 +104,8 @@ fn opaque_cell(value: &str, limit: usize) -> bool {
     !value.is_empty() && value.len() <= limit && !value.chars().any(char::is_control)
 }
 
-/// Parse the whitespace table headed SESSION_ID, SHELL, STATE, LAST_ACTIVE.
+/// Parse the legacy whitespace inventory and the tab-separated inventory
+/// headed SESSION_ID, NAME, SHELL, STATE, LAST_ACTIVE shipped by newer CLIs.
 /// State and last-active values are display data, not lifecycle authority.
 /// LAST_ACTIVE may contain spaces. Malformed rows, duplicate IDs and
 /// unrecognized diagnostic rows fail.
@@ -112,6 +113,7 @@ pub(super) fn parse_sessions(stdout: &str) -> Result<BTreeSet<String>, String> {
     let text = plain_text(stdout)?;
     let mut sessions = BTreeSet::new();
     let mut header = false;
+    let mut named_sessions = false;
     let mut explicit_empty = false;
     let mut connected = false;
     for (index, raw) in text.split(['\r', '\n']).enumerate() {
@@ -131,24 +133,38 @@ pub(super) fn parse_sessions(stdout: &str) -> Result<BTreeSet<String>, String> {
             continue;
         }
         let columns: Vec<_> = line.split_ascii_whitespace().collect();
-        if columns == ["SESSION_ID", "SHELL", "STATE", "LAST_ACTIVE"] {
+        if columns == ["SESSION_ID", "SHELL", "STATE", "LAST_ACTIVE"]
+            || columns == ["SESSION_ID", "NAME", "SHELL", "STATE", "LAST_ACTIVE"]
+        {
             if header || explicit_empty {
                 return Err(protocol_error());
             }
             header = true;
+            named_sessions = columns.len() == 5;
             continue;
         }
         if !header || explicit_empty || columns.len() < 4 {
             return Err(protocol_error());
         }
-        if !session_id(columns[0])
-            || !matches!(columns[1], "powershell" | "cmd" | "zsh" | "bash")
-            || !opaque_cell(columns[2], 128)
-            || !opaque_cell(&columns[3..].join(" "), 256)
+        let (id, shell, state, last_active) = if named_sessions {
+            // Names can be empty or contain spaces. Do not mistake a word in
+            // the name for a shell/session field by splitting on whitespace.
+            let cells: Vec<_> = line.split('\t').map(str::trim).collect();
+            if cells.len() != 5 || (!cells[1].is_empty() && !opaque_cell(cells[1], 256)) {
+                return Err(protocol_error());
+            }
+            (cells[0], cells[2], cells[3], cells[4].to_string())
+        } else {
+            (columns[0], columns[1], columns[2], columns[3..].join(" "))
+        };
+        if !session_id(id)
+            || !matches!(shell, "powershell" | "cmd" | "zsh" | "bash")
+            || !opaque_cell(state, 128)
+            || !opaque_cell(&last_active, 256)
         {
             return Err(protocol_error());
         }
-        if sessions.len() >= MAX_SESSIONS || !sessions.insert(columns[0].to_string()) {
+        if sessions.len() >= MAX_SESSIONS || !sessions.insert(id.to_string()) {
             return Err(protocol_error());
         }
     }
@@ -206,48 +222,79 @@ pub(super) fn shell_prompt(text: &str, shell: crate::uu_cli::TerminalShell) -> O
 }
 
 fn blocked_plain_startup(text: &str) -> bool {
+    startup_failure_plain(text).is_some()
+}
+
+fn startup_failure_plain(text: &str) -> Option<&'static str> {
     let lower = text.to_ascii_lowercase();
-    [
-        "[system] unlocking",
-        "unlock password",
-        "device is locked",
-        "not logged in",
-        "not logged-in",
-        "please log in",
-        "please login",
-        "login required",
-        "login is required",
+    if lower.contains("timeout waiting for terminal environment check") {
+        return Some("UU 客户端等待被控端终端环境检查响应超时；尚未建立远端 Shell");
+    }
+    if [
         "unsupported os",
         "unsupported operating system",
         "only supports windows",
         "only supported on windows",
         "仅支持 windows",
         "仅支持windows",
-        "请先登录",
-        "未登录",
-        "已锁屏",
-        "账户密码",
-        "解锁密码",
-        "正在解锁",
-        "解锁失败",
-        "请在被控设备上登录",
         "操作系统不支持远程终端",
-        "与远端设备的连接已断开",
     ]
     .iter()
     .any(|marker| lower.contains(marker))
+    {
+        return Some("UU 客户端报告被控设备的操作系统不支持远程终端");
+    }
+    if lower.contains("与远端设备的连接已断开") {
+        return Some("UU 客户端报告与被控端的连接已断开");
+    }
+    if [
+        "device is locked",
+        "unlock password",
+        "已锁屏",
+        "解锁密码",
+        "账户密码",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+    {
+        return Some("UU 被控端要求锁屏账户验证，请在被控设备上人工解锁；未发送密码或终端输入");
+    }
+    [
+        "[system] unlocking",
+        "not logged in",
+        "not logged-in",
+        "please log in",
+        "please login",
+        "login required",
+        "login is required",
+        "请先登录",
+        "未登录",
+        "正在解锁",
+        "解锁失败",
+        "请在被控设备上登录",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+    .then_some("UU 远端要求人工登录或解锁，未发送终端输入")
 }
 
 /// A locked desktop or missing login is not an invitation to inject input.
 /// A partial ANSI escape can be completed by the next PTY read; readiness
 /// remains false until its complete handshake can be parsed.
+#[cfg(test)]
 pub(super) fn blocked_startup(text: &str) -> bool {
+    startup_failure(text).is_some()
+}
+
+/// Return only a recognized, fixed diagnostic. Raw CLI output may contain
+/// device/account details and is not forwarded as an error message.
+pub(super) fn startup_failure(text: &str) -> Option<&'static str> {
     if text.len() > MAX_OUTPUT_BYTES {
-        return true;
+        return Some("UU 终端启动输出超过大小限制");
     }
     plain_text(text)
-        .map(|text| blocked_plain_startup(&text))
-        .unwrap_or_else(|_| blocked_plain_startup(text))
+        .map(|text| startup_failure_plain(&text))
+        .unwrap_or_else(|_| startup_failure_plain(text))
 }
 
 pub(super) fn list_arguments(device: &str) -> Result<Vec<String>, String> {
@@ -321,6 +368,31 @@ mod tests {
             .unwrap()
             .is_empty()
         );
+    }
+
+    #[test]
+    fn newer_inventory_supports_named_sessions_without_reinterpreting_names_as_shells() {
+        let header = "SESSION_ID\tNAME\tSHELL\tSTATE\tLAST_ACTIVE\n";
+        assert_eq!(parse_sessions(&format!(
+            "{header}1\tWorking terminal\tpowershell\tattached\t2026-09-10 09:50:00\n2\t\tcmd\tdetached\tnow\n"
+        )).unwrap(), ids(&["1", "2"]));
+        assert!(
+            parse_sessions(&format!("{header}No active sessions.\n"))
+                .unwrap()
+                .is_empty()
+        );
+        for row in [
+            "1 powershell cmd attached now",
+            "1\tname\tunknown\tattached\tnow",
+            "1\tname\twith tab\tcmd\tattached\tnow",
+            "1\tname\tcmd\tattached",
+            "1\tname\tcmd\tattached\tnow\n1\tother\tcmd\tdetached\tnow",
+        ] {
+            assert!(
+                parse_sessions(&format!("{header}{row}\n")).is_err(),
+                "{row}"
+            );
+        }
     }
 
     #[test]
@@ -421,6 +493,23 @@ mod tests {
         assert!(!blocked_startup("\x1b["));
         assert!(!ready("\x1b["));
         assert!(blocked_startup("[System] Unlocking...\n\x1b["));
+    }
+
+    #[test]
+    fn startup_failures_report_observed_diagnostics_without_guessing_login_state() {
+        let timeout =
+            startup_failure("Error: Timeout waiting for terminal environment check\r\n").unwrap();
+        assert!(timeout.contains("环境检查响应超时"));
+        assert!(!timeout.contains("未登录"));
+        assert!(
+            startup_failure("[系统] 被控设备操作系统不支持远程终端功能。")
+                .unwrap()
+                .contains("操作系统不支持")
+        );
+        assert!(startup_failure("Error: private-account-data").is_none());
+        assert!(!ready(&format!(
+            "{CONNECTED}\n{ENTERED_TERMINAL}\nError: Timeout waiting for terminal environment check"
+        )));
     }
 
     #[test]

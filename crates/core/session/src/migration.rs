@@ -65,8 +65,12 @@ pub fn migrate_v0_to_v3(
             dsh_llm::Role::System,
             vec![dsh_llm::ContentBlock::Text { text: system }],
             dsh_llm::MessageSource::Plugin {
-                plugin: "@deepseek-ai/dsh-system-prompt".into(), form: None,
-                sections: None, summary: None, compaction_id: None, source_command_id: None,
+                plugin: "@deepseek-ai/dsh-system-prompt".into(),
+                form: None,
+                sections: None,
+                summary: None,
+                compaction_id: None,
+                source_command_id: None,
             },
         );
         migrated.push(SessionEvent {
@@ -80,9 +84,17 @@ pub fn migrate_v0_to_v3(
         });
         let system = migrated.pop().expect("system event");
         for event in &mut migrated {
-            event.seq = SessionSeq::new(event.seq.get().checked_add(1).ok_or("session sequence overflow")?)?;
+            event.seq = SessionSeq::new(
+                event
+                    .seq
+                    .get()
+                    .checked_add(1)
+                    .ok_or("session sequence overflow")?,
+            )?;
             if let Some(seqs) = event.source_event_seqs.as_mut() {
-                for seq in seqs { *seq = seq.checked_add(1).ok_or("source sequence overflow")?; }
+                for seq in seqs {
+                    *seq = seq.checked_add(1).ok_or("source sequence overflow")?;
+                }
             }
             if let Some(crate::SurfaceOp::Replace { start, end }) = event.surface_op.as_mut() {
                 *start = start.checked_add(1).ok_or("surface sequence overflow")?;
@@ -173,7 +185,3 @@ mod tests {
         assert!(error.contains("non-contiguous"));
     }
 }
-
-
-
-

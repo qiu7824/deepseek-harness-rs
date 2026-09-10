@@ -36,10 +36,12 @@ fn self_connect_diagnostic(local_device_id: Option<&str>, devices: &[Value]) -> 
             "reason": "UU 客户端未提供本机设备 ID",
         });
     };
-    let listed = devices.iter().any(|device| device["id"].as_str() == Some(local_id));
-    let online = devices.iter().any(|device| {
-        device["id"].as_str() == Some(local_id) && device["online"] == true
-    });
+    let listed = devices
+        .iter()
+        .any(|device| device["id"].as_str() == Some(local_id));
+    let online = devices
+        .iter()
+        .any(|device| device["id"].as_str() == Some(local_id) && device["online"] == true);
     json!({
         "verification": "not-run",
         "canProbe": true,
@@ -507,10 +509,8 @@ mod tests {
         assert_eq!(absent["verification"], "not-run");
         assert_eq!(absent["canProbe"], true);
         assert_eq!(absent["listed"], false);
-        let published = self_connect_diagnostic(
-            Some("local"),
-            &[json!({"id":"local","online":true})],
-        );
+        let published =
+            self_connect_diagnostic(Some("local"), &[json!({"id":"local","online":true})]);
         assert_eq!(published["verification"], "not-run");
         assert_eq!(published["listed"], true);
         assert!(published.get("supported").is_none());

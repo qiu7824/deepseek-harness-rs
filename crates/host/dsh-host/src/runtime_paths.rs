@@ -388,8 +388,14 @@ impl RuntimePaths {
     }
 
     pub fn python_command(&self) -> Option<PathBuf> {
-        #[cfg(windows)] {python::command(&self.paths["environmentDirectory"])}
-        #[cfg(not(windows))] {None}
+        #[cfg(windows)]
+        {
+            python::command(&self.paths["environmentDirectory"])
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
     }
 
     pub(crate) async fn node_status(

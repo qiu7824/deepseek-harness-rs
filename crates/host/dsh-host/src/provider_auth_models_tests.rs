@@ -90,8 +90,14 @@ async fn shared_workspace_logins_keep_distinct_identity_and_migrate_legacy_witho
     let bob = tokens_for_subject("shared-workspace", "bob");
     assert_ne!(alice.account_scope, bob.account_scope);
     let mut legacy = alice.clone();
-    legacy.account_scope = format!("account-{}", crate::provider_auth_catalog::key("shared-workspace"));
-    auth.credentials.set(&reference(p.id), &serde_json::to_string(&legacy).unwrap()).await.unwrap();
+    legacy.account_scope = format!(
+        "account-{}",
+        crate::provider_auth_catalog::key("shared-workspace")
+    );
+    auth.credentials
+        .set(&reference(p.id), &serde_json::to_string(&legacy).unwrap())
+        .await
+        .unwrap();
     // The legacy single-account directory may already contain the same login.
     auth.write_accounts(p.id, &[legacy.clone()]).await.unwrap();
     auth.install_profile(p, &legacy).await.unwrap();
@@ -100,21 +106,53 @@ async fn shared_workspace_logins_keep_distinct_identity_and_migrate_legacy_witho
     auth.activate(p, &bob).await.unwrap();
     let saved = auth.saved_sessions(p.id).await.unwrap();
     assert_eq!(saved.len(), 2);
-    assert!(saved.iter().any(|item| item.account_scope == alice.account_scope));
-    assert!(saved.iter().any(|item| item.account_scope == bob.account_scope));
+    assert!(
+        saved
+            .iter()
+            .any(|item| item.account_scope == alice.account_scope)
+    );
+    assert!(
+        saved
+            .iter()
+            .any(|item| item.account_scope == bob.account_scope)
+    );
     let profile = auth.profile_snapshot(p.id, false).unwrap().0;
-    assert_eq!(profile["modelPreferences"][&alice.account_scope]["test-model"]["enabled"], false);
-    assert!(profile["modelPreferences"].get(&bob.account_scope).is_none());
+    assert_eq!(
+        profile["modelPreferences"][&alice.account_scope]["test-model"]["enabled"],
+        false
+    );
+    assert!(
+        profile["modelPreferences"]
+            .get(&bob.account_scope)
+            .is_none()
+    );
     let headers = vec![("ChatGPT-Account-ID".into(), "shared-workspace".into())];
     // Identical routing headers do not permit an old account snapshot to use Bob's token.
-    let result = auth.resolve_request_token_for_scope(p.id, p.base, &headers, Some(&alice.account_scope)).await;
+    let result = auth
+        .resolve_request_token_for_scope(p.id, p.base, &headers, Some(&alice.account_scope))
+        .await;
     assert!(result.unwrap_err().contains("配置已更新"));
-    auth.handle("switch", &json!({"provider":p.id,"accountScope":alice.account_scope})).await.unwrap();
-    assert_eq!(auth.session(p.id).await.unwrap().unwrap().access_token, alice.access_token);
-    let renewed = Session::from_tokens(&json!({"access_token":"opaque-refreshed","expires_in":3600}), Some(&alice)).unwrap();
+    auth.handle(
+        "switch",
+        &json!({"provider":p.id,"accountScope":alice.account_scope}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        auth.session(p.id).await.unwrap().unwrap().access_token,
+        alice.access_token
+    );
+    let renewed = Session::from_tokens(
+        &json!({"access_token":"opaque-refreshed","expires_in":3600}),
+        Some(&alice),
+    )
+    .unwrap();
     assert_eq!(renewed.account_scope, alice.account_scope);
     auth.save(p.id, &renewed).await.unwrap();
-    assert_eq!(auth.session(p.id).await.unwrap().unwrap().account_scope, alice.account_scope);
+    assert_eq!(
+        auth.session(p.id).await.unwrap().unwrap().account_scope,
+        alice.account_scope
+    );
     assert_eq!(auth.saved_sessions(p.id).await.unwrap().len(), 2);
     clean(auth, root).await;
 }
@@ -126,12 +164,21 @@ async fn legacy_active_scope_is_repaired_without_rejecting_the_first_request() {
     let current = tokens_for_subject("workspace", "alice");
     let mut legacy = current.clone();
     legacy.account_scope = format!("account-{}", crate::provider_auth_catalog::key("workspace"));
-    auth.credentials.set(&reference(p.id), &serde_json::to_string(&legacy).unwrap()).await.unwrap();
+    auth.credentials
+        .set(&reference(p.id), &serde_json::to_string(&legacy).unwrap())
+        .await
+        .unwrap();
     auth.install_profile(p, &legacy).await.unwrap();
     let headers = vec![("ChatGPT-Account-ID".into(), "workspace".into())];
-    let token = auth.resolve_request_token_for_scope(p.id, p.base, &headers, Some(&legacy.account_scope)).await.unwrap();
+    let token = auth
+        .resolve_request_token_for_scope(p.id, p.base, &headers, Some(&legacy.account_scope))
+        .await
+        .unwrap();
     assert_eq!(token, Some(current.access_token));
-    assert_eq!(auth.profile_snapshot(p.id, false).unwrap().0["modelCatalogScope"], current.account_scope);
+    assert_eq!(
+        auth.profile_snapshot(p.id, false).unwrap().0["modelCatalogScope"],
+        current.account_scope
+    );
     clean(auth, root).await;
 }
 
@@ -143,7 +190,8 @@ fn cached_account_catalog(provider: &str, scope: &str) -> crate::provider_auth_c
             "api":"openai-responses","available":true,"contextWindow":200000,"maxTokens":32000,
             "input":["text","image"],"reasoningEfforts":{"high":"high"},"reasoningDefault":"high",
             "supportsReasoningSummaries":true,"supportedParameters":["reasoning_effort"]}]
-    })).unwrap()
+    }))
+    .unwrap()
 }
 
 #[tokio::test]
@@ -154,10 +202,17 @@ async fn legacy_login_catalog_survives_scope_migration_and_new_refresh_wins() {
         let current = tokens_for_subject("workspace", "alice");
         let legacy_scope = format!("account-{}", crate::provider_auth_catalog::key("workspace"));
         let mut legacy = current.clone();
-        legacy.account_scope = if missing_scope { String::new() } else { legacy_scope.clone() };
+        legacy.account_scope = if missing_scope {
+            String::new()
+        } else {
+            legacy_scope.clone()
+        };
         let catalog = cached_account_catalog(p.id, &legacy_scope);
         auth.catalogs.store(catalog.clone()).await.unwrap();
-        auth.credentials.set(&reference(p.id), &serde_json::to_string(&legacy).unwrap()).await.unwrap();
+        auth.credentials
+            .set(&reference(p.id), &serde_json::to_string(&legacy).unwrap())
+            .await
+            .unwrap();
         auth.install_profile(p, &legacy).await.unwrap();
         let view = auth.model_view(p.id).await.unwrap();
         assert_eq!(view["catalog"]["count"], 1);
@@ -168,15 +223,22 @@ async fn legacy_login_catalog_survives_scope_migration_and_new_refresh_wins() {
         assert_eq!(migrated.models, catalog.models);
         assert_eq!(migrated.updated_at, catalog.updated_at);
         assert_eq!(migrated.endpoint, catalog.endpoint);
-        let reopened = crate::provider_auth_catalog::CatalogStore::new(root.join("cache/model-catalogs"));
-        assert_eq!(reopened.get(p.id, &current.account_scope).models, catalog.models);
+        let reopened =
+            crate::provider_auth_catalog::CatalogStore::new(root.join("cache/model-catalogs"));
+        assert_eq!(
+            reopened.get(p.id, &current.account_scope).models,
+            catalog.models
+        );
         let mut fresh = migrated;
         fresh.models[0].name = Some("Updated remote name".into());
         fresh.updated_at = Some(5678);
         auth.catalogs.store(fresh.clone()).await.unwrap();
         // The raw credential can remain in the old format until its next refresh.
         auth.session(p.id).await.unwrap();
-        assert_eq!(auth.catalogs.get(p.id, &current.account_scope).models, fresh.models);
+        assert_eq!(
+            auth.catalogs.get(p.id, &current.account_scope).models,
+            fresh.models
+        );
         clean(auth, root).await;
     }
 }
@@ -191,14 +253,38 @@ async fn saved_legacy_catalog_migrates_only_to_its_original_login() {
     legacy.account_scope = format!("account-{}", crate::provider_auth_catalog::key("workspace"));
     let catalog = cached_account_catalog(p.id, &legacy.account_scope);
     auth.catalogs.store(catalog.clone()).await.unwrap();
-    auth.credentials.set(&reference(p.id), &serde_json::to_string(&bob).unwrap()).await.unwrap();
+    auth.credentials
+        .set(&reference(p.id), &serde_json::to_string(&bob).unwrap())
+        .await
+        .unwrap();
     auth.write_accounts(p.id, &[legacy]).await.unwrap();
     auth.install_profile(p, &bob).await.unwrap();
-    assert!(auth.model_view(p.id).await.unwrap()["models"].as_array().unwrap().is_empty());
-    auth.handle("switch", &json!({"provider":p.id,"accountScope":alice.account_scope})).await.unwrap();
-    assert_eq!(auth.model_view(p.id).await.unwrap()["models"][0]["enabled"], true);
-    assert_eq!(auth.catalogs.get(p.id, &alice.account_scope).models, catalog.models);
-    assert!(auth.catalogs.get(p.id, &bob.account_scope).models.is_empty());
+    assert!(
+        auth.model_view(p.id).await.unwrap()["models"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    auth.handle(
+        "switch",
+        &json!({"provider":p.id,"accountScope":alice.account_scope}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        auth.model_view(p.id).await.unwrap()["models"][0]["enabled"],
+        true
+    );
+    assert_eq!(
+        auth.catalogs.get(p.id, &alice.account_scope).models,
+        catalog.models
+    );
+    assert!(
+        auth.catalogs
+            .get(p.id, &bob.account_scope)
+            .models
+            .is_empty()
+    );
     clean(auth, root).await;
 }
 async fn clean(auth: Arc<AccountAuth>, root: std::path::PathBuf) {
@@ -221,8 +307,13 @@ fn account_claim_is_a_literal_url_key_and_refresh_keeps_identity() {
     .unwrap();
     assert_eq!(a.account_scope, refreshed.account_scope);
     use base64::Engine;
-    let without_identity = format!("header.{}.fixture", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json!({"exp":now()+7200}).to_string()));
-    let refreshed = Session::from_tokens(&json!({"access_token":without_identity}), Some(&a)).unwrap();
+    let without_identity = format!(
+        "header.{}.fixture",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(json!({"exp":now()+7200}).to_string())
+    );
+    let refreshed =
+        Session::from_tokens(&json!({"access_token":without_identity}), Some(&a)).unwrap();
     assert_eq!(a.account_scope, refreshed.account_scope);
 }
 

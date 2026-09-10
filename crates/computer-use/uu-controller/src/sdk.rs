@@ -1,4 +1,4 @@
-//! Version-checked controller ABI and bounded event delivery.
+//! Export-discovered controller ABI and bounded event delivery.
 
 use serde_json::{Value, json};
 use std::mem::{offset_of, size_of};

@@ -4285,18 +4285,12 @@ impl ApiProxyService {
         {
             Some(session) => {
                 live_session = Some(session.clone());
-                let selected = session.with_events(|events| if let Some(after_seq) = request.payload.after_seq {
-                    Self::paginate_forward(
-                        events,
-                        after_seq,
-                        requested_messages,
-                    )
-                } else {
-                    Self::paginate(
-                        events,
-                        request.payload.before_seq,
-                        requested_messages,
-                    )
+                let selected = session.with_events(|events| {
+                    if let Some(after_seq) = request.payload.after_seq {
+                        Self::paginate_forward(events, after_seq, requested_messages)
+                    } else {
+                        Self::paginate(events, request.payload.before_seq, requested_messages)
+                    }
                 });
                 match selected {
                     Ok(page) => page,

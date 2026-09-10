@@ -3042,7 +3042,9 @@ pub fn register(
     code_index: BackgroundIndex,
     allow_remote_host: bool,
 ) -> RouteDisposer {
-    let service = PreviewService::new(registry, agents, terminals, jobs, subprocess, sandbox, code_index);
+    let service = PreviewService::new(
+        registry, agents, terminals, jobs, subprocess, sandbox, code_index,
+    );
     web_server.register(WebRoute {
         kind: WebRouteKind::Prefix,
         path: ROUTE.to_string(),

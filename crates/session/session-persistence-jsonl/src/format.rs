@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 
 use dsh_session::{
-    LEGACY_SESSION_FORMAT_VERSION, SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionId, SessionLogOffset,
-    decode_storage_record, pack_chunk_runs,
+    LEGACY_SESSION_FORMAT_VERSION, SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionId,
+    SessionLogOffset, decode_storage_record, pack_chunk_runs,
 };
 use dsh_session_persistence::{SessionStorageMetadata, session_format_version_refusal};
 
@@ -322,9 +322,11 @@ impl SessionLogScanner {
     /// record.
     pub fn new(header_record: &[u8]) -> Result<Self, String> {
         let storage = parse_header_record(header_record)?;
-        let legacy_v0 = serde_json::from_slice::<serde_json::Value>(&header_record[..header_record.len()-1])
-            .ok().and_then(|value| value.get("version").and_then(|v| v.as_u64()))
-            == Some(LEGACY_SESSION_FORMAT_VERSION);
+        let legacy_v0 =
+            serde_json::from_slice::<serde_json::Value>(&header_record[..header_record.len() - 1])
+                .ok()
+                .and_then(|value| value.get("version").and_then(|v| v.as_u64()))
+                == Some(LEGACY_SESSION_FORMAT_VERSION);
         Ok(Self {
             meta: storage.meta,
             inherited_event_count: storage.inherited_event_count,

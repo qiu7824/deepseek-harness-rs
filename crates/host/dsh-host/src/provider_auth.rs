@@ -231,22 +231,43 @@ fn codex_refresh_requires_login(status: u16, value: &Value) -> bool {
 }
 impl Session {
     fn identity_scope(account_id: Option<&str>, claims: Option<&Value>) -> Option<String> {
-        let subject = claims.and_then(|claims| {
-            claims.get("sub").and_then(Value::as_str).filter(|value| !value.is_empty()).or_else(|| {
-                claims.get("https://api.openai.com/auth")?.get("chatgpt_user_id")?.as_str()
+        let subject = claims
+            .and_then(|claims| {
+                claims
+                    .get("sub")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| {
+                        claims
+                            .get("https://api.openai.com/auth")?
+                            .get("chatgpt_user_id")?
+                            .as_str()
+                    })
             })
-        }).filter(|value| !value.is_empty());
+            .filter(|value| !value.is_empty());
         match (account_id, subject) {
-            (Some(account), Some(subject)) => Some(format!("account-v2-{}", crate::provider_auth_catalog::key(&json!([account, subject]).to_string()))),
-            (Some(identity), None) | (None, Some(identity)) => Some(format!("account-{}", crate::provider_auth_catalog::key(identity))),
+            (Some(account), Some(subject)) => Some(format!(
+                "account-v2-{}",
+                crate::provider_auth_catalog::key(&json!([account, subject]).to_string())
+            )),
+            (Some(identity), None) | (None, Some(identity)) => Some(format!(
+                "account-{}",
+                crate::provider_auth_catalog::key(identity)
+            )),
             _ => None,
         }
     }
     fn normalize_identity(&mut self) {
         let claims = jwt(&self.access_token);
-        if let Some(account) = claims.as_ref().and_then(|v| v.get("https://api.openai.com/auth"))
-            .and_then(|v| v.get("chatgpt_account_id")).and_then(Value::as_str) {
-            if self.account_id.as_deref() != Some(account) { self.account_scope.clear(); }
+        if let Some(account) = claims
+            .as_ref()
+            .and_then(|v| v.get("https://api.openai.com/auth"))
+            .and_then(|v| v.get("chatgpt_account_id"))
+            .and_then(Value::as_str)
+        {
+            if self.account_id.as_deref() != Some(account) {
+                self.account_scope.clear();
+            }
             self.account_id = Some(account.into());
         }
         if let Some(scope) = Self::identity_scope(self.account_id.as_deref(), claims.as_ref()) {
@@ -256,7 +277,12 @@ impl Session {
                 self.account_scope = scope;
             }
         } else if self.account_scope.is_empty() {
-            self.account_scope = format!("account-{}", crate::provider_auth_catalog::key(self.refresh_token.as_deref().unwrap_or(&self.access_token)));
+            self.account_scope = format!(
+                "account-{}",
+                crate::provider_auth_catalog::key(
+                    self.refresh_token.as_deref().unwrap_or(&self.access_token)
+                )
+            );
         }
     }
     fn from_tokens(value: &Value, previous: Option<&Session>) -> Result<Self, String> {
@@ -270,11 +296,16 @@ impl Session {
             .map(str::to_string)
             .or_else(|| previous.and_then(|p| p.account_id.clone()));
         let claimed_scope = Self::identity_scope(account_id.as_deref(), claims.as_ref());
-        let account_scope = previous.filter(|p| {
-                p.account_id == account_id && (claimed_scope.is_none()
-                    || p.account_scope.starts_with("account-v2-")
-                        && !claimed_scope.as_deref().is_some_and(|scope| scope.starts_with("account-v2-")))
-            }).map(|p| p.account_scope.clone())
+        let account_scope = previous
+            .filter(|p| {
+                p.account_id == account_id
+                    && (claimed_scope.is_none()
+                        || p.account_scope.starts_with("account-v2-")
+                            && !claimed_scope
+                                .as_deref()
+                                .is_some_and(|scope| scope.starts_with("account-v2-")))
+            })
+            .map(|p| p.account_scope.clone())
             .or(claimed_scope)
             .or_else(|| {
                 previous
@@ -383,7 +414,8 @@ impl AccountAuth {
         *self.cli.write() = Some(cli);
     }
     async fn session(&self, id: &str) -> Result<Option<Session>, String> {
-        let loaded = self.credentials
+        let loaded = self
+            .credentials
             .resolve(&reference(id))
             .await
             .map(|value| {
@@ -394,15 +426,23 @@ impl AccountAuth {
                 Ok::<_, String>((session, old_scope))
             })
             .transpose()?;
-        let Some((session, old_scope)) = loaded else { return Ok(None); };
+        let Some((session, old_scope)) = loaded else {
+            return Ok(None);
+        };
         self.migrate_session_catalog(id, &session, &old_scope).await;
         Ok(Some(session))
     }
     async fn migrate_session_catalog(&self, id: &str, session: &Session, old_scope: &str) {
-        if let Some(account) = session.account_id.as_deref().filter(|_| session.account_scope.starts_with("account-v2-")) {
+        if let Some(account) = session
+            .account_id
+            .as_deref()
+            .filter(|_| session.account_scope.starts_with("account-v2-"))
+        {
             let legacy = format!("account-{}", crate::provider_auth_catalog::key(account));
             if old_scope.is_empty() || old_scope == legacy {
-                self.catalogs.migrate_login_scope(id, &legacy, &session.account_scope).await;
+                self.catalogs
+                    .migrate_login_scope(id, &legacy, &session.account_scope)
+                    .await;
             }
         }
     }
@@ -410,7 +450,8 @@ impl AccountAuth {
         let Some(value) = self.credentials.resolve(&accounts_reference(id)).await else {
             return Ok(Vec::new());
         };
-        let accounts: Vec<Session> = serde_json::from_str(&value.value).map_err(|_| "账号目录凭据无效，请重新登录".to_string())?;
+        let accounts: Vec<Session> = serde_json::from_str(&value.value)
+            .map_err(|_| "账号目录凭据无效，请重新登录".to_string())?;
         let mut normalized: Vec<Session> = Vec::new();
         for mut account in accounts {
             let old_scope = account.account_scope.clone();
@@ -464,7 +505,10 @@ impl AccountAuth {
     async fn activate(&self, p: Provider, session: &Session) -> Result<(), String> {
         let previous = self.session(p.id).await?;
         self.save(p.id, session).await?;
-        if let Err(error) = self.install_profile_with_previous(p, session, previous.as_ref()).await {
+        if let Err(error) = self
+            .install_profile_with_previous(p, session, previous.as_ref())
+            .await
+        {
             // Keep the newly authorized account in the directory, but restore
             // the active credential when its route cannot be installed.
             let restored = match previous.as_ref() {
@@ -603,7 +647,9 @@ impl AccountAuth {
         // legitimately be migrated by resolve_token_locked below, but a route
         // captured before a switch must never use the newly active credential.
         let before = self.profile_snapshot(id, false)?.0;
-        if expected_scope.is_some_and(|scope| before.get("modelCatalogScope").and_then(Value::as_str) != Some(scope)) {
+        if expected_scope.is_some_and(|scope| {
+            before.get("modelCatalogScope").and_then(Value::as_str) != Some(scope)
+        }) {
             return Err("账号请求配置已更新，请重试当前请求".into());
         }
         let selected_scope = self.session(id).await?.map(|session| session.account_scope);
@@ -619,8 +665,12 @@ impl AccountAuth {
                     })
                 })
             });
-        if current.get("baseURL").and_then(Value::as_str) != Some(base) || header_changed
-            || selected_scope.as_deref().is_some_and(|scope| current.get("modelCatalogScope").and_then(Value::as_str) != Some(scope)) {
+        if current.get("baseURL").and_then(Value::as_str) != Some(base)
+            || header_changed
+            || selected_scope.as_deref().is_some_and(|scope| {
+                current.get("modelCatalogScope").and_then(Value::as_str) != Some(scope)
+            })
+        {
             return Err("账号请求配置已更新，请重试当前请求".into());
         }
         Ok(token)
@@ -910,24 +960,46 @@ impl AccountAuth {
     async fn install_profile(&self, p: Provider, session: &Session) -> Result<(), String> {
         self.install_profile_with_previous(p, session, None).await
     }
-    async fn install_profile_with_previous(&self, p: Provider, session: &Session, previous: Option<&Session>) -> Result<(), String> {
+    async fn install_profile_with_previous(
+        &self,
+        p: Provider,
+        session: &Session,
+        previous: Option<&Session>,
+    ) -> Result<(), String> {
         for attempt in 0..4 {
             let (mut profile, revision) = self.profile_snapshot(p.id, true)?;
             let owner = previous.unwrap_or(session);
             if owner.account_scope.starts_with("account-v2-") {
                 if let Some(account) = owner.account_id.as_deref() {
                     let legacy = format!("account-{}", crate::provider_auth_catalog::key(account));
-                    if let Some(preferences) = profile.get_mut("modelPreferences").and_then(Value::as_object_mut) {
+                    if let Some(preferences) = profile
+                        .get_mut("modelPreferences")
+                        .and_then(Value::as_object_mut)
+                    {
                         if let Some(old) = preferences.remove(&legacy) {
-                            let current = preferences.entry(owner.account_scope.clone()).or_insert_with(|| json!({}));
-                            if let (Some(current), Some(old)) = (current.as_object_mut(), old.as_object()) {
-                                for (model, value) in old { current.entry(model.clone()).or_insert_with(|| value.clone()); }
+                            let current = preferences
+                                .entry(owner.account_scope.clone())
+                                .or_insert_with(|| json!({}));
+                            if let (Some(current), Some(old)) =
+                                (current.as_object_mut(), old.as_object())
+                            {
+                                for (model, value) in old {
+                                    current
+                                        .entry(model.clone())
+                                        .or_insert_with(|| value.clone());
+                                }
                             }
                         }
                     }
-                    if profile.get("legacyModelScope").and_then(Value::as_str) == Some(&legacy) { profile["legacyModelScope"] = json!(owner.account_scope); }
+                    if profile.get("legacyModelScope").and_then(Value::as_str) == Some(&legacy) {
+                        profile["legacyModelScope"] = json!(owner.account_scope);
+                    }
                     if let Some(models) = profile.get_mut("models").and_then(Value::as_array_mut) {
-                        for model in models { if model.get("accountScope").and_then(Value::as_str) == Some(&legacy) { model["accountScope"] = json!(owner.account_scope); } }
+                        for model in models {
+                            if model.get("accountScope").and_then(Value::as_str) == Some(&legacy) {
+                                model["accountScope"] = json!(owner.account_scope);
+                            }
+                        }
                     }
                 }
             }

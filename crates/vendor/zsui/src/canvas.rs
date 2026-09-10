@@ -294,9 +294,15 @@ fn canvas_primitive_to_native(
         ZsCanvasPrimitive::Image { frame, rect } => NativeDrawCommand::Image(
             crate::NativeDrawImageCommand::new(
                 frame.clone(),
-                Rect { x: 0, y: 0, width: frame.width() as i32, height: frame.height() as i32 },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: frame.width() as i32,
+                    height: frame.height() as i32,
+                },
                 canvas_rect_to_native(bounds, *rect, dpi),
-            ).interpolation(NativeImageInterpolation::Smooth),
+            )
+            .interpolation(NativeImageInterpolation::Smooth),
         ),
     }
 }

@@ -1533,7 +1533,8 @@ async fn request_responses_chunks(
     session_id: Option<&str>,
     history: &[dsh_llm::Message],
 ) -> Result<(), LlmFailure> {
-    let account_scope = responses::account_scope_hash(&connection.headers, connection.account_scope.as_deref());
+    let account_scope =
+        responses::account_scope_hash(&connection.headers, connection.account_scope.as_deref());
     let mut body = responses::request_for_endpoint_with_history_for_account(
         chat_body,
         &connection.base_url,
@@ -1541,7 +1542,12 @@ async fn request_responses_chunks(
         provider_name,
         account_scope.as_deref(),
     )?;
-    responses::apply_session_cache_key_for_account(&mut body, session_id, &connection.base_url, account_scope.as_deref());
+    responses::apply_session_cache_key_for_account(
+        &mut body,
+        session_id,
+        &connection.base_url,
+        account_scope.as_deref(),
+    );
     responses::apply_cache_breakpoint(&mut body, &connection.base_url);
     let model = chat_body.get("model").and_then(serde_json::Value::as_str);
     crate::compat::apply_responses(&mut body, connection, model)?;
@@ -1657,7 +1663,12 @@ async fn request_responses_chunks(
         // Preserve completed/coalesced text items even when the transport
         // breaks before the terminal event; no tool call is finalized here.
         for mut chunk in translator.fail(error) {
-            responses::bind_replay_metadata_for_account(&mut chunk, &connection.base_url, model.unwrap_or(""), account_scope.as_deref());
+            responses::bind_replay_metadata_for_account(
+                &mut chunk,
+                &connection.base_url,
+                model.unwrap_or(""),
+                account_scope.as_deref(),
+            );
             sender
                 .send(chunk)
                 .await
@@ -2031,19 +2042,28 @@ mod endpoint_tests {
             account_scope: Some("private-login-identity".into()),
             headers: vec![("ChatGPT-Account-ID".into(), "workspace".into())],
             ..Default::default()
-        }).unwrap();
-        assert_eq!(connection.account_scope.as_deref(), Some("private-login-identity"));
+        })
+        .unwrap();
+        assert_eq!(
+            connection.account_scope.as_deref(),
+            Some("private-login-identity")
+        );
         let headers = super::request_headers(&connection, Some("session"));
-        assert!(!headers.iter().any(|(name, value)| name.contains("scope") || value.contains("private-login-identity")));
+        assert!(!headers.iter().any(
+            |(name, value)| name.contains("scope") || value.contains("private-login-identity")
+        ));
     }
 
     #[test]
     fn opencode_conversation_routing_is_stable_private_and_host_scoped() {
-        let mut connection = super::resolve_adapter_options(&super::DeepSeekConfig::default()).unwrap();
+        let mut connection =
+            super::resolve_adapter_options(&super::DeepSeekConfig::default()).unwrap();
         let routing = |connection: &super::ResolvedDeepSeekOptions, session: &str| {
-            super::request_headers(connection, Some(session)).into_iter()
+            super::request_headers(connection, Some(session))
+                .into_iter()
                 .filter(|(key, _)| key.eq_ignore_ascii_case("x-opencode-session"))
-                .map(|(_, value)| value).collect::<Vec<_>>()
+                .map(|(_, value)| value)
+                .collect::<Vec<_>>()
         };
         connection.base_url = "https://opencode.ai/zen/v1".into();
         let first = routing(&connection, "private-session-one");
@@ -2053,13 +2073,23 @@ mod endpoint_tests {
         assert_ne!(first, routing(&connection, "private-session-two"));
         connection.base_url = "https://opencode.ai/go/v1".into();
         assert_eq!(first, routing(&connection, "private-session-one"));
-        for url in ["https://opencode.ai.attacker.test/zen/v1", "http://opencode.ai/zen/v1", "https://elsewhere.test/v1", "https://opencode.ai/unrelated"] {
+        for url in [
+            "https://opencode.ai.attacker.test/zen/v1",
+            "http://opencode.ai/zen/v1",
+            "https://elsewhere.test/v1",
+            "https://opencode.ai/unrelated",
+        ] {
             connection.base_url = url.into();
             assert!(routing(&connection, "private-session-one").is_empty());
         }
         connection.base_url = "https://opencode.ai/zen/v1".into();
-        connection.headers.push(("X-OpenCode-Session".into(), "explicit-routing".into()));
-        assert_eq!(routing(&connection, "private-session-one"), vec!["explicit-routing"]);
+        connection
+            .headers
+            .push(("X-OpenCode-Session".into(), "explicit-routing".into()));
+        assert_eq!(
+            routing(&connection, "private-session-one"),
+            vec!["explicit-routing"]
+        );
     }
 
     #[test]

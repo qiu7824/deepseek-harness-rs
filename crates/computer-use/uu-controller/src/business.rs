@@ -16,20 +16,6 @@ use windows_sys::Win32::{
     },
 };
 
-/// UU 4.39.2.1561 changed all of the request identity fields.  Keep the
-/// profile in one place so a version bump cannot accidentally retain the old
-/// client hash or request version.  Known hashes select their exact profile;
-/// unknown builds are identified from their embedded product version.
-struct ClientProfile {
-    version: &'static str,
-    build: &'static str,
-    hash: &'static str,
-    signing_key_rva: u32,
-}
-const CLIENT_PROFILES: &[ClientProfile] = &[
-    ClientProfile { version: "4.39.2.1561", build: "1561", hash: "1587925c43fe9f5841ea6292b64894dde3dd59bb01832f0f288f910b553c2590", signing_key_rva: 0x3b08118 },
-    ClientProfile { version: "4.38.3.9325", build: "9325", hash: "2a3263062c9cbfe0dcaf81d9ec95cca480802a86b7d2fc89ef033f86a61b3853", signing_key_rva: 0x3b06e78 },
-];
 const API: &str = "https://api.nrd.nie.163.com";
 pub struct Account {
     pub device_id: String,
@@ -41,7 +27,7 @@ pub struct Account {
     channel: String,
     bin: PathBuf,
     client: reqwest::blocking::Client,
-    profile: &'static ClientProfile,
+    profile: crate::profile::ClientProfile,
 }
 fn ini(path: &Path, key: &str) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|_| "无法读取 UU 登录信息，请先打开 UU 远程并登录")?;
@@ -75,43 +61,6 @@ fn ini(path: &Path, key: &str) -> Result<String, String> {
     }
     Err(format!("UU 登录配置缺少 {key}"))
 }
-fn fingerprint(path: &Path) -> Result<&'static ClientProfile, String> {
-    let mut file = File::open(path).map_err(|_| "未找到 UU 客户端")?;
-    let size = file.metadata().map_err(|_| "无法检查 UU 客户端")?.len();
-    if size > 512 * 1024 * 1024 {
-        return Err("UU 客户端文件超过大小限制".into());
-    }
-    let mut hash = Sha256::new();
-    let mut buf = vec![0; 1024 * 1024];
-    loop {
-        let n = file.read(&mut buf).map_err(|_| "读取 UU 客户端失败")?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&buf[..n]);
-    }
-    let digest = format!("{:x}", hash.finalize());
-    if let Some(profile) = CLIENT_PROFILES.iter().find(|profile| profile.hash == digest) {
-        return Ok(profile);
-    }
-    // The business API is versioned by the installed client. Preserve the
-    // detected version for newer/older clients instead of pinning callers to
-    // this binary's release cadence; the SDK performs its own exported-table
-    // discovery at load time.
-    let bytes = std::fs::read(path).map_err(|_| "无法读取 UU 客户端")?;
-    let text = String::from_utf8_lossy(&bytes);
-    let version = text.split(|c: char| !c.is_ascii_digit() && c != '.')
-        .find(|part| part.starts_with("4.") && part.split('.').count() == 4 && part.chars().all(|c| c.is_ascii_digit() || c == '.') && part.len() <= 32)
-        .unwrap_or("unknown");
-    let build = version.rsplit('.').next().unwrap_or("0").to_owned();
-    let version = version.to_owned();
-    Ok(Box::leak(Box::new(ClientProfile {
-        version: Box::leak(version.into_boxed_str()),
-        build: Box::leak(build.into_boxed_str()),
-        hash: Box::leak(digest.into_boxed_str()),
-        signing_key_rva: 0x3b06e78,
-    })))
-}
 fn signing_key(bin: &Path, signing_key_rva: u32) -> Result<[u8; 24], String> {
     let mut file = File::open(bin.join("GameViewer.exe")).map_err(|_| "UU 客户端不可读")?;
     let mut dos = [0u8; 64];
@@ -140,8 +89,10 @@ fn signing_key(bin: &Path, signing_key_rva: u32) -> Result<[u8; 24], String> {
                 .checked_add(24)
                 .is_some_and(|end| end <= rva.saturating_add(size))
         {
-            file.seek(SeekFrom::Start(u64::from(raw + signing_key_rva - rva)))
-                .map_err(|_| "UU 接口数据不可读")?;
+            file.seek(SeekFrom::Start(
+                u64::from(raw) + u64::from(signing_key_rva - rva),
+            ))
+            .map_err(|_| "UU 接口数据不可读")?;
             let mut key = [0; 24];
             file.read_exact(&mut key).map_err(|_| "UU 接口数据不可读")?;
             return Ok(key);
@@ -212,7 +163,7 @@ fn system_uuid() -> Result<String, String> {
 }
 impl Account {
     pub fn open(bin: PathBuf, expected_account: &str) -> Result<Self, String> {
-        let profile = fingerprint(&bin.join("GameViewer.exe"))?;
+        let profile = crate::profile::load(&bin.join("GameViewer.exe"))?;
         let root = PathBuf::from(std::env::var_os("ProgramData").ok_or("ProgramData 不可用")?)
             .join("Netease/GameViewer");
         let info = root.join("user_info.ini");
@@ -274,8 +225,8 @@ impl Account {
             ("x-param-system-id", self.system_id.clone()),
             ("x-param-user-id", self.user_id.clone()),
             ("x-param-plat", "1".into()),
-            ("x-param-vn", self.profile.version.into()),
-            ("x-param-vc", self.profile.build.into()),
+            ("x-param-vn", self.profile.version.clone()),
+            ("x-param-vc", self.profile.build.clone()),
             ("x-param-pkgn", "com.netease.uuremote".into()),
             ("x-param-chn", self.channel.clone()),
             ("x-param-lang", "zh-CN".into()),
@@ -342,7 +293,9 @@ impl Account {
                     },
                 );
             }
-            let message = value.get("message").and_then(Value::as_str)
+            let message = value
+                .get("message")
+                .and_then(Value::as_str)
                 .or_else(|| value.get("msg").and_then(Value::as_str))
                 .unwrap_or("未知错误");
             return Err(format!(

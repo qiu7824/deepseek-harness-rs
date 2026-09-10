@@ -884,7 +884,10 @@ impl JsonlSessionPersistence {
             let frame = scan.frames.first().ok_or("empty session log")?;
             decompress_zstd_frame(&original[frame.start..frame.end])?
         } else {
-            let end = original.iter().position(|byte| *byte == b'\n').ok_or("header-less session log")?;
+            let end = original
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .ok_or("header-less session log")?;
             original[..end].to_vec()
         };
         let raw: serde_json::Value = serde_json::from_slice(&header).map_err(|e| e.to_string())?;
@@ -895,7 +898,22 @@ impl JsonlSessionPersistence {
         if prefix.revision != revision {
             return Err("session changed while preparing V3 migration; retry opening it".into());
         }
-        let inherited = if prefix.meta.is_seeded && prefix.events.first().is_some_and(|event| event.type_ == "system/message") { SessionLogOffset::new(prefix.inherited_event_count.get().checked_add(1).ok_or("inherited sequence overflow")?)? } else { prefix.inherited_event_count };
+        let inherited = if prefix.meta.is_seeded
+            && prefix
+                .events
+                .first()
+                .is_some_and(|event| event.type_ == "system/message")
+        {
+            SessionLogOffset::new(
+                prefix
+                    .inherited_event_count
+                    .get()
+                    .checked_add(1)
+                    .ok_or("inherited sequence overflow")?,
+            )?
+        } else {
+            prefix.inherited_event_count
+        };
         let content = self.encode_materialization(&prefix.meta, inherited, &prefix.events)?;
         // A unique immutable source backup is published before replacement.
         // Every failed step leaves either the original or the fully written

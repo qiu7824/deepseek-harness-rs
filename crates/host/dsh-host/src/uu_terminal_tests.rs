@@ -199,6 +199,9 @@ struct FakeTransport {
     next: AtomicU64,
     spawned: AtomicU64,
     queries: AtomicU64,
+    query_error: Mutex<Option<String>>,
+    spawn_error: Mutex<Option<String>>,
+    startup_output: Mutex<Option<String>>,
     displace_queries: AtomicBool,
     ambiguous: AtomicBool,
     ready: AtomicBool,
@@ -215,6 +218,9 @@ impl Transport for Arc<FakeTransport> {
                 Err("mock cancelled query".into())
             } else {
                 value.queries.fetch_add(1, Ordering::AcqRel);
+                if let Some(error) = value.query_error.lock().clone() {
+                    return Err(error);
+                }
                 if value.displace_queries.load(Ordering::Acquire) {
                     for client in value.clients.lock().iter() {
                         if !client.0.exited.load(Ordering::Acquire) {
@@ -241,12 +247,25 @@ impl Transport for Arc<FakeTransport> {
             if signal() {
                 return Err("mock spawn cancelled".into());
             }
+            if let Some(error) = value.spawn_error.lock().clone() {
+                return Err(error);
+            }
             let id = value.next.fetch_add(1, Ordering::AcqRel).to_string();
             value.ids.lock().insert(id.clone());
             if value.ambiguous.load(Ordering::Acquire) {
                 value.ids.lock().insert("999".into());
             }
             let client = FakeClient::new(value.ready.load(Ordering::Acquire));
+            if let Some(output) = value.startup_output.lock().as_ref() {
+                client
+                    .0
+                    .sender
+                    .lock()
+                    .as_ref()
+                    .unwrap()
+                    .unbounded_send(output.as_bytes().to_vec())
+                    .unwrap();
+            }
             *client.0.remote.lock() = Some((value.ids.clone(), id));
             value.clients.lock().push(client.clone());
             value.spawned.fetch_add(1, Ordering::Release);
@@ -282,6 +301,9 @@ impl Fixture {
             next: AtomicU64::new(2),
             spawned: AtomicU64::new(0),
             queries: AtomicU64::new(0),
+            query_error: Default::default(),
+            spawn_error: Default::default(),
+            startup_output: Default::default(),
             displace_queries: AtomicBool::new(true),
             ambiguous: AtomicBool::new(false),
             ready: AtomicBool::new(true),
@@ -395,6 +417,334 @@ async fn denied_open_never_starts_a_remote_client() {
     );
     assert_eq!(f.transport.spawned.load(Ordering::Acquire), 0);
     assert!(f.tracked.lock().is_empty());
+}
+
+#[tokio::test]
+async fn spawn_failure_retains_its_error_without_publishing_a_completed_terminal_job() {
+    let f = Fixture::new();
+    let failure = "本地终端进程无法创建";
+    *f.transport.spawn_error.lock() = Some(failure.into());
+    let error = f
+        .service
+        .open(&f.caller("owner-a"), None, TerminalShell::PowerShell)
+        .await
+        .unwrap_err();
+    assert!(error.contains(failure));
+    assert_eq!(f.transport.spawned.load(Ordering::Acquire), 0);
+    assert!(f.tracked.lock().is_empty());
+    let records = f.service.list("owner-a");
+    assert_eq!(records["terminals"][0]["error"], failure);
+    assert_eq!(records["terminals"][0]["jobId"], Value::Null);
+    assert_eq!(records["terminals"][0]["ownership"], "unconfirmed");
+    assert_eq!(*f.transport.ids.lock(), BTreeSet::from(["1".into()]));
+}
+
+#[tokio::test]
+async fn job_registration_failure_retains_the_owned_record_and_detaches_without_shell_input() {
+    let f = Fixture::new();
+    let mut caller = f.caller("owner-a");
+    caller.track = Arc::new(|_| Err("mock jobs unavailable".into()));
+    let error = f
+        .service
+        .open(&caller, None, TerminalShell::PowerShell)
+        .await
+        .unwrap_err();
+    assert!(error.contains("mock jobs unavailable"));
+    let record = &f.service.list("owner-a")["terminals"][0];
+    assert!(error.contains(record["terminalId"].as_str().unwrap()));
+    assert_eq!(record["error"], "mock jobs unavailable");
+    assert_eq!(record["cleanupConfirmed"], false);
+    assert!(
+        f.transport.clients.lock()[0]
+            .0
+            .terminated
+            .load(Ordering::Acquire)
+    );
+    assert!(f.transport.clients.lock()[0].0.written.lock().is_empty());
+    assert!(f.transport.ids.lock().contains("2"));
+}
+
+#[tokio::test]
+async fn rejected_handshake_does_not_publish_a_terminal_job_or_erase_startup_failure() {
+    let f = Fixture::new();
+    *f.transport.query_error.lock() = Some("终端环境检查超时".into());
+    f.transport.ready.store(false, Ordering::Release);
+    let caller = f.caller("owner-a");
+    let service = f.service.clone();
+    let operation =
+        tokio::spawn(async move { service.open(&caller, None, TerminalShell::PowerShell).await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while f.transport.spawned.load(Ordering::Acquire) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let client = f.transport.clients.lock()[0].clone();
+    client
+        .0
+        .sender
+        .lock()
+        .as_ref()
+        .unwrap()
+        .unbounded_send("[系统] 请输入被控端解锁密码: ".as_bytes().to_vec())
+        .unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(2), operation)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(error.contains("锁屏账户验证"));
+    assert!(f.tracked.lock().is_empty());
+    assert!(client.0.written.lock().is_empty());
+    let records = f.service.list("owner-a");
+    assert!(
+        records["terminals"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("锁屏账户验证")
+    );
+    assert!(
+        records["terminals"][0]["cleanupError"]
+            .as_str()
+            .unwrap()
+            .contains("未执行已批准的远端 exit 与库存核验")
+    );
+    assert_eq!(
+        records["terminals"][0]["inventoryError"],
+        "终端环境检查超时"
+    );
+    assert_eq!(records["terminals"][0]["jobId"], Value::Null);
+    assert_eq!(records["terminals"][0]["cleanupConfirmed"], false);
+}
+
+#[tokio::test]
+async fn customized_prompt_is_usable_and_does_not_grant_unrecognized_cleanup_input() {
+    let f = Fixture::new();
+    f.transport.ready.store(false, Ordering::Release);
+    let caller = f.caller("owner-a");
+    let service = f.service.clone();
+    let operation =
+        tokio::spawn(async move { service.open(&caller, None, TerminalShell::PowerShell).await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while f.transport.spawned.load(Ordering::Acquire) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let client = f.transport.clients.lock()[0].clone();
+    client
+        .0
+        .sender
+        .lock()
+        .as_ref()
+        .unwrap()
+        .unbounded_send(
+            "[Connect] Connected\r\n[Tips] Type 'exit' to end the remote session.\r\ncustom ❯ "
+                .as_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+    let opened = tokio::time::timeout(Duration::from_secs(2), operation)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(opened["state"], "ready");
+    assert_eq!(opened["writable"], true);
+    assert_eq!(f.tracked.lock().len(), 1);
+    assert_eq!(opened["canCloseGracefully"], false);
+    let id = opened["terminalId"].as_str().unwrap();
+    f.observe(id).await;
+    assert!(f.service.close(&f.caller("owner-a"), id).await.is_err());
+    assert!(client.0.written.lock().is_empty());
+}
+
+#[tokio::test]
+async fn prompt_received_after_the_handshake_is_available_for_observed_cleanup() {
+    let f = Fixture::new();
+    f.transport.ready.store(false, Ordering::Release);
+    let caller = f.caller("owner-a");
+    let service = f.service.clone();
+    let operation =
+        tokio::spawn(async move { service.open(&caller, None, TerminalShell::PowerShell).await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while f.transport.spawned.load(Ordering::Acquire) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let client = f.transport.clients.lock()[0].clone();
+    client
+        .0
+        .sender
+        .lock()
+        .as_ref()
+        .unwrap()
+        .unbounded_send(
+            b"[Connect] Connected\r\n[Tips] Type 'exit' to end the remote session.\r\n".to_vec(),
+        )
+        .unwrap();
+    let opened = tokio::time::timeout(Duration::from_secs(2), operation)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(opened["state"], "ready");
+    assert_eq!(opened["canCloseGracefully"], false);
+    client
+        .0
+        .sender
+        .lock()
+        .as_ref()
+        .unwrap()
+        .unbounded_send(b"PS C:\\fixture> ".to_vec())
+        .unwrap();
+    let id = opened["terminalId"].as_str().unwrap();
+    f.observe(id).await;
+    let closed = f.service.close(&f.caller("owner-a"), id).await.unwrap();
+    assert_eq!(closed["remoteExitObserved"], true);
+    assert_eq!(closed["cleanupConfirmed"], true);
+}
+
+#[tokio::test]
+async fn unavailable_inventory_does_not_block_a_verified_new_connection_or_claim_full_cleanup() {
+    let f = Fixture::new();
+    *f.transport.query_error.lock() = Some("mock unavailable inventory".into());
+    let opened = f.open().await;
+    assert_eq!(opened["state"], "ready");
+    assert_eq!(opened["writable"], true);
+    assert_eq!(opened["ownership"], "new-cli-connection");
+    assert_eq!(opened["inventoryBaselineAvailable"], false);
+    assert_eq!(opened["inventoryError"], "mock unavailable inventory");
+    assert_eq!(f.tracked.lock().len(), 1);
+    let id = opened["terminalId"].as_str().unwrap();
+    f.service
+        .write(&f.caller("owner-a"), id, "echo fixture", true, 0)
+        .await
+        .unwrap();
+    f.observe(id).await;
+    let error = f.service.close(&f.caller("owner-a"), id).await.unwrap_err();
+    assert!(error.contains("未获得启动前终端库存"));
+    let ended = f
+        .service
+        .find("owner-a", id)
+        .unwrap()
+        .snapshot(None, 0)
+        .unwrap();
+    assert_eq!(ended["remoteExitObserved"], true);
+    assert_eq!(ended["cleanupConfirmed"], false);
+    assert_eq!(f.transport.queries.load(Ordering::Acquire), 1);
+    assert_eq!(*f.transport.ids.lock(), BTreeSet::from(["1".into()]));
+    assert_eq!(
+        f.transport.clients.lock()[0].0.written.lock().as_slice(),
+        ["echo fixture\r", "exit\r"]
+    );
+}
+
+#[tokio::test]
+async fn unowned_failed_startups_release_capacity_while_diagnostics_remain_bounded() {
+    let f = Fixture::new();
+    f.transport.ready.store(false, Ordering::Release);
+    *f.transport.query_error.lock() = Some("mock unavailable inventory".into());
+    *f.transport.startup_output.lock() = Some("[系统] 请输入被控端解锁密码: ".into());
+    for _ in 0..34 {
+        let error = f
+            .service
+            .open(&f.caller("owner-a"), None, TerminalShell::PowerShell)
+            .await
+            .unwrap_err();
+        assert!(error.contains("锁屏账户验证"), "{error}");
+        assert!(f.service.slots.lock().len() <= 32);
+    }
+    assert_eq!(f.transport.spawned.load(Ordering::Acquire), 34);
+    assert!(f.tracked.lock().is_empty());
+    assert!(
+        f.transport
+            .clients
+            .lock()
+            .iter()
+            .all(|client| client.0.terminated.load(Ordering::Acquire)
+                && client.0.written.lock().is_empty())
+    );
+    assert!(
+        !f.service.list("owner-a")["terminals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    f.transport.ready.store(true, Ordering::Release);
+    f.transport.startup_output.lock().take();
+    f.transport.query_error.lock().take();
+    let opened = f.open().await;
+    assert_eq!(opened["state"], "ready");
+    f.observe(opened["terminalId"].as_str().unwrap()).await;
+    f.service
+        .close(&f.caller("owner-a"), opened["terminalId"].as_str().unwrap())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn owned_connections_without_confirmed_cleanup_still_reserve_the_safety_limit() {
+    let f = Fixture::new();
+    for _ in 0..3 {
+        let opened = f.open().await;
+        let slot = f
+            .service
+            .find("owner-a", opened["terminalId"].as_str().unwrap())
+            .unwrap();
+        assert!(slot.close_owned(false).await.is_err());
+    }
+    let error = f
+        .service
+        .open(&f.caller("owner-a"), None, TerminalShell::PowerShell)
+        .await
+        .unwrap_err();
+    assert!(error.contains("数量超过限制"));
+    assert_eq!(f.transport.spawned.load(Ordering::Acquire), 3);
+    assert_eq!(
+        *f.transport.ids.lock(),
+        BTreeSet::from(["1".into(), "2".into(), "3".into(), "4".into()])
+    );
+}
+
+#[tokio::test]
+async fn delayed_observer_and_explicit_old_cleanup_do_not_query_through_a_new_live_connection() {
+    let f = Fixture::new();
+    let original = f.open().await;
+    let old_id = original["terminalId"].as_str().unwrap();
+    let old = f.service.find("owner-a", old_id).unwrap();
+    assert!(old.close_owned(false).await.is_err());
+    assert_eq!(f.transport.queries.load(Ordering::Acquire), 1);
+    let current = f.open().await;
+    let current_id = current["terminalId"].as_str().unwrap();
+    let before_queries = f.transport.queries.load(Ordering::Acquire);
+    assert!(old.close_owned(false).await.is_err());
+    let error = f
+        .service
+        .close(&f.caller("owner-a"), old_id)
+        .await
+        .unwrap_err();
+    assert!(error.contains("其他活跃终端连接"));
+    assert_eq!(f.transport.queries.load(Ordering::Acquire), before_queries);
+    let live = f
+        .service
+        .find("owner-a", current_id)
+        .unwrap()
+        .snapshot(None, 0)
+        .unwrap();
+    assert_eq!(live["writable"], true);
+    assert_eq!(live["ownershipLost"], false);
+    f.observe(current_id).await;
+    let closed = f
+        .service
+        .close(&f.caller("owner-a"), current_id)
+        .await
+        .unwrap();
+    assert_eq!(closed["cleanupConfirmed"], true);
 }
 
 #[tokio::test]

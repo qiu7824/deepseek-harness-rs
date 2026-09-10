@@ -141,7 +141,13 @@ async fn terminal_query(
     )
     .await
     .map(|output| output.stdout)
-    .map_err(|error| uu_cli::failure_message(error.code.as_deref()))
+    .map_err(|error| {
+        let detail = protocol::startup_failure(&error.stderr)
+            .or_else(|| protocol::startup_failure(&error.stdout))
+            .map(str::to_owned)
+            .unwrap_or_else(|| uu_cli::failure_message(error.code.as_deref()));
+        format!("UU 终端会话列表查询失败：{}", detail)
+    })
 }
 impl Transport for NativeTransport {
     fn sessions(
@@ -290,17 +296,28 @@ struct SlotState {
     client: Option<Arc<dyn SubprocessTerminalHandle>>,
     spawned_client: bool,
     before: Option<BTreeSet<String>>,
+    inventory_error: Option<String>,
     remote_id: Option<String>,
     job_id: Option<String>,
+    initialization_failure: Option<String>,
     failure: Option<String>,
     output: Output,
     initial_prompt: Option<String>,
+    has_user_input: bool,
     read_prompt_end: Option<u64>,
     unsubmitted_input: bool,
     exit_requested: bool,
     exit_observed: bool,
     diagnostic_tail: String,
     owned_connection: bool,
+}
+impl SlotState {
+    fn reserves_connection(&self) -> bool {
+        self.phase != Phase::Closed
+            && (self.phase != Phase::CleanupUnconfirmed
+                || self.owned_connection
+                || self.client.is_some())
+    }
 }
 struct Slot {
     id: String,
@@ -328,7 +345,9 @@ impl Slot {
             json!({"terminalId":self.id,"deviceId":self.target.device_id,"deviceName":self.target.device_name,
             "remoteSessionId":state.remote_id,"jobId":state.job_id,"state":state.phase.name(),
             "connectionExited":self.client_exited.load(Ordering::Acquire),"output":output,"cursor":cursor,"truncated":truncated,
-            "cleanupConfirmed":state.phase==Phase::Closed,"error":state.failure,
+            "cleanupConfirmed":state.phase==Phase::Closed,"error":state.initialization_failure.as_ref().or(state.failure.as_ref()),
+            "cleanupError":state.failure,
+            "inventoryBaselineAvailable":state.before.is_some(),"inventoryError":state.inventory_error,
             "ownership":if state.owned_connection {"new-cli-connection"} else {"unconfirmed"},
             "ownershipLost":self.ownership_lost.load(Ordering::Acquire),
             "writable":state.phase==Phase::Ready && !self.client_exited.load(Ordering::Acquire) && !self.ownership_lost.load(Ordering::Acquire),
@@ -406,8 +425,21 @@ impl Slot {
             signal.clone(),
             Duration::from_secs(35),
         )
-        .await?;
-        self.state.lock().before = Some(before.clone());
+        .await;
+        if signal() {
+            return Err("UU 终端建立已取消".into());
+        }
+        {
+            let mut state = self.state.lock();
+            match before {
+                Ok(before) => state.before = Some(before),
+                Err(error) => state.inventory_error = Some(error),
+            }
+        }
+        // A captured inventory query can time out while the interactive
+        // connection would explain that the desktop is locked. The inventory
+        // is only a cleanup baseline; input still requires the forced-new
+        // connection's own handshake and binding checks.
         let client = bounded(
             self.transport
                 .spawn(self.target.clone(), shell, cwd, signal.clone()),
@@ -438,6 +470,12 @@ impl Slot {
                     .unwrap_or(0);
                 state.diagnostic_tail = diagnostic[start..].to_string();
                 state.output.append(&bytes);
+                if state.initial_prompt.is_none() && !state.has_user_input {
+                    let text = state.output.text();
+                    if protocol::ready(&text) {
+                        state.initial_prompt = protocol::shell_prompt(&text, output_slot.shell);
+                    }
+                }
                 drop(state);
                 output_slot.changed.notify_waiters();
             }
@@ -476,20 +514,21 @@ impl Slot {
                 if self.ownership_lost.load(Ordering::Acquire) {
                     return Err(self.connection_error("UU 终端连接已转移".into()));
                 }
-                if protocol::blocked_startup(&text) {
-                    return Err("UU 远端要求人工登录或解锁，未发送终端输入".into());
+                if let Some(error) = protocol::startup_failure(&text) {
+                    return Err(error.into());
                 }
                 if self.client_exited.load(Ordering::Acquire) {
                     return Err("UU 终端连接在建立前退出".into());
                 }
                 if protocol::ready(&text) {
+                    // The vendor handshake establishes the interactive
+                    // connection. A customized Windows prompt is still a
+                    // usable shell; recognizing a prompt is only needed to
+                    // authorize automatic graceful cleanup.
                     if let Some(prompt) = protocol::shell_prompt(&text, shell) {
                         self.state.lock().initial_prompt = Some(prompt);
-                        return Ok(());
                     }
-                    if !matches!(shell, TerminalShell::PowerShell | TerminalShell::Cmd) {
-                        return Ok(());
-                    }
+                    return Ok(());
                 }
                 notified.await;
             }
@@ -511,8 +550,21 @@ impl Slot {
 
     async fn close_owned(self: &Arc<Self>, approved_close: bool) -> Result<(), String> {
         let _operation = self.operation.lock().await;
-        if self.state.lock().phase == Phase::Closed {
-            return Ok(());
+        {
+            let state = self.state.lock();
+            if state.phase == Phase::Closed {
+                return Ok(());
+            }
+            // Process-exit and cancellation observers may arrive after an
+            // earlier close has finished. Repeating their inventory query
+            // could displace a subsequently opened terminal on this device.
+            // Only an explicit close may retry unconfirmed cleanup.
+            if state.phase == Phase::CleanupUnconfirmed && !approved_close {
+                return Err(state
+                    .failure
+                    .clone()
+                    .unwrap_or_else(|| "UU 远端清理未确认".into()));
+            }
         }
         let (client, before, spawned_client, may_exit) = {
             let mut state = self.state.lock();
@@ -526,7 +578,7 @@ impl Slot {
             )
         };
         let no_abort: Abort = Arc::new(|| false);
-        let authorization = if spawned_client {
+        let authorization = if spawned_client && approved_close {
             bounded(
                 self.access
                     .validate(self.target.clone(), false, no_abort.clone()),
@@ -577,6 +629,18 @@ impl Slot {
             if !spawned_client {
                 return Ok(());
             }
+            // Cancellation and exit observers only own the local transport.
+            // Starting another remote CLI query here can take over a newer
+            // connection; an explicit, admitted close performs verification.
+            if !approved_close {
+                return Err(self.connection_error(
+                    "仅关闭自有本地终端连接；未执行已批准的远端 exit 与库存核验，远端清理未确认"
+                        .into(),
+                ));
+            }
+            let baseline = before
+                .as_ref()
+                .ok_or("未获得启动前终端库存，无法确认远端库存清理；未操作任何未知会话")?;
             if local_result.is_err() && !self.client_exited.load(Ordering::Acquire) {
                 return Err("本地终端未关闭，跳过可能中断连接的列表查询；远端清理未确认".into());
             }
@@ -587,7 +651,6 @@ impl Slot {
                 Duration::from_secs(15),
             )
             .await?;
-            let baseline = before.as_ref().ok_or("缺少启动前库存，远端清理未确认")?;
             if &current != baseline {
                 return Err("远端终端库存尚未恢复到启动前基线；未关闭任何未知会话".into());
             }
@@ -738,13 +801,13 @@ impl RemoteTerminals {
         {
             let mut slots = self.slots.lock();
             if slots.len() >= 32 {
-                slots.retain(|_, slot| slot.state.lock().phase != Phase::Closed);
+                slots.retain(|_, slot| slot.state.lock().reserves_connection());
             }
             if slots.len() >= 32
                 || slots
                     .values()
                     .filter(|slot| {
-                        slot.owner == caller.owner && slot.state.lock().phase != Phase::Closed
+                        slot.owner == caller.owner && slot.state.lock().reserves_connection()
                     })
                     .count()
                     >= 3
@@ -778,11 +841,14 @@ impl RemoteTerminals {
                 client: None,
                 spawned_client: false,
                 before: None,
+                inventory_error: None,
                 remote_id: None,
                 job_id: None,
+                initialization_failure: None,
                 failure: None,
                 output: Output::default(),
                 initial_prompt: None,
+                has_user_input: false,
                 read_prompt_end: None,
                 unsubmitted_input: false,
                 exit_requested: false,
@@ -800,13 +866,12 @@ impl RemoteTerminals {
             shell,
             job_cursor: Mutex::new(0),
         });
-        let job_id = (caller.track)(slot.clone())?;
-        slot.state.lock().job_id = Some(job_id);
         self.slots.lock().insert(slot.id.clone(), slot.clone());
         let mut cleanup = CleanupOnDrop(Some(slot.clone()));
         let signal = slot.own_signal(caller.signal.clone());
         let initialized = slot.initialize(shell, caller.cwd.clone(), signal).await;
         if let Err(error) = initialized {
+            slot.state.lock().initialization_failure = Some(slot.connection_error(error.clone()));
             let close_error = slot.close_owned(false).await.err();
             cleanup.0 = None;
             return Err(format!(
@@ -818,6 +883,25 @@ impl RemoteTerminals {
                     .unwrap_or_default()
             ));
         }
+        // The lifecycle job represents an established remote terminal. A
+        // failed inventory query or handshake must not publish a spurious
+        // "completed terminal" notification for a shell that never opened.
+        let job_id = match (caller.track)(slot.clone()) {
+            Ok(job_id) => job_id,
+            Err(error) => {
+                slot.state.lock().initialization_failure = Some(error.clone());
+                let close_error = slot.close_owned(false).await.err();
+                cleanup.0 = None;
+                return Err(format!(
+                    "{error}; terminalId={}{}",
+                    slot.id,
+                    close_error
+                        .map(|error| format!("; {error}"))
+                        .unwrap_or_default()
+                ));
+            }
+        };
+        slot.state.lock().job_id = Some(job_id);
         cleanup.0 = None;
         slot.snapshot(None, MAX_READ)
     }
@@ -869,6 +953,7 @@ impl RemoteTerminals {
         {
             let mut state = slot.state.lock();
             state.read_prompt_end = None;
+            state.has_user_input = true;
             state.unsubmitted_input = !submit;
         }
         bounded(client.write(&input), signal.clone(), Duration::from_secs(8))
@@ -892,9 +977,19 @@ impl RemoteTerminals {
         Ok(value)
     }
     async fn close(&self, caller: &Caller, id: &str) -> Result<Value, String> {
+        let _admission = self.admission.lock().await;
         let slot = self.find(&caller.owner, id)?;
         if slot.state.lock().phase == Phase::Closed {
             return slot.snapshot(None, 0);
+        }
+        if self.slots.lock().values().any(|other| {
+            other.id != slot.id
+                && other.target.account == slot.target.account
+                && other.target.device_id == slot.target.device_id
+                && other.state.lock().client.is_some()
+                && !other.client_exited.load(Ordering::Acquire)
+        }) {
+            return Err("该设备已有其他活跃终端连接，暂不核验旧终端记录，以免中断新连接".into());
         }
         (caller.approve)("close", &slot.target, None).await?;
         if (caller.signal)() {

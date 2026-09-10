@@ -8,8 +8,8 @@ pub mod agent;
 pub mod constants;
 pub mod index;
 pub mod invariant;
-mod response_continuation;
 mod request_metrics;
+mod response_continuation;
 pub mod runtime_context;
 pub mod tool_calls;
 

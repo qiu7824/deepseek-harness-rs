@@ -18,6 +18,7 @@ use futures::FutureExt;
 mod artifacts;
 mod claude_cli_auth;
 mod client_plugins;
+mod code_intelligence;
 mod code_mode_dependency;
 mod codex_account;
 mod computer_use_http;
@@ -36,7 +37,6 @@ mod provider_auth;
 mod provider_auth_catalog;
 mod provider_compatibility;
 pub mod runtime_paths;
-mod code_intelligence;
 mod sidebar_settings;
 #[cfg(test)]
 mod ultra_control_tests;
@@ -808,7 +808,10 @@ impl OpenAiCompatibleAdapter {
                 compat: profile.compat.clone(),
                 api: Some(profile.api.clone()),
                 oauth: profile.auth_provider.is_some(),
-                account_scope: profile.auth_provider.as_ref().and(profile.model_catalog_scope.clone()),
+                account_scope: profile
+                    .auth_provider
+                    .as_ref()
+                    .and(profile.model_catalog_scope.clone()),
                 max_tokens: Some(16_384),
                 default_context_window: Some(131_072),
                 headers: profile
@@ -922,7 +925,12 @@ impl OpenAiCompatibleAdapter {
                 Box::pin(async move {
                     if let (Some(auth), Some(provider)) = (auth, auth_provider) {
                         return auth
-                            .resolve_request_token_for_scope(&provider, &base_url, &headers, auth_scope.as_deref())
+                            .resolve_request_token_for_scope(
+                                &provider,
+                                &base_url,
+                                &headers,
+                                auth_scope.as_deref(),
+                            )
                             .await
                             .map_err(|message| {
                                 dsh_llm::LlmError::new(
@@ -2005,16 +2013,26 @@ fn compose_host_in_fiber(
     let node_command = runtime_paths.node_command();
     let node_path = std::path::Path::new(&node_command);
     let python_command = runtime_paths.python_command();
-    let mut path_prefixes=Vec::new();
+    let mut path_prefixes = Vec::new();
     if node_path.is_absolute() && node_path.is_file() {
         if let Some(directory) = node_path.parent() {
             path_prefixes.push(directory.to_path_buf());
         }
     }
-    let runtime_roots=python_command.as_ref().and_then(|path|path.parent()).map(|path|path.to_path_buf()).into_iter().collect::<Vec<_>>();
+    let runtime_roots = python_command
+        .as_ref()
+        .and_then(|path| path.parent())
+        .map(|path| path.to_path_buf())
+        .into_iter()
+        .collect::<Vec<_>>();
     path_prefixes.extend(runtime_roots.iter().cloned());
     subprocess.set_path_prefixes(path_prefixes);
-    let sandbox = LocalSandboxProvider::install_with_runtimes(ctx, Default::default(),runtime_roots,runtime_paths.paths["cacheDirectory"].join("runtime-read-permissions"));
+    let sandbox = LocalSandboxProvider::install_with_runtimes(
+        ctx,
+        Default::default(),
+        runtime_roots,
+        runtime_paths.paths["cacheDirectory"].join("runtime-read-permissions"),
+    );
     let _sandbox_policy = SandboxPolicyService::install(
         ctx,
         dsh_sandbox_policy::Config {
@@ -3917,13 +3935,23 @@ fn compose_host_in_fiber(
         } else {
             dsh_host_directory_picker_auto::BindHost::AllInterfaces
         },
-        platform: if cfg!(windows) { "win32" } else if cfg!(target_os = "macos") { "darwin" } else { std::env::consts::OS }.into(),
-        env: ["SSH_CONNECTION", "SSH_TTY", "DISPLAY", "WAYLAND_DISPLAY"].into_iter()
-            .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_owned(),value))).collect(),
-        linux_chooser: cfg!(target_os = "linux") && dsh_host_directory_picker_auto::has_linux_chooser_binary(
-            std::env::var("PATH").ok().as_deref(),
-            &dsh_host_directory_picker_auto::can_execute,
-        ),
+        platform: if cfg!(windows) {
+            "win32"
+        } else if cfg!(target_os = "macos") {
+            "darwin"
+        } else {
+            std::env::consts::OS
+        }
+        .into(),
+        env: ["SSH_CONNECTION", "SSH_TTY", "DISPLAY", "WAYLAND_DISPLAY"]
+            .into_iter()
+            .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_owned(), value)))
+            .collect(),
+        linux_chooser: cfg!(target_os = "linux")
+            && dsh_host_directory_picker_auto::has_linux_chooser_binary(
+                std::env::var("PATH").ok().as_deref(),
+                &dsh_host_directory_picker_auto::can_execute,
+            ),
     };
     if dsh_host_directory_picker_auto::resolve_directory_picker_backend(&picker_facts)
         == dsh_host_directory_picker_auto::DirectoryPickerBackendKind::Native

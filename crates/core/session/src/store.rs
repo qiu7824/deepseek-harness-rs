@@ -283,9 +283,7 @@ fn assert_supported_request_header(
             "{location} uses unsupported legacy request/header reason \"fallback\""
         ));
     }
-    if type_ == "request/header"
-        && data.pointer("/header/system").is_some()
-    {
+    if type_ == "request/header" && data.pointer("/header/system").is_some() {
         return Err(format!(
             "{location} must omit header.system; use system/message"
         ));
@@ -375,9 +373,7 @@ impl Session {
         supplied_inherited_event_count: Option<SessionLogOffset>,
     ) -> Result<Session, String> {
         let had_seed = seed.is_some();
-        let seed = if header
-            .is_some_and(|value| value.version == LEGACY_SESSION_FORMAT_VERSION)
-        {
+        let seed = if header.is_some_and(|value| value.version == LEGACY_SESSION_FORMAT_VERSION) {
             let legacy = header.cloned().expect("header present");
             let events = seed.clone().unwrap_or_default();
             Some(crate::migrate_v0_to_v3(legacy, &events)?.events)

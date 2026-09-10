@@ -56,10 +56,11 @@ pub(crate) fn failure_message(code: Option<&str>) -> String {
     match code {
         Some("ENOENT") => "未找到 UU 远程 CLI，请检查安装路径".into(),
         Some("1") => "UU 远程配置不可用，请在客户端检查设置".into(),
-        Some("2") => "请打开 UU 远程客户端并登录账号".into(),
-        Some("3") => "当前 UU 远程版本不支持该命令，请更新客户端".into(),
+        Some("2") => "UU CLI 无法连接本机主程序，请打开 UU 远程客户端（退出码 2）".into(),
+        Some("3") => "UU CLI 报告无效命令（退出码 3）".into(),
         Some("4") => "UU 远程数据暂不可用，请检查账号与设备状态".into(),
-        Some("5" | "TIMEOUT") => "UU 远程终端环境检查超时，请确认被控端已登录、在线并支持远程终端后重试".into(),
+        Some("5") => "UU 客户端报告执行超时（退出码 5）".into(),
+        Some("TIMEOUT") => "UU CLI 未在限定时间内返回；尚未获得客户端操作结果".into(),
         Some("6") => "UU 远程终端操作失败".into(),
         Some("ABORT_ERR") => "UU 远程操作已取消".into(),
         Some("OUTPUT_LIMIT") => "UU 远程返回数据超过大小限制".into(),
@@ -298,6 +299,13 @@ mod tests {
     }
 
     #[test]
+    fn client_environment_failure_and_host_query_deadline_are_distinct() {
+        assert!(failure_message(Some("5")).contains("退出码 5"));
+        assert!(failure_message(Some("TIMEOUT")).contains("尚未获得客户端操作结果"));
+        assert!(!failure_message(Some("TIMEOUT")).contains("环境检查"));
+    }
+
+    #[test]
     fn status_uses_connected_devices_and_rejects_unknown_rows() {
         assert_eq!(
             connected_devices(&json!({"connected_devices":[]})).unwrap(),
@@ -357,6 +365,6 @@ mod tests {
             );
         }
         assert!(TerminalShell::parse("pwsh -Command anything").is_err());
-        assert_eq!(failure_message(Some("TIMEOUT")), failure_message(Some("5")));
+        assert_ne!(failure_message(Some("TIMEOUT")), failure_message(Some("5")));
     }
 }
