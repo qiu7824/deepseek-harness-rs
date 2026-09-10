@@ -14,7 +14,12 @@ use serde_json::Value as JsonValue;
 use crate::types::{SessionEvent, SurfaceOp};
 
 /// Runtime counterpart of the message-producing event union.
-pub const SURFACE_EVENT_TYPES: [&str; 4] = ["system/message", "user/message", "assistant/message", "tool/result"];
+pub const SURFACE_EVENT_TYPES: [&str; 4] = [
+    "system/message",
+    "user/message",
+    "assistant/message",
+    "tool/result",
+];
 
 /// Whether an event type can join the model-visible surface.
 pub fn is_surface_eligible_type(type_: &str) -> bool {
@@ -45,7 +50,9 @@ pub fn is_replacement_surface_event(event: &SessionEvent) -> bool {
 /// when it produces none (TS `deriveEventMessage`).
 pub fn derive_event_message(event: &SessionEvent) -> Option<Message> {
     match event.type_.as_str() {
-        "system/message" => serde_json::from_value::<Message>(event.data.get("message")?.clone()).ok(),
+        "system/message" => {
+            serde_json::from_value::<Message>(event.data.get("message")?.clone()).ok()
+        }
         "user/message" => serde_json::from_value::<Message>(event.data.clone()).ok(),
         "assistant/message" => {
             let message: Message =
@@ -89,7 +96,7 @@ pub struct SurfaceFoldResult {
 pub struct SessionSurface {
     /// Current surface event sequences in model-visible order.
     pub nodes: Vec<u64>,
-    /// Monotonic count of committed positional replacements.
+    /// Monotonic generation of positional changes, including restored prefixes.
     pub replace_generation: u64,
 }
 
@@ -114,7 +121,7 @@ struct SurfaceReplacePlan {
 /// One validated surface transition that has not mutated fold state yet.
 #[derive(Debug, Clone, PartialEq)]
 enum SurfacePlan {
-    Append { seq: u64 },
+    Append { seq: u64, prepend: bool },
     Replace(SurfaceReplacePlan),
 }
 
@@ -292,6 +299,8 @@ fn plan_surface_event(
             assert_provenance(event, &[])?;
             Ok(Some(SurfacePlan::Append {
                 seq: event.seq.get(),
+                prepend: event.type_ == "system/message"
+                    && event.data.get("prefix").and_then(JsonValue::as_bool) == Some(true),
             }))
         }
         SurfaceOp::Replace { .. } => {
@@ -320,8 +329,16 @@ fn apply_surface_plan(
     plan: Option<SurfacePlan>,
 ) -> Option<SurfaceFoldReplacement> {
     match plan {
-        Some(SurfacePlan::Append { seq }) => {
-            state.nodes.push(seq);
+        Some(SurfacePlan::Append { seq, prepend }) => {
+            if prepend && !state.nodes.is_empty() {
+                // Explicit prefixes can repair a shadowed system node. Old
+                // unmarked V3 appends retain their original positions so
+                // their later replacement spans can still be replayed.
+                state.nodes.insert(0, seq);
+                state.replace_generation += 1;
+            } else {
+                state.nodes.push(seq);
+            }
             None
         }
         Some(SurfacePlan::Replace(plan)) => {
@@ -426,6 +443,8 @@ impl StreamingSurfaceFold {
                 assert_provenance(event, &[])?;
                 Some(SurfacePlan::Append {
                     seq: event.seq.get(),
+                    prepend: event.type_ == "system/message"
+                        && event.data.get("prefix").and_then(JsonValue::as_bool) == Some(true),
                 })
             }
             SurfaceOp::Replace { start, end } => {
@@ -517,6 +536,51 @@ mod streaming_tests {
         streaming.push(&events[2]).expect("replacement chunk");
         assert_eq!(streaming.finish(), complete);
     }
+
+    #[test]
+    fn restored_system_prefix_invalidates_incremental_order_and_preserves_user_order() {
+        let mut events = vec![
+            event(0, SurfaceOp::Append, None),
+            event(1, SurfaceOp::Append, None),
+        ];
+        let mut manager = SurfaceManager::new(0);
+        assert_eq!(manager.nodes(&events).unwrap(), vec![0, 1]);
+        assert_eq!(manager.replace_generation(&events).unwrap(), 0);
+        let mut system = event(2, SurfaceOp::Append, None);
+        system.type_ = "system/message".into();
+        system.data["prefix"] = JsonValue::Bool(true);
+        events.push(system);
+        events.push(event(3, SurfaceOp::Append, None));
+        assert_eq!(manager.nodes(&events).unwrap(), vec![2, 0, 1, 3]);
+        assert_eq!(manager.replace_generation(&events).unwrap(), 1);
+        let mut streaming = StreamingSurfaceFold::default();
+        for event in &events {
+            streaming.push(event).unwrap();
+        }
+        assert_eq!(streaming.finish(), fold_surface(&events).unwrap());
+    }
+
+    #[test]
+    fn unmarked_v3_system_append_preserves_historical_replacement_spans() {
+        let mut system = event(1, SurfaceOp::Append, None);
+        system.type_ = "system/message".into();
+        let events = vec![
+            event(0, SurfaceOp::Append, None),
+            system,
+            event(2, SurfaceOp::Append, None),
+            event(3, SurfaceOp::Replace { start: 0, end: 1 }, Some(vec![0, 1])),
+        ];
+        let complete = fold_surface(&events).unwrap();
+        assert_eq!(complete.nodes, vec![3, 2]);
+        let mut streaming = StreamingSurfaceFold::default();
+        let mut manager = SurfaceManager::new(0);
+        for (index, event) in events.iter().enumerate() {
+            streaming.push(event).unwrap();
+            manager.nodes(&events[..=index]).unwrap();
+        }
+        assert_eq!(streaming.finish(), complete);
+        assert_eq!(manager.nodes(&events).unwrap(), complete.nodes);
+    }
 }
 
 impl SurfaceManager {
@@ -594,7 +658,7 @@ impl SurfaceManager {
         Ok(())
     }
 
-    /// Monotonic count of folded positional replacements.
+    /// Monotonic generation of folded positional changes.
     pub fn replace_generation(&mut self, log: &[SessionEvent]) -> Result<u64, String> {
         if self.needs_process(log) {
             self.process_delta(log)?;

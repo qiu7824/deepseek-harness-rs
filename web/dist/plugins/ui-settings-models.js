@@ -2062,7 +2062,7 @@ window.__ModuleLoader__.load({
         }
 
 
-        if(typeof document!=="undefined"&&!document.querySelector("style[data-account-navigation]")){const style=document.createElement("style");style.dataset.accountNavigation="";style.textContent=".dshSidebarAccount{width:100%;display:flex;align-items:stretch}.dshSidebarAccount>div{width:100%;display:flex}.dshAccountBadge{align-self:stretch;justify-content:flex-start}.dshAccountBadge>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;text-align:left}.dshAccountDisclosure{display:inline-flex;align-items:center;gap:8px;padding:6px 0;border:0;background:none;color:inherit;font:inherit;font-weight:500;cursor:pointer;min-width:0;text-align:left}.dshAccountEntry[hidden],.dshAccountEntry [hidden]{display:none!important}.dshAccountDialog{width:min(560px,calc(100vw - 32px))}.dshAccountSwitcher{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}";document.head.appendChild(style)}
+        if(typeof document!=="undefined"&&!document.querySelector("style[data-account-navigation]")){const style=document.createElement("style");style.dataset.accountNavigation="";style.textContent=".dshSidebarAccount{width:100%;display:flex;align-items:stretch}.dshSidebarAccount>div{width:100%;display:flex}.dshAccountBadge{align-self:stretch;justify-content:flex-start}.dshAccountBadge>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;text-align:left}.dshAccountDisclosure{display:inline-flex;align-items:center;gap:8px;padding:6px 0;border:0;background:none;color:inherit;font:inherit;font-weight:500;cursor:pointer;min-width:0;text-align:left}.dshAccountEntry[hidden],.dshAccountEntry [hidden]{display:none!important}.dshAccountDialog{width:min(560px,calc(100vw - 32px))}.dshAccountSwitcher{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.dshAccountSessionList{display:grid;gap:8px;margin:12px 0}.dshAccountSessionRow{display:flex;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-subtle,#8883);flex-wrap:wrap}.dshAccountSessionIdentity{flex:1;min-width:120px;overflow-wrap:anywhere}.dshAccountSessionIdentity small{display:block;opacity:.65;margin-top:4px}";document.head.appendChild(style)}
         function createAccountDirectory() {
             const store=(0,_deepseek_ai_dsh_client_runtime_client.createSnapshotStore)({accounts:[],status:"idle",error:null});
             let flight=null,updated=0,disposed=false,generation=0;
@@ -2091,30 +2091,59 @@ window.__ModuleLoader__.load({
                 return flight;
             }};
         }
+        function AccountSessionList({account,t,disabled,onSwitch,onLogout}) {
+            const h=react.createElement,rows=account.accounts??[];
+            return h("div",{className:"dshAccountSessionList","aria-label":t("accountSaved")},...rows.map((item,index)=>h("div",{key:item.accountScope,className:"dshAccountSessionRow","data-account-scope":item.accountScope},
+                h("div",{className:"dshAccountSessionIdentity"},h("strong",null,item.label||item.accountId||`${t("accountLabel")} ${index+1}`),h("small",null,item.active?t("accountCurrent"):item.needsLogin?t("accountNeedsLogin"):t("accountSavedLogin"))),
+                h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:disabled||item.active||item.needsLogin,"aria-pressed":item.active===true,onClick:()=>onSwitch(item.accountScope)},t(item.active?"accountCurrent":"accountSwitch")),
+                onLogout&&h("button",{type:"button",className:ModelsSection_module_css_default.dangerButton,disabled,onClick:()=>onLogout(item.accountScope)},t("accountRemove")))));
+        }
+        function AccountLoginPrompt({attempt,t,busy,onCancel}) {
+            const h=react.createElement;
+            return attempt&&h("div",{className:ModelsSection_module_css_default.editor,role:"status"},
+                h("p",{className:ModelsSection_module_css_default.advancedHint},t("accountAddHint")),
+                h("p",null,t(attempt.mode==="cli"?"accountCliVerify":"accountVerify")),
+                attempt.userCode&&h("code",null,attempt.userCode),
+                attempt.verificationUri&&h("a",{className:ModelsSection_module_css_default.secondaryButton,href:attempt.verificationUri,target:"_blank",rel:"noopener noreferrer"},t("accountOpen")),
+                h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy,onClick:onCancel},t("cancel")));
+        }
         function SidebarAccount({controller,t,wide}) {
             const h=react.createElement,service=controller.accounts;
             const state=(0,react.useSyncExternalStore)(service.store.subscribe,service.store.getSnapshot,service.store.getSnapshot);
-            const [open,setOpen]=react.useState(false),[selected,setSelected]=react.useState(null),[switching,setSwitching]=react.useState(false);
+            const [open,setOpen]=react.useState(false),[selected,setSelected]=react.useState(null),[switching,setSwitching]=react.useState(false),[failure,setFailure]=react.useState(null),[attempt,setAttempt]=react.useState(null);
+            const busy=react.useRef(false),mounted=react.useRef(true),attemptRef=react.useRef(null),opened=react.useRef(false);
             react.useEffect(()=>{service.load().catch(()=>{})},[service]);
-            const signed=state.accounts.filter(account=>account.signedIn&&account.scope!=="subagent");
+            react.useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;const id=attemptRef.current;attemptRef.current=null;if(id)accountRequest("cancel",{attempt:id}).catch(()=>{})}},[]);
+            const signed=state.accounts.filter(account=>(account.signedIn||account.accounts?.length)&&account.scope!=="subagent");
             const account=signed.find(item=>item.id===selected)??signed[0];
-            const manage=()=>{setOpen(false);window.dispatchEvent(new CustomEvent("dsh-open-settings",{detail:{section:"models"}}))};
-            const accountRows=account?.accounts??[];
-            const switchAccount=async scope=>{if(!scope||switching)return;setSwitching(true);try{await accountRequest("switch",{provider:account.id,accountScope:scope});await service.load(true);}catch(error){console.error(error);}finally{setSwitching(false);}};
+            const refresh=react.useCallback(async()=>{service.invalidate();await Promise.all([service.load(true),controller.load()])},[service,controller]);
+            const run=async task=>{if(busy.current)return;busy.current=true;setSwitching(true);setFailure(null);try{await task()}catch(error){if(mounted.current)setFailure(messageOf$1(error))}finally{busy.current=false;if(mounted.current)setSwitching(false)}};
+            const cancel=async()=>{const id=attemptRef.current;if(!id)return;const value=await accountRequest("cancel",{attempt:id});attemptRef.current=null;if(mounted.current)setAttempt(null);if(value.status==="complete")await refresh()};
+            const close=()=>run(async()=>{await cancel();opened.current=false;setOpen(false)});
+            const manage=()=>run(async()=>{await cancel();opened.current=false;setOpen(false);window.dispatchEvent(new CustomEvent("dsh-open-settings",{detail:{section:"models"}}))});
+            const switchAccount=scope=>run(async()=>{await accountRequest("switch",{provider:account.id,accountScope:scope});await refresh();await accountRequest("refresh",{provider:account.id});await refresh()});
+            const logout=scope=>run(async()=>{await accountRequest("logout",{provider:account.id,accountScope:scope});await refresh()});
+            const addAccount=()=>run(async()=>{if(attemptRef.current)return;const value=await accountRequest("start",{provider:account.id});if(!mounted.current||!opened.current){if(value.attempt)await accountRequest("cancel",{attempt:value.attempt});return}attemptRef.current=value.attempt;setAttempt(value)});
+            react.useEffect(()=>{if(!attempt)return;const id=attempt.attempt;let stale=false,timer;const poll=async()=>{try{const value=await accountRequest("poll",{attempt:id});if(stale||!mounted.current||attemptRef.current!==id)return;if(value.status==="complete"||value.status==="cancelled"){attemptRef.current=null;setAttempt(null);try{await refresh()}catch(error){if(mounted.current&&!attemptRef.current)setFailure(messageOf$1(error))}}else timer=setTimeout(poll,Math.max(3,value.interval||attempt.interval||3)*1000)}catch(error){if(!stale&&mounted.current&&attemptRef.current===id){setFailure(messageOf$1(error));attemptRef.current=null;setAttempt(null);accountRequest("cancel",{attempt:id}).catch(()=>{})}}};timer=setTimeout(poll,Math.max(3,attempt.interval||3)*1000);return()=>{stale=true;clearTimeout(timer)}},[attempt,refresh]);
             if(!account)return null;
             return h(react.Fragment,null,
-                h("button",{type:"button",className:"dshSidebarAction dshAccountBadge","data-rail":!wide||undefined,title:account.name+" · "+t("accountSignedIn"),"aria-label":t("accountTitle"),"aria-haspopup":"dialog",onClick:()=>{setOpen(true);service.load().catch(()=>{})}},
+                h("button",{type:"button",className:"dshSidebarAction dshAccountBadge","data-rail":!wide||undefined,title:account.name+" · "+t("accountSignedIn"),"aria-label":t("accountTitle"),"aria-haspopup":"dialog",onClick:()=>{opened.current=true;setOpen(true);service.load().catch(()=>{})}},
 					 h(_deepseek_ai_dsh_client_ui_primitives.IconAgentPresetOutline16,{size:16}),wide&&h("span",null,account.name)),
-                h(_deepseek_ai_dsh_client_ui_primitives.Modal,{open,onClose:()=>setOpen(false),title:t("accountTitle"),closeLabel:t("close"),className:"dshAccountDialog",footer:h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",onClick:manage},t("accountManage"))},
+                h(_deepseek_ai_dsh_client_ui_primitives.Modal,{open,onClose:close,title:t("accountTitle"),closeLabel:t("close"),className:"dshAccountDialog",footer:h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",disabled:switching,onClick:manage},t("accountManage"))},
                     state.error&&h("p",{role:"alert"},state.error),
-                    accountRows.length>1&&h("nav",{className:"dshAccountSwitcher","aria-label":t("accountProviders")},...accountRows.map((item,index)=>h("button",{key:item.accountScope,type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:switching,"aria-pressed":item.active===true,onClick:()=>switchAccount(item.accountScope)},item.accountId??`${t("accountSignedIn")} ${index+1}`,item.active===true?" · 当前":""))),
-                    open&&(account?h("div",null,h("p",{className:ModelsSection_module_css_default.modelCatalogMeta},account.name," · ",t("accountSignedIn")),account.id==="openai-codex"?h(CodexUsagePanel,{key:account.accountScope,account,disabled:false}):h("p",null,t("accountUsageUnavailable"))):h("p",null,t(state.status==="loading"?"accountReading":"accountNoLogin")))));
+                    failure&&h("p",{role:"alert",className:ModelsSection_module_css_default.error},failure),
+                    signed.length>1&&h("nav",{className:"dshAccountSwitcher","aria-label":t("accountProviders")},...signed.map(item=>h("button",{key:item.id,type:"button",disabled:switching||!!attempt,"aria-pressed":item.id===account.id,onClick:()=>setSelected(item.id)},item.name))),
+                    h("p",{className:ModelsSection_module_css_default.modelCatalogMeta},account.name),
+                    h(AccountSessionList,{account,t,disabled:switching||!!attempt,onSwitch:switchAccount,onLogout:logout}),
+                    h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:switching||!!attempt,onClick:addAccount},t("accountAdd")),
+                    h(AccountLoginPrompt,{attempt,t,busy:switching,onCancel:()=>run(cancel)}),
+                    open&&!switching&&!attempt&&(account.signedIn&&account.id==="openai-codex"?h(CodexUsagePanel,{key:account.accountScope,account,disabled:false}):h("p",null,t("accountUsageUnavailable")))));
         }
         function CodexUsagePanel({account,disabled}) {
             const h=react.createElement;
             const [snapshot,setSnapshot]=react.useState(null),[history,setHistory]=react.useState(null),[busy,setBusy]=react.useState(false),[error,setError]=react.useState(null);
             const mounted=react.useRef(true),generation=react.useRef(0),running=react.useRef(false);
-            const call=(action,body={})=>accountRequest(action,{provider:"openai-codex",...body});
+            const call=(action,body={})=>accountRequest(action,{provider:"openai-codex",accountScope:account.accountScope,...body});
             const load=react.useCallback(async(force=false)=>{
                 const seq=++generation.current;
                 try {const value=await call("usage",{refresh:force});if(mounted.current&&seq===generation.current){setSnapshot(value);setError(value.error??null);}}
@@ -2186,7 +2215,7 @@ window.__ModuleLoader__.load({
                         if(!current())return;
                         if(value.status==="cancelled"||value.status==="complete"){
                             attemptRef.current=null;setAttempt(null);
-                            if(value.status==="complete")await Promise.all([refresh(),controller.load()]);
+                            if(value.status==="complete"){try{await Promise.all([refresh(),controller.load()])}catch(error){if(mounted.current&&!attemptRef.current)setFailure(messageOf$1(error))}}
                         }else timer=setTimeout(poll,Math.max(3,value.interval||attempt.interval||3)*1000);
                     }catch(error){if(current()){setFailure(messageOf$1(error));attemptRef.current=null;setAttempt(null);accountRequest("cancel",{attempt:id}).catch(()=>{})}}
                 };
@@ -2206,7 +2235,8 @@ window.__ModuleLoader__.load({
                 if(!mounted.current){if(value.attempt)await accountRequest("cancel",{attempt:value.attempt});return}
                 attemptRef.current=value.attempt;setAttempt(value);
             });
-            const logout=provider=>run(async()=>{if(attemptRef.current)return;await accountRequest("logout",{provider});await Promise.all([refresh(),controller.load()])});
+            const logout=(provider,accountScope)=>run(async()=>{if(attemptRef.current)return;await accountRequest("logout",{provider,accountScope});await Promise.all([refresh(),controller.load()])});
+            const switchAccount=(provider,accountScope)=>run(async()=>{if(attemptRef.current)return;await accountRequest("switch",{provider,accountScope});await Promise.all([refresh(),controller.load()]);await accountRequest("refresh",{provider});await Promise.all([refresh(),controller.load()])});
             const cancel=()=>run(async()=>{
                 const pending=attempt,id=attemptRef.current;if(!id)return;
                 attemptRef.current=null;setAttempt(null);
@@ -2222,18 +2252,16 @@ window.__ModuleLoader__.load({
                         (0,react_jsx_runtime.jsx)("span",{className:ModelsSection_module_css_default.rowTag,children:`${t(account.signedIn?"accountSignedIn":"accountSignedOut")}${account.scope==="subagent"?` · ${t("accountSubagent")}`:""}`}),
                         (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowActions,hidden:activeAccount!==account.id,children:[
                             account.installed===false?(0,react_jsx_runtime.jsx)("a",{className:ModelsSection_module_css_default.secondaryButton,href:account.installUrl,target:"_blank",rel:"noopener noreferrer",children:t("accountInstallCli")}):(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:disabled||busy||!!attempt,onClick:()=>start(account.id,account.signedIn),children:t(account.signedIn?account.scope==="subagent"?"accountRefresh":"accountReconnect":"accountLogin")}),
+                            account.scope!=="subagent"&&(account.signedIn||account.accounts?.length>0)&&(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:disabled||busy||!!attempt||dirtyAccounts.has(account.id),onClick:()=>start(account.id,false),children:t("accountAdd")}),
                             account.signedIn&&account.scope!=="subagent"&&(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.dangerButton,disabled:disabled||busy||!!attempt,onClick:()=>logout(account.id),children:t("accountLogout")})
                         ]})
                     ]}),
-                    accountsOpen&&activeAccount===account.id&&account.id==="openai-codex"&&account.signedIn&&(0,react_jsx_runtime.jsx)(CodexUsagePanel,{account,disabled:disabled||busy||!!attempt},account.accountScope),
+                    account.error&&(0,react_jsx_runtime.jsx)("p",{role:"alert",className:ModelsSection_module_css_default.error,children:account.error}),
+                    accountsOpen&&activeAccount===account.id&&account.scope!=="subagent"&&(0,react_jsx_runtime.jsx)(AccountSessionList,{account,t,disabled:disabled||busy||!!attempt||dirtyAccounts.has(account.id),onSwitch:scope=>switchAccount(account.id,scope),onLogout:scope=>logout(account.id,scope)}),
+                    accountsOpen&&activeAccount===account.id&&account.id==="openai-codex"&&account.signedIn&&!busy&&!attempt&&(0,react_jsx_runtime.jsx)(CodexUsagePanel,{account,disabled},account.accountScope),
                     account.signedIn&&account.scope!=="subagent"&&((accountsOpen&&activeAccount===account.id)||dirtyAccounts.has(account.id))&&(0,react_jsx_runtime.jsx)("div",{hidden:!accountsOpen||activeAccount!==account.id,children:(0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0,react_jsx_runtime.jsx)(ProviderModelManager,{provider:account.provider||account.id,api,t,disabled:disabled||busy||!!attempt,revision:namespaces?.get(account.settingsNs)?.revision??account.catalog?.updatedAt,onDirtyChange:dirtyCallback(account.id),onSaved:async()=>{await Promise.all([refresh(),controller.load()])}})})})
                 ]},account.id)),
-                attempt&&(0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.editor,role:"status",children:[
-                    (0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.advancedHint,children:t(attempt.mode==="cli"?"accountCliVerify":"accountVerify")}),
-                    attempt.userCode&&(0,react_jsx_runtime.jsx)("code",{children:attempt.userCode}),
-                    attempt.verificationUri&&(0,react_jsx_runtime.jsx)("a",{className:ModelsSection_module_css_default.secondaryButton,href:attempt.verificationUri,target:"_blank",rel:"noopener noreferrer",children:t("accountOpen")}),
-                    (0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy,onClick:cancel,children:t("cancel")})
-                ]}),
+                (0,react_jsx_runtime.jsx)(AccountLoginPrompt,{attempt,t,busy,onCancel:cancel}),
                 failure&&(0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.error,role:"alert",children:failure})
             ]});
         }
@@ -3027,6 +3055,7 @@ window.__ModuleLoader__.load({
             accountManage: "Manage accounts and models", accountProviders: "Signed-in providers", accountUsageUnavailable: "This provider does not expose usage here.", accountNoLogin: "No signed-in account. Open account settings to connect a provider.", accountReading: "Reading accounts…",
             accountTitle: "Accounts", accountHint: "Sign in with a provider subscription. Credentials refresh automatically and stay on this device.",
             accountSignedIn: "Connected", accountSignedOut: "Disconnected", accountReconnect: "Reconnect", accountLogin: "Sign in", accountLogout: "Sign out",
+            accountAdd: "Sign in another account", accountSaved: "Accounts for this provider", accountCurrent: "Current account", accountSwitch: "Switch account", accountRemove: "Remove account", accountLabel: "Account", accountSavedLogin: "Saved login", accountNeedsLogin: "Sign in again", accountAddHint: "Existing accounts stay saved. On the authorization page, choose the other account you want to add.",
             accountVerify: "Open the sign-in page, enter this code, and complete authorization. This page will update automatically.", accountOpen: "Open sign-in page",
 
 			fetching: "Asking the provider…",
@@ -3166,6 +3195,7 @@ window.__ModuleLoader__.load({
             accountManage: "管理账号与模型", accountProviders: "已登录的供应商", accountUsageUnavailable: "该供应商暂未提供此处可读取的用量信息。", accountNoLogin: "尚未登录账号，可在账号设置中连接供应商。", accountReading: "正在读取账号…",
             accountTitle: "账号登录", accountHint: "使用供应商订阅登录，凭据保存在本机并自动续期。",
             accountSignedIn: "已连接", accountSignedOut: "未连接", accountReconnect: "重新连接", accountLogin: "登录", accountLogout: "退出登录",
+            accountAdd: "登录另一个账号", accountSaved: "同一登录方式的账号", accountCurrent: "当前账号", accountSwitch: "切换账号", accountRemove: "移除账号", accountLabel: "账号", accountSavedLogin: "已保存登录", accountNeedsLogin: "需要重新登录", accountAddHint: "现有账号会保留，请在授权页面选择要添加的另一个账号。",
             accountVerify: "打开登录页面，输入验证码并完成授权，此处会自动更新。", accountOpen: "打开登录页面",
 
 			fetching: "正在询问提供方…",

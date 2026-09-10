@@ -7,25 +7,48 @@ impl CompactionEngine for BasicCompactionEngine {
         signal: Option<&CompactionAbort>,
     ) -> Result<Option<CompactionResult>, ManualCompactionError> {
         let header = fold_request_header(&agent.session.events(), None);
-        let provider = header.as_ref().map(|header| header.config.provider.clone())
-            .filter(|value| !value.is_empty()).or_else(|| agent.provider.clone());
-        let model = header.as_ref().map(|header| header.config.model.clone())
-            .filter(|value| !value.is_empty()).or_else(|| agent.model.clone());
-        let (Some(provider), Some(model)) = (provider, model) else { return Ok(None); };
+        let provider = header
+            .as_ref()
+            .map(|header| header.config.provider.clone())
+            .filter(|value| !value.is_empty())
+            .or_else(|| agent.provider.clone());
+        let model = header
+            .as_ref()
+            .map(|header| header.config.model.clone())
+            .filter(|value| !value.is_empty())
+            .or_else(|| agent.model.clone());
+        let (Some(provider), Some(model)) = (provider, model) else {
+            return Ok(None);
+        };
         let measurement = self.meter.measure(&agent.session, header);
         if trigger == CompactionTrigger::Pressure {
-            let context = self.llm.resolve_model_info(&provider, &model, signal)
-                .await.map_err(|error| ManualCompactionError::new(
-                    ManualCompactionErrorCode::Summary, error.to_string()))?
-                .context.ok_or_else(|| ManualCompactionError::new(
-                    ManualCompactionErrorCode::Summary,
-                    format!("no context capacity is declared for {provider}/{model}")))?;
+            let context = self
+                .llm
+                .resolve_model_info(&provider, &model, signal)
+                .await
+                .map_err(|error| {
+                    ManualCompactionError::new(
+                        ManualCompactionErrorCode::Summary,
+                        error.to_string(),
+                    )
+                })?
+                .context
+                .ok_or_else(|| {
+                    ManualCompactionError::new(
+                        ManualCompactionErrorCode::Summary,
+                        format!("no context capacity is declared for {provider}/{model}"),
+                    )
+                })?;
             if measurement.total_tokens < context.context_window.saturating_mul(4) / 5 {
                 return Ok(None);
             }
         }
-        let Some((start, end)) = Self::select_range(&agent.session)? else { return Ok(None); };
-        self.compact_region_inner(start, end, agent, signal, None, false).await.map(Some)
+        let Some((start, end)) = Self::select_range(&agent.session)? else {
+            return Ok(None);
+        };
+        self.compact_region_inner(start, end, agent, signal, None, false)
+            .await
+            .map(Some)
     }
 
     async fn compact_now(
@@ -54,7 +77,8 @@ impl CompactionEngine for BasicCompactionEngine {
         agent: &CompactionAgentContext,
         signal: Option<&CompactionAbort>,
     ) -> Result<CompactionResult, ManualCompactionError> {
-        self.compact_region_inner(start, end, agent, signal, None, false).await
+        self.compact_region_inner(start, end, agent, signal, None, false)
+            .await
     }
 }
 
@@ -73,26 +97,42 @@ impl BasicCompactionEngine {
         let initial_surface = agent.session.surface().map_err(|error| {
             ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
         })?;
-        let shadowed_seqs: Vec<u64> = initial_surface
-            .nodes
-            .iter()
-            .copied()
-            .skip_while(|seq| *seq != start)
-            .take_while(|seq| *seq <= end)
-            .collect();
-        if shadowed_seqs.first() != Some(&start) || shadowed_seqs.last() != Some(&end) {
+        // Replacement nodes keep their surface position but have newer log
+        // sequences. Ranges must follow that position, never numeric seq order.
+        let start_index = initial_surface.nodes.iter().position(|seq| *seq == start);
+        let end_index = initial_surface.nodes.iter().position(|seq| *seq == end);
+        let Some((start_index, end_index)) = start_index
+            .zip(end_index)
+            .filter(|(start, end)| start <= end)
+        else {
             return Err(ManualCompactionError::new(
                 ManualCompactionErrorCode::Changed,
                 "the requested compaction range is not a contiguous surface span",
             ));
+        };
+        let shadowed_seqs = initial_surface.nodes[start_index..=end_index].to_vec();
+        if agent.session.with_events(|events| {
+            shadowed_seqs.iter().any(|seq| {
+                events
+                    .get(*seq as usize)
+                    .is_some_and(|event| event.type_ == "system/message")
+            })
+        }) {
+            return Err(ManualCompactionError::new(
+                ManualCompactionErrorCode::Commit,
+                "system messages cannot be included in a compaction range",
+            ));
         }
-        let open_turn = agent.session.events().iter().fold(None, |open, event| {
-            match event.type_.as_str() {
-                "turn/start" => event.data.get("turn").and_then(|value| value.as_u64()),
-                "turn/end" => None,
-                _ => open,
-            }
-        });
+        let open_turn =
+            agent
+                .session
+                .events()
+                .iter()
+                .fold(None, |open, event| match event.type_.as_str() {
+                    "turn/start" => event.data.get("turn").and_then(|value| value.as_u64()),
+                    "turn/end" => None,
+                    _ => open,
+                });
         if manual && open_turn.is_some() {
             return Err(ManualCompactionError::new(
                 ManualCompactionErrorCode::Busy,
@@ -108,7 +148,9 @@ impl BasicCompactionEngine {
         let start_event = agent
             .session
             .append("compaction/start", lifecycle.clone(), None)
-            .map_err(|error| ManualCompactionError::new(ManualCompactionErrorCode::Commit, error))?;
+            .map_err(|error| {
+                ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
+            })?;
         let messages = Self::selected_messages(&agent.session, start, end)?;
         let summarized = self.summarize(agent, messages, signal).await;
         let (summary, provider, model, usage) = match summarized {
@@ -160,7 +202,9 @@ impl BasicCompactionEngine {
                 }),
                 None,
             )
-            .map_err(|error| ManualCompactionError::new(ManualCompactionErrorCode::Commit, error))?;
+            .map_err(|error| {
+                ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
+            })?;
         let mut checkpoint = vec![ContentBlock::Text {
             text: format!("{PREAMBLE}\n\n<compacted-summary>"),
         }];
@@ -187,11 +231,15 @@ impl BasicCompactionEngine {
                     ),
                 }),
             )
-            .map_err(|error| ManualCompactionError::new(ManualCompactionErrorCode::Commit, error))?;
+            .map_err(|error| {
+                ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
+            })?;
         let end_event = agent
             .session
             .append("compaction/end", lifecycle, None)
-            .map_err(|error| ManualCompactionError::new(ManualCompactionErrorCode::Commit, error))?;
+            .map_err(|error| {
+                ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
+            })?;
         self.sessions.flush(&agent.session).await.map_err(|error| {
             ManualCompactionError::new(
                 ManualCompactionErrorCode::Persistence,

@@ -46,7 +46,8 @@ async function main() {
   vm.runInNewContext(shell.slice(start, end) + `;this.Component=${name};`, disclosure);
   primitives = new Proxy({ DisclosureRow: disclosure.Component, MarkdownText: await nativeMarkdown(), Menu: ({ anchor, open, items, onSelect }) => React.createElement(React.Fragment, null, anchor, open && React.createElement('div', { role: 'menu' }, items.map(item => React.createElement('button', { key: item.id, title: item.detail, role: 'menuitem', onClick: () => onSelect?.(item.id) }, item.label)))) }, { get: (target, key) => target[key] ?? (() => null) });
   const tool = load('ui-tool.js', 'GenericToolCard,ToolImage,toolDisplayTitle,toolDisplaySummary');
-  const conversation = load('ui-conversation.js', 'ConversationController,zh,en,ReasoningRow,messageDefinition,PermissionSelect');
+  const conversation = load('ui-conversation.js', 'ConversationController,zh,en,ReasoningRow,messageDefinition,PermissionSelect,registerChatNodeRenderers');
+  Object.assign(runtime, load('client-runtime.js', 'contextProvenance,contextForm'));
   const subagent = load('ui-subagent.js', 'SubagentMarkdownOutput,SubagentToolRow,subagentFileLinks,zh,en');
   const trajectory = load('ui-trajectory.js', 'TrajectoryLocale,LaneLabels,RecordTiming,AssistantTimingPanel,StartedAtValue,zh,en');
   const modelUi = load('ui-model-selection.js', 'ModelSelect,zh,en');
@@ -165,10 +166,35 @@ async function main() {
     assert.equal(document.querySelectorAll('button')[1].title, 'CUSTOM_DESCRIPTION_UNCHANGED');
   }
   const recovery = { type: 'user/message', surfaceOp: 'append', data: { id: 'internal', source: { kind: 'plugin', plugin: 'agent-loop:response-recovery' } } };
-  runtime.isAppendSurfaceEvent = event => event.surfaceOp === 'append'; runtime.isReplacementSurfaceEvent = () => false;
+  runtime.isAppendSurfaceEvent = event => event.surfaceOp === 'append'; runtime.isReplacementSurfaceEvent = event => event.surfaceOp?.kind === 'replace';
   assert.equal(conversation.messageDefinition.match(recovery), null, 'internal continuation is not a user chat message');
   assert.ok(conversation.messageDefinition.match({ ...recovery, data: { ...recovery.data, source: { kind: 'user' } } }), 'ordinary user messages remain visible');
+  const nodeRenderers = new Map();
+  conversation.registerChatNodeRenderers({ slots: { inject: (_name, register) => register(), register: (entry, renderer) => nodeRenderers.set(entry.key, renderer) } });
+  for (const [suffix, prefix, surfaceOp] of [['initial', true, 'append'], ['dynamic', true, { kind: 'replace', start: 0, end: 0 }], ['legacy', undefined, 'append']]) {
+    const event = { type: 'system/message', seq: 2, time: 1000, surfaceOp, data: { prefix, message: { id: suffix, role: 'system', content: [{ type: 'text', text: 'SYSTEM_PROMPT_' + suffix }], source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' } } } };
+    const matched = conversation.messageDefinition.match(event);
+    assert.ok(matched, `${suffix} system messages are claimed before the unknown-surface fallback`);
+    const context = { key: matched.id, id: matched.id, matches: [{ event, location: { kind: 'unresolved' } }] };
+    context.state = conversation.messageDefinition.start(context, context.matches[0], { previous: () => undefined });
+    const node = conversation.messageDefinition.buildViewNode(context);
+    assert.equal(node.kind, 'context', 'system messages dispatch through the registered context renderer');
+    assert.equal(node.data.content[0].text, 'SYSTEM_PROMPT_' + suffix, 'nested system message content survives classification');
+    await act(() => root.render(React.createElement(nodeRenderers.get(node.kind), { key: suffix, node, t: zh })));
+    assert.match(document.body.textContent, /系统提示词.*@deepseek-ai\/dsh-system-prompt/);
+    assert.equal(document.querySelector('[data-context-injection-body]'), null, 'system prompt uses the collapsed context disclosure by default');
+    assert.equal(document.body.textContent.includes('未知 surface'), false);
+    await act(() => document.querySelector('[data-disclosure-row]').click());
+    assert.match(document.querySelector('[data-context-injection-body]').textContent, new RegExp('SYSTEM_PROMPT_' + suffix), 'expanded system context exposes the actual model-facing prompt');
+  }
+  const dynamicContext = { type: 'user/message', seq: 3, time: 1001, surfaceOp: 'append', data: { id: 'runtime-context', content: [{ type: 'text', text: 'DYNAMIC_RUNTIME_CONTEXT' }], source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' } } };
+  const dynamicMatch = conversation.messageDefinition.match(dynamicContext);
+  const dynamicState = conversation.messageDefinition.start({}, { event: dynamicContext }, { previous: () => undefined });
+  assert.equal(dynamicState.provenance.role, 'inject', 'the same producer can publish runtime context without presenting it as another system prompt');
+  await act(() => root.render(React.createElement(nodeRenderers.get('context'), { key: dynamicMatch.id, node: { data: dynamicState }, t: zh })));
+  assert.match(document.body.textContent, /上下文注入.*@deepseek-ai\/dsh-system-prompt/);
+  assert.equal(conversation.messageDefinition.match({ type: 'system/message', seq: 9, surfaceOp: 'append', data: { message: null } }), null, 'malformed system records retain the diagnostic fallback');
   await act(() => root.unmount()); dispose();
-  console.log('PASS response rendering DOM: same attachment leases; collapse/paging/late load cleanup; image dedup; live locales; native safe Markdown and actual local-file click; internal recovery filtering');
+  console.log('PASS response rendering DOM: same attachment leases; collapse/paging/late load cleanup; image dedup; live locales; native safe Markdown and actual local-file click; internal recovery filtering; initial, dynamic and legacy system context disclosures');
 }
 main().catch(error => { errors.push(error); console.error(error); process.exitCode = 1; }).finally(() => { dom.window.close(); fs.rmSync(temporary, { recursive: true, force: true }); });

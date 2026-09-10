@@ -430,6 +430,7 @@ window.__ModuleLoader__.load({
 		*/
 		/** Runtime counterpart of the message-producing event union. */
 		const SURFACE_EVENT_TYPES = new Set([
+			"system/message",
 			"user/message",
 			"assistant/message",
 			"tool/result"
@@ -457,6 +458,7 @@ window.__ModuleLoader__.load({
 		*/
 		function deriveEventMessage(event) {
 			switch (event.type) {
+				case "system/message": return event.data.message;
 				case "user/message": return event.data;
 				case "assistant/message":
 					if (event.data.message.content.length === 0) return null;
@@ -582,6 +584,7 @@ window.__ModuleLoader__.load({
 				assertProvenance(event, []);
 				return {
 					kind: "append",
+					prepend: event.type === "system/message" && event.data.prefix === true,
 					seq: event.seq
 				};
 			}
@@ -602,7 +605,12 @@ window.__ModuleLoader__.load({
 		}
 		/** Commit one previously validated surface transition. */
 		function applySurfacePlan(state, plan) {
-			if (plan?.kind === "append") state.nodes.push(plan.seq);
+			if (plan?.kind === "append") {
+				if (plan.prepend && state.nodes.length) {
+					state.nodes.unshift(plan.seq);
+					state.replaceGeneration += 1;
+				} else state.nodes.push(plan.seq);
+			}
 			else if (plan?.kind === "replace") {
 				state.nodes.splice(plan.startIdx, plan.endIdx - plan.startIdx + 1, plan.seq);
 				state.replaceGeneration += 1;
@@ -7459,7 +7467,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				uncachedInputTokens: 0,
 				outputTokens: 0,
 				cacheReadTokens: 0,
-				cacheWriteTokens: 0
+				cacheWriteTokens: 0,
+				cacheStatistics: { reportedSamples: 0, unreportedSamples: 0, reportedInputTokens: 0 }
 			};
 			let last = null;
 			for (const event of log) {
@@ -7471,11 +7480,18 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					cacheReadTokens: sample.usage.cacheReadTokens ?? 0,
 					cacheWriteTokens: sample.usage.cacheWriteTokens ?? 0
 				};
+				const reported = Number.isSafeInteger(sample.usage.cacheReadTokens) && sample.usage.cacheReadTokens >= 0;
+				buckets.cacheStatistics = {
+					reportedSamples: reported ? 1 : 0,
+					unreportedSamples: reported ? 0 : 1,
+					reportedInputTokens: reported ? buckets.uncachedInputTokens + buckets.cacheReadTokens + buckets.cacheWriteTokens : 0
+				};
 				const previous = last?.turn === sample.turn && last.step === sample.step ? last.buckets : void 0;
 				totals.uncachedInputTokens += buckets.uncachedInputTokens - (previous?.uncachedInputTokens ?? 0);
 				totals.outputTokens += buckets.outputTokens - (previous?.outputTokens ?? 0);
 				totals.cacheReadTokens += buckets.cacheReadTokens - (previous?.cacheReadTokens ?? 0);
 				totals.cacheWriteTokens += buckets.cacheWriteTokens - (previous?.cacheWriteTokens ?? 0);
+				for (const key of Object.keys(totals.cacheStatistics)) totals.cacheStatistics[key] += buckets.cacheStatistics[key] - (previous?.cacheStatistics?.[key] ?? 0);
 				last = {
 					turn: sample.turn,
 					step: sample.step,

@@ -1,6 +1,9 @@
 use super::*;
 
-struct MemorySettings;
+#[derive(Default)]
+struct MemorySettings {
+    fail_writes: std::sync::atomic::AtomicBool,
+}
 #[async_trait::async_trait]
 impl dsh_settings::SettingsStorage for MemorySettings {
     fn writable(&self) -> bool {
@@ -14,10 +17,19 @@ impl dsh_settings::SettingsStorage for MemorySettings {
         _: &dsh_settings::SettingsNamespace,
         _: dsh_schemastery::Data,
     ) -> Result<(), String> {
-        Ok(())
+        if self.fail_writes.load(std::sync::atomic::Ordering::SeqCst) {
+            Err("fixture settings disk unavailable".into())
+        } else {
+            Ok(())
+        }
     }
 }
 async fn setup() -> (Arc<AccountAuth>, cordis::Context, std::path::PathBuf) {
+    setup_with_storage(Arc::new(MemorySettings::default())).await
+}
+async fn setup_with_storage(
+    storage: Arc<MemorySettings>,
+) -> (Arc<AccountAuth>, cordis::Context, std::path::PathBuf) {
     let ctx = cordis::Context::root();
     let root = std::env::temp_dir().join(format!("dsh-model-catalog-{}", uuid::Uuid::new_v4()));
     let credentials = dsh_credentials_local::LocalCredentialProvider::install(
@@ -29,7 +41,7 @@ async fn setup() -> (Arc<AccountAuth>, cordis::Context, std::path::PathBuf) {
         },
     )
     .unwrap();
-    let settings = dsh_settings::SettingsProvider::install(&ctx, Arc::new(MemorySettings));
+    let settings = dsh_settings::SettingsProvider::install(&ctx, storage);
     settings.ready().await.unwrap();
     settings
         .register(
@@ -53,8 +65,11 @@ async fn setup() -> (Arc<AccountAuth>, cordis::Context, std::path::PathBuf) {
     (AccountAuth::new(credentials, settings).unwrap(), ctx, root)
 }
 fn tokens(account: &str) -> Session {
+    tokens_for_subject(account, &format!("subject-{account}"))
+}
+fn tokens_for_subject(account: &str, subject: &str) -> Session {
     use base64::Engine;
-    let payload = json!({"https://api.openai.com/auth":{"chatgpt_account_id":account},"sub":format!("subject-{account}"),"exp":now()+3600});
+    let payload = json!({"https://api.openai.com/auth":{"chatgpt_account_id":account},"sub":subject,"exp":now()+3600});
     let token = format!(
         "header.{}.fixture",
         base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -65,6 +80,59 @@ fn tokens(account: &str) -> Session {
         None,
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn shared_workspace_logins_keep_distinct_identity_and_migrate_legacy_without_duplicates() {
+    let (auth, _ctx, root) = setup().await;
+    let p = provider("openai-codex").unwrap();
+    let alice = tokens_for_subject("shared-workspace", "alice");
+    let bob = tokens_for_subject("shared-workspace", "bob");
+    assert_ne!(alice.account_scope, bob.account_scope);
+    let mut legacy = alice.clone();
+    legacy.account_scope = format!("account-{}", crate::provider_auth_catalog::key("shared-workspace"));
+    auth.credentials.set(&reference(p.id), &serde_json::to_string(&legacy).unwrap()).await.unwrap();
+    // The legacy single-account directory may already contain the same login.
+    auth.write_accounts(p.id, &[legacy.clone()]).await.unwrap();
+    auth.install_profile(p, &legacy).await.unwrap();
+    let ns = dsh_settings::settings_namespace("llm-pi-ai").unwrap();
+    auth.settings.update(&ns, json!({"providers":{"openai-codex":{"modelPreferences":{legacy.account_scope.clone():{"test-model":{"enabled":false}}}}}}), None).await.unwrap();
+    auth.activate(p, &bob).await.unwrap();
+    let saved = auth.saved_sessions(p.id).await.unwrap();
+    assert_eq!(saved.len(), 2);
+    assert!(saved.iter().any(|item| item.account_scope == alice.account_scope));
+    assert!(saved.iter().any(|item| item.account_scope == bob.account_scope));
+    let profile = auth.profile_snapshot(p.id, false).unwrap().0;
+    assert_eq!(profile["modelPreferences"][&alice.account_scope]["test-model"]["enabled"], false);
+    assert!(profile["modelPreferences"].get(&bob.account_scope).is_none());
+    let headers = vec![("ChatGPT-Account-ID".into(), "shared-workspace".into())];
+    // Identical routing headers do not permit an old account snapshot to use Bob's token.
+    let result = auth.resolve_request_token_for_scope(p.id, p.base, &headers, Some(&alice.account_scope)).await;
+    assert!(result.unwrap_err().contains("配置已更新"));
+    auth.handle("switch", &json!({"provider":p.id,"accountScope":alice.account_scope})).await.unwrap();
+    assert_eq!(auth.session(p.id).await.unwrap().unwrap().access_token, alice.access_token);
+    let renewed = Session::from_tokens(&json!({"access_token":"opaque-refreshed","expires_in":3600}), Some(&alice)).unwrap();
+    assert_eq!(renewed.account_scope, alice.account_scope);
+    auth.save(p.id, &renewed).await.unwrap();
+    assert_eq!(auth.session(p.id).await.unwrap().unwrap().account_scope, alice.account_scope);
+    assert_eq!(auth.saved_sessions(p.id).await.unwrap().len(), 2);
+    clean(auth, root).await;
+}
+
+#[tokio::test]
+async fn legacy_active_scope_is_repaired_without_rejecting_the_first_request() {
+    let (auth, _ctx, root) = setup().await;
+    let p = provider("openai-codex").unwrap();
+    let current = tokens_for_subject("workspace", "alice");
+    let mut legacy = current.clone();
+    legacy.account_scope = format!("account-{}", crate::provider_auth_catalog::key("workspace"));
+    auth.credentials.set(&reference(p.id), &serde_json::to_string(&legacy).unwrap()).await.unwrap();
+    auth.install_profile(p, &legacy).await.unwrap();
+    let headers = vec![("ChatGPT-Account-ID".into(), "workspace".into())];
+    let token = auth.resolve_request_token_for_scope(p.id, p.base, &headers, Some(&legacy.account_scope)).await.unwrap();
+    assert_eq!(token, Some(current.access_token));
+    assert_eq!(auth.profile_snapshot(p.id, false).unwrap().0["modelCatalogScope"], current.account_scope);
+    clean(auth, root).await;
 }
 async fn clean(auth: Arc<AccountAuth>, root: std::path::PathBuf) {
     auth.credentials.drain().await;
@@ -85,6 +153,273 @@ fn account_claim_is_a_literal_url_key_and_refresh_keeps_identity() {
     )
     .unwrap();
     assert_eq!(a.account_scope, refreshed.account_scope);
+    use base64::Engine;
+    let without_identity = format!("header.{}.fixture", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json!({"exp":now()+7200}).to_string()));
+    let refreshed = Session::from_tokens(&json!({"access_token":without_identity}), Some(&a)).unwrap();
+    assert_eq!(a.account_scope, refreshed.account_scope);
+}
+
+#[tokio::test]
+async fn multiple_logins_preserve_legacy_account_switch_identity_and_remove_credentials() {
+    let (auth, _ctx, root) = setup().await;
+    let p = provider("openai-codex").unwrap();
+    let a = tokens("account-a");
+    let b = tokens("account-b");
+    // Upgrade from the single-account format without an ACCOUNTS credential.
+    auth.credentials
+        .set(&reference(p.id), &serde_json::to_string(&a).unwrap())
+        .await
+        .unwrap();
+    auth.save(p.id, &b).await.unwrap();
+    auth.install_profile(p, &b).await.unwrap();
+    assert_eq!(auth.saved_sessions(p.id).await.unwrap().len(), 2);
+    let body = json!({"provider":p.id,"accountScope":a.account_scope});
+    let switched = auth.handle("switch", &body).await.unwrap();
+    assert_eq!(switched["status"], "switched");
+    assert_eq!(
+        auth.session(p.id).await.unwrap().unwrap().access_token,
+        a.access_token
+    );
+    let profile = auth.profile_snapshot(p.id, false).unwrap().0;
+    assert_eq!(profile["modelCatalogScope"], a.account_scope);
+    assert_eq!(profile["headers"]["ChatGPT-Account-ID"], "account-a");
+    assert_eq!(auth.catalogs.scope(p.id), Some(a.account_scope.clone()));
+    let directory = auth.handle("providers", &json!({})).await.unwrap();
+    let codex = directory["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == p.id)
+        .unwrap();
+    assert_eq!(codex["accountCount"], 2);
+    assert!(!directory.to_string().contains(&a.access_token));
+    assert!(!directory.to_string().contains("fixture-refresh"));
+
+    // Removing a saved account leaves the current account usable and cannot be undone by switch.
+    auth.handle(
+        "logout",
+        &json!({"provider":p.id,"accountScope":b.account_scope}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        auth.handle(
+            "switch",
+            &json!({"provider":p.id,"accountScope":b.account_scope})
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        auth.session(p.id).await.unwrap().unwrap().account_scope,
+        a.account_scope
+    );
+    assert_eq!(auth.saved_sessions(p.id).await.unwrap().len(), 1);
+    auth.save(p.id, &b).await.unwrap();
+    auth.handle("logout", &json!({"provider":p.id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        auth.session(p.id).await.unwrap().unwrap().account_scope,
+        a.account_scope
+    );
+    auth.handle("logout", &json!({"provider":p.id}))
+        .await
+        .unwrap();
+    assert!(auth.session(p.id).await.unwrap().is_none());
+    assert!(
+        auth.credentials
+            .resolve(&accounts_reference(p.id))
+            .await
+            .is_none()
+    );
+    let directory = auth.handle("providers", &json!({})).await.unwrap();
+    let codex = directory["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == p.id)
+        .unwrap();
+    assert_eq!(codex["signedIn"], false);
+    assert_eq!(codex["accountCount"], 0);
+    clean(auth, root).await;
+}
+
+#[tokio::test]
+async fn switch_waits_for_refresh_before_reading_saved_tokens() {
+    let (auth, _ctx, root) = setup().await;
+    let p = provider("openai-codex").unwrap();
+    let mut a = tokens("account-a");
+    auth.save(p.id, &a).await.unwrap();
+    auth.install_profile(p, &a).await.unwrap();
+    let guard = auth.refresh.lock().await;
+    let actor = auth.clone();
+    let body = json!({"provider":p.id,"accountScope":a.account_scope});
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let switch = tokio::spawn(async move {
+        started.send(()).unwrap();
+        actor.handle("switch", &body).await
+    });
+    ready.await.unwrap();
+    tokio::task::yield_now().await;
+    a.access_token = "renewed-access".into();
+    a.refresh_token = Some("rotated-refresh".into());
+    auth.save(p.id, &a).await.unwrap();
+    drop(guard);
+    switch.await.unwrap().unwrap();
+    let current = auth.session(p.id).await.unwrap().unwrap();
+    assert_eq!(current.access_token, "renewed-access");
+    assert_eq!(current.refresh_token.as_deref(), Some("rotated-refresh"));
+    clean(auth, root).await;
+}
+
+#[tokio::test]
+async fn switching_while_catalog_request_is_running_rejects_the_old_accounts_result() {
+    let (auth, _ctx, root) = setup().await;
+    let p = provider("openai-codex").unwrap();
+    let a = tokens("account-a");
+    let b = tokens("account-b");
+    auth.save(p.id, &b).await.unwrap();
+    auth.activate(p, &a).await.unwrap();
+    let requested = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let on_request = requested.clone();
+    let can_finish = release.clone();
+    let expected_token = format!("Bearer {}", a.access_token);
+    *auth.catalog_transport.write() = Some(Arc::new(move |request| {
+        assert_eq!(request.headers["chatgpt-account-id"], "account-a");
+        assert_eq!(request.headers["authorization"], expected_token);
+        let on_request = on_request.clone();
+        let can_finish = can_finish.clone();
+        Box::pin(async move {
+            on_request.notify_one();
+            can_finish.notified().await;
+            Ok(json!({"models":[{"slug":"only-for-account-a"}]}))
+        })
+    }));
+    let actor = auth.clone();
+    let refresh = tokio::spawn(async move { actor.refresh_catalog("openai-codex").await });
+    requested.notified().await;
+    auth.handle(
+        "switch",
+        &json!({"provider":p.id,"accountScope":b.account_scope}),
+    )
+    .await
+    .unwrap();
+    release.notify_one();
+    assert!(refresh.await.unwrap().unwrap_err().contains("账号已切换"));
+    assert_eq!(auth.catalogs.scope(p.id), Some(b.account_scope.clone()));
+    assert!(auth.catalogs.get(p.id, &b.account_scope).models.is_empty());
+    clean(auth, root).await;
+}
+
+#[tokio::test]
+async fn broken_account_directory_does_not_overwrite_the_active_login() {
+    let (auth, _ctx, root) = setup().await;
+    let p = provider("openai-codex").unwrap();
+    let a = tokens("account-a");
+    auth.credentials
+        .set(&reference(p.id), &serde_json::to_string(&a).unwrap())
+        .await
+        .unwrap();
+    auth.credentials
+        .set(&accounts_reference(p.id), "invalid-json")
+        .await
+        .unwrap();
+    assert!(auth.save(p.id, &tokens("account-b")).await.is_err());
+    assert_eq!(
+        auth.session(p.id).await.unwrap().unwrap().account_scope,
+        a.account_scope
+    );
+    assert_eq!(
+        auth.credentials
+            .resolve(&accounts_reference(p.id))
+            .await
+            .unwrap()
+            .value,
+        "invalid-json"
+    );
+    let directory = auth.handle("providers", &json!({})).await.unwrap();
+    assert_eq!(
+        directory["providers"].as_array().unwrap().len(),
+        PROVIDERS.len()
+    );
+    let codex = directory["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == p.id)
+        .unwrap();
+    assert!(codex["error"].as_str().unwrap().contains("账号目录"));
+    assert!(
+        directory["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["id"] != p.id)
+            .all(|item| item.get("error").is_none())
+    );
+    clean(auth, root).await;
+}
+
+#[tokio::test]
+async fn failed_account_profile_write_rolls_back_active_credentials_and_catalog_binding() {
+    let storage = Arc::new(MemorySettings::default());
+    let (auth, _ctx, root) = setup_with_storage(storage.clone()).await;
+    let p = provider("openai-codex").unwrap();
+    let a = tokens("account-a");
+    let b = tokens("account-b");
+    auth.save(p.id, &b).await.unwrap();
+    auth.activate(p, &a).await.unwrap();
+    let original = auth.profile_snapshot(p.id, false).unwrap().0;
+    storage
+        .fail_writes
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let error = auth
+        .handle(
+            "switch",
+            &json!({"provider":p.id,"accountScope":b.account_scope}),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.contains("活动账号保持不变"));
+    assert_eq!(
+        auth.session(p.id).await.unwrap().unwrap().access_token,
+        a.access_token
+    );
+    assert_eq!(auth.profile_snapshot(p.id, false).unwrap().0, original);
+    assert_eq!(auth.catalogs.scope(p.id), Some(a.account_scope));
+    assert_eq!(auth.saved_sessions(p.id).await.unwrap().len(), 2);
+    storage
+        .fail_writes
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        auth.handle(
+            "switch",
+            &json!({"provider":p.id,"accountScope":b.account_scope})
+        )
+        .await
+        .unwrap()["status"],
+        "switched"
+    );
+    clean(auth, root).await;
+}
+
+#[tokio::test]
+async fn stale_usage_account_scope_is_rejected_before_account_rpc() {
+    let (auth, _ctx, root) = setup().await;
+    auth.save("openai-codex", &tokens("account-b"))
+        .await
+        .unwrap();
+    let error = auth
+        .handle(
+            "usage",
+            &json!({"provider":"openai-codex","accountScope":tokens("account-a").account_scope}),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.contains("账号已切换"));
+    clean(auth, root).await;
 }
 
 #[tokio::test]

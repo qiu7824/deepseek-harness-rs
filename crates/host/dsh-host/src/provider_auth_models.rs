@@ -346,9 +346,12 @@ impl AccountAuth {
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
         let _sync = lock.lock().await;
+        // Capture token, account scope and headers together; a switch must not
+        // combine one account's token with another account's catalog identity.
+        let auth_guard = self.refresh.lock().await;
         let profile = self.model_profile(route)?;
         let key = if let Some(auth) = profile.get("authProvider").and_then(Value::as_str) {
-            self.resolve_token(auth).await?
+            self.resolve_token_locked(auth, false, true).await?
         } else if profile.get("keyless") == Some(&Value::Bool(true)) {
             None
         } else if let Some(reference) = profile.get("apiKeyEnv").and_then(Value::as_str) {
@@ -362,6 +365,7 @@ impl AccountAuth {
         };
         let profile = self.model_profile(route)?;
         let scope = self.ensure_catalog_scope(route).await?;
+        drop(auth_guard);
         if scope == "signed-out" {
             return Err("账号尚未登录".into());
         }
@@ -401,14 +405,19 @@ impl AccountAuth {
                 );
             }
             if profile.get("authProvider") == Some(&json!("openai-codex")) {
-                let account = self
-                    .session("openai-codex")
-                    .await?
-                    .and_then(|s| s.account_id)
+                let account = profile
+                    .get("headers")
+                    .and_then(Value::as_object)
+                    .and_then(|headers| {
+                        headers
+                            .iter()
+                            .find(|(name, _)| name.eq_ignore_ascii_case("chatgpt-account-id"))
+                    })
+                    .and_then(|(_, value)| value.as_str())
                     .ok_or("账号授权未提供账号标识，请重新登录后刷新目录")?;
                 headers.insert(
                     "chatgpt-account-id",
-                    reqwest::header::HeaderValue::from_str(&account).map_err(|_| "账号标识无效")?,
+                    reqwest::header::HeaderValue::from_str(account).map_err(|_| "账号标识无效")?,
                 );
             }
             if profile.get("api") == Some(&json!("anthropic-messages")) {

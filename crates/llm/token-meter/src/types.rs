@@ -50,6 +50,18 @@ pub struct TokenUsageProjection {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
+    /// Absent for legacy views, whose missing provider buckets were folded as zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_statistics: Option<CacheStatistics>,
+}
+
+/// Cache hit ratios use only requests whose provider disclosed cache reads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheStatistics {
+    pub reported_samples: u64,
+    pub unreported_samples: u64,
+    pub reported_input_tokens: u64,
 }
 
 /// Approximate context occupancy for a status display.

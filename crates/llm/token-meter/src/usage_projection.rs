@@ -17,15 +17,30 @@ fn zero_buckets() -> Value {
         "outputTokens": 0,
         "cacheReadTokens": 0,
         "cacheWriteTokens": 0,
+        "cacheReportedSamples": 0,
+        "cacheUnreportedSamples": 0,
+        "cacheReportedInputTokens": 0,
     })
 }
 
 fn buckets_from(usage: &Value) -> Value {
+    let input = usage
+        .get("inputTokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let read = usage.get("cacheReadTokens").and_then(Value::as_u64);
+    let write = usage
+        .get("cacheWriteTokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     serde_json::json!({
-        "uncachedInputTokens": usage.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        "uncachedInputTokens": input,
         "outputTokens": usage.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
-        "cacheReadTokens": usage.get("cacheReadTokens").and_then(|v| v.as_u64()).unwrap_or(0),
-        "cacheWriteTokens": usage.get("cacheWriteTokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        "cacheReadTokens": read.unwrap_or(0),
+        "cacheWriteTokens": write,
+        "cacheReportedSamples": u64::from(read.is_some()),
+        "cacheUnreportedSamples": u64::from(read.is_none()),
+        "cacheReportedInputTokens": read.map_or(0, |read| input + read + write),
     })
 }
 
@@ -48,6 +63,9 @@ fn add_replacing(totals: &Value, previous: Option<&Value>, next: &Value) -> Valu
         "outputTokens": subtract("outputTokens"),
         "cacheReadTokens": subtract("cacheReadTokens"),
         "cacheWriteTokens": subtract("cacheWriteTokens"),
+        "cacheReportedSamples": subtract("cacheReportedSamples"),
+        "cacheUnreportedSamples": subtract("cacheUnreportedSamples"),
+        "cacheReportedInputTokens": subtract("cacheReportedInputTokens"),
     })
 }
 
@@ -64,7 +82,26 @@ fn validate_projection_schema(value: &Value) -> Result<Value, String> {
             ));
         }
     }
-    if !value.is_object() || value.as_object().map(|o| o.len()).unwrap_or(0) != 4 {
+    if let Some(statistics) = value.get("cacheStatistics") {
+        for key in [
+            "reportedSamples",
+            "unreportedSamples",
+            "reportedInputTokens",
+        ] {
+            if statistics.get(key).and_then(Value::as_u64).is_none() {
+                return Err(format!(
+                    "tokenUsage cacheStatistics field {key} must be a non-negative integer"
+                ));
+            }
+        }
+        if statistics.as_object().map(|o| o.len()) != Some(3) {
+            return Err("tokenUsage cacheStatistics carries unexpected keys".to_string());
+        }
+    }
+    if !value.is_object()
+        || value.as_object().map(|o| o.len()).unwrap_or(0)
+            != 4 + usize::from(value.get("cacheStatistics").is_some())
+    {
         return Err("tokenUsage view carries unexpected keys".to_string());
     }
     Ok(value.clone())
@@ -123,7 +160,25 @@ pub fn token_usage_projection_definition() -> ProjectionDefinition {
     });
     let view: Arc<dyn Fn(&ArcValue) -> ArcValue + Send + Sync> = Arc::new(|state_value| {
         let state: &Value = cordis::downcast(state_value).expect("tokenUsage state");
-        let totals = state.get("totals").cloned().unwrap_or_else(zero_buckets);
+        let mut totals = state.get("totals").cloned().unwrap_or_else(zero_buckets);
+        let object = totals.as_object_mut().expect("tokenUsage totals");
+        let reported = object.remove("cacheReportedSamples").unwrap_or(Value::Null);
+        let unreported = object
+            .remove("cacheUnreportedSamples")
+            .unwrap_or(Value::Null);
+        let input = object
+            .remove("cacheReportedInputTokens")
+            .unwrap_or(Value::Null);
+        if !reported.is_null() && !unreported.is_null() && !input.is_null() {
+            object.insert(
+                "cacheStatistics".into(),
+                serde_json::json!({
+                    "reportedSamples": reported,
+                    "unreportedSamples": unreported,
+                    "reportedInputTokens": input,
+                }),
+            );
+        }
         arc(totals)
     });
     ProjectionDefinition {
@@ -136,7 +191,7 @@ pub fn token_usage_projection_definition() -> ProjectionDefinition {
         init,
         apply,
         view,
-        state_version: 1,
+        state_version: 2,
     }
 }
 
@@ -331,6 +386,110 @@ fn token_usage_zero() -> TokenUsageProjection {
         output_tokens: 0,
         cache_read_tokens: 0,
         cache_write_tokens: 0,
+        cache_statistics: None,
+    }
+}
+
+#[cfg(test)]
+mod cache_disclosure_tests {
+    use super::*;
+
+    fn project(samples: &[(u64, Value)]) -> Value {
+        let definition = token_usage_projection_definition();
+        let mut state = arc(serde_json::json!({"totals": zero_buckets(), "last": null}));
+        for (step, usage) in samples {
+            let event: SessionEvent = serde_json::from_value(serde_json::json!({
+                "seq": step, "time": 1, "type": "assistant/message",
+                "data": {"turn": 1, "step": step, "usage": usage},
+            }))
+            .unwrap();
+            state = (definition.apply)(&state, &event);
+        }
+        (definition.schema)(&(definition.view)(&state)).unwrap()
+    }
+
+    #[test]
+    fn missing_cache_reads_and_explicit_zero_remain_distinct() {
+        let unknown = project(&[(
+            1,
+            serde_json::json!({"inputTokens": 100, "outputTokens": 10}),
+        )]);
+        assert_eq!(unknown["cacheReadTokens"], 0);
+        assert_eq!(
+            unknown["cacheStatistics"],
+            serde_json::json!({"reportedSamples": 0, "unreportedSamples": 1, "reportedInputTokens": 0})
+        );
+        let miss = project(&[(
+            1,
+            serde_json::json!({"inputTokens": 100, "outputTokens": 10, "cacheReadTokens": 0}),
+        )]);
+        assert_eq!(
+            miss["cacheStatistics"],
+            serde_json::json!({"reportedSamples": 1, "unreportedSamples": 0, "reportedInputTokens": 100})
+        );
+    }
+
+    #[test]
+    fn mixed_routes_keep_the_reported_cache_denominator_separate() {
+        let value = project(&[
+            (
+                1,
+                serde_json::json!({"inputTokens": 200, "outputTokens": 10, "cacheReadTokens": 750, "cacheWriteTokens": 50}),
+            ),
+            (
+                2,
+                serde_json::json!({"inputTokens": 9000, "outputTokens": 20}),
+            ),
+        ]);
+        assert_eq!(value["uncachedInputTokens"], 9200);
+        assert_eq!(value["cacheReadTokens"], 750);
+        assert_eq!(
+            value["cacheStatistics"],
+            serde_json::json!({"reportedSamples": 1, "unreportedSamples": 1, "reportedInputTokens": 1000})
+        );
+    }
+
+    #[test]
+    fn revised_step_usage_replaces_disclosure_and_tokens_without_duplicate_samples() {
+        let final_usage =
+            serde_json::json!({"inputTokens": 20, "outputTokens": 10, "cacheReadTokens": 80});
+        let value = project(&[
+            (
+                1,
+                serde_json::json!({"inputTokens": 100, "outputTokens": 5}),
+            ),
+            (1, final_usage.clone()),
+            (1, final_usage),
+        ]);
+        assert_eq!(value["uncachedInputTokens"], 20);
+        assert_eq!(value["cacheReadTokens"], 80);
+        assert_eq!(
+            value["cacheStatistics"],
+            serde_json::json!({"reportedSamples": 1, "unreportedSamples": 0, "reportedInputTokens": 100})
+        );
+        let omitted_final = project(&[
+            (
+                1,
+                serde_json::json!({"inputTokens": 20, "outputTokens": 10, "cacheReadTokens": 80}),
+            ),
+            (
+                1,
+                serde_json::json!({"inputTokens": 100, "outputTokens": 10}),
+            ),
+        ]);
+        assert_eq!(omitted_final["cacheReadTokens"], 0);
+        assert_eq!(omitted_final["cacheStatistics"]["reportedSamples"], 0);
+        assert_eq!(omitted_final["cacheStatistics"]["unreportedSamples"], 1);
+    }
+
+    #[test]
+    fn legacy_views_load_without_claiming_cache_disclosure() {
+        let legacy = serde_json::json!({"uncachedInputTokens": 100, "outputTokens": 10, "cacheReadTokens": 0, "cacheWriteTokens": 0});
+        assert!(validate_projection_schema(&legacy).is_ok());
+        let typed: TokenUsageProjection = serde_json::from_value(legacy).unwrap();
+        assert!(typed.cache_statistics.is_none());
+        assert_eq!(token_usage_projection_definition().state_version, 2);
+        assert!(validate_projection_schema(&serde_json::json!({"uncachedInputTokens": 100, "outputTokens": 10, "cacheReadTokens": 0, "cacheWriteTokens": 0, "cacheStatistics": {"reportedSamples": "1", "unreportedSamples": 0, "reportedInputTokens": 100}})).is_err());
     }
 }
 

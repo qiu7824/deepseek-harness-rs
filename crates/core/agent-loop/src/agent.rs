@@ -629,11 +629,68 @@ impl ReactLoopAgent {
                 }
                 let step_end = async {
                     let system_text = render_prompt(&assembly).expect("renderPrompt");
-                    let previous_system = self.session.with_events(|events| events.iter().rev().find(|event| event.type_ == "system/message").and_then(|event| event.data.pointer("/message/content/0/text")).and_then(serde_json::Value::as_str).map(str::to_owned));
-                    if previous_system.as_deref() != Some(system_text.as_str()) {
-                        let message = dsh_llm::create_message(dsh_llm::Role::System, if system_text.is_empty() { Vec::new() } else { vec![dsh_llm::ContentBlock::Text { text: system_text.clone() }] }, dsh_llm::MessageSource::Plugin { plugin: "@deepseek-ai/dsh-system-prompt".into(), form: None, sections: None, summary: None, compaction_id: None, source_command_id: None });
-                        let previous_seq = self.session.with_events(|events| events.iter().rev().find(|event| event.type_ == "system/message").map(|event| event.seq.get()));
-                        self.session.append("system/message", serde_json::json!({"turn": turn, "step": step, "message": message}), Some(match previous_seq { Some(seq) => SurfaceIntent { surface_op: SurfaceOp::Replace { start: seq, end: seq }, source_event_seqs: Some(vec![seq]) }, None => SurfaceIntent { surface_op: SurfaceOp::Append, source_event_seqs: None } })).expect("system/message");
+                    let content = if system_text.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![ContentBlock::Text { text: system_text }]
+                    };
+                    // Historical system events may have been shadowed by an
+                    // older compactor. Only the effective surface can decide
+                    // whether the request still has its system prefix.
+                    let surface = self.session.surface().expect("system surface");
+                    let previous_system = self.session.with_events(|events| {
+                        surface
+                            .nodes
+                            .iter()
+                            .filter_map(|seq| events.get(*seq as usize))
+                            .filter(|event| event.type_ == "system/message")
+                            .max_by_key(|event| event.seq.get())
+                            .map(|event| {
+                                (event.seq.get(), dsh_session::derive_event_message(event))
+                            })
+                    });
+                    if previous_system
+                        .as_ref()
+                        .and_then(|(_, message)| message.as_ref())
+                        .is_none_or(|message| message.content != content)
+                    {
+                        let message = dsh_llm::create_message(
+                            dsh_llm::Role::System,
+                            content,
+                            dsh_llm::MessageSource::Plugin {
+                                plugin: "@deepseek-ai/dsh-system-prompt".into(),
+                                form: None,
+                                sections: None,
+                                summary: None,
+                                compaction_id: None,
+                                source_command_id: None,
+                            },
+                        );
+                        let intent = match previous_system {
+                            Some((seq, _)) => SurfaceIntent {
+                                surface_op: SurfaceOp::Replace {
+                                    start: seq,
+                                    end: seq,
+                                },
+                                source_event_seqs: Some(vec![seq]),
+                            },
+                            None => SurfaceIntent {
+                                surface_op: SurfaceOp::Append,
+                                source_event_seqs: None,
+                            },
+                        };
+                        self.session
+                            .append(
+                                "system/message",
+                                serde_json::json!({
+                                        "turn": turn,
+                                        "step": step,
+                                        "prefix": true,
+                                        "message": message,
+                                }),
+                                Some(intent),
+                            )
+                            .expect("system/message");
                     }
                     for message in &messages {
                         self.session
@@ -772,7 +829,12 @@ impl ReactLoopAgent {
             // build_request may publish a V3 system/message boundary. Refresh
             // the immutable message list after that append so the dispatch
             // invariant and the provider receive the same durable surface.
-            request.messages = self.session.derive_messages().expect("deriveMessages").as_ref().clone();
+            request.messages = self
+                .session
+                .derive_messages()
+                .expect("deriveMessages")
+                .as_ref()
+                .clone();
             let mut assembler = BlockAssembler::new();
             let mut saw_tool_call = false;
             let mut chunk_seqs = Vec::new();

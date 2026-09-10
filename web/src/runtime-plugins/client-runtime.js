@@ -10683,6 +10683,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		//#region ../../core/session/src/surface.ts
 		/** Runtime counterpart of the message-producing event union. */
 		const SURFACE_EVENT_TYPES = new Set([
+			"system/message",
 			"user/message",
 			"assistant/message",
 			"tool/result"

@@ -808,6 +808,7 @@ impl OpenAiCompatibleAdapter {
                 compat: profile.compat.clone(),
                 api: Some(profile.api.clone()),
                 oauth: profile.auth_provider.is_some(),
+                account_scope: profile.auth_provider.as_ref().and(profile.model_catalog_scope.clone()),
                 max_tokens: Some(16_384),
                 default_context_window: Some(131_072),
                 headers: profile
@@ -907,6 +908,7 @@ impl OpenAiCompatibleAdapter {
         let credentials = self.credentials.clone();
         let auth = self.auth.clone();
         let auth_provider = profile.auth_provider.clone();
+        let auth_scope = profile.model_catalog_scope.clone();
         dsh_llm_deepseek::DeepSeekAdapter::new(dsh_llm_deepseek::DeepSeekAdapterOptions {
             options: Arc::new(move || Ok(resolved.clone())),
             resolve_api_key: Arc::new(move |snapshot| {
@@ -914,12 +916,13 @@ impl OpenAiCompatibleAdapter {
                 let api_key_env = snapshot.api_key_env.clone();
                 let auth = auth.clone();
                 let auth_provider = auth_provider.clone();
+                let auth_scope = auth_scope.clone();
                 let base_url = snapshot.base_url.clone();
                 let headers = snapshot.headers.clone();
                 Box::pin(async move {
                     if let (Some(auth), Some(provider)) = (auth, auth_provider) {
                         return auth
-                            .resolve_request_token(&provider, &base_url, &headers)
+                            .resolve_request_token_for_scope(&provider, &base_url, &headers, auth_scope.as_deref())
                             .await
                             .map_err(|message| {
                                 dsh_llm::LlmError::new(

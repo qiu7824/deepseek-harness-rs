@@ -367,12 +367,32 @@ impl BasicCompactionEngine {
         let surface = session.surface().map_err(|error| {
             ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
         })?;
-        if surface.nodes.len() < 2 {
+        let events = session.events();
+        // System messages are durable request prefixes, not conversation
+        // history. Leave them outside both automatic and manual checkpoints.
+        let Some(start_index) = surface.nodes.iter().position(|seq| {
+            events
+                .get(*seq as usize)
+                .is_some_and(|event| event.type_ != "system/message")
+        }) else {
             return Ok(None);
-        }
-        let start = surface.nodes[0];
-        let mut end_index = surface.nodes.len() - 2;
-        while end_index > 0
+        };
+        let history_end = surface.nodes[start_index..]
+            .iter()
+            .position(|seq| {
+                events
+                    .get(*seq as usize)
+                    .is_some_and(|event| event.type_ == "system/message")
+            })
+            .map_or(surface.nodes.len(), |index| start_index + index);
+        let Some(mut end_index) = history_end
+            .checked_sub(2)
+            .filter(|index| *index >= start_index)
+        else {
+            return Ok(None);
+        };
+        let start = surface.nodes[start_index];
+        while end_index > start_index
             && !tool_pairing_balanced_after(session, surface.nodes[end_index]).map_err(|error| {
                 ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
             })?

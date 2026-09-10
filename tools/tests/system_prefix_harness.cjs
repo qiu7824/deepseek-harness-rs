@@ -1,0 +1,36 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const root = path.resolve(__dirname, '../../web/src/runtime-plugins');
+const source = fs.readFileSync(path.join(root, 'connection.js'), 'utf8');
+const start = source.indexOf('const SURFACE_EVENT_TYPES =');
+const end = source.indexOf('//#endregion', start);
+assert.ok(start >= 0 && end > start);
+const surface = vm.runInNewContext(source.slice(start, end) + '\n({foldSurface, createFoldState, applySurfaceEvent, deriveEventMessage})');
+const message = (seq, type, text) => {
+    const payload = {role:type === 'system/message' ? 'system' : 'user', content:[{type:'text',text}]};
+    return {seq,type,surfaceOp:'append',data:type === 'system/message' ? {turn:1,step:1,prefix:true,message:payload} : payload};
+};
+const events = [message(0,'user/message','Question'), message(1,'user/message','Next question'), message(2,'system/message','Restored system'), message(3,'user/message','Continue')];
+assert.deepEqual(Array.from(surface.foldSurface(events).nodes), [2,0,1,3]);
+const state = surface.createFoldState();
+events.forEach((event,index)=>surface.applySurfaceEvent(state,event,index,events,0));
+assert.equal(state.replaceGeneration,1,'restoring system invalidates positional caches');
+assert.equal(surface.deriveEventMessage(events[2]).role,'system');
+events.push({...message(4,'system/message','Changed system'), surfaceOp:{op:'replace',start:2,end:2},sourceEventSeqs:[2]});
+assert.deepEqual(Array.from(surface.foldSurface(events).nodes), [4,0,1,3]);
+const legacySystem = message(1,'system/message','Legacy instruction');
+delete legacySystem.data.prefix;
+const legacy = [message(0,'user/message','Old question'),legacySystem,
+    {...message(2,'user/message','Old checkpoint'),surfaceOp:{op:'replace',start:0,end:1},sourceEventSeqs:[0,1]}];
+assert.deepEqual(Array.from(surface.foldSurface(legacy).nodes),[2],'legacy append order preserves historical replacement ranges');
+legacy.push(message(3,'system/message','Recovered instruction'));
+assert.deepEqual(Array.from(surface.foldSurface(legacy).nodes),[3,2]);
+const runtime = fs.readFileSync(path.join(root,'client-runtime.js'),'utf8');
+const runtimeStart = runtime.indexOf('const SURFACE_EVENT_TYPES =');
+const runtimeEnd = runtime.indexOf('//#endregion',runtimeStart);
+const eligible = vm.runInNewContext(runtime.slice(runtimeStart,runtimeEnd)+'\n({isSurfaceEvent})');
+assert.equal(eligible.isSurfaceEvent(events[2]),true);
+assert.equal(eligible.isSurfaceEvent({...events[2],surfaceOp:undefined}),false);
+console.log('PASS V3 system prefix: restore, dynamic replacement, generation invalidation, and client eligibility');

@@ -3136,13 +3136,20 @@ window.__ModuleLoader__.load({
 			return `${Math.floor(whole / 60)}m${whole % 60}s`;
 		}
 		/**
-		* Cache-hit share of prompt-side input over the whole durable log.
+		* Cache-hit share of input for requests that disclosed cache reads.
 		* @param usage - the session's token-usage projection value.
 		* @returns rounded integer percent, or null when no input was billed.
 		*/
 		function cacheHitPercent(usage) {
-			const denominator = billedInputTokens(usage);
-			return denominator === 0 ? null : Math.round(usage.cacheReadTokens / denominator * 100);
+			const statistics = usage.cacheStatistics;
+			if (!statistics || statistics.reportedSamples === 0) return null;
+			const denominator = statistics.reportedInputTokens;
+			return !Number.isFinite(denominator) || denominator <= 0 ? null : Math.round(usage.cacheReadTokens / denominator * 100);
+		}
+		function cacheUsageLabel(usage, t) {
+			const percent = cacheHitPercent(usage);
+			if (percent === null) return t("stats.cacheUnavailable");
+			return t(usage.cacheStatistics.unreportedSamples > 0 ? "stats.cacheHitPartial" : "stats.cacheHit", { percent });
 		}
 		/**
 		* Sum the three disjoint prompt-side billing buckets.
@@ -3195,8 +3202,7 @@ window.__ModuleLoader__.load({
 				if (speeds.length > 0) groups.push(speeds.join(" · "));
 			}
 			if (usage !== void 0 && (billedInputTokens(usage) > 0 || usage.outputTokens > 0)) {
-				const cacheHit = cacheHitPercent(usage);
-				if (cacheHit !== null) groups.push(t("stats.cacheHit", { percent: cacheHit }));
+				groups.push(cacheUsageLabel(usage, t));
 				groups.push(t("stats.tokens", {
 					input: formatTokens(billedInputTokens(usage)),
 					output: formatTokens(usage.outputTokens)
@@ -5144,7 +5150,7 @@ window.__ModuleLoader__.load({
 				className: ContextInjectionRow_module_css_default.root,
 				icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconBrowseOutline16, { size: 14 }),
 				chevronClassName: ContextInjectionRow_module_css_default.chevron,
-				title: t(provenance.role === "recall" ? "message.contextRecall" : "message.contextInjection"),
+				title: t(provenance.role === "system" ? "context.system" : provenance.role === "recall" ? "message.contextRecall" : "message.contextInjection"),
 				collapsedContent: provenance.label === null ? void 0 : (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
 					(0, react_jsx_runtime.jsx)("span", {
 						className: ContextInjectionRow_module_css_default.sep,
@@ -6453,6 +6459,8 @@ window.__ModuleLoader__.load({
 			"stats.ttftAverage": "首 token 平均 {duration}",
 			"stats.tokensPerSecond": "平均生成 {throughput} tok/s",
 			"stats.cacheHit": "缓存命中 {percent}%",
+			"stats.cacheHitPartial": "缓存命中 {percent}%（仅已披露请求）",
+			"stats.cacheUnavailable": "缓存数据未提供",
 			"stats.tokens": "输入 {input} tok · 输出 {output} tok",
 			"settings.enter.title": "繁忙时 Enter 键行为",
 			"settings.enter.description": "仅在智能体运行时生效；Cmd/Ctrl+Enter 使用另一行为",
@@ -6708,6 +6716,8 @@ window.__ModuleLoader__.load({
 			"stats.ttftAverage": "TTFT avg {duration}",
 			"stats.tokensPerSecond": "Generation avg {throughput} tok/s",
 			"stats.cacheHit": "Cache hit {percent}%",
+			"stats.cacheHitPartial": "Cache hit {percent}% (reported requests only)",
+			"stats.cacheUnavailable": "Cache data unavailable",
 			"stats.tokens": "Input {input} tok · Output {output} tok",
 			"settings.enter.title": "Enter behavior while busy",
 			"settings.enter.description": "Busy only; Cmd/Ctrl+Enter uses the other behavior",
@@ -9083,15 +9093,37 @@ window.__ModuleLoader__.load({
 			const source = event.data.source;
 			return source.kind === "plugin" && source.plugin === "compact";
 		}
-		/** User, steering, and injected-context message classification Definition. */
+		/** User, steering, system-prefix, and injected-context message classification Definition. */
 		const messageDefinition = {
 			kind: "input-message",
 			target: "chat",
-			match: (event) => event.type === "user/message" && (0, _deepseek_ai_dsh_client_runtime_client.isAppendSurfaceEvent)(event) && !isCompactionCheckpoint(event) && !(event.data.source.kind === "plugin" && event.data.source.plugin === "agent-loop:response-recovery") ? {
-				id: String(event.data.id),
-				role: "start"
-			} : null,
+			match: (event) => {
+				if (event.type === "system/message") {
+					const message = event.data.message;
+					return message !== null && typeof message === "object" && Array.isArray(message.content) && ((0, _deepseek_ai_dsh_client_runtime_client.isAppendSurfaceEvent)(event) || (0, _deepseek_ai_dsh_client_runtime_client.isReplacementSurfaceEvent)(event)) ? {
+						id: `system:${message.id ?? event.seq}`,
+						role: "start"
+					} : null;
+				}
+				return event.type === "user/message" && (0, _deepseek_ai_dsh_client_runtime_client.isAppendSurfaceEvent)(event) && !isCompactionCheckpoint(event) && !(event.data.source.kind === "plugin" && event.data.source.plugin === "agent-loop:response-recovery") ? {
+					id: String(event.data.id),
+					role: "start"
+				} : null;
+			},
 			start: (_context, match, reader) => {
+				if (match.event.type === "system/message") {
+					const { event } = match;
+					const message = event.data.message;
+					return {
+						kind: "context",
+						seq: event.seq,
+						time: event.time,
+						content: message.content,
+						source: message.source,
+						provenance: { ...(0, _deepseek_ai_dsh_client_runtime_client.contextProvenance)(message.source), role: "system" },
+						form: (0, _deepseek_ai_dsh_client_runtime_client.contextForm)(message.source)
+					};
+				}
 				if (match.event.type !== "user/message") throw new Error("input-message start requires user/message");
 				const event = match.event;
 				if (event.data.source.kind !== "user") return {
@@ -9125,7 +9157,7 @@ window.__ModuleLoader__.load({
 			}
 		};
 		/**
-		* Register the user, steering, and injected-context message contribution.
+		* Register the user, steering, system-prefix, and injected-context message contribution.
 		* @param ctx - owning UI Conversation context.
 		*/
 		function registerMessageConversationNode(ctx) {

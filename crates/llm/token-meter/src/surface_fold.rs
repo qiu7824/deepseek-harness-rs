@@ -92,7 +92,17 @@ pub fn fold_surface_tokens(
         }),
         Some(dsh_session::SurfaceOp::Append) => {
             let mut next = nodes.to_vec();
-            next.push(node.clone());
+            if event.type_ == "system/message"
+                && event
+                    .data
+                    .get("prefix")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+            {
+                next.insert(0, node.clone());
+            } else {
+                next.push(node.clone());
+            }
             Ok(SurfaceTokenFold {
                 tokens: node.heuristic_tokens,
                 nodes: next,

@@ -130,6 +130,8 @@ pub struct DeepSeekCatalogModel {
 pub struct DeepSeekConfig {
     pub compat: Option<ProviderCompatibility>,
     pub oauth: bool,
+    /// Local login identity for cache/replay isolation; never sent as a header.
+    pub account_scope: Option<String>,
     pub headers: Vec<(String, String)>,
     pub api: Option<String>,
     pub api_key_env: Option<String>,
@@ -152,6 +154,7 @@ pub struct DeepSeekConfig {
 pub struct ResolvedDeepSeekOptions {
     pub compat: ProviderCompatibility,
     pub oauth: bool,
+    pub account_scope: Option<String>,
     pub headers: Vec<(String, String)>,
     pub api: String,
     pub api_key_env: String,
@@ -283,6 +286,7 @@ pub fn resolve_adapter_options(
     Ok(ResolvedDeepSeekOptions {
         compat,
         oauth: config.oauth,
+        account_scope: config.account_scope.clone(),
         headers: config.headers.clone(),
         api,
         api_key_env: config
@@ -1497,13 +1501,15 @@ async fn request_responses_chunks(
     session_id: Option<&str>,
     history: &[dsh_llm::Message],
 ) -> Result<(), LlmFailure> {
-    let mut body = responses::request_for_endpoint_with_history(
+    let account_scope = responses::account_scope_hash(&connection.headers, connection.account_scope.as_deref());
+    let mut body = responses::request_for_endpoint_with_history_for_account(
         chat_body,
         &connection.base_url,
         history,
         provider_name,
+        account_scope.as_deref(),
     )?;
-    responses::apply_session_cache_key(&mut body, session_id, &connection.base_url);
+    responses::apply_session_cache_key_for_account(&mut body, session_id, &connection.base_url, account_scope.as_deref());
     responses::apply_cache_breakpoint(&mut body, &connection.base_url);
     let model = chat_body.get("model").and_then(serde_json::Value::as_str);
     crate::compat::apply_responses(&mut body, connection, model)?;
@@ -1579,10 +1585,11 @@ async fn request_responses_chunks(
             let translated = translator.consume_limited(&payload, MAX_SUCCESS_STREAM_CHUNKS.saturating_sub(emitted_chunks))?;
             emitted_chunks = emitted_chunks.saturating_add(translated.len());
             for mut chunk in translated {
-                responses::bind_replay_metadata(
+                responses::bind_replay_metadata_for_account(
                     &mut chunk,
                     &connection.base_url,
                     model.unwrap_or(""),
+                    account_scope.as_deref(),
                 );
                 sender
                     .send(chunk)
@@ -1601,7 +1608,7 @@ async fn request_responses_chunks(
         let translated = translator.consume_limited(&payload, MAX_SUCCESS_STREAM_CHUNKS.saturating_sub(emitted_chunks))?;
         emitted_chunks = emitted_chunks.saturating_add(translated.len());
         for mut chunk in translated {
-            responses::bind_replay_metadata(&mut chunk, &connection.base_url, model.unwrap_or(""));
+            responses::bind_replay_metadata_for_account(&mut chunk, &connection.base_url, model.unwrap_or(""), account_scope.as_deref());
             sender
                 .send(chunk)
                 .await
@@ -1618,7 +1625,7 @@ async fn request_responses_chunks(
         // Preserve completed/coalesced text items even when the transport
         // breaks before the terminal event; no tool call is finalized here.
         for mut chunk in translator.fail(error) {
-            responses::bind_replay_metadata(&mut chunk, &connection.base_url, model.unwrap_or(""));
+            responses::bind_replay_metadata_for_account(&mut chunk, &connection.base_url, model.unwrap_or(""), account_scope.as_deref());
             sender
                 .send(chunk)
                 .await
@@ -1975,6 +1982,19 @@ pub fn apply(
 #[cfg(test)]
 mod endpoint_tests {
     use super::{endpoint_url, inferred_model_max_tokens};
+
+    #[test]
+    fn account_identity_is_local_metadata_and_never_an_outbound_header() {
+        let connection = super::resolve_adapter_options(&super::DeepSeekConfig {
+            oauth: true,
+            account_scope: Some("private-login-identity".into()),
+            headers: vec![("ChatGPT-Account-ID".into(), "workspace".into())],
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(connection.account_scope.as_deref(), Some("private-login-identity"));
+        let headers = super::request_headers(&connection, Some("session"));
+        assert!(!headers.iter().any(|(name, value)| name.contains("scope") || value.contains("private-login-identity")));
+    }
 
     #[test]
     fn opencode_conversation_routing_is_stable_private_and_host_scoped() {

@@ -12,3 +12,5 @@ mod response_continuation;
 mod steering;
 #[path = "lifecycle_failures/support.rs"]
 mod support;
+#[path = "lifecycle_failures/system_prefix.rs"]
+mod system_prefix;
