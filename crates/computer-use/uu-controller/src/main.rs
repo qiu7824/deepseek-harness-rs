@@ -41,6 +41,28 @@ fn worker_error_code(message: &str) -> &str {
     }
 }
 
+/// Conditional stream cleanup must be admitted before it changes the input
+/// generation. Explicit GUI release/takeover keeps its normal priority.
+fn stale_stream_release(
+    value: &serde_json::Value,
+    control_id: Option<&str>,
+    generation: u64,
+    manual: bool,
+) -> bool {
+    let args = &value["arguments"];
+    if value["origin"] != "human"
+        || args["action"] != "release_inputs"
+        || args.get("expectedStreamGeneration").is_none()
+    {
+        return false;
+    }
+    !manual
+        || generation == 0
+        || args["expectedStreamGeneration"].as_u64() != Some(generation)
+        || control_id.is_none()
+        || args["controlId"].as_str() != control_id
+}
+
 #[cfg(windows)]
 fn main() {
     if std::env::args().any(|arg| arg == "--check-client") {
@@ -74,6 +96,10 @@ fn main() {
     }
     let input_generation = Arc::new(AtomicU64::new(0));
     let input_reader = input_generation.clone();
+    let published_control = Arc::new(Mutex::new(None::<String>));
+    let reader_control = published_control.clone();
+    let stream_generation = Arc::new(AtomicU64::new(0));
+    let reader_stream_generation = stream_generation.clone();
     let paused = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
     let cancellations = Arc::new(Mutex::new(HashMap::<u64, Arc<AtomicBool>>::new()));
@@ -112,6 +138,36 @@ fn main() {
             }
             if action == "close" {
                 break;
+            }
+            if value["origin"] == "human" && action == "video_frame" {
+                if let Some(generation) = value["arguments"]["streamGeneration"].as_u64() {
+                    if generation == 0
+                        || generation
+                            < reader_stream_generation.fetch_max(generation, Ordering::SeqCst)
+                    {
+                        let Some(id) = value["id"].as_u64() else {
+                            break;
+                        };
+                        respond(
+                            &json!({"id":id,"ok":false,"error":{"code":"COMPUTER_USE_STALE_CONTROL","message":"视频流已被新的消费者替代"}}),
+                        );
+                        continue;
+                    }
+                }
+            }
+            if stale_stream_release(
+                &value,
+                reader_control.lock().unwrap().as_deref(),
+                reader_stream_generation.load(Ordering::SeqCst),
+                pause_reader.load(Ordering::SeqCst),
+            ) {
+                let Some(id) = value["id"].as_u64() else {
+                    break;
+                };
+                respond(
+                    &json!({"id":id,"ok":false,"error":{"code":"COMPUTER_USE_STALE_CONTROL","message":"旧视频流的输入清理已失效"}}),
+                );
+                continue;
             }
             if value["origin"] == "human"
                 && matches!(
@@ -245,7 +301,10 @@ fn main() {
                         input_generation.clone(),
                     )?);
                 }
-                return Ok(json!({"state":engine.as_ref().unwrap().state_for(human)}));
+                let state = engine.as_ref().unwrap().state_for(human);
+                *published_control.lock().unwrap() =
+                    state["controlId"].as_str().map(str::to_string);
+                return Ok(json!({"state":state}));
             }
             if request["ownerId"].as_str() != Some(owner.as_str()) {
                 return Err("控制会话归属不匹配".into());
@@ -287,6 +346,54 @@ fn main() {
 
 #[cfg(test)]
 mod error_tests {
+    #[test]
+    fn stream_cleanup_admission_precedes_input_generation_and_preserves_explicit_controls() {
+        let mut cleanup = serde_json::json!({"origin":"human","arguments":{"action":"release_inputs","controlId":"old-control","expectedStreamGeneration":8}});
+        assert!(!super::stale_stream_release(
+            &cleanup,
+            Some("old-control"),
+            8,
+            true
+        ));
+        assert!(
+            super::stale_stream_release(&cleanup, None, 8, true),
+            "initialization has no published identity"
+        );
+        assert!(
+            super::stale_stream_release(&cleanup, Some("new-control"), 8, true),
+            "the previous stream cannot affect a new controller"
+        );
+        assert!(
+            super::stale_stream_release(&cleanup, Some("old-control"), 9, true),
+            "a new video consumer retires the old stream cleanup"
+        );
+        assert!(
+            super::stale_stream_release(&cleanup, Some("old-control"), 8, false),
+            "passive video cleanup never preempts an agent's held inputs or capture"
+        );
+        cleanup["arguments"]
+            .as_object_mut()
+            .unwrap()
+            .remove("expectedStreamGeneration");
+        assert!(
+            !super::stale_stream_release(&cleanup, Some("old-control"), 9, false),
+            "an explicit GUI release still preempts queued work"
+        );
+        cleanup["arguments"]["action"] = serde_json::json!("takeover");
+        assert!(!super::stale_stream_release(
+            &cleanup,
+            Some("old-control"),
+            9,
+            false
+        ));
+        cleanup["arguments"]["action"] = serde_json::json!("key_down");
+        assert!(!super::stale_stream_release(
+            &cleanup,
+            Some("old-control"),
+            9,
+            false
+        ));
+    }
     #[test]
     fn diagnostic_suffixes_do_not_change_error_identity() {
         assert_eq!(

@@ -339,10 +339,15 @@ impl ComputerUseAdapter for ControlledAdapter {
             lease.cancel()
         }
         let revision = lease.revision.load(Ordering::SeqCst);
+        // A GUI viewer opening the existing control session is not agent
+        // work. Another viewer's initial manual-mode publication must not
+        // cancel its pending start. Explicit close still stops the transport.
+        let viewing_start = request.origin == ControlOrigin::Human && request.action == "start";
         let lease_for_cancel = lease.clone();
         let user_signal = signal.clone();
         let action_signal: AbortPredicate = Arc::new(move || {
-            user_signal() || lease_for_cancel.revision.load(Ordering::SeqCst) != revision
+            user_signal()
+                || (!viewing_start && lease_for_cancel.revision.load(Ordering::SeqCst) != revision)
         });
         let action = request.action.clone();
         let origin = request.origin;
@@ -370,7 +375,7 @@ impl ComputerUseAdapter for ControlledAdapter {
         if signal() {
             return Err(AdapterError::cancelled());
         }
-        if lease.revision.load(Ordering::SeqCst) != revision && !closing {
+        if lease.revision.load(Ordering::SeqCst) != revision && !closing && !viewing_start {
             return Err(paused(&lease));
         }
         match result {
@@ -531,6 +536,76 @@ mod tests {
             entered: Notify::new(),
             release: Notify::new(),
         })
+    }
+
+    #[tokio::test]
+    async fn concurrent_human_starts_survive_the_first_successful_manual_mode_publication() {
+        struct StartDriver {
+            entered: Notify,
+            release: tokio::sync::Semaphore,
+            calls: AtomicU64,
+        }
+        #[async_trait]
+        impl ComputerUseAdapter for StartDriver {
+            fn adapter_id(&self) -> &'static str {
+                "uu-desktop"
+            }
+            fn control_scope(&self, _: &AdapterRequest) -> Result<String, AdapterError> {
+                Ok("device".into())
+            }
+            fn has_owner_activity(&self, _: &str) -> bool {
+                true
+            }
+            async fn execute(
+                &self,
+                _: AdapterRequest,
+                signal: AbortPredicate,
+            ) -> Result<AdapterOutput, AdapterError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.entered.notify_one();
+                self.release.acquire().await.unwrap().forget();
+                if signal() {
+                    return Err(AdapterError::cancelled());
+                }
+                Ok(AdapterOutput::json(
+                    json!({"state":{"controlId":"ready-control","connected":true},"control":{"mode":"manual"}}),
+                ))
+            }
+        }
+        let driver = Arc::new(StartDriver {
+            entered: Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+            calls: AtomicU64::new(0),
+        });
+        let adapter = Arc::new(ControlledAdapter::new(driver.clone()));
+        let first_adapter = adapter.clone();
+        let first = tokio::spawn(async move {
+            first_adapter
+                .execute(
+                    request("start", ControlOrigin::Human, "owner"),
+                    Arc::new(|| false),
+                )
+                .await
+        });
+        driver.entered.notified().await;
+        let second_adapter = adapter.clone();
+        let second = tokio::spawn(async move {
+            second_adapter
+                .execute(
+                    request("start", ControlOrigin::Human, "owner"),
+                    Arc::new(|| false),
+                )
+                .await
+        });
+        driver.entered.notified().await;
+        driver.release.add_permits(1);
+        assert!(first.await.unwrap().is_ok());
+        driver.release.add_permits(1);
+        assert!(
+            second.await.unwrap().is_ok(),
+            "a view's pending start is not an agent action to cancel on manual-mode publication"
+        );
+        assert_eq!(driver.calls.load(Ordering::SeqCst), 2);
     }
 
     struct DiagnosticDriver {

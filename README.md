@@ -1,162 +1,208 @@
 # DeepSeek Harness Rust
 
-DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serves the browser application through the production `dsh web` entry point while preserving session, tool, plugin, storage, and RPC compatibility boundaries.
+[简体中文](README.md) | [English](README.en.md)
 
-> This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
+DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使用正式 `dsh web` 入口托管浏览器应用，并保留会话、工具、插件、存储和RPC兼容边界。
 
-Current release line: `0.1.3-alpha.10`.
+> 当前版本仍是预发布版本。功能状态以本README的兼容矩阵和GitHub Release说明为准。
 
-The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
+当前发布线：`0.1.3-alpha.11`。
 
-[中文说明](README.zh.md)
+完整更新见 [alpha.11 发布说明](release/notes/v0.1.3-alpha.11.md)。
 
-## Downloads
+Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启动器和主题效果。版本号标识 Rust 发布线，不表示与 Node 版本逐项或磁盘格式完全相同。
 
-Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases):
+双向分页、阅读锚点和实时消息缓冲的设计见 [Rust 对话滚动与分页](docs/rust-conversation-scrolling.zh.md)。
 
-- `deepseek-harness-rs-v0.1.3-alpha.10-windows-x86_64-{core,skin}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.10-linux-x86_64-{core,skin}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.10-macos-{x86_64,aarch64}-{core,skin}-portable.tar.gz`
-- matching Windows `setup.exe`, Linux `.deb`, and macOS `.pkg` installers
+## 0.1.3-alpha.11 能力更新
 
-A complete package contains the binary, `web/dist`, `config/agent-presets`, bundled Web plugins, and security documentation. Copying only the binary does not provide a complete Web installation.
+- **UU 远程**：识别已安装客户端的真实版本与签名数据布局，保留新旧客户端 profile，不因未知版本字符串拒绝加载。实机已验证桌面连接与 Windows 锁屏画面；应用内键鼠操作和远程终端命令需要解锁后验收。
+- **同供应商多账号**：同一 ChatGPT / Codex 登录入口支持保存多个账号、登录另一个账号、切换和移除；切换时同步模型目录及账号用量统计。
+- **画面批注**：浏览器与 UU 画面支持线条和文字批注，草稿按会话隔离；提交时把当前画面、归一化坐标及实际尺寸保存到可追踪的用户消息中。
+- **会话与缓存**：V3 会话压缩保留系统指令前缀；Responses 缓存键按会话与账号稳定生成，令牌续期不改变键。公开 API 与账号登录通道分别处理协议和缓存参数。
 
-## Quick start
+实现范围与实测结果见 [alpha.2 能力评估](docs/upstream-v0.1.5-alpha.2-evaluation.zh.md)。
 
-The default download is the `core` package, which contains no extension skins. Launch the shared ZSUI native manager:
+### UU 网页画面与接管
+
+1. 在“设置 → 插件 → Computer Use 与远程设备”选择“UU 远程桌面”，并绑定当前账号下的设备。
+2. 在会话右上角打开“显示工作台”，点击 `+`，选择 `Computer Use`，即可在网页中连接和查看 UU 画面。
+3. 需要系统验证时保持人工接管，在画面中自行输入；可放大工作台或画面，智能体在此期间暂停操作。
+4. 完成后点击“交还智能体”。如果原任务已经停止，再发送继续指令；交还控制权不会擅自重做已结束的任务。
+
+`uu_terminal` 提供远程命令行，桌面画面由上述控制面板提供；终端错误文本本身不是桌面播放器。
+
+## 下载
+
+从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases) 下载对应平台的完整包：
+
+- `deepseek-harness-rs-v0.1.3-alpha.11-windows-x86_64-{core,skin}-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.11-linux-x86_64-{core,skin}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.11-macos-{x86_64,aarch64}-{core,skin}-portable.tar.gz`
+- 对应的 Windows `setup.exe`、Linux `.deb` 与 macOS `.pkg` 安装包
+
+完整包包含二进制、`web/dist`、`config/agent-presets`、随附Web插件和安全说明。不要只复制二进制后再期待完整Web界面和随附插件可用。
+
+## 快速启动
+
+默认下载 `core` 包；它不包含扩展皮肤。解压后直接运行三平台统一的 ZSUI 原生启动器：
 
 ```text
 Windows: dsh-launcher.exe
 Linux/macOS: ./dsh-launcher
 ```
 
-Confined Shell commands and native terminals on Linux use the system `bubblewrap` sandbox. DEB packages declare this dependency; portable installations should install `bubblewrap` through the distribution's package manager. Confined execution fails explicitly when the sandbox is missing or unavailable.
-Ubuntu systems that restrict user namespaces may need an administrator to configure the distribution's recommended [bwrap AppArmor profile](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007). The application does not change system protection policies automatically.
+Linux 的受限 Shell 与原生终端使用系统 `bubblewrap` 沙箱；DEB 包声明该依赖，使用便携包时请通过发行版包管理器安装 `bubblewrap`。缺少沙箱或系统不允许创建沙箱时，受限执行会明确失败。
+启用用户命名空间限制的 Ubuntu 系统可能需要管理员配置发行版推荐的 [bwrap AppArmor 规则](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007)，程序不会自动修改系统防护策略。
 
-The default URL is:
+默认地址：
 
 ```text
 http://127.0.0.1:58080/
 ```
 
-The launcher is built with ZSUI at a fixed commit and requires no CMD, PowerShell, WebView, or extra runtime. It starts, stops, and restarts the real `deepseek-harness-rs web` process and opens the Web UI or log directory. The Windows installer and launcher automatically use Simplified Chinese or English from the operating-system UI language.
+启动器由固定 commit 的 ZSUI 构建，不依赖 CMD、PowerShell、WebView 或额外运行时；负责启动、停止、重启正式 `deepseek-harness-rs web` 进程以及打开网页、日志目录。Windows 安装器和启动器按系统 UI 语言自动显示简体中文或英文。 全新安装默认位于 `D:\Program Files (x86)\DeepSeek Harness-rs\<variant>`，升级沿用原安装位置；默认位置不可用时需选择其他目录。
 
-For extension skins, download the separate `skin` package and run `deepseek-harness-rs-skin` (`.exe` on Windows). It installs only the skin payload into the adjacent `web/dist/skins`; the default `core` archive never bundles skin assets.
+需要扩展皮肤时，另行下载 `skin` 包并运行其中的 `deepseek-harness-rs-skin`（Windows 为 `.exe`）；它只把皮肤资产安装到同目录的 `web/dist/skins`，默认 `core` 包始终不携带皮肤资源。
 
-The `free` package uses the same Rust runtime and Web UI as `core`, with only the anonymous models that passed release verification. Exact IDs in the [official model directory](https://opencode.ai/zen/v1/models) and official input/output/cache-read prices are checked before streaming inference and a tool-result round trip. Evidence in `free-model-verification.json` is less than 24 hours old and tied to the packaged binary hash. Settings provide the current free catalog, verification results, and controls to test and add eligible models; no credentials or skin payload are bundled.
+`free` 包与 `core` 使用同一套正式运行时和 Web 界面，只预置通过发布检查的 OpenCode Zen 免费模型。检查[官方模型目录](https://opencode.ai/zen/v1/models)中的精确 ID、官方输入／输出／缓存读取价格、匿名流式推理、工具调用与工具结果续接，并将最近 24 小时的验证证据绑定到包内运行时校验和。`free-model-verification.json` 列出各候选的实际结果；设置中的免费模型页可刷新目录、重新检测和添加已通过的模型。免费包不包含凭据或皮肤载荷。
 
-The optional `free` edition is published only when anonymous verification passes for that exact build. OpenCode currently restricts its free endpoint to its own client, so `free` is unavailable until a supported anonymous route passes these checks; `core` and `skin` remain independently verified.
+可选的 `free` 版按平台与构建执行匿名模型验收，仅在通过后发布。是否提供 `free` 包，以该次 GitHub Release 的实际资产和包内 `free-model-verification.json` 为准；`core` 和 `skin` 独立验收。
 
-## Data, profiles, and workspaces
+普通会话、原生工具和 Web 界面由 Rust 核心提供。JavaScript／TypeScript 代码模式及部分外部工具需要单独配置 Node；设置中的运行环境页显示实际路径、版本及能力检测结果。
 
-The Rust core starts without Node. JavaScript/TypeScript Code Mode and some external tools require an optional Node installation; environment settings report the detected executable, version, and capabilities. Model catalogs synchronize account access and reasoning metadata while preserving display preferences. The code graph indexes the active workspace automatically and links local relationships to source locations.
+账号登录后自动同步可用模型和能力；模型管理中的显示开关保留跨刷新、重启的用户偏好，隐藏模型不会删除已有会话。代码图谱按需索引当前工作区，提供局部调用关系、文件依赖与源码定位；打开会话不会自动扫描整个项目，推断关系和未覆盖范围会明确标示。
 
-New Windows installations default to `D:\Program Files (x86)\DeepSeek Harness-rs\<variant>`; upgrades retain the previous installation directory. If the default location is unavailable, choose another directory in the installer.
+## 命令行入口
 
-The default Windows data root is:
-
-```text
-%LOCALAPPDATA%\DeepSeek Harness
+```bash
+./deepseek-harness-rs web
 ```
 
-Select a data root with `DSH_HOME` or Settings → Directories and runtime. Restarting applies a verified copy of the data and retains the source. A failed migration restores the previous active paths and reports the error. Session workspaces remain the project-directory source; application data relocation does not move project files.
+如需指定端口：
 
-Profile plugins are stored under:
+```bash
+./deepseek-harness-rs web --port 58080
+```
+
+## 数据、Profile与工作区
+
+默认数据根：
+
+```text
+Windows: %LOCALAPPDATA%\DeepSeek Harness
+Linux/macOS: 由平台数据目录与DSH_HOME决定
+```
+
+可通过 `DSH_HOME` 指定数据根，也可在“设置 → 目录与运行环境”中选择目录并重启应用。迁移会先复制并逐文件校验，成功后切换目录，保留原数据；失败时恢复原目录设置并显示原因。工作区仍是会话的项目目录来源，项目文件不会随应用数据迁移。
+
+Profile插件位于：
 
 ```text
 <DSH_HOME>/profiles/<profile>/node_modules
 ```
 
-Sessions, attachments, caches, settings, and plugin inventory are user data and must not be overwritten or cleaned by an upgrade package.
+正式会话、附件、缓存、设置和插件库存都属于用户数据，不应随升级包覆盖或清理。
 
-## Providers and protocols
+投影缓存采用逐记录 v5 格式，并兼容可解码的 v3/v4 数据；坏缓存先备份再重建，权威数据读取异常保持明确失败。详见[存储兼容与恢复](docs/storage-compatibility.md)。
 
-Configure an API key or connect an account in Settings → Models. Credentials remain on the local device, with token renewal and sign-out support. Each model has a visibility switch, and reasoning levels prefer provider-supplied metadata.
+## Provider与协议
 
-| Protocol/API | Status |
+在“设置 → 模型”中配置 API Key 或完成账号登录；凭据保存在本机，账号令牌支持续期和退出登录。模型条目提供显示开关，推理等级优先读取提供商元数据。
+
+| 协议/API | 状态 |
 |---|---|
-| DeepSeek/OpenAI-compatible Chat Completions | Connected to the production Rust adapter |
-| OpenAI Responses | Explicit `api: openai-responses` route implemented; tool, reasoning, image, usage, and SSE fixtures pass; real-provider verification requires user configuration |
-| Azure OpenAI Responses | Production provider closure incomplete |
-| OpenAI Codex Responses | Device authorization, token renewal, and Responses routing; users complete account authorization in Settings |
-| Anthropic Messages | Native text, tool, image, thinking, and usage conversion using API keys; Claude subscriptions use the official Claude Code subagent |
-| Bedrock Converse Stream | Not implemented |
+| DeepSeek/OpenAI-compatible Chat Completions | 已接入正式Rust适配器 |
+| OpenAI Responses | 已提供显式`api: openai-responses`入口；工具、推理、图片、usage和SSE已覆盖fixture，真实Provider仍需使用者配置后验收 |
+| Azure OpenAI Responses | 未完成正式Provider闭环 |
+| OpenAI Codex Responses | 账号设备码登录、令牌续期与 Responses 路由；使用者在设置中完成账号授权 |
+| Anthropic Messages | 原生请求与流式文本、工具、图片、thinking、usage 转换，使用 API Key；Claude 订阅由官方 Claude Code 子智能体使用 |
+| Bedrock Converse Stream | 未完成 |
 
-See [`docs/protocol-matrix.md`](docs/protocol-matrix.md) for evidence and scope. A type name or crate alone is not proof of production support.
+账号额度与单次请求的缓存 token 属于不同统计。缓存命中率仅使用响应明确披露的缓存读数；没有数据时显示“缓存数据未提供”，明确返回 0 时保留 0。ChatGPT / Codex 账号服务不直接套用公开 Responses API 的显式缓存断点参数。稳定缓存键有助于复用，但不保证命中；正式账号通道的长前缀连续请求已成功，实测缓存读取仍为 0。
 
-## Skills, MCP, and memory
+完整证据见[`docs/protocol-matrix.md`](docs/protocol-matrix.md)。存在文件名或crate不代表生产能力已完成。
 
-Settings → Skills and MCP manages skill files and MCP servers, including enable/disable, editing, and connection tests. Memory settings support searching, toggling, and maintaining lessons from known errors. See the [capabilities guide](docs/learning-and-capabilities.zh.md).
+## 技能、MCP 与记忆
 
-## Web plugins
+“设置 → 技能与 MCP”管理技能文件和 MCP 服务器，支持启停、编辑和连接测试。“记忆与上下文”支持检索、启停和维护已知错误经验。详见[技能、工具与经验记忆](docs/learning-and-capabilities.zh.md)。
 
-Pure Web plugins do not require Node, npm, or pnpm. The Rust Host validates, discovers, registers, and serves prebuilt client JavaScript.
+## Web插件
 
-### Installing third-party plugins
+纯Web插件无需Node、npm或pnpm。Rust Host负责校验、发现、登记和静态服务预构建的`client.js`。
 
-The Rust build directly installs pure Web plugins with this minimum layout:
+### 安装第三方插件
+
+Rust版本只直接安装符合以下结构的纯Web插件：
 
 ```text
 package.json
 lib/client.js
 ```
 
-`package.json` must declare a Web client export. GitHub sources must be pinned to an immutable 40-character commit SHA; branches, tags, and mutable default branches are rejected.
+`package.json`必须声明Web客户端导出。插件安装来源必须固定到完整40位Git commit，不能使用分支名、tag或可变默认分支：
 
-GitHub installations require an immutable 40-character commit SHA:
+GitHub插件安装必须固定完整40位commit SHA：
 
-```bash
-./dsh plugin --profile web add github:owner/repository#0123456789abcdef0123456789abcdef01234567
-./dsh plugin --profile web list
-./dsh plugin --profile web remove package-name
+```powershell
+.\dsh.exe plugin --profile web add github:owner/repository#0123456789abcdef0123456789abcdef01234567
 ```
 
-Restart `dsh web` after installation, then confirm the plugin is enabled under Settings → Plugins. To upgrade, review the new commit, remove the old package, and install again with the new commit SHA. The Rust installer validates package names, entry paths, symlinks, file sizes, and directory containment.
+安装后重启`dsh web`，然后在“设置 → 插件”中确认插件已启用。管理命令：
 
-Compatibility:
+```powershell
+.\dsh.exe plugin --profile web list
+.\dsh.exe plugin --profile web remove package-name
+```
 
-- Pure Web plugin: supported.
-- Web + Node Host plugin: only a standalone Web portion can load; the Node Host portion does not run.
-- Node Host/native-only plugin: not executed by the Rust Host.
+升级插件时，先审计新commit，再卸载旧版本并使用新commit SHA重新安装。Rust安装器会校验包名、入口路径、符号链接、文件大小和目录越界；校验失败时拒绝安装。
 
-Plugins that require `require()`, npm lifecycle scripts, a Node service, native addons, or Host-side JavaScript cannot run directly inside the pure Rust process. Use a plugin-provided pure Web build or run the Host portion as a separate sidecar.
+兼容范围：
 
-Web plugins run in the application origin and have page-level JavaScript capabilities. Install only trusted, reviewed code pinned to an immutable commit.
+- 纯Web插件：支持；
+- Web + Node Host插件：只可能加载独立的Web部分，Node Host部分不会运行；
+- 纯Node Host/native插件：Rust Host不执行。
 
-Bundled plugins:
+如果社区插件依赖`require()`、npm生命周期脚本、Node服务、native addon或Host侧JS，它不能直接装进纯Rust进程。应使用插件提供的纯Web构建，或者把Host部分作为独立sidecar程序运行。
 
-- `dsh-voice-input`: browser speech input.
-- `dsh-context-jump`: an indexed conversation rail that loads bounded history around user-message targets, with hover previews and keyboard navigation.
-- `dsh-better-sidebar`: resizable workbench panes, workspace files, terminals and web previews, integrated with the native conversation interface.
-- `dsh-sidebar-workbench-suite`: Markdown/code/structured-data viewers, background jobs and the shared browser/desktop control panel.
+Web插件与主应用同源运行，拥有页面级JavaScript能力。只安装来源可信、固定commit并完成审计的插件。
 
-## Capability status
+随附插件：
 
-| Capability | Status |
+- `dsh-voice-input`：浏览器语音输入；
+- `dsh-context-jump`：按完整用户消息索引定位，按需加载目标附近的有界历史，支持悬停预览和键盘导航；
+- `dsh-better-sidebar`：可调宽度的工作台、工作区文件、终端与网页预览，融入原生对话界面；
+- `dsh-sidebar-workbench-suite`：Markdown、源码、结构化数据查看器、后台任务及共用的浏览器／桌面控制面板。
+
+## 能力状态
+
+| 能力 | 状态 |
 |---|---|
-| Sessions, persistence, history paging | Strong `SessionSeq` / `SessionLogOffset` coordinates, explicit bounded reads, and v0 JSONL/Zstd `seedLength` compatibility are implemented |
-| DeepSeek streaming, reasoning, tools, images, usage | Implemented; final Release still requires real-provider verification |
-| Subagents | Continuable direct parent/child messaging uses `send_message({ agent_id, message })` in both directions; optional Codex/Claude Code providers are not installed by default |
-| Web fetch | Rust-native `web_fetch` is implemented with public HTTP(S)-only, redirect/DNS/IP, timeout, size, and cancellation bounds |
-| Model discovery | Saved Profile headers can be resolved server-side without returning credentials to the browser; the model picker supports filtered search and visible-only selection |
-| Workflows | Engine remains available; the PTC/code preset deliberately omits the generic `workflow` tool while retaining `run_code` and Ralph |
-| Terminal | Persistent terminal lifecycle implemented |
-| MCP | Production settings, stdio/HTTP connections, tool registration, enable/disable, and connection tests |
-| LSP | Registry/tool libraries implemented; not composed into the production Host |
-| ACP | Protocol entry exists; real prompt/cancel regression is not closed |
+| 会话、持久化、历史分页 | 已实现强类型 `SessionSeq` / `SessionLogOffset`、显式有界读取，并保持 v0 JSONL/Zstd `seedLength` 兼容 |
+| DeepSeek长流、reasoning、tool、图片、usage | 已实现，发布后仍需按真实Provider复验 |
+| 子智能体 | continuable 直接父子可双向使用 `send_message({ agent_id, message })`；外部Codex/Claude Code提供方未默认安装 |
+| 网页抓取 | 已实现 Rust 原生 `web_fetch`，只允许公开 HTTP(S)，并限制重定向、DNS/IP、超时、体积和取消 |
+| 模型发现 | 服务端可安全复用 Profile headers 而不向浏览器返回凭据；模型候选支持搜索和仅对可见结果全选 |
+| 工作流 | 引擎继续保留；PTC/code 预设刻意不提供通用 `workflow` 工具，但保留 `run_code` 和 Ralph |
+| 终端 | 已实现持久终端、输入、关闭和回收；UU 远程终端另受被控端登录、解锁及终端能力约束 |
+| UU 桌面控制 | 已实现独立控制进程、动态客户端识别、实时画面与输入通道；实机已验证连接和锁屏画面，应用输入仍需解锁后验收 |
+| 画面批注 | 当前截图、文字及归一化坐标进入持久用户消息，草稿按会话隔离 |
+| MCP | 已接入正式设置页，支持 stdio/HTTP、工具注册、启停与连接测试 |
+| LSP | 底层registry/tool实现；正式Host尚未组合 |
+| ACP | 协议入口存在；真实prompt/cancel回归尚未封板 |
 
 
-Sidebar support and its upstream compatibility limits are documented in [sidebar capabilities](docs/sidebar-capabilities.md); browser executors, model tools, and UU remote integration are described in [browser control](docs/browser-control-and-model-tools.zh.md).
+侧栏与上游插件的兼容范围见[侧栏能力清单](docs/sidebar-capabilities.md)；浏览器执行器、模型工具及 UU 远程接入方式见[浏览器控制说明](docs/browser-control-and-model-tools.zh.md)。
 
-## Build
+## 构建
 
-Rust is pinned to 1.97.1:
+工具链固定为Rust 1.97.1：
 
 ```bash
 cargo build --release -p dsh-host-cli --bin dsh -p dsh-launcher --bin dsh-launcher
 ```
 
-Core gates:
+基础门禁：
 
 ```bash
 cargo fmt --all -- --check
@@ -168,24 +214,26 @@ cargo test -p dsh-host --lib -- --test-threads=1
 cargo test -p dsh-host-cli --lib -- --test-threads=1
 ```
 
-## Security boundaries
+## 安全边界
 
-- Remote plaintext HTTP is rejected; bounded loopback fixtures are the exception.
-- Credentials are resolved through the credential service and are not stored in source, recordings, or Releases.
-- Plugin package names, entry paths, symlinks, sizes, and traversal attempts fail closed.
-- Windows tool execution uses AppContainer and approval policy boundaries.
-- Release archives contain runtime assets only, not source tests, sessions, caches, or credentials.
+- 远程明文HTTP默认拒绝，只允许受控loopback测试；
+- 凭据只通过credential service按需解析，不写入源码、测试录制或Release；
+- 插件入口、包名、符号链接、大小和路径越界均fail-closed；
+- Windows工具通过AppContainer和批准策略运行；
+- Release只包含运行资源，不包含源码测试、会话、缓存或凭据。
 
-See `PLUGIN_SECURITY.md` for the Web plugin trust boundary.
+更多插件边界见`PLUGIN_SECURITY.md`。
 
-## Known limitations
+## 已知限制
 
-- The generic pi-ai provider catalog has not been fully ported.
-- LSP remains a library-level implementation without production Host composition.
-- ACP real prompt/cancel and Python SDK real-turn regressions remain open.
-- Conversation navigation uses the user-message index and targeted history pages; full conversation data stays on the Host.
-- Linux and macOS are considered published only after every GitHub Actions matrix asset succeeds.
+- 通用pi-ai provider catalog尚未完整移植；
+- UU 实机验证覆盖连接与 Windows 锁屏画面，应用内输入和远程终端命令仍需被控端解锁后验收；
+- 多账号授权、切换与恢复已通过模拟账号回归，两个真实账号之间的完整授权切换尚未验收；账号服务的高缓存命中率也未得到实测证实；
+- LSP仍为库级能力，尚未接入正式Host配置；
+- ACP真实prompt/cancel与Python SDK真实turn仍有回归；
+- 对话导航使用用户消息索引和定点历史页，完整会话数据保留在 Host；
+- Linux和macOS资产只有在GitHub Actions矩阵全部成功后才视为发布完成。
 
-## License
+## 许可证
 
-MIT. See [`LICENSE`](LICENSE) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+MIT，见[`LICENSE`](LICENSE)。第三方声明见[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。

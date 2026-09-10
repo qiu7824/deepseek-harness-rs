@@ -1106,6 +1106,13 @@ fn release_due(
     }
 }
 
+fn stream_handoff_release(current: u64, next: u64, manual: bool) -> Result<bool, &'static str> {
+    if next < current {
+        return Err("COMPUTER_USE_STALE_CONTROL");
+    }
+    Ok(next != current && manual)
+}
+
 pub struct Engine {
     capture: Option<crate::render::Capture>,
     sdk: Sdk,
@@ -1136,6 +1143,7 @@ pub struct Engine {
     video_encoder: Option<crate::video::Encoder>,
     video_started: Instant,
     control_id: String,
+    stream_generation: u64,
 }
 impl Engine {
     pub fn open(
@@ -1284,6 +1292,7 @@ impl Engine {
                     .map_err(|_| "本机时间无效")?
                     .as_nanos()
             ),
+            stream_generation: 0,
         };
         let track = engine
             .observed
@@ -1711,6 +1720,22 @@ impl Engine {
             if !human {
                 return Err("COMPUTER_USE_HUMAN_REQUIRED".into());
             }
+            if let Some(generation) = args["streamGeneration"].as_u64() {
+                let release = stream_handoff_release(
+                    self.stream_generation,
+                    generation,
+                    self.paused.load(Ordering::SeqCst),
+                )?;
+                if generation != self.stream_generation {
+                    // The replacement consumer cannot submit input until it
+                    // receives a frame. Release the previous consumer's held
+                    // keys before publishing that first frame.
+                    if release {
+                        self.release_inputs()?;
+                    }
+                    self.stream_generation = generation;
+                }
+            }
             return self.video_frame(args["keyFrame"] == true, args["diagnostics"] == true);
         }
 
@@ -1725,6 +1750,11 @@ impl Engine {
                 return Err("COMPUTER_USE_STALE_CONTROL".into());
             }
             if action == "release_inputs" {
+                if args.get("expectedStreamGeneration").is_some()
+                    && !self.paused.load(Ordering::SeqCst)
+                {
+                    return Err("COMPUTER_USE_STALE_CONTROL".into());
+                }
                 self.release_inputs()?;
                 return Ok(json!({"state":self.state()}));
             }
@@ -1894,6 +1924,18 @@ impl Drop for Engine {
 #[cfg(test)]
 mod release_tests {
     use super::*;
+
+    #[test]
+    fn video_consumer_handoff_only_releases_the_previous_human_consumers_inputs() {
+        assert_eq!(stream_handoff_release(1, 2, true), Ok(true));
+        assert_eq!(stream_handoff_release(1, 1, true), Ok(false));
+        assert_eq!(
+            stream_handoff_release(1, 2, false),
+            Ok(false),
+            "passive viewing must not release agent input"
+        );
+        assert!(stream_handoff_release(2, 1, true).is_err());
+    }
 
     #[test]
     fn completing_hotkey_registration_does_not_override_a_new_takeover() {

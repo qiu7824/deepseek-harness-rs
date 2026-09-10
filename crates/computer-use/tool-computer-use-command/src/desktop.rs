@@ -37,6 +37,10 @@ mod tests {
     use super::*;
 
     async fn fixture_slot(owner: &str, ready: bool) -> Arc<Slot> {
+        fixture_rpc_slot(owner, ready).await.0
+    }
+
+    async fn fixture_rpc_slot(owner: &str, ready: bool) -> (Arc<Slot>, mpsc::Receiver<Vec<u8>>) {
         // An inert child supplies the real process cleanup path without
         // starting a desktop worker or accessing a user's desktop.
         let mut command = Command::new(std::env::current_exe().unwrap());
@@ -48,7 +52,7 @@ mod tests {
             .kill_on_drop(true)
             .creation_flags(0x08000000);
         let child = command.spawn().unwrap();
-        let (writer, _) = mpsc::channel(8);
+        let (writer, received) = mpsc::channel(8);
         let (signals, _) = mpsc::channel(32);
         let old = Instant::now() - IDLE_TIMEOUT - Duration::from_secs(1);
         let client = Arc::new(Client {
@@ -72,10 +76,11 @@ mod tests {
             client: OnceCell::new(),
             closed: AtomicBool::new(false),
             ready: AtomicBool::new(ready),
+            control_id: SyncMutex::new(None),
             created: old,
         });
         assert!(slot.client.set(client).is_ok());
-        slot
+        (slot, received)
     }
 
     fn fixture_adapter(backend: Backend) -> DesktopAdapter {
@@ -195,6 +200,152 @@ mod tests {
         std::fs::remove_file(root.join("invalid.exe")).unwrap();
         std::fs::remove_dir(root).unwrap();
     }
+
+    #[tokio::test]
+    async fn old_stream_release_never_reaches_a_starting_or_replaced_worker() {
+        let adapter = Arc::new(fixture_adapter(Backend::Uu));
+        let (slot, mut wire) = fixture_rpc_slot("owner", false).await;
+        adapter.sessions.lock().insert("owner".into(), slot.clone());
+        let request = |action: &str, control: Option<&str>| {
+            let mut value = json!({"action":action});
+            if let Some(control) = control {
+                value["controlId"] = json!(control);
+            }
+            let mut request = AdapterRequest::from_arguments(&value)
+                .unwrap()
+                .with_owner_id("owner");
+            request.origin = ControlOrigin::Human;
+            request
+        };
+        let start_adapter = adapter.clone();
+        let start_request = request("start", None);
+        let start = tokio::spawn(async move {
+            start_adapter
+                .execute(start_request, Arc::new(|| false))
+                .await
+        });
+        let command: Value = serde_json::from_slice(&wire.recv().await.unwrap()).unwrap();
+        assert_eq!(command["arguments"]["action"], "start");
+        for control in [None, Some("old-control")] {
+            let error = adapter
+                .execute(request("release_inputs", control), Arc::new(|| false))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, "COMPUTER_USE_STALE_CONTROL");
+            assert!(
+                wire.try_recv().is_err(),
+                "stale cleanup must not enter the worker queue during start"
+            );
+        }
+        let client = slot.client.get().unwrap();
+        client
+            .rpc
+            .pending
+            .lock()
+            .remove(&command["id"].as_u64().unwrap())
+            .unwrap()
+            .send(Ok(
+                json!({"state":{"controlId":"new-control","connected":true,"interactive":true}}),
+            ))
+            .unwrap();
+        assert_eq!(
+            start.await.unwrap().unwrap().value["state"]["controlId"],
+            "new-control"
+        );
+        let error = adapter
+            .execute(
+                request("release_inputs", Some("old-control")),
+                Arc::new(|| false),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "COMPUTER_USE_STALE_CONTROL");
+        assert!(
+            wire.try_recv().is_err(),
+            "an old controller identity must not preempt the new worker"
+        );
+        let release_adapter = adapter.clone();
+        let release_request = request("release_inputs", Some("new-control"));
+        let release = tokio::spawn(async move {
+            release_adapter
+                .execute(release_request, Arc::new(|| false))
+                .await
+        });
+        let release_command: Value = serde_json::from_slice(&wire.recv().await.unwrap()).unwrap();
+        assert_eq!(release_command["arguments"]["action"], "release_inputs");
+        assert_eq!(release_command["origin"], "human");
+        client
+            .rpc
+            .pending
+            .lock()
+            .remove(&release_command["id"].as_u64().unwrap())
+            .unwrap()
+            .send(Ok(
+                json!({"state":{"controlId":"new-control","connected":true}}),
+            ))
+            .unwrap();
+        assert!(
+            release.await.unwrap().is_ok(),
+            "the current view must still release held inputs through the real worker protocol"
+        );
+        adapter.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_close_cancels_pending_start_without_closing_a_subsequent_slot() {
+        let adapter = Arc::new(fixture_adapter(Backend::Uu));
+        let (slot, mut wire) = fixture_rpc_slot("owner", false).await;
+        adapter.sessions.lock().insert("owner".into(), slot.clone());
+        let request = |action| {
+            AdapterRequest::from_arguments(&json!({"action":action}))
+                .unwrap()
+                .with_owner_id("owner")
+                .with_origin(ControlOrigin::Human)
+        };
+        let start_adapter = adapter.clone();
+        let start_request = request("start");
+        let start = tokio::spawn(async move {
+            start_adapter
+                .execute(start_request, Arc::new(|| false))
+                .await
+        });
+        let command: Value = serde_json::from_slice(&wire.recv().await.unwrap()).unwrap();
+        let closed = adapter
+            .execute(request("close"), Arc::new(|| false))
+            .await
+            .unwrap();
+        assert_eq!(closed.value["closed"], true);
+        assert!(slot.closed.load(Ordering::SeqCst));
+        assert!(!slot.client.get().unwrap().rpc.alive.load(Ordering::SeqCst));
+        let replacement = fixture_slot("owner", true).await;
+        adapter
+            .sessions
+            .lock()
+            .insert("owner".into(), replacement.clone());
+        slot.client
+            .get()
+            .unwrap()
+            .rpc
+            .pending
+            .lock()
+            .remove(&command["id"].as_u64().unwrap())
+            .unwrap()
+            .send(Err(AdapterError::cancelled()))
+            .unwrap();
+        assert!(start.await.unwrap().is_err());
+        assert!(
+            adapter
+                .sessions
+                .lock()
+                .get("owner")
+                .is_some_and(|current| Arc::ptr_eq(current, &replacement))
+        );
+        assert!(
+            !replacement.closed.load(Ordering::SeqCst),
+            "late failure cleanup must stay scoped to its original worker"
+        );
+        adapter.shutdown().await.unwrap();
+    }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Backend {
@@ -222,6 +373,7 @@ struct Slot {
     client: OnceCell<Arc<Client>>,
     closed: AtomicBool,
     ready: AtomicBool,
+    control_id: SyncMutex<Option<String>>,
     created: Instant,
 }
 impl Slot {
@@ -538,10 +690,26 @@ impl DesktopAdapter {
             client: OnceCell::new(),
             closed: AtomicBool::new(false),
             ready: AtomicBool::new(false),
+            control_id: SyncMutex::new(None),
             created: Instant::now(),
         });
         sessions.insert(key, slot.clone());
         Ok(slot)
+    }
+    async fn close_slot(&self, slot: &Arc<Slot>) {
+        {
+            let mut sessions = self.sessions.lock();
+            if sessions
+                .get(&slot.owner)
+                .is_some_and(|current| Arc::ptr_eq(current, slot))
+            {
+                sessions.remove(&slot.owner);
+            }
+        }
+        slot.closed.store(true, Ordering::SeqCst);
+        if let Some(client) = slot.client.get() {
+            client.stop().await;
+        }
     }
 }
 #[async_trait]
@@ -621,6 +789,20 @@ impl ComputerUseAdapter for DesktopAdapter {
             ));
         }
         let slot = self.slot(&request).await?;
+        if request.action == "release_inputs"
+            && (!slot.ready.load(Ordering::SeqCst)
+                || request.arguments["controlId"].as_str().is_none()
+                || request.arguments["controlId"].as_str() != slot.control_id.lock().as_deref())
+        {
+            // Reject an old video consumer before its command reaches the
+            // worker reader, which preempts queued capture/input immediately.
+            // A new worker has no published control identity until start
+            // succeeds; stale cleanup must never initialize or interrupt it.
+            return Err(failure(
+                "COMPUTER_USE_STALE_CONTROL",
+                "旧画面的输入清理不属于当前已连接桌面",
+            ));
+        }
         let client = match slot
             .client
             .get_or_try_init(|| {
@@ -630,7 +812,7 @@ impl ComputerUseAdapter for DesktopAdapter {
         {
             Ok(client) => client.clone(),
             Err(error) => {
-                self.close_owner(&slot.owner).await?;
+                self.close_slot(&slot).await;
                 return Err(error);
             }
         };
@@ -640,10 +822,14 @@ impl ComputerUseAdapter for DesktopAdapter {
         }
         let result = client.request(&request, &slot.binding, signal).await;
         if request.action == "start" && result.is_err() {
-            self.close_owner(&slot.owner).await?;
+            self.close_slot(&slot).await;
         }
         let mut value = result?;
         if request.action == "start" {
+            *slot.control_id.lock() = value
+                .pointer("/state/controlId")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             slot.ready.store(true, Ordering::SeqCst);
         }
         let screenshot = value.as_object_mut().and_then(|v| v.remove("screenshot"));

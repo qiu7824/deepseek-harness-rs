@@ -12,6 +12,42 @@ window.__ModuleLoader__.load({
     const assetBase = suiteAssetBase;
     const assetVersions = globalThis.__DSH_SIDEBAR_SUITE_ASSET_VERSIONS__ ||= Object.create(null);
     const assetLoads = new Map();
+    const desktopStarts = new Map(), desktopClosures = new Map();
+    const desktopStartKey = (owner, session) => owner + "\u0000" + session;
+    function abortDesktopStart(owner, session) { const key=desktopStartKey(owner,session),entry=desktopStarts.get(key);if(entry){desktopStarts.delete(key);entry.controller.abort()} }
+    function desktopClose(owner, session, options) {
+      abortDesktopStart(owner,session);
+      const key=desktopStartKey(owner,session),existing=desktopClosures.get(key);
+      if(existing?.pending)return existing.promise;
+      const controller=new AbortController(),entry={pending:true,promise:null};
+      const timer=setTimeout(()=>controller.abort(),75_000);
+      entry.promise=json("/__dsh-computer-use/action",{...options,signal:controller.signal}).then(value=>{
+        entry.pending=false;if(desktopClosures.get(key)===entry)desktopClosures.delete(key);return value;
+      },error=>{entry.pending=false;throw error}).finally(()=>clearTimeout(timer));
+      // Failed closes remain a barrier until an explicit close retries them.
+      desktopClosures.set(key,entry);
+      return entry.promise;
+    }
+    function desktopStart(owner, session, options, keepAlive=true) {
+      const key=desktopStartKey(owner,session),existing=desktopStarts.get(key);
+      if(existing)return existing.promise;
+      const controller=new AbortController(),entry={controller,promise:null};
+      const timer=setTimeout(()=>controller.abort(),75_000);
+      const viewerSignal=keepAlive?null:options.signal,onViewerAbort=()=>controller.abort();
+      if(viewerSignal?.aborted)controller.abort();else viewerSignal?.addEventListener("abort",onViewerAbort,{once:true});
+      desktopStarts.set(key,entry);
+      entry.promise=(async()=>{
+        const closing=desktopClosures.get(key);let abort;
+        const cancelled=()=>Object.assign(new Error("Control startup cancelled"),{name:"AbortError"});
+        if(controller.signal.aborted)throw cancelled();
+        if(closing)try{
+          await Promise.race([closing.promise,new Promise((_,reject)=>{abort=()=>reject(cancelled());controller.signal.addEventListener("abort",abort,{once:true})})]);
+        }finally{if(abort)controller.signal.removeEventListener("abort",abort)}
+        if(controller.signal.aborted)throw cancelled();
+        return json("/__dsh-computer-use/action",{...options,signal:controller.signal});
+      })().finally(()=>{clearTimeout(timer);viewerSignal?.removeEventListener("abort",onViewerAbort);if(desktopStarts.get(key)===entry)desktopStarts.delete(key)});
+      return entry.promise;
+    }
     const fileDrafts = new Map(), MAX_FILE_DRAFTS = 32, MAX_FILE_DRAFT_BYTES = 4 * 1024 * 1024, MAX_FILE_DRAFT_TOTAL_BYTES = 8 * 1024 * 1024;
     const FILE_DRAFT_WARNING = "草稿与文件基线合计超过 4 MiB；当前仍可编辑，但移动或关闭此查看器会丢失未保存内容。";
     let fileDraftBytes = 0;
@@ -771,7 +807,12 @@ window.__ModuleLoader__.load({
         if(name==="close")closed.current=true;else if(name==="start"){closed.current=false;setLiveDesktop(true)}
         try {
           if (!quiet) { foregroundRequests.current += 1; setBusy(true); setError(""); }
-          const value = await json("/__dsh-computer-use/action", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: props.scope.sessionId, browserSessionId, action: name, includeScreenshot: !sdkDesktop, ...(extra || {}) }), signal: options?.signal || lifetime.current.signal });
+          // Desktop startup belongs to the control session, not this mounted
+          // viewer. Explicit close still ends it through the Host; the Host's
+          // bounded startup timeout handles a viewer that never returns.
+          const sessionStart=name==="start"&&(desktop||options?.desktopStart===true);
+          const request={ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: props.scope.sessionId, browserSessionId, action: name, includeScreenshot: !sdkDesktop, ...(extra || {}) }), signal: options?.signal || lifetime.current.signal };
+          const value = await (name==="start"?desktopStart(props.scope.sessionId,browserSessionId,request,sessionStart):name==="close"?desktopClose(props.scope.sessionId,browserSessionId,request):json("/__dsh-computer-use/action",request));
           if (alive.current && sequence >= appliedSequence.current) {
             appliedSequence.current = sequence;
             if(value.control){setControl(previous=>!previous||(value.control.generation??0)>=(previous.generation??0)?value.control:previous);if(name==="resume_agent")setTyping("");}
@@ -796,7 +837,11 @@ window.__ModuleLoader__.load({
           if (!value.enabled) { setError("Computer Use 未启用，请在设置 → 插件 → Computer Use 中开启并重启 Host"); return; }
           if (value.available === false) { setError(value.error?.message || "Computer Use 执行器当前不可用，请检查浏览器或外部命令设置"); return; }
           if(closed.current)return;
-          const started=await action("start", {includeScreenshot:value.adapter!=="uu-desktop",...(props.tab.path && /^https?:/i.test(props.tab.path) ? { url: props.tab.path } : {})}, { signal: controller.signal });
+          // Revealing an established desktop only resumes its video consumer.
+          // Restarting the SDK here races the previous socket's asynchronous
+          // input release and can cancel a healthy connection's new handshake.
+          const reuseDesktop=["native-desktop","uu-desktop"].includes(value.adapter)&&state?.connected===true;
+          const started=reuseDesktop?{state}:await action("start", {includeScreenshot:value.adapter!=="uu-desktop",...(props.tab.path && /^https?:/i.test(props.tab.path) ? { url: props.tab.path } : {})}, { signal: controller.signal, desktopStart:["native-desktop","uu-desktop"].includes(value.adapter) });
           if(active&&started&&autoRefresh&&!["native-desktop","uu-desktop"].includes(value.adapter))stop=visiblePoll(async signal=>{if(closed.current)return null;await action("capture",null,{quiet:true,signal});return 3000},3000);
         }).catch(reason => { if (active && reason?.name !== "AbortError") setError(reason.message || String(reason)); });
         return () => { active = false; controller.abort(); stop?.(); };
@@ -906,7 +951,7 @@ window.__ModuleLoader__.load({
         sidebar.registerFileViewer({ id: "suite:office", title: "本地文档", exts: ["doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "zip", "7z", "rar"], priority: 100, fetchStrategy: "binary-download", component: DownloadViewer }),
         sidebar.registerFileViewer({ id: "suite:code", title: "CodeMirror 文本编辑器", exts: ["", "txt", "log", "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte", "rs", "py", "go", "java", "c", "cc", "cpp", "h", "hpp", "cs", "rb", "php", "sh", "bash", "zsh", "ps1", "sql", "yaml", "yml", "toml", "ini", "conf", "env", "xml", "css", "scss", "less", "html", "htm", "svg", "dockerfile", "makefile"], priority: 90, fetchStrategy: "fsRead", component: CodeWorkbench }),
         sidebar.registerTab({ id: "suite:jobs", title: "后台任务", order: 80, single: true, component: JobsTab }),
-        sidebar.registerTab({ id: "suite:controlled-browser", title: "Computer Use", order: 100, single: true, component: props=>h(ControlledBrowserTab,{...props,sidebar}), settings: { pluginToggles: [{ key: "autoRefresh", title: "自动刷新浏览器画面", type: "switch", defaultValue: false }] }, onClose: (tab, scope) => { void fetch("/__dsh-computer-use/action", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: scope.sessionId, browserSessionId: tab.meta?.browserSessionId || "default", action: "close", includeScreenshot: false }) }).catch(() => {}); } })
+        sidebar.registerTab({ id: "suite:controlled-browser", title: "Computer Use", order: 100, single: true, component: props=>h(ControlledBrowserTab,{...props,sidebar}), settings: { pluginToggles: [{ key: "autoRefresh", title: "自动刷新浏览器画面", type: "switch", defaultValue: false }] }, onClose: (tab, scope) => { void desktopClose(scope.sessionId,tab.meta?.browserSessionId||"default",{ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: scope.sessionId, browserSessionId: tab.meta?.browserSessionId || "default", action: "close", includeScreenshot: false }) }).catch(() => {}); } })
       ];
       ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({ name: "settings.plugin.item", id: "computer-use", order: 40, label: "Computer Use" }, () => h("details", {className:"dshSettingsDisclosure"},h("summary",null,"Computer Use 与远程设备"),h(ComputerUseSettings, { scope: computerUseScope }))));
       ctx.effect?.(() => () => { clearFileDrafts(); for (const dispose of disposers.reverse()) dispose(); }, "sidebar-workbench-suite: registrations");

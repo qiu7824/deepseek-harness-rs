@@ -151,6 +151,7 @@ def main() -> None:
     copy_tree(ROOT / "config" / "agent-presets", stage / "config" / "agent-presets")
     (stage / "docs").mkdir(exist_ok=True)
     shutil.copy2(ROOT / "docs" / "storage-compatibility.md", stage / "docs" / "storage-compatibility.md")
+    shutil.copy2(ROOT / "docs" / "protocol-matrix.md", stage / "docs" / "protocol-matrix.md")
     shutil.copy2(ROOT / "docs" / "learning-and-capabilities.zh.md", stage / "docs" / "learning-and-capabilities.zh.md")
     shutil.copy2(ROOT / "docs" / "sidebar-capabilities.md", stage / "docs" / "sidebar-capabilities.md")
     shutil.copy2(ROOT / "docs" / "browser-control-and-model-tools.zh.md", stage / "docs" / "browser-control-and-model-tools.zh.md")
@@ -160,10 +161,14 @@ def main() -> None:
     shutil.copy2(ROOT / "docs" / "response-completeness.zh.md", stage / "docs" / "response-completeness.zh.md")
     for name in ["workspace-scratch-policy-design.zh.md", "workspace-scratch-open-source-study.zh.md", "ultra-codex-usage-reset-plan.zh.md", "upstream-v0.1.5-alpha.1-evaluation.zh.md", "upstream-v0.1.5-alpha.2-evaluation.zh.md", "uu-self-connect-probe.zh.md"]:
         shutil.copy2(ROOT / "docs" / name, stage / "docs" / name)
-    for name in ["README.md", "README.zh.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]:
+    for name in ["README.md", "README.zh.md", "README.en.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]:
         if (ROOT / name).exists():
             shutil.copy2(ROOT / name, stage / name)
     shutil.copy2(ROOT / "release" / "PLUGIN_SECURITY.md", stage / "PLUGIN_SECURITY.md")
+    release_notes = ROOT / "release" / "notes" / f"v{version}.md"
+    if release_notes.is_file():
+        (stage / "release" / "notes").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(release_notes, stage / "release" / "notes" / release_notes.name)
 
     if args.variant == "free":
         (stage / "free-model-verification.json").write_text(json.dumps(free_verification, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -194,10 +194,15 @@ class ReleaseProductContractTests(unittest.TestCase):
         self.assertTrue(manifest["rev"])
 
     def test_release_documentation_describes_runtime_and_variants(self):
-        english = (ROOT / "README.md").read_text(encoding="utf-8")
+        default = (ROOT / "README.md").read_text(encoding="utf-8")
         chinese = (ROOT / "README.zh.md").read_text(encoding="utf-8")
+        english = (ROOT / "README.en.md").read_text(encoding="utf-8")
         porting = (ROOT / "PORTING.md").read_text(encoding="utf-8")
-        for source in (english, chinese):
+        self.assertEqual(default, chinese)
+        self.assertIn("当前发布线", default)
+        self.assertIn("[English](README.en.md)", default)
+        self.assertIn("Current release line", english)
+        for source in (default, chinese, english):
             for marker in (
                 VERSION,
                 "send_message",

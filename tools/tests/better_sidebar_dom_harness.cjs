@@ -178,7 +178,9 @@ async function mount(){
  await openTab('终端');await act(()=>settle());assert.ok(document.querySelector('.dgt-shell'),'the enhanced terminal view loads from the same package asset');
  await act(()=>document.getElementById('dbs-setting-fullscreenOnOpen').click());await act(()=>button('关闭工作台').click());await act(()=>button('显示工作台').click());assert.equal(panel().dataset.fullscreen,'true');await act(()=>button('退出全屏').click());assert.equal(width(),900);
  await act(()=>app.layout.openDetails());assert.equal(panel().hidden,true,'native tool details close the workbench');assert.equal(app.detailsOpen(),true);
- await act(()=>button('显示工作台').click());assert.equal(app.detailsOpen(),false,'opening the dock closes native tool details');
+ const overlappingPanels=[];const stopPanelWatch=app.service.subscribeState(()=>{if(app.service.getSnapshot().state?.open&&app.detailsOpen())overlappingPanels.push('both-open')});
+ await act(()=>button('显示工作台').click());assert.equal(app.detailsOpen(),false,'opening the dock closes native tool details');assert.equal(panel().hidden,false,'one click opens the workbench from native details');assert.deepEqual(overlappingPanels,[],'native details close before workbench state is published, without a render-time overlap');
+ await act(()=>app.layout.openDetails());await act(()=>app.service.openTab({type:'suite:controlled-browser'}));assert.equal(app.detailsOpen(),false,'a programmatic UU tab opens from details with the same transaction');assert.equal(panel().hidden,false);assert.deepEqual(overlappingPanels,[],'programmatic workbench opening also publishes only the exclusive state');stopPanelWatch();
  for(const tab of [...app.service.getSnapshot().state.pluginTabs])await act(()=>app.service.closeTab(tab.id));
  assert.equal(app.service.getSnapshot().state.pluginTabs.length,0,'closing the last tab leaves an empty dock');
  assert.match(panel().textContent,/使用 \+/);await app.close();assert.equal(captures.size,0);

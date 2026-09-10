@@ -1,27 +1,49 @@
 # DeepSeek Harness Rust
 
+[简体中文](README.md) | [English](README.en.md)
+
 DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使用正式 `dsh web` 入口托管浏览器应用，并保留会话、工具、插件、存储和RPC兼容边界。
 
 > 当前版本仍是预发布版本。功能状态以本README的兼容矩阵和GitHub Release说明为准。
 
-当前发布线：`0.1.3-alpha.10`。
+当前发布线：`0.1.3-alpha.11`。
+
+完整更新见 [alpha.11 发布说明](release/notes/v0.1.3-alpha.11.md)。
 
 Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启动器和主题效果。版本号标识 Rust 发布线，不表示与 Node 版本逐项或磁盘格式完全相同。
 
 双向分页、阅读锚点和实时消息缓冲的设计见 [Rust 对话滚动与分页](docs/rust-conversation-scrolling.zh.md)。
 
+## 0.1.3-alpha.11 能力更新
+
+- **UU 远程**：识别已安装客户端的真实版本与签名数据布局，保留新旧客户端 profile，不因未知版本字符串拒绝加载。实机已验证桌面连接与 Windows 锁屏画面；应用内键鼠操作和远程终端命令需要解锁后验收。
+- **同供应商多账号**：同一 ChatGPT / Codex 登录入口支持保存多个账号、登录另一个账号、切换和移除；切换时同步模型目录及账号用量统计。
+- **画面批注**：浏览器与 UU 画面支持线条和文字批注，草稿按会话隔离；提交时把当前画面、归一化坐标及实际尺寸保存到可追踪的用户消息中。
+- **会话与缓存**：V3 会话压缩保留系统指令前缀；Responses 缓存键按会话与账号稳定生成，令牌续期不改变键。公开 API 与账号登录通道分别处理协议和缓存参数。
+
+实现范围与实测结果见 [alpha.2 能力评估](docs/upstream-v0.1.5-alpha.2-evaluation.zh.md)。
+
+### UU 网页画面与接管
+
+1. 在“设置 → 插件 → Computer Use 与远程设备”选择“UU 远程桌面”，并绑定当前账号下的设备。
+2. 在会话右上角打开“显示工作台”，点击 `+`，选择 `Computer Use`，即可在网页中连接和查看 UU 画面。
+3. 需要系统验证时保持人工接管，在画面中自行输入；可放大工作台或画面，智能体在此期间暂停操作。
+4. 完成后点击“交还智能体”。如果原任务已经停止，再发送继续指令；交还控制权不会擅自重做已结束的任务。
+
+`uu_terminal` 提供远程命令行，桌面画面由上述控制面板提供；终端错误文本本身不是桌面播放器。
+
 ## 下载
 
 从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases) 下载对应平台的完整包：
 
-- `deepseek-harness-rs-v0.1.3-alpha.10-windows-x86_64-{core,skin}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.10-linux-x86_64-{core,skin}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.10-macos-{x86_64,aarch64}-{core,skin}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.11-windows-x86_64-{core,skin}-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.11-linux-x86_64-{core,skin}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.11-macos-{x86_64,aarch64}-{core,skin}-portable.tar.gz`
 - 对应的 Windows `setup.exe`、Linux `.deb` 与 macOS `.pkg` 安装包
 
 完整包包含二进制、`web/dist`、`config/agent-presets`、随附Web插件和安全说明。不要只复制二进制后再期待完整Web界面和随附插件可用。
 
-## Windows快速启动
+## 快速启动
 
 默认下载 `core` 包；它不包含扩展皮肤。解压后直接运行三平台统一的 ZSUI 原生启动器：
 
@@ -45,11 +67,11 @@ http://127.0.0.1:58080/
 
 `free` 包与 `core` 使用同一套正式运行时和 Web 界面，只预置通过发布检查的 OpenCode Zen 免费模型。检查[官方模型目录](https://opencode.ai/zen/v1/models)中的精确 ID、官方输入／输出／缓存读取价格、匿名流式推理、工具调用与工具结果续接，并将最近 24 小时的验证证据绑定到包内运行时校验和。`free-model-verification.json` 列出各候选的实际结果；设置中的免费模型页可刷新目录、重新检测和添加已通过的模型。免费包不包含凭据或皮肤载荷。
 
-可选的 `free` 版仅在当前构建通过匿名验收后发布。OpenCode 当前将免费端点限制为自有客户端使用，因此在出现通过检查的受支持匿名通道前，不提供 `free` 包；`core` 和 `skin` 独立验收。
+可选的 `free` 版按平台与构建执行匿名模型验收，仅在通过后发布。是否提供 `free` 包，以该次 GitHub Release 的实际资产和包内 `free-model-verification.json` 为准；`core` 和 `skin` 独立验收。
 
 普通会话、原生工具和 Web 界面由 Rust 核心提供。JavaScript／TypeScript 代码模式及部分外部工具需要单独配置 Node；设置中的运行环境页显示实际路径、版本及能力检测结果。
 
-账号登录后自动同步可用模型和能力；模型管理中的显示开关保留跨刷新、重启的用户偏好，隐藏模型不会删除已有会话。代码图谱自动索引当前工作区，提供局部调用关系、文件依赖与源码定位；推断关系和未覆盖范围会明确标示。
+账号登录后自动同步可用模型和能力；模型管理中的显示开关保留跨刷新、重启的用户偏好，隐藏模型不会删除已有会话。代码图谱按需索引当前工作区，提供局部调用关系、文件依赖与源码定位；打开会话不会自动扫描整个项目，推断关系和未覆盖范围会明确标示。
 
 ## 命令行入口
 
@@ -96,6 +118,8 @@ Profile插件位于：
 | OpenAI Codex Responses | 账号设备码登录、令牌续期与 Responses 路由；使用者在设置中完成账号授权 |
 | Anthropic Messages | 原生请求与流式文本、工具、图片、thinking、usage 转换，使用 API Key；Claude 订阅由官方 Claude Code 子智能体使用 |
 | Bedrock Converse Stream | 未完成 |
+
+账号额度与单次请求的缓存 token 属于不同统计。缓存命中率仅使用响应明确披露的缓存读数；没有数据时显示“缓存数据未提供”，明确返回 0 时保留 0。ChatGPT / Codex 账号服务不直接套用公开 Responses API 的显式缓存断点参数。稳定缓存键有助于复用，但不保证命中；正式账号通道的长前缀连续请求已成功，实测缓存读取仍为 0。
 
 完整证据见[`docs/protocol-matrix.md`](docs/protocol-matrix.md)。存在文件名或crate不代表生产能力已完成。
 
@@ -160,7 +184,9 @@ Web插件与主应用同源运行，拥有页面级JavaScript能力。只安装�
 | 网页抓取 | 已实现 Rust 原生 `web_fetch`，只允许公开 HTTP(S)，并限制重定向、DNS/IP、超时、体积和取消 |
 | 模型发现 | 服务端可安全复用 Profile headers 而不向浏览器返回凭据；模型候选支持搜索和仅对可见结果全选 |
 | 工作流 | 引擎继续保留；PTC/code 预设刻意不提供通用 `workflow` 工具，但保留 `run_code` 和 Ralph |
-| 终端 | 已实现持久终端、输入、关闭和回收 |
+| 终端 | 已实现持久终端、输入、关闭和回收；UU 远程终端另受被控端登录、解锁及终端能力约束 |
+| UU 桌面控制 | 已实现独立控制进程、动态客户端识别、实时画面与输入通道；实机已验证连接和锁屏画面，应用输入仍需解锁后验收 |
+| 画面批注 | 当前截图、文字及归一化坐标进入持久用户消息，草稿按会话隔离 |
 | MCP | 已接入正式设置页，支持 stdio/HTTP、工具注册、启停与连接测试 |
 | LSP | 底层registry/tool实现；正式Host尚未组合 |
 | ACP | 协议入口存在；真实prompt/cancel回归尚未封板 |
@@ -201,6 +227,8 @@ cargo test -p dsh-host-cli --lib -- --test-threads=1
 ## 已知限制
 
 - 通用pi-ai provider catalog尚未完整移植；
+- UU 实机验证覆盖连接与 Windows 锁屏画面，应用内输入和远程终端命令仍需被控端解锁后验收；
+- 多账号授权、切换与恢复已通过模拟账号回归，两个真实账号之间的完整授权切换尚未验收；账号服务的高缓存命中率也未得到实测证实；
 - LSP仍为库级能力，尚未接入正式Host配置；
 - ACP真实prompt/cancel与Python SDK真实turn仍有回归；
 - 对话导航使用用户消息索引和定点历史页，完整会话数据保留在 Host；

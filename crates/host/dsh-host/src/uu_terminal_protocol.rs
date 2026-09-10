@@ -257,7 +257,9 @@ fn startup_failure_plain(text: &str) -> Option<&'static str> {
     .iter()
     .any(|marker| lower.contains(marker))
     {
-        return Some("UU 被控端要求锁屏账户验证，请在被控设备上人工解锁；未发送密码或终端输入");
+        return Some(
+            "UU 被控端要求锁屏账户验证，请由用户在 UU 画面中完成验证后再继续；未发送密码或终端输入",
+        );
     }
     [
         "[system] unlocking",
