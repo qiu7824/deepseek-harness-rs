@@ -5262,6 +5262,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		const sessionModelsValueSchema = object({
 			current: modelSelectionSchema,
 			routable: boolean(),
+			currentHidden: boolean().optional(),
 			groups: array(modelProviderGroupSchema),
 			failures: array(modelCatalogFailureSchema)
 		});

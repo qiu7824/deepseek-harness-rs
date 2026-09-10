@@ -20,6 +20,7 @@ window.__ModuleLoader__.load({
 			store = (0, _deepseek_ai_dsh_client_runtime_client.createSnapshotStore)({
 				current: null,
 				currentName: null,
+				currentHidden: false,
 				routable: null,
 				groups: [],
 				failures: [],
@@ -62,11 +63,11 @@ window.__ModuleLoader__.load({
                         const { result } = await this.sessions.models({ sessionId: this.sessionId });
                         if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
                         if (this.disposed || generation !== this.generation) return result.value;
-                        const { current, routable, groups, failures } = result.value;
+                        const { current, currentHidden, routable, groups, failures } = result.value;
                         this.store.update((state) => {
                             const known = groups.find(group => group.id === current?.provider)?.models.find(model => model.id === current?.model)?.name;
                             state.currentName = known ?? (state.current?.provider === current?.provider && state.current?.model === current?.model ? state.currentName : null);
-                            state.current = current; state.routable = routable;
+                            state.current = current; state.currentHidden = currentHidden === true; state.routable = routable;
                             state.groups = groups; state.failures = failures;
                             state.status = "ready"; state.error = null;
                         });
@@ -114,6 +115,7 @@ window.__ModuleLoader__.load({
                             const selected=result.value.selected;
                             const known=state.groups.find(group=>group.id===selected.provider)?.models.find(model=>model.id===selected.model)?.name;
                             state.currentName=known??(state.current?.provider===selected.provider&&state.current?.model===selected.model?state.currentName:null);
+                            state.currentHidden=state.current?.provider===selected.provider&&state.current?.model===selected.model&&state.currentHidden===true;
                             state.current=selected;state.routable=true;state.status="ready";state.error=null;
                         });
                         try { await this.saveDefault(result.value.selected); }
@@ -451,7 +453,7 @@ window.__ModuleLoader__.load({
 				select(selection).then(settleSelection);
 			};
 			const currentName = currentChoice?.model.name ?? state.currentName ?? state.current?.model;
-			const currentStatus = state.current === null ? void 0 : state.routable === false ? "unavailable" : state.routable === true && currentChoice === void 0 && !state.failures.some(failure => failure.id === state.current.provider) ? "hidden" : void 0;
+			const currentStatus = state.current === null ? void 0 : state.routable === false ? "unavailable" : state.routable === true && state.currentHidden === true ? "hidden" : void 0;
 			const modelLabel = currentName === void 0 ? t("trigger.fallback") : currentStatus === void 0 ? currentName : `${currentName} · ${t(`trigger.${currentStatus}`)}`;
 			const triggerLabel = effortLabel === void 0 ? modelLabel : `${modelLabel} · ${effortLabel}`;
 			const triggerAria = state.current === null ? t("trigger.selectAria") : effortLabel === void 0 ? t("trigger.aria", { model: modelLabel }) : t("trigger.ariaEffort", {

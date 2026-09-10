@@ -383,16 +383,28 @@ impl AccountAuth {
         *self.cli.write() = Some(cli);
     }
     async fn session(&self, id: &str) -> Result<Option<Session>, String> {
-        self.credentials
+        let loaded = self.credentials
             .resolve(&reference(id))
             .await
             .map(|value| {
                 let mut session: Session = serde_json::from_str(&value.value)
                     .map_err(|_| "账号凭据无效，请重新登录".to_string())?;
+                let old_scope = session.account_scope.clone();
                 session.normalize_identity();
-                Ok(session)
+                Ok::<_, String>((session, old_scope))
             })
-            .transpose()
+            .transpose()?;
+        let Some((session, old_scope)) = loaded else { return Ok(None); };
+        self.migrate_session_catalog(id, &session, &old_scope).await;
+        Ok(Some(session))
+    }
+    async fn migrate_session_catalog(&self, id: &str, session: &Session, old_scope: &str) {
+        if let Some(account) = session.account_id.as_deref().filter(|_| session.account_scope.starts_with("account-v2-")) {
+            let legacy = format!("account-{}", crate::provider_auth_catalog::key(account));
+            if old_scope.is_empty() || old_scope == legacy {
+                self.catalogs.migrate_login_scope(id, &legacy, &session.account_scope).await;
+            }
+        }
     }
     async fn saved_sessions(&self, id: &str) -> Result<Vec<Session>, String> {
         let Some(value) = self.credentials.resolve(&accounts_reference(id)).await else {
@@ -401,7 +413,9 @@ impl AccountAuth {
         let accounts: Vec<Session> = serde_json::from_str(&value.value).map_err(|_| "账号目录凭据无效，请重新登录".to_string())?;
         let mut normalized: Vec<Session> = Vec::new();
         for mut account in accounts {
+            let old_scope = account.account_scope.clone();
             account.normalize_identity();
+            self.migrate_session_catalog(id, &account, &old_scope).await;
             normalized.retain(|saved| saved.account_scope != account.account_scope);
             normalized.push(account);
         }

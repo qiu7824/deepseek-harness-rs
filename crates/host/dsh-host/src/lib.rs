@@ -968,6 +968,10 @@ impl dsh_llm::LlmAdapter for OpenAiCompatibleAdapter {
         self.delegate(provider).provider_retry_policy(provider)
     }
 
+    fn model_is_hidden(&self, provider: &str, model: &str) -> bool {
+        self.delegate(provider).model_is_hidden(provider, model)
+    }
+
     async fn list_models(&self, provider: &str) -> Vec<dsh_llm::LlmModelInfo> {
         if let Some(auth) = &self.auth {
             let _ = auth.ensure_catalog_scope(provider).await;

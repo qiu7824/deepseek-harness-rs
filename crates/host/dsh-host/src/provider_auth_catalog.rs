@@ -85,6 +85,7 @@ pub(crate) struct CatalogStore {
     root: parking_lot::RwLock<PathBuf>,
     records: parking_lot::Mutex<HashMap<(String, String), Catalog>>,
     bindings: parking_lot::RwLock<HashMap<String, String>>,
+    writes: tokio::sync::Mutex<()>,
     pub locks: parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 impl CatalogStore {
@@ -93,6 +94,7 @@ impl CatalogStore {
             root: parking_lot::RwLock::new(root),
             records: Default::default(),
             bindings: Default::default(),
+            writes: Default::default(),
             locks: Default::default(),
         }
     }
@@ -129,6 +131,27 @@ impl CatalogStore {
         self.records.lock().insert(cache_key, loaded.clone());
         loaded
     }
+    /// Transfer a legacy login's cached metadata only when its verified local
+    /// identity acquires a more precise scope. Never replace a newer catalog.
+    pub async fn migrate_login_scope(&self, provider: &str, old_scope: &str, new_scope: &str) {
+        if old_scope == new_scope { return; }
+        let _write = self.writes.lock().await;
+        let current = self.get(provider, new_scope);
+        if current.status == "synced" || current.updated_at.is_some() || !current.models.is_empty() { return; }
+        let mut legacy = self.get(provider, old_scope);
+        if legacy.updated_at.is_none() && legacy.models.is_empty() { return; }
+        legacy.account_scope = new_scope.into();
+        // A failed refresh may coexist with previously usable metadata.
+        if current.status == "error" {
+            legacy.status = current.status;
+            legacy.error = current.error;
+        }
+        if self.store_locked(legacy.clone()).await.is_err() {
+            // Cache persistence failure must not turn a valid login into a
+            // disconnected account. Keep metadata usable and retry on restart.
+            self.records.lock().insert((provider.into(), new_scope.into()), legacy);
+        }
+    }
     pub fn mark_syncing(&self, provider: &str, scope: &str) {
         let mut value = self.get(provider, scope);
         value.status = "syncing".into();
@@ -138,6 +161,10 @@ impl CatalogStore {
             .insert((provider.into(), scope.into()), value);
     }
     pub async fn store(&self, value: Catalog) -> Result<(), String> {
+        let _write = self.writes.lock().await;
+        self.store_locked(value).await
+    }
+    async fn store_locked(&self, value: Catalog) -> Result<(), String> {
         let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
         if bytes.len() > 8 * 1024 * 1024 {
             return Err("模型目录超过缓存容量".into());

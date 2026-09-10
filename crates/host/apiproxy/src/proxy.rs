@@ -4668,11 +4668,13 @@ impl ApiProxyService {
             .list_providers()
             .iter()
             .any(|provider| provider.id == current.provider);
+        let current_hidden = runtime.model_is_hidden(&current.provider, &current.model);
         ok(
             request.rpc_id,
             crate::api::sessions::SessionModels {
                 current,
                 routable,
+                current_hidden,
                 groups: catalog.groups,
                 failures: catalog.failures,
             },

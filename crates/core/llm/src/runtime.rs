@@ -212,6 +212,12 @@ pub trait LlmAdapter: Send + Sync {
         Vec::new()
     }
 
+    /// Whether configuration explicitly hides this model from the catalog.
+    /// Missing discovery metadata does not imply a hidden model.
+    fn model_is_hidden(&self, _provider: &str, _model: &str) -> bool {
+        false
+    }
+
     /// Resolve all metadata available for one exact model. This query is
     /// independent of the advisory catalog and does not validate request
     /// routing.
@@ -734,6 +740,14 @@ impl LlmRuntime {
             result.push(model);
         }
         Ok(result)
+    }
+
+    /// Read explicit catalog visibility without inferring it from membership.
+    pub fn model_is_hidden(&self, provider: &str, model: &str) -> bool {
+        self.adapters
+            .lock()
+            .get(provider)
+            .is_some_and(|registration| registration.adapter.model_is_hidden(provider, model))
     }
 
     /// Resolve and validate all metadata from the adapter that owns one

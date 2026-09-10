@@ -40,7 +40,7 @@
     {
       "id": "@deepseek-ai/dsh-client-connection",
       "url": "/plugins/connection.js",
-      "rev": "8db1a5bdf50e87d6",
+      "rev": "a7b83d9368d9ec26",
       "inject": [],
       "immediately": true
     },
@@ -308,7 +308,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-model-selection",
       "url": "/plugins/ui-model-selection.js",
-      "rev": "9772708900bad9ec",
+      "rev": "26225bd6e14352cf",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",

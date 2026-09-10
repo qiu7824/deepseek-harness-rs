@@ -805,6 +805,38 @@ mod image_pricing_tests {
         let uncatalogued = adapter.resolve_model(PROVIDER, "future-model", None).await;
         assert_eq!(uncatalogued.input_modalities, None);
     }
+
+    #[tokio::test]
+    async fn explicit_hidden_model_is_distinct_from_missing_catalog_metadata() {
+        let mut resolved = resolve_adapter_options(&DeepSeekConfig::default()).expect("options");
+        let hidden_id = resolved.models[0].id.clone();
+        resolved.models[0].enabled = Some(false);
+        let configured = Arc::new(std::sync::RwLock::new(resolved));
+        let adapter = DeepSeekAdapter::new(DeepSeekAdapterOptions {
+            options: Arc::new({
+                let configured = configured.clone();
+                move || Ok(configured.read().expect("config").clone())
+            }),
+            resolve_api_key: Arc::new(|_| Box::pin(async { Ok(None) })),
+            resolve_attachments: None,
+            provider_name: None,
+            reasoning_wire_format: ReasoningWireFormat::DeepSeek,
+        });
+        assert!(adapter.model_is_hidden(PROVIDER, &hidden_id));
+        assert!(
+            !adapter
+                .list_models(PROVIDER)
+                .await
+                .iter()
+                .any(|entry| entry.id == hidden_id)
+        );
+        assert!(!adapter.model_is_hidden(PROVIDER, "uncatalogued-model"));
+        configured.write().expect("config").models[0].enabled = Some(true);
+        assert!(!adapter.model_is_hidden(PROVIDER, &hidden_id));
+        configured.write().expect("config").models.clear();
+        assert!(adapter.list_models(PROVIDER).await.is_empty());
+        assert!(!adapter.model_is_hidden(PROVIDER, &hidden_id));
+    }
 }
 
 fn project_exact_request(
@@ -1778,6 +1810,15 @@ impl LlmAdapter for DeepSeekAdapter {
                 })
                 .collect()
         }))
+    }
+
+    fn model_is_hidden(&self, _provider: &str, model: &str) -> bool {
+        (self.config.options)().is_ok_and(|options| {
+            options
+                .models
+                .iter()
+                .any(|entry| entry.id == model && entry.enabled == Some(false))
+        })
     }
 
     async fn list_models(&self, provider: &str) -> Vec<LlmModelInfo> {

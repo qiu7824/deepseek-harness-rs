@@ -162,6 +162,10 @@ pub struct SessionModels {
     /// Whether an adapter currently serves `current.provider`, and therefore
     /// whether this session can start a turn at all.
     pub routable: bool,
+    /// Explicit catalog visibility for the selected model. Missing metadata
+    /// is not a hidden preference; older snapshots default to visible.
+    #[serde(default)]
+    pub current_hidden: bool,
     /// Successfully loaded provider groups.
     pub groups: Vec<ModelProviderGroup>,
     /// Provider-local failures; successful groups remain usable.
@@ -951,5 +955,20 @@ mod history_paging_contract_tests {
         assert_eq!(value["hasMoreAfter"], true);
         assert_eq!(value["firstSeq"], 30);
         assert_eq!(value["lastSeq"], 79);
+    }
+
+    #[test]
+    fn model_directory_visibility_requires_explicit_evidence() {
+        let legacy = serde_json::json!({
+            "current": {"provider": "fixture", "model": "not-in-catalog"},
+            "routable": true, "groups": [], "failures": []
+        });
+        let mut directory: SessionModels = serde_json::from_value(legacy).expect("legacy snapshot");
+        assert!(!directory.current_hidden);
+        directory.current_hidden = true;
+        let wire = serde_json::to_value(directory).expect("visibility snapshot");
+        assert_eq!(wire["currentHidden"], true);
+        let decoded: SessionModels = serde_json::from_value(wire).expect("current snapshot");
+        assert!(decoded.current_hidden);
     }
 }

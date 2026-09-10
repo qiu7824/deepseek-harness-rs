@@ -134,6 +134,73 @@ async fn legacy_active_scope_is_repaired_without_rejecting_the_first_request() {
     assert_eq!(auth.profile_snapshot(p.id, false).unwrap().0["modelCatalogScope"], current.account_scope);
     clean(auth, root).await;
 }
+
+fn cached_account_catalog(provider: &str, scope: &str) -> crate::provider_auth_catalog::Catalog {
+    serde_json::from_value(json!({
+        "provider":provider,"accountScope":scope,"status":"synced","source":"remote",
+        "endpoint":"https://chatgpt.com/backend-api/codex/models","updatedAt":1234,"error":null,
+        "models":[{"id":"gpt-6-astra","name":"GPT-6-Astra","description":"Fixture model",
+            "api":"openai-responses","available":true,"contextWindow":200000,"maxTokens":32000,
+            "input":["text","image"],"reasoningEfforts":{"high":"high"},"reasoningDefault":"high",
+            "supportsReasoningSummaries":true,"supportedParameters":["reasoning_effort"]}]
+    })).unwrap()
+}
+
+#[tokio::test]
+async fn legacy_login_catalog_survives_scope_migration_and_new_refresh_wins() {
+    for missing_scope in [false, true] {
+        let (auth, _ctx, root) = setup().await;
+        let p = provider("openai-codex").unwrap();
+        let current = tokens_for_subject("workspace", "alice");
+        let legacy_scope = format!("account-{}", crate::provider_auth_catalog::key("workspace"));
+        let mut legacy = current.clone();
+        legacy.account_scope = if missing_scope { String::new() } else { legacy_scope.clone() };
+        let catalog = cached_account_catalog(p.id, &legacy_scope);
+        auth.catalogs.store(catalog.clone()).await.unwrap();
+        auth.credentials.set(&reference(p.id), &serde_json::to_string(&legacy).unwrap()).await.unwrap();
+        auth.install_profile(p, &legacy).await.unwrap();
+        let view = auth.model_view(p.id).await.unwrap();
+        assert_eq!(view["catalog"]["count"], 1);
+        assert_eq!(view["models"][0]["name"], "GPT-6-Astra");
+        assert_eq!(view["models"][0]["enabled"], true);
+        assert_eq!(view["models"][0]["availability"], "available");
+        let migrated = auth.catalogs.get(p.id, &current.account_scope);
+        assert_eq!(migrated.models, catalog.models);
+        assert_eq!(migrated.updated_at, catalog.updated_at);
+        assert_eq!(migrated.endpoint, catalog.endpoint);
+        let reopened = crate::provider_auth_catalog::CatalogStore::new(root.join("cache/model-catalogs"));
+        assert_eq!(reopened.get(p.id, &current.account_scope).models, catalog.models);
+        let mut fresh = migrated;
+        fresh.models[0].name = Some("Updated remote name".into());
+        fresh.updated_at = Some(5678);
+        auth.catalogs.store(fresh.clone()).await.unwrap();
+        // The raw credential can remain in the old format until its next refresh.
+        auth.session(p.id).await.unwrap();
+        assert_eq!(auth.catalogs.get(p.id, &current.account_scope).models, fresh.models);
+        clean(auth, root).await;
+    }
+}
+
+#[tokio::test]
+async fn saved_legacy_catalog_migrates_only_to_its_original_login() {
+    let (auth, _ctx, root) = setup().await;
+    let p = provider("openai-codex").unwrap();
+    let alice = tokens_for_subject("workspace", "alice");
+    let bob = tokens_for_subject("workspace", "bob");
+    let mut legacy = alice.clone();
+    legacy.account_scope = format!("account-{}", crate::provider_auth_catalog::key("workspace"));
+    let catalog = cached_account_catalog(p.id, &legacy.account_scope);
+    auth.catalogs.store(catalog.clone()).await.unwrap();
+    auth.credentials.set(&reference(p.id), &serde_json::to_string(&bob).unwrap()).await.unwrap();
+    auth.write_accounts(p.id, &[legacy]).await.unwrap();
+    auth.install_profile(p, &bob).await.unwrap();
+    assert!(auth.model_view(p.id).await.unwrap()["models"].as_array().unwrap().is_empty());
+    auth.handle("switch", &json!({"provider":p.id,"accountScope":alice.account_scope})).await.unwrap();
+    assert_eq!(auth.model_view(p.id).await.unwrap()["models"][0]["enabled"], true);
+    assert_eq!(auth.catalogs.get(p.id, &alice.account_scope).models, catalog.models);
+    assert!(auth.catalogs.get(p.id, &bob.account_scope).models.is_empty());
+    clean(auth, root).await;
+}
 async fn clean(auth: Arc<AccountAuth>, root: std::path::PathBuf) {
     auth.credentials.drain().await;
     drop(auth);
