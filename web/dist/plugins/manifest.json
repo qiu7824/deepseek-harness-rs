@@ -138,7 +138,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-models",
       "url": "/plugins/ui-settings-models.js",
-      "rev": "23774d0fb0e38865",
+      "rev": "fabe74fc830d93a2",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
