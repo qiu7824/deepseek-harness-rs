@@ -1,10 +1,6 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: You are a software engineering assistant. Use the native shell and text editor to complete and verify the task. Preserve existing files and follow workspace instructions.
+    text: You are a software engineering assistant. Use the persistent native shell to complete and verify the task. Preserve existing files and follow workspace instructions.
 - id: native-shell
   name: '@deepseek-ai/dsh-tool-pwsh'
-- id: text-editor
-  name: '@deepseek-ai/dsh-tool-str-replace-editor'
-  config:
-    maxOutputChars: 16000

@@ -88,7 +88,8 @@ window.__ModuleLoader__.load({
 		* @param props - composed slot props (runtime share + injected callbacks, contract/slots.ts).
 		* @returns the sidebar element tree.
 		*/
-		function SidebarRoot({ collapsed, width, startSession, toggleSidebar, t, renderSlot }) {
+		function SidebarRoot({ collapsed, width, startSession, toggleSidebar, selectPanel, usePanels, usePanelInfo, t, renderSlot }) {
+			const panels=usePanels(rows=>rows),activePanel=usePanelInfo(info=>info.activePanelId);
 			const [settled, setSettled] = (0, react.useState)(collapsed);
 			(0, react.useEffect)(() => {
 				if (!collapsed) {
@@ -195,6 +196,7 @@ window.__ModuleLoader__.load({
 							})]
 						})
 					}),
+					panels.length>0&&(0,react_jsx_runtime.jsxs)("nav",{"aria-label":t("panels.label"),style:{display:"grid",gap:4,marginBottom:8},children:[activePanel!==null&&(0,react_jsx_runtime.jsx)("button",{type:"button",className:"dshSidebarAction",style:{justifyContent:"flex-start",textAlign:"left"},onClick:()=>selectPanel(null),children:t("panels.conversation")}),...panels.map(panel=>(0,react_jsx_runtime.jsxs)("button",{type:"button",className:"dshSidebarAction",title:panel.label,"aria-label":panel.label,"aria-current":activePanel===panel.id?"page":undefined,style:{display:"flex",gap:8,alignItems:"center",justifyContent:wide?"flex-start":"center",textAlign:"left",width:"100%"},onClick:()=>selectPanel(panel.id),children:[renderSlot("sidebar.panellist",{size:wide?16:18,active:activePanel===panel.id},{only:panel.id}),wide&&(0,react_jsx_runtime.jsx)("span",{children:panel.label})]},panel.id))]}),
 					(0, react_jsx_runtime.jsx)("div", {
 						className: SidebarRoot_module_css_default.regionArea,
 						children: renderSlot("sidebar.workspaces", {
@@ -222,6 +224,8 @@ window.__ModuleLoader__.load({
 		/** `sidebar` namespace dictionaries: shell controls (brand row, New Session, fold toggle). */
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
+			"panels.label":"全局面板",
+			"panels.conversation":"返回对话",
 			"session.new": "新会话",
 			"session.new.label": "新建会话",
 			"toggle.open": "打开侧边栏",
@@ -229,6 +233,8 @@ window.__ModuleLoader__.load({
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
+			"panels.label":"Global panels",
+			"panels.conversation":"Back to conversation",
 			"session.new": "New Session",
 			"session.new.label": "New session",
 			"toggle.open": "Open sidebar",
@@ -250,14 +256,22 @@ window.__ModuleLoader__.load({
 		* @param ctx - Client root context.
 		*/
 		function apply(ctx) {
+			let snapshot=[];const listeners=new Set();
+			const panels={getSnapshot:()=>snapshot,subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener)}};
+			const syncPanels=()=>{const next=ctx.slots.entriesOfSlot("sidebar.panellist").map(({options})=>({id:options.id,order:options.order??0,label:typeof options.label==="function"?options.label():options.label??options.id})).sort((a,b)=>a.order-b.order);if(JSON.stringify(next)!==JSON.stringify(snapshot)){snapshot=next;for(const listener of [...listeners])listener();}};
+			ctx.effect(()=>ctx.slots.subscribe("sidebar.panellist",syncPanels),"ui-sidebar: panel registry");
+			if(ctx.locale.subscribe)ctx.effect(()=>ctx.locale.subscribe(syncPanels),"ui-sidebar: panel labels");
 			ctx.effect(() => ctx.locale.register(NS, {
 				zh,
 				en
 			}), "ui-sidebar: dictionaries");
 			const injectProps = () => ({
 				startSession: (workspaceId) => {
+					ctx.layout.selectPanel(null);
 					ctx.workspaces.startSession(workspaceId);
 				},
+				selectPanel:id=>ctx.layout.selectPanel(id),
+				hooks:{panels,panelInfo:ctx.layout.panelInfo},
 				toggleSidebar: () => {
 					ctx.layout.toggleSidebar();
 				}
@@ -266,6 +280,7 @@ window.__ModuleLoader__.load({
 				name: "sidebar",
 				locale: NS,
 				children: {
+					"sidebar.panellist": {kind:"list",scope:"root"},
 					"sidebar.account": {kind:"list",scope:"root"},
 					"sidebar.workspaces": {
 						kind: "single",
@@ -282,6 +297,7 @@ window.__ModuleLoader__.load({
 				},
 				inject: injectProps
 			}, SidebarRoot), "ui-sidebar: slot registration");
+			syncPanels();
 		}
 		//#endregion
 		exports.apply = apply;

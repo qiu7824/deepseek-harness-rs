@@ -1136,6 +1136,13 @@ window.__ModuleLoader__.load({
 		*/
 		const PROVIDER_PRESETS = [{"id": "openai-api", "name": "OpenAI API", "baseURL": "https://api.openai.com/v1", "api": "openai-responses"}, {"id": "anthropic-api", "name": "Anthropic API", "baseURL": "https://api.anthropic.com/v1", "api": "anthropic-messages"}, {"id": "gemini", "name": "Google Gemini", "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai", "api": "openai-completions"}, {"id": "alibaba", "name": "Alibaba Cloud", "baseURL": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "api": "openai-completions"}, {"id": "alibaba-cn", "name": "阿里云百炼", "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api": "openai-completions"}, {"id": "alibaba-token-plan", "name": "Alibaba Token Plan", "baseURL": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "api": "openai-completions"}, {"id": "alibaba-token-plan-cn", "name": "阿里云 Token Plan", "baseURL": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "api": "openai-completions"}, {"id": "ai-gateway", "name": "Vercel AI Gateway", "baseURL": "https://ai-gateway.vercel.sh/v1", "api": "openai-completions"}, {"id": "arcee", "name": "Arcee AI", "baseURL": "https://api.arcee.ai/api/v1", "api": "openai-completions"}, {"id": "fireworks", "name": "Fireworks AI", "baseURL": "https://api.fireworks.ai/inference/v1", "api": "openai-completions"}, {"id": "kimi-coding", "name": "Kimi International", "baseURL": "https://api.moonshot.ai/v1", "api": "openai-completions"}, {"id": "kimi-coding-cn", "name": "Kimi 中国", "baseURL": "https://api.moonshot.cn/v1", "api": "openai-completions"}, {"id": "nvidia", "name": "NVIDIA Build", "baseURL": "https://integrate.api.nvidia.com/v1", "api": "openai-completions"}, {"id": "nebius-token-factory", "name": "Nebius Token Factory", "baseURL": "https://api.tokenfactory.nebius.com/v1", "api": "openai-completions"}, {"id": "meta-ai", "name": "Meta Model API", "baseURL": "https://api.meta.ai/v1", "api": "openai-completions"}, {"id": "minimax-api", "name": "MiniMax International", "baseURL": "https://api.minimax.io/anthropic", "api": "anthropic-messages"}, {"id": "minimax-cn-api", "name": "MiniMax 中国", "baseURL": "https://api.minimaxi.com/anthropic", "api": "anthropic-messages"}, {"id": "commandcode", "name": "CommandCode", "baseURL": "https://api.commandcode.ai/provider/v1", "api": "openai-completions"}, {"id": "actual", "name": "Actual Computer", "baseURL": "https://api.actual.inc/v1", "api": "openai-responses"}, {"id": "xai", "name": "xAI API", "baseURL": "https://api.x.ai/v1", "api": "openai-responses"}, {"id": "openrouter", "name": "OpenRouter", "baseURL": "https://openrouter.ai/api/v1", "api": "openai-completions"}, {"id": "novita", "name": "NovitaAI", "baseURL": "https://api.novita.ai/openai/v1", "api": "openai-completions"}, {"id": "gmi", "name": "GMI Cloud", "baseURL": "https://api.gmi-serving.com/v1", "api": "openai-completions"}, {"id": "huggingface", "name": "Hugging Face", "baseURL": "https://router.huggingface.co/v1", "api": "openai-completions"}, {"id": "stepfun", "name": "StepFun API", "baseURL": "https://api.stepfun.com/v1", "api": "openai-completions"}, {"id": "zai", "name": "Z.AI / GLM", "baseURL": "https://api.z.ai/api/paas/v4", "api": "openai-completions"}, {"id": "alibaba-coding-plan", "name": "Alibaba Coding Plan", "baseURL": "https://coding-intl.dashscope.aliyuncs.com/v1", "api": "openai-completions"}, {"id": "opencode-zen", "name": "OpenCode Zen", "baseURL": "https://opencode.ai/zen/v1", "api": "openai-completions"}, {"id": "opencode-go", "name": "OpenCode Go", "baseURL": "https://opencode.ai/zen/go/v1", "api": "openai-completions"}, {"id": "kilocode", "name": "Kilo Code", "baseURL": "https://api.kilo.ai/api/gateway", "api": "openai-completions"}, {"id": "xiaomi", "name": "Xiaomi MiMo", "baseURL": "https://api.xiaomimimo.com/v1", "api": "openai-completions"}, {"id": "tencent-tokenhub", "name": "Tencent TokenHub", "baseURL": "https://tokenhub.tencentmaas.com/v1", "api": "openai-completions"}, {"id": "tencent-tokenplan", "name": "Tencent TokenPlan", "baseURL": "https://api.lkeap.cloud.tencent.com/plan/anthropic", "api": "anthropic-messages"}, {"id": "lmstudio", "name": "LM Studio", "baseURL": "http://127.0.0.1:1234/v1", "api": "openai-completions", "keyless": true}];
 		const ROUTE_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+		function normalizeProviderRoute(value) {
+			const route = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+			return /^[0-9]/.test(route) ? `provider-${route}` : route;
+		}
+		PROVIDER_PRESETS.unshift(
+			{ id: "deepseek-api", name: "DeepSeek V4 / V4.1 · Chat Completions", baseURL: "https://api.deepseek.com/v1", api: "openai-completions", models:[{id:"deepseek-flash",name:"DeepSeek-V41-Flash",contextWindow:1000000,input:["text","image"],systemPromptUpdate:"in-history"},{id:"deepseek-v4-pro",name:"DeepSeek V4 Pro",contextWindow:1000000,input:["text"]}] }
+		);
 		/**
 		* Render the custom-provider creation card.
 		* @param props - existing routes, protocol choices, wire faces, and copy.
@@ -1163,8 +1170,9 @@ window.__ModuleLoader__.load({
 			const disabled = props.readOnly || busy;
 			/** Everything but the key stops being editable once the provider exists. */
 			const profileDisabled = disabled || committed;
-			const routeInvalid = route.length > 0 && !ROUTE_PATTERN.test(route);
-			const routeTaken = taken.includes(route);
+			const canonicalRoute = normalizeProviderRoute(route);
+			const routeInvalid = route.length > 0 && !ROUTE_PATTERN.test(canonicalRoute);
+			const routeTaken = taken.includes(canonicalRoute);
 			const modelFailure = validateDeepSeekModels(models);
 			const keyFailure = apiKeyFailure(keyDraft);
 			const keyValue = keyDraft.trim();
@@ -1172,7 +1180,7 @@ window.__ModuleLoader__.load({
 			const hint = failure !== void 0 || ready || keyFailure !== void 0 || route.length === 0 || routeInvalid || routeTaken ? void 0 : baseURL.length === 0 ? t("customNeedsBaseUrl") : modelFailure !== void 0 ? `${t("model")} ${String(modelFailure.index + 1)}: ${t(modelFailure.key)}` : t("customNeedsModels");
 			/** Perform the create, returning a failure message or undefined. */
 			const createOnce = async () => {
-				const keyRef = deriveKeyRef(route);
+				const keyRef = deriveKeyRef(canonicalRoute);
 				const storesKey = !keyless && keyValue.length > 0;
 				if (!committed) {
 					const profile = {
@@ -1186,7 +1194,7 @@ window.__ModuleLoader__.load({
 						ns: NS$1,
 						ops: [{
 							op: "set",
-							path: ["providers", route],
+							path: ["providers", canonicalRoute],
 							value: profile
 						}],
 						expectedRevision: openedAt
@@ -1258,7 +1266,8 @@ window.__ModuleLoader__.load({
 							disabled: profileDisabled,
 							onChange: (event) => {
 								setRoute(event.target.value);
-							}
+							},
+							onBlur: () => { if (canonicalRoute) setRoute(canonicalRoute); }
 						})]
 					}),
 					routeInvalid || routeTaken ? (0, react_jsx_runtime.jsx)("p", {
@@ -1865,19 +1874,20 @@ window.__ModuleLoader__.load({
 			} })});
 		}
         async function accountRequest(action, body = {}) {
-            const response = await fetch(`/provider-auth/${action}`, {
+            let response;
+            try { response = await fetch(`/provider-auth/${action}`, {
                 method: "POST", credentials: "same-origin",
                 headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
-            });
-            const value = await response.json();
-            if (!response.ok) throw new Error(value.error || `HTTP ${response.status}`);
+            }); } catch (cause) { const error=cause instanceof Error?cause:new Error(String(cause));error.retryable=true;throw error; }
+            let value;try { value=await response.json(); } catch { const error=new Error(`HTTP ${response.status}`);error.retryable=response.status>=500;throw error; }
+            if (!response.ok) { const error=new Error(value.error || `HTTP ${response.status}`);error.retryable=response.status===408||response.status===429||response.status>=500;throw error; }
             return value;
         }
         const managerCss = ".dshModelManager{border-top:1px solid var(--dsw-alias-border-l2);padding-top:10px;margin-top:10px;display:flex;flex-direction:column;gap:9px;min-width:0}.dshModelManagerHead,.dshModelToolbar,.dshModelFooter{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dshModelManagerHead strong{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);margin-right:auto}.dshModelToolbar input{flex:1;min-width:160px}.dshModelCount,.dshModelHint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}.dshModelRows{display:flex;flex-direction:column;gap:4px;max-height:360px;overflow:auto}.dshModelRow{display:flex;align-items:center;gap:10px;min-height:36px;padding:5px 7px;border-radius:7px;box-sizing:border-box}.dshModelRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.dshModelIdentity{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px}.dshModelName{font-size:13px;line-height:18px;overflow-wrap:anywhere}.dshModelId{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere;font-family:var(--ds-font-family-code)}.dshModelVisibility{position:relative;display:inline-flex;align-items:center;gap:6px;flex:none;cursor:pointer;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}.dshModelVisibility input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:inherit}.dshModelCheckBox{box-sizing:border-box;width:16px;height:16px;border:1px solid var(--dsw-alias-border-l3);border-radius:4px;display:inline-flex;align-items:center;justify-content:center;background:var(--dsw-alias-bg-base);pointer-events:none}.dshModelVisibility[data-checked=true] .dshModelCheckBox{background:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary-foreground)}.dshModelVisibility input:focus-visible+.dshModelCheckBox{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}.dshModelVisibility[data-disabled=true]{opacity:.45;cursor:default}.dshModelDetails{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 8px}.dshModelDetails summary{cursor:pointer;font-size:12px;color:var(--dsw-alias-label-secondary)}.dshModelFields{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:8px}.dshModelFields label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dsw-alias-label-tertiary)}.dshModelFooter{justify-content:flex-end}.dshModelFooter [role=status]{margin-right:auto;font-size:12px;color:var(--dsw-alias-label-tertiary)}.dshAccountEntry+.dshAccountEntry{border-top:1px solid var(--dsw-alias-border-l2);padding-top:12px;margin-top:4px}.dshModelEmpty{padding:8px 7px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}";
         if (typeof document !== "undefined") {
             let style=document.querySelector("style[data-dsh-model-manager]");
             if(!style){style=document.createElement("style");style.dataset.dshModelManager="";style.dataset.plugin="@deepseek-ai/dsh-client-ui-settings-models";style.dataset.pluginCss="@deepseek-ai/dsh-client-ui-settings-models/ModelManager.css";document.head.appendChild(style)}
-            style.textContent=managerCss;
+            style.textContent=managerCss+'.dshProviderIndex{display:flex;flex-wrap:wrap;gap:6px}.dshProviderIndex button{font:inherit;font-size:13px;padding:7px 12px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;border-radius:8px}.dshProviderIndex button[aria-pressed=true]{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary)}.dshModelWorkspace .-\\35 oaCW_rows{margin-top:0}.dshModelWorkspace .-\\35 oaCW_rowHead{flex-wrap:wrap}.dshModelWorkspace .dshModelHint{line-height:20px}@media(min-width:769px){._7h7_Oq_panel:has(.dshModelWorkspace){width:min(1040px,calc(100vw - 48px));max-width:1040px}}'+'\n.dshModelWorkspace{width:100%;max-width:900px}.dshModelWorkspace [hidden]{display:none!important}\n.dshModelNav{display:flex;gap:6px;border-bottom:1px solid var(--dsw-alias-border-l2);padding:0 0 10px}\n.dshModelNav button{font:inherit;font-size:14px;min-height:38px;padding:8px 16px;border:0;border-radius:9px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}\n.dshModelNav button[aria-selected=true]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);font-weight:600}\n.dshProviderToolbar{display:flex;align-items:center;gap:10px}.dshProviderToolbar input{flex:1;min-width:100px}.dshProviderToolbar button{flex:none}\n.dshProviderToolbar button[aria-pressed=true]{box-shadow:inset 0 0 0 1px var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}\n.dshModelWorkspace button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}\n.dshModelWorkspace button{min-height:34px;border-radius:8px}.dshModelWorkspace button svg{width:18px;height:18px;flex-shrink:0}\n.dshModelWorkspace input,.dshModelWorkspace select{min-height:36px}.dshModelToolbar select{width:auto;max-width:150px;flex:0 1 auto}\n.dshModelManagerHead strong{font-size:13px}.dshModelName{font-size:14px;line-height:21px}.dshModelId{font-size:12px;line-height:18px}.dshModelRow{min-height:46px;padding:8px}\n.dshModelRows{max-height:480px;gap:6px}.dshModelDetails{background:var(--dsw-alias-bg-module-platform);border:0}.dshModelDetails summary{min-height:28px;display:flex;align-items:center}\n.dshModelFooter{position:sticky;bottom:0;padding:10px;background:var(--dsw-alias-bg-base);border-top:1px solid var(--dsw-alias-border-l2);z-index:1}\n.dshModelCheckBox{width:18px;height:18px}.dshModelVisibility{min-height:36px;padding:0 4px}\n.dshAccountEntry{padding:12px 0}.dshAccountDisclosure{font-size:14px;gap:8px}.dshAccountDisclosure svg{width:18px;height:18px}\n@media(max-width:600px){.dshProviderToolbar{flex-wrap:wrap}.dshModelToolbar input{flex-basis:100%}.dshModelToolbar button{flex:1}.dshModelWorkspace button{min-height:38px}}\n';
         }
         function ModelVisibility({checked,disabled,onChange,label,t}) {
             return (0,react_jsx_runtime.jsxs)("label",{className:"dshModelVisibility","data-checked":checked,"data-disabled":disabled||void 0,children:[
@@ -1938,10 +1948,11 @@ window.__ModuleLoader__.load({
             render(){return this.state.error?(0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.error,role:"alert",children:[this.props.t("modelEditorFailed")," ",this.state.error,(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,onClick:()=>this.setState({error:null}),children:this.props.t("retry")})]}):this.props.children;}
         }
         function validCapacityDraft(text) { const parsed=parseCapacity(text);return text.trim()===""||Number.isSafeInteger(parsed)&&parsed>0; }
-        function ProviderModelManager({provider,api,t,disabled,revision,onSaved,onDirtyChange,initialModels=[]}) {
+        function ProviderModelManager({provider,api,t,disabled,revision,onSaved,onDirtyChange,initialModels=[],embedded=false}) {
             const [catalog,setCatalog]=(0,react.useState)(null),[changes,setChanges]=(0,react.useState)({}),[manual,setManual]=(0,react.useState)([]);
-            const [expanded,setExpanded]=(0,react.useState)(false),[query,setQuery]=(0,react.useState)(""),[loading,setLoading]=(0,react.useState)(false),[saving,setSaving]=(0,react.useState)(false),[error,setError]=(0,react.useState)(null),[saved,setSaved]=(0,react.useState)(false),[nextAccount,setNextAccount]=(0,react.useState)(null);
+            const [expanded,setExpanded]=(0,react.useState)(embedded),[query,setQuery]=(0,react.useState)(""),[loading,setLoading]=(0,react.useState)(false),[saving,setSaving]=(0,react.useState)(false),[error,setError]=(0,react.useState)(null),[saved,setSaved]=(0,react.useState)(false),[nextAccount,setNextAccount]=(0,react.useState)(null);
             const [capacityText,setCapacityText]=(0,react.useState)({});
+            const [visibility,setVisibility]=react.useState("all"),[pageSize,setPageSize]=react.useState(100);
             const manualSequence=(0,react.useRef)(0);
             const capacityRef=(0,react.useRef)(capacityText);capacityRef.current=capacityText;
             const mounted=(0,react.useRef)(true),generation=(0,react.useRef)(0),savingRef=(0,react.useRef)(false),catalogRef=(0,react.useRef)(catalog),changesRef=(0,react.useRef)(changes),manualRef=(0,react.useRef)(manual);
@@ -1976,8 +1987,8 @@ window.__ModuleLoader__.load({
             };
             const rows=draftModelRows(catalog??{models:initialModels},changes,manual);
             const filter=query.trim().toLocaleLowerCase();
-            const visible=rows.filter(model=>model._draftId||!filter||(model.id+" "+(model.name??"")).toLocaleLowerCase().includes(filter));
-            const shown=expanded?visible:[...visible.filter(model=>!model._draftId).slice(0,6),...visible.filter(model=>model._draftId)];
+            const visible=rows.filter(model=>model._draftId||((!filter||(model.id+" "+(model.name??"")).toLocaleLowerCase().includes(filter))&&(visibility==="all"||(model.enabled!==false)===(visibility==="shown"))));
+            const shown=expanded?[...visible.filter(model=>!model._draftId).slice(0,pageSize),...visible.filter(model=>model._draftId)]:[...visible.filter(model=>!model._draftId).slice(0,6),...visible.filter(model=>model._draftId)];
             const editable=!disabled&&!saving&&catalog!==null&&nextAccount===null;
             const update=(model,field,value)=>{
                 const manualIndex=model._draftId?manual.findIndex(candidate=>candidate._draftId===model._draftId):-1;
@@ -2006,8 +2017,8 @@ window.__ModuleLoader__.load({
             };
             const removeManual=model=>{setManual(current=>current.filter(row=>row._draftId!==model._draftId));setCapacityText(current=>Object.fromEntries(Object.entries(current).filter(([key])=>!key.startsWith(model._draftId+":"))));setSaved(false);setError(null);};
             return (0,react_jsx_runtime.jsxs)("section",{className:"dshModelManager","data-model-manager":provider,"aria-label":t("models"),children:[
-                (0,react_jsx_runtime.jsxs)("div",{className:"dshModelManagerHead",children:[(0,react_jsx_runtime.jsx)("strong",{children:`${t("models")} · ${rows.length}`}),button(t(expanded?"modelCollapse":"modelManage"),()=>setExpanded(value=>!value),{"aria-expanded":expanded}),button(t("modelRefresh"),()=>load("refresh"),{disabled:disabled||saving||loading})]}),
-                expanded&&(0,react_jsx_runtime.jsxs)("div",{className:"dshModelToolbar",children:[(0,react_jsx_runtime.jsx)("input",{type:"search",className:ModelsSection_module_css_default.input,value:query,"aria-label":t("modelSearch"),placeholder:t("modelSearch"),onChange:event=>setQuery(event.target.value)}),button(t("modelShowFiltered"),()=>visible.forEach(model=>update(model,"enabled",true)),{disabled:!editable||visible.length===0}),button(t("modelHideFiltered"),()=>visible.forEach(model=>update(model,"enabled",false)),{disabled:!editable||visible.length===0})]}),
+                (0,react_jsx_runtime.jsxs)("div",{className:"dshModelManagerHead",children:[(0,react_jsx_runtime.jsx)("strong",{children:`${t("models")} · ${rows.filter(model=>model.enabled!==false).length} / ${rows.length} ${t("modelShown")}`}),!embedded&&button(t(expanded?"modelCollapse":"modelManage"),()=>setExpanded(value=>!value),{"aria-expanded":expanded}),button(t("modelRefresh"),()=>load("refresh"),{disabled:disabled||saving||loading})]}),
+                expanded&&(0,react_jsx_runtime.jsxs)("div",{className:"dshModelToolbar",children:[(0,react_jsx_runtime.jsx)("input",{type:"search",className:ModelsSection_module_css_default.input,value:query,"aria-label":t("modelSearch"),placeholder:t("modelSearch"),onChange:event=>{setQuery(event.target.value);setPageSize(100)}}),(0,react_jsx_runtime.jsx)("select",{className:ModelsSection_module_css_default.input,value:visibility,"aria-label":t("modelVisibilityFilter"),onChange:event=>{setVisibility(event.target.value);setPageSize(100)},children:["all","shown","hidden"].map(value=>(0,react_jsx_runtime.jsx)("option",{value,children:t(value==="all"?"modelAll":value==="shown"?"modelShown":"modelHidden")},value))}),button(t("modelShowFiltered"),()=>visible.forEach(model=>update(model,"enabled",true)),{disabled:!editable||visible.length===0}),button(t("modelHideFiltered"),()=>visible.forEach(model=>update(model,"enabled",false)),{disabled:!editable||visible.length===0})]}),
                 loading&&(0,react_jsx_runtime.jsx)("div",{className:"dshModelHint",role:"status",children:t("loading")}),
                 (0,react_jsx_runtime.jsx)("div",{className:"dshModelRows",children:shown.map((model,index)=>(0,react_jsx_runtime.jsxs)("div",{"data-model-id":model.id,"data-model-draft":model._draftId,className:model._draftId?ModelsSection_module_css_default.modelEntry:void 0,children:[
                     (0,react_jsx_runtime.jsxs)("div",{className:"dshModelRow",children:[(0,react_jsx_runtime.jsxs)("div",{className:"dshModelIdentity",children:[(0,react_jsx_runtime.jsx)("span",{className:"dshModelName",children:model._draftId?t("modelManualNew"):model.name||model.id}), !model._draftId&&(0,react_jsx_runtime.jsx)("span",{className:"dshModelId",children:model.id})]}),(0,react_jsx_runtime.jsx)(ModelVisibility,{checked:model.enabled!==false,disabled:!editable,label:`${t("modelVisible")} ${model.name||model.id||t("modelManualNew")}`,t,onChange:value=>update(model,"enabled",value)})]}),
@@ -2015,6 +2026,7 @@ window.__ModuleLoader__.load({
                     expanded&&(0,react_jsx_runtime.jsxs)("details",{className:"dshModelDetails",children:[(0,react_jsx_runtime.jsx)("summary",{children:t("modelAdvanced")}), (0,react_jsx_runtime.jsx)("div",{className:"dshModelFields",children:[...(!model._draftId?["name"]:[]),"contextWindow","maxTokens"].map(field=>modelField(model,index,field))})]}),
                     model._draftId&&button(t("modelManualRemove"),()=>removeManual(model),{"aria-label":`${t("modelManualRemove")} ${index+1}`,disabled:!editable})
                 ]},model._draftId??model.id??`new-${index}`))}),
+                expanded&&visible.length>shown.length&&button(t("modelLoadMore"),()=>setPageSize(value=>value+100)),
                 !shown.length&&(0,react_jsx_runtime.jsx)("div",{className:"dshModelEmpty",children:t(catalog?"modelNoMatches":"modelCatalogUnavailable")}),
                 !expanded&&rows.length>shown.length&&(0,react_jsx_runtime.jsx)("div",{className:"dshModelCount",children:t("modelMoreCount").replace("{count}",String(rows.length-shown.length))}),
                 expanded&&button(t("modelManualAdd"),()=>{const id=`manual-${++manualSequence.current}`;setManual(current=>[...current,{_draftId:id,id:"",enabled:true}]);setSaved(false);setError(null)},{disabled:!editable}),
@@ -2124,7 +2136,7 @@ window.__ModuleLoader__.load({
             const switchAccount=scope=>run(async()=>{await accountRequest("switch",{provider:account.id,accountScope:scope});await refresh();await accountRequest("refresh",{provider:account.id});await refresh()});
             const logout=scope=>run(async()=>{await accountRequest("logout",{provider:account.id,accountScope:scope});await refresh()});
             const addAccount=()=>run(async()=>{if(attemptRef.current)return;const value=await accountRequest("start",{provider:account.id});if(!mounted.current||!opened.current){if(value.attempt)await accountRequest("cancel",{attempt:value.attempt});return}attemptRef.current=value.attempt;setAttempt(value)});
-            react.useEffect(()=>{if(!attempt)return;const id=attempt.attempt;let stale=false,timer;const poll=async()=>{try{const value=await accountRequest("poll",{attempt:id});if(stale||!mounted.current||attemptRef.current!==id)return;if(value.status==="complete"||value.status==="cancelled"){attemptRef.current=null;setAttempt(null);try{await refresh()}catch(error){if(mounted.current&&!attemptRef.current)setFailure(messageOf$1(error))}}else timer=setTimeout(poll,Math.max(3,value.interval||attempt.interval||3)*1000)}catch(error){if(!stale&&mounted.current&&attemptRef.current===id){setFailure(messageOf$1(error));attemptRef.current=null;setAttempt(null);accountRequest("cancel",{attempt:id}).catch(()=>{})}}};timer=setTimeout(poll,Math.max(3,attempt.interval||3)*1000);return()=>{stale=true;clearTimeout(timer)}},[attempt,refresh]);
+            react.useEffect(()=>{if(!attempt)return;const id=attempt.attempt;let stale=false,timer;const poll=async()=>{try{const value=await accountRequest("poll",{attempt:id});if(stale||!mounted.current||attemptRef.current!==id)return;setFailure(value.retryable?t("accountRetrying"):null);if(value.status==="complete"||value.status==="cancelled"){attemptRef.current=null;setAttempt(null);try{await refresh()}catch(error){if(mounted.current&&!attemptRef.current)setFailure(messageOf$1(error))}}else timer=setTimeout(poll,Math.max(3,value.interval||attempt.interval||3)*1000)}catch(error){if(!stale&&mounted.current&&attemptRef.current===id){setFailure(error.retryable?t("accountRetrying"):messageOf$1(error));if(error.retryable&&(!attempt.expiresAt||Date.now()<attempt.expiresAt*1000)){timer=setTimeout(poll,Math.max(5,attempt.interval||5)*1000)}else{attemptRef.current=null;setAttempt(null);accountRequest("cancel",{attempt:id}).catch(()=>{})}}}};timer=setTimeout(poll,Math.max(3,attempt.interval||3)*1000);return()=>{stale=true;clearTimeout(timer)}},[attempt,refresh]);
             if(!account)return null;
             return h(react.Fragment,null,
                 h("button",{type:"button",className:"dshSidebarAction dshAccountBadge","data-rail":!wide||undefined,title:account.name+" · "+t("accountSignedIn"),"aria-label":t("accountTitle"),"aria-haspopup":"dialog",onClick:()=>{opened.current=true;setOpen(true);service.load().catch(()=>{})}},
@@ -2186,11 +2198,11 @@ window.__ModuleLoader__.load({
                 error&&h("p",{role:"alert",className:ModelsSection_module_css_default.error},error));
         }
 
-        function AccountConnections({controller,api,namespaces,t,disabled,onManagedProvidersChange}) {
+        function AccountConnections({controller,api,namespaces,t,disabled,onManagedProvidersChange,standalone=false}) {
             const service=controller.accounts;
             const directory=(0,react.useSyncExternalStore)(service.store.subscribe,service.store.getSnapshot,service.store.getSnapshot),accounts=directory.accounts;
             const [attempt,setAttempt]=(0,react.useState)(null),[busy,setBusy]=(0,react.useState)(false),[failure,setFailure]=(0,react.useState)(null);
-            const [accountsOpen,setAccountsOpen]=react.useState(false),[activeAccount,setActiveAccount]=react.useState(null),[dirtyAccounts,setDirtyAccounts]=react.useState(()=>new Set());
+            const [accountsOpen,setAccountsOpen]=react.useState(standalone),[activeAccount,setActiveAccount]=react.useState(null),[dirtyAccounts,setDirtyAccounts]=react.useState(()=>new Set());
             const dirtyCallbacks=react.useRef(new Map());
             const dirtyCallback=id=>{if(!dirtyCallbacks.current.has(id))dirtyCallbacks.current.set(id,dirty=>setDirtyAccounts(old=>{if(old.has(id)===dirty)return old;const next=new Set(old);if(dirty)next.add(id);else next.delete(id);return next}));return dirtyCallbacks.current.get(id)};
             const managedProviders=(0,react.useMemo)(()=>[...new Set(accounts.filter(account=>account.signedIn&&account.scope!=="subagent").map(account=>account.provider||account.id))],[accounts]);
@@ -2213,11 +2225,12 @@ window.__ModuleLoader__.load({
                     try{
                         const value=await accountRequest("poll",{attempt:id});
                         if(!current())return;
+                        setFailure(value.retryable?t("accountRetrying"):null);
                         if(value.status==="cancelled"||value.status==="complete"){
                             attemptRef.current=null;setAttempt(null);
                             if(value.status==="complete"){try{await Promise.all([refresh(),controller.load()])}catch(error){if(mounted.current&&!attemptRef.current)setFailure(messageOf$1(error))}}
                         }else timer=setTimeout(poll,Math.max(3,value.interval||attempt.interval||3)*1000);
-                    }catch(error){if(current()){setFailure(messageOf$1(error));attemptRef.current=null;setAttempt(null);accountRequest("cancel",{attempt:id}).catch(()=>{})}}
+                    }catch(error){if(current()){setFailure(error.retryable?t("accountRetrying"):messageOf$1(error));if(error.retryable&&(!attempt.expiresAt||Date.now()<attempt.expiresAt*1000)){timer=setTimeout(poll,Math.max(5,attempt.interval||5)*1000)}else{attemptRef.current=null;setAttempt(null);accountRequest("cancel",{attempt:id}).catch(()=>{})}}}
                 };
                 timer=setTimeout(poll,Math.max(3,attempt.interval||3)*1000);
                 return()=>{stale=true;clearTimeout(timer)};
@@ -2259,7 +2272,7 @@ window.__ModuleLoader__.load({
                     account.error&&(0,react_jsx_runtime.jsx)("p",{role:"alert",className:ModelsSection_module_css_default.error,children:account.error}),
                     accountsOpen&&activeAccount===account.id&&account.scope!=="subagent"&&(0,react_jsx_runtime.jsx)(AccountSessionList,{account,t,disabled:disabled||busy||!!attempt||dirtyAccounts.has(account.id),onSwitch:scope=>switchAccount(account.id,scope),onLogout:scope=>logout(account.id,scope)}),
                     accountsOpen&&activeAccount===account.id&&account.id==="openai-codex"&&account.signedIn&&!busy&&!attempt&&(0,react_jsx_runtime.jsx)(CodexUsagePanel,{account,disabled},account.accountScope),
-                    account.signedIn&&account.scope!=="subagent"&&((accountsOpen&&activeAccount===account.id)||dirtyAccounts.has(account.id))&&(0,react_jsx_runtime.jsx)("div",{hidden:!accountsOpen||activeAccount!==account.id,children:(0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0,react_jsx_runtime.jsx)(ProviderModelManager,{provider:account.provider||account.id,api,t,disabled:disabled||busy||!!attempt,revision:namespaces?.get(account.settingsNs)?.revision??account.catalog?.updatedAt,onDirtyChange:dirtyCallback(account.id),onSaved:async()=>{await Promise.all([refresh(),controller.load()])}})})})
+                    account.signedIn&&account.scope!=="subagent"&&((accountsOpen&&activeAccount===account.id)||dirtyAccounts.has(account.id))&&(0,react_jsx_runtime.jsx)("div",{hidden:!accountsOpen||activeAccount!==account.id,children:(0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0,react_jsx_runtime.jsx)(ProviderModelManager,{provider:account.provider||account.id,api,t,embedded:standalone,disabled:disabled||busy||!!attempt,revision:namespaces?.get(account.settingsNs)?.revision??account.catalog?.updatedAt,onDirtyChange:dirtyCallback(account.id),onSaved:async()=>{await Promise.all([refresh(),controller.load()])}})})})
                 ]},account.id)),
                 (0,react_jsx_runtime.jsx)(AccountLoginPrompt,{attempt,t,busy,onCancel:cancel}),
                 failure&&(0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.error,role:"alert",children:failure})
@@ -2279,6 +2292,7 @@ window.__ModuleLoader__.load({
 			const [declaring, setDeclaring] = (0, react.useState)(false);
 			const [dismissedSetup, setDismissedSetup] = (0, react.useState)(() => /* @__PURE__ */ new Set());
 			const [accountManagedProviders, setAccountManagedProviders] = (0, react.useState)([]);
+            const [activeProvider,setActiveProvider]=react.useState(null),[managementTab,setManagementTab]=react.useState("api"),[providerQuery,setProviderQuery]=react.useState(""),[needsAttention,setNeedsAttention]=react.useState(false);
 			const [expandedProviders, setExpandedProviders] = (0, react.useState)(() => /* @__PURE__ */ new Set());
 			const toggleProviderModels = (provider) => setExpandedProviders((previous) => {
 				const next = new Set(previous);
@@ -2353,12 +2367,19 @@ window.__ModuleLoader__.load({
 			};
 			const anyUsable = state.rows.some(providerUsable);
 			const configured = state.rows.filter((row) => row.configured && !accountManagedProviders.includes(row.entry.provider));
-			const addable = state.rows.filter((row) => !row.configured && row.entry.settingsNs !== "" && !accountManagedProviders.includes(row.entry.provider));
+			const matchesProvider=row=>{
+                const namespace=state.namespaces.get(row.entry.settingsNs),profile=namespace?(0,_deepseek_ai_dsh_client_schema_form.getPath)(namespace.value,row.entry.settingsPath):null;
+                const searchable=[row.entry.displayName,row.entry.provider,...modelDrafts(profile?.models).flatMap(model=>[model.id,model.name])].filter(Boolean).join(" ").toLocaleLowerCase();
+                return (!providerQuery.trim()||searchable.includes(providerQuery.trim().toLocaleLowerCase()))&&(!needsAttention||!providerUsable(row));
+            };
+            const matchedProviders=configured.filter(matchesProvider);
+            const currentProvider=matchedProviders.some(row=>row.entry.provider===activeProvider)?activeProvider:matchedProviders[0]?.entry.provider;
+            const addable = state.rows.filter((row) => !row.configured && row.entry.settingsNs !== "" && !accountManagedProviders.includes(row.entry.provider));
 			const addTarget = adding ? editing : void 0;
 			const addNamespace = addTarget === void 0 ? void 0 : state.namespaces.get(addTarget.settingsNs);
 			const protocols = protocolChoices(state.namespaces.get("llm-pi-ai"));
 			return (0, react_jsx_runtime.jsxs)("div", {
-				className: ModelsSection_module_css_default["section"],
+				className: ModelsSection_module_css_default["section"]+" dshModelWorkspace",
 				children: [
 					(0, react_jsx_runtime.jsx)("h2", {
 						className: ModelsSection_module_css_default["title"],
@@ -2372,7 +2393,9 @@ window.__ModuleLoader__.load({
 						className: ModelsSection_module_css_default["notice"],
 						children: t("readOnly")
 					}) : null,
-					(0, react_jsx_runtime.jsx)(AccountConnections, { controller, api, namespaces:state.namespaces, t, disabled: !state.writable, onManagedProvidersChange:setAccountManagedProviders }),
+					(0,react_jsx_runtime.jsx)("div",{className:"dshModelNav",role:"tablist","aria-label":t("modelWorkspace"),children:["api","accounts"].map((value,index)=>(0,react_jsx_runtime.jsx)("button",{type:"button",role:"tab",id:`dsh-model-tab-${value}`,"aria-controls":`dsh-model-panel-${value}`,"aria-selected":managementTab===value,tabIndex:managementTab===value?0:-1,onClick:()=>setManagementTab(value),onKeyDown:event=>{if(["ArrowLeft","ArrowRight","Home","End"].includes(event.key)){event.preventDefault();const next=event.key==="Home"?"api":event.key==="End"?"accounts":value==="api"?"accounts":"api";setManagementTab(next);event.currentTarget.parentElement.querySelector(`#dsh-model-tab-${next}`)?.focus()}},children:t(value==="api"?"modelApiTab":"modelAccountTab")},value))}),
+                    (0,react_jsx_runtime.jsx)("div",{role:"tabpanel",id:"dsh-model-panel-accounts","aria-labelledby":"dsh-model-tab-accounts",hidden:managementTab!=="accounts",children:(0,react_jsx_runtime.jsx)(AccountConnections,{controller,api,namespaces:state.namespaces,t,disabled:!state.writable,onManagedProvidersChange:setAccountManagedProviders,standalone:true})}),
+                    (0,react_jsx_runtime.jsxs)("div",{className:"dshProviderToolbar",hidden:managementTab!=="api",children:[(0,react_jsx_runtime.jsx)("input",{type:"search",className:ModelsSection_module_css_default.input,value:providerQuery,placeholder:t("modelProviderSearch"),"aria-label":t("modelProviderSearch"),onChange:event=>setProviderQuery(event.target.value)}),(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,"aria-pressed":needsAttention,onClick:()=>setNeedsAttention(value=>!value),children:t("modelNeedsAttention")})]}),
                     state.error&&(0,react_jsx_runtime.jsxs)("div",{role:"alert",className:ModelsSection_module_css_default.error,children:[state.error,(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,onClick:()=>controller.load(),children:t("retry")})]}),
 					savedIdentity === void 0 ? null : (0, react_jsx_runtime.jsx)("p", {
 						className: ModelsSection_module_css_default["savedNotice"],
@@ -2380,15 +2403,19 @@ window.__ModuleLoader__.load({
 						"aria-live": "polite",
 						children: providerCopy(t("savedProvider"), savedIdentity)
 					}),
-					(0, react_jsx_runtime.jsx)("ul", {
+					(0,react_jsx_runtime.jsx)("nav",{className:"dshProviderIndex",hidden:managementTab!=="api","aria-label":t("provider"),children:matchedProviders.map(row=>(0,react_jsx_runtime.jsx)("button",{type:"button","aria-pressed":currentProvider===row.entry.provider,onClick:()=>setActiveProvider(row.entry.provider),children:row.entry.displayName},row.entry.provider))}),
+                    managementTab==="api"&&matchedProviders.length===0&&(0,react_jsx_runtime.jsx)("p",{role:"status",className:"dshModelHint",children:t("modelNoMatches")}),
+                    (0, react_jsx_runtime.jsx)("ul", {
 						className: ModelsSection_module_css_default["rows"],
+                        role:"tabpanel",id:"dsh-model-panel-api","aria-labelledby":"dsh-model-tab-api",hidden:managementTab!=="api",
 						children: configured.map((row) => {
 							const target = targetOf(row);
 							const namespace = state.namespaces.get(target.settingsNs);
-							/* v8 ignore next -- the join marks a row configured only when its namespace resolved */
+                            const hidden=target.provider!==currentProvider;
+                            /* v8 ignore next -- the join marks a row configured only when its namespace resolved */
 							if (namespace === void 0) return null;
 							if (needsSetup(row, anyUsable) && !dismissedSetup.has(row.entry.provider)) return (0, react_jsx_runtime.jsxs)("li", {
-								className: ModelsSection_module_css_default["setupCard"],
+								className: ModelsSection_module_css_default["setupCard"],hidden,
 								children: [renderProviderEditor({
 									target,
 									namespace,
@@ -2407,7 +2434,7 @@ window.__ModuleLoader__.load({
 							const credentialConfigured = row.credential?.configured === true;
 							const credentialMissing = !credentialConfigured && row.apiKeyEnv !== void 0 && row.credential?.configured === false;
 							return (0, react_jsx_runtime.jsxs)("li", {
-								className: ModelsSection_module_css_default["rowCard"],
+								className: ModelsSection_module_css_default["rowCard"],hidden,
 								children: [(0, react_jsx_runtime.jsxs)("div", {
 									className: ModelsSection_module_css_default["rowHead"],
 									children: [(0, react_jsx_runtime.jsxs)("span", {
@@ -2460,7 +2487,7 @@ window.__ModuleLoader__.load({
 											children: t("remove")
 										}) : null]
 									})]
-								}), (0,react_jsx_runtime.jsxs)(react.Fragment,{children:[(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default["linkButton"],"aria-expanded":expandedProviders.has(target.provider),onClick:()=>toggleProviderModels(target.provider),children:expandedProviders.has(target.provider)?t("collapseModels"):t("expandModels")}), (0,react_jsx_runtime.jsx)("div",{hidden:!expandedProviders.has(target.provider),children:(0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0,react_jsx_runtime.jsx)(ProviderModelManager,{provider:target.provider,api,t,disabled:!state.writable,revision:namespace.revision,initialModels,onSaved:()=>controller.load()})},target.provider+"-models")})] }), open ? renderProviderEditor({
+								}), (0,react_jsx_runtime.jsxs)(react.Fragment,{children:[(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default["linkButton"],"aria-expanded":!expandedProviders.has(target.provider),onClick:()=>toggleProviderModels(target.provider),children:!expandedProviders.has(target.provider)?t("collapseModels"):t("expandModels")}), (0,react_jsx_runtime.jsx)("div",{hidden:!!expandedProviders.has(target.provider),children:(0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0,react_jsx_runtime.jsx)(ProviderModelManager,{provider:target.provider,api,t,embedded:true,disabled:!state.writable,revision:namespace.revision,initialModels,onSaved:()=>controller.load()})},target.provider+"-models")})] }), open ? renderProviderEditor({
 									target,
 									namespace,
 									api,
@@ -2474,7 +2501,7 @@ window.__ModuleLoader__.load({
 						})
 					}),
 					(0, react_jsx_runtime.jsx)("div", {
-						className: ModelsSection_module_css_default["addBlock"],
+						className: ModelsSection_module_css_default["addBlock"],hidden:managementTab!=="api",
 						children: addTarget !== void 0 && addNamespace !== void 0 ? (0, react_jsx_runtime.jsxs)("div", {
 							className: ModelsSection_module_css_default["addCard"],
 							children: [(0, react_jsx_runtime.jsxs)("div", {
@@ -2955,6 +2982,7 @@ window.__ModuleLoader__.load({
 		/** Copy dictionaries for the Models settings section. */
 		/** English strings (the key-set source of truth for this pair). */
 		const en = {
+            modelWorkspace:"Model management",modelApiTab:"API connections",modelAccountTab:"Subscription accounts",modelProviderSearch:"Search connections or model IDs",modelNeedsAttention:"Needs attention",modelVisibilityFilter:"Model visibility",modelAll:"All models",modelLoadMore:"Load more models",accountRetrying:"Connection interrupted. Retrying this sign-in request.",
             freeTitle:"Free models",freeIntro:"Free model candidates from the official directory. Enable after price confirmation and successful connectivity and tool-call checks.",freeTestHint:"Refresh checks the directory. Test availability sends a real free request; status can change with service limits.",freeRefresh:"Refresh directory",freeRefreshing:"Refreshing…",freeReading:"Reading the directory…",freeProtocolPending:"Protocol pending confirmation",freeTest:"Test availability",freeTesting:"Testing…",freeEnable:"Enable in models",freeEnabled:"Model enabled. Its display preference can be managed under Models.",freeAvailable:"Available",freePending:"Not verified",freeUnavailable:"Unavailable",freeRateLimited:"Rate limited",freeRetired:"Retired",freeVerifiedAt:"Last verified",freeNeverVerified:"Not verified",
 
             modelManage: "Manage models",
@@ -3072,8 +3100,8 @@ window.__ModuleLoader__.load({
 			customTitle: "Custom provider",
 			customTag: "Custom",
 			customRoute: "Provider ID",
-			customRouteHint: "Lowercase identifier, starting with a letter, that uniquely names this provider in requests and as its credential name.",
-			customRouteInvalid: "Start with a lowercase letter; then lowercase letters, digits, and dashes.",
+			customRouteHint: "Provider identifiers are normalized to lowercase with dashes; model IDs are preserved exactly.",
+			customRouteInvalid: "Include at least one English letter or digit in the internal identifier; use Display name for other characters.",
 			customRouteTaken: "A provider already uses this ID.",
 			customDisplayName: "Display name",
 			customApi: "API protocol",
@@ -3095,6 +3123,7 @@ window.__ModuleLoader__.load({
 		};
 		/** Chinese strings (same keys as {@link en}). */
 		const zh = {
+            modelWorkspace:"模型管理",modelApiTab:"API 连接",modelAccountTab:"订阅账号",modelProviderSearch:"搜索连接或模型 ID",modelNeedsAttention:"仅待修复",modelVisibilityFilter:"模型显示状态",modelAll:"全部模型",modelLoadMore:"加载更多模型",accountRetrying:"连接暂时中断，正在重试当前登录请求。",
             freeTitle:"免费模型",freeIntro:"官方目录中的免费候选；确认价格并通过连通性与工具调用检测后可启用。",freeTestHint:"刷新只检查目录；检测可用性会发送真实免费请求，状态可能随服务限额变化。",freeRefresh:"刷新目录",freeRefreshing:"刷新中…",freeReading:"正在读取目录…",freeProtocolPending:"协议待确认",freeTest:"检测可用性",freeTesting:"检测中…",freeEnable:"添加到模型",freeEnabled:"模型已启用，可在模型管理中调整显示偏好。",freeAvailable:"可用",freePending:"尚未验证",freeUnavailable:"不可用",freeRateLimited:"暂时限流",freeRetired:"已下线",freeVerifiedAt:"最近验证",freeNeverVerified:"尚未验证",
 
             modelManage: "管理模型",
@@ -3127,7 +3156,7 @@ window.__ModuleLoader__.load({
 
 			nav: "模型",
 			title: "模型",
-			intro: "填入各提供方的 API 密钥即可使用其模型。",
+			intro: "选择连接，管理模型显示与参数；订阅登录在账号页管理。",
 			edit: "编辑",
 			editProvider: "编辑 {provider}",
 			remove: "删除",
@@ -3212,8 +3241,8 @@ window.__ModuleLoader__.load({
 			customTitle: "自定义提供方",
 			customTag: "自定义",
 			customRoute: "Provider ID",
-			customRouteHint: "以小写字母开头的标识，在请求中唯一标识该提供方，并用于派生凭据名。",
-			customRouteInvalid: "需以小写字母开头，之后可用小写字母、数字和短横线。",
+			customRouteHint: "提供方内部标识会自动转为小写，并把空格、小数点转为短横线，例如 DeepSeek 4.1 → deepseek-4-1；模型 ID 保留原样。",
+			customRouteInvalid: "内部标识至少包含一个英文字母或数字；中文名称请填写在显示名称中。",
 			customRouteTaken: "已有提供方使用了这个 ID。",
 			customDisplayName: "显示名称",
 			customApi: "API 协议",

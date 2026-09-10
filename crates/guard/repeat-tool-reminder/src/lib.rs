@@ -20,7 +20,7 @@ use std::sync::Arc;
 use cordis::{ArcValue, Context, Disposer, Listener, Plugin, PluginError, arc, downcast_arc};
 use dsh_agent::AgentPreStepPayload;
 use dsh_llm::{ContentBlock, ContextForm, MessageSource, UserMessage, create_user_message};
-use dsh_tools::{PostToolDecision, ToolExecution};
+use dsh_tools::{PostToolDecision, ToolExecution, ToolExecutionResult};
 use parking_lot::Mutex;
 
 /// Cordis plugin name used by loader diagnostics.
@@ -282,9 +282,39 @@ fn tracked(state: &ObserveState, tool_name: &str) -> bool {
         .any(|pattern| pattern.is_match(tool_name))
 }
 
+fn call_key(name: &str, canonical: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    name.hash(&mut hash);
+    canonical.hash(&mut hash);
+    // This key drives an advisory only; never retain a file-sized argument
+    // payload in the per-agent chain map.
+    format!("call:{:016x}", hash.finish())
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    #[test]
+    fn argument_identity_is_order_independent_without_retaining_large_payloads() {
+        let first = serde_json::json!({"path":"file","content":"x".repeat(1024 * 1024)});
+        let reordered = serde_json::json!({"content":"x".repeat(1024 * 1024),"path":"file"});
+        let key = call_key("write", &canonicalize(&first));
+        assert!(key.len() < 64);
+        assert_eq!(key, call_key("write", &canonicalize(&reordered)));
+        assert_ne!(key, call_key("edit", &canonicalize(&first)));
+        assert_ne!(key, call_key("write", &canonicalize(&serde_json::json!({"path":"other","content":"x".repeat(1024 * 1024)}))));
+    }
+}
+
 /// Advance the calling agent's chain for one attempt and return the reminder
 /// to deliver, if this attempt's run length hits a configured threshold.
-fn observe(state: &ObserveState, exec: &ToolExecution) -> Option<UserMessage> {
+fn observe(
+    state: &ObserveState,
+    exec: &ToolExecution,
+    result: Option<&ToolExecutionResult>,
+) -> Option<UserMessage> {
     // A direct `ctx.tools.execute()` caller has no model to remind and no id
     // to key on; only agent-loop calls participate.
     let agent = exec.agent.as_ref()?;
@@ -292,10 +322,36 @@ fn observe(state: &ObserveState, exec: &ToolExecution) -> Option<UserMessage> {
         return None;
     }
     let canonical = canonicalize(&exec.arguments);
-    let key = serde_json::to_string(&[exec.name.as_str(), canonical.as_str()]).expect("key");
+    let failure = result
+        .filter(|result| result.is_error)
+        .and_then(|result| result.error.as_ref())
+        .and_then(|error| error.info.as_ref())
+        .map(|info| info.code.as_str())
+        .filter(|code| {
+            matches!(
+                *code,
+                "SANDBOX_SETUP_FAILED"
+                    | "SANDBOX_SETUP_TIMEOUT"
+                    | "SANDBOX_RUNNER_FAILED"
+                    | "SANDBOX_RUNNER_TIMEOUT"
+                    | "SANDBOX_UNAVAILABLE"
+                    | "SHELL_STARTUP_FAILED"
+                    | "SHELL_TIMEOUT"
+                    | "TERMINAL_STARTUP_FAILED"
+                    | "TERMINAL_STARTUP_TIMEOUT"
+            )
+        });
+    let key = failure
+        .map(|code| format!("execution-failure:{code}"))
+        .unwrap_or_else(|| call_key(&exec.name, &canonical));
     let agent_key = agent.id().as_str().to_string();
     let count = {
         let mut chains = state.chains.lock();
+        if chains.len() >= 512 && !chains.contains_key(&agent_key) {
+            if let Some(oldest) = chains.keys().next().cloned() {
+                chains.remove(&oldest);
+            }
+        }
         let next = match chains.get(&agent_key) {
             Some(chain) if chain.key == key => chain.count + 1,
             _ => 1,
@@ -303,10 +359,14 @@ fn observe(state: &ObserveState, exec: &ToolExecution) -> Option<UserMessage> {
         chains.insert(agent_key, Chain { key, count: next });
         next
     };
-    if !state.threshold_set.contains(&count) {
+    if !state.threshold_set.contains(&count) && !(failure.is_some() && count == 2) {
         return None;
     }
-    let text = if count == state.first_threshold {
+    let text = if let Some(code) = failure {
+        format!(
+            "The execution path has failed {count} times with {code}, including calls whose arguments may differ. Identify whether startup, command execution, or cleanup failed before retrying. Changing command text or switching between shell and PTY does not repair a shared runtime failure. Use existing diagnostics and new evidence; do not disable the sandbox or bypass an approval denial. If the operation simply needs more time, use the supported background-job workflow."
+        )
+    } else if count == state.first_threshold {
         GENTLE_REMINDER.to_string()
     } else {
         detailed_reminder(
@@ -388,7 +448,14 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
                 let next =
                     downcast_arc::<cordis::NextFn>(args.last().expect("tools/post-execute next"))
                         .expect("tools/post-execute next");
-                let reminder = observe(&state, &exec);
+                let result = args
+                    .get(1)
+                    .and_then(downcast_arc::<Arc<ToolExecutionResult>>);
+                let reminder = observe(
+                    &state,
+                    &exec,
+                    result.as_ref().map(|result| result.as_ref().as_ref()),
+                );
                 let downstream_value = next.call().await;
                 let Some(reminder) = reminder else {
                     return Some(downstream_value);

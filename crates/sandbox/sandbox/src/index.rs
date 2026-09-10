@@ -140,6 +140,42 @@ pub struct ConfinedArgv {
     pub denial_signatures: Vec<String>,
     /// Structured runner-failure evidence rules.
     pub runner_failure_rules: Vec<RunnerFailureRule>,
+    /// Optional runner-owned confirmation that the command process has started.
+    pub startup: Option<SandboxStartup>,
+}
+
+#[derive(Clone)]
+pub struct SandboxStartup {
+    ready: Arc<dyn Fn() -> Result<bool, String> + Send + Sync>,
+    timed_out: Arc<dyn Fn() -> Result<bool, String> + Send + Sync>,
+}
+
+impl SandboxStartup {
+    pub fn new(
+        ready: impl Fn() -> Result<bool, String> + Send + Sync + 'static,
+        timed_out: impl Fn() -> Result<bool, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            ready: Arc::new(ready),
+            timed_out: Arc::new(timed_out),
+        }
+    }
+    pub fn is_ready(&self) -> Result<bool, String> {
+        (self.ready)()
+    }
+    pub fn timed_out(&self) -> Result<bool, String> {
+        (self.timed_out)()
+    }
+}
+impl std::fmt::Debug for SandboxStartup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SandboxStartup")
+    }
+}
+impl PartialEq for SandboxStartup {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.ready, &other.ready) && Arc::ptr_eq(&self.timed_out, &other.timed_out)
+    }
 }
 
 /// Error code for a requested confined mode when no backend is usable. The
@@ -159,10 +195,9 @@ impl SandboxUnavailableError {
     pub fn new(mode: ConfinedSandboxMode, detail: Option<&str>) -> Self {
         let message = format!(
             "sandbox mode \"{}\" is requested but no sandbox backend is usable on this host; \
-             refusing to run the command unconfined. Install bubblewrap or run a Landlock-enforcing \
-             kernel (Linux), ensure sandbox-exec is usable (macOS), or ensure the ACL \
-             restricted-token runner can start (Windows) — otherwise switch the consumer to \
-             danger-full-access.{}",
+             refusing to run the command unconfined. Check bubblewrap (Linux), sandbox-exec \
+             (macOS), or the configured AppContainer runner (Windows). The command was not \
+             started; repair the execution environment before retrying.{}",
             mode.as_str(),
             match detail {
                 Some(detail) => format!(" Runner failure: {detail}"),
@@ -203,6 +238,23 @@ impl std::error::Error for SandboxUnavailableError {}
 /// multi-runner chains and may be skipped for a sole candidate, whose own
 /// refusal remains the fail-closed end.
 pub trait SandboxProvider: Send + Sync + 'static {
+    /// Opt into a runner handshake only when the consumer retains and uses it.
+    fn confine_with_startup(
+        &self,
+        argv: &[String],
+        policy: &SandboxPolicy,
+    ) -> Result<ConfinedArgv, SandboxUnavailableError> {
+        self.confine(argv, policy)
+    }
+    /// Prepare reusable runtime access before a consumer starts its command or
+    /// PTY deadline. This never starts the requested command or widens its policy.
+    fn prepare(
+        &self,
+        _policy: &SandboxExecutionPolicy,
+    ) -> futures::future::BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Wrap `argv` so it executes confined under `policy` on this host; the
     /// caller spawns the returned argv in place of its own.
     ///

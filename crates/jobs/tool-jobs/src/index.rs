@@ -31,7 +31,7 @@ use dsh_llm::{
 };
 use dsh_output_retention::{TextRetainer, TextRetentionStrategy};
 use dsh_schemastery::{Data, Schema};
-use dsh_system_prompt::{PromptSection, PromptText, SystemPrompt};
+use dsh_system_prompt::{PromptSection, SystemPrompt};
 use dsh_tools::{
     ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolExecution, ToolExecutionResult,
     ToolOutputDefinition, ToolRunContext, ToolRuntime,
@@ -401,7 +401,7 @@ impl ToolJobsService {
             PromptSection {
                 name: "tool:jobs".to_string(),
                 order: 106.0,
-                text: PromptText::Static(
+                text: dsh_tools::scoped_tool_guidance(ctx, &["job_output", "job_kill"],
                     "Track every background job id you start. You are notified in-session when a job finishes — do not busy-poll or sleep on one; keep working on independent steps and do not duplicate a running job's work. Before giving a final answer, collect every still-relevant job with job_output (set wait: true only when you are genuinely blocked on it), and job_kill jobs that stopped mattering.".to_string(),
                 ),
                 complete: None,

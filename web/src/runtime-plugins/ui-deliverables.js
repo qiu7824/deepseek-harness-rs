@@ -46,7 +46,8 @@ window.__ModuleLoader__.load({
 			if (data === void 0) return [];
 			const paths = [];
 			const seen = /* @__PURE__ */ new Set();
-			for (const produced of data.produced) {
+			const declared = (data.presented ?? []).filter((file) => file.seq <= seq);
+			for (const produced of declared.length > 0 ? declared : (data.produced ?? [])) {
 				if (produced.seq > seq || seen.has(produced.path)) continue;
 				seen.add(produced.path);
 				paths.push(produced.path);
@@ -59,9 +60,10 @@ window.__ModuleLoader__.load({
 		* @returns Produced paths as the component's match, or null to decline before mount.
 		*/
 		function selectProducedFiles(owner) {
-			const paths = producedForClosing(owner.turn.data.get("deliverables"), owner.seq);
-			return paths.length === 0 ? null : paths;
+			const data=owner.turn.data.get("deliverables"),paths = producedForClosing(data, owner.seq);
+			return paths.length === 0 ? null : {paths,declared:(data?.presented??[]).some(file=>file.seq<=owner.seq)};
 		}
+		function validPresented(data){return Number.isSafeInteger(data?.turn)&&data.turn>0&&typeof data.callId==="string"&&data.callId.length>0&&Array.isArray(data.files)&&data.files.length>0&&data.files.length<=8&&data.files.every(file=>file&&typeof file.path==="string"&&file.path.trim()&&file.path.length<=4096&&!/[\u0000-\u001f]/.test(file.path));}
 		/** Turn-local successful mutation accumulator; it publishes no view Node. */
 		const deliverablesDefinition = {
 			kind: "deliverables",
@@ -74,6 +76,7 @@ window.__ModuleLoader__.load({
 					id: String(event.data.turn),
 					role: "update"
 				};
+				if (event.type === "deliverables/presented" && validPresented(event.data)) return { id:String(event.data.turn), role:"update" };
 				if (event.type === "tool/result" && (0, _deepseek_ai_dsh_client_runtime_client.isAppendSurfaceEvent)(event)) return {
 					id: String(event.data.turn),
 					role: "update"
@@ -85,10 +88,15 @@ window.__ModuleLoader__.load({
 				return {
 					turn: match.event.data.turn,
 					calls: /* @__PURE__ */ new Map(),
-					produced: []
+					produced: [],
+					presented: []
 				};
 			},
 			update: (context, match) => {
+				if (match.event.type === "deliverables/presented") {
+					const additions = match.event.data.files.filter((file) => file && typeof file.path === "string" && file.path.trim()).map((file) => ({seq:match.event.seq,path:file.path,description:typeof file.description === "string" ? file.description : undefined}));
+					return {...context.state,presented:[...(context.state.presented ?? []),...additions]};
+				}
 				if (match.event.type === "tool/call") {
 					const calls = new Map(context.state.calls);
 					calls.set(String(match.event.data.callId), match.view?.for === "call" ? match.view.view : null);
@@ -113,7 +121,7 @@ window.__ModuleLoader__.load({
 				kind: "turn",
 				turn: context.state.turn,
 				key: "deliverables",
-				value: { produced: context.state.produced }
+				value: { produced: context.state.produced, presented:context.state.presented }
 			}
 		};
 		/**
@@ -212,7 +220,8 @@ window.__ModuleLoader__.load({
 		* @param props - selector-matched paths, the chat view's file opener, and the locale seat.
 		* @returns The produced-files row.
 		*/
-		function ProducedFiles({ matched: paths, openFile, isLoopback, useHostGeneration, t }) {
+		function ProducedFiles({ matched, openFile, isLoopback, useHostGeneration, t }) {
+			const paths=Array.isArray(matched)?matched:matched.paths;
 			const hostCanOpenPath = useHostGeneration((generation) => generation?.host?.canOpenPath === true);
 			const canOpenPath = isLoopback && hostCanOpenPath;
 			const limit = Math.min(paths.length, SHOWN_LIMIT);
@@ -257,7 +266,7 @@ window.__ModuleLoader__.load({
 				children: [
 					(0, react_jsx_runtime.jsx)("span", {
 						className: ProducedFiles_module_css_default.label,
-						children: t("produced.label")
+						children: t(matched.declared?"presented.label":"produced.label")
 					}),
 					(0, react_jsx_runtime.jsxs)("div", {
 						ref: rowRef,
@@ -312,6 +321,7 @@ window.__ModuleLoader__.load({
 		const NS = "deliverables";
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
+			"presented.label":"交付文件",
 			"produced.label": "产物",
 			"produced.moreOne": "+ 1 个文件",
 			"produced.more": "+ {count} 个文件",
@@ -320,6 +330,7 @@ window.__ModuleLoader__.load({
 		};
 		/** English dictionary (same key set). */
 		const en = {
+			"presented.label":"Deliverables",
 			"produced.label": "Produced",
 			"produced.moreOne": "+ 1 file",
 			"produced.more": "+ {count} files",
@@ -357,9 +368,9 @@ window.__ModuleLoader__.load({
 			}, ProducedFiles));
 			const t = ctx.locale.bind(NS);
 			ctx.provide("chatFileMentions", { forClosing(owner) {
-				const paths = selectProducedFiles(owner);
-				if (paths === null) return void 0;
-				return producedFileMentions(paths, owner.openFile, (path) => t("produced.open", { name: path }));
+				const matched = selectProducedFiles(owner);
+				if (matched === null) return void 0;
+				return producedFileMentions(matched.paths, owner.openFile, (path) => t("produced.open", { name: path }));
 			} });
 		}
 		//#endregion

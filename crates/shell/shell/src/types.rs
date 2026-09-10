@@ -32,8 +32,52 @@ pub struct ShellSandboxInfo {
     pub denied: bool,
     /// How completely the selected runner enforced the requested mode.
     pub enforcement: Option<SandboxEnforcement>,
-    /// Whether the sandbox runner failed before the command could run.
+    /// Whether runner setup or teardown failed; inspect its diagnostic before
+    /// retrying because teardown failures can follow an executed command.
     pub runner_failed: Option<bool>,
+}
+
+impl ShellSandboxInfo {
+    pub fn observe(
+        mode: SandboxMode,
+        confined: &dsh_sandbox::ConfinedArgv,
+        exit_code: Option<i32>,
+        stderr: &str,
+    ) -> Self {
+        let failed = exit_code.is_some_and(|code| code != 0);
+        let lines = stderr
+            .lines()
+            .filter(|line| !line.starts_with("[sandbox-cleanup]"))
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>();
+        let runner_failed = failed
+            && confined.runner_failure_rules.iter().any(|rule| {
+                rule.allowed_exit_codes
+                    .as_ref()
+                    .is_none_or(|codes| exit_code.is_some_and(|code| codes.contains(&code)))
+                    && lines.iter().any(|line| {
+                        !rule.informational_lines.as_ref().is_some_and(|items| {
+                            items.iter().any(|item| line.eq_ignore_ascii_case(item))
+                        }) && rule
+                            .fatal_signatures
+                            .iter()
+                            .any(|signature| line.contains(&signature.to_ascii_lowercase()))
+                    })
+            });
+        let denied = failed
+            && !runner_failed
+            && confined.denial_signatures.iter().any(|signature| {
+                lines
+                    .iter()
+                    .any(|line| line.contains(&signature.to_ascii_lowercase()))
+            });
+        Self {
+            mode,
+            denied,
+            enforcement: Some(confined.enforcement),
+            runner_failed: Some(runner_failed),
+        }
+    }
 }
 
 /// A caller's execution REQUEST: `workdir` and `timeout_ms` are optional and

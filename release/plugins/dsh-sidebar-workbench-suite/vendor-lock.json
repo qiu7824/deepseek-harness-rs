@@ -17,11 +17,13 @@
     "codemirror": "6.0.2",
     "dompurify": "3.4.14",
     "marked": "16.3.0",
-    "mermaid": "11.16.1"
+    "mermaid": "11.16.1",
+    "pdfjs-dist": "6.3.289"
   },
   "outputs": {
-    "lib/editor.js": "sha256:b4c99b4f3661bdee9bebe3610b3ab8c32dc1d6e3d9a6cf6d5c3a1eb5058be670",
+    "lib/editor.js": "sha256:3b038c1d2bad494d03aa80d4f7a58c1bc7f5d0ebb44913d4899b4c56e7c60e23",
     "lib/markdown.js": "sha256:329c23964f24e62967aed9d7a414e8625ea5f582c972f10f1ea4c7abc5103651",
-    "lib/mermaid.js": "sha256:c2e9bfb2af758128ad383f7aea2d6bec40c38762c684cfc6efddbf4ab122c847"
+    "lib/mermaid.js": "sha256:c2e9bfb2af758128ad383f7aea2d6bec40c38762c684cfc6efddbf4ab122c847",
+    "lib/pdf.js": "sha256:32cee500a47968c75aa6555a0e65b166a43f769c175110fb736d791482add5a0"
   }
 }

@@ -239,6 +239,38 @@ impl Artifacts {
                 },
             );
         }
+        for event in events
+            .iter()
+            .filter(|event| event.type_ == "deliverables/presented")
+        {
+            for file in event.data["files"].as_array().into_iter().flatten() {
+                let Some(path) = file["path"].as_str() else {
+                    continue;
+                };
+                let native = PathBuf::from(
+                    dsh_host_apiproxy::native_path_opener::display_native_path(path),
+                );
+                let native = if native.is_absolute() {
+                    native
+                } else {
+                    root.join(native)
+                };
+                let absolute = fs::canonicalize(&native).unwrap_or(native);
+                let Ok(relative) = absolute.strip_prefix(root) else {
+                    continue;
+                };
+                let relative = relative.to_string_lossy().replace('\\', "/");
+                index.entries.insert(
+                    relative.clone(),
+                    Artifact {
+                        path: relative,
+                        change: "presented".into(),
+                        source: "delivery".into(),
+                        updated_at: (event.time.max(0) as u64) / 1000,
+                    },
+                );
+            }
+        }
         let rows = index
             .entries
             .values()

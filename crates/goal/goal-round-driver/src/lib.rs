@@ -703,7 +703,7 @@ fn pre_step_listener(driver: Arc<Driver>) -> Arc<Listener> {
                 return Some(decision_value);
             }
             let exact_batch = match &decision {
-                PreStepDecision::Enter { messages } => state
+                PreStepDecision::Enter { messages, .. } => state
                     .attempt
                     .lock()
                     .as_ref()
@@ -718,7 +718,7 @@ fn pre_step_listener(driver: Arc<Driver>) -> Arc<Listener> {
             if post_verdict != ReservationVerdict::Valid {
                 clear_matching_attempt(&state, submitted);
                 let restored = match &decision {
-                    PreStepDecision::Enter { messages } => {
+                    PreStepDecision::Enter { messages, .. } => {
                         restore_other_claimed(&payload.agent, messages, &submitted.id)
                     }
                     PreStepDecision::Reject => Ok(()),

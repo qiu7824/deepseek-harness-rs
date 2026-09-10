@@ -163,6 +163,8 @@ pub fn assert_usable_api_key(raw: &str, pkg: &str, reference: &str) -> Result<St
 /// One model call whose config and adapter registration were resolved
 /// together.
 pub struct PreparedLlmCall {
+    /// Capability captured with the exact adapter/options used for dispatch.
+    pub system_prompt_update: Option<crate::SystemPromptUpdate>,
     /// Detached, deep-frozen config with any adapter-owned default
     /// materialized.
     pub config: LlmCallConfig,
@@ -184,6 +186,11 @@ pub struct PreparedLlmCall {
 /// Provider-wire adapter for the harness message and stream vocabulary.
 #[async_trait::async_trait]
 pub trait LlmAdapter: Send + Sync {
+    /// Freeze mutable route options before capabilities and request defaults
+    /// are resolved. Replay ownership remains the registered adapter's.
+    async fn snapshot_for_call(&self, _provider: &str, _model: &str, _signal: Option<&AbortSignal>) -> Result<Option<Arc<dyn LlmAdapter>>, LlmError> {
+        Ok(None)
+    }
     /// Describe one provider route owned by this adapter.
     fn provider_info(&self, provider: &str) -> LlmProviderInfo {
         LlmProviderInfo {
@@ -228,6 +235,7 @@ pub trait LlmAdapter: Send + Sync {
         _signal: Option<&AbortSignal>,
     ) -> LlmResolvedModelInfo {
         LlmResolvedModelInfo {
+            system_prompt_update: None,
             execution_modes: Default::default(),
             provider: provider.to_string(),
             id: model.to_string(),
@@ -268,6 +276,13 @@ struct AdapterRegistration {
     adapter: Arc<dyn LlmAdapter>,
     provider: LlmProviderInfo,
     retry_policy: ResolvedRetryPolicy,
+}
+
+#[derive(Clone)]
+struct PreparedDispatch {
+    registration: Arc<AdapterRegistration>,
+    config: LlmCallConfig,
+    adapter: Arc<dyn LlmAdapter>,
 }
 
 type DiscoveryFn = Arc<
@@ -861,7 +876,7 @@ impl LlmRuntime {
         registration: &AdapterRegistration,
         config: &LlmCallConfig,
         signal: Option<&AbortSignal>,
-    ) -> Result<(LlmCallConfig, Option<LlmModelContext>), LlmError> {
+    ) -> Result<(LlmCallConfig, Option<LlmModelContext>, Option<crate::SystemPromptUpdate>), LlmError> {
         let info = Self::resolve_model_info_for(registration, &config.model, signal).await?;
         let mut resolved = config.clone();
         if resolved.max_tokens.is_none()
@@ -946,7 +961,7 @@ impl LlmRuntime {
                 }
             }
         }
-        Ok((resolved, info.context))
+        Ok((resolved, info.context, info.system_prompt_update))
     }
 
     /// Resolve one call under its current adapter registration. The returned
@@ -961,8 +976,9 @@ impl LlmRuntime {
         signal: Option<&AbortSignal>,
     ) -> Result<PreparedLlmCall, LlmError> {
         let registration = self.registration(&config.provider)?;
-        let (resolved_config, context) =
-            Self::resolve_call_for(registration.as_ref(), config, signal).await?;
+        let adapter=registration.adapter.snapshot_for_call(&config.provider,&config.model,signal).await?.unwrap_or_else(||Arc::clone(&registration.adapter));
+        let frozen=AdapterRegistration {adapter:Arc::clone(&adapter),provider:registration.provider.clone(),retry_policy:adapter.provider_retry_policy(&config.provider).unwrap_or_else(||registration.retry_policy.clone())};
+        let (resolved_config, context, system_prompt_update) = Self::resolve_call_for(&frozen, config, signal).await?;
         let adapter_defaults = LlmCallConfigAdapterDefaults {
             reasoning_effort: (config.reasoning_effort.is_none()
                 && resolved_config.reasoning_effort.is_some())
@@ -996,15 +1012,13 @@ impl LlmRuntime {
                 }
                 Ok(runtime.stream_with_registration(
                     options,
-                    Some((
-                        Arc::clone(&registration_for_stream),
-                        resolved_for_stream.clone(),
-                    )),
+                    Some(PreparedDispatch {registration:Arc::clone(&registration_for_stream),config:resolved_for_stream.clone(),adapter:Arc::clone(&adapter)}),
                 ))
             });
         Ok(PreparedLlmCall {
+            system_prompt_update,
             config: resolved_config,
-            retry_policy: registration.retry_policy.clone(),
+            retry_policy: frozen.retry_policy,
             context,
             adapter_defaults,
             stream,
@@ -1079,7 +1093,7 @@ impl LlmRuntime {
     fn adapter_stream(
         self: &Arc<Self>,
         options: GenerateOptions,
-        prepared: Option<(Arc<AdapterRegistration>, LlmCallConfig)>,
+        prepared: Option<PreparedDispatch>,
     ) -> ChunkStream {
         let runtime = Arc::clone(self);
         Box::pin(futures::stream::unfold(AdapterPhase::Setup, move |phase| {
@@ -1094,13 +1108,13 @@ impl LlmRuntime {
         self: &Arc<Self>,
         phase: AdapterPhase,
         options: GenerateOptions,
-        prepared: Option<(Arc<AdapterRegistration>, LlmCallConfig)>,
+        prepared: Option<PreparedDispatch>,
     ) -> Option<(StreamChunk, AdapterPhase)> {
         match phase {
             AdapterPhase::Setup => {
                 let signal = options.signal.clone();
-                let (registration, resolved_config) = match &prepared {
-                    Some((registration, config)) => (Arc::clone(registration), config.clone()),
+                let (registration, resolved_config, adapter) = match &prepared {
+                    Some(binding) => (Arc::clone(&binding.registration), binding.config.clone(), Arc::clone(&binding.adapter)),
                     None => {
                         let registration = match self.registration(&options.provider) {
                             Ok(registration) => registration,
@@ -1109,14 +1123,19 @@ impl LlmRuntime {
                                 return Some((chunk, AdapterPhase::Done));
                             }
                         };
+                        let adapter=match registration.adapter.snapshot_for_call(&options.provider,&options.model,signal.as_ref()).await {
+                            Ok(snapshot)=>snapshot.unwrap_or_else(||Arc::clone(&registration.adapter)),
+                            Err(error)=>return Some((adapter_failure_chunk(error.failure,signal.as_ref()),AdapterPhase::Done)),
+                        };
+                        let frozen=AdapterRegistration {adapter:Arc::clone(&adapter),provider:registration.provider.clone(),retry_policy:registration.retry_policy.clone()};
                         match Self::resolve_call_for(
-                            registration.as_ref(),
+                            &frozen,
                             &config_of(&options),
                             signal.as_ref(),
                         )
                         .await
                         {
-                            Ok((config, _context)) => (registration, config),
+                            Ok((config, _context, _system_update)) => (registration, config, adapter),
                             Err(error) => {
                                 let chunk = adapter_failure_chunk(error.failure, signal.as_ref());
                                 return Some((chunk, AdapterPhase::Done));
@@ -1145,8 +1164,7 @@ impl LlmRuntime {
                 } else {
                     merged_call_options(options, &resolved_config)
                 };
-                let adapter = Arc::clone(&registration.adapter);
-                let filtered = self.for_adapter(resolved_options, &adapter);
+                let filtered = self.for_adapter(resolved_options, &registration.adapter);
                 let mut stream = match catch_unwind(AssertUnwindSafe(|| adapter.stream(&filtered)))
                 {
                     Ok(stream) => stream,
@@ -1201,7 +1219,7 @@ impl LlmRuntime {
     fn stream_with_registration(
         self: &Arc<Self>,
         options: GenerateOptions,
-        prepared: Option<(Arc<AdapterRegistration>, LlmCallConfig)>,
+        prepared: Option<PreparedDispatch>,
     ) -> ChunkStream {
         let runtime = Arc::clone(self);
         // The `llm/stream` waterfall resolves a StreamFactory while the

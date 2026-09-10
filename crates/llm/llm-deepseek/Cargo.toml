@@ -13,6 +13,7 @@ cordis = { path = "../../vendor/cordis" }
 dsh-attachment = { path = "../../attachment/attachment" }
 dsh-brand = { path = "../../util/brand" }
 dsh-home-paths = { path = "../../util/home-paths" }
+dsh-anonymous-user-id = { path = "../../identity/anonymous-user-id" }
 dsh-atomic-write = { path = "../../util/atomic-write" }
 dsh-llm = { path = "../../core/llm" }
 base64 = "0.22"

@@ -46,6 +46,7 @@ fn pending(auth: &AccountAuth, id: &str) -> Provider {
                 next_poll: now(),
                 interval: 5,
                 verifier: None,
+                authorization: None,
             })),
         ),
     );
@@ -112,4 +113,56 @@ fn token_refresh_preserves_account_route_and_unrotated_refresh_token() {
     assert_eq!(renewed.account_id, original.account_id);
     assert_eq!(renewed.base_url, original.base_url);
     assert_eq!(renewed.refresh_token, original.refresh_token);
+}
+
+#[tokio::test]
+async fn transient_grant_exchange_keeps_one_grant_and_cancellation_remains_final() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url: &'static str =
+        Box::leak(format!("http://{}/token", listener.local_addr().unwrap()).into_boxed_str());
+    let (auth, root) = setup();
+    pending(&auth, "attempt");
+    let state = auth.pending.lock()["attempt"].1.clone();
+    let grant = json!({"authorization_code":"single-grant","code_verifier":"pkce-verifier"});
+    {
+        let mut state = state.lock().await;
+        state.provider.token = url;
+        state.authorization = Some(grant.clone());
+    }
+    let server = tokio::spawn(async move {
+        for status in [503, 429] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = vec![0; 8192];
+            let size = stream.read(&mut bytes).await.unwrap();
+            let request = String::from_utf8_lossy(&bytes[..size]);
+            assert!(request.contains("code=single-grant"));
+            assert!(request.contains("code_verifier=pkce-verifier"));
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 {status} Busy\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    for _ in 0..2 {
+        state.lock().await.next_poll = 0;
+        let reply = auth.poll("attempt").await.unwrap();
+        assert_eq!(reply["status"], "pending");
+        assert_eq!(reply["retryable"], true);
+        assert!(!reply.to_string().contains("single-grant"));
+        assert_eq!(state.lock().await.authorization, Some(grant.clone()));
+        assert!(auth.session("openai-codex").await.unwrap().is_none());
+    }
+    server.await.unwrap();
+    auth.handle("cancel", &json!({"attempt":"attempt"}))
+        .await
+        .unwrap();
+    assert!(auth.poll("attempt").await.is_err());
+    auth.credentials.drain().await;
+    let _ = tokio::fs::remove_dir_all(root).await;
 }

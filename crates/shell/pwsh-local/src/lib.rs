@@ -43,6 +43,7 @@ struct PwshProcessState {
     signal: Mutex<Option<String>>,
     stdout_offset: Mutex<u64>,
     stderr_offset: Mutex<u64>,
+    sandbox: Mutex<Option<ShellSandboxInfo>>,
 }
 
 struct PwshProcess {
@@ -209,12 +210,12 @@ fn apply_sandbox(
     sandbox: Option<&Arc<dyn SandboxProvider>>,
     argv: Vec<String>,
     execution: Option<&SandboxExecutionPolicy>,
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, Option<dsh_sandbox::ConfinedArgv>), String> {
     let Some(execution) = execution else {
-        return Ok(argv);
+        return Ok((argv, None));
     };
     let mode = match execution.mode {
-        SandboxMode::DangerFullAccess => return Ok(argv),
+        SandboxMode::DangerFullAccess => return Ok((argv, None)),
         SandboxMode::ReadOnly => ConfinedSandboxMode::ReadOnly,
         SandboxMode::WorkspaceWrite => ConfinedSandboxMode::WorkspaceWrite,
     };
@@ -223,7 +224,7 @@ fn apply_sandbox(
         format!("[{}] {error}", error.code())
     })?;
     provider
-        .confine(
+        .confine_with_startup(
             &argv,
             &SandboxPolicy {
                 read_only_roots: execution.read_only_roots.clone(),
@@ -232,7 +233,7 @@ fn apply_sandbox(
                 session_id: execution.session_id.clone(),
             },
         )
-        .map(|confined| confined.argv)
+        .map(|confined| (confined.argv.clone(), Some(confined)))
         .map_err(|error| format!("[{}] {error}", error.code()))
 }
 
@@ -250,7 +251,7 @@ impl ShellProcess for PwshProcess {
         self.done.clone().boxed()
     }
     fn sandbox(&self) -> Option<ShellSandboxInfo> {
-        None
+        self.state.sandbox.lock().clone()
     }
 
     fn read_output(&self) -> ShellProcessRead {
@@ -351,6 +352,15 @@ impl ShellExecutor for LocalPwshExecutor {
         let sandbox = self.sandbox.clone();
         let config = self.config.clone();
         Box::pin(async move {
+            if spec.signal.as_ref().is_some_and(|signal| signal()) {
+                return Err("[SHELL_ABORTED] PowerShell command cancelled before startup".into());
+            }
+            if let (Some(sandbox), Some(policy)) = (&sandbox, &spec.sandbox_policy) {
+                sandbox.prepare(policy).await?;
+            }
+            if spec.signal.as_ref().is_some_and(|signal| signal()) {
+                return Err("[SHELL_ABORTED] PowerShell command cancelled before startup".into());
+            }
             let max_output_bytes = config.max_output_bytes.unwrap_or(64_000);
             let spill = Some(SubprocessSpill {
                 max_bytes: config.max_spill_bytes.unwrap_or(64 * 1024 * 1024),
@@ -363,7 +373,47 @@ impl ShellExecutor for LocalPwshExecutor {
             };
             let argv = pwsh_argv(&config, &spec);
             let env = shell_environment(&spec, &argv[0]);
-            let argv = apply_sandbox(sandbox.as_ref(), argv, spec.sandbox_policy.as_ref())?;
+            let (mut argv, confined) =
+                apply_sandbox(sandbox.as_ref(), argv, spec.sandbox_policy.as_ref())?;
+            let startup = confined
+                .as_ref()
+                .and_then(|confined| confined.startup.clone());
+            if startup.is_some() {
+                let separator = argv
+                    .iter()
+                    .position(|argument| argument == "--")
+                    .ok_or("[SANDBOX_SETUP_FAILED] missing runner command boundary")?;
+                argv.splice(
+                    separator..separator,
+                    ["--command-timeout-ms".into(), spec.timeout_ms.to_string()],
+                );
+            }
+            let cause = Arc::new(std::sync::atomic::AtomicU8::new(0));
+            let signal = spec.signal.as_ref().map(|signal| {
+                let signal = signal.clone();
+                let cause = cause.clone();
+                let startup = startup.clone();
+                Arc::new(move || {
+                    let cancelled = signal();
+                    if cancelled {
+                        let reason = if startup
+                            .as_ref()
+                            .is_some_and(|startup| startup.timed_out().unwrap_or(false))
+                        {
+                            2
+                        } else {
+                            1
+                        };
+                        let _ = cause.compare_exchange(
+                            0,
+                            reason,
+                            std::sync::atomic::Ordering::SeqCst,
+                            std::sync::atomic::Ordering::SeqCst,
+                        );
+                    }
+                    cancelled
+                }) as dsh_subprocess::SubprocessAbort
+            });
             let handle = subprocess.spawn(SubprocessSpawnSpec {
                 argv,
                 cwd: spec.workdir.clone(),
@@ -377,23 +427,92 @@ impl ShellExecutor for LocalPwshExecutor {
                     stderr: collect(max_output_bytes),
                 },
                 grace_ms: config.grace_ms.unwrap_or(3_000),
-                signal: spec.signal.clone(),
+                signal,
                 env: Some(env),
             })?;
-            let (outcome, timed_out) = match tokio::time::timeout(
-                std::time::Duration::from_millis(spec.timeout_ms),
+            let mut process_guard = dsh_subprocess::SubprocessRunGuard::new(handle.clone());
+            if let Some(startup) = confined
+                .as_ref()
+                .and_then(|confined| confined.startup.as_ref())
+            {
+                let ready = async {
+                    loop {
+                        if startup
+                            .is_ready()
+                            .map_err(|error| format!("[SANDBOX_SETUP_FAILED] {error}"))?
+                        {
+                            return Ok(());
+                        }
+                        tokio::select! {
+                            result = handle.done() => {
+                                if cause.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                                    return Err("[SHELL_ABORTED] PowerShell startup cancelled".to_string());
+                                }
+                                let detail = handle.collected().stderr.map(|reader| reader.read_from(0).text).unwrap_or_default();
+                                return Err(format!("[SANDBOX_SETUP_FAILED] Runner exited before command readiness ({result:?}): {}", detail.chars().take(2048).collect::<String>()));
+                            }
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(15)) => {}
+                        }
+                    }
+                };
+                let setup = tokio::time::timeout(std::time::Duration::from_secs(120), ready).await
+                    .unwrap_or_else(|_| Err("[SANDBOX_SETUP_TIMEOUT] Sandbox startup exceeded 120 seconds before readiness was confirmed. Inspect the execution state before retrying.".into()));
+                if let Err(error) = setup {
+                    handle.terminate();
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        handle.wait_for_exit(None),
+                    )
+                    .await;
+                    return Err(error);
+                }
+            }
+            let outcome = match tokio::time::timeout(
+                std::time::Duration::from_millis(if startup.is_some() {
+                    spec.timeout_ms.saturating_add(120_000)
+                } else {
+                    spec.timeout_ms
+                }),
                 handle.done(),
             )
             .await
             {
-                Ok(outcome) => (outcome?, false),
+                Ok(outcome) => outcome?,
                 Err(_) => {
+                    if startup.is_some() {
+                        handle.terminate();
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            handle.wait_for_exit(None),
+                        )
+                        .await;
+                        return Err("[SANDBOX_RUNNER_TIMEOUT] The runner did not settle within its command and cleanup budgets; inspect command effects before retrying.".into());
+                    }
+                    let _ = cause.compare_exchange(
+                        0,
+                        2,
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
                     handle.terminate();
                     let outcome = handle.done().await?;
                     let _ = handle.wait_for_exit(None).await;
-                    (outcome, true)
+                    outcome
                 }
             };
+            process_guard.disarm();
+            if startup
+                .as_ref()
+                .is_some_and(|startup| startup.timed_out().unwrap_or(false))
+            {
+                let _ = cause.compare_exchange(
+                    0,
+                    2,
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+            }
+            let cause = cause.load(std::sync::atomic::Ordering::SeqCst);
             let collected = handle.collected();
             let output = |reader: Arc<dyn dsh_subprocess::SubprocessOutputReader>| {
                 let read = reader.read_from(0);
@@ -403,23 +522,37 @@ impl ShellExecutor for LocalPwshExecutor {
                     spill_path: read.spill_path,
                 }
             };
+            let stdout = output(
+                collected
+                    .stdout
+                    .ok_or_else(|| "missing stdout collector".to_string())?,
+            );
+            let stderr = output(
+                collected
+                    .stderr
+                    .ok_or_else(|| "missing stderr collector".to_string())?,
+            );
+            let sandbox_info =
+                confined
+                    .as_ref()
+                    .zip(spec.sandbox_policy.as_ref())
+                    .map(|(confined, policy)| {
+                        ShellSandboxInfo::observe(
+                            policy.mode,
+                            confined,
+                            outcome.exit_code,
+                            &stderr.text,
+                        )
+                    });
             Ok(ShellRunResult {
                 exit_code: outcome.exit_code,
                 signal: outcome.signal,
-                timed_out,
-                aborted: false,
+                timed_out: cause == 2,
+                aborted: cause == 1,
                 timeout_ms: spec.timeout_ms,
-                stdout: output(
-                    collected
-                        .stdout
-                        .ok_or_else(|| "missing stdout collector".to_string())?,
-                ),
-                stderr: output(
-                    collected
-                        .stderr
-                        .ok_or_else(|| "missing stderr collector".to_string())?,
-                ),
-                sandbox: None,
+                stdout,
+                stderr,
+                sandbox: sandbox_info,
             })
         })
     }
@@ -436,10 +569,11 @@ impl ShellExecutor for LocalPwshExecutor {
         };
         let argv = pwsh_argv(&self.config, &spec);
         let env = shell_environment(&spec, &argv[0]);
-        let argv = match apply_sandbox(self.sandbox.as_ref(), argv, spec.sandbox_policy.as_ref()) {
-            Ok(argv) => argv,
-            Err(error) => return failed_process(error),
-        };
+        let (argv, confined) =
+            match apply_sandbox(self.sandbox.as_ref(), argv, spec.sandbox_policy.as_ref()) {
+                Ok(argv) => argv,
+                Err(error) => return failed_process(error),
+            };
         let handle = match self.subprocess.spawn(SubprocessSpawnSpec {
             argv,
             cwd: spec.workdir,
@@ -469,13 +603,26 @@ impl ShellExecutor for LocalPwshExecutor {
             signal: Mutex::new(None),
             stdout_offset: Mutex::new(0),
             stderr_offset: Mutex::new(0),
+            sandbox: Mutex::new(None),
         });
         let done: Shared<BoxFuture<'static, ()>> = {
             let handle = handle.clone();
             let state = state.clone();
+            let stderr = stderr.clone();
+            let sandbox_policy = spec.sandbox_policy;
             async move {
                 match handle.done().await {
                     Ok(outcome) => {
+                        *state.sandbox.lock() = confined.as_ref().zip(sandbox_policy.as_ref()).map(
+                            |(confined, policy)| {
+                                ShellSandboxInfo::observe(
+                                    policy.mode,
+                                    confined,
+                                    outcome.exit_code,
+                                    &stderr.read_from(0).text,
+                                )
+                            },
+                        );
                         let _ = handle.wait_for_exit(None).await;
                         let mut status = state.status.lock();
                         if *status == ShellProcessStatus::Running {

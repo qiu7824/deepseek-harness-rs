@@ -341,6 +341,14 @@ struct Pending {
     next_poll: u64,
     interval: u64,
     verifier: Option<String>,
+    authorization: Option<Value>,
+}
+impl Pending {
+    fn retry(&mut self, message: &str) -> Value {
+        self.interval = self.interval.saturating_mul(2).clamp(5, 60);
+        self.next_poll = now().saturating_add(self.interval);
+        json!({"status":"pending","interval":self.interval,"retryable":true,"message":message})
+    }
 }
 pub(crate) struct AccountAuth {
     account_usage: crate::codex_account::CodexAccountService,
@@ -798,6 +806,7 @@ impl AccountAuth {
                     next_poll: now() + interval,
                     interval,
                     verifier: (minimax || id == "qwen-oauth").then_some(verifier),
+                    authorization: None,
                 })),
             ),
         );
@@ -822,86 +831,100 @@ impl AccountAuth {
         }
         pending.next_poll = now() + pending.interval;
         let p = pending.provider;
-        let response = if p.id == "openai-codex" {
-            self.client
-                .post("https://auth.openai.com/api/accounts/deviceauth/token")
-                .json(&json!({"device_auth_id":pending.device,"user_code":pending.user_code}))
-                .send()
-                .await
-        } else if p.id.starts_with("minimax") {
-            self.client
-                .post(p.token)
-                .form(&[
-                    ("grant_type", "urn:ietf:params:oauth:grant-type:user_code"),
-                    ("client_id", p.client),
-                    ("user_code", pending.user_code.as_str()),
-                    ("code_verifier", pending.verifier.as_deref().unwrap_or("")),
-                ])
-                .send()
-                .await
-        } else if p.id == "qwen-oauth" {
-            self.client
-                .post(p.token)
-                .form(&[
-                    ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-                    ("client_id", p.client),
-                    ("device_code", pending.device.as_str()),
-                    ("code_verifier", pending.verifier.as_deref().unwrap_or("")),
-                ])
-                .send()
-                .await
+        let mut value = if let Some(value) = pending.authorization.clone() {
+            value
         } else {
-            self.client
-                .post(p.token)
-                .form(&[
-                    ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-                    ("client_id", p.client),
-                    ("device_code", &pending.device),
-                ])
-                .send()
+            let response = if p.id == "openai-codex" {
+                self.client
+                    .post("https://auth.openai.com/api/accounts/deviceauth/token")
+                    .json(&json!({"device_auth_id":pending.device,"user_code":pending.user_code}))
+                    .send()
+                    .await
+            } else if p.id.starts_with("minimax") {
+                self.client
+                    .post(p.token)
+                    .form(&[
+                        ("grant_type", "urn:ietf:params:oauth:grant-type:user_code"),
+                        ("client_id", p.client),
+                        ("user_code", pending.user_code.as_str()),
+                        ("code_verifier", pending.verifier.as_deref().unwrap_or("")),
+                    ])
+                    .send()
+                    .await
+            } else if p.id == "qwen-oauth" {
+                self.client
+                    .post(p.token)
+                    .form(&[
+                        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                        ("client_id", p.client),
+                        ("device_code", pending.device.as_str()),
+                        ("code_verifier", pending.verifier.as_deref().unwrap_or("")),
+                    ])
+                    .send()
+                    .await
+            } else {
+                self.client
+                    .post(p.token)
+                    .form(&[
+                        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                        ("client_id", p.client),
+                        ("device_code", &pending.device),
+                    ])
+                    .send()
+                    .await
+            };
+            let response = match response {
+                Ok(response) => response,
+                Err(_) => return Ok(pending.retry("登录服务暂时无法连接，正在重试")),
+            };
+            let status = response.status();
+            if status.is_server_error() || matches!(status.as_u16(), 408 | 429) {
+                return Ok(pending.retry("登录服务暂时繁忙，正在重试"));
+            }
+            if p.id == "openai-codex" && matches!(status.as_u16(), 403 | 404) {
+                return Ok(json!({"status":"pending","interval":pending.interval}));
+            }
+            let value = response
+                .json::<Value>()
                 .await
-        }
-        .map_err(|_| "登录状态查询失败，请重试".to_string())?;
-        let status = response.status();
-        if p.id == "openai-codex" && matches!(status.as_u16(), 403 | 404) {
-            return Ok(json!({"status":"pending","interval":pending.interval}));
-        }
-        let mut value = response
-            .json::<Value>()
-            .await
-            .map_err(|_| "登录服务返回无效数据".to_string())?;
-        if p.id.starts_with("minimax")
-            && status.is_success()
-            && value.get("status").and_then(Value::as_str) != Some("success")
-        {
-            if value.get("status").and_then(Value::as_str) == Some("error") {
-                self.pending.lock().remove(attempt);
-                return Err("MiniMax 拒绝了登录授权".to_string());
-            }
-            return Ok(json!({"status":"pending","interval":pending.interval}));
-        }
-        if !status.is_success() || value.get("error").is_some() {
-            match value.get("error").and_then(Value::as_str) {
-                Some("authorization_pending") => {
-                    return Ok(json!({"status":"pending","interval":pending.interval}));
-                }
-                Some("slow_down") => {
-                    pending.interval = (pending.interval + 5).min(60);
-                    pending.next_poll = now() + pending.interval;
-                    return Ok(json!({"status":"pending","interval":pending.interval}));
-                }
-                _ => {
+                .map_err(|_| "登录服务返回无效数据".to_string())?;
+            if p.id.starts_with("minimax")
+                && status.is_success()
+                && value.get("status").and_then(Value::as_str) != Some("success")
+            {
+                if value.get("status").and_then(Value::as_str) == Some("error") {
                     self.pending.lock().remove(attempt);
-                    return Err(format!(
-                        "账号授权失败（HTTP {}），请重新登录",
-                        status.as_u16()
-                    ));
+                    return Err("MiniMax 拒绝了登录授权".to_string());
+                }
+                return Ok(json!({"status":"pending","interval":pending.interval}));
+            }
+            if !status.is_success() || value.get("error").is_some() {
+                match value.get("error").and_then(Value::as_str) {
+                    Some("authorization_pending") => {
+                        return Ok(json!({"status":"pending","interval":pending.interval}));
+                    }
+                    Some("slow_down") => {
+                        pending.interval = (pending.interval + 5).min(60);
+                        pending.next_poll = now() + pending.interval;
+                        return Ok(json!({"status":"pending","interval":pending.interval}));
+                    }
+                    _ => {
+                        self.pending.lock().remove(attempt);
+                        return Err(format!(
+                            "账号授权失败（HTTP {}），请重新登录",
+                            status.as_u16()
+                        ));
+                    }
                 }
             }
-        }
+            value
+        };
         if p.id == "openai-codex" {
             let code = string(&value, "authorization_code")?;
             let verifier = string(&value, "code_verifier")?;
+            // Retain the same grant across transient exchange failures. Polling
+            // the device endpoint again could consume or replace that grant.
+            pending.authorization = Some(value.clone());
             let response = self
                 .client
                 .post(p.token)
@@ -916,8 +939,16 @@ impl AccountAuth {
                     ),
                 ])
                 .send()
-                .await
-                .map_err(|_| "登录授权交换失败".to_string())?;
+                .await;
+            let response = match response {
+                Ok(response) => response,
+                Err(_) => return Ok(pending.retry("登录授权交换暂未完成，正在重试")),
+            };
+            if response.status().is_server_error()
+                || matches!(response.status().as_u16(), 408 | 429)
+            {
+                return Ok(pending.retry("登录授权服务暂时繁忙，正在重试"));
+            }
             if !response.status().is_success() {
                 self.pending.lock().remove(attempt);
                 return Err(format!(

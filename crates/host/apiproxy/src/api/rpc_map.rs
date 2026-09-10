@@ -8,7 +8,7 @@
 //! the TS declaration is grouped by domain, the set is identical), while
 //! the carrier layer (later milestone) owns the per-method dispatch.
 
-/// Every client-request method, lexically sorted (62 methods).
+/// Every client-request method, lexically sorted.
 pub const CLIENT_REQUEST_METHODS: &[&str] = &[
     "agentPreset.copy",
     "agentPreset.list",
@@ -72,6 +72,7 @@ pub const CLIENT_REQUEST_METHODS: &[&str] = &[
     "session.selectModel",
     "session.updateQueue",
     "session.updateTodos",
+    "sessionFeedback.record",
     "settings.describe",
     "settings.mutate",
     "settings.openDocument",
@@ -105,7 +106,7 @@ mod tests {
 
     #[test]
     fn request_methods_are_sorted_unique_and_include_todo_updates() {
-        assert_eq!(CLIENT_REQUEST_METHODS.len(), 81);
+        assert_eq!(CLIENT_REQUEST_METHODS.len(), 82);
         for method in [
             "memory.learningList",
             "memory.learningConfigure",

@@ -17,6 +17,7 @@ dsh-session-stats = { path = "../../session/session-stats" }
 cordis = { path = "../../vendor/cordis" }
 dsh-agent = { path = "../../core/agent" }
 dsh-fs-local = { path = "../../fs/fs-local" }
+dsh-fs = { path = "../../fs/fs" }
 dsh-skill = { path = "../../skill/skill" }
 dsh-skill-filesystem = { path = "../../skill/skill-filesystem" }
 dsh-skill-badge = { path = "../../skill/skill-badge" }
@@ -45,6 +46,7 @@ dsh-goal-round-driver = { path = "../../goal/goal-round-driver" }
 dsh-home-paths = { path = "../../util/home-paths" }
 dsh-native-command = { path = "../../util/native-command" }
 dsh-timeout-policy = { path = "../../guard/timeout-policy" }
+dsh-repeat-tool-reminder = { path = "../../guard/repeat-tool-reminder" }
 dsh-tool-computer-use-command = { path = "../../computer-use/tool-computer-use-command" }
 dsh-tool-voice-command = { path = "../../voice/tool-voice-command" }
 dsh-tool-memory-local = { path = "../../memory/tool-memory-local" }

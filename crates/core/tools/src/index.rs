@@ -41,6 +41,10 @@ use serde_json::Value as JsonValue;
 use crate::json_schema::{assert_supported_json_schema, validate_json_schema_value};
 use crate::presentation::{ToolCallView, ToolResult, ToolResultView};
 
+#[cfg(test)]
+#[path = "guidance_tests.rs"]
+mod guidance_tests;
+
 /// Cancellation predicate (TS `AbortSignal`).
 pub type AbortPredicate = Arc<dyn Fn() -> bool + Send + Sync>;
 
@@ -220,6 +224,31 @@ pub struct ToolRestriction {
     /// Global tool names removed from visibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deny: Option<Vec<String>>,
+}
+
+/// Resolve built-in tool guidance against the same scoped definitions used
+/// for execution. Logical visibility is retained in Code/Both presentations.
+pub fn scoped_tool_guidance(
+    caller: &Context,
+    names: &[&str],
+    text: impl Into<String>,
+) -> dsh_system_prompt::PromptText {
+    let tools = caller
+        .get_typed::<Arc<ToolRuntime>>("tools", false)
+        .map(|slot| Arc::downgrade(slot.as_ref()))
+        .unwrap_or_default();
+    let names: Vec<String> = names.iter().map(|name| (*name).to_string()).collect();
+    let text = text.into();
+    dsh_system_prompt::PromptText::Provider(Arc::new(move |context| {
+        if tools.upgrade().is_some_and(|tools| {
+            let view = tools.view(context.scope.as_ref());
+            names.iter().all(|name| view.visible.contains_key(name))
+        }) {
+            text.clone()
+        } else {
+            String::new()
+        }
+    }))
 }
 
 /// One restriction compiled at registration for repeated live-global lookup.

@@ -96,6 +96,10 @@ impl StdioClient {
     /// Inspect a server without making its tools visible to active agents.
     pub async fn probe(ctx: &Context, config: StdioConfig) -> Result<usize, McpClientError> {
         let (client, catalog) = Self::connect_generation(ctx, &config).await?;
+        if let Err(failure) = validate_catalog(&catalog) {
+            let _ = client.close().await;
+            return Err(failure);
+        }
         let count = catalog
             .get("tools")
             .and_then(Value::as_array)
@@ -122,7 +126,24 @@ impl StdioClient {
         ctx: &Context,
         config: StdioConfig,
     ) -> Result<Arc<ReconnectingStdioClient>, McpClientError> {
+        let routed = Self::prepare_reconnecting(ctx, config).await?;
+        if let Err(failure) = routed.activate_tools(ctx).await {
+            let _ = routed.close().await;
+            return Err(failure);
+        }
+        Ok(routed)
+    }
+
+    /// Complete startup and discovery while the previous route stays usable.
+    pub async fn prepare_reconnecting(
+        ctx: &Context,
+        config: StdioConfig,
+    ) -> Result<Arc<ReconnectingStdioClient>, McpClientError> {
         let (generation, catalog) = Self::connect_generation(ctx, &config).await?;
+        if let Err(failure) = validate_catalog(&catalog) {
+            let _ = generation.close().await;
+            return Err(failure);
+        }
         let routed = Arc::new(ReconnectingStdioClient {
             ctx: ctx.clone(),
             config: config.clone(),
@@ -133,14 +154,6 @@ impl StdioClient {
             registrations: parking_lot::Mutex::new(Vec::new()),
             closed: AtomicBool::new(false),
         });
-        let transport: Arc<dyn McpTransport> = routed.clone();
-        match register_tools(ctx, transport, &config.server_name, catalog).await {
-            Ok(registrations) => *routed.registrations.lock() = registrations,
-            Err(failure) => {
-                let _ = routed.close().await;
-                return Err(failure);
-            }
-        }
         Ok(routed)
     }
 
@@ -348,6 +361,32 @@ impl McpTransport for StdioClient {
 }
 
 impl ReconnectingStdioClient {
+    pub async fn activate_tools(self: &Arc<Self>, ctx: &Context) -> Result<(), McpClientError> {
+        let _lifecycle = self.reconnect_gate.lock().await;
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(error("MCP connection is closed"));
+        }
+        if !self.registrations.lock().is_empty() {
+            return Err(error("MCP tools already active"));
+        }
+        let transport: Arc<dyn McpTransport> = self.clone();
+        let registrations = register_tools(
+            ctx,
+            transport,
+            &self.config.server_name,
+            self.catalog.clone(),
+        )
+        .await?;
+        *self.registrations.lock() = registrations;
+        Ok(())
+    }
+    pub async fn suspend_tools(&self) {
+        let _lifecycle = self.reconnect_gate.lock().await;
+        let registrations = std::mem::take(&mut *self.registrations.lock());
+        for dispose in registrations.into_iter().rev() {
+            dispose().await;
+        }
+    }
     pub fn tool_count(&self) -> usize {
         self.catalog
             .get("tools")
@@ -485,12 +524,35 @@ fn public_tool_name(server: &str, raw: &str) -> String {
     )
 }
 
+pub(crate) fn validate_catalog(listed: &Value) -> Result<(), McpClientError> {
+    let entries = listed["tools"]
+        .as_array()
+        .ok_or_else(|| error("MCP tools/list result requires a tools array"))?;
+    let mut names = std::collections::HashSet::new();
+    for entry in entries {
+        let name = entry["name"]
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| error("MCP tool name must be a non-empty string"))?;
+        if !names.insert(name) {
+            return Err(error(format!("duplicate MCP tool name {name:?}")));
+        }
+        dsh_tools::assert_object_json_schema(&entry["inputSchema"]).map_err(|failure| {
+            error(format!(
+                "unsupported MCP inputSchema for {name:?}: {failure}"
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn register_tools(
     ctx: &Context,
     client: Arc<dyn McpTransport>,
     server: &str,
     listed: Value,
 ) -> Result<Vec<Disposer>, McpClientError> {
+    validate_catalog(&listed)?;
     let tools = ctx
         .get_typed::<Arc<ToolRuntime>>("tools", false)
         .map(|slot| slot.as_ref().clone())
@@ -590,8 +652,8 @@ pub(crate) async fn register_tools(
     }
     let mut registrations = Vec::new();
     for definition in pending {
-        match tools.register(ctx, definition) {
-            Ok(disposer) => registrations.push(disposer),
+        match tools.prepare_register_arc(ctx, Arc::new(definition)) {
+            Ok(prepared) => registrations.push(prepared.commit(ctx)),
             Err(failure) => {
                 for dispose in registrations.into_iter().rev() {
                     dispose().await;

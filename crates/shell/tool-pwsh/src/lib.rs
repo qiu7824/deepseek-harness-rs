@@ -11,6 +11,21 @@ use dsh_tools::{
 };
 use futures::future::BoxFuture;
 
+fn shell_runtime_failure(message: String) -> ToolBodyError {
+    for code in [
+        "SANDBOX_UNAVAILABLE",
+        "SANDBOX_SETUP_FAILED",
+        "SANDBOX_SETUP_TIMEOUT",
+        "SANDBOX_RUNNER_TIMEOUT",
+        "SHELL_ABORTED",
+    ] {
+        if message.starts_with(&format!("[{code}]")) {
+            return ToolBodyError::coded(message, "ShellRuntimeError", code);
+        }
+    }
+    ToolBodyError::coded(message, "ShellRuntimeError", "SHELL_STARTUP_FAILED")
+}
+
 struct PwshJobHooks {
     process: Arc<dyn ShellProcess>,
 }
@@ -190,6 +205,7 @@ impl ToolPwshService {
                         "command": { "type": "string" },
                         "workdir": { "type": "string", "description": "Working directory; managed execution copies preserve the source project as read-only." },
                         "description": { "type": "string" },
+                        "timeout_ms": { "type": "integer", "description": "Foreground execution budget in milliseconds, from 1 to 600000; use a short budget for simple probes and background jobs for long work." },
                         "run_in_background": { "type": "boolean" },
                         "allow_nonzero": { "type": "boolean", "description": "Return read-only diagnostic output even when a probe exits nonzero; the exitCode remains visible." }
                     },
@@ -238,6 +254,11 @@ impl ToolPwshService {
                             .ok_or_else(|| {
                                 ToolBodyError::plain("invalid command: expected a non-empty string")
                             })?;
+                        let timeout_ms = match args.get("timeout_ms") {
+                            None => None,
+                            Some(value) => Some(value.as_u64().filter(|value| (1..=600_000).contains(value))
+                                .ok_or_else(|| ToolBodyError::coded("timeout_ms must be an integer from 1 to 600000", "ToolInputError", "TOOL_INPUT_INVALID"))?),
+                        };
                         if args.get("run_in_background") == Some(&serde_json::Value::Bool(true)) {
                             let description = args
                                 .get("description")
@@ -287,6 +308,7 @@ impl ToolPwshService {
                             }));
                         }
                         let mut request = ShellExecRequest::new(command);
+                        request.timeout_ms = timeout_ms;
                         request.signal = Some(signal);
                         if let Some(owner) = owner.as_ref() {
                             let policy = sandbox_policy
@@ -306,13 +328,24 @@ impl ToolPwshService {
                         let result = shell
                             .run(shell.resolve(request))
                             .await
-                            .map_err(ToolBodyError::plain)?;
+                            .map_err(shell_runtime_failure)?;
                         let allow_nonzero = args.get("allow_nonzero") == Some(&serde_json::Value::Bool(true));
                         let output = if result.stderr.text.is_empty() { result.stdout.text.clone() } else {
                             format!("{}\n[stderr]\n{}", result.stdout.text, result.stderr.text)
                         };
+                        if result.aborted {
+                            return Err(ToolBodyError::coded(format!("PowerShell command cancelled\n{output}"), "AbortError", "SHELL_ABORTED"));
+                        }
                         if result.timed_out {
                             return Err(ToolBodyError::coded(format!("PowerShell command timed out after {} ms\n{output}", result.timeout_ms), "ShellError", "SHELL_TIMEOUT"));
+                        }
+                        if let Some(sandbox) = &result.sandbox {
+                            if sandbox.runner_failed == Some(true) {
+                                return Err(ToolBodyError::coded(format!("Sandbox startup or cleanup failed; inspect the runtime before retrying the command.\n{output}"), "SandboxError", "SANDBOX_RUNNER_FAILED"));
+                            }
+                            if sandbox.denied {
+                                return Err(ToolBodyError::coded(format!("The sandbox denied a file operation. Check the authorized workspace and permissions before retrying.\n{output}"), "SandboxError", "SANDBOX_DENIED"));
+                            }
                         }
                         if (result.exit_code.is_some_and(|code| code != 0) || result.signal.is_some()) && !allow_nonzero {
                             return Err(ToolBodyError::coded(format!("PowerShell command failed (exit: {:?}, signal: {:?})\n{output}", result.exit_code, result.signal), "ShellError", "SHELL_FAILED"));

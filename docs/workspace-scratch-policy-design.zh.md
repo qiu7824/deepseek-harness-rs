@@ -91,3 +91,5 @@ Git 副本进入或离开恢复队列时同步更新自己的 Git 关联。清�
 - 默认插件入口、原生终端、审批、引导输入和手机布局通过同一发布产物验证。
 
 实现学习依据见 [开源机制说明](workspace-scratch-open-source-study.zh.md)。
+
+容量治理的目标行为、分类保留规则与验收条件见 [垃圾槽容量与生命周期规则](workspace-scratch-capacity-rules.zh.md)。

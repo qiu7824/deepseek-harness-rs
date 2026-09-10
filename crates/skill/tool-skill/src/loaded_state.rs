@@ -275,7 +275,7 @@ pub(super) async fn install(
             let decision_value = next.call().await;
             let decision =
                 downcast_arc::<PreStepDecision>(&decision_value).expect("pre-step decision");
-            let PreStepDecision::Enter { messages } = decision.as_ref() else {
+            let PreStepDecision::Enter { messages, starts_request_series } = decision.as_ref() else {
                 return Some(decision_value);
             };
             let mut state = tracker.observe(&payload.agent);
@@ -376,7 +376,7 @@ pub(super) async fn install(
             }
             let mut messages = messages.clone();
             messages.extend(updates);
-            Some(arc(PreStepDecision::Enter { messages }))
+            Some(arc(PreStepDecision::Enter { messages, starts_request_series: *starts_request_series }))
         })
     });
     ctx.on("agent/pre-step", listener, cordis::EventOptions::default())

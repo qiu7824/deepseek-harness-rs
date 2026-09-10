@@ -6,6 +6,96 @@ use dsh_subprocess_local::LocalSubprocessRuntime;
 
 #[tokio::test]
 #[cfg(windows)]
+async fn dropping_a_foreground_call_terminates_its_process_tree() {
+    use dsh_subprocess::*;
+    use futures::future::BoxFuture;
+    use std::sync::{Arc, Mutex};
+    struct Tracking {
+        inner: Arc<LocalSubprocessRuntime>,
+        spawned: Mutex<Option<tokio::sync::oneshot::Sender<Arc<dyn SubprocessHandle>>>>,
+    }
+    impl SubprocessRuntime for Tracking {
+        fn resolve_executable(
+            &self,
+            command: &str,
+            env: Option<&[(String, String)]>,
+            signal: Option<SubprocessAbort>,
+        ) -> BoxFuture<'static, Result<String, String>> {
+            self.inner.resolve_executable(command, env, signal)
+        }
+        fn spawn(&self, spec: SubprocessSpawnSpec) -> Result<Arc<dyn SubprocessHandle>, String> {
+            let handle = self.inner.spawn(spec)?;
+            if let Some(sender) = self.spawned.lock().unwrap().take() {
+                let _ = sender.send(handle.clone());
+            }
+            Ok(handle)
+        }
+        fn spawn_terminal(
+            &self,
+            spec: SubprocessTerminalSpawnSpec,
+        ) -> BoxFuture<'static, Result<Arc<dyn SubprocessTerminalHandle>, String>> {
+            self.inner.spawn_terminal(spec)
+        }
+    }
+    let ctx = Context::root();
+    let (spawned, received) = tokio::sync::oneshot::channel();
+    let tracking = Arc::new(Tracking {
+        inner: LocalSubprocessRuntime::new(),
+        spawned: Mutex::new(Some(spawned)),
+    });
+    ctx.register_service(tracking.clone() as Arc<dyn SubprocessRuntime>);
+    let shell = LocalPwshExecutor::install(
+        &ctx,
+        Config {
+            grace_ms: Some(20),
+            ..Default::default()
+        },
+    );
+    let first_shell = shell.clone();
+    let operation = tokio::spawn(async move {
+        let shell = first_shell;
+        shell
+            .run(shell.resolve(ShellExecRequest::new("Start-Sleep -Seconds 60")))
+            .await
+    });
+    let handle = received.await.unwrap();
+    operation.abort();
+    assert!(matches!(operation.await, Err(error) if error.is_cancelled()));
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            handle.wait_for_exit(None)
+        )
+        .await
+        .unwrap(),
+        "dropping the command future must release the real Windows process tree"
+    );
+    let (spawned, received) = tokio::sync::oneshot::channel();
+    *tracking.spawned.lock().unwrap() = Some(spawned);
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let signal = cancelled.clone();
+    let mut request = ShellExecRequest::new("Start-Sleep -Seconds 60");
+    request.signal = Some(Arc::new(move || {
+        signal.load(std::sync::atomic::Ordering::SeqCst)
+    }));
+    let operation = tokio::spawn(async move { shell.run(shell.resolve(request)).await });
+    let handle = received.await.unwrap();
+    cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), operation)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(result.aborted);
+    assert!(
+        !result.timed_out,
+        "user cancellation must not be reported as a timeout"
+    );
+    assert!(handle.wait_for_exit(None).await);
+}
+
+#[tokio::test]
+#[cfg(windows)]
 async fn selected_system_powershell_loads_its_own_builtin_modules() {
     let ctx = Context::root();
     let _processes = LocalSubprocessRuntime::install(&ctx);

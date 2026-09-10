@@ -4079,6 +4079,7 @@ window.__ModuleLoader__.load({
 				t
 			}, sessionId);
 			const deco = input === void 0 ? INERT_DECORATIONS : deriveDecorations(input, lexicon);
+			const placeholderText = placeholder ?? (parentOffline ? t("placeholder.parentOffline") : disabled ? t("placeholder.unavailable") : canSteerQueue ? t("placeholder.steerQueue") : planActive ? t("placeholder.plan") : t("placeholder.default"));
 			const backdrop = [];
 			{
 				let cursor = 0;
@@ -4212,11 +4213,11 @@ window.__ModuleLoader__.load({
 											value: draft,
 											disabled: textareaDisabled,
 											readOnly: machineBusy || workspaceTrigger,
-											"aria-label": workspaceTrigger ? t("hero.chooseWorkspace") : void 0,
+											"aria-label": workspaceTrigger ? t("hero.chooseWorkspace") : placeholderText,
 											"aria-haspopup": workspaceTrigger ? "menu" : void 0,
 											"aria-expanded": workspaceTrigger ? workspacePickerOpen : void 0,
 											"data-phase": input?.phase ?? "inert",
-											placeholder: placeholder ?? (parentOffline ? t("placeholder.parentOffline") : disabled ? t("placeholder.unavailable") : canSteerQueue ? t("placeholder.steerQueue") : planActive ? t("placeholder.plan") : t("placeholder.default")),
+											placeholder: attachments.length === 0 && input?.claim == null ? placeholderText : "",
 											rows: 2,
 											onChange,
 											onKeyDown,
@@ -5805,7 +5806,10 @@ window.__ModuleLoader__.load({
 			}
 			save() {
 				const following = this.mode === "following" && this.liveTail();
-				if (this.lastPublished !== following) { this.lastPublished = following; this.publish(following); }
+				// Button visibility is geometry, not the saved reading/follow mode.
+				// A folded or short live transcript has nowhere further to scroll.
+				const atBottom = this.liveTail() && (following || this.floor() - this.el.scrollTop <= 1);
+				if (this.lastPublished !== atBottom) { this.lastPublished = atBottom; this.publish(atBottom); }
 				if (following) { this.anchor = null; this.model().chatScroll.save(null); }
 				else if (this.anchor !== null) this.model().chatScroll.save({ ...this.anchor, scrollTop: this.el.scrollTop });
 			}
@@ -5826,7 +5830,11 @@ window.__ModuleLoader__.load({
 				const m = this.model(), revision = m.historyNavigationRevision ?? 0;
 				if (this.navigationRevision !== null && revision !== this.navigationRevision) {
 					this.page = null; this.direction = 0; this.intentUntil = 0;
-					if (m.historyNavigationReason !== "resync") {
+					if (m.historyNavigationReason === "latest") {
+						// Both Send and the jump button call the model's returnLatest,
+						// including its no-fetch fast path. That is an explicit follow intent.
+						this.anchor = null; this.mode = "returning"; this.returnReady = true;
+					} else if (m.historyNavigationReason !== "resync") {
 						this.anchor = null;
 						if (this.mode !== "returning") this.mode = "reading";
 					}

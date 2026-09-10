@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use cordis::{ArcValue, Context, Disposer, Listener, Plugin, PluginError, arc, downcast_arc};
 use dsh_llm::ContentBlock;
-use dsh_timeout::{DeadlineSignal, deadline, timeout_of};
+use dsh_timeout::{AbortTaskOnDrop, DeadlineSignal, deadline, timeout_of};
 use dsh_tools::{ToolErrorInfo, ToolExecution, ToolExecutionResult, ToolFailure, ToolRuntime};
 
 /// The code owned by this plugin, used BOTH as the internal deadline
@@ -33,6 +33,18 @@ pub const NAME: &str = "timeout-policy";
 /// The tool registry service this plugin wraps (`tools/execute`) and reads
 /// (`get`).
 pub const INJECT: [&str; 1] = ["tools"];
+
+struct ExecutionSignalGuard {
+    execution: Arc<ToolExecution>,
+    upstream: dsh_tools::AbortPredicate,
+    _poller: AbortTaskOnDrop,
+}
+
+impl Drop for ExecutionSignalGuard {
+    fn drop(&mut self) {
+        *self.execution.signal.lock() = self.upstream.clone();
+    }
+}
 
 /// The structured result substituted when this plugin's deadline wins.
 pub fn tool_timeout_result(timeout_ms: u64) -> ToolExecutionResult {
@@ -120,9 +132,13 @@ pub fn apply(ctx: &Context) -> Disposer {
                 let fused = Arc::clone(&fused);
                 Arc::new(move || fused.is_cancelled())
             };
+            let signal_guard = ExecutionSignalGuard {
+                execution: exec.clone(),
+                upstream: upstream_predicate,
+                _poller: AbortTaskOnDrop::new(poller),
+            };
             let result = next.call().await;
-            poller.abort();
-            *exec.signal.lock() = upstream_predicate;
+            drop(signal_guard);
             // If OUR timer fired (scoped by code — a nested outer deadline
             // reads as None here), replace whatever the tool returned with
             // the structured TOOL_TIMEOUT the model sees.

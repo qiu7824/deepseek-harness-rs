@@ -57,6 +57,9 @@
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
 
+- id: tool-present
+  name: '@deepseek-ai/dsh-tool-present'
+
 - id: tool-fs-search
   name: '@deepseek-ai/dsh-tool-fs-search'
   config:

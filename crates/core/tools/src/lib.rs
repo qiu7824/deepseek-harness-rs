@@ -17,7 +17,7 @@ pub use index::{
     RUN_CODE_NAME, TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH, ToolBodyError, ToolDefinition,
     ToolErrorInfo, ToolExecution, ToolExecutionInput, ToolExecutionMode, ToolExecutionResult,
     ToolFailure, ToolGuard, ToolNotFoundError, ToolOutputDefinition, ToolOutputError,
-    ToolPresentationMode, ToolRestriction, ToolRunContext, ToolRuntime,
+    ToolPresentationMode, ToolRestriction, ToolRunContext, ToolRuntime, scoped_tool_guidance,
 };
 pub use json_schema::{
     JsonSchemaError, JsonSchemaNode, ObjectJsonSchema, assert_object_json_schema,

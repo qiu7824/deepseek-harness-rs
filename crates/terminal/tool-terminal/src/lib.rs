@@ -11,6 +11,15 @@ use dsh_terminal::{
 use dsh_tools::{ToolBodyError, ToolDefinition, ToolOutputDefinition, ToolRunContext, ToolRuntime};
 use futures::future::BoxFuture;
 
+fn terminal_failure(error: dsh_terminal::TerminalFailure) -> ToolBodyError {
+    let code = match error.code() {
+        Some(code) => code.as_str().to_string(),
+        None if matches!(error, dsh_terminal::TerminalFailure::Aborted) => "TOOL_ABORTED".into(),
+        None => "TERMINAL_FAILED".into(),
+    };
+    ToolBodyError::coded(error.to_string(), "TerminalError", &code)
+}
+
 struct TerminalSendJob {
     operation: Arc<dyn TerminalSendOperation>,
     cancel_requested: Arc<AtomicBool>,
@@ -134,9 +143,9 @@ impl ToolTerminalService {
                         };
                         let created = terminals
                             .spawn(owner, request, Some(signal))
-                            .map_err(|error| ToolBodyError::plain(error.to_string()))?
+                            .map_err(terminal_failure)?
                             .await
-                            .map_err(|error| ToolBodyError::plain(error.to_string()))?;
+                            .map_err(terminal_failure)?;
                         Ok(serde_json::json!({
                             "sessionId": created.session_id.as_str(),
                             "name": created.name,

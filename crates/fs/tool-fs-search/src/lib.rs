@@ -5,7 +5,7 @@ use dsh_subprocess::{
     SubprocessAbort, SubprocessCollect, SubprocessOutputMode, SubprocessRuntime,
     SubprocessSpawnSpec, SubprocessStdinMode, SubprocessStdio,
 };
-use dsh_system_prompt::{PromptSection, PromptText, SystemPrompt};
+use dsh_system_prompt::{PromptSection, SystemPrompt};
 use dsh_tools::{ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition};
 use std::{
     collections::BTreeMap,
@@ -373,14 +373,27 @@ impl Service {
             PromptSection {
                 name: "tool:glob".into(),
                 order: 103.0,
-                text: PromptText::Static(
-                    "Use the glob tool — not shell find — to discover files by path pattern."
-                        .into(),
+                text: dsh_tools::scoped_tool_guidance(
+                    ctx,
+                    &["glob"],
+                    "Use the glob tool — not shell find — to discover files by path pattern.",
                 ),
                 complete: None,
             },
         );
-        prompt.section(ctx,PromptSection{name:"tool:grep".into(),order:104.0,text:PromptText::Static("Use the grep tool — not shell grep or rg — to search file contents. Use read on a matched file when you need surrounding context.".into()),complete:None});
+        prompt.section(
+            ctx,
+            PromptSection {
+                name: "tool:grep".into(),
+                order: 104.0,
+                text: dsh_tools::scoped_tool_guidance(
+                    ctx,
+                    &["grep"],
+                    "Use the grep tool — not shell grep or rg — to search file contents.",
+                ),
+                complete: None,
+            },
+        );
         tools.register(ctx, s.glob())?;
         tools.register(ctx, s.grep())?;
         Ok(s)

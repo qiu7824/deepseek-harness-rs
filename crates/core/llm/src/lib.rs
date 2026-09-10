@@ -69,5 +69,5 @@ pub use types::{
     LlmCallConfigAdapterDefaults, LlmConfigurableProvider, LlmDiscoveredModel, LlmFailure,
     LlmModelContext, LlmModelDiscoveryRequest, LlmModelInfo, LlmModelReasoningInfo,
     LlmProviderInfo, LlmReasoningEffortInfo, LlmResolvedModelInfo, ModelModality, StreamChunk,
-    TokenUsage, ToolCallBlock, ToolSchema,
+    SystemPromptUpdate, TokenUsage, ToolCallBlock, ToolSchema,
 };

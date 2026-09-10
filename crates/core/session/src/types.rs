@@ -305,6 +305,8 @@ pub struct EpochHeader {
 /// Registration-bound metadata for one resolved model route.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RequestContext {
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "systemPromptUpdate")]
+    pub system_prompt_update: Option<dsh_llm::SystemPromptUpdate>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -331,6 +333,7 @@ pub enum RequestHeaderReason {
     Initial,
     Resume,
     Change,
+    Series,
 }
 
 /// How a session event entered the ordered surface.

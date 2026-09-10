@@ -14,6 +14,7 @@ pub(crate) fn schema() -> Schema {
         ("maxTokens".into(), Schema::number().min(1.0).step(1.0)),
         ("compat".into(), super::provider_compatibility::schema()),
         ("imageInput".into(), Schema::boolean()),
+        ("systemPromptUpdate".into(), Schema::constant(Data::String("in-history".into()))),
         ("source".into(), Schema::string()),
         ("accountScope".into(), Schema::string()),
     ]));

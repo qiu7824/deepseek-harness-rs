@@ -106,12 +106,14 @@ fn opaque_cell(value: &str, limit: usize) -> bool {
 
 /// Parse the legacy whitespace inventory and the tab-separated inventory
 /// headed SESSION_ID, NAME, SHELL, STATE, LAST_ACTIVE shipped by newer CLIs.
-/// State and last-active values are display data, not lifecycle authority.
+/// Explicitly exited rows are historical records, not active sessions. Other
+/// states and timestamps never confer ownership or permission to terminate.
 /// LAST_ACTIVE may contain spaces. Malformed rows, duplicate IDs and
 /// unrecognized diagnostic rows fail.
 pub(super) fn parse_sessions(stdout: &str) -> Result<BTreeSet<String>, String> {
     let text = plain_text(stdout)?;
     let mut sessions = BTreeSet::new();
+    let mut seen = BTreeSet::new();
     let mut header = false;
     let mut named_sessions = false;
     let mut explicit_empty = false;
@@ -128,7 +130,7 @@ pub(super) fn parse_sessions(stdout: &str) -> Result<BTreeSet<String>, String> {
             connected = true;
             continue;
         }
-        if line == EMPTY_SESSIONS && !explicit_empty && sessions.is_empty() {
+        if line == EMPTY_SESSIONS && !explicit_empty && seen.is_empty() {
             explicit_empty = true;
             continue;
         }
@@ -164,11 +166,14 @@ pub(super) fn parse_sessions(stdout: &str) -> Result<BTreeSet<String>, String> {
         {
             return Err(protocol_error());
         }
-        if sessions.len() >= MAX_SESSIONS || !sessions.insert(id.to_string()) {
+        if seen.len() >= MAX_SESSIONS || !seen.insert(id.to_string()) {
             return Err(protocol_error());
         }
+        if !state.eq_ignore_ascii_case("exited") {
+            sessions.insert(id.to_string());
+        }
     }
-    if !explicit_empty && (!header || sessions.is_empty()) {
+    if !explicit_empty && (!header || seen.is_empty()) {
         return Err(protocol_error());
     }
     Ok(sessions)
@@ -227,6 +232,11 @@ fn blocked_plain_startup(text: &str) -> bool {
 
 fn startup_failure_plain(text: &str) -> Option<&'static str> {
     let lower = text.to_ascii_lowercase();
+    if lower.contains("invalid open response") {
+        return Some(
+            "UU 官方 CLI 未收到有效的远端终端开启响应（invalid open response）；远端 Shell 尚未建立",
+        );
+    }
     if lower.contains("timeout waiting for terminal environment check") {
         return Some("UU 客户端等待被控端终端环境检查响应超时；尚未建立远端 Shell");
     }
@@ -369,6 +379,20 @@ mod tests {
             )
             .unwrap()
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn exited_inventory_rows_do_not_keep_a_closed_shell_active() {
+        assert_eq!(parse_sessions(&format!("{HEADER}0 powershell detached 1789026219839\n4071905568 powershell exited 1789026398194\n")).unwrap(), ids(&["0"]));
+        assert!(
+            parse_sessions(&format!("{HEADER}4071905568 powershell exited now\n"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            parse_sessions(&format!("{HEADER}1 cmd exited now\n1 cmd detached later\n")).is_err(),
+            "conflicting historical and active identities remain invalid"
         );
     }
 

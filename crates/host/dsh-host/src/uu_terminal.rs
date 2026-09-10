@@ -105,6 +105,13 @@ impl Access for BridgeAccess {
 }
 
 trait Transport: Send + Sync {
+    fn preferred_target(&self, target: &TerminalTarget) -> TerminalTarget {
+        target.clone()
+    }
+    fn compatibility_target(&self, _target: &TerminalTarget) -> Option<TerminalTarget> {
+        None
+    }
+    fn remember_compatible(&self, _primary: &TerminalTarget, _selected: &TerminalTarget) {}
     fn sessions(
         &self,
         target: TerminalTarget,
@@ -119,7 +126,58 @@ trait Transport: Send + Sync {
     ) -> BoxFuture<'static, Result<Arc<dyn SubprocessTerminalHandle>, String>>;
 }
 
-struct NativeTransport(Arc<dyn SubprocessRuntime>);
+type CliKey = (std::path::PathBuf, String, String);
+type CliStamp = (u64, std::time::SystemTime);
+struct CompatibleCli {
+    primary: CliStamp,
+    selected: CliStamp,
+    path: std::path::PathBuf,
+}
+struct NativeTransport {
+    runtime: Arc<dyn SubprocessRuntime>,
+    compatible: Mutex<HashMap<CliKey, CompatibleCli>>,
+}
+fn cli_stamp(path: &std::path::Path) -> Option<CliStamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    Some((metadata.len(), metadata.modified().ok()?))
+}
+fn cli_key(target: &TerminalTarget) -> CliKey {
+    (
+        target.cli.clone(),
+        target.account.clone(),
+        target.device_id.clone(),
+    )
+}
+fn installed_backup_cli(primary: &std::path::Path) -> Option<std::path::PathBuf> {
+    if !primary
+        .file_name()?
+        .to_str()?
+        .eq_ignore_ascii_case("uuyc-cli.exe")
+    {
+        return None;
+    }
+    let parent = primary.parent()?;
+    let root = if parent.file_name()?.to_str()?.eq_ignore_ascii_case("bin") {
+        parent.parent()?
+    } else {
+        parent
+    };
+    let root = root.canonicalize().ok()?;
+    let backup = root.join("bak/uuyc-cli.exe").canonicalize().ok()?;
+    if !backup.starts_with(&root)
+        || backup == primary.canonicalize().ok()?
+        || cli_stamp(&backup).is_none()
+    {
+        return None;
+    }
+    // Do not retry an identical copy, or select by a version-string allowlist.
+    use sha2::{Digest, Sha256};
+    (Sha256::digest(std::fs::read(primary).ok()?) != Sha256::digest(std::fs::read(&backup).ok()?))
+        .then_some(backup)
+}
 async fn terminal_query(
     target: &TerminalTarget,
     arguments: Vec<String>,
@@ -150,6 +208,41 @@ async fn terminal_query(
     })
 }
 impl Transport for NativeTransport {
+    fn preferred_target(&self, target: &TerminalTarget) -> TerminalTarget {
+        let choices = self.compatible.lock();
+        let mut selected = target.clone();
+        if let Some(choice) = choices.get(&cli_key(target)) {
+            if cli_stamp(&target.cli) == Some(choice.primary)
+                && cli_stamp(&choice.path) == Some(choice.selected)
+            {
+                selected.cli = choice.path.clone();
+            }
+        }
+        selected
+    }
+    fn compatibility_target(&self, target: &TerminalTarget) -> Option<TerminalTarget> {
+        let mut selected = target.clone();
+        selected.cli = installed_backup_cli(&target.cli)?;
+        Some(selected)
+    }
+    fn remember_compatible(&self, primary: &TerminalTarget, selected: &TerminalTarget) {
+        if primary.cli == selected.cli {
+            self.compatible.lock().remove(&cli_key(primary));
+            return;
+        }
+        if let (Some(primary_stamp), Some(selected_stamp)) =
+            (cli_stamp(&primary.cli), cli_stamp(&selected.cli))
+        {
+            self.compatible.lock().insert(
+                cli_key(primary),
+                CompatibleCli {
+                    primary: primary_stamp,
+                    selected: selected_stamp,
+                    path: selected.cli.clone(),
+                },
+            );
+        }
+    }
     fn sessions(
         &self,
         target: TerminalTarget,
@@ -172,7 +265,7 @@ impl Transport for NativeTransport {
         cwd: String,
         signal: Abort,
     ) -> BoxFuture<'static, Result<Arc<dyn SubprocessTerminalHandle>, String>> {
-        let runtime = self.0.clone();
+        let runtime = self.runtime.clone();
         Box::pin(async move {
             let mut argv = vec![target.cli.to_string_lossy().into_owned()];
             argv.extend(uu_cli::new_terminal_arguments(&target.device_id, shell)?);
@@ -309,6 +402,9 @@ struct SlotState {
     exit_requested: bool,
     exit_observed: bool,
     diagnostic_tail: String,
+    process_exit_code: Option<i32>,
+    process_signal: Option<String>,
+    output_drain_finished: bool,
     owned_connection: bool,
 }
 impl SlotState {
@@ -343,10 +439,12 @@ impl Slot {
         let (output, cursor, truncated) = state.output.page(cursor, limit)?;
         Ok(
             json!({"terminalId":self.id,"deviceId":self.target.device_id,"deviceName":self.target.device_name,
+            "cliPath":self.target.cli,
             "remoteSessionId":state.remote_id,"jobId":state.job_id,"state":state.phase.name(),
             "connectionExited":self.client_exited.load(Ordering::Acquire),"output":output,"cursor":cursor,"truncated":truncated,
             "cleanupConfirmed":state.phase==Phase::Closed,"error":state.initialization_failure.as_ref().or(state.failure.as_ref()),
             "cleanupError":state.failure,
+            "processExitCode":state.process_exit_code,"processSignal":state.process_signal,
             "inventoryBaselineAvailable":state.before.is_some(),"inventoryError":state.inventory_error,
             "ownership":if state.owned_connection {"new-cli-connection"} else {"unconfirmed"},
             "ownershipLost":self.ownership_lost.load(Ordering::Acquire),
@@ -485,11 +583,17 @@ impl Slot {
         let exit_slot = self.clone();
         tokio::spawn(async move {
             let outcome = client.done().await;
+            if let Ok(outcome) = &outcome {
+                let mut state = exit_slot.state.lock();
+                state.process_exit_code = outcome.exit_code;
+                state.process_signal = outcome.signal.clone();
+            }
             exit_slot.client_exited.store(true, Ordering::Release);
             // ConPTY may keep its output pipe open after the child exits.
             // Closing that already-exited local PTY drains the final bytes.
             let _ = client.terminate().await;
             let output_drained = exit_slot.wait_output_end().await.is_ok();
+            exit_slot.state.lock().output_drain_finished = true;
             if output_drained
                 && outcome
                     .as_ref()
@@ -518,7 +622,33 @@ impl Slot {
                     return Err(error.into());
                 }
                 if self.client_exited.load(Ordering::Acquire) {
-                    return Err("UU 终端连接在建立前退出".into());
+                    // Process exit and the final PTY read arrive independently.
+                    // Wait for the bounded drain before classifying startup.
+                    if !self.state.lock().output_drain_finished {
+                        notified.await;
+                        continue;
+                    }
+                    let state = self.state.lock();
+                    if self.ownership_lost.load(Ordering::Acquire) {
+                        return Err(self.connection_error("UU 终端连接已转移".into()));
+                    }
+                    if let Some(error) = protocol::startup_failure(&state.output.text()) {
+                        return Err(error.into());
+                    }
+                    let detail = state
+                        .process_exit_code
+                        .map(|code| {
+                            if code == 0 {
+                                "：进程正常结束，但未收到终端握手（进程退出码 0）".into()
+                            } else {
+                                format!(
+                                    "：{}（进程退出码 {code}）",
+                                    uu_cli::failure_message(Some(&code.to_string()))
+                                )
+                            }
+                        })
+                        .unwrap_or_default();
+                    return Err(format!("UU 终端连接在建立前退出{detail}"));
                 }
                 if protocol::ready(&text) {
                     // The vendor handshake establishes the interactive
@@ -634,8 +764,7 @@ impl Slot {
             // connection; an explicit, admitted close performs verification.
             if !approved_close {
                 return Err(self.connection_error(
-                    "仅关闭自有本地终端连接；未执行已批准的远端 exit 与库存核验，远端清理未确认"
-                        .into(),
+                    "仅关闭自有本地终端连接；未执行远端 exit 或库存核验，远端清理未确认".into(),
                 ));
             }
             let baseline = before
@@ -827,9 +956,54 @@ impl RemoteTerminals {
             );
         }
         (caller.approve)("open", &target, None).await?;
+        let primary = target;
+        let target = self.transport.preferred_target(&primary);
         self.access
             .validate(target.clone(), true, caller.signal.clone())
             .await?;
+        match self.open_target(caller, target.clone(), shell).await {
+            Ok(value) => Ok(value),
+            Err((error, compatible)) => {
+                if !compatible || (caller.signal)() {
+                    return Err(error);
+                }
+                let backup = if target.cli != primary.cli {
+                    self.transport.remember_compatible(&primary, &primary);
+                    Some(primary.clone())
+                } else {
+                    self.transport.compatibility_target(&target)
+                };
+                let Some(backup) = backup else {
+                    return Err(error);
+                };
+                self.access
+                    .validate(backup.clone(), true, caller.signal.clone())
+                    .await?;
+                match self.open_target(caller, backup.clone(), shell).await {
+                    Ok(mut value) => {
+                        self.transport.remember_compatible(&primary, &backup);
+                        value["compatibilityFallback"] = json!({"primaryCliPath":primary.cli,"reason":"invalid open response","primaryFailure":error});
+                        Ok(value)
+                    }
+                    Err((fallback, _)) => {
+                        Err(format!("{error}; 安装目录兼容 CLI 连接结果：{fallback}"))
+                    }
+                }
+            }
+        }
+    }
+    async fn open_target(
+        &self,
+        caller: &Caller,
+        target: TerminalTarget,
+        shell: TerminalShell,
+    ) -> Result<Value, (String, bool)> {
+        {
+            let mut slots = self.slots.lock();
+            if slots.len() >= 32 {
+                slots.retain(|_, slot| slot.state.lock().reserves_connection());
+            }
+        }
         let slot = Arc::new(Slot {
             id: format!("uu-terminal-{}", uuid::Uuid::new_v4()),
             owner: caller.owner.clone(),
@@ -845,6 +1019,9 @@ impl RemoteTerminals {
                 remote_id: None,
                 job_id: None,
                 initialization_failure: None,
+                process_exit_code: None,
+                process_signal: None,
+                output_drain_finished: false,
                 failure: None,
                 output: Output::default(),
                 initial_prompt: None,
@@ -874,13 +1051,20 @@ impl RemoteTerminals {
             slot.state.lock().initialization_failure = Some(slot.connection_error(error.clone()));
             let close_error = slot.close_owned(false).await.err();
             cleanup.0 = None;
-            return Err(format!(
-                "{}; terminalId={}{}",
-                slot.connection_error(error),
-                slot.id,
-                close_error
-                    .map(|error| format!("; {error}"))
-                    .unwrap_or_default()
+            let compatible = error.contains("invalid open response") && {
+                let state = slot.state.lock();
+                state.client.is_none() && !state.owned_connection && !state.has_user_input
+            };
+            return Err((
+                format!(
+                    "{}; terminalId={}{}",
+                    slot.connection_error(error),
+                    slot.id,
+                    close_error
+                        .map(|error| format!("; {error}"))
+                        .unwrap_or_default()
+                ),
+                compatible,
             ));
         }
         // The lifecycle job represents an established remote terminal. A
@@ -892,18 +1076,22 @@ impl RemoteTerminals {
                 slot.state.lock().initialization_failure = Some(error.clone());
                 let close_error = slot.close_owned(false).await.err();
                 cleanup.0 = None;
-                return Err(format!(
-                    "{error}; terminalId={}{}",
-                    slot.id,
-                    close_error
-                        .map(|error| format!("; {error}"))
-                        .unwrap_or_default()
+                return Err((
+                    format!(
+                        "{error}; terminalId={}{}",
+                        slot.id,
+                        close_error
+                            .map(|error| format!("; {error}"))
+                            .unwrap_or_default()
+                    ),
+                    false,
                 ));
             }
         };
         slot.state.lock().job_id = Some(job_id);
         cleanup.0 = None;
         slot.snapshot(None, MAX_READ)
+            .map_err(|error| (error, false))
     }
     async fn write(
         &self,
@@ -1031,7 +1219,10 @@ pub(crate) fn install(ctx: &Context, bridge: Arc<Bridge>) -> Result<Arc<RemoteTe
         .ok_or("uu-terminal requires subprocess")?;
     let service = Arc::new(RemoteTerminals {
         access: Arc::new(BridgeAccess(bridge)),
-        transport: Arc::new(NativeTransport(subprocess)),
+        transport: Arc::new(NativeTransport {
+            runtime: subprocess,
+            compatible: Default::default(),
+        }),
         slots: Default::default(),
         admission: Default::default(),
         closing: AtomicBool::new(false),

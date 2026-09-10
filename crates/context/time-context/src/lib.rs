@@ -281,7 +281,7 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
                     }
                 }
             }
-            let PreStepDecision::Enter { messages } = decision else {
+            let PreStepDecision::Enter { messages, starts_request_series } = decision else {
                 unreachable!("reject returned above");
             };
             let previous = if step == 1 {
@@ -339,7 +339,7 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
                     source_command_id: None,
                 },
             ));
-            Some(arc(PreStepDecision::Enter { messages: merged }))
+            Some(arc(PreStepDecision::Enter { messages: merged, starts_request_series }))
         })
     });
 

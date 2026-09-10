@@ -888,6 +888,7 @@ impl SystemPrompt {
             a.order
                 .partial_cmp(&b.order)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.name.encode_utf16().cmp(b.name.encode_utf16()))
         });
         let complete_sections: Vec<&PromptSection> = section_definitions
             .iter()
@@ -926,6 +927,7 @@ impl SystemPrompt {
                 a.order
                     .partial_cmp(&b.order)
                     .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.name.encode_utf16().cmp(b.name.encode_utf16()))
             });
             entries
                 .into_iter()
@@ -1001,5 +1003,54 @@ fn live_entries<V: Clone + Send + Sync + 'static>(
 impl Service for SystemPrompt {
     fn service_name(&self) -> &'static str {
         "systemPrompt"
+    }
+}
+
+#[cfg(test)]
+mod stable_order_tests {
+    use super::*;
+    #[tokio::test]
+    async fn equal_order_uses_utf16_names_independently_of_plugin_registration_order() {
+        let ctx = Context::root();
+        let prompt = SystemPrompt::install(&ctx, Default::default()).unwrap();
+        for name in ["\u{e000}", "\u{1d49c}", "z", "a"] {
+            prompt.section(
+                &ctx,
+                PromptSection {
+                    name: name.into(),
+                    order: 1.0,
+                    text: name.into(),
+                    complete: None,
+                },
+            );
+            prompt.context(
+                &ctx,
+                PromptContext {
+                    name: name.into(),
+                    order: 1.0,
+                    text: name.into(),
+                },
+            );
+        }
+        let assembled = prompt.assemble(&ctx, &Default::default()).await.unwrap();
+        let expected = vec!["a", "z", "\u{1d49c}", "\u{e000}"];
+        assert_eq!(
+            assembled
+                .sections
+                .iter()
+                .map(|section| section.name.as_str())
+                .filter(|name| expected.contains(name))
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            assembled
+                .contexts
+                .iter()
+                .map(|section| section.name.as_str())
+                .filter(|name| expected.contains(name))
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
 }

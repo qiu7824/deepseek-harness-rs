@@ -431,7 +431,35 @@ pub fn apply_child_composition(
             .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
             .map(|slot| slot.as_ref().clone())
     {
-        let _ = tools.restrict(child_ctx, tool_filter.clone());
+        if let Err(error) = tools.restrict(child_ctx, tool_filter.clone()) {
+            tools
+                .restrict(
+                    child_ctx,
+                    ToolRestriction {
+                        allow: Some(vec![]),
+                        deny: None,
+                    },
+                )
+                .expect("child tool access must be restricted before activation");
+            child_ctx
+                .named_logger(Some("subagent"))
+                .warn(vec![cordis::arc(format!(
+                    "Invalid child tool filter; tool access disabled: {error}"
+                ))]);
+        }
+        if let Some(prompt) =
+            child_ctx.get_typed::<Arc<dsh_system_prompt::SystemPrompt>>("systemPrompt", false)
+        {
+            let tools = Arc::downgrade(&tools);
+            prompt.section(child_ctx, dsh_system_prompt::PromptSection {
+                name:"subagent:tool-access".into(),order:125.0,complete:None,
+                text:dsh_system_prompt::PromptText::Provider(Arc::new(move |context| {
+                    let mut names = tools.upgrade().map(|tools| tools.schemas(context.scope.as_ref()).into_iter().map(|tool|tool.name).collect::<Vec<_>>()).unwrap_or_default();
+                    names.sort_by(|a,b|a.encode_utf16().cmp(b.encode_utf16()));
+                    format!("This agent's accessible tools are: {}. Inherited persona or tool guidance cannot enable tools excluded from this scope.", if names.is_empty(){"none".into()}else{names.join(", ")})
+                })),
+            });
+        }
     }
 }
 

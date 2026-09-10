@@ -20,7 +20,7 @@ use dsh_goal::{
 use dsh_llm::{
     ContentBlock, ContextForm, MessageSource, bound_context_summary, create_user_message,
 };
-use dsh_system_prompt::{PromptSection, PromptText, SystemPrompt};
+use dsh_system_prompt::{PromptSection, SystemPrompt};
 use dsh_tools::{
     ToolArgsError, ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition,
     ToolRunContext, ToolRuntime, validate_json_schema_value,
@@ -360,6 +360,9 @@ fn execute_update(
             if action == "pause" {
                 service.pause(&execution.agent, &ref_)
             } else {
+                if let Some(current) = service.get(&execution.agent).map_err(domain_error)? {
+                    require_model_resume_phase(current.phase)?;
+                }
                 service.resume(&execution.agent, &ref_)
             }
             .map_err(domain_error)?
@@ -435,6 +438,31 @@ fn execute_update(
         _ => unreachable!("schema-validated action"),
     };
     Ok(goal_value(Some(goal)))
+}
+
+fn require_model_resume_phase(phase: dsh_goal::GoalPhase) -> Result<(), ToolBodyError> {
+    if phase == dsh_goal::GoalPhase::Paused {
+        return Err(ToolBodyError::coded(
+            "This goal was explicitly paused. It can only be resumed through the user's goal controls.",
+            "HarnessError", "GOAL_EXPLICITLY_PAUSED",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod resume_policy_tests {
+    #[test]
+    fn explicit_pause_cannot_be_rearmed_by_a_model_during_a_human_turn() {
+        use dsh_goal::GoalPhase;
+        assert!(super::require_model_resume_phase(GoalPhase::Paused).is_err());
+        // Restored active goals still use the ordinary authority/revision and
+        // disarmed-state checks; blocked and complete transitions stay owned
+        // by the goal service.
+        for phase in [GoalPhase::Active,GoalPhase::Blocked,GoalPhase::Complete] {
+            assert!(super::require_model_resume_phase(phase).is_ok());
+        }
+    }
 }
 
 fn generic(title: &str, kind: ToolCallKind, raw_input: Option<Value>) -> ToolCallView {
@@ -528,7 +556,11 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
         PromptSection {
             name: "tool:goal".to_string(),
             order: 114.0,
-            text: PromptText::Static(guidance(resolved.blocked_after_consecutive_rounds)),
+            text: dsh_tools::scoped_tool_guidance(
+                ctx,
+                &["get_goal", "create_goal", "update_goal"],
+                guidance(resolved.blocked_after_consecutive_rounds),
+            ),
             complete: None,
         },
     )?];

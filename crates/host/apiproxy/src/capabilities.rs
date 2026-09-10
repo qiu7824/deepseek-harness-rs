@@ -54,6 +54,19 @@ enum Connection {
     Http(Arc<RemoteHttpClient>),
 }
 impl Connection {
+    async fn activate(&self, ctx: &Context) -> Result<(), String> {
+        match self {
+            Self::Stdio(client) => client.activate_tools(ctx).await,
+            Self::Http(client) => client.activate_tools(ctx).await,
+        }
+        .map_err(|error| error.to_string())
+    }
+    async fn suspend(&self) {
+        match self {
+            Self::Stdio(client) => client.suspend_tools().await,
+            Self::Http(client) => client.suspend_tools().await,
+        }
+    }
     fn count(&self) -> usize {
         match self {
             Self::Stdio(c) => c.tool_count(),
@@ -419,7 +432,7 @@ impl CapabilityManager {
     }
     async fn connect(&self, server: &ServerConfig) -> Result<Connection, String> {
         let result = if server.transport == "stdio" {
-            StdioClient::connect_reconnecting(
+            StdioClient::prepare_reconnecting(
                 &self.ctx,
                 StdioConfig {
                     server_name: server.name.clone(),
@@ -442,7 +455,7 @@ impl CapabilityManager {
             .await
             .map(Connection::Stdio)
         } else {
-            RemoteHttpClient::connect(
+            RemoteHttpClient::prepare(
                 &self.ctx,
                 RemoteHttpConfig {
                     server_name: server.name.clone(),
@@ -458,21 +471,57 @@ impl CapabilityManager {
     }
     async fn reconnect(&self, state: &mut State, server: &ServerConfig) {
         state.errors.remove(&server.name);
-        if let Some(connection) = state.connections.remove(&server.name) {
-            if let Err(error) = connection.close().await {
-                state.errors.insert(server.name.clone(), error);
-            }
-        }
         if !server.enabled {
+            if let Some(connection) = state.connections.remove(&server.name) {
+                if let Err(error) = connection.close().await {
+                    state.errors.insert(server.name.clone(), error);
+                }
+            }
             return;
         }
-        match self.connect(server).await {
-            Ok(connection) => {
-                state.connections.insert(server.name.clone(), connection);
-                state.errors.remove(&server.name);
-            }
+        let candidate = match self.connect(server).await {
+            Ok(candidate) => candidate,
             Err(error) => {
-                state.errors.insert(server.name.clone(), error);
+                let message = if state.connections.contains_key(&server.name) {
+                    format!("新配置未应用，保留原有 MCP 工具：{error}")
+                } else {
+                    error
+                };
+                state.errors.insert(server.name.clone(), message);
+                return;
+            }
+        };
+        let previous = state.connections.remove(&server.name);
+        if let Some(previous) = &previous {
+            previous.suspend().await;
+        }
+        if let Err(mut failure) = candidate.activate(&self.ctx).await {
+            let _ = candidate.close().await;
+            if let Some(previous) = previous {
+                match previous.activate(&self.ctx).await {
+                    Ok(()) => {
+                        state.connections.insert(server.name.clone(), previous);
+                    }
+                    Err(error) => {
+                        failure
+                            .push_str(&format!("; previous catalog restoration failed: {error}"));
+                        let _ = previous.close().await;
+                    }
+                }
+            }
+            if state.connections.contains_key(&server.name) {
+                failure = format!("新配置未应用，保留原有 MCP 工具：{failure}");
+            }
+            state.errors.insert(server.name.clone(), failure);
+            return;
+        }
+        state.connections.insert(server.name.clone(), candidate);
+        if let Some(previous) = previous {
+            if let Err(error) = previous.close().await {
+                state.errors.insert(
+                    server.name.clone(),
+                    format!("Previous MCP connection cleanup: {error}"),
+                );
             }
         }
     }
@@ -520,6 +569,10 @@ async fn atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+#[path = "capabilities_mcp_tests.rs"]
+mod mcp_replacement_tests;
 
 #[cfg(test)]
 mod tests {

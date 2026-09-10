@@ -6,6 +6,14 @@ window.__ModuleLoader__.load({
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		let react_jsx_runtime = require("react/jsx-runtime");
 		let react = require("react");
+        const interactionScaleCss = `
+        :root{--dsh-control-icon:18px;--dsh-control-hit:34px}
+        .dshSidebarAction,.Uzx--a_add,.tMJkdG_trigger,.oHd92q_trigger,.YysEUW_trigger,.fnCloG_action,.EKSdBa_close,._7h7_Oq_close{min-height:var(--dsh-control-hit);min-width:var(--dsh-control-hit);border-radius:8px}
+        .dshSidebarAction svg,.Uzx--a_add svg,.Uzx--a_primary svg,.tMJkdG_trigger svg,.oHd92q_trigger svg,.YysEUW_trigger svg,.fnCloG_action svg,.EKSdBa_close svg,._7h7_Oq_close svg,._7h7_Oq_navIcon{width:var(--dsh-control-icon)!important;height:var(--dsh-control-icon)!important;flex-shrink:0}
+        .dshSidebarAction{gap:8px}.dswSuiteToolbar button,.dswSuiteBar button{min-width:32px;min-height:32px;border-radius:8px}.dswSuiteToolbar button svg,.dswSuiteBar button svg{width:18px;height:18px}body .dbs-head>.dbs-icon{min-width:34px;min-height:34px;font-size:18px}
+        @media(pointer:coarse){:root{--dsh-control-icon:20px;--dsh-control-hit:42px}}
+        `;
+        if(typeof document!=="undefined"&&!document.querySelector("style[data-dsh-interaction-scale]")){const style=document.createElement("style");style.dataset.dshInteractionScale="";style.textContent=interactionScaleCss;document.head.appendChild(style);}
 		let _deepseek_ai_dsh_client_runtime_client = require("@deepseek-ai/dsh-client-runtime/client");
 		/** Viewport width below which the sidebar auto-collapses to the rail (deepsuite
 		* LG breakpoint); a manual toggle below it re-expands over the squeezed center
@@ -160,8 +168,9 @@ window.__ModuleLoader__.load({
 			});
 		}
 		/** The three-column frame (see module doc). */
-		function AppFrame({ useStore, useSessions, actions, renderSlot }) {
+		function AppFrame({ useStore, useSessions, usePanelInfo, actions, renderSlot }) {
 			const panels = useStore((s) => s);
+			const mainPanel = usePanelInfo((state) => state.activePanelId);
 			const detailsSession = useSessions((s) => {
 				const current = s.current;
 				return current !== void 0 && s.byId[current]?.blank === false ? current : void 0;
@@ -252,7 +261,7 @@ window.__ModuleLoader__.load({
 							width: sidebarWidth
 						})
 					}),
-					(0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(CenterColumn, { inert: mobileSidebarOpen || mobileDetailsOpen, children: renderSlot("conversation", {}) }), (0, react_jsx_runtime.jsx)(DetailsColumn, { children: renderSlot("details", {}) }), (0,react_jsx_runtime.jsx)("div",{className:"dsh-native-dock",style:{gridColumn:4,gridRow:1,minWidth:0,minHeight:0,display:"flex"},children:renderSlot("shell.dock",{})})] }),
+					(0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(CenterColumn, { inert: mobileSidebarOpen || mobileDetailsOpen, children: renderSlot("main", {}, {entryKey:mainPanel??"conversation"}) }), (0, react_jsx_runtime.jsx)(DetailsColumn, { children: renderSlot("details", {}) }), (0,react_jsx_runtime.jsx)("div",{className:"dsh-native-dock",style:{gridColumn:4,gridRow:1,minWidth:0,minHeight:0,display:"flex"},children:renderSlot("shell.dock",{})})] }),
 					mobileSidebarOpen && (0, react_jsx_runtime.jsx)("button", { type: "button", className: "dshMobileSidebarBackdrop", "aria-label": "收起侧边栏", onClick: () => actions.toggleSidebar() }),
 					(0, react_jsx_runtime.jsx)("div", {
 						className: AppFrame_module_css_default.overlayLayer,
@@ -335,6 +344,19 @@ window.__ModuleLoader__.load({
 		/** Cross-plugin panel-action face (ctx.layout). */
 		var LayoutController = class {
 			#panels;
+			#main = Object.freeze({activePanelId:null});
+			#listeners = new Set();
+			#navigation;
+			hasMainPanel = () => false;
+			panelInfo = {getSnapshot:()=>this.#main,subscribe:listener=>{this.#listeners.add(listener);return()=>this.#listeners.delete(listener);}};
+			selectPanel(id) {
+				if(id!==null&&!this.hasMainPanel(id))throw new Error(`layout.selectPanel: main panel "${id}" is not registered`);
+				this.#navigation?.abort();
+				if(this.#main.activePanelId===id)return;
+				this.#main=Object.freeze({activePanelId:id});for(const listener of [...this.#listeners])listener();
+			}
+			beginNavigation(){this.#navigation?.abort();this.#navigation=new AbortController();return this.#navigation.signal;}
+			dispose(){this.#navigation?.abort();this.#listeners.clear();}
 			/**
 			* Adopt the root entry's bound store actions. Called from the root
 			* registration's inject hook (a sanctioned assembly side effect), so the
@@ -426,6 +448,7 @@ window.__ModuleLoader__.load({
 		*/
 		function apply(ctx) {
 			const layout = new LayoutController();
+			layout.hasMainPanel=id=>ctx.slots.entriesOfSlot("main").some(entry=>entry.options.key===id);
 			ctx.effect(() => {
 				const disposeService = ctx.reflect.provide("layout", layout);
 				const disposeRegistration = ctx.slots.register({
@@ -435,10 +458,7 @@ window.__ModuleLoader__.load({
 							kind: "single",
 							scope: "root"
 						},
-						"conversation": {
-							kind: "single",
-							scope: "session-maybe"
-						},
+						"main": {kind:"keyed",scope:"root"},
 						"details": {
 							kind: "single",
 							scope: "session"
@@ -452,10 +472,13 @@ window.__ModuleLoader__.load({
 					store: createLayoutStore,
 					inject: (actions) => {
 						layout.attachPanels(actions);
-						return {};
+						return {hooks:{panelInfo:layout.panelInfo}};
 					}
 				}, AppFrame);
+				const disposeConversation=ctx.slots.register({name:"main",key:"conversation",children:{conversation:{kind:"single",scope:"session-maybe"}}},({renderSlot})=>renderSlot("conversation",{}));
+				const disposePanels=ctx.slots.subscribe("main",()=>{const id=layout.panelInfo.getSnapshot().activePanelId;if(id!==null&&!layout.hasMainPanel(id))layout.selectPanel(null);});
 				return () => {
+					layout.dispose();disposePanels();disposeConversation();
 					disposeRegistration();
 					disposeService();
 				};

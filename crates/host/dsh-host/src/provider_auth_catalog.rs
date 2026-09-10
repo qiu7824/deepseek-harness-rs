@@ -223,6 +223,14 @@ pub(crate) const OVERRIDE_FIELDS: &[&str] = &[
 /// manually configured list.
 pub(crate) fn merge_models(profile: &Value, catalog: &Catalog, native: bool) -> Vec<Value> {
     let mut rows = indexmap::IndexMap::<String, Value>::new();
+    let official = native
+        && profile.get("api").and_then(Value::as_str).is_none_or(|api| api == "openai-completions")
+        && reqwest::Url::parse(profile.get("baseURL").and_then(Value::as_str).unwrap_or(dsh_llm_deepseek::PUBLIC_BASE_URL))
+            .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("api.deepseek.com"));
+    let native_flash = official.then(|| {
+        let defaults = dsh_llm_deepseek::resolve_adapter_options(&dsh_llm_deepseek::DeepSeekConfig::default()).expect("native defaults");
+        serde_json::to_value(defaults.models.into_iter().find(|model|model.id=="deepseek-flash").expect("native Flash model")).expect("native model JSON")
+    });
     for model in &catalog.models {
         let mut row = serde_json::to_value(model).expect("model metadata JSON");
         row["source"] = json!(catalog.source);
@@ -233,6 +241,13 @@ pub(crate) fn merge_models(profile: &Value, catalog: &Catalog, native: bool) -> 
         });
         row["enabled"] = json!(model.available != Some(false));
         rows.insert(model.id.clone(), row);
+    }
+    if let Some(defaults) = &native_flash {
+        rows.entry("deepseek-flash".into()).or_insert_with(|| {
+            let mut row=defaults.clone();
+            row["source"]=json!("builtin");row["available"]=json!(true);row["availability"]=json!("available");row["enabled"]=json!(true);
+            row
+        });
     }
     let legacy_scope = profile.get("legacyModelScope").and_then(Value::as_str);
     for model in profile
@@ -264,6 +279,11 @@ pub(crate) fn merge_models(profile: &Value, catalog: &Catalog, native: bool) -> 
                     if let Some(value) = model.get(*field).filter(|v| !v.is_null()) {
                         row[*field] = value.clone();
                     }
+                }
+            }
+            if id=="deepseek-flash" && official {
+                for field in ["systemPromptUpdate","imageInput"] {
+                    if let Some(value)=model.get(field).filter(|value|!value.is_null()) {row[field]=value.clone();}
                 }
             }
         } else {
@@ -300,6 +320,11 @@ pub(crate) fn merge_models(profile: &Value, catalog: &Catalog, native: bool) -> 
         .and_then(|v| v.get(&catalog.account_scope))
         .and_then(Value::as_object);
     for (id, row) in &mut rows {
+        if id=="deepseek-flash" && let Some(defaults)=&native_flash {
+            for field in ["systemPromptUpdate","imageInput","contextWindow","name"] {
+                if row.get(field).is_none_or(Value::is_null) {row[field]=defaults[field].clone();}
+            }
+        }
         if let Some(values) = preferences
             .and_then(|p| p.get(id))
             .and_then(Value::as_object)
@@ -442,6 +467,23 @@ mod tests {
             error: None,
             models: serde_json::from_value(models).unwrap(),
         }
+    }
+    #[test]
+    fn official_flash_upgrade_preserves_legacy_rows_and_explicit_preferences_only_on_its_route() {
+        let profile=json!({"models":[{"id":"deepseek-v4-flash","enabled":false},{"id":"custom","contextWindow":32000}],"modelPreferences":{"alice":{"deepseek-flash":{"enabled":false,"name":"Preferred Flash","contextWindow":128000}}}});
+        let directory=catalog("alice",json!([]));
+        let rows=merge_models(&profile,&directory,true);
+        let flash=rows.iter().find(|row|row["id"]=="deepseek-flash").unwrap();
+        assert_eq!(flash["enabled"],false);assert_eq!(flash["name"],"Preferred Flash");assert_eq!(flash["contextWindow"],128000);
+        assert_eq!(flash["imageInput"],true);assert_eq!(flash["systemPromptUpdate"],"in-history");
+        assert_eq!(rows.iter().find(|row|row["id"]=="deepseek-v4-flash").unwrap()["enabled"],false);
+        assert!(rows.iter().any(|row|row["id"]=="custom"));
+        for native in [false,true] {
+            let mut third_party=profile.clone();third_party["baseURL"]=json!("https://gateway.example/v1");
+            assert!(!merge_models(&third_party,&directory,native).iter().any(|row|row["id"]=="deepseek-flash"));
+        }
+        let remote=catalog("alice",json!([{"id":"deepseek-flash"}]));
+        assert_eq!(merge_models(&profile,&remote,true).iter().find(|row|row["id"]=="deepseek-flash").unwrap()["systemPromptUpdate"],"in-history");
     }
     #[test]
     fn remote_updates_preserve_preferences_without_pinning_provider_capabilities() {

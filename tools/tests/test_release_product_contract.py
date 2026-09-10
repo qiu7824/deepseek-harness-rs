@@ -72,6 +72,14 @@ class ReleaseProductContractTests(unittest.TestCase):
         minimal = self.preset("minimal")
         self.assertNotIn("- id: tool-web", minimal)
 
+    def test_minimal_has_only_the_persistent_shell_and_no_editor_guidance(self):
+        minimal = self.preset("minimal")
+        self.assertIn("dsh-tool-pwsh", minimal)
+        self.assertNotIn("dsh-tool-str-replace-editor", minimal)
+        self.assertNotIn("text editor", minimal)
+        for preset_id in ("standard", "code"):
+            self.assertIn("dsh-tool-fs", self.preset(preset_id))
+
 
     def test_release_workflow_names_every_variant_artifact_uniquely(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(

@@ -15,7 +15,8 @@
     "dompurify": "3.4.14",
     "esbuild": "0.25.10",
     "marked": "16.3.0",
-    "mermaid": "11.16.1"
+    "mermaid": "11.16.1",
+    "pdfjs-dist": "6.3.289"
   },
   "name": "dsh-sidebar-assets-build",
   "version": "0.1.0",

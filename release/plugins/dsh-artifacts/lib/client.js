@@ -2,7 +2,7 @@ window.__ModuleLoader__.load({id:"dsh-artifacts",factory:require=>{
   const React=require("react"),h=React.createElement;
   const ID="dsh-artifacts";
   const displayPath=value=>globalThis.__DSH_FILE_ACTIONS__?.displayPath(value)??String(value??"").replace(/^\\\\\?\\UNC\\/i,"\\\\").replace(/^\\\\\?\\/,"");
-  const labels={created:"新增",modified:"修改",deleted:"已移除",active:"运行中",retained:"保留中",candidate:"待交付",interrupted:"运行中断",failed:"失败材料",quarantined:"恢复队列",reclaimed:"已回收"};
+  const labels={created:"新增",modified:"修改",presented:"已交付",deleted:"已移除",active:"运行中",retained:"保留中",candidate:"待交付",interrupted:"运行中断",failed:"失败材料",quarantined:"恢复队列",reclaimed:"已回收"};
   const bytes=n=>n>1073741824?`${(n/1073741824).toFixed(2)} GiB`:n>1048576?`${(n/1048576).toFixed(1)} MiB`:n>1024?`${(n/1024).toFixed(1)} KiB`:`${n||0} B`;
   async function api(operation,args,signal){const response=await fetch(`/__dsh-artifacts/${operation}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(args),signal});const value=await response.json().catch(()=>({message:`HTTP ${response.status}`}));if(!response.ok)throw Error(value.message||`HTTP ${response.status}`);return value}
   function useList(operation,args){

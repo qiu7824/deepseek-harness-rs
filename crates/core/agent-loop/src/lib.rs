@@ -9,6 +9,7 @@ pub mod constants;
 pub mod index;
 pub mod invariant;
 mod request_metrics;
+mod system_prompt_projection;
 mod response_continuation;
 pub mod runtime_context;
 pub mod tool_calls;

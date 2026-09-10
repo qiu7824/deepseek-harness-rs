@@ -7,7 +7,7 @@ Object.assign(global, { window: dom.window, document: dom.window.document, HTMLE
 const React = require(path.join(modules, 'react')), Client = require(path.join(modules, 'react-dom/client'));
 const observers = [];
 class ResizeObserver { constructor(callback) { this.callback = callback; this.dead = false; observers.push(this); } observe() {} disconnect() { this.dead = true; } }
-const source = fs.readFileSync(path.join(__dirname, '../../web/dist/plugins/ui-conversation.js'), 'utf8');
+const source = fs.readFileSync(process.env.DSH_CHAT_SOURCE || path.join(__dirname, '../../web/dist/plugins/ui-conversation.js'), 'utf8');
 const localeContext = { PLAN_NEXT_ACTION_ZH: '' };
 vm.runInNewContext(source.slice(source.indexOf('\t\tconst zh = {'), source.indexOf('\t\tconst en = {')) + ';this.dictionary=zh;', localeContext);
 const translate = key => localeContext.dictionary[key] ?? key;
@@ -52,6 +52,7 @@ async function fixture({ rows, viewport = 200, heights = {}, before = false, aft
   const result = { state, port, calls, pending, saves, heights, heightOf,
     top: () => top, writes: () => writes,
     render: () => act(render),
+    replace: (rows, flags = {}) => act(async () => { install(rows); Object.assign(state,flags); render(); await wait(1); }),
     wheel: async deltaY => act(async () => { port.dispatchEvent(new window.WheelEvent('wheel', { deltaY, bubbles: true })); await wait(85); }),
     move: async (value, direction) => act(async () => { if (direction) port.dispatchEvent(new window.WheelEvent('wheel', { deltaY: direction, bubbles: true })); port.scrollTop = value; port.dispatchEvent(new window.Event('scroll')); port.dispatchEvent(new window.Event('scrollend')); await wait(1); }),
     resolve: async (request, next, flags = {}) => act(async () => { if (!request.cancelled) { install(next); Object.assign(state, flags); state.loadingOlder = state.loadingNewer = false; render(); } request.resolve(); await wait(25); }),
@@ -63,6 +64,21 @@ async function fixture({ rows, viewport = 200, heights = {}, before = false, aft
 }
 
 (async () => {
+  let repeat = await fixture({rows:['0'],heights:{0:80,1:80,2:500},viewport:300,history:false,after:false});
+  repeat.state.historyNavigationRevision++; repeat.state.historyNavigationReason='latest';
+  await repeat.render();
+  assert.equal(!!document.querySelector(`button[aria-label="${translate('chat.toBottom')}"]`),false,'Send fast path keeps a short live conversation at the latest content');
+  assert.equal(repeat.saves.at(-1),null,'Send must clear reading-away state rather than buffering later replies as hidden history');
+  await repeat.replace(['0','1','2'],{running:true});
+  assert.equal(repeat.top(),360,'the subsequent response stays followed as it grows');
+  assert.equal(repeat.port.querySelectorAll('[data-chat-anchor-key]').length,3,'earlier messages remain rendered');
+  await repeat.move(100,-100);
+  assert.ok(document.querySelector(`button[aria-label="${translate('chat.toBottom')}"]`));
+  repeat.heights['2']=80; await repeat.move(0); await repeat.resize();
+  assert.equal(!!document.querySelector(`button[aria-label="${translate('chat.toBottom')}"]`),false,'collapsing thought content to a non-scrollable transcript hides the jump button');
+  repeat.state.hasMoreAfter=true; repeat.state.historyBrowsing=true; await repeat.render();
+  assert.ok(document.querySelector(`button[aria-label="${translate('chat.toBottom')}"]`),'short historical windows still offer a way back to newer content');
+  await repeat.close();
   // Real regression geometry from the configured Host: appending a page must
   // preserve the reader at 485px rather than snapping to the new 1639px floor.
   let f = await fixture({ rows: ['0'], viewport: 617, heights: { 0: 1102, 1: 1154 } });

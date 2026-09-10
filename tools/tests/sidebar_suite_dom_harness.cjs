@@ -42,7 +42,7 @@ const context = {
 const plugin = definitions["dsh-sidebar-workbench-suite"].factory(id => id === "react" ? React : id === "@deepseek-ai/dsh-client-ui-primitives" ? {Button:({variant,size,children,...props})=>React.createElement('button',props,children),Menu:({anchor,open,items,onSelect})=>React.createElement('div',null,anchor,open&&React.createElement('div',{role:'menu'},items.map(item=>React.createElement('button',{key:item.id,role:'menuitem',disabled:item.disabled,onClick:()=>onSelect(item.id)},item.label))))} : {});
 plugin.apply(context);
 assert.deepEqual(registrations.tabs.map(row => row.id), ["suite:jobs", "suite:controlled-browser"]);
-assert.deepEqual(registrations.viewers.map(row => row.id), ["suite:markdown", "suite:structured", "suite:office", "suite:code"]);
+assert.deepEqual(registrations.viewers.map(row => row.id), ["suite:markdown", "suite:structured", "suite:office", "suite:code", "suite:pdf", "suite:image"]);
 assert.equal(registrations.viewers[0].priority > registrations.viewers[1].priority, true);
 assert.equal(registrations.viewers[0].settings.pluginToggles.length, 2);
 assert.equal(slotEntries[0].descriptor.id, "computer-use");
@@ -63,6 +63,7 @@ global.fetch = async (url, options = {}) => {
   let requestBody = null;
   if (options.body) { try { requestBody = JSON.parse(options.body); } catch { requestBody = String(options.body); } }
   fetchRecords.push([String(url), options.method || "GET", requestBody]);
+  if (String(url).includes("/__dsh-preview/meta")) return new Response(JSON.stringify({siteToken:"fixture-token"}),{status:200,headers:{"Content-Type":"application/json"}});
   if (String(url).includes("/__dsh-computer-use/annotation")) { if (annotationPending) await annotationPending; return new Response(JSON.stringify(annotationFailure?{error:{message:"批注投递失败"}}:{submitted:true,ownerSessionId:requestBody.ownerSessionId,hasScreenshot:true}),{status:annotationFailure?503:200,headers:{"Content-Type":"application/json"}}); }
   if (String(url).includes("/__dsh-devices/")) return new Response(JSON.stringify({installed:false,devices:[],website:"https://uuyc.163.com/"}),{status:200,headers:{"Content-Type":"application/json"}});
   if (String(url).includes("__dsh-computer-use/meta")) return new Response(JSON.stringify({ enabled: true, available: true, adapter: computerAdapter, actions:computerAdapter==='native-desktop'?['start','list_windows','focus_window']:['start'], defaultBrowserSessionId: "default" }), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -493,7 +494,7 @@ pageHidden=false;document.dispatchEvent(new dom.window.Event("visibilitychange")
 await new Promise(resolve=>setTimeout(resolve,25));assert.ok(polls>hiddenPolls,"visible pages resume promptly");
 stopPolling();const stoppedPolls=polls;await new Promise(resolve=>setTimeout(resolve,75));assert.equal(polls,stoppedPolls);assert.equal(peakConcurrent,1,"poll requests never overlap");
 cleanup();
-assert.equal(disposed.length, 6);
+assert.equal(disposed.length, 8);
 assert.deepEqual(runtimeErrors,[],"sidebar interactions must not raise browser runtime errors");
 await React.act(async () => root.unmount());
 dom.window.close();

@@ -6,7 +6,7 @@ use dsh_fs::{
     FsTarget, FsWriteIntent,
 };
 use dsh_fs_observation_policy::FsObservationActorHandle;
-use dsh_system_prompt::{PromptSection, PromptText, SystemPrompt};
+use dsh_system_prompt::{PromptSection, SystemPrompt};
 use dsh_tools::{
     FileDiff, FileLocation, ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition,
     ToolExecution, ToolOutputDefinition, ToolResultView,
@@ -204,9 +204,9 @@ impl Service {
             ctx: ctx.clone(),
             fs,
         });
-        prompt.section(ctx, PromptSection { name:"tool:read".into(), order:100.0, text:PromptText::Static("Use the read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files.".into()), complete:None });
-        prompt.section(ctx, PromptSection { name:"tool:write".into(), order:101.0, text:PromptText::Static("Use the write tool to create files or completely replace file contents. Existing files are overwritten, so read an existing file first and prefer edit for targeted changes.".into()), complete:None });
-        prompt.section(ctx, PromptSection { name:"tool:edit".into(), order:102.0, text:PromptText::Static("Use the edit tool for targeted changes to existing UTF-8 text files. It replaces literal old_string with new_string; by default old_string must appear exactly once.".into()), complete:None });
+        prompt.section(ctx, PromptSection { name:"tool:read".into(), order:100.0, text:dsh_tools::scoped_tool_guidance(ctx, &["read"], "Use the read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files."), complete:None });
+        prompt.section(ctx, PromptSection { name:"tool:write".into(), order:101.0, text:dsh_tools::scoped_tool_guidance(ctx, &["write"], "Use the write tool to create files or completely replace file contents. Existing files are overwritten; inspect them before replacing their contents."), complete:None });
+        prompt.section(ctx, PromptSection { name:"tool:edit".into(), order:102.0, text:dsh_tools::scoped_tool_guidance(ctx, &["edit"], "Use the edit tool for targeted changes to existing UTF-8 text files. It replaces literal old_string with new_string; by default old_string must appear exactly once."), complete:None });
         tools.register(ctx, service.read_definition())?;
         if ctx
             .get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false)

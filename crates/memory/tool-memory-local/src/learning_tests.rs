@@ -31,6 +31,47 @@ fn recovery() -> RecoveryObservation {
 }
 
 #[tokio::test]
+async fn diagnostics_keep_safe_evidence_ids_and_reclassify_legacy_codes() {
+    let root = root();
+    let store = LearningStore::open(root.clone()).await.unwrap();
+    let entry = store
+        .record_failure(FailureObservation {
+            code: "SANDBOX_SETUP_TIMEOUT".into(),
+            ..failure("sandbox-call")
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.rule_id, "sandbox-runtime");
+    assert_eq!(entry.last_session_id.as_deref(), Some("session-1"));
+    assert_eq!(entry.last_call_id.as_deref(), Some("sandbox-call"));
+    assert_eq!(
+        store.list(&json!({}))["items"][0]["disposition"],
+        "diagnostic"
+    );
+    drop(store);
+    let path = root.join("learning.json");
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    saved["entries"][0]["ruleId"] = json!("unclassified-tool-failure");
+    saved["entries"][0]["status"] = json!("verified");
+    saved["entries"][0]["verification"] = json!("user-confirmed");
+    std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let restored = LearningStore::open(root).await.unwrap();
+    let rows = restored.list(&json!({}));
+    assert_eq!(rows["items"][0]["ruleId"], "sandbox-runtime");
+    assert_eq!(rows["items"][0]["status"], "pending");
+    assert_eq!(rows["items"][0]["occurrences"], 1);
+    assert_eq!(
+        std::fs::read(path).unwrap(),
+        original,
+        "read-only migration preserves the durable ledger"
+    );
+    assert!(evidence_id("../../credentials").is_none());
+    assert!(evidence_id("<script>").is_none());
+}
+
+#[tokio::test]
 async fn runtime_diagnostics_cannot_be_confirmed_or_injected_as_reusable_rules() {
     let root = root();
     let store = LearningStore::open(root.clone()).await.unwrap();

@@ -60,6 +60,18 @@ pub struct LocalSandboxProvider {
     platform: String,
     runtime_roots: Vec<std::path::PathBuf>,
     runtime_cache: Option<std::path::PathBuf>,
+    #[cfg(windows)]
+    preparation: Arc<std::sync::Mutex<RuntimePreparation>>,
+}
+
+#[cfg(windows)]
+#[derive(Default)]
+struct RuntimePreparation {
+    generation: u64,
+    active: Option<(
+        u64,
+        futures::future::Shared<futures::future::BoxFuture<'static, Result<(), String>>>,
+    )>,
 }
 
 impl LocalSandboxProvider {
@@ -68,6 +80,8 @@ impl LocalSandboxProvider {
             platform: config.platform.unwrap_or_else(host_platform),
             runtime_roots: Vec::new(),
             runtime_cache: None,
+            #[cfg(windows)]
+            preparation: Default::default(),
         })
     }
 
@@ -88,6 +102,8 @@ impl LocalSandboxProvider {
             platform: config.platform.unwrap_or_else(host_platform),
             runtime_roots: roots,
             runtime_cache: Some(cache),
+            #[cfg(windows)]
+            preparation: Default::default(),
         });
         let erased: Arc<dyn SandboxProvider> = provider.clone();
         ctx.register_service(erased);
@@ -124,6 +140,97 @@ impl LocalSandboxProvider {
 }
 
 impl SandboxProvider for LocalSandboxProvider {
+    fn confine_with_startup(
+        &self,
+        argv: &[String],
+        policy: &SandboxPolicy,
+    ) -> Result<ConfinedArgv, SandboxUnavailableError> {
+        let mut confined = self.confine(argv, policy)?;
+        #[cfg(windows)]
+        if self.platform == "win32"
+            && embedded_runner_path().is_some_and(|runner| {
+                confined
+                    .argv
+                    .first()
+                    .is_some_and(|program| std::path::Path::new(program) == runner)
+            })
+        {
+            let (name, startup) = windows_startup_signal()
+                .map_err(|error| SandboxUnavailableError::new(policy.mode, Some(&error)))?;
+            let separator = confined.argv.len() - argv.len() - 1;
+            confined
+                .argv
+                .splice(separator..separator, ["--ready-event".into(), name]);
+            confined.startup = Some(startup);
+        }
+        Ok(confined)
+    }
+    fn prepare(
+        &self,
+        policy: &SandboxExecutionPolicy,
+    ) -> futures::future::BoxFuture<'static, Result<(), String>> {
+        #[cfg(windows)]
+        if self.platform == "win32"
+            && policy.mode != SandboxMode::DangerFullAccess
+            && !self.runtime_roots.is_empty()
+        {
+            use futures::FutureExt;
+            let roots = self.runtime_roots.clone();
+            let cache = self.runtime_cache.clone();
+            let candidate: futures::future::BoxFuture<'static, Result<(), String>> = Box::pin(
+                async move {
+                    let cache = cache.ok_or(
+                        "[SANDBOX_SETUP_FAILED] runtime permission state is not configured",
+                    )?;
+                    // A cold installed Python tree can take longer than the PTY
+                    // prompt budget. Complete its cached read-only preparation once
+                    // outside that budget; cancellation never launches user code.
+                    let preparation = tokio::task::spawn_blocking(move || {
+                        embedded_windows_runner::windows_runner::prepare_runtime_permissions(
+                            &roots, &cache,
+                        )
+                    });
+                    match tokio::time::timeout(std::time::Duration::from_secs(120), preparation).await {
+                    Ok(Ok(Ok(()))) => Ok(()),
+                    Ok(Ok(Err(error))) => Err(format!("[SANDBOX_SETUP_FAILED] {error}")),
+                    Ok(Err(error)) => Err(format!("[SANDBOX_SETUP_FAILED] runtime preparation task failed: {error}")),
+                    Err(_) => Err("[SANDBOX_SETUP_TIMEOUT] Runtime access preparation exceeded 120 seconds; the command was not started. Check runtime permissions before retrying.".into()),
+                }
+                },
+            );
+            let state = self.preparation.clone();
+            let (generation, preparation) = {
+                let mut state = state.lock().unwrap();
+                if let Some(active) = &state.active {
+                    active.clone()
+                } else {
+                    state.generation = state.generation.wrapping_add(1);
+                    let active = (state.generation, candidate.shared());
+                    state.active = Some(active.clone());
+                    active
+                }
+            };
+            return Box::pin(async move {
+                // Retaining one shared attempt prevents cancelled or concurrent
+                // callers from creating an unbounded set of blocking ACL workers.
+                let result = preparation.await;
+                if result.is_err() {
+                    let mut state = state.lock().unwrap();
+                    if state
+                        .active
+                        .as_ref()
+                        .is_some_and(|active| active.0 == generation)
+                    {
+                        state.active = None;
+                    }
+                }
+                result
+            });
+        }
+        let _ = policy;
+        Box::pin(async { Ok(()) })
+    }
+
     fn confine(
         &self,
         argv: &[String],
@@ -174,6 +281,21 @@ impl SandboxProvider for LocalSandboxProvider {
                 }
             }
         }
+        #[cfg(windows)]
+        if self.platform == "win32"
+            && embedded_runner_path().is_some_and(|runner| {
+                wrapped
+                    .first()
+                    .is_some_and(|program| std::path::Path::new(program) == runner)
+            })
+        {
+            if let Some(cache) = self.runtime_cache.as_ref().and_then(|cache| cache.parent()) {
+                wrapped.extend([
+                    "--cleanup-state".into(),
+                    cache.join("sandbox-cleanup").to_string_lossy().into_owned(),
+                ]);
+            }
+        }
         wrapped.push("--".to_string());
         wrapped.extend_from_slice(argv);
         Ok(ConfinedArgv {
@@ -181,8 +303,60 @@ impl SandboxProvider for LocalSandboxProvider {
             enforcement: SandboxEnforcement::Full,
             denial_signatures,
             runner_failure_rules,
+            startup: None,
         })
     }
+}
+
+#[cfg(windows)]
+fn windows_startup_signal() -> Result<(String, dsh_sandbox::SandboxStartup), String> {
+    use windows_sys::Win32::{Foundation::*, System::Threading::*};
+    struct Event(HANDLE);
+    // Event handles support concurrent waits; the last Arc closes the handle.
+    unsafe impl Send for Event {}
+    unsafe impl Sync for Event {}
+    impl Drop for Event {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let name = format!(
+        "Local\\DSH-Sandbox-Ready-{}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    fn event(name: &str) -> Result<Arc<Event>, String> {
+        let wide = name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, wide.as_ptr()) };
+        if handle.is_null() {
+            return Err(format!(
+                "create sandbox startup event: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(Arc::new(Event(handle)))
+    }
+    fn poll(event: &Event) -> Result<bool, String> {
+        match unsafe { WaitForSingleObject(event.0, 0) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(format!(
+                "read sandbox startup event: {}",
+                std::io::Error::last_os_error()
+            )),
+        }
+    }
+    let ready = event(&name)?;
+    let timed_out = event(&format!("{name}-timeout"))?;
+    let signal = dsh_sandbox::SandboxStartup::new(move || poll(&ready), move || poll(&timed_out));
+    Ok((name, signal))
 }
 
 fn host_platform() -> String {

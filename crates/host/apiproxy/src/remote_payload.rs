@@ -8,6 +8,7 @@ pub(crate) fn normalize(method: &str, payload: Value) -> Result<Value, serde_jso
             | "messageFeedback.put"
             | "messageFeedback.list"
             | "messageFeedback.delete"
+            | "sessionFeedback.record"
     ) || payload.get("args").is_none()
     {
         return Ok(payload);
@@ -35,6 +36,7 @@ mod tests {
             "messageFeedback.put",
             "messageFeedback.list",
             "messageFeedback.delete",
+            "sessionFeedback.record",
         ] {
             let request = json!({"entryId":"sidebar","enabled":false});
             assert_eq!(

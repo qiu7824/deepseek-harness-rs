@@ -21,6 +21,9 @@ fn main() {
 
 #[cfg(windows)]
 pub mod windows_runner {
+    mod run_journal {
+        include!("../run_journal.rs");
+    }
     use std::ffi::{OsStr, c_void};
     use std::mem::{size_of, zeroed};
     use std::os::windows::ffi::OsStrExt;
@@ -97,6 +100,7 @@ pub mod windows_runner {
         name: Vec<u16>,
         sid: Sid,
         preserve: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        removed: bool,
     }
     impl AppContainerProfile {
         fn create() -> Result<Self, String> {
@@ -132,12 +136,32 @@ pub mod windows_runner {
                 name,
                 sid: Sid(sid),
                 preserve: Default::default(),
+                removed: false,
             })
+        }
+        fn remove(&mut self) -> Result<(), String> {
+            if self.removed {
+                return Ok(());
+            }
+            if self.preserve.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(
+                    "sandbox temporary storage changed; profile preserved for safe recovery".into(),
+                );
+            }
+            let result = unsafe { DeleteAppContainerProfile(self.name.as_ptr()) };
+            if result < 0 {
+                return Err(format!(
+                    "DeleteAppContainerProfile failed: 0x{:08x}",
+                    result as u32
+                ));
+            }
+            self.removed = true;
+            Ok(())
         }
     }
     impl Drop for AppContainerProfile {
         fn drop(&mut self) {
-            if self.preserve.load(std::sync::atomic::Ordering::SeqCst) {
+            if self.removed || self.preserve.load(std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
             unsafe {
@@ -374,7 +398,8 @@ pub mod windows_runner {
     // Windows PowerShell resolves every component of its startup directory.
     // Give the ephemeral SID metadata/traverse access to ancestors only, with
     // no listing, file reads, writes or inherited permission. Updating the
-    // handle's security descriptor avoids walking an entire drive's children.
+    // handle's security descriptor without propagation avoids walking an entire
+    // drive's children, including when another process holds the directory open.
     struct AncestorAccess {
         handles: Vec<Handle>,
         sid: PSID,
@@ -393,10 +418,10 @@ pub mod windows_runner {
                         continue;
                     }
                     let name = wide(parent.as_os_str());
-                    let mut handle = unsafe {
+                    let handle = unsafe {
                         CreateFileW(
                             name.as_ptr(),
-                            0x02000000, // MAXIMUM_ALLOWED: SetSecurityInfo must not recurse
+                            0x00060000, // READ_CONTROL | WRITE_DAC; no DELETE sharing needed
                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                             null(),
                             OPEN_EXISTING,
@@ -404,24 +429,6 @@ pub mod windows_runner {
                             null_mut(),
                         )
                     };
-                    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
-                        && unsafe { GetLastError() } == 32
-                    {
-                        // A process's current-directory handle can deny DELETE
-                        // sharing, which MAXIMUM_ALLOWED also requests. ACL-only
-                        // access remains compatible with that live directory.
-                        handle = unsafe {
-                            CreateFileW(
-                                name.as_ptr(),
-                                0x00060000,
-                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                null(),
-                                OPEN_EXISTING,
-                                FILE_FLAG_BACKUP_SEMANTICS,
-                                null_mut(),
-                            )
-                        };
-                    }
                     if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
                         return Err(format!(
                             "{}: {}",
@@ -439,8 +446,21 @@ pub mod windows_runner {
     }
     impl Drop for AncestorAccess {
         fn drop(&mut self) {
-            for handle in self.handles.iter().rev() {
-                let _ = update_ancestor_access(handle.0, self.sid, false);
+            let _ = self.revoke();
+        }
+    }
+    impl AncestorAccess {
+        fn revoke(&mut self) -> Result<(), String> {
+            let mut errors = Vec::new();
+            while let Some(handle) = self.handles.pop() {
+                if let Err(error) = update_ancestor_access(handle.0, self.sid, false) {
+                    errors.push(error);
+                }
+            }
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("; "))
             }
         }
     }
@@ -529,7 +549,9 @@ pub mod windows_runner {
                     size as u32,
                 ) != 0;
             }
-            let status = if canonical {
+            let status = if canonical && inheritance == 0 {
+                set_object_dacl(handle, ordered_acl, descriptor)
+            } else if canonical {
                 SetSecurityInfo(
                     handle,
                     SE_FILE_OBJECT,
@@ -553,6 +575,173 @@ pub mod windows_runner {
             LocalFree(descriptor);
             error.map_or(Ok(()), Err)
         }
+    }
+
+    // SetSecurityInfo(SE_FILE_OBJECT) walks existing descendants even when the
+    // new ACE itself is not inheritable. Ancestors need only a local metadata
+    // grant. Use the native handle-based operation so an ACL-only handle remains
+    // nonrecursive and a concurrent rename cannot redirect the update.
+    unsafe fn set_object_dacl(
+        handle: HANDLE,
+        acl: *const windows_sys::Win32::Security::ACL,
+        original: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+    ) -> u32 {
+        use windows_sys::Win32::Security::*;
+        #[link(name = "ntdll")]
+        unsafe extern "system" {
+            fn NtSetSecurityObject(
+                handle: HANDLE,
+                information: u32,
+                descriptor: PSECURITY_DESCRIPTOR,
+            ) -> i32;
+            fn RtlNtStatusToDosError(status: i32) -> u32;
+        }
+        unsafe {
+            let mut descriptor: SECURITY_DESCRIPTOR = zeroed();
+            let pointer = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
+            let mut control = 0;
+            let mut revision = 0;
+            let preserved = SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED;
+            if GetSecurityDescriptorControl(original, &mut control, &mut revision) == 0
+                || InitializeSecurityDescriptor(pointer, 1) == 0
+                || SetSecurityDescriptorDacl(pointer, 1, acl, 0) == 0
+                || SetSecurityDescriptorControl(pointer, preserved, control & preserved) == 0
+            {
+                return GetLastError();
+            }
+            let status = NtSetSecurityObject(handle, DACL_SECURITY_INFORMATION, pointer);
+            if status >= 0 {
+                0
+            } else {
+                RtlNtStatusToDosError(status)
+            }
+        }
+    }
+
+    #[test]
+    fn ancestor_acl_updates_leave_existing_children_unchanged() {
+        use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, LocalFree};
+        use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::*;
+        use windows_sys::Win32::Storage::FileSystem::*;
+
+        struct Snapshot(PSECURITY_DESCRIPTOR, *mut ACL);
+        impl Snapshot {
+            fn read(handle: HANDLE) -> Self {
+                let mut descriptor = null_mut();
+                let mut acl = null_mut();
+                assert_eq!(
+                    unsafe {
+                        GetSecurityInfo(
+                            handle,
+                            SE_FILE_OBJECT,
+                            DACL_SECURITY_INFORMATION,
+                            null_mut(),
+                            null_mut(),
+                            &mut acl,
+                            null_mut(),
+                            &mut descriptor,
+                        )
+                    },
+                    0
+                );
+                assert!(!acl.is_null());
+                Self(descriptor, acl)
+            }
+            fn bytes(&self) -> Vec<u8> {
+                unsafe {
+                    std::slice::from_raw_parts(self.1.cast(), (*self.1).AclSize as usize).to_vec()
+                }
+            }
+        }
+        impl Drop for Snapshot {
+            fn drop(&mut self) {
+                unsafe {
+                    LocalFree(self.0);
+                }
+            }
+        }
+        fn open(path: &Path, access: u32, sharing: u32) -> Handle {
+            let handle = unsafe {
+                CreateFileW(
+                    wide(path.as_os_str()).as_ptr(),
+                    access,
+                    sharing,
+                    null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS,
+                    null_mut(),
+                )
+            };
+            assert_ne!(
+                handle,
+                INVALID_HANDLE_VALUE,
+                "{}",
+                last_error("open test directory")
+            );
+            Handle(handle)
+        }
+        let profile = AppContainerProfile::create().unwrap();
+        let marker = AppContainerProfile::create().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "dsh-ancestor-acl-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let child = root.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        // Match a live process's current-directory handle: no DELETE sharing.
+        let held = open(
+            &root,
+            FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+        );
+        let parent = open(
+            &root,
+            READ_CONTROL | WRITE_DAC,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        );
+        let child_handle = open(
+            &child,
+            READ_CONTROL | WRITE_DAC,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        );
+        let before = Snapshot::read(child_handle.0);
+        // Give the parent an inheritable marker, then retain the child's prior
+        // ACL to detect even an unrelated inheritance walk deterministically.
+        update_access(
+            parent.0,
+            marker.sid.0,
+            true,
+            FILE_GENERIC_READ,
+            OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+        )
+        .unwrap();
+        assert_ne!(Snapshot::read(child_handle.0).bytes(), before.bytes());
+        assert_eq!(
+            unsafe { set_object_dacl(child_handle.0, before.1, before.0) },
+            0
+        );
+        let child_baseline = Snapshot::read(child_handle.0).bytes();
+        // The fixture's inheritable grant may normalize the parent's existing
+        // inheritance. Compare the operations under test with that seeded state.
+        let original = Snapshot::read(parent.0);
+        update_ancestor_access(parent.0, profile.sid.0, true).unwrap();
+        assert_eq!(Snapshot::read(child_handle.0).bytes(), child_baseline);
+        update_ancestor_access(parent.0, profile.sid.0, false).unwrap();
+        assert_eq!(Snapshot::read(child_handle.0).bytes(), child_baseline);
+        assert_eq!(Snapshot::read(parent.0).bytes(), original.bytes());
+        update_ancestor_access(parent.0, marker.sid.0, false).unwrap();
+        drop(child_handle);
+        drop(parent);
+        drop(held);
+        let resolved = std::fs::canonicalize(&root).unwrap();
+        let temporary = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        assert!(resolved != temporary && resolved.starts_with(&temporary));
+        std::fs::remove_dir_all(resolved).unwrap();
     }
     impl AclGrant {
         fn grant(workspace: &Path, sid: &str, writable: bool) -> Result<Self, String> {
@@ -665,9 +854,61 @@ pub mod windows_runner {
         run_args(std::env::args().skip(1))
     }
 
+    pub fn prepare_runtime_permissions(roots: &[PathBuf], cache: &Path) -> Result<(), String> {
+        for root in roots {
+            let _access = super::runtime_read_access::RuntimeReadAccess::acquire(
+                root,
+                cache,
+                |root, sid| update_workspace_acl_native(root, sid, true, false),
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn run_args(args: impl Iterator<Item = String>) -> Result<i32, String> {
-        let (mode, workspace, temp_roots, read_roots, runtime_roots, runtime_cache, argv) =
-            parse_args(args)?;
+        let (
+            mode,
+            workspace,
+            temp_roots,
+            read_roots,
+            runtime_roots,
+            runtime_cache,
+            ready_event,
+            cleanup_state,
+            command_timeout,
+            argv,
+        ) = parse_args(args)?;
+        if let Some(directory) = &cleanup_state {
+            for warning in run_journal::recover(directory) {
+                eprintln!("[sandbox-cleanup] {warning}");
+            }
+        }
+        let ready = ready_event
+            .as_ref()
+            .map(|name| {
+                use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW};
+                Handle::new(
+                    unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, wide(&name).as_ptr()) },
+                    "open startup event",
+                )
+            })
+            .transpose()?;
+        let timed_out = ready_event
+            .as_ref()
+            .map(|name| {
+                use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW};
+                Handle::new(
+                    unsafe {
+                        OpenEventW(
+                            EVENT_MODIFY_STATE,
+                            0,
+                            wide(format!("{name}-timeout")).as_ptr(),
+                        )
+                    },
+                    "open command timeout event",
+                )
+            })
+            .transpose()?;
         let workspace = std::fs::canonicalize(workspace)
             .map_err(|error| format!("resolve sandbox workspace: {error}"))?;
         if is_user_profile_root(&workspace, std::env::var_os("USERPROFILE").as_deref()) {
@@ -676,7 +917,7 @@ pub mod windows_runner {
                     .to_string(),
             );
         }
-        let profile = AppContainerProfile::create()?;
+        let mut profile = AppContainerProfile::create()?;
         let _temporary_redirect = if mode == "workspace-write" {
             ManagedTempRedirect::install(&profile, &temp_roots)?
         } else {
@@ -690,7 +931,30 @@ pub mod windows_runner {
         if let Some(redirect) = _temporary_redirect.as_ref() {
             ancestor_roots.push(&redirect.link);
         }
-        let _ancestor_access = AncestorAccess::grant(&ancestor_roots, profile.sid.0)?;
+        let journal = cleanup_state
+            .as_ref()
+            .map(|directory| {
+                let mut roots = vec![workspace.clone()];
+                roots.extend(temp_roots.iter().cloned());
+                roots.extend(read_roots.iter().cloned());
+                if let Some(redirect) = &_temporary_redirect {
+                    if let Some(package) = redirect.link.parent().and_then(Path::parent) {
+                        roots.push(package.to_path_buf());
+                    }
+                    roots.push(redirect.target.clone());
+                }
+                for root in &ancestor_roots {
+                    roots.extend(root.ancestors().skip(1).map(Path::to_path_buf));
+                }
+                run_journal::Journal::begin(
+                    directory,
+                    &profile,
+                    roots,
+                    _temporary_redirect.as_ref(),
+                )
+            })
+            .transpose()?;
+        let mut ancestor_access = AncestorAccess::grant(&ancestor_roots, profile.sid.0)?;
         let mut workspace_grant =
             AclGrant::grant(&workspace, &sid_text, mode == "workspace-write")?;
         let mut temporary_grants = Vec::new();
@@ -755,10 +1019,24 @@ pub mod windows_runner {
             Sid: access.raw(),
             Attributes: 4,
         }));
-        let exit = spawn_appcontainer(profile.sid.0, &capabilities, &cwd, &argv)?;
+        let exit = spawn_appcontainer(
+            profile.sid.0,
+            &capabilities,
+            &cwd,
+            &argv,
+            ready.as_ref(),
+            timed_out.as_ref(),
+            command_timeout,
+        )?;
         workspace_grant.revoke()?;
         for grant in temporary_grants.iter_mut().chain(read_grants.iter_mut()) {
             grant.revoke()?;
+        }
+        ancestor_access.revoke()?;
+        drop(_temporary_redirect);
+        profile.remove()?;
+        if let Some(journal) = journal {
+            journal.complete()?;
         }
         Ok(exit as i32)
     }
@@ -773,6 +1051,9 @@ pub mod windows_runner {
             Vec<PathBuf>,
             Vec<PathBuf>,
             Option<PathBuf>,
+            Option<String>,
+            Option<PathBuf>,
+            Option<u32>,
             Vec<String>,
         ),
         String,
@@ -792,11 +1073,55 @@ pub mod windows_runner {
         let mut read_roots = Vec::new();
         let mut runtime_roots = Vec::new();
         let mut runtime_cache = None;
+        let mut ready_event = None;
+        let mut cleanup_state = None;
+        let mut command_timeout = None;
         let mut separator = args.next();
         while matches!(
             separator.as_deref(),
-            Some("--temp-root" | "--read-root" | "--runtime-root" | "--runtime-cache")
+            Some(
+                "--temp-root"
+                    | "--read-root"
+                    | "--runtime-root"
+                    | "--runtime-cache"
+                    | "--ready-event"
+                    | "--cleanup-state"
+                    | "--command-timeout-ms"
+            )
         ) {
+            if separator.as_deref() == Some("--command-timeout-ms") {
+                let value = args
+                    .next()
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .filter(|value| *value > 0 && *value <= 2_147_483_647)
+                    .ok_or("invalid command timeout")?;
+                if command_timeout.replace(value).is_some() {
+                    return Err("duplicate command timeout".into());
+                }
+                separator = args.next();
+                continue;
+            }
+            if separator.as_deref() == Some("--cleanup-state") {
+                let path = PathBuf::from(args.next().ok_or("missing cleanup state directory")?);
+                if cleanup_state.is_some() || !path.is_absolute() {
+                    return Err("invalid cleanup state directory".into());
+                }
+                cleanup_state = Some(path);
+                separator = args.next();
+                continue;
+            }
+            if separator.as_deref() == Some("--ready-event") {
+                let name = args.next().ok_or("missing startup event")?;
+                if ready_event.is_some()
+                    || !name.starts_with("Local\\DSH-Sandbox-Ready-")
+                    || name.len() > 160
+                {
+                    return Err("invalid startup event".into());
+                }
+                ready_event = Some(name);
+                separator = args.next();
+                continue;
+            }
             if temp_roots.len() + read_roots.len() + runtime_roots.len() >= 32 {
                 return Err("too many sandbox roots".into());
             }
@@ -829,6 +1154,9 @@ pub mod windows_runner {
             read_roots,
             runtime_roots,
             runtime_cache,
+            ready_event,
+            cleanup_state,
+            command_timeout,
             argv,
         ))
     }
@@ -838,6 +1166,9 @@ pub mod windows_runner {
         file_capabilities: &[SID_AND_ATTRIBUTES],
         cwd: &Path,
         argv: &[String],
+        ready: Option<&Handle>,
+        timeout_event: Option<&Handle>,
+        command_timeout: Option<u32>,
     ) -> Result<u32, String> {
         let mut attributes = AttributeList::new()?;
         let capabilities = SECURITY_CAPABILITIES {
@@ -914,14 +1245,39 @@ pub mod windows_runner {
         if unsafe { ResumeThread(thread_handle.0) } == u32::MAX {
             return Err(last_error("ResumeThread"));
         }
-        if unsafe { WaitForSingleObject(process_handle.0, INFINITE) } != WAIT_OBJECT_0 {
+        if let Some(ready) = ready {
+            if unsafe { windows_sys::Win32::System::Threading::SetEvent(ready.0) } == 0 {
+                return Err(last_error("signal command startup"));
+            }
+        }
+        // The command budget belongs to the actual child, after preparation
+        // and before cleanup. Timeout stops that job while this runner remains
+        // alive to revoke its grants and remove the profile.
+        let wait =
+            unsafe { WaitForSingleObject(process_handle.0, command_timeout.unwrap_or(INFINITE)) };
+        let timed_out = wait == windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+        if timed_out {
+            if let Some(event) = timeout_event {
+                if unsafe { windows_sys::Win32::System::Threading::SetEvent(event.0) } == 0 {
+                    return Err(last_error("signal command timeout"));
+                }
+            }
+            if unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(job.0, 124) }
+                == 0
+            {
+                return Err(last_error("terminate timed-out command"));
+            }
+            if unsafe { WaitForSingleObject(process_handle.0, 5000) } != WAIT_OBJECT_0 {
+                return Err("timed-out command did not settle".into());
+            }
+        } else if wait != WAIT_OBJECT_0 {
             return Err(last_error("WaitForSingleObject"));
         }
         let mut exit = 125;
         if unsafe { GetExitCodeProcess(process_handle.0, &mut exit) } == 0 {
             return Err(last_error("GetExitCodeProcess"));
         }
-        Ok(exit)
+        Ok(if timed_out { 124 } else { exit })
     }
 
     fn create_kill_job() -> Result<Handle, String> {

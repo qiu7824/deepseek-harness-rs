@@ -3,8 +3,7 @@
 //! `packages/feedback/command-feedback/src/invariant.ts`.
 //!
 //! No runtime invariant: the producer owns one log-only domain event with a
-//! single scalar payload, with no independent relation for a companion to
-//! compare.
+//! validated record payload, with no independent mutable index to reconcile.
 
 use std::sync::Arc;
 

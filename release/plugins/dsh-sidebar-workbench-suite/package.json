@@ -20,7 +20,8 @@
       "assets": {
         "editor.js": "./lib/editor.js",
         "markdown.js": "./lib/markdown.js",
-        "mermaid.js": "./lib/mermaid.js"
+        "mermaid.js": "./lib/mermaid.js",
+        "pdf.js": "./lib/pdf.js"
       }
     }
   }

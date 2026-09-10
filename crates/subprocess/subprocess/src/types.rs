@@ -195,6 +195,27 @@ pub trait SubprocessHandle: Send + Sync {
     fn wait_for_exit(&self, signal: Option<SubprocessAbort>) -> BoxFuture<'static, bool>;
 }
 
+/// Own a foreground process until its result is collected. Cancelling or
+/// dropping the caller must not detach a still-running process tree.
+pub struct SubprocessRunGuard(Option<Arc<dyn SubprocessHandle>>);
+
+impl SubprocessRunGuard {
+    pub fn new(handle: Arc<dyn SubprocessHandle>) -> Self {
+        Self(Some(handle))
+    }
+    pub fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for SubprocessRunGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = &self.0 {
+            handle.terminate();
+        }
+    }
+}
+
 /// Signals supported by the terminal-process primitive (TS
 /// `SubprocessTerminalSignal`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

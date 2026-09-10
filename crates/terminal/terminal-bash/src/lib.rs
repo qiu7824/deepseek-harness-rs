@@ -11,9 +11,9 @@ use dsh_subprocess::{
 };
 use dsh_terminal::{
     TerminalBackend, TerminalBackendSession, TerminalBackendSpawnError, TerminalBackendSpawnSpec,
-    TerminalReadRequest, TerminalReadResult, TerminalSendOperation, TerminalSendRead,
-    TerminalSendRequest, TerminalSendResult, TerminalSessionService, TerminalSessionStatus,
-    TerminalSignal, TerminalSignalResult, TerminalWaitReason,
+    TerminalErrorCode, TerminalReadRequest, TerminalReadResult, TerminalSendOperation,
+    TerminalSendRead, TerminalSendRequest, TerminalSendResult, TerminalSessionService,
+    TerminalSessionStatus, TerminalSignal, TerminalSignalResult, TerminalWaitReason,
 };
 use futures::StreamExt;
 use futures::future::{BoxFuture, FutureExt, Shared};
@@ -140,11 +140,11 @@ fn validate(config: &Config) -> Result<(), String> {
 fn terminal_argv(
     backend: &ShellTerminalBackend,
     policy: &dsh_sandbox::SandboxExecutionPolicy,
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, Option<dsh_sandbox::SandboxStartup>), String> {
     let mut argv = vec![backend.config.shell_path.clone()];
     argv.extend(backend.config.shell_args.clone());
     let mode = match policy.mode {
-        SandboxMode::DangerFullAccess => return Ok(argv),
+        SandboxMode::DangerFullAccess => return Ok((argv, None)),
         SandboxMode::ReadOnly => ConfinedSandboxMode::ReadOnly,
         SandboxMode::WorkspaceWrite => ConfinedSandboxMode::WorkspaceWrite,
     };
@@ -157,7 +157,7 @@ fn terminal_argv(
                 policy.mode
             )
         })?
-        .confine(
+        .confine_with_startup(
             &argv,
             &SandboxPolicy {
                 read_only_roots: policy.read_only_roots.clone(),
@@ -166,7 +166,7 @@ fn terminal_argv(
                 session_id: policy.session_id.clone(),
             },
         )
-        .map(|confined| confined.argv)
+        .map(|confined| (confined.argv, confined.startup))
         .map_err(|error| error.to_string())
 }
 
@@ -198,13 +198,28 @@ impl TerminalBackend for ShellTerminalBackend {
             mode: None,
         });
         let argv = terminal_argv(self, &policy);
+        let sandbox = self.sandbox.clone();
         let config = self.config.clone();
         Box::pin(async move {
             if spec.signal.as_ref().is_some_and(|signal| signal()) {
                 return Err(TerminalBackendSpawnError::spawn("terminal spawn aborted"));
             }
-            let argv = argv.map_err(TerminalBackendSpawnError::spawn)?;
+            let (argv, startup) = argv.map_err(TerminalBackendSpawnError::spawn)?;
+            if let Some(sandbox) = sandbox {
+                sandbox.prepare(&policy).await.map_err(|message| {
+                    let code = if message.starts_with("[SANDBOX_SETUP_TIMEOUT]") {
+                        TerminalErrorCode::SandboxSetupTimeout
+                    } else {
+                        TerminalErrorCode::SandboxSetupFailed
+                    };
+                    TerminalBackendSpawnError::coded(message, code)
+                })?;
+            }
+            if spec.signal.as_ref().is_some_and(|signal| signal()) {
+                return Err(TerminalBackendSpawnError::spawn("terminal spawn aborted"));
+            }
             let cwd = terminal_cwd(spec.cwd.unwrap_or(policy.workspace_root));
+            let cancellation = spec.signal.clone();
             let terminal = subprocess
                 .spawn_terminal(SubprocessTerminalSpawnSpec {
                     argv,
@@ -232,10 +247,13 @@ impl TerminalBackend for ShellTerminalBackend {
                 .await
                 .map_err(TerminalBackendSpawnError::spawn)?;
             let session = Arc::new(LocalPtySession::new(terminal, config));
-            if let Err(error) = session.initialize().await {
+            if let Err(mut error) = session.initialize(startup, cancellation).await {
                 return match session.close("PTY startup failed").await {
-                    Ok(()) => Err(TerminalBackendSpawnError::spawn(error)),
-                    Err(cleanup) => Err(TerminalBackendSpawnError::cleanup_failed(error, cleanup)),
+                    Ok(()) => Err(error),
+                    Err(cleanup) => {
+                        error.cleanup_error = Some(cleanup);
+                        Err(error)
+                    }
                 };
             }
             Ok(session as Arc<dyn TerminalBackendSession>)
@@ -434,10 +452,55 @@ impl LocalPtySession {
         }
     }
 
-    async fn initialize(&self) -> Result<(), String> {
+    async fn initialize(
+        &self,
+        startup: Option<dsh_sandbox::SandboxStartup>,
+        cancellation: Option<dsh_subprocess::SubprocessAbort>,
+    ) -> Result<(), TerminalBackendSpawnError> {
+        if let Some(startup) = startup {
+            let deadline = Instant::now() + Duration::from_secs(120);
+            loop {
+                if cancellation.as_ref().is_some_and(|signal| signal()) {
+                    return Err(TerminalBackendSpawnError::coded(
+                        "terminal startup cancelled",
+                        TerminalErrorCode::Aborted,
+                    ));
+                }
+                if startup.is_ready().map_err(|message| {
+                    TerminalBackendSpawnError::coded(message, TerminalErrorCode::SandboxSetupFailed)
+                })? {
+                    break;
+                }
+                if matches!(self.status(), TerminalSessionStatus::Exited { .. }) {
+                    return Err(TerminalBackendSpawnError::coded(
+                        format!(
+                            "Sandbox runner exited before command readiness: {}",
+                            startup_tail(&self.output.lock().snapshot().0)
+                        ),
+                        TerminalErrorCode::SandboxSetupFailed,
+                    ));
+                }
+                if Instant::now() >= deadline {
+                    return Err(TerminalBackendSpawnError::coded(
+                        "Sandbox startup exceeded 120 seconds before command readiness was confirmed",
+                        TerminalErrorCode::SandboxSetupTimeout,
+                    ));
+                }
+                tokio::select! {
+                    _ = self.output_notify.notified() => {}
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                }
+            }
+        }
         let deadline = Instant::now() + Duration::from_millis(self.config.timeout_ms.min(20_000));
         let silence = Duration::from_millis(self.config.idle_silence_ms);
         loop {
+            if cancellation.as_ref().is_some_and(|signal| signal()) {
+                return Err(TerminalBackendSpawnError::coded(
+                    "terminal startup cancelled",
+                    TerminalErrorCode::Aborted,
+                ));
+            }
             if matches!(self.status(), TerminalSessionStatus::Exited { .. }) {
                 #[cfg(target_os = "linux")]
                 {
@@ -450,14 +513,23 @@ impl LocalPtySession {
                         .into_iter()
                         .rev()
                         .collect::<String>();
-                    return Err(format!(
-                        "PTY shell exited during startup ({:?}): {}",
-                        self.status(),
-                        tail.trim()
+                    return Err(TerminalBackendSpawnError::coded(
+                        format!(
+                            "PTY shell exited during startup ({:?}): {}",
+                            self.status(),
+                            tail.trim()
+                        ),
+                        TerminalErrorCode::StartupFailed,
                     ));
                 }
                 #[cfg(not(target_os = "linux"))]
-                return Err("PTY shell exited during startup".to_string());
+                return Err(TerminalBackendSpawnError::coded(
+                    format!(
+                        "PTY shell exited during startup: {}",
+                        startup_tail(&self.output.lock().snapshot().0)
+                    ),
+                    TerminalErrorCode::StartupFailed,
+                ));
             }
             let output = self.output.lock().snapshot().0;
             let quiet = self.last_output.lock().elapsed() >= silence;
@@ -470,8 +542,10 @@ impl LocalPtySession {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err(format!(
-                    "PTY shell did not reach startup prompt: {output:?}"
+                let output = startup_tail(&output);
+                return Err(TerminalBackendSpawnError::coded(
+                    format!("PTY shell did not reach startup prompt: {output:?}"),
+                    TerminalErrorCode::StartupTimeout,
                 ));
             }
             tokio::select! {
@@ -480,6 +554,17 @@ impl LocalPtySession {
             }
         }
     }
+}
+
+fn startup_tail(value: &str) -> String {
+    value
+        .chars()
+        .rev()
+        .take(2048)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
 }
 
 #[cfg(windows)]

@@ -176,14 +176,8 @@ mod tests {
         std::path::PathBuf,
         std::sync::Arc<dsh_attachment_local::LocalAttachmentStore>,
     ) {
-        let root = std::env::temp_dir().join(format!(
-            "dsh-annotation-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("dsh-annotation-test-{}", uuid::Uuid::new_v4()));
         let context = cordis::Context::root();
         let store = dsh_attachment_local::LocalAttachmentStore::install(
             &context,
@@ -213,6 +207,12 @@ mod tests {
                 .as_str()
                 .is_some_and(|id| id.starts_with("sha256:"))
         );
+        let reference =
+            serde_json::from_value(serialized["content"][1]["attachment"].clone()).unwrap();
+        store
+            .read_image(&reference, None)
+            .await
+            .expect("submitted screenshot remains readable from durable storage");
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }

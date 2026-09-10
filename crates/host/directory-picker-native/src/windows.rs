@@ -48,6 +48,7 @@ pub fn run_windows_picker() -> Result<Option<String>, String> {
                 FOS_DONTADDTORECENT, FOS_FORCEFILESYSTEM, FOS_NOCHANGEDIR, FOS_PICKFOLDERS,
                 FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH,
             },
+            UI::WindowsAndMessaging::GetForegroundWindow,
         },
         core::{HRESULT, w},
     };
@@ -79,7 +80,11 @@ pub fn run_windows_picker() -> Result<Option<String>, String> {
         dialog
             .SetTitle(w!("DeepSeek Harness"))
             .map_err(|error| error.to_string())?;
-        if let Err(error) = dialog.Show(None) {
+        // The hidden helper has no window of its own. The foreground window
+        // is the requesting desktop surface, so keep the chooser above it.
+        let foreground = GetForegroundWindow();
+        let owner = (!foreground.0.is_null()).then_some(foreground);
+        if let Err(error) = dialog.Show(owner) {
             return if error.code() == HRESULT::from_win32(ERROR_CANCELLED.0) {
                 Ok(None)
             } else {

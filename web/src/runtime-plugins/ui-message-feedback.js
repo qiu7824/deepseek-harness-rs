@@ -380,6 +380,43 @@ window.__ModuleLoader__.load({
 		function feedbackSubmissionId() {
 			return globalThis.crypto?.randomUUID?.() ?? "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, value => { const random = Math.random() * 16 | 0; return (value === "x" ? random : random & 3 | 8).toString(16); });
 		}
+		const SESSION_FEEDBACK_CATEGORIES = ["task-result","instruction-following","product-interaction","service-stability","resource-cost","security-privacy-permission","other"];
+		async function sessionFeedbackRequest(payload) {
+			const rpcId = feedbackSubmissionId();
+			const response = await fetch("/api/sessionFeedback.record", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"client-request",rpcId,method:"sessionFeedback.record",payload})});
+			if (!response.ok) throw new Error(`Session feedback HTTP ${response.status}`);
+			const envelope = await response.json();
+			if (envelope.rpcId !== rpcId) throw new Error("Session feedback response id mismatch");
+			if (!envelope.result?.ok) throw new Error(envelope.result?.error?.message ?? "Could not record feedback");
+			if (!envelope.result.value?.ok) throw new Error(envelope.result.value?.error?.message ?? "Could not record feedback");
+			if (envelope.result.value.value?.recorded !== true) throw new Error("Feedback was not acknowledged");
+			return envelope.result.value.value;
+		}
+		function SessionFeedbackEntry({sessionId,t}) {
+			const h=react.createElement;
+			const [open,setOpen]=react.useState(false),[text,setText]=react.useState(""),[category,setCategory]=react.useState(""),[busy,setBusy]=react.useState(false),[error,setError]=react.useState(""),[saved,setSaved]=react.useState(false);
+			const requestId=react.useRef(feedbackSubmissionId()),running=react.useRef(false),alive=react.useRef(true);
+			react.useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
+			const change=(setter,value)=>{setter(value);requestId.current=feedbackSubmissionId();setSaved(false);setError("");};
+			const save=async()=>{
+				if(running.current||(!text.trim()&&!category))return;
+				running.current=true;setBusy(true);setError("");
+				try { await sessionFeedbackRequest({sessionId,requestId:requestId.current,...(text.trim()?{text:text.trim()}:{}),...(category?{category}:{})});
+					if(alive.current){setSaved(true);setOpen(false);setText("");setCategory("");requestId.current=feedbackSubmissionId();}
+				} catch(failure) {if(alive.current)setError(failure.message);}
+				finally {running.current=false;if(alive.current)setBusy(false);}
+			};
+			return h(react.Fragment,null,
+				h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"ghost",size:"sm",onClick:()=>{setOpen(true);setSaved(false);}},t("session.title")),
+				saved&&h("span",{role:"status",style:{fontSize:12,color:"var(--dsw-alias-label-tertiary)"}},t("session.recorded")),
+				open&&h(_deepseek_ai_dsh_client_ui_primitives.Modal,{open,title:t("session.title"),onClose:()=>{if(!busy)setOpen(false);},closeLabel:t("note.cancel"),footer:h(react.Fragment,null,
+					h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",disabled:busy,onClick:()=>setOpen(false)},t("note.cancel")),
+					h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"primary",disabled:busy||(!text.trim()&&!category),onClick:save},busy?t("session.saving"):t("note.save")))},
+					h("p",null,t("session.description")),
+					h("label",{style:{display:"grid",gap:8,marginBottom:16}},t("session.category"),h("select",{value:category,"aria-label":t("session.category"),disabled:busy,onChange:event=>change(setCategory,event.target.value),style:{font:"inherit",color:"inherit",background:"var(--dsw-alias-bg-layer-1)",border:"1px solid var(--dsw-alias-border-l2)",borderRadius:8,padding:8}},h("option",{value:""},t("session.choose")),...SESSION_FEEDBACK_CATEGORIES.map(value=>h("option",{key:value,value},t(`session.category.${value}`))))),
+					h("textarea",{className:MessageFeedbackActions_module_css_default.noteInput,style:{width:"100%",boxSizing:"border-box"},rows:4,maxLength:20000,value:text,disabled:busy,"aria-label":t("note.aria"),placeholder:t("session.placeholder"),onChange:event=>change(setText,event.target.value)}),
+					error&&h("p",{role:"alert",style:{color:"var(--dsw-alias-state-error-primary)"}},error)));
+		}
 		function FeedbackSubmissionDialog({ sessionId, messageId, open, onClose, t }) {
 			const key = `dsh.feedback.submission:${sessionId}:${messageId}`;
 			const [submissionId, setSubmissionId] = (0, react.useState)(() => { try { return localStorage.getItem(key) || feedbackSubmissionId(); } catch { return feedbackSubmissionId(); } });
@@ -573,6 +610,8 @@ window.__ModuleLoader__.load({
 		/** `feedback` namespace dictionaries. */
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
+			"session.title":"会话反馈","session.recorded":"反馈已记录","session.saving":"正在保存…","session.description":"记录对整个会话的意见，不会启动模型请求；会话共享仍由当前共享设置控制。","session.category":"反馈分类","session.choose":"选择分类（可选）","session.placeholder":"描述具体问题或建议（可选）",
+			"session.category.task-result":"任务结果","session.category.instruction-following":"指令遵循","session.category.product-interaction":"交互体验","session.category.service-stability":"服务稳定性","session.category.resource-cost":"资源与费用","session.category.security-privacy-permission":"安全、隐私与权限","session.category.other":"其他",
 			"delivery.title": "反馈交付",
 			"delivery.description": "反馈默认保存在本地。启用接收端后，仍需在提交包中查看内容并点击发送。",
 			"delivery.enabled": "允许提交到接收端",
@@ -614,6 +653,8 @@ window.__ModuleLoader__.load({
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
+			"session.title":"Session feedback","session.recorded":"Feedback recorded","session.saving":"Saving…","session.description":"Record a remark about this session without starting a model request. Session sharing follows the current sharing settings.","session.category":"Category","session.choose":"Choose a category (optional)","session.placeholder":"Describe an issue or suggestion (optional)",
+			"session.category.task-result":"Task result","session.category.instruction-following":"Instruction following","session.category.product-interaction":"Product interaction","session.category.service-stability":"Service stability","session.category.resource-cost":"Resources and cost","session.category.security-privacy-permission":"Security, privacy and permissions","session.category.other":"Other",
 			"delivery.title": "Feedback delivery",
 			"delivery.description": "Feedback is stored locally by default. Enabling a recipient still requires reviewing the package and choosing Send.",
 			"delivery.enabled": "Allow delivery to recipient",
@@ -678,6 +719,7 @@ window.__ModuleLoader__.load({
 		* @param ctx - client root context.
 		*/
 		function apply(ctx) {
+			ctx.slots.inject("conversation.session.header.utilities",()=>ctx.slots.register({name:"conversation.session.header.utilities",id:"session-feedback",order:30,locale:NS,inject:sessionId=>({sessionId})},props=>react.createElement(SessionFeedbackEntry,{...props,key:props.sessionId})));
 			ctx.effect(() => ctx.locale.register(NS, {
 				zh,
 				en

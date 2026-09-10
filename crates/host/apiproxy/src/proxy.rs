@@ -7046,6 +7046,32 @@ impl ApiProxyCarrier for ApiProxyService {
                     Err(value) => ok(rpc_id, value),
                 }
             }
+            "sessionFeedback.record" => {
+                let payload: dsh_command_feedback::SessionFeedbackRecordRequest =
+                    match serde_json::from_value(request.payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            return err(rpc_id, bad_request("sessionFeedback.record", error));
+                        }
+                    };
+                let Some(service) = self
+                    .ctx
+                    .get_typed::<Arc<dsh_command_feedback::SessionFeedbackService>>(
+                        "sessionFeedback",
+                        false,
+                    )
+                    .map(|slot| slot.as_ref().clone())
+                else {
+                    return err(
+                        rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message: "Session feedback service is unavailable".into(),
+                            details: EmptyDetails {},
+                        }),
+                    );
+                };
+                ok(rpc_id, service.record(&payload))
+            }
             "messageFeedback.put" => {
                 let payload: dsh_message_feedback::MessageFeedbackPutRequest =
                     match serde_json::from_value(request.payload) {

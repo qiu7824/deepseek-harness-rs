@@ -123,6 +123,84 @@ window.__ModuleLoader__.load({
       if (!response.ok) throw Object.assign(new Error(value.message || value.error?.message || value.error || "HTTP " + response.status),{code:typeof value.error==="string"?value.error:value.error?.code});
       return value;
     }
+    async function loadPdfBytes(path,scope,signal) {
+      const response=await fetch(endpoint("file",scope.sessionId,path),{signal});
+      if(!response.ok)throw new Error(`PDF HTTP ${response.status}`);
+      const mime=(response.headers.get("content-type")||"").split(";")[0].toLowerCase();
+      if(mime!=="application/pdf")throw new Error("文件不是 PDF 格式");
+      if(Number(response.headers.get("content-length"))>64*1024*1024)throw new Error("PDF 超过 64 MiB 预览限制");
+      const data=new Uint8Array(await response.arrayBuffer());
+      if(data.byteLength>64*1024*1024)throw new Error("PDF 超过 64 MiB 预览限制");
+      if(!String.fromCharCode(...data.slice(0,1024)).includes("%PDF-"))throw new Error("PDF 文件头无效");
+      return data;
+    }
+    function PdfViewer(props) {
+      const positionKey=fileDraftKey("pdf-position",props.scope.sessionId,props.path),stored=readingPositions.get(positionKey);
+      const savedPage=Number.isInteger(stored?.page)&&stored.page>0?stored.page:1,savedZoom=[0.5,0.75,1,1.25,1.5,2].includes(stored?.zoom)?stored.zoom:1;
+      const [document,setDocument]=React.useState(null),[page,setPage]=React.useState(savedPage),[zoom,setZoom]=React.useState(savedZoom),[error,setError]=React.useState(""),[rendering,setRendering]=React.useState(true);
+      const canvas=React.useRef(null);
+      React.useEffect(()=>{
+        const controller=new AbortController();let opened;
+        setDocument(null);setPage(savedPage);setZoom(savedZoom);setError("");setRendering(true);
+        loadAsset("pdf.js","__DSH_SIDEBAR_PDF__").then(async runtime=>{
+          if(controller.signal.aborted)return;
+          opened=runtime.open(props.customData,controller.signal);
+          const next=await opened.document;if(!controller.signal.aborted){setPage(value=>Math.min(next.numPages,value));setDocument(next);}
+        }).catch(reason=>{if(!controller.signal.aborted){setError(reason.message||String(reason));setRendering(false)}});
+        return()=>{controller.abort();void opened?.dispose()};
+      },[props.customData,props.path,props.scope.sessionId]);
+      React.useEffect(()=>{
+        if(!document||!canvas.current)return;let active=true,task;
+        setRendering(true);setError("");
+        document.getPage(page).then(async current=>{
+          if(!active)return;
+          const base=current.getViewport({scale:1}),scale=Math.min(zoom*Math.min(window.devicePixelRatio||1,2),Math.sqrt(16000000/Math.max(1,base.width*base.height))),viewport=current.getViewport({scale});
+          const target=canvas.current;target.width=Math.ceil(viewport.width);target.height=Math.ceil(viewport.height);target.style.width=Math.ceil(base.width*zoom)+"px";target.style.height=Math.ceil(base.height*zoom)+"px";
+          task=current.render({canvasContext:target.getContext("2d"),viewport});await task.promise;
+          if(active)setRendering(false);
+        }).catch(reason=>{if(active&&reason?.name!=="RenderingCancelledException"){setError(reason.message||String(reason));setRendering(false)}});
+        return()=>{active=false;task?.cancel()};
+      },[document,page,zoom]);
+      React.useEffect(()=>{if(document)rememberReading(positionKey,{page,zoom})},[document,page,zoom,positionKey]);
+      return h("section",{className:"dswSuite","data-preview-kind":"pdf"},
+        h("div",{className:"dswSuiteBar"},h("strong",{className:"dswSuiteTitle",title:props.path},props.title),
+          h(Button,{variant:"outline",size:"sm",disabled:!document||page<=1,onClick:()=>setPage(value=>value-1)},"上一页"),
+          h("input",{type:"number",min:1,max:document?.numPages||1,value:page,"aria-label":"PDF 页码",style:{width:65},disabled:!document,onChange:event=>{const value=Number(event.target.value);if(Number.isInteger(value)&&value>=1&&value<=document.numPages)setPage(value)}}),h("span",null,"/ "+(document?.numPages||"—")),
+          h(Button,{variant:"outline",size:"sm",disabled:!document||page>=document.numPages,onClick:()=>setPage(value=>value+1)},"下一页"),
+          h("select",{value:zoom,"aria-label":"PDF 缩放",onChange:event=>setZoom(Number(event.target.value))},...[0.5,0.75,1,1.25,1.5,2].map(value=>h("option",{key:value,value},Math.round(value*100)+"%")))),
+        error&&h("div",{className:"dswSuiteStatus dswSuiteError",role:"alert"},error),rendering&&!error&&h("div",{className:"dswSuiteStatus",role:"status"},"正在渲染 PDF…"),
+        h("div",{style:{minHeight:0,flex:1,overflow:"auto",padding:16,background:"var(--dsw-alias-bg-layer-1)"}},h("canvas",{ref:canvas,role:"img","aria-label":`${props.title} · 第 ${page} 页`,style:{display:error?"none":"block",margin:"auto",background:"white"}})));
+    }
+    function ImageViewer(props) {
+      const [zoom,setZoom]=React.useState(1),[error,setError]=React.useState(false);
+      React.useEffect(()=>{setZoom(1);setError(false)},[props.path,props.scope.sessionId]);
+      return h("section",{className:"dswSuite","data-preview-kind":"image"},h("div",{className:"dswSuiteBar"},h("strong",{className:"dswSuiteTitle"},props.title),h(Button,{variant:"outline",size:"sm",disabled:zoom<=0.25,onClick:()=>setZoom(value=>value/2)},"缩小"),h("span",null,Math.round(zoom*100)+"%"),h(Button,{variant:"outline",size:"sm",disabled:zoom>=4,onClick:()=>setZoom(value=>value*2)},"放大")),error?h("div",{role:"alert",className:"dswSuiteError"},"图片无法解码或文件已失效"):h("div",{style:{minHeight:0,flex:1,overflow:"auto",padding:16}},h("img",{src:props.mediaUrl,alt:props.title,onError:()=>setError(true),style:{display:"block",maxWidth:zoom===1?"100%":"none",transform:`scale(${zoom})`,transformOrigin:"top left"}})));
+    }
+    function isolatedHtml(source,base) {
+      const document=new window.DOMParser().parseFromString(source,"text/html");
+      for(const node of document.querySelectorAll("base"))node.remove();
+      const address=new URL(base),root=address.origin,directory=root+address.pathname.split("/").slice(0,5).join("/")+"/";
+      const csp=document.createElement("meta");csp.httpEquiv="Content-Security-Policy";
+      csp.content=`default-src 'none'; img-src data: blob: ${directory}; media-src data: blob: ${directory}; style-src 'unsafe-inline' ${directory}; script-src 'unsafe-inline' blob: ${directory}; connect-src ${directory}; font-src data: ${directory}; form-action 'none'; base-uri ${root}`;
+      const anchor=document.createElement("base");anchor.href=base;document.head.prepend(csp,anchor);
+      return "<!doctype html>"+document.documentElement.outerHTML;
+    }
+    function HtmlPreview({source,path,sessionId}) {
+      const [base,setBase]=React.useState(""),[error,setError]=React.useState("");
+      React.useEffect(()=>{
+        const controller=new AbortController();setBase("");setError("");
+        json(endpoint("meta",sessionId),{signal:controller.signal}).then(value=>{
+          if(controller.signal.aborted)return;
+          const token=value.siteToken||value.token;if(typeof token!=="string"||!token)throw new Error("HTML 预览授权不可用");
+          const origin=new URL(window.location.href);if(origin.hostname==="127.0.0.1")origin.hostname="localhost";else if(origin.hostname==="localhost")origin.hostname="127.0.0.1";
+          const relative=path.replaceAll("\\","/").split("/").map(encodeURIComponent).join("/");
+          setBase(origin.origin+"/__dsh-preview/site/"+encodeURIComponent(token)+"/"+encodeURIComponent(sessionId)+"/"+relative);
+        }).catch(reason=>{if(!controller.signal.aborted)setError(reason.message||String(reason))});
+        return()=>controller.abort();
+      },[path,sessionId]);
+      const packed=React.useMemo(()=>base?isolatedHtml(source,base):"",[source,base]);
+      return error?h("div",{className:"dswSuiteStatus dswSuiteError",role:"alert"},error):base?h("iframe",{className:"dswSuiteHtml",sandbox:"allow-scripts",srcDoc:packed,title:"预览 "+path,referrerPolicy:"no-referrer"}):h("div",{className:"dswSuiteStatus",role:"status"},"正在准备 HTML 预览…");
+    }
     function installStyle() {
       if (document.querySelector('style[data-plugin-css="dsh-sidebar-workbench-suite"]')) return;
       const style = document.createElement("style");
@@ -186,26 +264,37 @@ window.__ModuleLoader__.load({
       if (state.svg) return h("div", { className: "dswSuiteDiagram", "data-mermaid-runtime": "loaded", dangerouslySetInnerHTML: { __html: state.svg } });
       return h("div", { className: "dswSuiteDiagram", title: state.error || "正在加载 Mermaid" }, h(FallbackDiagram, { source }));
     }
-    function CodeEditor({ value, path, onChange, onSave }) {
+    const READING_STORAGE="dsh.documentReading.v1",readingPositions=new Map();
+    try{for(const [key,value] of JSON.parse(window.sessionStorage?.getItem(READING_STORAGE)||"[]").slice(-128)){if(typeof key==="string"&&value&&typeof value==="object")readingPositions.set(key,value)}}catch{}
+    function rememberReading(key,value){readingPositions.delete(key);readingPositions.set(key,value);while(readingPositions.size>128)readingPositions.delete(readingPositions.keys().next().value);try{window.sessionStorage?.setItem(READING_STORAGE,JSON.stringify([...readingPositions]))}catch{}}
+    function CodeEditor({ value, path, stateKey=path, ready=true, onChange, onSave }) {
       const host = React.useRef(null), controller = React.useRef(null);
       const latest = React.useRef(value);
+      const changeHandler=React.useRef(onChange);changeHandler.current=onChange;
+      const [line,setLine]=React.useState(""),[wrap,setWrap]=React.useState(readingPositions.get(stateKey)?.wrap!==false);
       latest.current = value;
       const [fallback, setFallback] = React.useState(true);
-      React.useEffect(() => {
+      React.useLayoutEffect(() => {
+        if(!ready){setFallback(true);return;}
         let active = true;
         loadAsset("editor.js", "__DSH_SIDEBAR_EDITOR__").then(runtime => {
           if (!active || !host.current) return;
-          controller.current = runtime.mount({ parent: host.current, value: latest.current, path, onChange });
+          controller.current = runtime.mount({ parent: host.current, value: latest.current, path, onChange:next=>changeHandler.current(next),position:readingPositions.get(stateKey),onViewportChange:position=>rememberReading(stateKey,position) });
           setFallback(false);
         }).catch(() => { if (active) setFallback(true); });
-        return () => { active = false; controller.current?.destroy(); controller.current = null; };
-      }, [path]);
+        const save=()=>{const position=controller.current?.getPosition?.();if(position)rememberReading(stateKey,position)};
+        window.addEventListener("pagehide",save);
+        return () => { active = false;save();window.removeEventListener("pagehide",save);controller.current?.destroy(); controller.current = null; };
+      }, [path,stateKey,ready]);
       React.useEffect(() => { controller.current?.setValue(value); }, [value]);
-      return h("div", { className: "dswSuiteSource", onKeyDown: event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); onSave(); } } }, h("div", { ref: host, style: { minWidth: 0, minHeight: 0, flex: 1 }, "aria-label": "CodeMirror 编辑器 " + path }), fallback && h("textarea", { value, spellCheck: false, "aria-label": "编辑 " + path, onChange: event => onChange(event.target.value) }));
+      return h("div", { className: "dswSuiteSource",style:{flexDirection:"column"}, onKeyDown: event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); onSave(); } } },h("div",{className:"dswSuiteBar"},h("input",{type:"number",min:1,value:line,placeholder:"行号","aria-label":"跳转行号",style:{width:82},onChange:event=>setLine(event.target.value),onKeyDown:event=>{if(event.key==="Enter"){event.preventDefault();controller.current?.revealLine?.(line)}}}),h(Button,{variant:"outline",size:"sm",disabled:fallback||!line,onClick:()=>controller.current?.revealLine?.(line)},"跳转"),h(Button,{variant:"outline",size:"sm",disabled:fallback,"aria-pressed":wrap,onClick:()=>{setWrap(!wrap);controller.current?.setWrap?.(!wrap)}},"自动换行")), h("div", { ref: host, style: { minWidth: 0, minHeight: 0, flex: 1 }, "aria-label": "CodeMirror 编辑器 " + path }), fallback && h("textarea", { value, spellCheck: false, "aria-label": "编辑 " + path, onChange: event => onChange(event.target.value) }));
     }
-    function MarkdownPreview({ source, outline, mermaidEnabled, fallback }) {
+    function MarkdownPreview({ source, outline, mermaidEnabled, fallback, stateKey }) {
       const host = React.useRef(null);
       const [rendered, setRendered] = React.useState(null);
+      const position=React.useRef(readingPositions.get(stateKey));
+      React.useLayoutEffect(()=>{if(host.current){host.current.scrollTop=position.current?.top||0;host.current.scrollLeft=position.current?.left||0}},[rendered,stateKey]);
+      const onScroll=event=>{position.current={top:event.currentTarget.scrollTop,left:event.currentTarget.scrollLeft};rememberReading(stateKey,position.current)};
       React.useEffect(() => {
         let active = true;
         loadAsset("markdown.js", "__DSH_SIDEBAR_MARKDOWN__").then(runtime => runtime.render(source)).then(value => { if (active) setRendered(value); }).catch(() => { if (active) setRendered(null); });
@@ -243,8 +332,8 @@ window.__ModuleLoader__.load({
         });
         return () => { active = false; };
       }, [rendered, mermaidEnabled, outline]);
-      if (!rendered) return h("article", { className: "dswSuitePreview" }, fallback);
-      return h("article", { ref: host, className: "dswSuitePreview", "data-markdown-runtime": "marked", dangerouslySetInnerHTML: { __html: rendered.html } });
+      if (!rendered) return h("article", { ref:host,onScroll,className: "dswSuitePreview" }, fallback);
+      return h("article", { ref: host,onScroll, className: "dswSuitePreview", "data-markdown-runtime": "marked", dangerouslySetInnerHTML: { __html: rendered.html } });
     }
     function renderMarkdown(source, outlineEnabled, mermaidEnabled) {
       const lines = source.split(/\r?\n/), content = [], outline = [];
@@ -268,6 +357,7 @@ window.__ModuleLoader__.load({
       return { content, outline: outlineEnabled ? outline : [] };
     }
     function MarkdownWorkbenchSession(props) {
+      const [fileLoaded,setFileLoaded]=React.useState(false);
       const pluginSettings = props.pluginSettings || {};
       const draftKey = fileDraftKey("markdown", props.scope.sessionId, props.path), initialDraft = fileDrafts.get(draftKey);
       const [source, setSource] = React.useState(initialDraft?.source ?? props.content ?? ""), [saved, setSaved] = React.useState(initialDraft?.saved ?? props.content ?? ""), [etag, setEtag] = React.useState(initialDraft?.etag || "");
@@ -279,7 +369,7 @@ window.__ModuleLoader__.load({
           if (!response.ok) throw new Error("HTTP " + response.status);
           const text = await response.text();
           if (active) applyFetchedFile(draftKey, text, response.headers.get("etag") || "", { source: setSource, saved: setSaved, etag: setEtag, error: setError });
-        }).catch(reason => { if (active) setError(reason.message || String(reason)); });
+        }).catch(reason => { if (active) setError(reason.message || String(reason)); }).finally(()=>{if(active)setFileLoaded(true)});
         return () => { active = false; };
       }, [draftKey]);
       const rendered = React.useMemo(() => renderMarkdown(source, pluginSettings.outline !== false, pluginSettings.mermaid !== false), [source, pluginSettings.outline, pluginSettings.mermaid]);
@@ -306,8 +396,8 @@ window.__ModuleLoader__.load({
         error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error),
         rendered.outline.length > 0 && h("nav", { className: "dswSuiteOutline", "aria-label": "Markdown 大纲" }, rendered.outline.map(row => h(Button, { variant: "outline", size: "sm", key: row.id, style: { paddingLeft: 6 + row.level * 8 }, onClick: () => document.getElementById(row.id)?.scrollIntoView({ behavior: "smooth", block: "start" }) }, row.text))),
         h("div", { className: "dswSuiteEditor", style: mode === "split" ? undefined : { gridTemplateColumns: "minmax(0,1fr)" } },
-          showSource && h(CodeEditor, { value: source, path: props.path, onChange: editSource, onSave: save }),
-          showPreview && h(MarkdownPreview, { source, outline: rendered.outline, mermaidEnabled: pluginSettings.mermaid !== false, fallback: rendered.content })));
+          showSource && h(CodeEditor, { ready:fileLoaded,value: source, path: props.path,stateKey:fileDraftKey("editor",props.scope.sessionId,props.path), onChange: editSource, onSave: save }),
+          showPreview && h(MarkdownPreview, { source,stateKey:fileDraftKey("markdown-position",props.scope.sessionId,props.path), outline: rendered.outline, mermaidEnabled: pluginSettings.mermaid !== false, fallback: rendered.content })));
     }
     function MarkdownWorkbench(props) {
       return h(MarkdownWorkbenchSession, { ...props, key: props.scope.sessionId + "\u0000" + props.path });
@@ -328,6 +418,7 @@ window.__ModuleLoader__.load({
       return rows.filter(cells => cells.some(cell => cell !== ""));
     }
     function CodeWorkbenchSession(props) {
+      const [fileLoaded,setFileLoaded]=React.useState(false);
       const draftKey = fileDraftKey("code", props.scope.sessionId, props.path), initialDraft = fileDrafts.get(draftKey);
       const [source, setSource] = React.useState(initialDraft?.source ?? props.content ?? ""), [saved, setSaved] = React.useState(initialDraft?.saved ?? props.content ?? ""), [etag, setEtag] = React.useState(initialDraft?.etag || "");
       const [query, setQuery] = React.useState(""), [replacement, setReplacement] = React.useState(""), [error, setError] = React.useState(""), [status, setStatus] = React.useState("");
@@ -341,7 +432,7 @@ window.__ModuleLoader__.load({
           if (!response.ok) throw new Error("HTTP " + response.status);
           const text = await response.text();
           if (active) applyFetchedFile(draftKey, text, response.headers.get("etag") || "", { source: setSource, saved: setSaved, etag: setEtag, error: setError });
-        }).catch(reason => { if (active) setError(reason.message || String(reason)); });
+        }).catch(reason => { if (active) setError(reason.message || String(reason)); }).finally(()=>{if(active)setFileLoaded(true)});
         return () => { active = false; };
       }, [draftKey]);
       const save = async () => {
@@ -357,7 +448,7 @@ window.__ModuleLoader__.load({
       return h("section", { className: "dswSuite", "data-viewer": "code-workbench" },
         h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle", title: props.path }, props.title), previewable && [["source", "源码"], ["preview", "预览"], ["split", "分栏"]].map(row => h(Button, { variant: "outline", size: "sm", key: row[0], onClick: () => setMode(row[0]) }, row[1])), h("input", { value: query, placeholder: "查找", onChange: event => setQuery(event.target.value) }), h("span", { className: "dswSuiteMeta" }, matches + " 处"), h("input", { value: replacement, placeholder: "替换为", onChange: event => setReplacement(event.target.value) }), h(Button, { variant: "outline", size: "sm", disabled: !query, onClick: () => editSource(source.split(query).join(replacement)) }, "全部替换"), h(Button, { variant: "outline", size: "sm", disabled: source === saved || !etag, onClick: save }, status || "保存")),
         error && h("div", { className: "dswSuiteStatus dswSuiteError" }, error),
-        h("div", { className: "dswSuiteEditor", style: mode === "split" ? undefined : { gridTemplateColumns: "minmax(0,1fr)" } }, mode !== "preview" && h(CodeEditor, { value: source, path: props.path, onChange: editSource, onSave: save }), previewable && mode !== "source" && h("iframe", { className: "dswSuiteHtml", sandbox: "allow-scripts", srcDoc: source, title: "预览 " + props.path })));
+        h("div", { className: "dswSuiteEditor", style: mode === "split" ? undefined : { gridTemplateColumns: "minmax(0,1fr)" } }, mode !== "preview" && h(CodeEditor, { ready:fileLoaded,value: source, path: props.path,stateKey:fileDraftKey("editor",props.scope.sessionId,props.path), onChange: editSource, onSave: save }), previewable && mode !== "source" && h(HtmlPreview,{source,path:props.path,sessionId:props.scope.sessionId})));
     }
     function CodeWorkbench(props) {
       return h(CodeWorkbenchSession, { ...props, key: props.scope.sessionId + "\u0000" + props.path });
@@ -397,7 +488,7 @@ window.__ModuleLoader__.load({
       return h("section", { className: "dswSuite", "data-viewer": "structured-data" },
         h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle" }, props.title), h(Button, { variant: "outline", size: "sm", onClick: () => setMode("table") }, "表格"), h(Button, { variant: "outline", size: "sm", onClick: () => setMode("source") }, "源码"), h("span", { className: "dswSuiteMeta" }, body.length + " 行 · " + headers.length + " 列"), h(Button, { variant: "outline", size: "sm", disabled: source === saved || !etag, onClick: save }, "保存")),
         (error || saveError) && h("div", { className: "dswSuiteStatus dswSuiteError" }, error || saveError),
-        mode === "source" ? h("div", { className: "dswSuiteEditor", style: { gridTemplateColumns: "minmax(0,1fr)" } }, h(CodeEditor, { value: source, path: props.path, onChange: setSource, onSave: save })) : !error && h("div", { className: "dswSuiteTableWrap" }, h("table", { className: "dswSuiteTable" },
+        mode === "source" ? h("div", { className: "dswSuiteEditor", style: { gridTemplateColumns: "minmax(0,1fr)" } }, h(CodeEditor, { value: source, path: props.path,stateKey:fileDraftKey("editor",props.scope.sessionId,props.path), onChange: setSource, onSave: save })) : !error && h("div", { className: "dswSuiteTableWrap" }, h("table", { className: "dswSuiteTable" },
           h("thead", null, h("tr", null, headers.map((cell, index) => h("th", { key: index }, cell)))),
           h("tbody", null, body.map((row, rowIndex) => h("tr", { key: rowIndex }, headers.map((_, index) => h("td", { key: index }, row[index] || ""))))))));
     }
@@ -950,6 +1041,8 @@ window.__ModuleLoader__.load({
         sidebar.registerFileViewer({ id: "suite:structured", title: "结构化数据表", exts: ["json", "csv", "tsv"], priority: 110, fetchStrategy: "fsRead", component: StructuredViewer }),
         sidebar.registerFileViewer({ id: "suite:office", title: "本地文档", exts: ["doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "zip", "7z", "rar"], priority: 100, fetchStrategy: "binary-download", component: DownloadViewer }),
         sidebar.registerFileViewer({ id: "suite:code", title: "CodeMirror 文本编辑器", exts: ["", "txt", "log", "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte", "rs", "py", "go", "java", "c", "cc", "cpp", "h", "hpp", "cs", "rb", "php", "sh", "bash", "zsh", "ps1", "sql", "yaml", "yml", "toml", "ini", "conf", "env", "xml", "css", "scss", "less", "html", "htm", "svg", "dockerfile", "makefile"], priority: 90, fetchStrategy: "fsRead", component: CodeWorkbench }),
+        sidebar.registerFileViewer({id:"suite:pdf",title:"PDF 预览",exts:["pdf"],priority:130,fetchStrategy:"custom",load:loadPdfBytes,component:PdfViewer}),
+        sidebar.registerFileViewer({id:"suite:image",title:"图片预览",exts:["png","jpg","jpeg","webp","gif","bmp","avif","ico"],priority:130,fetchStrategy:"mediaUrl",component:ImageViewer}),
         sidebar.registerTab({ id: "suite:jobs", title: "后台任务", order: 80, single: true, component: JobsTab }),
         sidebar.registerTab({ id: "suite:controlled-browser", title: "Computer Use", order: 100, single: true, component: props=>h(ControlledBrowserTab,{...props,sidebar}), settings: { pluginToggles: [{ key: "autoRefresh", title: "自动刷新浏览器画面", type: "switch", defaultValue: false }] }, onClose: (tab, scope) => { void desktopClose(scope.sessionId,tab.meta?.browserSessionId||"default",{ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: scope.sessionId, browserSessionId: tab.meta?.browserSessionId || "default", action: "close", includeScreenshot: false }) }).catch(() => {}); } })
       ];
@@ -958,7 +1051,7 @@ window.__ModuleLoader__.load({
     }
     exports.apply = apply;
     exports.inject = inject;
-    exports.test = { parseCsv, renderMarkdown, visiblePoll, MermaidDiagram, MarkdownWorkbench, CodeWorkbench, StructuredViewer, JobsTab, ControlledBrowserTab, RuntimeDiagnostics, ScreenAnnotation, ComputerUseSettings, DeviceSettings, rememberFileDraft, fileDraftCacheSnapshot: () => ({ keys: [...fileDrafts.keys()], bytes: fileDraftBytes }), clearFileDrafts };
+    exports.test = { PdfViewer, ImageViewer, HtmlPreview, isolatedHtml, loadPdfBytes, parseCsv, renderMarkdown, visiblePoll, MermaidDiagram, MarkdownWorkbench, CodeWorkbench, StructuredViewer, JobsTab, ControlledBrowserTab, RuntimeDiagnostics, ScreenAnnotation, ComputerUseSettings, DeviceSettings, rememberFileDraft, fileDraftCacheSnapshot: () => ({ keys: [...fileDrafts.keys()], bytes: fileDraftBytes }), clearFileDrafts };
     return module.exports;
   }
 });

@@ -399,10 +399,19 @@ pub struct LlmDiscoveredModel {
     pub max_tokens: Option<u64>,
 }
 
+/// A route that treats a later system message as the current instructions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SystemPromptUpdate {
+    InHistory,
+}
+
 /// One adapter-discovered model; catalog membership is advisory.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmModelInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_update: Option<SystemPromptUpdate>,
     pub provider: String,
     pub id: String,
     pub name: String,
@@ -453,6 +462,8 @@ pub struct LlmModelReasoningInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmResolvedModelInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_update: Option<SystemPromptUpdate>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub execution_modes: Vec<ExecutionMode>,
 

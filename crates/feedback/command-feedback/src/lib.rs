@@ -5,6 +5,10 @@
 //! Rust port of `packages/feedback/command-feedback/src/index.ts`.
 
 pub mod invariant;
+mod session_feedback;
+pub use session_feedback::{
+    FEEDBACK_CATEGORIES, SessionFeedbackRecordRequest, SessionFeedbackService,
+};
 
 use std::sync::Arc;
 
@@ -91,6 +95,7 @@ pub fn execute_feedback_command(
 /// Register the global `/feedback` command for every composed command
 /// adapter (TS `apply`).
 pub fn apply(ctx: &Context) -> Result<cordis::Disposer, String> {
+    SessionFeedbackService::install(ctx);
     let ctx = ctx.clone();
     let commands = ctx
         .get_typed::<Arc<CommandRuntime>>("commands", false)

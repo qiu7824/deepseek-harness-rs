@@ -2641,6 +2641,7 @@ window.__ModuleLoader__.load({
 		*/
 		const inject = [
 			"slots",
+			"layout",
 			"sessions",
 			"workspaces",
 			"locale"
@@ -2670,9 +2671,11 @@ window.__ModuleLoader__.load({
 			const pickerFlowSource = flowSource("conversation.hero.workspace.directoryFlow");
 			const browserInjected = () => ({
 				startSession: (workspaceId) => {
+					ctx.layout.selectPanel(null);
 					ctx.workspaces.startSession(workspaceId);
 				},
 				open: (sessionId) => {
+					ctx.layout?.selectPanel?.(null);
 					ctx.sessions.open(sessionId);
 				},
 				searchSessions,
@@ -2688,6 +2691,7 @@ window.__ModuleLoader__.load({
 						sessionId,
 						increaseTitle: true
 					}).then((childId) => {
+						ctx.layout?.selectPanel?.(null);
 						ctx.sessions.open(childId);
 					}).catch(() => {});
 				},

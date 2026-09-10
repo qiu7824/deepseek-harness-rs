@@ -131,7 +131,11 @@ impl AgentStatus {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PreStepDecision {
     Reject,
-    Enter { messages: Vec<UserMessage> },
+    Enter {
+        messages: Vec<UserMessage>,
+        /// A pre-step owner can explicitly invalidate the cached request prefix.
+        starts_request_series: bool,
+    },
 }
 
 /// Action returned by a listener that owns model-request recovery.

@@ -5697,7 +5697,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
             id:string(),workspaceKey:string(),workspaceLabel:string().optional(),tool:string(),category:string(),code:string(),source:string(),provider:string().nullable().optional(),
             models:array(looseObject({provider:string(),model:string(),count:number()})),occurrences:number(),firstSeen:number(),lastSeen:number(),
             lastRecovered:number().nullable().optional(),status:string(),verification:string().nullable().optional(),suggestion:string(),ruleId:string(),message:string(),enabled:boolean(),revision:number(),
-            applicationCount:number().optional(),lastApplied:number().nullable().optional(),lastApplicationOutcome:string().nullable().optional()
+            applicationCount:number().optional(),lastApplied:number().nullable().optional(),lastApplicationOutcome:string().nullable().optional(),
+            lastSessionId:string().optional(),lastCallId:string().optional()
         });
         const memoryLearningListValueSchema=looseObject({enabled:boolean(),memoryEnabled:boolean(),effectiveEnabled:boolean(),revision:number(),lastError:string().nullable().optional(),items:array(memoryLearningEntrySchema),total:number()});
         const memoryLearningMutationValueSchema=looseObject({});

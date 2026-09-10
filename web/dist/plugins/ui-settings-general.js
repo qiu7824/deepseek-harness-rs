@@ -84,6 +84,16 @@ window.__ModuleLoader__.load({
 		*/
 		/** Nav glyph by section id; unknown ids fall back to the settings gear. */
 		function navIcon(id) {
+            const paths={
+                "runtime-paths":["M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"],
+                memory:["M8 3a4 4 0 0 0-4 4v2a4 4 0 0 0 0 6v2a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4Zm8 0a4 4 0 0 1 4 4v2a4 4 0 0 1 0 6v2a4 4 0 0 1-8 0V7a4 4 0 0 1 4-4Z","M4 9h3m10 0h3M6 16h2m8 0h2"],
+                subagent:["M9 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm8-7a3 3 0 0 1 0 6M2 21v-2a6 6 0 0 1 12 0v2m4-7a5 5 0 0 1 4 5v2"],
+                security:["M12 3 3 7v6c0 4 5 7 9 9 4-2 9-5 9-9V7Z","m8 12 3 3 5-6"],
+                capabilities:["M8 3v5H3v13h18V8h-5V3Z","M8 8h8M8 13h8M8 17h5"],
+                "archived-sessions":["M3 3h18v5H3Zm2 5v13h14V8M9 12h6"],
+                trash:["M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"]
+            }[id];
+            if(paths)return (0,react_jsx_runtime.jsx)("svg",{className:SettingsRoot_module_css_default.navIcon,width:18,height:18,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:1.7,strokeLinecap:"round",strokeLinejoin:"round","aria-hidden":true,children:paths.map((d,index)=>(0,react_jsx_runtime.jsx)("path",{d},index))});
 			if (id === "models") return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconDataOutline16, {
 				className: SettingsRoot_module_css_default.navIcon,
 				size: 16
@@ -443,7 +453,7 @@ window.__ModuleLoader__.load({
         function experienceList(value){if(!value||typeof value.enabled!=="boolean"||typeof value.memoryEnabled!=="boolean"||typeof value.effectiveEnabled!=="boolean"||!Number.isSafeInteger(value.revision)||!Array.isArray(value.items)||!Number.isSafeInteger(value.total))throw new Error("自动经验目录返回的数据不完整");return value}
         const experienceDate=value=>typeof value==="number"&&Number.isFinite(value)&&value>0?new Date(value).toLocaleString():"未记录";
         const experienceCount=value=>Number.isSafeInteger(value)&&value>=0?String(value):"未提供";
-        const experienceCategory=category=>({feedback:"用户反馈",authentication:"账号与访问权限","rate-limit":"服务限流",provider:"模型请求",arguments:"工具参数",parameters:"工具参数","filesystem-observation":"文件观察","tool-availability":"工具可用性",runtime:"运行环境",preflight:"工具前置检查","tool-error":"工具执行错误"})[category]||"经验记录";
+        const experienceCategory=category=>({feedback:"用户反馈",authentication:"账号与访问权限","rate-limit":"服务限流",provider:"模型请求",arguments:"工具参数",parameters:"工具参数","filesystem-observation":"文件观察","tool-availability":"工具可用性",runtime:"运行环境",preflight:"工具前置检查","tool-error":"工具执行错误","request-format":"接入参数与格式",transport:"连接与响应传输","sandbox-runtime":"沙箱初始化",permissions:"目录访问权限",timeout:"执行超时","command-exit":"命令退出状态","filesystem-target":"文件目标与搜索","remote-runtime":"远程连接与环境"})[category]||"经验记录";
         const experienceControlCodes=new Set(["ABORTED","ABORTED_BEFORE_DISPATCH","CANCELLED","CANCELED","USER_APPROVAL_DENIED","USER_APPROVAL_CANCELLED","USER_APPROVAL_TIMED_OUT","USER_APPROVAL_UNAVAILABLE","COMPUTER_USE_MANUAL_CONTROL","COMPUTER_USE_ABORTED","COMPUTER_USE_HUMAN_REQUIRED","COMPUTER_USE_SESSION_NOT_FOUND","COMPUTER_USE_DEVICE_BUSY","COMPUTER_USE_SESSION_LIMIT","COMPUTER_USE_DESKTOP_DISCONNECTED","COMPUTER_USE_BUSY","COMPUTER_USE_FRAME_PENDING","COMPUTER_USE_CAPTURE_INTERRUPTED"]);
         function experienceAssessment(entry){
             const code=String(entry.code||"").toUpperCase();
@@ -525,6 +535,7 @@ window.__ModuleLoader__.load({
                         h("dl",{className:"dshExperienceFacts"},facts(entry).flatMap(([label,value])=>[h("dt",{key:label+"-label"},label),h("dd",{key:label},value)])),
                         entry.suggestion&&h("p",null,entry.suggestion),
                         h("details",null,h("summary",null,"错误类别与诊断"),h("div",{className:"dshMemoryHint"},`错误代码：${entry.code||"未提供"}`),h("pre",null,entry.message||"未记录诊断")),
+                        entry.lastSessionId&&h("details",null,h("summary",null,"原始记录定位"),h("div",{className:"dshMemoryHint"},"任务：",h("code",null,entry.lastSessionId)),entry.lastCallId&&h("div",{className:"dshMemoryHint"},"调用：",h("code",null,entry.lastCallId))),
                         h("div",{className:"dshMemoryHint","data-experience-reuse":true},experienceReuse(entry,masterEnabled===true&&report.effectiveEnabled,selected.get(entry.id),excluded.get(entry.id))),
                         h("div",{className:"dshMemoryToolbar"},entry.status==="pending"&&assessment.confirm&&button("确认修正建议",()=>setConfirmation({id:entry.id,revision:entry.revision,suggestion:entry.suggestion||""})),button("删除",()=>setRemoveId(entry.id))),
                         editing&&h("div",{className:"dshExperienceConfirm"},h("div",{className:"dshMemoryHint"},"只确认已检查的修正建议；记录为用户确认，不代表已观察到工具恢复。"),h("textarea",{value:confirmation.suggestion,maxLength:1000,disabled:!!busy,"aria-label":"确认的修正建议",placeholder:"填写明确的修正步骤与适用条件",onChange:event=>setConfirmation({...confirmation,suggestion:event.target.value})}),changed&&h("div",{className:"dshMemoryHint"},"记录已更新，请核对上方最新证据。",button("已核对最新记录",()=>setConfirmation({...confirmation,revision:entry.revision}))),h("div",{className:"dshMemoryToolbar"},button("确认此建议",()=>act("learningConfirm",{id:entry.id,expectedRevision:confirmation.revision,confirmed:true,suggestion:confirmation.suggestion.trim()}),changed||!confirmation.suggestion.trim()||confirmation.suggestion.trim().length>1000),button("取消",()=>setConfirmation(null)))),

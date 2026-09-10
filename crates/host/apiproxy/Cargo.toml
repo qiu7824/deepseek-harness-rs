@@ -25,6 +25,7 @@ dsh-cordis-loader = { path = "../../vendor/loader" }
 dsh-atomic-write = { path = "../../util/atomic-write" }
 dsh-llm = { path = "../../core/llm" }
 dsh-message-feedback = { path = "../../feedback/message-feedback" }
+dsh-command-feedback = { path = "../../feedback/command-feedback" }
 dsh-native-command = { path = "../../util/native-command" }
 dsh-session = { path = "../../core/session" }
 dsh-session-reference = { path = "../../context/session-reference" }
@@ -59,6 +60,7 @@ tokio = { workspace = true }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+dsh-system-prompt = { path = "../../core/system-prompt" }
 dsh-jobs-local = { path = "../../jobs/jobs-local" }
 dsh-agent-presets = { path = "../../preset/agent-presets" }
 dsh-attachment = { path = "../../attachment/attachment" }

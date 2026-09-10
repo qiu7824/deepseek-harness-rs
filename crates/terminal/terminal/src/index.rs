@@ -549,7 +549,13 @@ impl TerminalSessionService {
                 }
                 Err(error) => {
                     cleanup_failure = error.cleanup_error.map(TerminalFailure::Plain);
-                    failure = Some(TerminalFailure::Plain(error.spawn_error));
+                    failure = Some(match error.code {
+                        Some(TerminalErrorCode::Aborted) => TerminalFailure::Aborted,
+                        Some(code) => {
+                            TerminalFailure::Coded(TerminalError::new(error.spawn_error, code))
+                        }
+                        None => TerminalFailure::Plain(error.spawn_error),
+                    });
                 }
             }
             let Some(failure) = failure else {

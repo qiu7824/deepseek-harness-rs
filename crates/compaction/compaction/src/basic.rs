@@ -368,24 +368,10 @@ impl BasicCompactionEngine {
             ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
         })?;
         let events = session.events();
-        // System messages are durable request prefixes, not conversation
-        // history. Leave them outside both automatic and manual checkpoints.
-        let Some(start_index) = surface.nodes.iter().position(|seq| {
-            events
-                .get(*seq as usize)
-                .is_some_and(|event| event.type_ != "system/message")
-        }) else {
-            return Ok(None);
-        };
-        let history_end = surface.nodes[start_index..]
-            .iter()
-            .position(|seq| {
-                events
-                    .get(*seq as usize)
-                    .is_some_and(|event| event.type_ == "system/message")
-            })
-            .map_or(surface.nodes.len(), |index| start_index + index);
-        let Some(mut end_index) = history_end
+        // Only the protected head is outside history. Later system updates,
+        // including dormant empty nodes, must not block bounded compaction.
+        let start_index = usize::from(surface.nodes.first().and_then(|seq|events.get(*seq as usize)).is_some_and(|event|event.type_=="system/message"));
+        let Some(mut end_index) = surface.nodes.len()
             .checked_sub(2)
             .filter(|index| *index >= start_index)
         else {
@@ -420,13 +406,17 @@ impl BasicCompactionEngine {
             ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
         })?;
         let mut selected = Vec::new();
+        let events=session.events();
+        if let Some(head)=surface.nodes.first().and_then(|seq|events.get(*seq as usize)).filter(|event|event.type_=="system/message") {
+            if let Some(message)=derive_event_message(head){selected.push(message);}
+        }
         let mut in_range = false;
         for seq in surface.nodes {
             if seq == start {
                 in_range = true;
             }
             if in_range {
-                let event = session.events().get(seq as usize).cloned().ok_or_else(|| {
+                let event = events.get(seq as usize).cloned().ok_or_else(|| {
                     ManualCompactionError::new(
                         ManualCompactionErrorCode::Changed,
                         "the selected history changed before summarization",
@@ -518,12 +508,15 @@ impl BasicCompactionEngine {
                 source_command_id: None,
             },
         ));
+        let surface=agent.session.surface().map_err(|error|ManualCompactionError::new(ManualCompactionErrorCode::Commit,error))?;
+        let has_system_history=agent.session.with_events(|events|surface.nodes.iter().any(|seq|events.get(*seq as usize).is_some_and(|event|event.type_=="system/message")));
+        let legacy_system=if has_system_history {None}else{header.as_ref().and_then(|header|header.system.clone())};
         let options = GenerateOptions {
             provider: provider.clone(),
             model: model.clone(),
             reasoning_effort: None,
             messages,
-            system: header.as_ref().and_then(|header| header.system.clone()),
+            system: legacy_system,
             tools: header.as_ref().and_then(|header| header.tools.clone()),
             temperature: None,
             max_tokens: Some(self.max_tokens),

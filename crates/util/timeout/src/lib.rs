@@ -21,6 +21,22 @@ use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tokio::task::AbortHandle;
 
+/// Cancel a helper task when its owning operation completes, fails, or is
+/// dropped. Dropping a Tokio JoinHandle alone would detach the helper.
+pub struct AbortTaskOnDrop(AbortHandle);
+
+impl AbortTaskOnDrop {
+    pub fn new<T>(task: tokio::task::JoinHandle<T>) -> Self {
+        Self(task.abort_handle())
+    }
+}
+
+impl Drop for AbortTaskOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Internal abort reason carrying a capability-owned code and elapsed
 /// deadline (TS `TimeoutReason`).
 #[derive(Debug, Clone, PartialEq, Eq)]

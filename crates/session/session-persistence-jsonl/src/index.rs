@@ -374,6 +374,7 @@ pub struct JsonlSessionPersistence {
     coordinator: Mutex<Option<Arc<PersistenceCoordinator<JsonlTornMarker>>>>,
     root_encoding_check: tokio::sync::OnceCell<Result<(), String>>,
     metadata_cache: Mutex<VecDeque<MetadataCacheEntry>>,
+    migration_gate: tokio::sync::Mutex<()>,
 }
 
 impl JsonlSessionPersistence {
@@ -391,6 +392,7 @@ impl JsonlSessionPersistence {
             coordinator: Mutex::new(None),
             root_encoding_check: tokio::sync::OnceCell::new(),
             metadata_cache: Mutex::new(VecDeque::new()),
+            migration_gate: Default::default(),
         });
         // Register the ERASED service shape: the session-query seam and the
         // schedule/corpus consumers observe `Arc<dyn SessionPersistenceApi>`.
@@ -807,7 +809,7 @@ impl JsonlSessionPersistence {
             );
         }
         if scan.torn_start.is_none() {
-            let finished = scanner.finish();
+            let finished = scanner.finish()?;
             return Ok(StoredPrefix {
                 meta: finished.meta,
                 inherited_event_count: finished.inherited_event_count,
@@ -819,8 +821,12 @@ impl JsonlSessionPersistence {
         let torn_start = scan.torn_start.expect("torn start");
         let recovered_plaintext = decompress_zstd_prefix(&buffer[torn_start..]);
         scanner.write(&recovered_plaintext)?;
-        let recovered = scanner.finish();
-        let recovered_events = recovered.events[complete.event_count..].to_vec();
+        let recovered = scanner.finish()?;
+        let recovered_cut = *recovered
+            .source_offsets
+            .get(complete.event_count)
+            .ok_or("invalid recovered frame boundary")?;
+        let recovered_events = recovered.events[recovered_cut..].to_vec();
         Ok(StoredPrefix {
             meta: recovered.meta,
             inherited_event_count: recovered.inherited_event_count,
@@ -878,6 +884,18 @@ impl JsonlSessionPersistence {
     // ---- file mechanics ----
 
     async fn upgrade_v0(&self, path: &Path, id: &SessionId) -> Result<(), String> {
+        let first = if self.compression == JsonlCompression::Zstd {
+            self.read_first_zstd_line(path).await?
+        } else {
+            self.read_first_line(path).await?
+        };
+        let first: serde_json::Value =
+            serde_json::from_str(first.as_deref().ok_or("header-less session log")?)
+                .map_err(|error| error.to_string())?;
+        if first["version"].as_u64() != Some(dsh_session::LEGACY_SESSION_FORMAT_VERSION) {
+            return Ok(());
+        }
+        let _migration = self.migration_gate.lock().await;
         let (original, revision) = self.read_stable_file(path).await?;
         let header = if self.compression == JsonlCompression::Zstd {
             let scan = scan_zstd_frames(&original)?;
@@ -898,22 +916,7 @@ impl JsonlSessionPersistence {
         if prefix.revision != revision {
             return Err("session changed while preparing V3 migration; retry opening it".into());
         }
-        let inherited = if prefix.meta.is_seeded
-            && prefix
-                .events
-                .first()
-                .is_some_and(|event| event.type_ == "system/message")
-        {
-            SessionLogOffset::new(
-                prefix
-                    .inherited_event_count
-                    .get()
-                    .checked_add(1)
-                    .ok_or("inherited sequence overflow")?,
-            )?
-        } else {
-            prefix.inherited_event_count
-        };
+        let inherited = prefix.inherited_event_count;
         let content = self.encode_materialization(&prefix.meta, inherited, &prefix.events)?;
         // A unique immutable source backup is published before replacement.
         // Every failed step leaves either the original or the fully written
@@ -1365,6 +1368,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let Some(path) = self.find_log(id).await? else {
             return Ok(None);
         };
+        self.upgrade_v0(&path, id).await?;
         let (buffer, _) = self.read_stable_file(&path).await?;
         let content = if self.compression == JsonlCompression::Zstd {
             let scan = scan_zstd_frames(&buffer)?;
@@ -1463,6 +1467,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let Some(path) = self.find_log(id).await? else {
             return Err(format!("session \"{}\" not found", id.as_str()));
         };
+        self.upgrade_v0(&path, id).await?;
         if self.compression != JsonlCompression::Zstd {
             let mut whole = self.read_from(id, from_seq).await?;
             let has_more = whole.events.len() > max_events;
@@ -1498,6 +1503,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let Some(path) = self.find_log(id).await? else {
             return Err(format!("session \"{}\" not found", id.as_str()));
         };
+        self.upgrade_v0(&path, id).await?;
         if self.compression != JsonlCompression::Zstd {
             let chunk = self
                 .read_event_chunk(id, request.after_seq, request.max_events)
@@ -1571,6 +1577,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let Some(path) = self.find_log(id).await? else {
             return Err(format!("session \"{}\" not found", id.as_str()));
         };
+        self.upgrade_v0(&path, id).await?;
         if self.compression != JsonlCompression::Zstd {
             let whole = self.read_from(id, 0).await?;
             for chunk in whole.events.chunks(max_events) {
@@ -1602,6 +1609,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let Some(path) = self.find_log(id).await? else {
             return Err(format!("session \"{}\" not found", id.as_str()));
         };
+        self.upgrade_v0(&path, id).await?;
         let (header_line, format_name) = if self.compression == JsonlCompression::Zstd {
             (
                 self.read_first_zstd_line(&path)
@@ -1635,6 +1643,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let Some(path) = self.find_log(id).await? else {
             return Err(format!("session \"{}\" not found", id.as_str()));
         };
+        self.upgrade_v0(&path, id).await?;
         let from_whole = |whole: dsh_session_persistence::SessionReadFromResult| {
             let last_seq = whole
                 .events
@@ -1741,6 +1750,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let Some(path) = self.find_log(id).await? else {
             return Err(format!("session \"{}\" not found", id.as_str()));
         };
+        self.upgrade_v0(&path, id).await?;
         if self.compression == JsonlCompression::Zstd
             && let Some(window) = self.read_zstd_window(&path, id, request).await?
         {
@@ -1793,6 +1803,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             .find_log(id)
             .await?
             .ok_or_else(|| format!("session \"{}\" not found", id.as_str()))?;
+        self.upgrade_v0(&path, id).await?;
         let revision = file_revision(&std::fs::metadata(&path).map_err(|error| error.to_string())?);
         {
             let mut cache = self.metadata_cache.lock();
@@ -1847,6 +1858,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let Some(path) = self.find_log(id).await? else {
             return Err(format!("session \"{}\" not found", id.as_str()));
         };
+        self.upgrade_v0(&path, id).await?;
         if self.compression != JsonlCompression::Zstd {
             return Ok(None);
         }
@@ -2068,6 +2080,140 @@ mod history_window_tests {
     use super::*;
     use dsh_session::{SESSION_FORMAT_VERSION, SessionSeq, SurfaceOp, session_id};
     use dsh_session_persistence::{SessionPersistenceApi, SessionReadForwardWindowRequest};
+
+    #[tokio::test]
+    async fn foreign_v2_and_future_artifacts_are_refused_without_relabelling_or_rewriting() {
+        for compression in [JsonlCompression::None, JsonlCompression::Zstd] {
+            let root =
+                std::env::temp_dir().join(format!("dsh-foreign-log-{}", uuid::Uuid::new_v4()));
+            let ctx = Context::root();
+            let backend = JsonlSessionPersistence::install(
+                &ctx,
+                JsonlConfig {
+                    root: root.to_string_lossy().into_owned(),
+                    compression,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            for version in [2, 99] {
+                let id = session_id(format!("foreign-{version}"));
+                let header = SessionHeader {
+                    version,
+                    id: id.clone(),
+                    created_at: 1,
+                    cwd: None,
+                    parent_session: None,
+                    is_seeded: false,
+                    origin: None,
+                    delegation_depth: None,
+                    agent_preset: None,
+                };
+                let bytes = backend
+                    .encode_materialization(&header, SessionLogOffset::ZERO, &[])
+                    .unwrap();
+                let file = log_path(&root.to_string_lossy(), None, &id, compression);
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(&file, &bytes).unwrap();
+                assert!(backend.read_prefix(&file, Some(&id)).await.is_err());
+                assert_eq!(std::fs::read(&file).unwrap(), bytes);
+                assert_eq!(
+                    std::fs::read_dir(file.parent().unwrap()).unwrap().count(),
+                    1,
+                    "no migrated generation was published"
+                );
+            }
+            drop(backend);
+            drop(ctx);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_migration_publishes_once_preserves_source_and_maps_the_inherited_cut() {
+        for compression in [JsonlCompression::None, JsonlCompression::Zstd] {
+            let root =
+                std::env::temp_dir().join(format!("dsh-v3-migration-{}", uuid::Uuid::new_v4()));
+            let ctx = Context::root();
+            let backend = JsonlSessionPersistence::install(
+                &ctx,
+                JsonlConfig {
+                    root: root.to_string_lossy().into_owned(),
+                    compression,
+                    ..JsonlConfig::default()
+                },
+            )
+            .unwrap();
+            let id = session_id("migrated");
+            let header = SessionHeader {
+                version: 0,
+                id: id.clone(),
+                created_at: 1,
+                cwd: None,
+                parent_session: Some(session_id("parent")),
+                is_seeded: true,
+                origin: None,
+                delegation_depth: None,
+                agent_preset: None,
+            };
+            let mut first = event(0, "request/header", false);
+            first.data =
+                serde_json::json!({"header":{"config":{},"system":"A"},"reason":"initial"});
+            let mut second = event(1, "request/header", false);
+            second.data =
+                serde_json::json!({"header":{"config":{},"system":"B"},"reason":"change"});
+            let mut cut = event(2, "session/end-seed", false);
+            cut.data = serde_json::json!({"inherited":true});
+            let mut third = event(3, "request/header", false);
+            third.data = serde_json::json!({"header":{"config":{}},"reason":"change"});
+            let events = vec![first, second, cut, third];
+            let bytes = backend
+                .encode_materialization(&header, SessionLogOffset::new(2).unwrap(), &events)
+                .unwrap();
+            let file = log_path(&root.to_string_lossy(), None, &id, compression);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, &bytes).unwrap();
+            backend.upgrade_v0(&file, &id).await.unwrap();
+            let migrated = backend.read_prefix(&file, Some(&id)).await.unwrap();
+            assert_eq!(migrated.meta.version, 3);
+            assert_eq!(migrated.inherited_event_count.get(), 4);
+            assert_eq!(migrated.events[4].type_, "session/end-seed");
+            assert_eq!(migrated.events.len(), 7);
+            let published = std::fs::read(&file).unwrap();
+            backend.upgrade_v0(&file, &id).await.unwrap();
+            assert_eq!(std::fs::read(&file).unwrap(), published);
+            let backups = std::fs::read_dir(file.parent().unwrap())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains("v0-backup-"))
+                .collect::<Vec<_>>();
+            assert_eq!(backups.len(), 1);
+            assert_eq!(std::fs::read(backups[0].path()).unwrap(), bytes);
+            let mut malformed = events.clone();
+            malformed[1].data["header"]["system"] = serde_json::json!(42);
+            let corrupt = backend
+                .encode_materialization(&header, SessionLogOffset::new(2).unwrap(), &malformed)
+                .unwrap();
+            std::fs::write(&file, &corrupt).unwrap();
+            assert!(
+                backend
+                    .upgrade_v0(&file, &id)
+                    .await
+                    .unwrap_err()
+                    .contains("string")
+            );
+            assert_eq!(std::fs::read(&file).unwrap(), corrupt);
+            assert!(
+                std::fs::read_dir(file.parent().unwrap())
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp"))
+            );
+            drop(backend);
+            drop(ctx);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
 
     fn event(seq: u64, type_: &str, append_surface: bool) -> SessionEvent {
         SessionEvent {

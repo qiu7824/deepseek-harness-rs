@@ -31,9 +31,44 @@ pub struct RemoteHttpClient {
     closed: AtomicBool,
     registrations: parking_lot::Mutex<Vec<Disposer>>,
     tool_count: AtomicU64,
+    server_name: String,
+    catalog: std::sync::OnceLock<Value>,
+    lifecycle: tokio::sync::Mutex<()>,
 }
 
 impl RemoteHttpClient {
+    /// Open and validate a candidate without publishing model tools.
+    pub async fn prepare(
+        ctx: &Context,
+        config: RemoteHttpConfig,
+    ) -> Result<Arc<Self>, McpClientError> {
+        Self::connect_inner(ctx, config, false).await
+    }
+    pub async fn activate_tools(self: &Arc<Self>, ctx: &Context) -> Result<(), McpClientError> {
+        let _lifecycle = self.lifecycle.lock().await;
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(error("MCP connection is closed"));
+        }
+        if !self.registrations.lock().is_empty() {
+            return Err(error("MCP tools already active"));
+        }
+        let catalog = self
+            .catalog
+            .get()
+            .ok_or_else(|| error("MCP discovery not complete"))?
+            .clone();
+        let route: Arc<dyn McpTransport> = self.clone();
+        let registrations = register_tools(ctx, route, &self.server_name, catalog).await?;
+        *self.registrations.lock() = registrations;
+        Ok(())
+    }
+    pub async fn suspend_tools(&self) {
+        let _lifecycle = self.lifecycle.lock().await;
+        let registrations = std::mem::take(&mut *self.registrations.lock());
+        for dispose in registrations.into_iter().rev() {
+            dispose().await;
+        }
+    }
     pub async fn connect(
         ctx: &Context,
         config: RemoteHttpConfig,
@@ -96,6 +131,9 @@ impl RemoteHttpClient {
             .build()
             .map_err(|e| error(e.to_string()))?;
         let transport = Arc::new(Self {
+            server_name: config.server_name.clone(),
+            catalog: std::sync::OnceLock::new(),
+            lifecycle: tokio::sync::Mutex::new(()),
             client,
             endpoint,
             session: tokio::sync::Mutex::new(None),
@@ -120,7 +158,9 @@ impl RemoteHttpClient {
                 let Some(next) = &cursor else { break; };
                 if !seen.insert(next.clone()) || seen.len() > 100 { return Err(error("MCP tools pagination did not terminate")); }
             }
+            crate::validate_catalog(&listed)?;
             transport.tool_count.store(listed["tools"].as_array().unwrap().len() as u64, Ordering::Relaxed);
+            let _=transport.catalog.set(listed.clone());
             let route: Arc<dyn McpTransport> = transport.clone();
             if register { *transport.registrations.lock() = register_tools(ctx, route, &config.server_name, listed).await?; }
             Ok(())
@@ -137,6 +177,7 @@ impl RemoteHttpClient {
     }
 
     pub async fn close(&self) -> Result<(), McpClientError> {
+        let _lifecycle = self.lifecycle.lock().await;
         if self.closed.swap(true, Ordering::SeqCst) {
             return Ok(());
         }

@@ -111,16 +111,10 @@ impl BasicCompactionEngine {
             ));
         };
         let shadowed_seqs = initial_surface.nodes[start_index..=end_index].to_vec();
-        if agent.session.with_events(|events| {
-            shadowed_seqs.iter().any(|seq| {
-                events
-                    .get(*seq as usize)
-                    .is_some_and(|event| event.type_ == "system/message")
-            })
-        }) {
+        if start_index == 0 && agent.session.with_events(|events|initial_surface.nodes.first().and_then(|seq|events.get(*seq as usize)).is_some_and(|event|event.type_=="system/message")) {
             return Err(ManualCompactionError::new(
                 ManualCompactionErrorCode::Commit,
-                "system messages cannot be included in a compaction range",
+                "the protected system head cannot be included in a compaction range",
             ));
         }
         let open_turn =

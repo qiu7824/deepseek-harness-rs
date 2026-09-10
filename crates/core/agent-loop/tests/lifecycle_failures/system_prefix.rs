@@ -71,10 +71,12 @@ fn assert_prefix(session: &Session, expected: &[ContentBlock]) {
             .iter()
             .filter(|message| message.role == Role::System)
             .count(),
-        1
+        if expected.is_empty() { 0 } else { 1 }
     );
-    assert_eq!(messages[0].role, Role::System);
-    assert_eq!(messages[0].content, expected);
+    if !expected.is_empty() {
+        assert_eq!(messages[0].role, Role::System);
+        assert_eq!(messages[0].content, expected);
+    }
     // Fork/reload must derive the same prefix and preserve conversation order.
     let fork = Session::create(
         session_id(uuid::Uuid::new_v4().to_string()),
@@ -165,6 +167,21 @@ async fn real_manual_and_automatic_compaction_preserve_v3_prefix_across_repeated
 #[tokio::test]
 async fn explicit_compaction_rejects_system_ranges_before_summarization_or_log_changes() {
     let (harness, engine, calls) = setup().await;
+    let prompt = harness
+        .ctx
+        .get_typed::<Arc<dsh_system_prompt::SystemPrompt>>("systemPrompt", false)
+        .unwrap();
+    let _section = prompt.section(
+        &harness.ctx,
+        dsh_system_prompt::PromptSection {
+            name: "compaction-protected-system".into(),
+            order: 0.0,
+            text: dsh_system_prompt::PromptText::Static(
+                "Keep the protected system instruction.".into(),
+            ),
+            complete: Some(true),
+        },
+    );
     turn(&harness, "Keep the instructions.").await;
     let session = harness.agent.session();
     let nodes = session.surface().unwrap().nodes;
@@ -176,7 +193,7 @@ async fn explicit_compaction_rejects_system_ranges_before_summarization_or_log_c
             .await
             .unwrap_err();
         assert_eq!(error.code, ManualCompactionErrorCode::Commit);
-        assert!(error.message.contains("system messages"));
+        assert!(error.message.contains("protected system head"), "{}", error.message);
         assert_eq!(session.events().len(), event_count);
         assert_eq!(calls.lock().len(), call_count);
     }

@@ -38,6 +38,7 @@ mod provider_auth_catalog;
 mod provider_compatibility;
 pub mod runtime_paths;
 mod sidebar_settings;
+mod tool_present;
 #[cfg(test)]
 mod ultra_control_tests;
 mod uu_cli;
@@ -175,6 +176,8 @@ fn packaged_resource(relative: &str) -> std::path::PathBuf {
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenAiCompatibleModelConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    system_prompt_update: Option<dsh_llm::SystemPromptUpdate>,
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     compat: Option<dsh_llm_deepseek::ProviderCompatibility>,
@@ -296,6 +299,7 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
     model.insert("id".to_string(), Schema::string().required(true));
     model.insert("compat".into(), provider_compatibility::schema());
     model.insert("name".to_string(), Schema::string());
+    model.insert("systemPromptUpdate".into(),Schema::constant(Data::String("in-history".into())));
     model.insert("enabled".to_string(), Schema::boolean());
     for field in [
         "source",
@@ -826,6 +830,7 @@ impl OpenAiCompatibleAdapter {
                     configured_models
                         .iter()
                         .map(|model| dsh_llm_deepseek::DeepSeekCatalogModel {
+                            system_prompt_update: model.system_prompt_update,
                             compat: model.compat.clone(),
                             execution_modes: if profile.auth_provider.as_deref()
                                 == Some("openai-codex")
@@ -912,6 +917,20 @@ impl OpenAiCompatibleAdapter {
         let auth = self.auth.clone();
         let auth_provider = profile.auth_provider.clone();
         let auth_scope = profile.model_catalog_scope.clone();
+        let reasoning_wire_format = if resolved.api == "openai-completions"
+            && resolved.models.iter().all(|model| {
+                model
+                    .api
+                    .as_deref()
+                    .is_none_or(|api| api == "openai-completions")
+            })
+            && reqwest::Url::parse(&resolved.base_url).is_ok_and(|url| {
+                url.scheme() == "https" && url.host_str() == Some("api.deepseek.com")
+            }) {
+            dsh_llm_deepseek::ReasoningWireFormat::DeepSeek
+        } else {
+            dsh_llm_deepseek::ReasoningWireFormat::OpenAi
+        };
         dsh_llm_deepseek::DeepSeekAdapter::new(dsh_llm_deepseek::DeepSeekAdapterOptions {
             options: Arc::new(move || Ok(resolved.clone())),
             resolve_api_key: Arc::new(move |snapshot| {
@@ -961,13 +980,17 @@ impl OpenAiCompatibleAdapter {
                     .clone()
                     .unwrap_or_else(|| provider.to_string()),
             ),
-            reasoning_wire_format: dsh_llm_deepseek::ReasoningWireFormat::OpenAi,
+            reasoning_wire_format,
         })
     }
 }
 
 #[async_trait::async_trait]
 impl dsh_llm::LlmAdapter for OpenAiCompatibleAdapter {
+    async fn snapshot_for_call(&self,provider:&str,_model:&str,_signal:Option<&Arc<dyn Fn()->bool+Send+Sync>>)->Result<Option<Arc<dyn dsh_llm::LlmAdapter>>,dsh_llm::LlmError> {
+        if let Some(auth)=&self.auth {let _=auth.ensure_catalog_scope(provider).await;}
+        self.delegate(provider).frozen().map(Some)
+    }
     fn provider_info(&self, provider: &str) -> dsh_llm::LlmProviderInfo {
         self.delegate(provider).provider_info(provider)
     }
@@ -2774,7 +2797,7 @@ fn compose_host_in_fiber(
         ctx,
         dsh_agent_default_model::AgentDefaultModelConfig {
             provider: dsh_llm_deepseek::PROVIDER.to_string(),
-            model: "deepseek-v4-flash".to_string(),
+            model: "deepseek-flash".to_string(),
         },
     );
     futures::executor::block_on(default_model.ready())
@@ -3090,6 +3113,9 @@ fn compose_host_in_fiber(
     artifacts.install_tracking(ctx)?;
     let install_timeout_policy = dsh_timeout_policy::apply(ctx);
     futures::executor::block_on(install_timeout_policy());
+    let install_repeat_reminder = dsh_repeat_tool_reminder::apply(ctx, &Default::default())
+        .map_err(|error| format!("repeat-tool-reminder: {error}"))?;
+    futures::executor::block_on(install_repeat_reminder());
     let _fs = dsh_fs_local::LocalFileSystem::install(
         ctx,
         dsh_fs_local::Config {
@@ -3640,6 +3666,10 @@ fn compose_host_in_fiber(
         Arc::new(dsh_tool_fs::ToolFsPlugin),
     );
     loader.core.register(
+        "@deepseek-ai/dsh-tool-present",
+        Arc::new(tool_present::PresentPlugin),
+    );
+    loader.core.register(
         "@deepseek-ai/dsh-tool-fs-search",
         Arc::new(dsh_tool_fs_search::ToolFsSearchPlugin),
     );
@@ -3883,7 +3913,7 @@ fn compose_host_in_fiber(
         "provider".to_string(),
         serde_json::json!("deepseek-official"),
     );
-    object.insert("model".to_string(), serde_json::json!("deepseek-chat"));
+    object.insert("model".to_string(), serde_json::json!("deepseek-flash"));
     let _external_client_plugin_routes = if let Some(profile) = profile {
         let profile_dir = data_root.join("profiles").join(profile);
         client_plugins::compose(&web_server, &mut boot_payload, &profile_dir)?

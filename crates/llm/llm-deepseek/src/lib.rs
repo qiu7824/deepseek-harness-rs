@@ -101,6 +101,8 @@ pub struct CatalogReasoningEffort {
 #[serde(rename_all = "camelCase")]
 pub struct DeepSeekCatalogModel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_update: Option<dsh_llm::SystemPromptUpdate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compat: Option<ProviderCompatibility>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub execution_modes: Vec<dsh_llm::ExecutionMode>,
@@ -175,8 +177,9 @@ pub fn resolve_adapter_options(
     config: &DeepSeekConfig,
 ) -> Result<ResolvedDeepSeekOptions, LlmError> {
     let models = config.models.clone().unwrap_or_else(|| {
-        vec![
+        let mut models = vec![
             DeepSeekCatalogModel {
+                system_prompt_update: None,
                 compat: None,
                 execution_modes: Default::default(),
                 reasoning_default: None,
@@ -193,6 +196,7 @@ pub fn resolve_adapter_options(
                 image_input: Some(false),
             },
             DeepSeekCatalogModel {
+                system_prompt_update: None,
                 compat: None,
                 execution_modes: Default::default(),
                 reasoning_default: None,
@@ -209,6 +213,7 @@ pub fn resolve_adapter_options(
                 image_input: Some(false),
             },
             DeepSeekCatalogModel {
+                system_prompt_update: None,
                 compat: None,
                 execution_modes: Default::default(),
                 reasoning_default: None,
@@ -224,7 +229,16 @@ pub fn resolve_adapter_options(
                 reasoning_efforts: None,
                 image_input: Some(true),
             },
-        ]
+        ];
+        // Current directory alias. Keep historical explicit IDs usable for
+        // existing profiles instead of silently renaming stored selections.
+        let mut flash = models[0].clone();
+        flash.id = "deepseek-flash".into();
+        flash.name = Some("DeepSeek-V41-Flash".into());
+        flash.system_prompt_update = Some(dsh_llm::SystemPromptUpdate::InHistory);
+        flash.image_input = Some(true);
+        models.insert(0, flash);
+        models
     });
     let retry_policy =
         resolve_retry_policy(config.retry_policy.as_ref(), "llm-deepseek: retryPolicy").map_err(
@@ -333,6 +347,46 @@ fn request_headers(
         .cloned()
         .collect();
     values.extend(attribution_headers(&app_identity()));
+    // Native DeepSeek uses this stable conversation identity alongside the
+    // history prefix. Keep client attribution separate from routing identity.
+    let url = reqwest::Url::parse(&connection.base_url).ok();
+    let native_deepseek = url
+        .as_ref()
+        .is_some_and(|url| url.scheme() == "https" && url.host_str() == Some("api.deepseek.com"));
+    if native_deepseek {
+        if !values
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("x-deepseek-harness-user-id"))
+        {
+            let id = dsh_anonymous_user_id::get_or_create_anonymous_user_id(Default::default());
+            values.push(("x-deepseek-harness-user-id".into(), id.as_str().into()));
+        }
+        if let Some(session) = session_id.filter(|value| !value.is_empty()) {
+            if !values
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("x-deepseek-harness-session-id"))
+            {
+                values.push(("x-deepseek-harness-session-id".into(), session.into()));
+            }
+        }
+    }
+    // Subscription transport uses a stable conversation header as well as the
+    // cache key in the request body (codex-api build_conversation_headers).
+    if url.as_ref().is_some_and(|url| {
+        url.scheme() == "https"
+            && url.host_str() == Some("chatgpt.com")
+            && matches!(
+                url.path().trim_end_matches('/'),
+                "/backend-api/codex" | "/backend-api/codex/responses"
+            )
+    }) && !values
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("session_id"))
+    {
+        if let Some(session) = session_id.filter(|value| !value.is_empty()) {
+            values.push(("session_id".into(), session.into()));
+        }
+    }
     // OpenCode routes a conversation to a stable backend through this header.
     // Keep our own client identity; account/tier restrictions still apply.
     if reqwest::Url::parse(&connection.base_url)
@@ -357,6 +411,24 @@ fn request_headers(
         }
     }
     values
+}
+
+fn request_headers_for_purpose(
+    connection: &ResolvedDeepSeekOptions,
+    session: Option<&str>,
+    purpose: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut headers = request_headers(connection, session);
+    if purpose == Some("compaction")
+        && reqwest::Url::parse(&connection.base_url)
+            .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("api.deepseek.com"))
+        && !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("x-deepseek-harness-compact"))
+    {
+        headers.push(("x-deepseek-harness-compact".into(), "1".into()));
+    }
+    headers
 }
 
 fn endpoint_url(base_url: &str, api: &str) -> String {
@@ -428,6 +500,17 @@ fn upload_lock(
 impl DeepSeekAdapter {
     pub fn new(config: DeepSeekAdapterOptions) -> Self {
         Self { config }
+    }
+
+    pub fn frozen(&self) -> Result<Arc<dyn dsh_llm::LlmAdapter>, LlmError> {
+        let options=(self.config.options)()?;
+        Ok(Arc::new(Self::new(DeepSeekAdapterOptions {
+            options:Arc::new(move ||Ok(options.clone())),
+            resolve_api_key:Arc::clone(&self.config.resolve_api_key),
+            resolve_attachments:self.config.resolve_attachments.clone(),
+            provider_name:self.config.provider_name.clone(),
+            reasoning_wire_format:self.config.reasoning_wire_format,
+        })))
     }
 }
 
@@ -1270,7 +1353,11 @@ async fn request_chunks(
             &connection,
             &api_key,
             provider_name,
-            &request_headers(&connection, options.session_id.as_deref()),
+            &request_headers_for_purpose(
+                &connection,
+                options.session_id.as_deref(),
+                options.purpose.as_deref(),
+            ),
             sender,
             cancelled.clone(),
             options.session_id.as_deref(),
@@ -1336,7 +1423,11 @@ async fn request_chunks(
             &url,
             (!connection.keyless).then_some(api_key.as_str()),
             encoded,
-            &request_headers(&connection, options.session_id.as_deref()),
+            &request_headers_for_purpose(
+                &connection,
+                options.session_id.as_deref(),
+                options.purpose.as_deref(),
+            ),
             cancelled.clone(),
         )
         .await
@@ -1407,7 +1498,11 @@ async fn request_chunks(
                 &connection,
                 &api_key,
                 provider_name,
-                &request_headers(&connection, options.session_id.as_deref()),
+                &request_headers_for_purpose(
+                    &connection,
+                    options.session_id.as_deref(),
+                    options.purpose.as_deref(),
+                ),
                 sender,
                 cancelled.clone(),
                 options.session_id.as_deref(),
@@ -1760,6 +1855,9 @@ async fn drive_owned_request(
 
 #[async_trait::async_trait]
 impl LlmAdapter for DeepSeekAdapter {
+    async fn snapshot_for_call(&self, _provider:&str, _model:&str, _signal:Option<&Arc<dyn Fn()->bool+Send+Sync>>) -> Result<Option<Arc<dyn LlmAdapter>>,LlmError> {
+        self.frozen().map(Some)
+    }
     fn provider_info(&self, provider: &str) -> LlmProviderInfo {
         LlmProviderInfo {
             id: provider.to_string(),
@@ -1843,6 +1941,7 @@ impl LlmAdapter for DeepSeekAdapter {
             .map(|model| {
                 let input_modalities = model_modalities(Some(&model));
                 LlmModelInfo {
+                    system_prompt_update: model.system_prompt_update,
                     provider: provider.to_string(),
                     name: model.name.clone().unwrap_or_else(|| model.id.clone()),
                     id: model.id,
@@ -1872,6 +1971,7 @@ impl LlmAdapter for DeepSeekAdapter {
                 })
                 .collect::<Vec<_>>();
             return LlmResolvedModelInfo {
+                system_prompt_update: configured.and_then(|entry|entry.system_prompt_update),
                 execution_modes: configured
                     .map(|m| m.execution_modes.clone())
                     .unwrap_or_default(),
@@ -1904,6 +2004,7 @@ impl LlmAdapter for DeepSeekAdapter {
         }
         if self.config.reasoning_wire_format == ReasoningWireFormat::OpenAi {
             return LlmResolvedModelInfo {
+                system_prompt_update: configured.and_then(|entry|entry.system_prompt_update),
                 execution_modes: configured
                     .map(|m| m.execution_modes.clone())
                     .unwrap_or_default(),
@@ -1955,6 +2056,7 @@ impl LlmAdapter for DeepSeekAdapter {
                 .collect()
         };
         LlmResolvedModelInfo {
+            system_prompt_update: configured.and_then(|entry|entry.system_prompt_update),
             execution_modes: configured
                 .map(|m| m.execution_modes.clone())
                 .unwrap_or_default(),
@@ -2034,6 +2136,76 @@ pub fn apply(
 #[cfg(test)]
 mod endpoint_tests {
     use super::{endpoint_url, inferred_model_max_tokens};
+
+    #[test]
+    fn native_deepseek_preserves_conversation_and_compaction_headers() {
+        let mut connection =
+            super::resolve_adapter_options(&super::DeepSeekConfig::default()).unwrap();
+        connection.headers.push((
+            "x-deepseek-harness-user-id".into(),
+            "anonymous-fixture".into(),
+        ));
+        let headers = |connection: &super::ResolvedDeepSeekOptions, session, purpose| {
+            super::request_headers_for_purpose(connection, session, purpose)
+        };
+        let first = headers(&connection, Some("session-a"), None);
+        assert!(first.contains(&("x-deepseek-harness-session-id".into(), "session-a".into())));
+        assert!(first.contains(&(
+            "x-deepseek-harness-user-id".into(),
+            "anonymous-fixture".into()
+        )));
+        assert_eq!(first, headers(&connection, Some("session-a"), None));
+        assert!(
+            !first
+                .iter()
+                .any(|(key, _)| key == "x-deepseek-harness-compact")
+        );
+        assert!(
+            headers(&connection, Some("session-a"), Some("compaction"))
+                .contains(&("x-deepseek-harness-compact".into(), "1".into()))
+        );
+        connection.headers.clear();
+        for url in [
+            "https://api.deepseek.com.attacker.test/v1",
+            "http://api.deepseek.com/v1",
+            "https://example.test/v1",
+        ] {
+            connection.base_url = url.into();
+            assert!(
+                !headers(&connection, Some("session-a"), Some("compaction"))
+                    .iter()
+                    .any(|(key, _)| key.starts_with("x-deepseek-harness-"))
+            );
+        }
+    }
+
+    #[test]
+    fn codex_account_sends_the_conversation_header_only_to_the_account_service() {
+        let mut connection =
+            super::resolve_adapter_options(&super::DeepSeekConfig::default()).unwrap();
+        for url in [
+            "https://chatgpt.com/backend-api/codex",
+            "https://chatgpt.com/backend-api/codex/responses",
+        ] {
+            connection.base_url = url.into();
+            assert!(
+                super::request_headers(&connection, Some("thread-a"))
+                    .contains(&("session_id".into(), "thread-a".into()))
+            );
+        }
+        for url in [
+            "https://chatgpt.com.attacker.test/backend-api/codex",
+            "https://chatgpt.com/unrelated",
+            "https://api.openai.com/v1",
+        ] {
+            connection.base_url = url.into();
+            assert!(
+                !super::request_headers(&connection, Some("thread-a"))
+                    .iter()
+                    .any(|(key, _)| key == "session_id")
+            );
+        }
+    }
 
     #[test]
     fn account_identity_is_local_metadata_and_never_an_outbound_header() {

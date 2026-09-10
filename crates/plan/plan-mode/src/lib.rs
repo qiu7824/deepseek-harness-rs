@@ -223,12 +223,12 @@ impl PlanModeController {
                     if !pending.narrate || narration.is_none() {
                         return Some(decision_value);
                     }
-                    let PreStepDecision::Enter { messages } = decision else {
+                    let PreStepDecision::Enter { messages, starts_request_series } = decision else {
                         unreachable!("reject returned above");
                     };
                     let mut merged = messages;
                     merged.push(narration.expect("checked"));
-                    Some(arc(PreStepDecision::Enter { messages: merged }))
+                    Some(arc(PreStepDecision::Enter { messages: merged, starts_request_series }))
                 })
             },
         );

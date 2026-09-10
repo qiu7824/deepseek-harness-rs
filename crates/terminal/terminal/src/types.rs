@@ -46,6 +46,7 @@ pub struct TerminalBackendSpawnError {
     /// Failure that may leave backend-owned resources alive (TS
     /// `cleanupError`).
     pub cleanup_error: Option<String>,
+    pub code: Option<TerminalErrorCode>,
 }
 
 impl TerminalBackendSpawnError {
@@ -53,6 +54,7 @@ impl TerminalBackendSpawnError {
         Self {
             spawn_error: spawn_error.into(),
             cleanup_error: None,
+            code: None,
         }
     }
 
@@ -63,13 +65,26 @@ impl TerminalBackendSpawnError {
         Self {
             spawn_error: spawn_error.into(),
             cleanup_error: Some(cleanup_error.into()),
+            code: None,
+        }
+    }
+
+    pub fn coded(message: impl Into<String>, code: TerminalErrorCode) -> Self {
+        Self {
+            spawn_error: message.into(),
+            cleanup_error: None,
+            code: Some(code),
         }
     }
 }
 
 impl fmt::Display for TerminalBackendSpawnError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("PTY backend startup and cleanup both failed")
+        f.write_str(&self.spawn_error)?;
+        if let Some(cleanup) = &self.cleanup_error {
+            write!(f, "; cleanup failed: {cleanup}")?;
+        }
+        Ok(())
     }
 }
 
@@ -326,6 +341,11 @@ pub trait TerminalBackend: Send + Sync + 'static {
 /// Machine-routable PTY service failures (TS `TerminalErrorCode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalErrorCode {
+    Aborted,
+    StartupFailed,
+    StartupTimeout,
+    SandboxSetupFailed,
+    SandboxSetupTimeout,
     DuplicateBackend,
     DuplicateName,
     ForeignSession,
@@ -340,6 +360,11 @@ pub enum TerminalErrorCode {
 impl TerminalErrorCode {
     pub fn as_str(&self) -> &'static str {
         match self {
+            TerminalErrorCode::Aborted => "TOOL_ABORTED",
+            TerminalErrorCode::StartupFailed => "TERMINAL_STARTUP_FAILED",
+            TerminalErrorCode::StartupTimeout => "TERMINAL_STARTUP_TIMEOUT",
+            TerminalErrorCode::SandboxSetupFailed => "SANDBOX_SETUP_FAILED",
+            TerminalErrorCode::SandboxSetupTimeout => "SANDBOX_SETUP_TIMEOUT",
             TerminalErrorCode::DuplicateBackend => "DUPLICATE_BACKEND",
             TerminalErrorCode::DuplicateName => "DUPLICATE_NAME",
             TerminalErrorCode::ForeignSession => "FOREIGN_SESSION",
@@ -418,7 +443,13 @@ impl TerminalFailure {
 
 impl fmt::Display for TerminalFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.message())
+        f.write_str(self.message())?;
+        if let Self::Aggregate { failures, .. } = self {
+            for failure in failures.iter().take(4) {
+                write!(f, "; {failure}")?;
+            }
+        }
+        Ok(())
     }
 }
 

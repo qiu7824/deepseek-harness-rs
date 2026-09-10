@@ -62,7 +62,11 @@ fn checked_cli(path: &Path) -> Option<PathBuf> {
 }
 pub(crate) fn installed_cli(configured: &str) -> Option<PathBuf> {
     if !configured.is_empty() {
-        return checked_cli(Path::new(configured));
+        if let Some(path) = checked_cli(Path::new(configured)) {
+            return Some(path);
+        }
+        // An upgrade can replace a versioned installation directory. Rediscover
+        // the registered client instead of making the stale preference fatal.
     }
     #[cfg(windows)]
     {
@@ -518,7 +522,7 @@ mod tests {
     }
     #[test]
     fn explicit_missing_cli_does_not_fall_back_to_another_installation() {
-        assert!(installed_cli("Z:/missing/uuyc-cli.exe").is_none());
+        assert_eq!(installed_cli("Z:/missing/uuyc-cli.exe"), installed_cli(""));
     }
     #[test]
     fn unrelated_executable_is_rejected() {

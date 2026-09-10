@@ -257,6 +257,7 @@ pub struct SessionLogScan {
     pub inherited_event_count: SessionLogOffset,
     pub events: Vec<SessionEvent>,
     pub committed_bytes: usize,
+    pub source_offsets: Vec<usize>,
 }
 
 /// Parse one complete header record supplied independently from event rows
@@ -386,22 +387,35 @@ impl SessionLogScanner {
 
     /// Finish scanning, ignoring a final record without a newline as a torn
     /// tail.
-    pub fn finish(mut self) -> SessionLogScan {
+    pub fn finish(mut self) -> Result<SessionLogScan, String> {
         self.finished = true;
         let mut events = self.events;
+        let mut source_offsets = (0..=events.len()).collect::<Vec<_>>();
         if self.legacy_v0 {
             let mut legacy = self.meta.clone();
             legacy.version = LEGACY_SESSION_FORMAT_VERSION;
-            if let Ok(report) = dsh_session::migrate_v0_to_v3(legacy, &events) {
-                events = report.events;
-            }
+            let report = dsh_session::migrate_v0_to_v3(legacy, &events)?;
+            let cut = usize::try_from(self.inherited_event_count.get())
+                .map_err(|_| "inherited cut overflow")?;
+            let target_cut = *report
+                .source_cuts
+                .get(cut)
+                .ok_or("inherited cut exceeds source log")?;
+            self.inherited_event_count = SessionLogOffset::new(if self.meta.is_seeded {
+                target_cut as u64
+            } else {
+                0
+            })?;
+            events = report.events;
+            source_offsets = report.source_cuts;
         }
-        SessionLogScan {
+        Ok(SessionLogScan {
             meta: self.meta,
             inherited_event_count: self.inherited_event_count,
             events,
             committed_bytes: self.committed_bytes,
-        }
+            source_offsets,
+        })
     }
 
     /// Decode one complete event row and update the contiguous prefix
@@ -481,7 +495,7 @@ pub fn scan_log(buffer: &[u8]) -> Result<SessionLogScan, String> {
     };
     let mut scanner = SessionLogScanner::new(&buffer[..=header_end])?;
     scanner.write(&buffer[header_end + 1..])?;
-    Ok(scanner.finish())
+    scanner.finish()
 }
 
 /// Parse just the header line of a log into a [`SessionHeader`], or `None`

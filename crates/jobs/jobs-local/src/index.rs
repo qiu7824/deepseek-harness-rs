@@ -89,6 +89,16 @@ struct TrackedJob {
     admission_released: AtomicBool,
 }
 
+struct JobWaiterGuard(Option<Arc<TrackedJob>>);
+
+impl Drop for JobWaiterGuard {
+    fn drop(&mut self) {
+        if let Some(job) = &self.0 {
+            job.waiters.fetch_sub(1, SeqCst);
+        }
+    }
+}
+
 struct JobAdmission<'a> {
     registry: &'a LocalJobRegistry,
     key: usize,
@@ -1115,8 +1125,11 @@ impl JobRegistry for LocalJobRegistry {
         }
         let settled = job.settled.clone();
         let job_for_wait = job.clone();
-        let counted = live;
+        // Construct outside the async body: an unpolled future also owns and
+        // must release the synchronous registration above.
+        let waiter = JobWaiterGuard(live.then(|| job.clone()));
         Box::pin(async move {
+            let waiter = waiter;
             let result = if live {
                 // The scoped deadline distinguishes a successful wait timeout
                 // from caller cancellation and clears its timer on every exit.
@@ -1126,9 +1139,9 @@ impl JobRegistry for LocalJobRegistry {
                     &mut deadline.signal,
                     DeadlineSignal::never(),
                 ));
-                let poller = signal.map(|abort| {
+                let _poller = signal.map(|abort| {
                     let fused_for_poll = fused.clone();
-                    tokio::spawn(async move {
+                    dsh_timeout::AbortTaskOnDrop::new(tokio::spawn(async move {
                         loop {
                             if abort() {
                                 fused_for_poll.cancel(None);
@@ -1136,7 +1149,7 @@ impl JobRegistry for LocalJobRegistry {
                             }
                             tokio::time::sleep(Duration::from_millis(15)).await;
                         }
-                    })
+                    }))
                 });
                 loop {
                     if job_for_wait.settled_flag.load(SeqCst) {
@@ -1151,9 +1164,6 @@ impl JobRegistry for LocalJobRegistry {
                         }
                     }
                 }
-                if let Some(poller) = poller {
-                    poller.abort();
-                }
                 let timed_out =
                     timeout_of(fused.reason().as_ref(), Some(TASK_WAIT_TIMEOUT)).is_some();
                 if fused.is_cancelled() && !timed_out {
@@ -1164,9 +1174,7 @@ impl JobRegistry for LocalJobRegistry {
             } else {
                 Ok(())
             };
-            if counted {
-                job.waiters.fetch_sub(1, SeqCst);
-            }
+            drop(waiter);
             match result {
                 Err(error) => Err(error),
                 Ok(()) => {
@@ -1541,5 +1549,53 @@ mod view_tests {
         .await
         .expect("all admitted jobs settle and release their slots");
         assert_eq!(registry.active_task_count(Some(&owner)), 0);
+    }
+
+    #[tokio::test]
+    async fn dropped_waits_release_registration_and_preserve_completion_notice() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let ctx = Context::root();
+        SessionStore::install(&ctx);
+        let agents = AgentRegistry::install(&ctx);
+        let registry = LocalJobRegistry::install(&ctx, Config::default());
+        let _controller = registry.attach_controller(&ctx, "cancelled-wait-test");
+        let owner = agent(&ctx, "cancelled-wait-owner").await;
+        let _entry = agents.enter(owner.clone(), None).unwrap();
+        let completion = Arc::new(tokio::sync::Notify::new());
+        let hooks = Arc::new(StreamHooks {
+            output: Mutex::new(VecDeque::new()),
+            done: completion.clone(),
+        });
+        let id = registry
+            .start(JobStart {
+                kind: "wait-test".into(),
+                label: "wait cancellation".into(),
+                output_limit_bytes: None,
+                owner: Some(owner.clone()),
+                run: Arc::new(move || hooks.clone()),
+            })
+            .unwrap();
+        let job = registry.expect(&id).unwrap();
+        let unpolled = registry.wait(&id, 60_000, Some(&owner), None);
+        assert_eq!(job.waiters.load(SeqCst), 1);
+        drop(unpolled);
+        assert_eq!(job.waiters.load(SeqCst), 0);
+        let mut polled = registry.wait(&id, 60_000, Some(&owner), Some(Arc::new(|| false)));
+        assert!(futures::poll!(polled.as_mut()).is_pending());
+        assert_eq!(job.waiters.load(SeqCst), 1);
+        drop(polled);
+        assert_eq!(job.waiters.load(SeqCst), 0);
+        completion.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !job.settled_flag.load(SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !job.reported.load(SeqCst),
+            "a cancelled wait must not consume the completion notice"
+        );
     }
 }

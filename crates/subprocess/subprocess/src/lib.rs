@@ -9,7 +9,8 @@ pub use index::{SubprocessRuntime, scrubbed_parent_env, sensitive_env_pattern};
 pub use types::{
     CollectedOutput, DSH_ENV_PREFIX, DshEnvironment, DshEnvironmentKey, SubprocessAbort,
     SubprocessCollect, SubprocessCollectedOutputs, SubprocessHandle, SubprocessOutcome,
-    SubprocessOutputMode, SubprocessOutputRead, SubprocessOutputReader, SubprocessSpawnSpec,
-    SubprocessSpill, SubprocessStdinMode, SubprocessStdio, SubprocessTerminalForeground,
-    SubprocessTerminalHandle, SubprocessTerminalSignal, SubprocessTerminalSpawnSpec,
+    SubprocessOutputMode, SubprocessOutputRead, SubprocessOutputReader, SubprocessRunGuard,
+    SubprocessSpawnSpec, SubprocessSpill, SubprocessStdinMode, SubprocessStdio,
+    SubprocessTerminalForeground, SubprocessTerminalHandle, SubprocessTerminalSignal,
+    SubprocessTerminalSpawnSpec,
 };

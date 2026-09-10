@@ -626,6 +626,7 @@ async fn login_connect_refresh_use_live_account_catalog_and_preserve_field_prefe
                 next_poll: now(),
                 interval: 5,
                 verifier: None,
+                authorization: None,
             })),
         ),
     );

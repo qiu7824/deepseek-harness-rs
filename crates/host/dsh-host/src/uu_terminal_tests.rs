@@ -6,6 +6,96 @@ use std::sync::atomic::AtomicU64;
 const READY: &str =
     "[Connect] Connected\r\n[Tips] Type 'exit' to end the remote session.\r\nPS C:\\fixture> ";
 
+/// Opt-in transport acceptance against an explicitly selected remote fixture.
+/// Uses only a forced-new shell, one marker command and graceful owned cleanup.
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "requires DSH_UU_LIVE_CLI, DSH_UU_LIVE_DEVICE and an unlocked owned test device"]
+async fn live_native_transport_fallback_marker_and_owned_cleanup() {
+    let cli = std::env::var("DSH_UU_LIVE_CLI").expect("explicit vendor CLI required");
+    let device = std::env::var("DSH_UU_LIVE_DEVICE").expect("explicit owned device required");
+    let cwd = std::env::var("DSH_UU_LIVE_CWD").expect("explicit test workspace required");
+    assert!(uu_cli::valid_device_id(&device));
+    let target = TerminalTarget {
+        cli: std::path::PathBuf::from(cli),
+        account: "live-transport-fixture".into(),
+        device_id: device,
+        device_name: "Owned transport fixture".into(),
+    };
+    let access = Arc::new(FakeAccess {
+        account: AtomicBool::new(true),
+        binding: AtomicBool::new(true),
+        target,
+    });
+    let runtime = dsh_subprocess_local::LocalSubprocessRuntime::new();
+    let service = Arc::new(RemoteTerminals {
+        access: Arc::new(access),
+        transport: Arc::new(NativeTransport {
+            runtime,
+            compatible: Default::default(),
+        }),
+        slots: Default::default(),
+        admission: Default::default(),
+        closing: AtomicBool::new(false),
+    });
+    let caller = Caller {
+        owner: "native-transport-acceptance".into(),
+        cwd,
+        signal: Arc::new(|| false),
+        approve: Arc::new(|_, _, _| Box::pin(async { Ok(()) })),
+        track: Arc::new(|_| Ok("live-owned-terminal".into())),
+    };
+    let opened = service.open(&caller, None, TerminalShell::PowerShell).await;
+    if opened.is_err() {
+        service.dispose().await;
+    }
+    let opened = opened.expect("native handshake");
+    println!(
+        "LIVE_OPEN {}",
+        json!({"state":opened["state"],"writable":opened["writable"],"compatibilityFallback":opened["compatibilityFallback"],"inventoryBaselineAvailable":opened["inventoryBaselineAvailable"]})
+    );
+    let id = opened["terminalId"].as_str().unwrap();
+    let written = service
+        .write(
+            &caller,
+            id,
+            "Write-Output 'DSH_UU_RUST_TRANSPORT_OK'",
+            true,
+            1500,
+        )
+        .await;
+    let slot = service.find(&caller.owner, id).unwrap();
+    let mut seen = false;
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        slot.observe_read(None, MAX_READ).unwrap();
+        let snapshot = slot.snapshot(None, MAX_READ).unwrap();
+        seen |= snapshot["output"]
+            .as_str()
+            .unwrap_or("")
+            .lines()
+            .any(|line| line.trim() == "DSH_UU_RUST_TRANSPORT_OK");
+        if seen && snapshot["canCloseGracefully"] == true {
+            break;
+        }
+    }
+    let closed = service.close(&caller, id).await;
+    println!(
+        "LIVE_CLOSE {}",
+        match &closed {
+            Ok(value) =>
+                json!({"cleanupConfirmed":value["cleanupConfirmed"],"remoteExitObserved":value["remoteExitObserved"],"state":value["state"]}),
+            Err(error) => json!({"error":error}),
+        }
+    );
+    service.dispose().await;
+    assert!(written.is_ok(), "marker write failed: {written:?}");
+    assert!(seen, "standalone marker output was not observed");
+    let closed = closed.expect("owned remote cleanup");
+    assert_eq!(closed["cleanupConfirmed"], true);
+    assert_eq!(closed["remoteExitObserved"], true);
+}
+
 #[derive(Default)]
 struct ClientState {
     sender: Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>,
@@ -20,6 +110,7 @@ struct ClientState {
     fail_exit: AtomicBool,
     late_takeover: AtomicBool,
     output_until_terminate: AtomicBool,
+    late_startup_error: Mutex<Option<String>>,
     changed: tokio::sync::Notify,
 }
 struct FakeClient(Arc<ClientState>);
@@ -137,6 +228,17 @@ impl SubprocessTerminalHandle for FakeClient {
             if state.fail_terminate.load(Ordering::Acquire) {
                 return Err("mock local cleanup failed".into());
             }
+            let late_error = state.late_startup_error.lock().take();
+            if let Some(error) = late_error {
+                if let Some(sender) = state.sender.lock().as_ref() {
+                    let _ =
+                        sender.unbounded_send(b"[Connect] Closing local transport\r\n".to_vec());
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                if let Some(sender) = state.sender.lock().as_ref() {
+                    let _ = sender.unbounded_send(error.into_bytes());
+                }
+            }
             state.terminated.store(true, Ordering::Release);
             state.exited.store(true, Ordering::Release);
             state.sender.lock().take();
@@ -202,11 +304,32 @@ struct FakeTransport {
     query_error: Mutex<Option<String>>,
     spawn_error: Mutex<Option<String>>,
     startup_output: Mutex<Option<String>>,
+    exit_on_startup: Mutex<Option<String>>,
+    compatibility_enabled: AtomicBool,
+    compatibility_preferred: AtomicBool,
     displace_queries: AtomicBool,
     ambiguous: AtomicBool,
     ready: AtomicBool,
 }
 impl Transport for Arc<FakeTransport> {
+    fn preferred_target(&self, target: &TerminalTarget) -> TerminalTarget {
+        let mut selected = target.clone();
+        if self.compatibility_preferred.load(Ordering::Acquire) {
+            selected.cli = "mock/bak/uuyc-cli.exe".into();
+        }
+        selected
+    }
+    fn compatibility_target(&self, target: &TerminalTarget) -> Option<TerminalTarget> {
+        self.compatibility_enabled.load(Ordering::Acquire).then(|| {
+            let mut selected = target.clone();
+            selected.cli = "mock/bak/uuyc-cli.exe".into();
+            selected
+        })
+    }
+    fn remember_compatible(&self, primary: &TerminalTarget, selected: &TerminalTarget) {
+        self.compatibility_preferred
+            .store(primary.cli != selected.cli, Ordering::Release);
+    }
     fn sessions(
         &self,
         _target: TerminalTarget,
@@ -237,7 +360,7 @@ impl Transport for Arc<FakeTransport> {
     }
     fn spawn(
         &self,
-        _target: TerminalTarget,
+        target: TerminalTarget,
         _shell: TerminalShell,
         _cwd: String,
         signal: Abort,
@@ -256,6 +379,15 @@ impl Transport for Arc<FakeTransport> {
                 value.ids.lock().insert("999".into());
             }
             let client = FakeClient::new(value.ready.load(Ordering::Acquire));
+            if let Some(error) = value
+                .exit_on_startup
+                .lock()
+                .clone()
+                .filter(|_| target.cli != std::path::PathBuf::from("mock/bak/uuyc-cli.exe"))
+            {
+                *client.0.late_startup_error.lock() = Some(error);
+                client.0.exited.store(true, Ordering::Release);
+            }
             if let Some(output) = value.startup_output.lock().as_ref() {
                 client
                     .0
@@ -304,6 +436,9 @@ impl Fixture {
             query_error: Default::default(),
             spawn_error: Default::default(),
             startup_output: Default::default(),
+            exit_on_startup: Default::default(),
+            compatibility_enabled: AtomicBool::new(false),
+            compatibility_preferred: AtomicBool::new(false),
             displace_queries: AtomicBool::new(true),
             ambiguous: AtomicBool::new(false),
             ready: AtomicBool::new(true),
@@ -366,6 +501,108 @@ impl Fixture {
             .unwrap()
             .observe_read(None, MAX_READ)
             .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn incompatible_open_response_uses_one_vendor_backup_and_remembers_the_working_cli() {
+    let f = Fixture::new();
+    f.transport
+        .compatibility_enabled
+        .store(true, Ordering::Release);
+    *f.transport.exit_on_startup.lock() = Some("Error: invalid open response\r\n".into());
+    let opened = f.open().await;
+    assert_eq!(opened["state"], "ready");
+    assert_eq!(opened["cliPath"], "mock/bak/uuyc-cli.exe");
+    assert_eq!(
+        opened["compatibilityFallback"]["reason"],
+        "invalid open response"
+    );
+    assert_eq!(f.transport.spawned.load(Ordering::Acquire), 2);
+    assert_eq!(f.tracked.lock().len(), 1, "failed handshake creates no job");
+    assert!(
+        f.transport.clients.lock()[0]
+            .0
+            .terminated
+            .load(Ordering::Acquire)
+    );
+    assert!(f.transport.clients.lock()[0].0.written.lock().is_empty());
+    let id = opened["terminalId"].as_str().unwrap();
+    f.observe(id).await;
+    f.service.close(&f.caller("owner-a"), id).await.unwrap();
+    let next = f.open().await;
+    assert_eq!(next["cliPath"], "mock/bak/uuyc-cli.exe");
+    assert_eq!(
+        f.transport.spawned.load(Ordering::Acquire),
+        3,
+        "reuse the known working helper"
+    );
+    let next_id = next["terminalId"].as_str().unwrap();
+    f.observe(next_id).await;
+    f.service
+        .close(&f.caller("owner-a"), next_id)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn locked_or_cancelled_startup_does_not_try_another_cli() {
+    let f = Fixture::new();
+    f.transport
+        .compatibility_enabled
+        .store(true, Ordering::Release);
+    *f.transport.exit_on_startup.lock() = Some("[系统] 已锁屏，请输入账户密码\r\n".into());
+    let error = f
+        .service
+        .open(&f.caller("owner-a"), None, TerminalShell::PowerShell)
+        .await
+        .unwrap_err();
+    assert!(error.contains("锁屏账户验证"));
+    assert_eq!(f.transport.spawned.load(Ordering::Acquire), 1);
+    assert!(f.tracked.lock().is_empty());
+}
+
+#[tokio::test]
+async fn startup_exit_drains_late_vendor_diagnostics_before_classifying_failure() {
+    for (wire, expected) in [
+        (
+            "[terminal] resumed existing session\r\nError: invalid open response\r\n",
+            "invalid open response",
+        ),
+        (
+            "Error: Timeout waiting for terminal environment check\r\n",
+            "终端环境检查响应超时",
+        ),
+        (
+            "[系统] 检测到被控端已锁屏，请输入被控端账户密码验证身份\r\n",
+            "锁屏账户验证",
+        ),
+        (
+            "Error: Terminal session attached from another window (code 2001)\r\n",
+            "code 2001",
+        ),
+    ] {
+        let f = Fixture::new();
+        f.transport.ready.store(false, Ordering::Release);
+        *f.transport.exit_on_startup.lock() = Some(wire.into());
+        let error = f
+            .service
+            .open(&f.caller("owner-a"), None, TerminalShell::PowerShell)
+            .await
+            .unwrap_err();
+        assert!(error.contains(expected), "{error}");
+        assert!(
+            !error.contains("连接在建立前退出"),
+            "the generic exit must not hide a late diagnostic: {error}"
+        );
+        assert!(f.tracked.lock().is_empty());
+        assert!(
+            f.transport
+                .clients
+                .lock()
+                .iter()
+                .all(|client| client.0.written.lock().is_empty())
+        );
     }
 }
 
@@ -508,7 +745,7 @@ async fn rejected_handshake_does_not_publish_a_terminal_job_or_erase_startup_fai
         records["terminals"][0]["cleanupError"]
             .as_str()
             .unwrap()
-            .contains("未执行已批准的远端 exit 与库存核验")
+            .contains("未执行远端 exit 或库存核验")
     );
     assert_eq!(
         records["terminals"][0]["inventoryError"],

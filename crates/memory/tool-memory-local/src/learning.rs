@@ -89,6 +89,10 @@ pub struct LearningEntry {
     pub last_applied: Option<u64>,
     #[serde(default)]
     pub last_application_outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_call_id: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -198,6 +202,8 @@ fn control_outcome(code: &str) -> bool {
     matches!(
         code,
         "ABORTED"
+            | "SHELL_ABORTED"
+            | "TOOL_ABORTED"
             | "ABORTED_BEFORE_DISPATCH"
             | "CANCELLED"
             | "CANCELED"
@@ -225,6 +231,18 @@ pub fn rule(code: &str, source: &str) -> (&'static str, &'static str, &'static s
     }
     if source == "provider" {
         return match code {
+            "INVALID_REQUEST" | "UNSUPPORTED_REASONING_EFFORT" => (
+                "provider-request",
+                "request-format",
+                "核对接入层发送的字段格式及模型支持的参数；请求格式错误不能通过原样重试解决。",
+                false,
+            ),
+            "TRANSPORT" | "NETWORK_ERROR" => (
+                "provider-transport",
+                "transport",
+                "核对连接、代理及流式响应中断位置；按明确的可重试条件恢复，保留原任务错误证据。",
+                false,
+            ),
             "RATE_LIMIT" | "429" => (
                 "provider-rate-limit",
                 "rate-limit",
@@ -241,6 +259,55 @@ pub fn rule(code: &str, source: &str) -> (&'static str, &'static str, &'static s
         };
     }
     match code {
+        "SANDBOX_SETUP_FAILED"
+        | "SANDBOX_SETUP_TIMEOUT"
+        | "SANDBOX_RUNNER_FAILED"
+        | "SANDBOX_RUNNER_TIMEOUT"
+        | "SANDBOX_UNAVAILABLE" => (
+            "sandbox-runtime",
+            "sandbox-runtime",
+            "检查沙箱初始化、运行库权限和宿主版本；初始化失败时命令可能尚未执行，不应反复改写命令或关闭沙箱。",
+            false,
+        ),
+        "SANDBOX_DENIED" => (
+            "sandbox-denial",
+            "permissions",
+            "核对目标是否位于已授权目录；遵守现行权限和审批结果。",
+            false,
+        ),
+        "SHELL_STARTUP_FAILED"
+        | "TERMINAL_STARTUP_FAILED"
+        | "TERMINAL_STARTUP_TIMEOUT"
+        | "TERMINAL_FAILED" => (
+            "execution-startup",
+            "runtime",
+            "检查执行后端是否启动、依赖是否就绪以及启动阶段错误；无新证据时避免重复启动。",
+            false,
+        ),
+        "SHELL_TIMEOUT" | "TOOL_TIMEOUT" => (
+            "execution-timeout",
+            "timeout",
+            "区分初始化、命令运行和输出回收阶段；确认命令是否已产生效果，再决定等待、后台执行或重试。",
+            false,
+        ),
+        "SHELL_FAILED" => (
+            "command-exit",
+            "command-exit",
+            "查看原任务中的退出码和标准错误，核对命令、工作目录及运行权限；非零退出码本身不能确定故障责任。",
+            false,
+        ),
+        "FS_NOT_FOUND" | "SEARCH_FAILED" => (
+            "filesystem-target",
+            "filesystem-target",
+            "核对目标路径与当前工作目录；搜索失败应查看原始错误，不能把错误当作没有匹配结果。",
+            false,
+        ),
+        "UU_TERMINAL" | "COMPUTER_USE_UU_ERROR" => (
+            "remote-runtime",
+            "remote-runtime",
+            "核对远端在线、登录解锁、连接归属和客户端兼容状态；需要人工操作时应明确提示。",
+            false,
+        ),
         "TOOL_INPUT_INVALID"
         | "INVALID_ARGUMENTS"
         | "INVALID_INPUT"
@@ -321,10 +388,24 @@ impl LearningStore {
                 if bytes.len() > MAX_DOCUMENT_BYTES {
                     return Err("经验账本超过读取预算".into());
                 }
-                let document: Document = serde_json::from_slice(&bytes)
+                let mut document: Document = serde_json::from_slice(&bytes)
                     .map_err(|_| "经验账本损坏，未覆盖原文件".to_string())?;
                 if document.version != 1 || document.entries.len() > MAX_ENTRIES {
                     return Err("经验账本版本或数量不受支持".into());
+                }
+                // Reclassify from trusted codes, never from saved free text.
+                // Existing evidence does not automatically verify a newer rule.
+                for entry in &mut document.entries {
+                    let (rule_id, category, suggestion, _) = rule(&entry.code, &entry.source);
+                    if entry.source != "feedback" && entry.rule_id != rule_id {
+                        entry.rule_id = rule_id.into();
+                        entry.category = category.into();
+                        entry.message = diagnostic(rule_id).into();
+                        entry.suggestion = suggestion.into();
+                        entry.status = "pending".into();
+                        entry.verification = None;
+                        entry.revision = entry.revision.saturating_add(1);
+                    }
                 }
                 document
             }
@@ -740,12 +821,16 @@ impl LearningStore {
                         application_count: 0,
                         last_applied: None,
                         last_application_outcome: None,
+                        last_session_id: None,
+                        last_call_id: None,
                     });
                     document.entries.len() - 1
                 };
                 let entry = &mut document.entries[position];
                 entry.occurrences = entry.occurrences.saturating_add(1);
                 entry.last_seen = at;
+                entry.last_session_id = evidence_id(&observation.session_id);
+                entry.last_call_id = evidence_id(&observation.call_id);
                 entry.revision = entry.revision.saturating_add(1);
                 if let Some(seen) = entry
                     .models
@@ -1055,9 +1140,27 @@ fn diagnostic(rule_id: &str) -> &'static str {
         "provider-rate-limit" => "供应商返回限流状态。",
         "provider-auth" => "供应商拒绝当前账号或模型访问。",
         "provider-error" => "模型请求失败；具体输出保留在原任务中。",
+        "provider-request" => "供应商拒绝请求格式或模型参数；需核对 Agent 接入实现。",
+        "provider-transport" => "模型请求或响应流传输失败；不能据此判定模型回答错误。",
+        "sandbox-runtime" => "沙箱初始化或执行器失败；需检查宿主执行环境。",
+        "sandbox-denial" => "文件操作被当前沙箱权限拒绝。",
+        "execution-startup" => "Shell 或终端启动失败；尚未确认执行通道可用。",
+        "execution-timeout" => "执行超过时间预算；需结合原始输出确定停留阶段。",
+        "command-exit" => "命令返回非零退出状态；原任务保留了命令和错误输出。",
+        "filesystem-target" => "文件目标或搜索未能完成；需核对路径与原始错误。",
+        "remote-runtime" => "远程执行或控制连接失败；需核对远端状态和客户端兼容性。",
         "user-feedback" => "用户标记回复存在问题；尚未确认可复用的修正方法。",
         _ => "工具执行失败；未保存或提升工具返回的原始文本。",
     }
+}
+
+fn evidence_id(value: &str) -> Option<String> {
+    (!value.is_empty()
+        && value.len() <= 200
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_:".contains(&byte)))
+    .then(|| value.to_string())
 }
 fn confirmed_suggestion(value: &str) -> Result<String, String> {
     let value = value.trim();

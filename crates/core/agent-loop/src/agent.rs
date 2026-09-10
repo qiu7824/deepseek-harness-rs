@@ -196,6 +196,7 @@ enum PreparedStep {
     Reject,
     Enter {
         messages: Vec<UserMessage>,
+        starts_request_series: bool,
         assembly: PromptAssembly,
     },
 }
@@ -216,6 +217,7 @@ pub struct ReactLoopAgent {
     activity: Arc<Mutex<Activity>>,
     clear_inbox_when_idle: AtomicBool,
     request_header_logged: AtomicBool,
+    request_surface_generation: Mutex<Option<u64>>,
     runtime_context: RuntimeContextProjection,
 }
 
@@ -301,6 +303,7 @@ impl ReactLoopAgent {
                 activity: Arc::new(Mutex::new(Activity::resolved())),
                 clear_inbox_when_idle: AtomicBool::new(false),
                 request_header_logged: AtomicBool::new(false),
+                request_surface_generation: Mutex::new(None),
                 runtime_context,
             }
         });
@@ -521,6 +524,7 @@ impl ReactLoopAgent {
         let claimed_for_fallback = claimed.clone();
         let fallback: BoxFuture<'static, ArcValue> = Box::pin(async move {
             arc(PreStepDecision::Enter {
+                starts_request_series: false,
                 messages: match context {
                     Some(context) => {
                         let mut messages = claimed_for_fallback;
@@ -550,11 +554,9 @@ impl ReactLoopAgent {
         let decision = downcast_arc::<PreStepDecision>(&decision).expect("agent/pre-step decision");
         match decision.as_ref() {
             PreStepDecision::Reject => Ok(PreparedStep::Reject),
-            PreStepDecision::Enter { .. } => Ok(PreparedStep::Enter {
-                messages: match decision.as_ref() {
-                    PreStepDecision::Enter { messages } => messages.clone(),
-                    PreStepDecision::Reject => unreachable!(),
-                },
+            PreStepDecision::Enter { messages, starts_request_series } => Ok(PreparedStep::Enter {
+                messages: messages.clone(),
+                starts_request_series: *starts_request_series,
                 assembly,
             }),
         }
@@ -595,7 +597,7 @@ impl ReactLoopAgent {
                     _ => unreachable!(),
                 };
                 let decision = self.pre_step(target, (turn, step)).await?;
-                let PreparedStep::Enter { messages, assembly } = decision else {
+                let PreparedStep::Enter { messages, assembly, starts_request_series } = decision else {
                     turn_ends = Some(TurnEndReason::Blocked);
                     return Ok(());
                 };
@@ -627,86 +629,7 @@ impl ReactLoopAgent {
                 {
                     *phase_step = step;
                 }
-                let step_end = async {
-                    let system_text = render_prompt(&assembly).expect("renderPrompt");
-                    let content = if system_text.is_empty() {
-                        Vec::new()
-                    } else {
-                        vec![ContentBlock::Text { text: system_text }]
-                    };
-                    // Historical system events may have been shadowed by an
-                    // older compactor. Only the effective surface can decide
-                    // whether the request still has its system prefix.
-                    let surface = self.session.surface().expect("system surface");
-                    let previous_system = self.session.with_events(|events| {
-                        surface
-                            .nodes
-                            .iter()
-                            .filter_map(|seq| events.get(*seq as usize))
-                            .filter(|event| event.type_ == "system/message")
-                            .max_by_key(|event| event.seq.get())
-                            .map(|event| {
-                                (event.seq.get(), dsh_session::derive_event_message(event))
-                            })
-                    });
-                    if previous_system
-                        .as_ref()
-                        .and_then(|(_, message)| message.as_ref())
-                        .is_none_or(|message| message.content != content)
-                    {
-                        let message = dsh_llm::create_message(
-                            dsh_llm::Role::System,
-                            content,
-                            dsh_llm::MessageSource::Plugin {
-                                plugin: "@deepseek-ai/dsh-system-prompt".into(),
-                                form: None,
-                                sections: None,
-                                summary: None,
-                                compaction_id: None,
-                                source_command_id: None,
-                            },
-                        );
-                        let intent = match previous_system {
-                            Some((seq, _)) => SurfaceIntent {
-                                surface_op: SurfaceOp::Replace {
-                                    start: seq,
-                                    end: seq,
-                                },
-                                source_event_seqs: Some(vec![seq]),
-                            },
-                            None => SurfaceIntent {
-                                surface_op: SurfaceOp::Append,
-                                source_event_seqs: None,
-                            },
-                        };
-                        self.session
-                            .append(
-                                "system/message",
-                                serde_json::json!({
-                                        "turn": turn,
-                                        "step": step,
-                                        "prefix": true,
-                                        "message": message,
-                                }),
-                                Some(intent),
-                            )
-                            .expect("system/message");
-                    }
-                    for message in &messages {
-                        self.session
-                            .append(
-                                "user/message",
-                                serde_json::to_value(message).expect("message"),
-                                Some(SurfaceIntent {
-                                    surface_op: SurfaceOp::Append,
-                                    source_event_seqs: None,
-                                }),
-                            )
-                            .expect("user/message");
-                    }
-                    self.step(&assembly, &mut continuation).await
-                }
-                .await;
+                let step_end = self.step(&assembly, &messages, starts_request_series, &mut continuation).await;
                 self.session
                     .append(
                         "step/end",
@@ -803,6 +726,8 @@ impl ReactLoopAgent {
     async fn step(
         &self,
         assembly: &PromptAssembly,
+        incoming: &[UserMessage],
+        starts_request_series: bool,
         continuation: &mut crate::response_continuation::ResponseContinuation,
     ) -> Result<Option<TurnEndReason>, LoopCancelled> {
         let (turn, step, signal) = match &*self.phase.lock() {
@@ -814,27 +739,37 @@ impl ReactLoopAgent {
         throw_if_aborted(&signal)?;
         let system = render_prompt(assembly).expect("renderPrompt");
 
+        let mut first_attempt=true;
         loop {
-            let boundary_messages = self.session.derive_messages().expect("deriveMessages");
-            let (mut request, prepared_call) = self
-                .build_request(
-                    turn,
-                    step,
-                    &assembly.tools,
-                    &system,
-                    boundary_messages.as_ref(),
-                    &signal,
-                )
-                .await?;
-            // build_request may publish a V3 system/message boundary. Refresh
-            // the immutable message list after that append so the dispatch
-            // invariant and the provider receive the same durable surface.
-            request.messages = self
-                .session
-                .derive_messages()
-                .expect("deriveMessages")
-                .as_ref()
-                .clone();
+            let prepared=self.prepare_request(turn,step,&signal).await;
+            let (config,prepared_call)=match prepared {
+                Ok(prepared)=>prepared,
+                Err(error)=>{
+                    // Failed route preparation must not lose the admitted user input.
+                    if first_attempt {
+                        self.commit_system_prompt(turn,step,&system,false,true)?;
+                        self.commit_incoming(incoming);
+                    }
+                    return Err(error);
+                }
+            };
+            let before=self.session.surface().map_err(LoopCancelled::hook)?.replace_generation;
+            let previous_generation=*self.request_surface_generation.lock();
+            let baseline=self.session.request_header();
+            let tools_changed=baseline.as_ref().is_none_or(|header|header.tools.as_deref().unwrap_or(&[])!=assembly.tools.as_slice());
+            let route_changed=baseline.as_ref().is_some_and(|header|header.config.provider!=config.provider||header.config.model!=config.model);
+            let explicit_series=first_attempt&&starts_request_series;
+            let reset_series=explicit_series||previous_generation!=Some(before)||tools_changed||route_changed;
+            let in_history=prepared_call.as_ref().and_then(|call|call.system_prompt_update)==Some(dsh_llm::SystemPromptUpdate::InHistory);
+            self.commit_system_prompt(turn,step,&system,in_history,reset_series)?;
+            if first_attempt { self.commit_incoming(incoming); }
+            first_attempt=false;
+            let generation=self.session.surface().map_err(LoopCancelled::hook)?.replace_generation;
+            let starts_series=explicit_series||previous_generation!=Some(generation)||route_changed;
+            let boundary_messages=self.session.derive_messages().map_err(LoopCancelled::hook)?;
+            let mut request=self.build_request(&assembly.tools,config,prepared_call.as_ref(),starts_series,boundary_messages.as_ref(),&signal)?;
+            *self.request_surface_generation.lock()=Some(generation);
+            request.messages=self.session.derive_messages().map_err(LoopCancelled::hook)?.as_ref().clone();
             let mut assembler = BlockAssembler::new();
             let mut saw_tool_call = false;
             let mut chunk_seqs = Vec::new();
@@ -1173,17 +1108,21 @@ impl ReactLoopAgent {
         }
     }
 
-    /// Compose one frozen request and bind it to the adapter registration
-    /// that resolved its exact-model defaults.
-    async fn build_request(
-        &self,
-        turn: u64,
-        step: u64,
-        tools: &[dsh_llm::ToolSchema],
-        system: &str,
-        boundary_messages: &[dsh_llm::Message],
-        signal: &Arc<CancellationSignal>,
-    ) -> Result<(GenerateOptions, Option<dsh_llm::PreparedLlmCall>), LoopCancelled> {
+    fn commit_incoming(&self,messages:&[UserMessage]) {
+        for message in messages {
+            self.session.append("user/message",serde_json::to_value(message).expect("message"),Some(SurfaceIntent{surface_op:SurfaceOp::Append,source_event_seqs:None})).expect("user/message");
+        }
+    }
+
+    fn commit_system_prompt(&self,turn:u64,step:u64,rendered:&str,in_history:bool,starts_series:bool)->Result<(),LoopCancelled> {
+        for commit in crate::system_prompt_projection::project(&self.session,rendered,in_history,starts_series).map_err(LoopCancelled::hook)? {
+            self.session.append("system/message",serde_json::json!({"turn":turn,"step":step,"prefix":commit.prefix,"message":commit.message}),Some(commit.intent)).map_err(LoopCancelled::hook)?;
+        }
+        Ok(())
+    }
+
+    /// Capture the route and its capabilities before changing the model surface.
+    async fn prepare_request(&self,turn:u64,step:u64,signal:&Arc<CancellationSignal>)->Result<(LlmCallConfig,Option<dsh_llm::PreparedLlmCall>),LoopCancelled> {
         let persisted_header = self.session.request_header();
         let persisted_config = persisted_header
             .as_ref()
@@ -1260,16 +1199,16 @@ impl ReactLoopAgent {
         };
         throw_if_aborted(signal)?;
 
+        Ok((config,prepared_call))
+    }
+
+    fn build_request(&self,tools:&[dsh_llm::ToolSchema],config:LlmCallConfig,prepared_call:Option<&dsh_llm::PreparedLlmCall>,starts_series:bool,boundary_messages:&[dsh_llm::Message],signal:&Arc<CancellationSignal>)->Result<GenerateOptions,LoopCancelled> {
         let header = canonical_header(&EpochHeader {
             config: config.clone(),
             adapter_defaults: prepared_call
                 .as_ref()
                 .map(|prepared| prepared.adapter_defaults.clone()),
-            system: if system.is_empty() {
-                None
-            } else {
-                Some(system.to_string())
-            },
+            system: None,
             tools: if tools.is_empty() {
                 None
             } else {
@@ -1318,13 +1257,16 @@ impl ReactLoopAgent {
             self.session
                 .append(
                     "request/header",
-                    serde_json::json!({ "header": persisted_header, "reason": "change" }),
+                    serde_json::json!({ "header": persisted_header, "reason": "change", "startsSeries": starts_series }),
                     None,
                 )
                 .expect("request/header change");
+        } else if starts_series {
+            self.session.append("request/header",serde_json::json!({"header":persisted_header,"reason":"series"}),None).expect("request/header series");
         }
 
         let request_context = RequestContext {
+            system_prompt_update: prepared_call.as_ref().and_then(|prepared|prepared.system_prompt_update),
             context_window_estimated: prepared_call
                 .as_ref()
                 .and_then(|prepared| prepared.context.as_ref())
@@ -1342,6 +1284,7 @@ impl ReactLoopAgent {
                 || previous.model != request_context.model
                 || previous.context_window != request_context.context_window
                 || previous.context_window_estimated != request_context.context_window_estimated
+                || previous.system_prompt_update != request_context.system_prompt_update
         });
         if changed {
             self.session
@@ -1376,7 +1319,7 @@ impl ReactLoopAgent {
         mark_agent_loop_request(&mut request);
         let signal_for_request = Arc::clone(signal);
         request.signal = Some(Arc::new(move || signal_for_request.aborted()));
-        Ok((request, prepared_call))
+        Ok(request)
     }
 }
 

@@ -571,10 +571,10 @@ impl LocalBashExecutor {
                 DeadlineSignal::never(),
             ));
             // Bridge the caller's abort predicate onto the fused signal.
-            let poller = spec.signal.as_ref().map(|abort| {
+            let _poller = spec.signal.as_ref().map(|abort| {
                 let abort = abort.clone();
                 let fused_for_poll = fused.clone();
-                tokio::spawn(async move {
+                dsh_timeout::AbortTaskOnDrop::new(tokio::spawn(async move {
                     loop {
                         if abort() {
                             fused_for_poll.cancel(None);
@@ -582,7 +582,7 @@ impl LocalBashExecutor {
                         }
                         tokio::time::sleep(Duration::from_millis(15)).await;
                     }
-                })
+                }))
             });
             let spawn_signal: SubprocessAbort = {
                 let fused = fused.clone();
@@ -596,10 +596,9 @@ impl LocalBashExecutor {
                 Some(spawn_signal),
             );
             let handle = subprocess.spawn(spawn)?;
+            let mut process_guard = dsh_subprocess::SubprocessRunGuard::new(handle.clone());
             let outcome = handle.done().await?;
-            if let Some(poller) = poller {
-                poller.abort();
-            }
+            process_guard.disarm();
             let collected = handle.collected();
             let stdout = collected.stdout.ok_or_else(|| {
                 "bash-local: subprocess implementation dropped a requested collect stream"

@@ -14,10 +14,10 @@ function snapshotStore(initial){let value=initial;const listeners=new Set();cons
 let providersReply=null,accountActionReply=null;
 const primitives=new Proxy({IconCheckOutline14:()=>React.createElement('svg',{'data-check-icon':true}),Modal:({open,children,footer,title})=>open?React.createElement('section',{role:'dialog','aria-label':title},children,footer):null,Button:({variant,...props})=>React.createElement('button',props)},{get:(target,key)=>target[key]??(()=>React.createElement('svg',{'data-icon':key}))});
 let exported;const context={document,window:{__ModuleLoader__:{load(def){exported=def.factory(id=>id==='react'?React:id==='react/jsx-runtime'?jsx:id.endsWith('ui-primitives')?primitives:id.endsWith('schema-form')?{getPath:(value,parts)=>parts.reduce((current,key)=>current?.[key],value),rehydrateSchema:value=>value,nodeAtPath:()=>null}: {createSnapshotStore:snapshotStore})}}},fetch:async(url,init)=>{const action=url.split('/').at(-1),body=init.body?JSON.parse(init.body):{};apiCalls.push({action,body});if(accountActionReply&&['switch','logout','start','poll'].includes(action))return accountActionReply(action,body);if(usageReply&&['usage','usage-login'].includes(action))return usageReply(action);if(url.startsWith('/__dsh-free/')){if(action==='test')freeReport.models[0]={...freeReport.models[0],status:'available',available:true,verifiedAt:Date.now()};return{ok:true,json:async()=>clone(action==='enable'?{enabled:true,provider:'opencode-free',model:body.model}:freeReport)}};if(readError)throw readError;if(action==='providers'&&providersReply)return providersReply();if(action==='reset-prepare')return{ok:true,json:async()=>({operation:{operationId:'fixture-reset',state:'prepared'}})};if(action==='reset-consume'){assert.equal(body.confirmed,true);assert.equal(body.operationId,'fixture-reset');return{ok:true,json:async()=>({operation:{operationId:'fixture-reset',state:'complete',outcome:'reset'}})}};if(action==='providers')return{ok:true,json:async()=>({providers:accountRows})};if(action==='start'&&startPending)return startPending.promise;if(action==='cancel')return{ok:true,json:async()=>({status:'cancelled'})};return{ok:true,json:async()=>clone(catalog)}},setTimeout,clearTimeout,setInterval,clearInterval,structuredClone,console};
-vm.runInNewContext(source.replace('return module.exports;','exports.test={ProviderModelManager,CodexUsagePanel,AccountConnections,ModelEditorBoundary,ProviderEditor,Loaded,FreeModelsSection,createAccountDirectory,SidebarAccount,zh,en};return module.exports;'),context);
+vm.runInNewContext(source.replace('return module.exports;','exports.test={CustomProviderCard,normalizeProviderRoute,PROVIDER_PRESETS,ProviderModelManager,CodexUsagePanel,AccountConnections,ModelEditorBoundary,ProviderEditor,Loaded,FreeModelsSection,createAccountDirectory,SidebarAccount,zh,en};return module.exports;'),context);
 const test=exported.test,t=key=>test.en[key]??key,api={settings:{mutate:async request=>{writes.push(request);if(writeError)return{result:{ok:false,error:{code:'write-error',message:writeError}}};mergeOps(request.ops);return{result:{ok:true,value:{}}}}}};
 const makeController=()=>({load:async()=>{},accounts:test.createAccountDirectory()});
-async function expandAccounts(name){await act(async()=>document.querySelector('.dshAccountDisclosure').click());await click(name)}
+async function expandAccounts(name){const tab=document.querySelector('#dsh-model-tab-accounts');if(tab)await act(async()=>tab.click());const disclosure=document.querySelector('.dshAccountDisclosure');if(disclosure.getAttribute('aria-expanded')!=='true')await act(async()=>disclosure.click());await click(name)}
 let root=ReactDOM.createRoot(document.getElementById('root'));const {act}=React;
 const flush=async()=>act(async()=>{await new Promise(resolve=>setImmediate(resolve))});
 async function render(element){await act(async()=>root.render(element));await flush()}
@@ -25,6 +25,15 @@ async function click(label){const button=[...document.querySelectorAll('button')
 async function check(id,value){const node=document.querySelector(`[data-model-id="${id}"] input[type=checkbox]`);assert.ok(node);assert.equal(node.checked,!value);await act(async()=>node.click());await flush()}
 async function input(selector,value){const node=document.querySelector(selector);assert.ok(node,selector);await act(async()=>{Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype,'value').set.call(node,value);node.dispatchEvent(new dom.window.Event('input',{bubbles:true}))});await flush()}
 async function main(){
+assert.equal(test.normalizeProviderRoute('DeepSeek 4.1'),'deepseek-4-1');
+assert.equal(test.normalizeProviderRoute('4.1'),'provider-4-1');
+await render(React.createElement(test.CustomProviderCard,{taken:[],protocols:['openai-completions','openai-responses','anthropic-messages'],api,t,revision:1}));
+assert.ok([...document.querySelectorAll('select option')].some(option=>option.textContent.includes('DeepSeek V4 / V4.1')));
+await input('input[aria-label="'+t('customRoute')+'"]','DeepSeek 4.1');
+assert.equal(document.body.textContent.includes(t('customRouteInvalid')),false,'display-like provider IDs normalize without rejecting a model version');
+await render(React.createElement(test.CustomProviderCard,{key:'collision',taken:['deepseek-4-1'],protocols:['openai-completions'],api,t,revision:1}));
+await input('input[aria-label="'+t('customRoute')+'"]','DeepSeek 4.1');
+assert.ok(document.body.textContent.includes(t('customRouteTaken')),'duplicates are checked after normalization');
 const props={provider:'fixture',api,t,disabled:false,revision:1};
 await render(React.createElement(test.ProviderModelManager,props));assert.equal(document.querySelectorAll('[data-model-id]').length,2);assert.equal(document.querySelectorAll('[data-check-icon]').length,2);assert.equal(document.querySelector('input[type=checkbox]').getAttribute('role'),null,'real checkbox semantics, original-token visible box');
 await check('one',false);assert.equal(writes.length,0,'toggle is draft until Apply');await click(t('cancel'));assert.equal(document.querySelector('[data-model-id=one] input').checked,true);assert.equal(writes.length,0);
@@ -69,6 +78,22 @@ await click(t('modelManage'));await input('input[type=search]',exactId);await cl
 assert.equal([...document.querySelectorAll('button')].find(node=>node.textContent===t('apply')).disabled,true,'duplicate IDs cannot replace an existing model');
 const beforeRemove=writes.length;await click(t('modelManualRemove'));assert.equal(writes.length,beforeRemove,'removing an unsaved draft never deletes stored models');assert.ok(catalog.models.some(model=>model.id===exactId));
 assert.ok(writes.slice(beforeManual).every(write=>write.ops.every(op=>op.path[0]==='models'||op.path[0]==='modelPreferences')),'manual model operations never touch provider credentials or connection fields');
+// Temporary browser transport errors retain the pending code and retry the same attempt.
+accountRows=[{id:'fixture',name:'Account',signedIn:false,settingsNs:'llm-pi-ai'}];
+let retryPolls=0;
+accountActionReply=async action=>{
+ if(action==='start')return{ok:true,json:async()=>({attempt:'retry-login',userCode:'RETRY-CODE',interval:3,expiresAt:Math.floor(Date.now()/1000)+60})};
+ if(action==='poll'){if(++retryPolls===1)throw Error('temporary offline');return{ok:true,json:async()=>({status:'pending',interval:3})};}
+ throw Error('Unexpected retry-fixture action');
+};
+await render(React.createElement(test.AccountConnections,{controller:makeController(),api,namespaces:new Map(),t,disabled:false}));await expandAccounts('Account');await click(t('accountLogin'));
+await act(async()=>{await new Promise(resolve=>setTimeout(resolve,3100))});
+assert.match(document.body.textContent,/RETRY-CODE/);assert.match(document.body.textContent,/Retrying/);
+assert.equal(apiCalls.some(call=>call.action==='cancel'&&call.body.attempt==='retry-login'),false);
+await act(async()=>{await new Promise(resolve=>setTimeout(resolve,5100))});assert.ok(retryPolls>=2);
+assert.equal(apiCalls.filter(call=>call.action==='start').at(-1).body.provider,'fixture');
+await click(t('cancel'));assert.ok(apiCalls.some(call=>call.action==='cancel'&&call.body.attempt==='retry-login'));
+await render(React.createElement('span',null,'retry fixture complete'));accountActionReply=null;
 const freshUsage={status:'fresh',updatedAt:1788800000,rateLimits:{limitId:'codex',primary:{usedPercent:35,windowDurationMins:300}},rateLimitResetCredits:{availableCount:0}};
 let resolveOldUsage,usageSyncError=null,usageSynced=freshUsage;
 usageReply=action=>action==='usage'?new Promise(resolve=>{resolveOldUsage=resolve}):usageSyncError?Promise.reject(Error(usageSyncError)):Promise.resolve({ok:true,json:async()=>clone(usageSynced)});
@@ -85,6 +110,14 @@ const loadedState={status:'ready',writable:true,rows:[providerRow('openai-codex'
 const loadedProps={injected:{api,t,controller:makeController(),useSnapshot:select=>select(loadedState)}};
 accountRows=[{id:'openai-codex',name:'ChatGPT/Codex',signedIn:true,settingsNs:'llm-pi-ai',accountScope:'usage-fixture'}];
 await render(React.createElement(test.Loaded,{...loadedProps,key:'account-deduplication'}));await flush();await expandAccounts('ChatGPT/Codex');
+assert.equal(document.querySelector('#dsh-model-panel-api').hidden,true);
+assert.equal(document.querySelector('#dsh-model-panel-accounts').hidden,false);
+await click(t('modelApiTab'));
+assert.equal(document.querySelector('#dsh-model-panel-accounts').hidden,true);
+await act(async()=>{const input=document.querySelector('input[aria-label="'+t('modelProviderSearch')+'"]');Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(input,'unmatched-connection');input.dispatchEvent(new window.Event('input',{bubbles:true}));});
+assert.ok([...document.querySelectorAll('#dsh-model-panel-api>li')].every(row=>row.hidden),'connection filtering does not unmount drafts');
+await act(async()=>{const input=document.querySelector('input[aria-label="'+t('modelProviderSearch')+'"]');Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(input,'');input.dispatchEvent(new window.Event('input',{bubbles:true}));});
+await click(t('modelAccountTab'));
 assert.equal(document.querySelectorAll('[data-model-manager="openai-codex"]').length,1,'a connected account has one model manager, not another disabled provider copy');
 assert.ok(document.querySelector('[data-model-manager="custom-codex"]'),'a custom provider with the same display name stays editable');
 assert.ok([...document.querySelectorAll('button')].some(node=>node.getAttribute('aria-label')?.includes('custom-codex')&&!node.disabled),'same-label custom connection retains its edit action');
@@ -161,7 +194,7 @@ let sidebar;
 const sideWindow={setTimeout,clearTimeout,__ModuleLoader__:{load:def=>{sidebar=def.factory(id=>id==='react'?React:id==='react/jsx-runtime'?jsx:primitives)}}};
 vm.runInNewContext(fs.readFileSync(path.join(plugins,'ui-sidebar.js'),'utf8').replace('return module.exports;','exports.SidebarRoot=SidebarRoot;return module.exports;'),{document,window:sideWindow,console,setTimeout,clearTimeout});
 for(const collapsed of [false,true]){
- await render(React.createElement(sidebar.SidebarRoot,{key:String(collapsed),collapsed,width:248,startSession:()=>{},toggleSidebar:()=>{},t:key=>key,renderSlot:name=>React.createElement('button',{'data-slot':name},name)}));
+ await render(React.createElement(sidebar.SidebarRoot,{key:String(collapsed),collapsed,width:248,usePanels:select=>select([]),usePanelInfo:select=>select({activePanelId:null}),selectPanel:()=>{},startSession:()=>{},toggleSidebar:()=>{},t:key=>key,renderSlot:name=>React.createElement('button',{'data-slot':name},name)}));
  const account=document.querySelector('[data-slot="sidebar.account"]'),settings=document.querySelector('[data-slot="sidebar.settings"]');
  assert.ok(account.closest('.dshSidebarAccount'));assert.ok(account.parentElement.nextElementSibling===settings,'account is immediately above Settings in both sidebar forms');
  if(collapsed)assert.equal(window.getComputedStyle(settings.parentElement).flexDirection,'column','collapsed account and Settings are stacked vertically');
