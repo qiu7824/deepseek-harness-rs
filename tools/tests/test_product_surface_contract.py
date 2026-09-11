@@ -375,7 +375,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("dsh-better-sidebar", package["dsh"]["client"]["inject"])
         self.assertEqual(
             set(package["dsh"]["client"]["assets"]),
-            {"editor.js", "markdown.js", "mermaid.js"},
+            {"editor.js", "markdown.js", "mermaid.js", "pdf.js"},
         )
         for marker in (
             "registerTab",
@@ -389,7 +389,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
             "__DSH_SIDEBAR_MERMAID__",
         ):
             self.assertIn(marker, client)
-        for name in ("editor.js", "markdown.js", "mermaid.js"):
+        for name in ("editor.js", "markdown.js", "mermaid.js", "pdf.js"):
             asset = ROOT / "release/plugins/dsh-sidebar-workbench-suite/lib" / name
             self.assertTrue(asset.is_file())
             self.assertGreater(asset.stat().st_size, 50_000)
