@@ -260,12 +260,19 @@ pub async fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
                 if injections.is_empty() {
                     return Some(decision_value);
                 }
-                let PreStepDecision::Enter { messages, starts_request_series } = decision else {
+                let PreStepDecision::Enter {
+                    messages,
+                    starts_request_series,
+                } = decision
+                else {
                     unreachable!("reject returned above");
                 };
                 let mut merged = messages;
                 merged.extend(injections);
-                Some(arc(PreStepDecision::Enter { messages: merged, starts_request_series }))
+                Some(arc(PreStepDecision::Enter {
+                    messages: merged,
+                    starts_request_series,
+                }))
             })
         });
     let invocation_disposer = ctx
@@ -344,7 +351,11 @@ pub async fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
                     return Some(match existing {
                         None => decision_value,
                         Some(existing) => {
-                            let PreStepDecision::Enter { messages, starts_request_series } = decision else {
+                            let PreStepDecision::Enter {
+                                messages,
+                                starts_request_series,
+                            } = decision
+                            else {
                                 unreachable!("reject returned above");
                             };
                             arc(PreStepDecision::Enter {
@@ -366,7 +377,11 @@ pub async fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
                     return Some(match existing {
                         None => decision_value,
                         Some(existing) => {
-                            let PreStepDecision::Enter { messages, starts_request_series } = decision else {
+                            let PreStepDecision::Enter {
+                                messages,
+                                starts_request_series,
+                            } = decision
+                            else {
                                 unreachable!("reject returned above");
                             };
                             arc(PreStepDecision::Enter {
@@ -384,7 +399,11 @@ pub async fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
                 } else {
                     render_catalog_message(&entries)
                 };
-                let PreStepDecision::Enter { messages, starts_request_series } = decision else {
+                let PreStepDecision::Enter {
+                    messages,
+                    starts_request_series,
+                } = decision
+                else {
                     unreachable!("reject returned above");
                 };
                 let merged = match existing {
@@ -404,7 +423,10 @@ pub async fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
                         })
                         .collect(),
                 };
-                Some(arc(PreStepDecision::Enter { messages: merged, starts_request_series }))
+                Some(arc(PreStepDecision::Enter {
+                    messages: merged,
+                    starts_request_series,
+                }))
             })
         });
     let catalog_disposer = ctx

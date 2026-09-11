@@ -51,7 +51,8 @@ pub fn is_replacement_surface_event(event: &SessionEvent) -> bool {
 pub fn derive_event_message(event: &SessionEvent) -> Option<Message> {
     match event.type_.as_str() {
         "system/message" => {
-            let message=serde_json::from_value::<Message>(event.data.get("message")?.clone()).ok()?;
+            let message =
+                serde_json::from_value::<Message>(event.data.get("message")?.clone()).ok()?;
             (!message.content.is_empty()).then_some(message)
         }
         "user/message" => serde_json::from_value::<Message>(event.data.clone()).ok(),

@@ -9,9 +9,9 @@ pub mod constants;
 pub mod index;
 pub mod invariant;
 mod request_metrics;
-mod system_prompt_projection;
 mod response_continuation;
 pub mod runtime_context;
+mod system_prompt_projection;
 pub mod tool_calls;
 
 pub use agent::{LoopCancelled, ReactLoopAgent};

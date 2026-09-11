@@ -188,7 +188,12 @@ pub struct PreparedLlmCall {
 pub trait LlmAdapter: Send + Sync {
     /// Freeze mutable route options before capabilities and request defaults
     /// are resolved. Replay ownership remains the registered adapter's.
-    async fn snapshot_for_call(&self, _provider: &str, _model: &str, _signal: Option<&AbortSignal>) -> Result<Option<Arc<dyn LlmAdapter>>, LlmError> {
+    async fn snapshot_for_call(
+        &self,
+        _provider: &str,
+        _model: &str,
+        _signal: Option<&AbortSignal>,
+    ) -> Result<Option<Arc<dyn LlmAdapter>>, LlmError> {
         Ok(None)
     }
     /// Describe one provider route owned by this adapter.
@@ -876,7 +881,14 @@ impl LlmRuntime {
         registration: &AdapterRegistration,
         config: &LlmCallConfig,
         signal: Option<&AbortSignal>,
-    ) -> Result<(LlmCallConfig, Option<LlmModelContext>, Option<crate::SystemPromptUpdate>), LlmError> {
+    ) -> Result<
+        (
+            LlmCallConfig,
+            Option<LlmModelContext>,
+            Option<crate::SystemPromptUpdate>,
+        ),
+        LlmError,
+    > {
         let info = Self::resolve_model_info_for(registration, &config.model, signal).await?;
         let mut resolved = config.clone();
         if resolved.max_tokens.is_none()
@@ -976,9 +988,20 @@ impl LlmRuntime {
         signal: Option<&AbortSignal>,
     ) -> Result<PreparedLlmCall, LlmError> {
         let registration = self.registration(&config.provider)?;
-        let adapter=registration.adapter.snapshot_for_call(&config.provider,&config.model,signal).await?.unwrap_or_else(||Arc::clone(&registration.adapter));
-        let frozen=AdapterRegistration {adapter:Arc::clone(&adapter),provider:registration.provider.clone(),retry_policy:adapter.provider_retry_policy(&config.provider).unwrap_or_else(||registration.retry_policy.clone())};
-        let (resolved_config, context, system_prompt_update) = Self::resolve_call_for(&frozen, config, signal).await?;
+        let adapter = registration
+            .adapter
+            .snapshot_for_call(&config.provider, &config.model, signal)
+            .await?
+            .unwrap_or_else(|| Arc::clone(&registration.adapter));
+        let frozen = AdapterRegistration {
+            adapter: Arc::clone(&adapter),
+            provider: registration.provider.clone(),
+            retry_policy: adapter
+                .provider_retry_policy(&config.provider)
+                .unwrap_or_else(|| registration.retry_policy.clone()),
+        };
+        let (resolved_config, context, system_prompt_update) =
+            Self::resolve_call_for(&frozen, config, signal).await?;
         let adapter_defaults = LlmCallConfigAdapterDefaults {
             reasoning_effort: (config.reasoning_effort.is_none()
                 && resolved_config.reasoning_effort.is_some())
@@ -1012,7 +1035,11 @@ impl LlmRuntime {
                 }
                 Ok(runtime.stream_with_registration(
                     options,
-                    Some(PreparedDispatch {registration:Arc::clone(&registration_for_stream),config:resolved_for_stream.clone(),adapter:Arc::clone(&adapter)}),
+                    Some(PreparedDispatch {
+                        registration: Arc::clone(&registration_for_stream),
+                        config: resolved_for_stream.clone(),
+                        adapter: Arc::clone(&adapter),
+                    }),
                 ))
             });
         Ok(PreparedLlmCall {
@@ -1114,7 +1141,11 @@ impl LlmRuntime {
             AdapterPhase::Setup => {
                 let signal = options.signal.clone();
                 let (registration, resolved_config, adapter) = match &prepared {
-                    Some(binding) => (Arc::clone(&binding.registration), binding.config.clone(), Arc::clone(&binding.adapter)),
+                    Some(binding) => (
+                        Arc::clone(&binding.registration),
+                        binding.config.clone(),
+                        Arc::clone(&binding.adapter),
+                    ),
                     None => {
                         let registration = match self.registration(&options.provider) {
                             Ok(registration) => registration,
@@ -1123,19 +1154,32 @@ impl LlmRuntime {
                                 return Some((chunk, AdapterPhase::Done));
                             }
                         };
-                        let adapter=match registration.adapter.snapshot_for_call(&options.provider,&options.model,signal.as_ref()).await {
-                            Ok(snapshot)=>snapshot.unwrap_or_else(||Arc::clone(&registration.adapter)),
-                            Err(error)=>return Some((adapter_failure_chunk(error.failure,signal.as_ref()),AdapterPhase::Done)),
-                        };
-                        let frozen=AdapterRegistration {adapter:Arc::clone(&adapter),provider:registration.provider.clone(),retry_policy:registration.retry_policy.clone()};
-                        match Self::resolve_call_for(
-                            &frozen,
-                            &config_of(&options),
-                            signal.as_ref(),
-                        )
-                        .await
+                        let adapter = match registration
+                            .adapter
+                            .snapshot_for_call(&options.provider, &options.model, signal.as_ref())
+                            .await
                         {
-                            Ok((config, _context, _system_update)) => (registration, config, adapter),
+                            Ok(snapshot) => {
+                                snapshot.unwrap_or_else(|| Arc::clone(&registration.adapter))
+                            }
+                            Err(error) => {
+                                return Some((
+                                    adapter_failure_chunk(error.failure, signal.as_ref()),
+                                    AdapterPhase::Done,
+                                ));
+                            }
+                        };
+                        let frozen = AdapterRegistration {
+                            adapter: Arc::clone(&adapter),
+                            provider: registration.provider.clone(),
+                            retry_policy: registration.retry_policy.clone(),
+                        };
+                        match Self::resolve_call_for(&frozen, &config_of(&options), signal.as_ref())
+                            .await
+                        {
+                            Ok((config, _context, _system_update)) => {
+                                (registration, config, adapter)
+                            }
                             Err(error) => {
                                 let chunk = adapter_failure_chunk(error.failure, signal.as_ref());
                                 return Some((chunk, AdapterPhase::Done));

@@ -10,7 +10,11 @@ use crate::types::{EpochHeader, RequestHeaderReason, SessionEvent};
 pub struct RequestHeaderPayload {
     pub header: EpochHeader,
     pub reason: RequestHeaderReason,
-    #[serde(default, skip_serializing_if="Option::is_none", rename="startsSeries")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "startsSeries"
+    )]
     pub starts_series: Option<bool>,
 }
 

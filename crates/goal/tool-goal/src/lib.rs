@@ -444,7 +444,8 @@ fn require_model_resume_phase(phase: dsh_goal::GoalPhase) -> Result<(), ToolBody
     if phase == dsh_goal::GoalPhase::Paused {
         return Err(ToolBodyError::coded(
             "This goal was explicitly paused. It can only be resumed through the user's goal controls.",
-            "HarnessError", "GOAL_EXPLICITLY_PAUSED",
+            "HarnessError",
+            "GOAL_EXPLICITLY_PAUSED",
         ));
     }
     Ok(())
@@ -459,7 +460,7 @@ mod resume_policy_tests {
         // Restored active goals still use the ordinary authority/revision and
         // disarmed-state checks; blocked and complete transitions stay owned
         // by the goal service.
-        for phase in [GoalPhase::Active,GoalPhase::Blocked,GoalPhase::Complete] {
+        for phase in [GoalPhase::Active, GoalPhase::Blocked, GoalPhase::Complete] {
             assert!(super::require_model_resume_phase(phase).is_ok());
         }
     }

@@ -299,7 +299,10 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
     model.insert("id".to_string(), Schema::string().required(true));
     model.insert("compat".into(), provider_compatibility::schema());
     model.insert("name".to_string(), Schema::string());
-    model.insert("systemPromptUpdate".into(),Schema::constant(Data::String("in-history".into())));
+    model.insert(
+        "systemPromptUpdate".into(),
+        Schema::constant(Data::String("in-history".into())),
+    );
     model.insert("enabled".to_string(), Schema::boolean());
     for field in [
         "source",
@@ -987,8 +990,15 @@ impl OpenAiCompatibleAdapter {
 
 #[async_trait::async_trait]
 impl dsh_llm::LlmAdapter for OpenAiCompatibleAdapter {
-    async fn snapshot_for_call(&self,provider:&str,_model:&str,_signal:Option<&Arc<dyn Fn()->bool+Send+Sync>>)->Result<Option<Arc<dyn dsh_llm::LlmAdapter>>,dsh_llm::LlmError> {
-        if let Some(auth)=&self.auth {let _=auth.ensure_catalog_scope(provider).await;}
+    async fn snapshot_for_call(
+        &self,
+        provider: &str,
+        _model: &str,
+        _signal: Option<&Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) -> Result<Option<Arc<dyn dsh_llm::LlmAdapter>>, dsh_llm::LlmError> {
+        if let Some(auth) = &self.auth {
+            let _ = auth.ensure_catalog_scope(provider).await;
+        }
         self.delegate(provider).frozen().map(Some)
     }
     fn provider_info(&self, provider: &str) -> dsh_llm::LlmProviderInfo {

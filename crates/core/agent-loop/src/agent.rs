@@ -554,7 +554,10 @@ impl ReactLoopAgent {
         let decision = downcast_arc::<PreStepDecision>(&decision).expect("agent/pre-step decision");
         match decision.as_ref() {
             PreStepDecision::Reject => Ok(PreparedStep::Reject),
-            PreStepDecision::Enter { messages, starts_request_series } => Ok(PreparedStep::Enter {
+            PreStepDecision::Enter {
+                messages,
+                starts_request_series,
+            } => Ok(PreparedStep::Enter {
                 messages: messages.clone(),
                 starts_request_series: *starts_request_series,
                 assembly,
@@ -597,7 +600,12 @@ impl ReactLoopAgent {
                     _ => unreachable!(),
                 };
                 let decision = self.pre_step(target, (turn, step)).await?;
-                let PreparedStep::Enter { messages, assembly, starts_request_series } = decision else {
+                let PreparedStep::Enter {
+                    messages,
+                    assembly,
+                    starts_request_series,
+                } = decision
+                else {
                     turn_ends = Some(TurnEndReason::Blocked);
                     return Ok(());
                 };
@@ -629,7 +637,14 @@ impl ReactLoopAgent {
                 {
                     *phase_step = step;
                 }
-                let step_end = self.step(&assembly, &messages, starts_request_series, &mut continuation).await;
+                let step_end = self
+                    .step(
+                        &assembly,
+                        &messages,
+                        starts_request_series,
+                        &mut continuation,
+                    )
+                    .await;
                 self.session
                     .append(
                         "step/end",
@@ -739,37 +754,73 @@ impl ReactLoopAgent {
         throw_if_aborted(&signal)?;
         let system = render_prompt(assembly).expect("renderPrompt");
 
-        let mut first_attempt=true;
+        let mut first_attempt = true;
         loop {
-            let prepared=self.prepare_request(turn,step,&signal).await;
-            let (config,prepared_call)=match prepared {
-                Ok(prepared)=>prepared,
-                Err(error)=>{
+            let prepared = self.prepare_request(turn, step, &signal).await;
+            let (config, prepared_call) = match prepared {
+                Ok(prepared) => prepared,
+                Err(error) => {
                     // Failed route preparation must not lose the admitted user input.
                     if first_attempt {
-                        self.commit_system_prompt(turn,step,&system,false,true)?;
+                        self.commit_system_prompt(turn, step, &system, false, true)?;
                         self.commit_incoming(incoming);
                     }
                     return Err(error);
                 }
             };
-            let before=self.session.surface().map_err(LoopCancelled::hook)?.replace_generation;
-            let previous_generation=*self.request_surface_generation.lock();
-            let baseline=self.session.request_header();
-            let tools_changed=baseline.as_ref().is_none_or(|header|header.tools.as_deref().unwrap_or(&[])!=assembly.tools.as_slice());
-            let route_changed=baseline.as_ref().is_some_and(|header|header.config.provider!=config.provider||header.config.model!=config.model);
-            let explicit_series=first_attempt&&starts_request_series;
-            let reset_series=explicit_series||previous_generation!=Some(before)||tools_changed||route_changed;
-            let in_history=prepared_call.as_ref().and_then(|call|call.system_prompt_update)==Some(dsh_llm::SystemPromptUpdate::InHistory);
-            self.commit_system_prompt(turn,step,&system,in_history,reset_series)?;
-            if first_attempt { self.commit_incoming(incoming); }
-            first_attempt=false;
-            let generation=self.session.surface().map_err(LoopCancelled::hook)?.replace_generation;
-            let starts_series=explicit_series||previous_generation!=Some(generation)||route_changed;
-            let boundary_messages=self.session.derive_messages().map_err(LoopCancelled::hook)?;
-            let mut request=self.build_request(&assembly.tools,config,prepared_call.as_ref(),starts_series,boundary_messages.as_ref(),&signal)?;
-            *self.request_surface_generation.lock()=Some(generation);
-            request.messages=self.session.derive_messages().map_err(LoopCancelled::hook)?.as_ref().clone();
+            let before = self
+                .session
+                .surface()
+                .map_err(LoopCancelled::hook)?
+                .replace_generation;
+            let previous_generation = *self.request_surface_generation.lock();
+            let baseline = self.session.request_header();
+            let tools_changed = baseline.as_ref().is_none_or(|header| {
+                header.tools.as_deref().unwrap_or(&[]) != assembly.tools.as_slice()
+            });
+            let route_changed = baseline.as_ref().is_some_and(|header| {
+                header.config.provider != config.provider || header.config.model != config.model
+            });
+            let explicit_series = first_attempt && starts_request_series;
+            let reset_series = explicit_series
+                || previous_generation != Some(before)
+                || tools_changed
+                || route_changed;
+            let in_history = prepared_call
+                .as_ref()
+                .and_then(|call| call.system_prompt_update)
+                == Some(dsh_llm::SystemPromptUpdate::InHistory);
+            self.commit_system_prompt(turn, step, &system, in_history, reset_series)?;
+            if first_attempt {
+                self.commit_incoming(incoming);
+            }
+            first_attempt = false;
+            let generation = self
+                .session
+                .surface()
+                .map_err(LoopCancelled::hook)?
+                .replace_generation;
+            let starts_series =
+                explicit_series || previous_generation != Some(generation) || route_changed;
+            let boundary_messages = self
+                .session
+                .derive_messages()
+                .map_err(LoopCancelled::hook)?;
+            let mut request = self.build_request(
+                &assembly.tools,
+                config,
+                prepared_call.as_ref(),
+                starts_series,
+                boundary_messages.as_ref(),
+                &signal,
+            )?;
+            *self.request_surface_generation.lock() = Some(generation);
+            request.messages = self
+                .session
+                .derive_messages()
+                .map_err(LoopCancelled::hook)?
+                .as_ref()
+                .clone();
             let mut assembler = BlockAssembler::new();
             let mut saw_tool_call = false;
             let mut chunk_seqs = Vec::new();
@@ -1108,21 +1159,49 @@ impl ReactLoopAgent {
         }
     }
 
-    fn commit_incoming(&self,messages:&[UserMessage]) {
+    fn commit_incoming(&self, messages: &[UserMessage]) {
         for message in messages {
-            self.session.append("user/message",serde_json::to_value(message).expect("message"),Some(SurfaceIntent{surface_op:SurfaceOp::Append,source_event_seqs:None})).expect("user/message");
+            self.session
+                .append(
+                    "user/message",
+                    serde_json::to_value(message).expect("message"),
+                    Some(SurfaceIntent {
+                        surface_op: SurfaceOp::Append,
+                        source_event_seqs: None,
+                    }),
+                )
+                .expect("user/message");
         }
     }
 
-    fn commit_system_prompt(&self,turn:u64,step:u64,rendered:&str,in_history:bool,starts_series:bool)->Result<(),LoopCancelled> {
-        for commit in crate::system_prompt_projection::project(&self.session,rendered,in_history,starts_series).map_err(LoopCancelled::hook)? {
+    fn commit_system_prompt(
+        &self,
+        turn: u64,
+        step: u64,
+        rendered: &str,
+        in_history: bool,
+        starts_series: bool,
+    ) -> Result<(), LoopCancelled> {
+        for commit in crate::system_prompt_projection::project(
+            &self.session,
+            rendered,
+            in_history,
+            starts_series,
+        )
+        .map_err(LoopCancelled::hook)?
+        {
             self.session.append("system/message",serde_json::json!({"turn":turn,"step":step,"prefix":commit.prefix,"message":commit.message}),Some(commit.intent)).map_err(LoopCancelled::hook)?;
         }
         Ok(())
     }
 
     /// Capture the route and its capabilities before changing the model surface.
-    async fn prepare_request(&self,turn:u64,step:u64,signal:&Arc<CancellationSignal>)->Result<(LlmCallConfig,Option<dsh_llm::PreparedLlmCall>),LoopCancelled> {
+    async fn prepare_request(
+        &self,
+        turn: u64,
+        step: u64,
+        signal: &Arc<CancellationSignal>,
+    ) -> Result<(LlmCallConfig, Option<dsh_llm::PreparedLlmCall>), LoopCancelled> {
         let persisted_header = self.session.request_header();
         let persisted_config = persisted_header
             .as_ref()
@@ -1199,10 +1278,18 @@ impl ReactLoopAgent {
         };
         throw_if_aborted(signal)?;
 
-        Ok((config,prepared_call))
+        Ok((config, prepared_call))
     }
 
-    fn build_request(&self,tools:&[dsh_llm::ToolSchema],config:LlmCallConfig,prepared_call:Option<&dsh_llm::PreparedLlmCall>,starts_series:bool,boundary_messages:&[dsh_llm::Message],signal:&Arc<CancellationSignal>)->Result<GenerateOptions,LoopCancelled> {
+    fn build_request(
+        &self,
+        tools: &[dsh_llm::ToolSchema],
+        config: LlmCallConfig,
+        prepared_call: Option<&dsh_llm::PreparedLlmCall>,
+        starts_series: bool,
+        boundary_messages: &[dsh_llm::Message],
+        signal: &Arc<CancellationSignal>,
+    ) -> Result<GenerateOptions, LoopCancelled> {
         let header = canonical_header(&EpochHeader {
             config: config.clone(),
             adapter_defaults: prepared_call
@@ -1262,11 +1349,19 @@ impl ReactLoopAgent {
                 )
                 .expect("request/header change");
         } else if starts_series {
-            self.session.append("request/header",serde_json::json!({"header":persisted_header,"reason":"series"}),None).expect("request/header series");
+            self.session
+                .append(
+                    "request/header",
+                    serde_json::json!({"header":persisted_header,"reason":"series"}),
+                    None,
+                )
+                .expect("request/header series");
         }
 
         let request_context = RequestContext {
-            system_prompt_update: prepared_call.as_ref().and_then(|prepared|prepared.system_prompt_update),
+            system_prompt_update: prepared_call
+                .as_ref()
+                .and_then(|prepared| prepared.system_prompt_update),
             context_window_estimated: prepared_call
                 .as_ref()
                 .and_then(|prepared| prepared.context.as_ref())

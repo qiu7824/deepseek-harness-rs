@@ -130,7 +130,11 @@ pub fn apply(ctx: &Context, config: Config) -> Disposer {
                 .expect("agent/pre-step decision")
                 .as_ref()
                 .clone();
-            let PreStepDecision::Enter { mut messages, starts_request_series } = decision else {
+            let PreStepDecision::Enter {
+                mut messages,
+                starts_request_series,
+            } = decision
+            else {
                 return Some(decision_value);
             };
             if let Some(context) = context_message(&config, payload.agent.session()) {
@@ -147,7 +151,10 @@ pub fn apply(ctx: &Context, config: Config) -> Disposer {
                     .next_back();
                 messages.insert(last_claimed.map_or(0, |index| index + 1), context);
             }
-            Some(arc(PreStepDecision::Enter { messages, starts_request_series }))
+            Some(arc(PreStepDecision::Enter {
+                messages,
+                starts_request_series,
+            }))
         })
     });
     futures::executor::block_on(ctx.on("agent/pre-step", listener, Default::default()))

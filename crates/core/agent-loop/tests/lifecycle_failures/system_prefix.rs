@@ -193,7 +193,11 @@ async fn explicit_compaction_rejects_system_ranges_before_summarization_or_log_c
             .await
             .unwrap_err();
         assert_eq!(error.code, ManualCompactionErrorCode::Commit);
-        assert!(error.message.contains("protected system head"), "{}", error.message);
+        assert!(
+            error.message.contains("protected system head"),
+            "{}",
+            error.message
+        );
         assert_eq!(session.events().len(), event_count);
         assert_eq!(calls.lock().len(), call_count);
     }

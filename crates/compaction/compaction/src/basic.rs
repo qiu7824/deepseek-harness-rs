@@ -370,8 +370,16 @@ impl BasicCompactionEngine {
         let events = session.events();
         // Only the protected head is outside history. Later system updates,
         // including dormant empty nodes, must not block bounded compaction.
-        let start_index = usize::from(surface.nodes.first().and_then(|seq|events.get(*seq as usize)).is_some_and(|event|event.type_=="system/message"));
-        let Some(mut end_index) = surface.nodes.len()
+        let start_index = usize::from(
+            surface
+                .nodes
+                .first()
+                .and_then(|seq| events.get(*seq as usize))
+                .is_some_and(|event| event.type_ == "system/message"),
+        );
+        let Some(mut end_index) = surface
+            .nodes
+            .len()
             .checked_sub(2)
             .filter(|index| *index >= start_index)
         else {
@@ -406,9 +414,16 @@ impl BasicCompactionEngine {
             ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
         })?;
         let mut selected = Vec::new();
-        let events=session.events();
-        if let Some(head)=surface.nodes.first().and_then(|seq|events.get(*seq as usize)).filter(|event|event.type_=="system/message") {
-            if let Some(message)=derive_event_message(head){selected.push(message);}
+        let events = session.events();
+        if let Some(head) = surface
+            .nodes
+            .first()
+            .and_then(|seq| events.get(*seq as usize))
+            .filter(|event| event.type_ == "system/message")
+        {
+            if let Some(message) = derive_event_message(head) {
+                selected.push(message);
+            }
         }
         let mut in_range = false;
         for seq in surface.nodes {
@@ -508,9 +523,21 @@ impl BasicCompactionEngine {
                 source_command_id: None,
             },
         ));
-        let surface=agent.session.surface().map_err(|error|ManualCompactionError::new(ManualCompactionErrorCode::Commit,error))?;
-        let has_system_history=agent.session.with_events(|events|surface.nodes.iter().any(|seq|events.get(*seq as usize).is_some_and(|event|event.type_=="system/message")));
-        let legacy_system=if has_system_history {None}else{header.as_ref().and_then(|header|header.system.clone())};
+        let surface = agent.session.surface().map_err(|error| {
+            ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
+        })?;
+        let has_system_history = agent.session.with_events(|events| {
+            surface.nodes.iter().any(|seq| {
+                events
+                    .get(*seq as usize)
+                    .is_some_and(|event| event.type_ == "system/message")
+            })
+        });
+        let legacy_system = if has_system_history {
+            None
+        } else {
+            header.as_ref().and_then(|header| header.system.clone())
+        };
         let options = GenerateOptions {
             provider: provider.clone(),
             model: model.clone(),

@@ -304,7 +304,15 @@ mod key_tests {
         assert!(key.len() < 64);
         assert_eq!(key, call_key("write", &canonicalize(&reordered)));
         assert_ne!(key, call_key("edit", &canonicalize(&first)));
-        assert_ne!(key, call_key("write", &canonicalize(&serde_json::json!({"path":"other","content":"x".repeat(1024 * 1024)}))));
+        assert_ne!(
+            key,
+            call_key(
+                "write",
+                &canonicalize(
+                    &serde_json::json!({"path":"other","content":"x".repeat(1024 * 1024)})
+                )
+            )
+        );
     }
 }
 

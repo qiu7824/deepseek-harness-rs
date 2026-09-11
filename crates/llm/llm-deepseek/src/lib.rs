@@ -503,13 +503,13 @@ impl DeepSeekAdapter {
     }
 
     pub fn frozen(&self) -> Result<Arc<dyn dsh_llm::LlmAdapter>, LlmError> {
-        let options=(self.config.options)()?;
+        let options = (self.config.options)()?;
         Ok(Arc::new(Self::new(DeepSeekAdapterOptions {
-            options:Arc::new(move ||Ok(options.clone())),
-            resolve_api_key:Arc::clone(&self.config.resolve_api_key),
-            resolve_attachments:self.config.resolve_attachments.clone(),
-            provider_name:self.config.provider_name.clone(),
-            reasoning_wire_format:self.config.reasoning_wire_format,
+            options: Arc::new(move || Ok(options.clone())),
+            resolve_api_key: Arc::clone(&self.config.resolve_api_key),
+            resolve_attachments: self.config.resolve_attachments.clone(),
+            provider_name: self.config.provider_name.clone(),
+            reasoning_wire_format: self.config.reasoning_wire_format,
         })))
     }
 }
@@ -1855,7 +1855,12 @@ async fn drive_owned_request(
 
 #[async_trait::async_trait]
 impl LlmAdapter for DeepSeekAdapter {
-    async fn snapshot_for_call(&self, _provider:&str, _model:&str, _signal:Option<&Arc<dyn Fn()->bool+Send+Sync>>) -> Result<Option<Arc<dyn LlmAdapter>>,LlmError> {
+    async fn snapshot_for_call(
+        &self,
+        _provider: &str,
+        _model: &str,
+        _signal: Option<&Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) -> Result<Option<Arc<dyn LlmAdapter>>, LlmError> {
         self.frozen().map(Some)
     }
     fn provider_info(&self, provider: &str) -> LlmProviderInfo {
@@ -1971,7 +1976,7 @@ impl LlmAdapter for DeepSeekAdapter {
                 })
                 .collect::<Vec<_>>();
             return LlmResolvedModelInfo {
-                system_prompt_update: configured.and_then(|entry|entry.system_prompt_update),
+                system_prompt_update: configured.and_then(|entry| entry.system_prompt_update),
                 execution_modes: configured
                     .map(|m| m.execution_modes.clone())
                     .unwrap_or_default(),
@@ -2004,7 +2009,7 @@ impl LlmAdapter for DeepSeekAdapter {
         }
         if self.config.reasoning_wire_format == ReasoningWireFormat::OpenAi {
             return LlmResolvedModelInfo {
-                system_prompt_update: configured.and_then(|entry|entry.system_prompt_update),
+                system_prompt_update: configured.and_then(|entry| entry.system_prompt_update),
                 execution_modes: configured
                     .map(|m| m.execution_modes.clone())
                     .unwrap_or_default(),
@@ -2056,7 +2061,7 @@ impl LlmAdapter for DeepSeekAdapter {
                 .collect()
         };
         LlmResolvedModelInfo {
-            system_prompt_update: configured.and_then(|entry|entry.system_prompt_update),
+            system_prompt_update: configured.and_then(|entry| entry.system_prompt_update),
             execution_modes: configured
                 .map(|m| m.execution_modes.clone())
                 .unwrap_or_default(),
