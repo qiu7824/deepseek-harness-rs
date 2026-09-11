@@ -676,14 +676,17 @@ window.__ModuleLoader__.load({
 				if (mode !== "native" || typeof pickDirectory !== "function" || nativeAttempt.current) return;
 				nativeAttempt.current = true;
 				setNativeOpening(true);
-				pickDirectory().then((path) => {
-					if (path) onOpen(path);
-					else { nativeAttempt.current = false; onClose(); }
-				}, (reason) => {
-					nativeAttempt.current = false;
-					setError(failureText(reason));
+				const generation = openGeneration.current;
+				Promise.resolve().then(() => pickDirectory()).then((path) => {
+					if (generation !== openGeneration.current) return;
+					if (path !== null && (typeof path !== "string" || path.length === 0)) throw new Error("Invalid directory picker response");
+					if (path) return onOpen(path);
 					onClose();
-				}).finally(() => setNativeOpening(false));
+				}).catch((reason) => {
+					if (generation === openGeneration.current) setError(failureText(reason));
+				}).finally(() => {
+					if (generation === openGeneration.current) setNativeOpening(false);
+				});
 			}, [open, pickDirectory, onOpen]);
 			if (!open || nativeOpening) return null;
 			const twoPane = selected !== null;
@@ -1043,7 +1046,7 @@ window.__ModuleLoader__.load({
 			const injected = () => ({
 				listDirectory: (path, signal) => ctx.workspaces.listDirectory(path, signal),
 				createDirectory: (path, name) => ctx.workspaces.createDirectory(path, name),
-				pickDirectory: () => ctx.connection.api.host.pickDirectory({}),
+				pickDirectory: () => ctx.workspaces.pickDirectory(),
 				t: ctx.locale.bind(LOCALE_NS)
 			});
 			ctx.slots.inject("conversation.hero.workspace.directoryFlow", () => ctx.slots.inject("sidebar.workspaces.directoryFlow", function* () {

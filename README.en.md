@@ -6,13 +6,13 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: `0.1.3-alpha.11`.
+Current release line: `0.1.3-alpha.12`.
 
-See the [alpha.11 release notes](release/notes/v0.1.3-alpha.11.md) for the complete changes.
+See the [alpha.12 release notes](release/notes/v0.1.3-alpha.12.md) for the complete changes.
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 
-## 0.1.3-alpha.11 capabilities
+## 0.1.3-alpha.12 capabilities
 
 - **UU remote access**: detects the installed client's version and signing-data layout, retains known profiles, and does not reject a client solely because its version is unknown. Live verification covers desktop connection and the Windows lock screen; application input and remote terminal commands still require validation after the target is unlocked.
 - **Multiple accounts per provider**: the same ChatGPT / Codex login entry can save, add, switch, and remove accounts. Switching also updates the model catalog and the account scope of usage statistics.
@@ -34,9 +34,9 @@ See the [alpha.2 capability evaluation](docs/upstream-v0.1.5-alpha.2-evaluation.
 
 Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases):
 
-- `deepseek-harness-rs-v0.1.3-alpha.11-windows-x86_64-{core,skin}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.11-linux-x86_64-{core,skin}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.11-macos-{x86_64,aarch64}-{core,skin}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.12-windows-x86_64-{core,skin}-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.12-linux-x86_64-{core,skin}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.12-macos-{x86_64,aarch64}-{core,skin}-portable.tar.gz`
 - matching Windows `setup.exe`, Linux `.deb`, and macOS `.pkg` installers
 
 A complete package contains the binary, `web/dist`, `config/agent-presets`, bundled Web plugins, and security documentation. Copying only the binary does not provide a complete Web installation.

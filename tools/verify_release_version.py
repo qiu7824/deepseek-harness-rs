@@ -42,6 +42,20 @@ def verify(version: str, binary: pathlib.Path | None = None) -> None:
         reported = output.rsplit(" ", 1)[-1]
         if reported != expected:
             raise ValueError(f"binary version {output!r} does not match {expected}")
+        info = json.loads(subprocess.check_output([str(binary), "--build-info"], text=True))
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        verify_build_identity(info, expected, revision)
+        dirty = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, text=True
+        ).strip()
+        if dirty:
+            raise ValueError("release source contains uncommitted changes")
+
+
+def verify_build_identity(info: dict, version: str, revision: str) -> None:
+    if (info.get("version") != version or info.get("revision") != revision
+            or info.get("dirty") is not False):
+        raise ValueError("binary build identity does not match the clean release source")
 
 
 def main() -> None:

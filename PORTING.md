@@ -1,14 +1,14 @@
 # DeepSeek Harness Rust 实现与兼容状态
 
-> 目标行为基线：`dsh-v0.1.3-alpha.2`；Rust 产品版本：`0.1.3-alpha.11`。
+> 目标行为基线：`dsh-v0.1.3-alpha.2`；Rust 产品版本：`0.1.3-alpha.12`。
 
 ## 当前产品边界
 
-当前发布线为 `0.1.3-alpha.11`。Rust Host 提供有界双向历史窗口、引导输入、产物与垃圾槽、侧栏扩展、原生终端和受控浏览器。运行时接口、存储格式和视觉效果按 Rust 产品契约维护。
+当前发布线为 `0.1.3-alpha.12`。Rust Host 提供有界双向历史窗口、引导输入、产物与垃圾槽、侧栏扩展、原生终端和受控浏览器。运行时接口、存储格式和视觉效果按 Rust 产品契约维护。
 
 Session 新写入使用 V3，JSONL/Zstd v0 记录按迁移规则读取，稳定事件坐标与 `seedLength` 兼容边界保留；投影缓存使用逐记录 v5。未声明对其他上游 Session 格式的完整导入支持。支持的协议、入口及限制以 README 和协议矩阵为准。
 
-`alpha.11` 补齐网页 UU 面板展开、跨展示容器连接复用和视频消费者清理隔离，保留人工验证后交还控制权的流程；README 默认中文，英文说明独立保留。旧版本记录见后续各节，当前验证边界见 [alpha.2 能力评估](docs/upstream-v0.1.5-alpha.2-evaluation.zh.md)及[发布说明](release/notes/v0.1.3-alpha.11.md)。
+`alpha.12` 修复 Windows 沙箱权限传播、执行阶段计时及原生目录选择结果传递，并校验核心程序的源码提交身份。保留网页 UU 连接复用、人工接管与账号隔离。旧版本记录见后续各节，当前验证边界见 [rc.1 能力评估](docs/upstream-v0.1.5-rc.1-evaluation.zh.md)及[发布说明](release/notes/v0.1.3-alpha.12.md)。
 
 ## 0. `0.1.2-alpha.4` 同步说明
 

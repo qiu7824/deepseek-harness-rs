@@ -416,7 +416,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-directory-picker-browse",
       "url": "/plugins/directory-picker-browse.js",
-      "rev": "ba7f099b5b2fc4f0",
+      "rev": "7d3f8ad56fda4b35",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-workspace",

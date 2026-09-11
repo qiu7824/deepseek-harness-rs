@@ -6,15 +6,15 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 > 当前版本仍是预发布版本。功能状态以本README的兼容矩阵和GitHub Release说明为准。
 
-当前发布线：`0.1.3-alpha.11`。
+当前发布线：`0.1.3-alpha.12`。
 
-完整更新见 [alpha.11 发布说明](release/notes/v0.1.3-alpha.11.md)。
+完整更新见 [alpha.12 发布说明](release/notes/v0.1.3-alpha.12.md)。
 
 Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启动器和主题效果。版本号标识 Rust 发布线，不表示与 Node 版本逐项或磁盘格式完全相同。
 
 双向分页、阅读锚点和实时消息缓冲的设计见 [Rust 对话滚动与分页](docs/rust-conversation-scrolling.zh.md)。
 
-## 0.1.3-alpha.11 能力更新
+## 0.1.3-alpha.12 能力更新
 
 - **UU 远程**：识别已安装客户端的真实版本与签名数据布局，保留新旧客户端 profile，不因未知版本字符串拒绝加载。实机已验证桌面连接与 Windows 锁屏画面；应用内键鼠操作和远程终端命令需要解锁后验收。
 - **同供应商多账号**：同一 ChatGPT / Codex 登录入口支持保存多个账号、登录另一个账号、切换和移除；切换时同步模型目录及账号用量统计。
@@ -36,9 +36,9 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 
 从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases) 下载对应平台的完整包：
 
-- `deepseek-harness-rs-v0.1.3-alpha.11-windows-x86_64-{core,skin}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.11-linux-x86_64-{core,skin}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.11-macos-{x86_64,aarch64}-{core,skin}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.12-windows-x86_64-{core,skin}-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.12-linux-x86_64-{core,skin}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.12-macos-{x86_64,aarch64}-{core,skin}-portable.tar.gz`
 - 对应的 Windows `setup.exe`、Linux `.deb` 与 macOS `.pkg` 安装包
 
 完整包包含二进制、`web/dist`、`config/agent-presets`、随附Web插件和安全说明。不要只复制二进制后再期待完整Web界面和随附插件可用。

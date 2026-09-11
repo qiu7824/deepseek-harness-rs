@@ -53,6 +53,7 @@ jobs:
           python tools/verify_release_version.py --version "$VERSION"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then python tools/verify_release_version.py --version "${GITHUB_REF_NAME#v}"; fi
           python tools/verify_product_surface.py
+          python -B -m unittest tools.tests.test_release_build_identity -v
           python -m unittest tools.tests.test_history_window_contract tools.tests.test_product_surface_contract tools.tests.test_rust_ui_contract tools.tests.test_rust_runtime_contract tools.tests.test_release_product_contract tools.tests.test_release_integrity tools.tests.test_launcher_release_contract tools.tests.test_client_performance tools.tests.test_free_model_evidence tools.tests.test_release_variants tools.tests.test_settings_migration_contract tools.tests.test_installer_compile_gate -v
           node tools/tests/connection_controller_harness.js
           node tools/tests/turn_usage_optional_harness.js
@@ -63,6 +64,7 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/dsh-dom-tests" --ignore-scripts --no-audit --no-fund react@19.2.8 react-dom@19.2.8 react-test-renderer@19.2.8 jsdom@26.1.0
           node tools/tests/model_management_harness.cjs
           node tools/tests/model_management_react_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/directory_picker_flow_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/learning_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/agent_preset_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/file_actions_graph_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"

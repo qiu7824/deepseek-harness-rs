@@ -34,6 +34,17 @@ fn configure_allocator() {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--build-info") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "revision": env!("DSH_BUILD_REVISION"),
+                "dirty": env!("DSH_BUILD_DIRTY") != "false"
+            })
+        );
+        return;
+    }
     #[cfg(windows)]
     configure_allocator();
     #[cfg(windows)]
