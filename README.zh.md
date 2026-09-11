@@ -16,12 +16,16 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 
 ## 0.1.3-alpha.12 能力更新
 
-- **UU 远程**：识别已安装客户端的真实版本与签名数据布局，保留新旧客户端 profile，不因未知版本字符串拒绝加载。实机已验证桌面连接与 Windows 锁屏画面；应用内键鼠操作和远程终端命令需要解锁后验收。
-- **同供应商多账号**：同一 ChatGPT / Codex 登录入口支持保存多个账号、登录另一个账号、切换和移除；切换时同步模型目录及账号用量统计。
-- **画面批注**：浏览器与 UU 画面支持线条和文字批注，草稿按会话隔离；提交时把当前画面、归一化坐标及实际尺寸保存到可追踪的用户消息中。
-- **会话与缓存**：V3 会话压缩保留系统指令前缀；Responses 缓存键按会话与账号稳定生成，令牌续期不改变键。公开 API 与账号登录通道分别处理协议和缓存参数。
+- **Windows 执行可靠性**：祖先目录权限更新不再遍历子目录；沙箱准备、实际命令和清理分别计时；取消与超时回收所属进程，保留部分输出和具体错误原因。
+- **对话滚动与统计**：短对话和折叠后的内容不再显示多余的“返回底部”按钮；发送后恢复跟随最新回复；修复 V3 系统消息、上下文和缓存统计分类。
+- **系统目录选择**：系统文件夹窗口返回的路径正确回填工作区表单，确认后同步工作区；取消不创建目录或工作区，选择器错误保留可见提示。
+- **文件阅读与交付**：代码支持行号定位、换行及阅读位置恢复；Markdown、HTML 和 PDF 保留各自滚动位置，PDF 支持页码与缩放恢复；产物按回合关联并通过 `present` 明确交付。
+- **账号与模型管理**：验证码登录遇到临时网络错误时保留有效请求并重试；补齐官方 Flash 能力目录和动态系统提示词；模型连接支持搜索、筛选、批量可见性和草稿保护。
+- **任务控制与诊断**：明确暂停目标后，模型不能自行恢复；重复执行错误按错误码识别，诊断记录关联具体会话和工具调用；MCP 新配置失败时保留原有可用连接与工具。
+- **UU 兼容**：重新发现升级后的客户端安装位置，支持新版终端兼容路径并保持连接归属隔离；保留网页画面、批注、连接复用和人工接管。
+- **发布一致性**：核心提供 `--build-info`；打包核对版本、源码提交和修改状态；Windows、Linux、macOS 的安装包与便携包均由同一提交验收，附件提供 SHA-256 校验和。
 
-实现范围与实测结果见 [alpha.2 能力评估](docs/upstream-v0.1.5-alpha.2-evaluation.zh.md)。
+完整变更见 [alpha.12 发布说明](release/notes/v0.1.3-alpha.12.md)，协议适配范围见 [rc.1 能力评估](docs/upstream-v0.1.5-rc.1-evaluation.zh.md)。
 
 ### UU 网页画面与接管
 
@@ -34,11 +38,11 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 
 ## 下载
 
-从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases) 下载对应平台的完整包：
+从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.12) 下载对应平台的完整包：
 
-- `deepseek-harness-rs-v0.1.3-alpha.12-windows-x86_64-{core,skin}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.12-linux-x86_64-{core,skin}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.12-macos-{x86_64,aarch64}-{core,skin}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.12-windows-x86_64-{core,skin,free}-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.12-linux-x86_64-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.12-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
 - 对应的 Windows `setup.exe`、Linux `.deb` 与 macOS `.pkg` 安装包
 
 完整包包含二进制、`web/dist`、`config/agent-presets`、随附Web插件和安全说明。不要只复制二进制后再期待完整Web界面和随附插件可用。

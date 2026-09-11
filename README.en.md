@@ -14,10 +14,16 @@ The Rust edition maintains its own bounded conversation history, targeted naviga
 
 ## 0.1.3-alpha.12 capabilities
 
-- **UU remote access**: detects the installed client's version and signing-data layout, retains known profiles, and does not reject a client solely because its version is unknown. Live verification covers desktop connection and the Windows lock screen; application input and remote terminal commands still require validation after the target is unlocked.
-- **Multiple accounts per provider**: the same ChatGPT / Codex login entry can save, add, switch, and remove accounts. Switching also updates the model catalog and the account scope of usage statistics.
-- **Screen annotations**: browser and UU views support strokes and notes with drafts isolated by conversation and control session. Submission saves the current frame, normalized coordinates, and actual dimensions in an identified user message.
-- **Sessions and caching**: V3 compaction preserves the system-instruction prefix. Responses cache keys remain stable within an account and session, including token renewal; public API and account-login routes use their respective protocol and cache options.
+- **Windows execution reliability**: ancestor permission updates no longer traverse descendants. Sandbox preparation, command execution and cleanup have separate budgets; cancellation and timeouts reclaim owned processes while preserving partial output and specific errors.
+- **Conversation scrolling and statistics**: short or collapsed conversations hide the unnecessary return-to-bottom button; sending restores following of the live reply. V3 system-message, context and cache statistics use the correct categories.
+- **Native directory selection**: the system folder dialog returns a path to the workspace form, and confirmation updates the selected workspace. Cancellation creates nothing and picker failures remain visible.
+- **Document reading and delivery**: code supports line navigation, wrapping and reading-position restoration. Markdown, HTML and PDF keep independent reading state, including PDF pages and zoom. Artifacts are associated with turns and delivered explicitly through `present`.
+- **Accounts and models**: temporary device-login failures preserve valid requests for retry. Official Flash capabilities and dynamic system prompts are updated; model connections support search, filtering, bulk visibility and protected drafts.
+- **Task control and diagnostics**: a model cannot rearm an explicitly paused goal. Repeated infrastructure errors retain session and call evidence. Failed MCP configuration changes preserve the previous working connection and tools.
+- **UU compatibility**: upgraded client locations and compatible terminal paths are discovered while preserving connection ownership, browser display, annotations, connection reuse and manual handoff.
+- **Release integrity**: `--build-info` exposes the build identity. Packaging checks the version, source commit and modification state. Windows, Linux and macOS packages are verified against the same commit and include SHA-256 checksums.
+
+See the [alpha.12 release notes](release/notes/v0.1.3-alpha.12.md) and [rc.1 capability evaluation](docs/upstream-v0.1.5-rc.1-evaluation.zh.md).
 
 ### UU display and manual handoff
 
@@ -28,15 +34,13 @@ The Rust edition maintains its own bounded conversation history, targeted naviga
 
 `uu_terminal` is the remote command-line tool. The desktop image is shown by the control panel above, not by terminal error output.
 
-See the [alpha.2 capability evaluation](docs/upstream-v0.1.5-alpha.2-evaluation.zh.md) for implementation scope and observed results.
-
 ## Downloads
 
-Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases):
+Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.12):
 
-- `deepseek-harness-rs-v0.1.3-alpha.12-windows-x86_64-{core,skin}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.12-linux-x86_64-{core,skin}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.12-macos-{x86_64,aarch64}-{core,skin}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.12-windows-x86_64-{core,skin,free}-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.12-linux-x86_64-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.12-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
 - matching Windows `setup.exe`, Linux `.deb`, and macOS `.pkg` installers
 
 A complete package contains the binary, `web/dist`, `config/agent-presets`, bundled Web plugins, and security documentation. Copying only the binary does not provide a complete Web installation.
