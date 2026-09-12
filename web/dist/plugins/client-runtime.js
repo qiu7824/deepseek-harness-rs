@@ -5962,8 +5962,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				let changed = false;
 				for (const turn of new Set([...this.turnDataStores.keys(), ...turns.keys()])) changed = this.mutableTurnData(turn).replace(turns.get(turn) ?? /* @__PURE__ */ new Map()) || changed;
 				for (const step of new Set([...this.stepDataStores.keys(), ...steps.keys()])) changed = this.mutableStepData(step).replace(steps.get(step) ?? /* @__PURE__ */ new Map()) || changed;
-				for (const key of this.turnDataStores.keys()) if (!turns.has(key)) this.turnDataStores.delete(key);
-				for (const key of this.stepDataStores.keys()) if (!steps.has(key)) this.stepDataStores.delete(key);
+				for (const key of this.turnDataStores.keys()) if (!turns.has(key) && !this.timeline.turns.has(key)) this.turnDataStores.delete(key);
+				const activeSteps = new Set([...this.timeline.turns.values()].flatMap(turn => turn.steps.map(step => stepDataKey(turn.turn, step.step))));
+				for (const key of this.stepDataStores.keys()) if (!steps.has(key) && !activeSteps.has(key)) this.stepDataStores.delete(key);
 				return changed;
 			}
 			/**

@@ -150,6 +150,15 @@ window.__ModuleLoader__.load({
 			* @param rating - the judgment the human asked for.
 			* @returns the settled mutation result.
 			*/
+            retract(messageId, rating) {
+                return this.mutate(async () => {
+                    const observed = this.view.items.get(messageId);
+                    return observed?.rating === rating ? await this.deleteCommitted(messageId, observed) : OK;
+                });
+            }
+            confirmRating(messageId, rating, note, category) {
+                return this.mutate(async () => this.putCommitted(messageId, rating, note, this.view.items.get(messageId), category ?? null));
+            }
 			toggle(messageId, rating) {
 				return this.mutate(async () => {
 					const observed = this.view.items.get(messageId);
@@ -183,12 +192,13 @@ window.__ModuleLoader__.load({
 				});
 			}
 			/** Commit one put against the observed version and reconcile a conflict. */
-			async putCommitted(messageId, rating, note, observed) {
+			async putCommitted(messageId, rating, note, observed, category = observed?.category) {
 				const carried = await this.remote.put({
 					sessionId: this.sessionId,
 					messageId,
 					rating,
 					...note === void 0 ? {} : { note },
+                    ...category == null ? {} : { category },
 					ifVersion: observed?.version ?? null
 				});
 				if (!carried.ok) return carrierFailure(carried.error);
@@ -455,161 +465,104 @@ window.__ModuleLoader__.load({
 				]
 			});
 		}
-		function MessageFeedbackActions({ sessionId, messageId, ensure, rate, toggle, clearNote, useFeedback, t }) {
-			const item = useFeedback((view) => view.items.get(messageId));
-			const loadFailed = useFeedback((view) => view.status === "error");
-			const rating = item?.rating;
-			const [noteOpen, setNoteOpen] = (0, react.useState)(false);
-			const [submissionOpen, setSubmissionOpen] = (0, react.useState)(false);
-			const [draft, setDraft] = (0, react.useState)("");
-			const [pending, setPending] = (0, react.useState)(false);
-			const [failure, setFailure] = (0, react.useState)(null);
-			const seeded = (0, react.useRef)(false);
-			const seed = (0, react.useCallback)(() => {
-				if (seeded.current) return;
-				seeded.current = true;
-				ensure();
-			}, [ensure]);
-			(0, react.useEffect)(seed, [seed]);
-			const alive = (0, react.useRef)(true);
-			(0, react.useEffect)(() => {
-				alive.current = true;
-				return () => { alive.current = false; };
-			}, []);
-			const settle = (0, react.useCallback)((result) => {
-				if (!alive.current) return;
-				setPending(false);
-				if (result.ok) {
-					setFailure(null);
-					return;
-				}
-				setFailure(result.error?.code === "version-conflict" ? t("error.conflict") : t("error.generic"));
-			}, [t]);
-			const onRate = (0, react.useCallback)((next) => {
-				seed();
-				setPending(true);
-				setFailure(null);
-				setNoteOpen(false);
-				toggle(messageId, next).then(settle);
-			}, [
-				messageId,
-				seed,
-				settle,
-				toggle
-			]);
-			const onSaveNote = (0, react.useCallback)((current) => {
-				const trimmed = draft.trim();
-				setPending(true);
-				setFailure(null);
-				(trimmed.length === 0 ? clearNote(messageId) : rate(messageId, current, trimmed)).then((result) => {
-					settle(result);
-					if (result.ok && alive.current) setNoteOpen(false);
-				});
-			}, [
-				clearNote,
-				draft,
-				messageId,
-				rate,
-				settle
-			]);
-			const openNote = (0, react.useCallback)(() => {
-				setDraft(item?.note ?? "");
-				setNoteOpen(true);
-			}, [item?.note]);
-			const likeLabel = rating === "positive" ? t("action.likeActive") : t("action.like");
-			const dislikeLabel = rating === "negative" ? t("action.dislikeActive") : t("action.dislike");
-			return (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-				(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
-					label: likeLabel,
-					side: "bottom",
-					children: (0, react_jsx_runtime.jsx)("button", {
-						type: "button",
-						className: MessageFeedbackActions_module_css_default.action,
-						"aria-label": likeLabel,
-						"aria-pressed": rating === "positive",
-						"data-active": rating === "positive" || void 0,
-						disabled: pending,
-						onFocus: seed,
-						onPointerEnter: seed,
-						onClick: () => {
-							onRate("positive");
-						},
-						children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconLikeOutline16, {})
-					})
-				}),
-				(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
-					label: dislikeLabel,
-					side: "bottom",
-					children: (0, react_jsx_runtime.jsx)("button", {
-						type: "button",
-						className: MessageFeedbackActions_module_css_default.action,
-						"aria-label": dislikeLabel,
-						"aria-pressed": rating === "negative",
-						"data-active": rating === "negative" || void 0,
-						disabled: pending,
-						onFocus: seed,
-						onPointerEnter: seed,
-						onClick: () => {
-							onRate("negative");
-						},
-						children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconDislikeOutline16, {})
-					})
-				}),
-				rating !== void 0 && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, { variant: "ghost", size: "sm", disabled: pending, onClick: () => setSubmissionOpen(true), children: t("submission.title") }),
-				submissionOpen && (0, react_jsx_runtime.jsx)(FeedbackSubmissionDialog, { sessionId, messageId, open: submissionOpen, onClose: () => setSubmissionOpen(false), t }),
-				rating !== void 0 && !noteOpen && (0, react_jsx_runtime.jsx)("button", {
-					type: "button",
-					className: MessageFeedbackActions_module_css_default.noteOpen,
-					onClick: openNote,
-					children: item?.note === void 0 ? t("note.open") : item.note
-				}),
-				rating !== void 0 && noteOpen && (0, react_jsx_runtime.jsxs)("span", {
-					className: MessageFeedbackActions_module_css_default.noteEditor,
-					children: [
-						(0, react_jsx_runtime.jsx)("textarea", {
-							className: MessageFeedbackActions_module_css_default.noteInput,
-							"aria-label": t("note.aria"),
-							placeholder: t("note.placeholder"),
-							value: draft,
-							rows: 2,
-							onChange: (event) => {
-								setDraft(event.target.value);
-							}
-						}),
-						(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
-							variant: "primary", size: "sm",
-							disabled: pending,
-							onClick: () => {
-								onSaveNote(rating);
-							},
-							children: t("note.save")
-						}),
-						(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
-							variant: "outline", size: "sm",
-							onClick: () => {
-								setNoteOpen(false);
-							},
-							children: t("note.cancel")
-						})
-					]
-				}),
-				failure === null && loadFailed && (0, react_jsx_runtime.jsx)("span", {
-					className: MessageFeedbackActions_module_css_default.failure,
-					role: "status",
-					children: t("error.load")
-				}),
-				failure !== null && (0, react_jsx_runtime.jsx)("span", {
-					className: MessageFeedbackActions_module_css_default.failure,
-					role: "status",
-					children: failure
-				})
-			] });
-		}
+        function RatingConfirmation({ draft, submit, onClose, t }) {
+            const h = react.createElement;
+            const [note, setNote] = react.useState(draft.note ?? "");
+            const [category, setCategory] = react.useState(draft.category ?? "");
+            const [busy, setBusy] = react.useState(false), [error, setError] = react.useState(null);
+            const saving = react.useRef(false), alive = react.useRef(true);
+            react.useEffect(() => { alive.current = true; return () => { alive.current = false; if (draft.returnFocus?.isConnected && document.activeElement === document.body) draft.returnFocus.focus(); }; }, []);
+            const save = async () => {
+                if (saving.current) return;
+                saving.current = true; setBusy(true); setError(null);
+                try {
+                    const result = await submit(draft.rating, note.trim() || undefined, category || undefined);
+                    if (!alive.current) return;
+                    if (result.ok) onClose(true);
+                    else setError(result.error?.code === "version-conflict" ? t("error.conflict") : result.error?.code === "note-too-large" ? t("confirm.tooLong") : t("error.generic"));
+                } catch { if (alive.current) setError(t("error.generic")); }
+                finally { saving.current = false; if (alive.current) setBusy(false); }
+            };
+            return h(_deepseek_ai_dsh_client_ui_primitives.Modal, {
+                open: true, title: t(draft.rating === "positive" ? "confirm.positive" : "confirm.negative"),
+                closeLabel: t("note.cancel"), onClose: () => onClose(false),
+                footer: h(react.Fragment, null,
+                    h(_deepseek_ai_dsh_client_ui_primitives.Button, { variant: "outline", onClick: () => onClose(false) }, t("note.cancel")),
+                    h(_deepseek_ai_dsh_client_ui_primitives.Button, { variant: "primary", disabled: busy, onClick: save }, busy ? t("session.saving") : t("confirm.save")))
+            },
+                h("p", null, t("confirm.description")),
+                h("label", { style: { display: "grid", gap: 8, marginBottom: 16 } }, t("session.category"),
+                    h("select", { value: category, disabled: busy, "aria-label": t("session.category"), onChange: event => setCategory(event.target.value), style: { font: "inherit", color: "inherit", background: "var(--dsw-alias-bg-layer-1)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 8, padding: 8 } },
+                        h("option", { value: "" }, t("session.choose")),
+                        ...SESSION_FEEDBACK_CATEGORIES.map(value => h("option", { key: value, value }, t(`session.category.${value}`))))),
+                h("textarea", { className: MessageFeedbackActions_module_css_default.noteInput, style: { width: "100%", boxSizing: "border-box" }, rows: 4, autoFocus: true, value: note, disabled: busy, "aria-label": t("note.aria"), placeholder: t("note.placeholder"), onChange: event => setNote(event.target.value) }),
+                error && h("div", { role: "alert", style: { color: "var(--dsw-alias-state-error-primary)" } }, error,
+                    h(_deepseek_ai_dsh_client_ui_primitives.Button, { variant: "ghost", onClick: () => setError(null), "aria-label": t("confirm.dismissError") }, t("confirm.dismissError"))));
+        }
+        function MessageFeedbackActions({ sessionId, messageId, ensure, readItem, confirmRating, retract, useFeedback, t }) {
+            const h = react.createElement;
+            const item = useFeedback(view => view.items.get(messageId));
+            const loadFailed = useFeedback(view => view.status === "error");
+            const [dialog, setDialog] = react.useState(null), [submissionOpen, setSubmissionOpen] = react.useState(false);
+            const [pending, setPending] = react.useState(false), [failure, setFailure] = react.useState(null), [notice, setNotice] = react.useState(null);
+            const operation = react.useRef(null), nextId = react.useRef(0), alive = react.useRef(true);
+            const key = `${sessionId}:${messageId}`, currentKey = react.useRef(key); currentKey.current = key;
+            react.useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+            react.useEffect(() => { operation.current = null; setPending(false); setDialog(null); setSubmissionOpen(false); setFailure(null); setNotice(null); void ensure(); }, [sessionId, messageId]);
+            const seed = () => { void ensure(); };
+            const choose = async (rating, editing = false) => {
+                if (operation.current !== null) return;
+                const token = { key, id: ++nextId.current, returnFocus: document.activeElement }; operation.current = token;
+                const valid = () => alive.current && currentKey.current === key && operation.current === token;
+                setPending(true); setFailure(null); setNotice(null);
+                try {
+                    const loaded = await ensure();
+                    if (!valid()) return;
+                    if (!loaded.ok) { setFailure(t("error.load")); return; }
+                    const observed = readItem(messageId);
+                    if (editing) {
+                        if (observed) setDialog({ id: token.id, rating: observed.rating, note: observed.note, category: observed.category, returnFocus: token.returnFocus });
+                    } else if (observed?.rating === rating) {
+                        const result = await retract(messageId, rating);
+                        if (valid()) {
+                            if (result.ok) setNotice(t("confirm.updated"));
+                            else setFailure(result.error?.code === "version-conflict" ? t("error.conflict") : t("error.generic"));
+                        }
+                    } else setDialog({ id: token.id, rating, note: "", category: "", returnFocus: token.returnFocus });
+                } catch { if (valid()) setFailure(t("error.generic")); }
+                finally { if (valid()) { operation.current = null; setPending(false); } }
+            };
+            const rateButton = rating => {
+                const active = item?.rating === rating;
+                const label = t(rating === "positive" ? active ? "action.likeActive" : "action.like" : active ? "action.dislikeActive" : "action.dislike");
+                return h(_deepseek_ai_dsh_client_ui_primitives.Tooltip, { label, side: "bottom" },
+                    h("button", { type: "button", className: MessageFeedbackActions_module_css_default.action, "aria-label": label, "aria-pressed": active, "data-active": active || undefined, disabled: pending, onFocus: seed, onPointerEnter: seed, onClick: () => choose(rating) },
+                        h(rating === "positive" ? _deepseek_ai_dsh_client_ui_primitives.IconLikeOutline16 : _deepseek_ai_dsh_client_ui_primitives.IconDislikeOutline16)));
+            };
+            return h(react.Fragment, null, rateButton("positive"), rateButton("negative"),
+                dialog && h(RatingConfirmation, { key: `${key}:${dialog.id}`, draft: dialog, t,
+                    submit: (rating, note, category) => confirmRating(messageId, rating, note, category),
+                    onClose: saved => { setDialog(current => current?.id === dialog.id ? null : current); if (saved && currentKey.current === key) setNotice(t("confirm.saved")); } }),
+                item && h("button", { type: "button", className: MessageFeedbackActions_module_css_default.noteOpen, disabled: pending, onClick: () => choose(item.rating, true) }, item.note ?? t("note.open")),
+                item && h(_deepseek_ai_dsh_client_ui_primitives.Button, { variant: "ghost", size: "sm", onClick: () => setSubmissionOpen(true) }, t("submission.title")),
+                submissionOpen && h(FeedbackSubmissionDialog, { key, sessionId, messageId, open: true, onClose: () => setSubmissionOpen(false), t }),
+                (failure || loadFailed) && h("span", { role: "alert", className: MessageFeedbackActions_module_css_default.failure }, failure ?? t("error.load")),
+                notice && h("span", { role: "status", style: { fontSize: 12, color: "var(--dsw-alias-label-tertiary)" } }, notice));
+        }
 		//#endregion
 		//#region lib/types/client/locales.js
 		/** `feedback` namespace dictionaries. */
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
+            "confirm.positive": "确认正面评价",
+            "confirm.negative": "确认负面评价",
+            "confirm.save": "确认评价",
+            "confirm.description": "记录对这条回复的评价。分类和说明可选；向接收端发送需要另行确认。",
+            "confirm.saved": "评价已记录",
+            "confirm.updated": "评价状态已更新",
+            "confirm.tooLong": "评价说明过长，请缩短后重试",
+            "confirm.dismissError": "关闭错误提示",
+
 			"session.title":"会话反馈","session.recorded":"反馈已记录","session.saving":"正在保存…","session.description":"记录对整个会话的意见，不会启动模型请求；会话共享仍由当前共享设置控制。","session.category":"反馈分类","session.choose":"选择分类（可选）","session.placeholder":"描述具体问题或建议（可选）",
 			"session.category.task-result":"任务结果","session.category.instruction-following":"指令遵循","session.category.product-interaction":"交互体验","session.category.service-stability":"服务稳定性","session.category.resource-cost":"资源与费用","session.category.security-privacy-permission":"安全、隐私与权限","session.category.other":"其他",
 			"delivery.title": "反馈交付",
@@ -653,6 +606,15 @@ window.__ModuleLoader__.load({
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
+            "confirm.positive": "Confirm positive feedback",
+            "confirm.negative": "Confirm negative feedback",
+            "confirm.save": "Confirm feedback",
+            "confirm.description": "Record feedback for this response. Category and note are optional; delivery to a recipient requires separate confirmation.",
+            "confirm.saved": "Feedback recorded",
+            "confirm.updated": "Feedback state updated",
+            "confirm.tooLong": "The note is too long. Shorten it and retry.",
+            "confirm.dismissError": "Dismiss error",
+
 			"session.title":"Session feedback","session.recorded":"Feedback recorded","session.saving":"Saving…","session.description":"Record a remark about this session without starting a model request. Session sharing follows the current sharing settings.","session.category":"Category","session.choose":"Choose a category (optional)","session.placeholder":"Describe an issue or suggestion (optional)",
 			"session.category.task-result":"Task result","session.category.instruction-following":"Instruction following","session.category.product-interaction":"Product interaction","session.category.service-stability":"Service stability","session.category.resource-cost":"Resources and cost","session.category.security-privacy-permission":"Security, privacy and permissions","session.category.other":"Other",
 			"delivery.title": "Feedback delivery",
@@ -765,13 +727,16 @@ window.__ModuleLoader__.load({
 							sessionId,
 							hooks: { feedback: controller },
 							ensure: () => controller.ensure(),
+                            readItem: messageId => controller.getSnapshot().items.get(messageId),
+                            retract: (messageId, rating) => controller.retract(messageId, rating),
+                            confirmRating: (messageId, rating, note, category) => controller.confirmRating(messageId, rating, note, category),
 							rate: (messageId, rating, note) => controller.rate(messageId, rating, note),
 							toggle: (messageId, rating) => controller.toggle(messageId, rating),
 							clearNote: (messageId) => controller.clearNote(messageId),
 							clear: (messageId) => controller.clear(messageId)
 						};
 					}
-				}, MessageFeedbackActions);
+				}, props => react.createElement(MessageFeedbackActions, { ...props, key: `${props.sessionId}:${props.messageId}` }));
 				return () => {
 					dispose();
 					for (const controller of controllers.values()) controller.dispose();

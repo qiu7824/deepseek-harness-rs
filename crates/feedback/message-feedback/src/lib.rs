@@ -54,6 +54,17 @@ impl MessageFeedbackRating {
     }
 }
 
+/// Shared product feedback categories, matching the session feedback form.
+pub const FEEDBACK_CATEGORIES: &[&str] = &[
+    "task-result",
+    "instruction-following",
+    "product-interaction",
+    "service-stability",
+    "resource-cost",
+    "security-privacy-permission",
+    "other",
+];
+
 /// One current feedback value and its opaque mutation token.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +73,8 @@ pub struct MessageFeedbackItem {
     pub rating: MessageFeedbackRating,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     pub version: MessageFeedbackVersion,
     pub created_at: u64,
     pub updated_at: u64,
@@ -98,6 +111,7 @@ pub enum MessageFeedbackFailure {
         current: Option<MessageFeedbackItem>,
     },
     NoteBlank,
+    CategoryInvalid,
     NoteTooLarge {
         max_bytes: u64,
         actual_bytes: u64,
@@ -153,6 +167,8 @@ pub struct MessageFeedbackPutRequest {
     pub rating: MessageFeedbackRating,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     pub if_version: Option<MessageFeedbackVersion>,
 }
 
@@ -359,6 +375,15 @@ impl MessageFeedbackService {
     /// Create or replace feedback for one derived append-origin assistant
     /// message.
     pub async fn put(&self, request: &MessageFeedbackPutRequest) -> MessageFeedbackPutResult {
+        if request
+            .category
+            .as_deref()
+            .is_some_and(|category| !FEEDBACK_CATEGORIES.contains(&category))
+        {
+            return Err(MessageFeedbackRejected::of(
+                MessageFeedbackFailure::CategoryInvalid,
+            ));
+        }
         let note = match self.resolve_note(request.note.as_deref()) {
             Ok(note) => note,
             Err(error) => return Err(MessageFeedbackRejected::of(error)),
@@ -401,6 +426,7 @@ impl MessageFeedbackService {
             if let Some(existing) = &existing
                 && existing.rating == request.rating
                 && existing.note == note
+                && existing.category == request.category
             {
                 return Ok(MessageFeedbackSuccess::of(existing.clone()));
             }
@@ -409,6 +435,7 @@ impl MessageFeedbackService {
                 message_id: request.message_id.clone(),
                 rating: request.rating,
                 note: note.clone(),
+                category: request.category.clone(),
                 version: dsh_brand::Branded::new(uuid::Uuid::new_v4().to_string()),
                 created_at: existing
                     .as_ref()

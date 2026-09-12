@@ -6,6 +6,7 @@ window.__ModuleLoader__.load({
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		let react_jsx_runtime = require("react/jsx-runtime");
 		let react = require("react");
+        let primitives = require("@deepseek-ai/dsh-client-ui-primitives");
 		let _deepseek_ai_dsh_client_runtime_client = require("@deepseek-ai/dsh-client-runtime/client");
 		//#region lib/types/client/turn-deliverables.js
 		/**
@@ -165,7 +166,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-deliverables\src\client\ProducedFiles.module.css.mjs
-		const css = ".D13QPq_root{grid-template-columns:max-content minmax(0,1fr);align-items:center;gap:6px 8px;margin-top:16px;font-size:13px;line-height:22px;display:grid;position:relative}.D13QPq_label{color:var(--dsw-alias-label-tertiary);grid-area:1/1}.D13QPq_row{flex-wrap:nowrap;grid-area:1/2;align-items:center;gap:8px;min-width:0;display:flex;overflow:hidden}.D13QPq_file{text-overflow:ellipsis;white-space:nowrap;background:var(--dsw-alias-interactive-bg-hover);max-width:320px;color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer;border:none;border-radius:6px;flex:none;margin:0;padding:0 8px;overflow:hidden}.D13QPq_file:hover{color:var(--dsw-alias-label-primary);text-decoration:underline}.D13QPq_file:focus-visible,.D13QPq_showFolder:focus-visible{box-shadow:inset 0 0 0 2px var(--dsw-alias-border-l3);outline:none}.D13QPq_more{white-space:nowrap;color:var(--dsw-alias-label-tertiary);flex:none}.D13QPq_showFolder{color:var(--dsw-alias-label-tertiary);font:inherit;cursor:pointer;background:0 0;border:none;border-radius:4px;grid-area:2/2;justify-self:start;margin:0;padding:0 2px;line-height:20px}.D13QPq_showFolder:hover{color:var(--dsw-alias-label-secondary);text-decoration:underline}.D13QPq_measure{visibility:hidden;pointer-events:none;contain:strict;width:0;height:0;position:absolute;overflow:hidden}.D13QPq_probe{width:max-content;position:absolute;inset:0 auto auto 0}";
+		const css = ".D13QPq_root{grid-template-columns:max-content minmax(0,1fr);align-items:center;gap:4px 8px;margin-top:4px;font-size:13px;line-height:22px;display:grid;position:relative}.D13QPq_label{color:var(--dsw-alias-label-tertiary);grid-area:1/1}.D13QPq_row{flex-wrap:nowrap;grid-area:1/2;align-items:center;gap:6px;min-width:0;display:flex;overflow:hidden}.D13QPq_file{display:inline-flex;align-items:center;gap:6px;min-width:0;min-height:28px;text-overflow:ellipsis;white-space:nowrap;background:var(--dsw-alias-interactive-bg-hover);max-width:320px;color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer;border:none;border-radius:6px;flex:0 1 auto;margin:0;padding:2px 8px;overflow:hidden}.D13QPq_file:hover{color:var(--dsw-alias-label-primary);text-decoration:underline}.D13QPq_file:focus-visible,.D13QPq_more:focus-visible,.D13QPq_showFolder:focus-visible{box-shadow:inset 0 0 0 2px var(--dsw-alias-border-l3);outline:none}.D13QPq_more{font:inherit;border:0;background:transparent;padding:0;cursor:pointer;white-space:nowrap;color:var(--dsw-alias-label-tertiary);flex:none}.D13QPq_showFolder{color:var(--dsw-alias-label-tertiary);font:inherit;cursor:pointer;background:0 0;border:none;border-radius:4px;grid-area:2/2;justify-self:start;margin:0;padding:0 2px;line-height:20px}.D13QPq_showFolder:hover{color:var(--dsw-alias-label-secondary);text-decoration:underline}.D13QPq_measure{visibility:hidden;pointer-events:none;contain:strict;width:0;height:0;position:absolute;overflow:hidden}.D13QPq_filename{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.D13QPq_probe{max-width:none;width:max-content;position:absolute;inset:0 auto auto 0}";
 		const tagId = "@deepseek-ai/dsh-client-ui-deliverables/ProducedFiles.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -210,7 +211,7 @@ window.__ModuleLoader__.load({
 				const items = shown + (more === void 0 ? 0 : 1);
 				if (width + (more ?? 0) + Math.max(0, items - 1) * gap <= available) largestFit = shown;
 			}
-			return largestFit;
+			return largestFit || (chipWidths.length && available >= 40 + (moreWidthsByShown[1] ?? 0) + (moreWidthsByShown[1] === void 0 ? 0 : gap) ? 1 : 0);
 		}
 		function moreLabel(t, count) {
 			return count === 1 ? t("produced.moreOne") : t("produced.more", { count: String(count) });
@@ -220,8 +221,34 @@ window.__ModuleLoader__.load({
 		* @param props - selector-matched paths, the chat view's file opener, and the locale seat.
 		* @returns The produced-files row.
 		*/
+        function producedFileType(path) {
+            const extension = basename(path).split(".").pop().toLowerCase();
+            const known = {
+                rs: ["RS", "#a84924"], js: ["JS", "#9a6d00"], jsx: ["JSX", "#9a6d00"],
+                ts: ["TS", "#2563ad"], tsx: ["TSX", "#2563ad"], py: ["PY", "#286aa0"],
+                html: ["HTML", "#b84d23"], css: ["CSS", "#8053b0"], json: ["JSON", "#687436"],
+                md: ["MD", "#5b6474"], pdf: ["PDF", "#bc3c45"], docx: ["DOC", "#2563ad"],
+                xlsx: ["XLS", "#24724b"], csv: ["CSV", "#24724b"], pptx: ["PPT", "#b84d23"],
+                png: ["IMG", "#7b50a6"], jpg: ["IMG", "#7b50a6"], jpeg: ["IMG", "#7b50a6"], svg: ["SVG", "#7b50a6"],
+                zip: ["ZIP", "#816043"], gz: ["ZIP", "#816043"]
+            };
+            return known[extension] ?? ["FILE", "#667085"];
+        }
+        function ProducedFileIcon({ path }) {
+            const [label, color] = producedFileType(path);
+            return react.createElement("svg", { width: 20, height: 20, viewBox: "0 0 24 24", "aria-hidden": "true", focusable: "false", "data-file-type": label, style: { flex: "none" } },
+                react.createElement("path", { d: "M5 2h9l5 5v15H5z", fill: color }),
+                react.createElement("path", { d: "M14 2v5h5", fill: "none", stroke: "white", strokeWidth: 1, opacity: .8 }),
+                react.createElement("text", { x: 12, y: 16, textAnchor: "middle", fill: "white", fontSize: label.length > 3 ? 5 : 6, fontFamily: "sans-serif", fontWeight: 700 }, label));
+        }
+        function producedFileLabel(path) {
+            return react.createElement(react.Fragment, null, react.createElement(ProducedFileIcon, { path }),
+                react.createElement("span", { className: "D13QPq_filename" }, basename(path)));
+        }
 		function ProducedFiles({ matched, openFile, isLoopback, useHostGeneration, t }) {
 			const paths=Array.isArray(matched)?matched:matched.paths;
+            const [expanded, setExpanded] = react.useState(false);
+            const moreButton = react.useRef(null);
 			const hostCanOpenPath = useHostGeneration((generation) => generation?.host?.canOpenPath === true);
 			const canOpenPath = isLoopback && hostCanOpenPath;
 			const limit = Math.min(paths.length, SHOWN_LIMIT);
@@ -281,12 +308,25 @@ window.__ModuleLoader__.load({
 							onClick: () => {
 								openFile(path);
 							},
-							children: basename(path)
-						}, path)), hidden > 0 && (0, react_jsx_runtime.jsx)("span", {
+							children: producedFileLabel(path)
+						}, path)), hidden > 0 && (0, react_jsx_runtime.jsx)("button", {
+                            type: "button", ref: moreButton, onClick: () => setExpanded(true),
+                            "aria-label": t("produced.showAll", { count: String(paths.length) }),
 							className: ProducedFiles_module_css_default.more,
 							children: moreLabel(t, hidden)
 						})]
 					}),
+                    expanded && react.createElement(primitives.Modal, {
+                        open: true, title: t(matched.declared ? "presented.label" : "produced.label"),
+                        closeLabel: t("produced.close"), onClose: () => { setExpanded(false); moreButton.current?.focus(); }
+                    }, react.createElement("div", { style: { display: "grid", gap: 12, maxHeight: "55vh", overflowY: "auto" }, "data-all-produced-files": true },
+                        paths.map((path, index) => react.createElement("div", { key: path },
+                            react.createElement("button", { type: "button", autoFocus: index === 0, className: ProducedFiles_module_css_default.file, style: { maxWidth: "100%" }, title: path,
+                                "aria-label": t("produced.open", { name: path }), onClick: () => { setExpanded(false); openFile(path); },
+                                onContextMenu: event => { event.preventDefault(); openFile(path, { intent: "menu", x: event.clientX, y: event.clientY }); }
+                            }, producedFileLabel(path)),
+                            react.createElement("div", { style: { fontSize: 11, lineHeight: "16px", overflowWrap: "anywhere", color: "var(--dsw-alias-label-tertiary)", marginTop: 3 } }, path)
+                        )))),
 					canOpenPath && (0, react_jsx_runtime.jsx)("button", {
 						type: "button",
 						className: ProducedFiles_module_css_default.showFolder,
@@ -305,7 +345,7 @@ window.__ModuleLoader__.load({
 							type: "button",
 							tabIndex: -1,
 							className: `${ProducedFiles_module_css_default.file} ${ProducedFiles_module_css_default.probe}`,
-							children: basename(path)
+							children: producedFileLabel(path)
 						}, path)), (0, react_jsx_runtime.jsx)("span", {
 							ref: moreProbe,
 							className: `${ProducedFiles_module_css_default.more} ${ProducedFiles_module_css_default.probe}`
@@ -323,6 +363,7 @@ window.__ModuleLoader__.load({
 		const zh = {
 			"presented.label":"交付文件",
 			"produced.label": "产物",
+            "produced.showAll": "查看全部 {count} 个文件", "produced.close": "关闭",
 			"produced.moreOne": "+ 1 个文件",
 			"produced.more": "+ {count} 个文件",
 			"produced.open": "打开 {name}",
@@ -332,6 +373,7 @@ window.__ModuleLoader__.load({
 		const en = {
 			"presented.label":"Deliverables",
 			"produced.label": "Produced",
+            "produced.showAll": "Show all {count} files", "produced.close": "Close",
 			"produced.moreOne": "+ 1 file",
 			"produced.more": "+ {count} files",
 			"produced.open": "Open {name}",

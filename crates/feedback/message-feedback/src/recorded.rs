@@ -117,6 +117,7 @@ mod tests {
             message_id: answer.id,
             rating: MessageFeedbackRating::Negative,
             note: Some("private correction text".into()),
+            category: None,
             version: dsh_brand::Branded::new(uuid::Uuid::new_v4().to_string()),
             created_at: 1,
             updated_at: 1,

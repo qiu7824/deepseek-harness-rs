@@ -69,7 +69,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
     def test_prompt_acceptance_cannot_be_overwritten_by_a_late_idle_frame(self):
         runtime = RUNTIME.read_text(encoding="utf-8")
         prompt = runtime[runtime.index("async sendPrompt(content, mode, requestId)"):runtime.index("async readAttachment", runtime.index("async sendPrompt(content, mode, requestId)"))]
-        self.assertIn("const runningRevisionAtStart = this.runningRevision", prompt)
+        self.assertRegex(prompt, r"(?:const|let) runningRevisionAtStart = this\.runningRevision")
         self.assertIn("if (result.value.accepted && this.runningRevision === runningRevisionAtStart) this.handleRunning(true)", prompt)
         self.assertNotIn("this.running = true", prompt)
 
@@ -84,7 +84,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
         runtime = RUNTIME.read_text(encoding="utf-8")
         prompt = runtime[runtime.index("async sendPrompt(content, mode, requestId)"):runtime.index("async readAttachment", runtime.index("async sendPrompt(content, mode, requestId)"))]
         return_latest = prompt.index("await this.returnLatest()")
-        revision = prompt.index("const runningRevisionAtStart = this.runningRevision")
+        revision = prompt.index("runningRevisionAtStart = this.runningRevision", return_latest)
         self.assertLess(return_latest, revision)
 
     def test_ordinary_send_commits_only_after_host_acceptance(self):

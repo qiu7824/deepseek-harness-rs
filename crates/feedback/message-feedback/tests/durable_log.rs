@@ -134,8 +134,74 @@ fn put(
         message_id: dsh_llm::MessageId::new("assistant-1"),
         rating: MessageFeedbackRating::Negative,
         note: Some(note.into()),
+        category: None,
         if_version: version,
     }
+}
+
+#[tokio::test]
+async fn categories_survive_replay_and_participate_in_cas_without_requiring_a_note() {
+    let root = TempRoot::new();
+    let pool = Arc::new(MemoryMediaPool::new());
+    let fixture = Fixture::new(&root, pool.clone());
+    let header = fixture.create("categories", 1).await;
+    let mut request = put(&header, None, "unused");
+    request.note = None;
+    request.rating = MessageFeedbackRating::Positive;
+    request.category = Some("task-result".into());
+    let first = fixture.feedback.put(&request).await.unwrap().value;
+    assert_eq!(first.category.as_deref(), Some("task-result"));
+    assert!(first.note.is_none());
+    request.if_version = Some(first.version.clone());
+    let same = fixture.feedback.put(&request).await.unwrap().value;
+    assert_eq!(same.version, first.version);
+    request.category = Some("instruction-following".into());
+    let changed = fixture.feedback.put(&request).await.unwrap().value;
+    assert_ne!(changed.version, first.version);
+    assert!(matches!(
+        fixture.feedback.put(&request).await.unwrap_err().error,
+        MessageFeedbackFailure::VersionConflict { .. }
+    ));
+    request.if_version = Some(changed.version.clone());
+    request.category = Some("unknown-category".into());
+    let before = fixture
+        .persistence
+        .read_from(&header.id, 0)
+        .await
+        .unwrap()
+        .events
+        .len();
+    assert!(matches!(
+        fixture.feedback.put(&request).await.unwrap_err().error,
+        MessageFeedbackFailure::CategoryInvalid
+    ));
+    assert_eq!(
+        fixture
+            .persistence
+            .read_from(&header.id, 0)
+            .await
+            .unwrap()
+            .events
+            .len(),
+        before
+    );
+    fixture.close().await;
+    let restored = Fixture::new(&root, Arc::new(MemoryMediaPool::new()));
+    assert_eq!(restored.list(&header).await, vec![changed.clone()]);
+    request.category = None;
+    let cleared = restored.feedback.put(&request).await.unwrap().value;
+    assert!(cleared.category.is_none());
+    restored
+        .feedback
+        .delete(&MessageFeedbackDeleteRequest {
+            session_id: header.id.clone(),
+            message_id: cleared.message_id.clone(),
+            if_version: cleared.version,
+        })
+        .await
+        .unwrap();
+    assert!(restored.list(&header).await.is_empty());
+    restored.close().await;
 }
 
 #[tokio::test]
@@ -149,6 +215,7 @@ async fn cold_feedback_survives_index_failure_restart_and_cas_races() {
         message_id: dsh_llm::MessageId::new("assistant-1"),
         rating: MessageFeedbackRating::Positive,
         note: None,
+        category: None,
         version: MessageFeedbackVersion::new(uuid::Uuid::new_v4().to_string()),
         created_at: 1,
         updated_at: 1,

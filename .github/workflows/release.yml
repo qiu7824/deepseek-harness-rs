@@ -80,6 +80,10 @@ jobs:
           node tools/tests/reply_hint_display_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/workspace_browser_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/feedback_submission_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/session_feedback_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/message_feedback_confirmation_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/produced_files_presentation_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/turn_tail_location_harness.cjs
           node tools/tests/session_reference_input_harness.cjs
           node tools/tests/session_queue_harness.cjs
           node tools/tests/assistant_steps_harness.cjs
