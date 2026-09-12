@@ -31,10 +31,10 @@ rc.1 的发布文案覆盖多个早期版本。相对 alpha.2，源码增量集�
 
 运行时源模块、dist 与 manifest 哈希同步；CodeMirror、PDF 随附资源及 vendor-lock 一致。安装前后核对原始会话文件、账号凭据、设置与运行目录配置。Windows 优化构建和宿主执行验收针对同一程序哈希完成。
 
-会话迁移支持已有 Rust V0→V3 路径，包含读取、追加、恢复、fork、压缩及原文件保护。完整官方 V0/V1/V2/V3 导入仍是独立兼容范围。
+会话迁移支持已有 Rust V0→V3 路径，包含读取、追加、恢复、fork、压缩及原文件保护。官方 V0/V1/V2/V3 的显式导入、原件保留和图片恢复见[会话与文件能力](session-files-teams-and-network.zh.md)。
 
 ## 后续独立项目
 
-通用附件上传的完整交互、全面代理支持、Agent Teams、完整 Responses Lite 与跨平台发布门禁继续独立验收。公开网页读取的 DNS/IP 边界保持有效；不能直接删除 `no_proxy()` 代替完整代理设计。
+通用附件上传、共享代理策略、显式启用的 Agent Teams 与按能力声明启用的 Responses Lite 已接入，配置和边界见[能力说明](session-files-teams-and-network.zh.md)。跨平台包由发布工作流分别构建和验收，真实账号及解锁后的 UU 操作由使用环境验收。
 
 Windows 本机维护结果不替代 Linux/macOS 启动和发布包回归，也不构成对未知供应商协议或未来 ABI 的无条件兼容保证。

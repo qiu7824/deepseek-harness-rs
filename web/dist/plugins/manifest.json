@@ -1,5 +1,5 @@
 {
-  "rev": "rust-v0.1.3-alpha.6",
+  "rev": "rust-v0.1.3-alpha.13",
   "entries": [
     {
       "id": "@deepseek-ai/dsh-client-ui-file-actions",
@@ -40,7 +40,7 @@
     {
       "id": "@deepseek-ai/dsh-client-connection",
       "url": "/plugins/connection.js",
-      "rev": "b0d1a4f37e7701e5",
+      "rev": "6a92c204c85ab48d",
       "inject": [],
       "immediately": true
     },
@@ -162,7 +162,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-conversation",
       "url": "/plugins/ui-conversation.js",
-      "rev": "ad32b4759f683b90",
+      "rev": "00aa9d0de86cc489",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -222,7 +222,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-workspace",
       "url": "/plugins/ui-workspace.js",
-      "rev": "7ec25ecf562d8cc3",
+      "rev": "06e7647c214e2329",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
@@ -271,7 +271,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-subagent",
       "url": "/plugins/ui-subagent.js",
-      "rev": "3b79f9c7eac44646",
+      "rev": "eb64de8d28d2301b",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",

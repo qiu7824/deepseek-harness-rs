@@ -13,6 +13,7 @@ pub(crate) fn preferences_schema() -> dsh_schemastery::Schema {
     use dsh_schemastery::{Data, Schema};
     let fields = indexmap::IndexMap::from([
         ("enabled".into(), Schema::boolean()),
+        ("compat".into(), super::provider_compatibility::schema()),
         ("name".into(), Schema::string()),
         ("description".into(), Schema::string()),
         (
@@ -205,6 +206,7 @@ impl CatalogStore {
 }
 
 pub(crate) const OVERRIDE_FIELDS: &[&str] = &[
+    "compat",
     "enabled",
     "name",
     "description",
@@ -297,7 +299,7 @@ pub(crate) fn merge_models(profile: &Value, catalog: &Catalog, native: bool) -> 
             if manual || catalog.updated_at.is_none() || model_scope.is_none() {
                 for field in OVERRIDE_FIELDS {
                     if let Some(value) = model.get(*field).filter(|v| !v.is_null()) {
-                        row[*field] = value.clone();
+                        merge_override(row, field, value);
                     }
                 }
             }
@@ -357,7 +359,7 @@ pub(crate) fn merge_models(profile: &Value, catalog: &Catalog, native: bool) -> 
         {
             for field in OVERRIDE_FIELDS {
                 if let Some(value) = values.get(*field).filter(|v| !v.is_null()) {
-                    row[*field] = value.clone();
+                    merge_override(row, field, value);
                 }
             }
             row["overriddenFields"] = json!(values.keys().collect::<Vec<_>>());
@@ -600,5 +602,19 @@ mod tests {
             false,
         );
         assert_eq!(explicit[0]["api"], "openai-completions");
+    }
+}
+
+fn merge_override(row: &mut Value, field: &str, value: &Value) {
+    if field == "compat" && value.is_object() {
+        if !row["compat"].is_object() {
+            row["compat"] = json!({});
+        }
+        row["compat"]
+            .as_object_mut()
+            .unwrap()
+            .extend(value.as_object().unwrap().clone());
+    } else {
+        row[field] = value.clone();
     }
 }

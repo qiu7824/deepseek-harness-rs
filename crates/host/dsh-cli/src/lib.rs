@@ -4,6 +4,7 @@
 //! flags belongs to the booted tree verbatim).
 
 pub mod acp_stdio;
+mod history_import;
 pub mod native_plugin;
 pub mod profile_boot;
 pub mod run_profile;
@@ -114,62 +115,7 @@ pub fn import_legacy_history(
     source: &std::path::Path,
     target_home: &std::path::Path,
 ) -> Result<usize, String> {
-    let mut candidates = Vec::new();
-    fn visit(path: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
-        if path.is_dir() {
-            for entry in std::fs::read_dir(path)? {
-                visit(&entry?.path(), out)?;
-            }
-        } else if path.file_name().and_then(|v| v.to_str()) == Some("session.jsonl") {
-            out.push(path.to_path_buf());
-        }
-        Ok(())
-    }
-    visit(source, &mut candidates).map_err(|error| format!("history scan failed: {error}"))?;
-    let sessions_root = target_home.join("sessions");
-    let mut imported = 0usize;
-    for source_file in candidates {
-        let content = std::fs::read_to_string(&source_file)
-            .map_err(|error| format!("history read {}: {error}", source_file.display()))?;
-        let first = content
-            .lines()
-            .next()
-            .ok_or_else(|| format!("history artifact has no header: {}", source_file.display()))?;
-        let header: dsh_session_persistence_jsonl::HeaderLine = serde_json::from_str(first)
-            .map_err(|error| format!("history header {}: {error}", source_file.display()))?;
-        if header.type_ != "session" {
-            return Err(format!(
-                "unsupported history artifact: {}",
-                source_file.display()
-            ));
-        }
-        let root = sessions_root.to_string_lossy();
-        let target = dsh_session_persistence_jsonl::log_path(
-            &root,
-            header.cwd.as_deref(),
-            &header.id,
-            dsh_session_persistence_jsonl::JsonlCompression::None,
-        );
-        if target.exists() {
-            return Err(format!(
-                "history target already exists: {}",
-                target.display()
-            ));
-        }
-        std::fs::create_dir_all(target.parent().expect("session artifact parent"))
-            .map_err(|error| format!("history target directory: {error}"))?;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        let mut file = options
-            .open(&target)
-            .map_err(|error| format!("history target {}: {error}", target.display()))?;
-        std::io::Write::write_all(&mut file, content.as_bytes())
-            .map_err(|error| format!("history target write {}: {error}", target.display()))?;
-        file.sync_all()
-            .map_err(|error| format!("history target sync: {error}"))?;
-        imported += 1;
-    }
-    Ok(imported)
+    history_import::import(source, target_home)
 }
 
 /// The resolved `dsh` invocation.

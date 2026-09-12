@@ -5,12 +5,13 @@
 /// vocabulary this build understands. The persistence read path refuses to
 /// interpret a log containing a type outside this set unless the event
 /// carries the envelope's `ignorable` marker.
-pub const KNOWN_SESSION_EVENT_TYPES: [&str; 53] = [
+pub const KNOWN_SESSION_EVENT_TYPES: [&str; 60] = [
     "agent-preset/selected",
     "agent/inbox/spliced",
     "approval/asked",
     "approval/decided",
     "approval/policy",
+    "assistant/attempt",
     "assistant/chunk",
     "assistant/message",
     "command/done",
@@ -39,6 +40,7 @@ pub const KNOWN_SESSION_EVENT_TYPES: [&str; 53] = [
     "request/header",
     "sandbox/mode",
     "schedule/change",
+    "session-log-deepseek/delivery-accepted",
     "session/end-seed",
     "session/title",
     "session/title-llm-request",
@@ -46,6 +48,11 @@ pub const KNOWN_SESSION_EVENT_TYPES: [&str; 53] = [
     "step/start",
     "system/message",
     "subagent/descriptor",
+    "subagent/model-selection-policy",
+    "team/member",
+    "team/message/delivered",
+    "team/message/queued",
+    "team/task",
     "todo/write",
     "tool-workflow/agent-end",
     "tool-workflow/agent-start",

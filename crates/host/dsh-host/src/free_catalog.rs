@@ -183,7 +183,7 @@ impl Catalog {
                 model["available"] = json!(false);
             }
         }
-        let client = reqwest::Client::builder()
+        let client = dsh_http_proxy::builder()?
             .timeout(Duration::from_secs(45))
             .connect_timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())

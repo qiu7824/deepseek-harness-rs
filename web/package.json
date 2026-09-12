@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-web-frontend",
   "description": "Web application entry: vite build over the @deepseek-ai/dsh-client-web shell library; dist/ served by apps/cli's dsh web",
-  "version": "0.1.3-alpha.12",
+  "version": "0.1.3-alpha.13",
   "publishConfig": {
     "access": "public"
   },
@@ -23,7 +23,7 @@
     "build": "vite build",
     "dev": "vite",
     "watch": "vite build --watch",
-    "build:runtime-plugins": "node --input-type=module -e \"import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';const root='src/runtime-plugins',out='dist/plugins';for(const name of fs.readdirSync(root).filter(n=>n.endsWith('.js')))fs.copyFileSync(path.join(root,name),path.join(out,name));const file=path.join(out,'manifest.json'),manifest=JSON.parse(fs.readFileSync(file,'utf8'));for(const entry of manifest.entries)entry.rev=crypto.createHash('sha256').update(fs.readFileSync(path.join('dist',entry.url.startsWith('/')?entry.url.slice(1):entry.url))).digest('hex').slice(0,16);fs.writeFileSync(file,JSON.stringify(manifest,null,2)+String.fromCharCode(10));\""
+    "build:runtime-plugins": "node --input-type=module -e \"import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';const root='src/runtime-plugins',out='dist/plugins';for(const name of fs.readdirSync(root).filter(n=>n.endsWith('.js')))fs.copyFileSync(path.join(root,name),path.join(out,name));const file=path.join(out,'manifest.json'),manifest=JSON.parse(fs.readFileSync(file,'utf8'));manifest.rev='rust-v'+JSON.parse(fs.readFileSync('package.json','utf8')).version;for(const entry of manifest.entries)entry.rev=crypto.createHash('sha256').update(fs.readFileSync(path.join('dist',entry.url.startsWith('/')?entry.url.slice(1):entry.url))).digest('hex').slice(0,16);fs.writeFileSync(file,JSON.stringify(manifest,null,2)+String.fromCharCode(10));\""
   },
   "license": "MIT",
   "dependencies": {

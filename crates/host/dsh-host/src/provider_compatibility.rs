@@ -30,6 +30,7 @@ pub(crate) fn schema() -> Schema {
                 .step(1.0),
         ),
         ("supportsMaxOutputTokens".into(), Schema::boolean()),
+        ("useResponsesLite".into(), Schema::boolean()),
     ]))
     .default(Data::Undefined)
 }

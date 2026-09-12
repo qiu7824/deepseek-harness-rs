@@ -90,6 +90,12 @@ function assertBodyBounds() { const rail=document.querySelector('._6bmela_layer'
     await act(()=>root.render(React.createElement(messageContext.UserMessageNodeView,{node:{data:{content:[{type:'text',text:literal}],time:1}},loadImage:async()=>'',t:props.t})));
     assert.equal(document.querySelector('[data-ref-chip=session]'),null);assert.ok(document.body.textContent.includes(literal),'lookalikes and ordinary URLs stay literal');
   }
+  const uploadedPath='D:/workspace/.dsh-attachments/'+'a'.repeat(64)+'/'+'b'.repeat(64)+'/说明.txt';
+  const receipt='Attached file: 说明.txt\nPath: '+uploadedPath+'\nSize: 7 bytes';const uploadedContent=Object.freeze([{type:'text',text:receipt}]);const openedFiles=[];
+  await act(()=>root.render(React.createElement(messageContext.UserMessageNodeView,{node:{data:{content:uploadedContent,time:1}},openFile:path=>openedFiles.push(path),loadImage:async()=>'',t:props.t})));
+  assert.equal(document.querySelector('[data-uploaded-file]').textContent,'说明.txt7 B');
+  await act(()=>document.querySelector('[data-uploaded-file]').click());assert.deepEqual(openedFiles,[uploadedPath]);
+  assert.equal(uploadedContent[0].text,receipt,'file presentation keeps durable receipt content intact');
   await act(() => root.unmount());
   assert.equal(listeners.size, 0); assert.equal(snapshotListeners.size, 0);
   assert.ok(observers.every(observer => observer.dead), 'unmount releases layout observers');

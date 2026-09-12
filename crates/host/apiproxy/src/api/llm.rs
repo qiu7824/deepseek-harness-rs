@@ -64,6 +64,8 @@ pub struct LlmDiscoverModelsRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveredModelView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat: Option<serde_json::Value>,
     /// Model id the endpoint accepts.
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]

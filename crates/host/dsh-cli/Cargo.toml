@@ -11,6 +11,12 @@ path = "src/main.rs"
 
 
 [dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }
+dsh-attachment = { path = "../../attachment/attachment" }
+dsh-attachment-local = { path = "../../attachment/attachment-local" }
+dsh-host-apiproxy = { path = "../apiproxy" }
+sha2.workspace = true
+zstd = "0.13"
 dsh-acp = { path = "../../acp/acp" }
 dsh-app-boot = { path = "../../boot/app-boot" }
 dsh-agent = { path = "../../core/agent" }

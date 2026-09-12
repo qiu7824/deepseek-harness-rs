@@ -10,6 +10,7 @@ name = "dsh-uu-controller"
 path = "src/main.rs"
 
 [dependencies]
+dsh-http-proxy = { path = "../../util/http-proxy" }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 base64 = "0.22"

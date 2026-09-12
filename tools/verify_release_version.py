@@ -31,6 +31,8 @@ def verify(version: str, binary: pathlib.Path | None = None) -> None:
         raise ValueError(f"release version {version} does not match workspace {expected}")
     if web_version() != expected:
         raise ValueError(f"web version {web_version()} does not match workspace {expected}")
+    manifest = json.loads((ROOT / "web/dist/plugins/manifest.json").read_text(encoding="utf-8"))
+    verify_manifest_version(manifest, expected)
     installer = (ROOT / "packaging/windows/deepseek-harness-rs.iss").read_text(encoding="utf-8")
     declared = re.search(r'^#define MyAppVersion "([^"]+)"', installer, re.MULTILINE)
     if declared is None or declared.group(1) != expected:
@@ -50,6 +52,11 @@ def verify(version: str, binary: pathlib.Path | None = None) -> None:
         ).strip()
         if dirty:
             raise ValueError("release source contains uncommitted changes")
+
+
+def verify_manifest_version(manifest: dict, version: str) -> None:
+    if manifest.get("rev") != "rust-v" + version:
+        raise ValueError("frontend manifest version does not match workspace; rebuild runtime plugins")
 
 
 def verify_build_identity(info: dict, version: str, revision: str) -> None:

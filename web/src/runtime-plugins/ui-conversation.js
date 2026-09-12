@@ -59,7 +59,7 @@ window.__ModuleLoader__.load({
 		/** Create one browser-only draft descriptor; only its id enters input state. */
 		function browserDraftAttachment(file) {
 			return {
-				kind: "image",
+				kind: isRasterFile(file) ? "image" : "file",
 				id: crypto.randomUUID(),
 				previewUrl: URL.createObjectURL(file),
 				file
@@ -148,7 +148,7 @@ window.__ModuleLoader__.load({
 			* @returns ordered draft descriptors.
 			*/
 			createDraftImages(files) {
-				for (const file of files) imageMediaType(file.type);
+				for (const file of files) { if (!isRasterFile(file) && file.size > 16 * 1024 * 1024) throw new Error("Each file must be at most 16 MiB"); }
 				return files.map((file) => {
 					// Image result path: conversation.resolveImage(sessionId, attachment)
 					const attachment = browserDraftAttachment(file);
@@ -337,13 +337,14 @@ window.__ModuleLoader__.load({
 			/** Convert browser files to canonical base64 prompt parts. */
 			serializeImages(images) {
 				return Promise.all(images.map(async (file) => ({
-					type: "image",
-					mediaType: imageMediaType(file.type),
+					type: isRasterFile(file) ? "image" : "file",
+					mediaType: isRasterFile(file) ? imageMediaType(file.type) : (file.type || "application/octet-stream"),
 					data: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
 					...file.name === "" ? {} : { name: file.name }
 				})));
 			}
 		};
+		function isRasterFile(file) { return ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type); }
 		function imageMediaType(value) {
 			switch (value) {
 				case "image/png":
@@ -3766,6 +3767,7 @@ window.__ModuleLoader__.load({
 				t,
 				imageLimits
 			]);
+			const uploadRef = (0, react.useRef)(null);
 			const inputRef = (0, react.useRef)(null);
 			const cardRef = (0, react.useRef)(null);
 			const dragDepthRef = (0, react.useRef)(0);
@@ -3974,25 +3976,19 @@ window.__ModuleLoader__.load({
 				restoreCaret(el, caret);
 				keyboard.track(keyboard.snapshot.draft, caret);
 			};
-			const intakeImages = (0, react.useCallback)((files) => {
-				if (addImages === void 0 || files.length === 0) return;
-				const rejected = (() => {
-					if (imageLimits !== void 0) {
-						if (files.some((file) => !imageLimits.mediaTypes.includes(file.type))) return addImages(files);
-						if (attachments.length + files.length > imageLimits.maxImagesPerMessage) return t("image.tooMany", { count: imageLimits.maxImagesPerMessage });
-						if (files.some((file) => file.size > imageLimits.maxImageBytes)) return t("image.fileTooLarge", { size: imageSizeText(imageLimits.maxImageBytes) });
-						if (attachments.reduce((sum, attachment) => sum + attachment.file.size, 0) + files.reduce((sum, file) => sum + file.size, 0) > imageLimits.maxMessageImageBytes) return t("image.totalTooLarge", { size: imageSizeText(imageLimits.maxMessageImageBytes) });
-					}
-					return addImages(files);
-				})();
-				if (rejected !== null) showToast(rejected);
-			}, [
-				addImages,
-				attachments,
-				imageLimits,
-				showToast,
-				t
-			]);
+            const intakeImages = react.useCallback(files => {
+                if (addImages === undefined || files.length === 0) return;
+                const all = [...attachments.map(item => item.file), ...files];
+                const generic = all.filter(file => !isRasterFile(file));
+                const images = all.filter(isRasterFile);
+                let rejected = null;
+                if (generic.length > 16 || generic.some(file => file.size > 16 * 1024 * 1024) || generic.reduce((sum, file) => sum + file.size, 0) > 64 * 1024 * 1024) rejected = t("file.limits");
+                else if (imageLimits !== undefined && images.length > imageLimits.maxImagesPerMessage) rejected = t("image.tooMany", { count: imageLimits.maxImagesPerMessage });
+                else if (imageLimits !== undefined && images.some(file => file.size > imageLimits.maxImageBytes)) rejected = t("image.fileTooLarge", { size: imageSizeText(imageLimits.maxImageBytes) });
+                else if (imageLimits !== undefined && images.reduce((sum, file) => sum + file.size, 0) > imageLimits.maxMessageImageBytes) rejected = t("image.totalTooLarge", { size: imageSizeText(imageLimits.maxMessageImageBytes) });
+                else rejected = addImages(files);
+                if (rejected !== null) showToast(rejected);
+            }, [addImages, attachments, imageLimits, showToast, t]);
 			const canAcceptDrop = !locked && !machineBusy && addImages !== void 0;
 			(0, react.useEffect)(() => {
 				const hasFiles = (event) => event.dataTransfer?.types.includes("Files") ?? false;
@@ -4041,7 +4037,7 @@ window.__ModuleLoader__.load({
 			const closePreview = (0, react.useCallback)(() => {
 				setPreview(null);
 			}, []);
-			const railItems = (0, react.useMemo)(() => attachments.map((attachment) => ({
+			const railItems = (0, react.useMemo)(() => attachments.filter(item => item.kind !== "file").map((attachment) => ({
 				id: attachment.id,
 				previewUrl: attachment.previewUrl,
 				alt: attachment.file.name || t("image.pending"),
@@ -4181,6 +4177,10 @@ window.__ModuleLoader__.load({
 								className: InputBar_module_css_default.accessory,
 								children: accessory
 							}),
+                            attachments.filter(item => item.kind === "file").map(item => react.createElement("div", { key: item.id, "data-file-draft": true, style: { display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", minWidth: 0 } },
+                                react.createElement("span", { title: item.file.name, style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, item.file.name),
+                                react.createElement("span", { style: { flex: "none", fontSize: 12 } }, imageSizeText(item.file.size)),
+                                react.createElement("button", { type: "button", disabled: locked || machineBusy, "aria-label": t("file.remove", { name: item.file.name }), onClick: () => removeImage?.(item.id) }, "×"))),
 							railItems.length > 0 && (0, react_jsx_runtime.jsx)("div", {
 								className: InputBar_module_css_default.attachments,
 								children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_attachment.AttachmentRail, {
@@ -4271,6 +4271,12 @@ window.__ModuleLoader__.load({
 											className: InputBar_module_css_default.modes,
 											children: [accessSelect, renderSlot("conversation.input.plan", { locked })]
 										}),
+                                        addImages !== undefined && react.createElement(react.Fragment, null,
+                                            react.createElement("input", { ref: uploadRef, type: "file", multiple: true, hidden: true, "data-file-picker": true,
+                                                onChange: event => { const files = Array.from(event.target.files ?? []); event.target.value = ""; if (!locked && !machineBusy) intakeImages(files); } }),
+                                            react.createElement("button", { type: "button", className: InputBar_module_css_default.add, disabled: locked || machineBusy, "aria-label": t("file.upload"), title: t("file.upload"), onClick: () => uploadRef.current?.click() },
+                                                react.createElement("svg", { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.6, "aria-hidden": true },
+                                                    react.createElement("path", { d: "M8 13l7-7a3 3 0 014 4L9 20a5 5 0 01-7-7L13 2M6 15l9-9" })))),
 										leftItems
 									]
 								}), (0, react_jsx_runtime.jsxs)("div", {
@@ -5388,6 +5394,19 @@ window.__ModuleLoader__.load({
 				rest
 			};
 		}
+        function uploadedFileReceipt(text) {
+            if (typeof text !== 'string') return null;
+            const match = /^Attached file: ([^\r\n]+)\nPath: ([^\r\n]+)\nSize: (\d+) bytes$/.exec(text);
+            if (!match || !/(?:^|[\\/])\.dsh-attachments[\\/][a-f0-9]{64}[\\/][a-f0-9]{64}[\\/][^\\/]+$/.test(match[2])) return null;
+            const size = Number(match[3]);
+            if (!Number.isSafeInteger(size) || size < 0 || size > 16 * 1024 * 1024) return null;
+            return { name: match[1], path: match[2], size };
+        }
+        function uploadedFileSize(size) {
+            if (size < 1024) return `${size} B`;
+            if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KiB`;
+            return `${(size / 1024 / 1024).toFixed(1)} MiB`;
+        }
 		function retrySeconds(milliseconds) {
 			return Math.max(1, Math.ceil(milliseconds / 1e3));
 		}
@@ -5540,8 +5559,10 @@ window.__ModuleLoader__.load({
 			return (0, react_jsx_runtime.jsx)(react_jsx_runtime.Fragment, { children: parts });
 		}
 		/** Right-aligned bubble shared by user and steering rows. */
-		function UserStyleBubble({ content, imageLoader, actions, pending = false, t }) {
-			const { text, images, rest } = contentParts(content);
+		function UserStyleBubble({ content, imageLoader, openFile, actions, pending = false, t }) {
+            const files = content.map(block => block.type === "text" ? uploadedFileReceipt(block.text) : null).filter(Boolean);
+            const originalText = contentParts(content).text;
+            const { text, images, rest } = contentParts(content.filter(block => block.type !== "text" || !uploadedFileReceipt(block.text)));
 			const truncated = (total) => t("json.truncated", { total });
 			const showBubble = text !== "" || rest.length > 0;
 			return (0, react_jsx_runtime.jsxs)("div", {
@@ -5550,7 +5571,9 @@ window.__ModuleLoader__.load({
 				"data-time-hover-root": true,
 				children: [(0, react_jsx_runtime.jsxs)("div", {
 					className: MessageItem_module_css_default.userStack,
-					children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_attachment.ImageGallery, {
+					children: [files.map((file, index) => react.createElement("button", { key: `${file.path}:${index}`, type: "button", "data-uploaded-file": true, disabled: !openFile, title: file.path, "aria-label": t("file.open", { name: file.name }), onClick: () => openFile?.(file.path), style: { display: "flex", gap: 8, maxWidth: "100%", alignItems: "center", padding: "8px 12px", borderRadius: 10, border: "1px solid var(--dsw-alias-border-l2)", color: "var(--dsw-alias-label-primary)", background: "var(--dsw-alias-interactive-bg-hover)", cursor: openFile ? "pointer" : "default" } },
+                            react.createElement("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, file.name),
+                            react.createElement("span", { style: { flex: "none", fontSize: 12 } }, uploadedFileSize(file.size)))), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_attachment.ImageGallery, {
 						images,
 						load: imageLoader,
 						align: "end",
@@ -5563,7 +5586,7 @@ window.__ModuleLoader__.load({
 							truncatedLabel: truncated
 						}, i))]
 					})]
-				}), actions?.(text)]
+				}), actions?.(originalText)]
 			});
 		}
 		/**
@@ -5587,11 +5610,12 @@ window.__ModuleLoader__.load({
 			});
 		}
 		/** User and admitted-steering keyed Chat renderer. */
-		const UserMessageNodeView = (0, react.memo)(function UserMessageNodeView({ node, loadImage, t }) {
+		const UserMessageNodeView = (0, react.memo)(function UserMessageNodeView({ node, loadImage, openFile, t }) {
 			const data = node.data;
 			return (0, react_jsx_runtime.jsx)(UserStyleBubble, {
 				content: data.content,
 				imageLoader: loadImage,
+                openFile,
 				t,
 				actions: (text) => (0, react_jsx_runtime.jsx)(MessageIconActions, {
 					text,
@@ -6358,6 +6382,7 @@ window.__ModuleLoader__.load({
 		const PLAN_NEXT_ACTION_EN = "describe your task to generate plan";
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
+            "file.open": "打开文件 {name}", "file.upload": "上传文件", "file.remove": "移除文件 {name}", "file.limits": "每条消息最多 16 个文件，单个不超过 16 MiB，合计不超过 64 MiB",
             "tool.title.codeContext": "代码上下文",
             "tool.title.codeCallers": "代码调用者",
             "tool.title.codeCallees": "代码被调用者",
@@ -6615,6 +6640,7 @@ window.__ModuleLoader__.load({
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
+            "file.open": "Open file {name}", "file.upload": "Upload files", "file.remove": "Remove file {name}", "file.limits": "Up to 16 files per message, 16 MiB each and 64 MiB total",
             "tool.title.codeContext": "Code context",
             "tool.title.codeCallers": "Code callers",
             "tool.title.codeCallees": "Code callees",

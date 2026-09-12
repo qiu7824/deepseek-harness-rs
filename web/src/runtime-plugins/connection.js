@@ -5293,7 +5293,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			mediaType: imageMediaTypeSchema,
 			data: string(),
 			name: string().optional()
-		})]);
+		}), object({ type: literal("file"), name: string(), data: string(), mediaType: string().optional() })]);
 		object({
 			sessionId: sessionIdSchema,
 			mode: union([literal("queue"), literal("steer")]),
@@ -5925,6 +5925,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		});
 		/** DiscoveredModelView row of llm.discoverModels. */
 		const discoveredModelViewSchema = object({
+            compat: unknown().optional(),
 			id: string().min(1),
 			reasoningEfforts: unknown().optional(),
             reasoningDefault: string().optional(),

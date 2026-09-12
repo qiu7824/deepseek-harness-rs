@@ -6,13 +6,22 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: `0.1.3-alpha.12`.
+Current release line: `0.1.3-alpha.13`.
 
-See the [alpha.12 release notes](release/notes/v0.1.3-alpha.12.md) for the complete changes.
+See the [alpha.13 release notes](release/notes/v0.1.3-alpha.13.md) for the complete changes.
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 
-## 0.1.3-alpha.12 capabilities
+## 0.1.3-alpha.13 capabilities
+
+- **Sessions and feedback**: permanent deletion includes owned subagent histories while preserving independent forks; ratings require confirmation and retain failed drafts.
+- **Files and imports**: upload ordinary files through the picker, clipboard or drop; validated V0/V1/V2/V3 and image-bearing ZIP imports preserve source artifacts.
+- **Agent Teams**: opt-in named teammates, durable peer messages, versioned shared tasks and a team panel.
+- **Networking and protocol**: shared Host HTTP proxy policy and capability-gated Responses Lite with account and endpoint isolation.
+- **Release identity**: the frontend manifest version follows the package version, alongside module hashes and binary source identity.
+
+See [configuration and boundaries](docs/session-files-teams-and-network.zh.md).
+
 
 - **Windows execution reliability**: ancestor permission updates no longer traverse descendants. Sandbox preparation, command execution and cleanup have separate budgets; cancellation and timeouts reclaim owned processes while preserving partial output and specific errors.
 - **Conversation scrolling and statistics**: short or collapsed conversations hide the unnecessary return-to-bottom button; sending restores following of the live reply. V3 system-message, context and cache statistics use the correct categories.
@@ -23,7 +32,7 @@ The Rust edition maintains its own bounded conversation history, targeted naviga
 - **UU compatibility**: upgraded client locations and compatible terminal paths are discovered while preserving connection ownership, browser display, annotations, connection reuse and manual handoff.
 - **Release integrity**: `--build-info` exposes the build identity. Packaging checks the version, source commit and modification state. Windows, Linux and macOS packages are verified against the same commit and include SHA-256 checksums.
 
-See the [alpha.12 release notes](release/notes/v0.1.3-alpha.12.md) and [rc.1 capability evaluation](docs/upstream-v0.1.5-rc.1-evaluation.zh.md).
+See the [alpha.13 release notes](release/notes/v0.1.3-alpha.13.md) and [rc.1 capability evaluation](docs/upstream-v0.1.5-rc.1-evaluation.zh.md).
 
 ### UU display and manual handoff
 
@@ -36,11 +45,11 @@ See the [alpha.12 release notes](release/notes/v0.1.3-alpha.12.md) and [rc.1 cap
 
 ## Downloads
 
-Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.12):
+Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.13):
 
-- `deepseek-harness-rs-v0.1.3-alpha.12-windows-x86_64-{core,skin,free}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.12-linux-x86_64-{core,skin,free}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.12-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.13-windows-x86_64-{core,skin,free}-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.13-linux-x86_64-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.13-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
 - matching Windows `setup.exe`, Linux `.deb`, and macOS `.pkg` installers
 
 A complete package contains the binary, `web/dist`, `config/agent-presets`, bundled Web plugins, and security documentation. Copying only the binary does not provide a complete Web installation.

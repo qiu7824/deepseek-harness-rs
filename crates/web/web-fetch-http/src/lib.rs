@@ -9,7 +9,6 @@ use dsh_web::{
     Cancelled, WebError, WebFetchBody, WebFetchProvider, WebFetchRequest, WebFetchResult,
 };
 use futures::StreamExt;
-use reqwest::Client;
 use reqwest::header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, LOCATION, USER_AGENT};
 use url::{Host, Url};
 
@@ -126,11 +125,10 @@ impl HttpFetchProvider {
         cancelled: &Cancelled,
     ) -> Result<reqwest::Response, WebError> {
         let host = url.host_str().expect("validated host");
-        let mut builder = Client::builder()
-            // Anonymous public fetch must not inherit HTTP(S)_PROXY. A proxy
-            // would perform its own DNS/connect after our public-address
-            // validation and could therefore bypass the SSRF boundary.
-            .no_proxy()
+        // Direct requests pin the validated addresses. An explicitly configured
+        // proxy controls its own onward DNS; URL and redirect checks still apply.
+        let mut builder = dsh_http_proxy::builder()
+            .map_err(|message| WebError::new("WEB_PROXY_CONFIG", message))?
             // Keep the transport byte stream encoded. Automatic content
             // decoding can expand a small compressed response beyond the
             // configured memory cap before `read_body` can reject it.
@@ -661,15 +659,10 @@ mod tests {
     }
 
     #[test]
-    fn request_client_disables_ambient_proxies_before_using_pinned_dns() {
+    fn request_client_uses_shared_policy_and_keeps_direct_dns_pinning() {
         let source = include_str!("lib.rs");
-        let no_proxy = source
-            .find(".no_proxy()")
-            .expect("web fetch client must disable ambient proxies");
-        let pinned_dns = source
-            .find("builder = builder.resolve(host, *address)")
-            .expect("web fetch client must pin validated addresses");
-        assert!(no_proxy < pinned_dns);
+        assert!(source.contains("dsh_http_proxy::builder()"));
+        assert!(source.contains("builder = builder.resolve(host, *address)"));
     }
 
     #[test]

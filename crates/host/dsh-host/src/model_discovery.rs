@@ -96,6 +96,12 @@ pub(crate) fn parse_model_listing(value: &Value) -> Result<Vec<LlmDiscoveredMode
                 })
             });
         models.push(LlmDiscoveredModel {
+            compat: entry
+                .get("use_responses_lite")
+                .or_else(|| entry.get("useResponsesLite"))
+                .or_else(|| entry.pointer("/compat/useResponsesLite"))
+                .and_then(Value::as_bool)
+                .map(|enabled| serde_json::json!({"useResponsesLite":enabled})),
             description: label([entry.get("description")]),
             api,
             reasoning_default: super::model_capabilities::reasoning_default(
@@ -193,6 +199,14 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn lite_metadata_is_preserved_only_when_explicitly_disclosed() {
+        let rows=parse_model_listing(&json!({"models":[{"slug":"lite","use_responses_lite":true},{"slug":"ordinary"},{"slug":"disabled","use_responses_lite":false}]})).unwrap();
+        assert_eq!(rows[0].compat, Some(json!({"useResponsesLite":true})));
+        assert_eq!(rows[1].compat, None);
+        assert_eq!(rows[2].compat, Some(json!({"useResponsesLite":false})));
     }
 
     #[test]

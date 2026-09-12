@@ -180,6 +180,17 @@ pub enum MessageSource {
         baseline_identity: Option<String>,
         changes: Vec<AgentInstructionChange>,
     },
+    /// Durable peer delivery within one explicitly enabled agent team.
+    TeamMessage {
+        #[serde(rename = "teamId")]
+        team_id: String,
+        #[serde(rename = "messageId")]
+        message_id: String,
+        #[serde(rename = "senderId")]
+        sender_id: String,
+        #[serde(rename = "senderName")]
+        sender_name: String,
+    },
     /// Durable attribution for one model-authored message between adjacent
     /// Agents.
     AgentMessage {
@@ -208,6 +219,7 @@ impl MessageSource {
             MessageSource::SkillCatalog { .. } => "skill-catalog",
             MessageSource::SkillInvocation { .. } => "skill-invocation",
             MessageSource::AgentInstructions { .. } => "agent-instructions",
+            MessageSource::TeamMessage { .. } => "team-message",
             MessageSource::AgentMessage { .. } => "agent-message",
             MessageSource::SubagentSettled { .. } => "subagent-settled",
         }

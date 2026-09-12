@@ -82,6 +82,9 @@ jobs:
           node tools/tests/feedback_submission_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/session_feedback_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/message_feedback_confirmation_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/file_upload_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/agent_team_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/composer_empty_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/produced_files_presentation_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/turn_tail_location_harness.cjs
           node tools/tests/session_reference_input_harness.cjs
@@ -100,6 +103,8 @@ jobs:
           cargo test --locked -p dsh-cordis-loader --test group_ownership
           cargo test --locked -p dsh-agent-presets standing_tests --lib
           cargo test --locked -p dsh-host-cli --lib headless_selection_tests
+          cargo test --locked -p dsh-host-cli --lib history_import
+          cargo test --locked -p dsh-agent-team -p dsh-http-proxy --lib
           cargo check --locked -p dsh-subprocess-e2b
           cargo test --locked -p dsh-llm-retry -p dsh-system-prompt -p dsh-session-reference -p dsh-spill-local -p dsh-subagent-codex -p dsh-message-feedback -- --test-threads=1
           cargo test --locked -p dsh-workspace-resources -p dsh-subagent -p dsh-pwsh-local -p dsh-tool-pwsh -p dsh-sandbox-local -- --test-threads=1
@@ -167,6 +172,8 @@ jobs:
           python tools/e2e_approval_interactions.py --binary "$HOST" --repo . --node-modules "$RUNNER_TEMP/dsh-dom-tests/node_modules" --workdir "$RUNNER_TEMP/dsh-approval-interactions"
           python tools/e2e_skill_injection.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-skill-injection"
           python tools/e2e_subagent_progress.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-subagent-progress" --node-modules "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          python tools/e2e_file_upload.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-file-upload"
+          python tools/e2e_agent_team.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-agent-team"
           python tools/e2e_workspace_insights.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-insights"
           python tools/e2e_workspace_insights.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-insights-no-node" --without-node
           python tools/e2e_sidebar_git_terminal.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-sidebar-git-terminal" --without-node

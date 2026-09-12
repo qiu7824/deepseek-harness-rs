@@ -1628,6 +1628,38 @@ async fn request_responses_chunks(
     session_id: Option<&str>,
     history: &[dsh_llm::Message],
 ) -> Result<(), LlmFailure> {
+    let lite = crate::compat::responses_lite(
+        connection,
+        chat_body.get("model").and_then(serde_json::Value::as_str),
+    );
+    let mut lite_chat;
+    let chat_body = if lite {
+        lite_chat = chat_body.clone();
+        if let Some(messages) = lite_chat
+            .get_mut("messages")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for message in messages {
+                if message["role"] == "system" {
+                    message["role"] = serde_json::json!("developer");
+                }
+            }
+        }
+        &lite_chat
+    } else {
+        chat_body
+    };
+    let mut lite_headers = attribution.to_vec();
+    if lite {
+        lite_headers.retain(|(name, _)| {
+            !name.eq_ignore_ascii_case("x-openai-internal-codex-responses-lite")
+        });
+        lite_headers.push((
+            "x-openai-internal-codex-responses-lite".into(),
+            "true".into(),
+        ));
+    }
+    let attribution = lite_headers.as_slice();
     let account_scope =
         responses::account_scope_hash(&connection.headers, connection.account_scope.as_deref());
     let mut body = responses::request_for_endpoint_with_history_for_account(

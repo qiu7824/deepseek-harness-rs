@@ -428,13 +428,38 @@ impl SubagentContinuationManager {
         &self,
         spec: ContinuableStartSpec,
     ) -> Result<ContinuableStart, SubagentError> {
+        self.start_continuable_reserved(spec, None).await
+    }
+
+    /// Reserve a durable identity for a caller that journals provisioning.
+    pub async fn start_continuable_reserved(
+        &self,
+        spec: ContinuableStartSpec,
+        reserved: Option<SessionId>,
+    ) -> Result<ContinuableStart, SubagentError> {
         let request = &spec.request;
         let parent = request.parent.clone();
         self.assert_admitting(parent.as_ref())?;
         self.require_persistence()?;
         crate::depth::assert_subagent_max_depth(request.max_depth)
             .map_err(|message| SubagentError::new("INVALID_MAX_DEPTH", message))?;
-        let child_id = session_id(uuid::Uuid::new_v4().to_string());
+        let was_reserved = reserved.is_some();
+        let child_id = reserved.unwrap_or_else(|| session_id(uuid::Uuid::new_v4().to_string()));
+        if was_reserved
+            && (self.agents().get(&child_id).is_some()
+                || self
+                    .require_persistence()?
+                    .list()
+                    .await
+                    .map_err(|error| SubagentError::new("PERSISTENCE_UNAVAILABLE", error))?
+                    .iter()
+                    .any(|header| header.id == child_id))
+        {
+            return Err(SubagentError::new(
+                "CHILD_ID_CONFLICT",
+                "reserved child identity already exists",
+            ));
+        }
         let child_depth = resolve_child_depth(parent.as_ref(), request.max_depth)
             .map_err(|error| SubagentError::new("DEPTH_EXCEEDED", error.message))?;
         let agent_provider = request

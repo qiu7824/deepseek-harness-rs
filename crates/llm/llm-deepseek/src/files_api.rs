@@ -113,7 +113,10 @@ impl DeepSeekFilesClient {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
             timeout,
-            client: reqwest::Client::new(),
+            client: dsh_http_proxy::builder()
+                .expect("valid outbound proxy policy")
+                .build()
+                .expect("file upload HTTP client"),
         }
     }
 

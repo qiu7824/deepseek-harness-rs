@@ -11,6 +11,7 @@ pub mod fetch;
 mod interactions;
 mod learning_preview;
 pub mod native_path_opener;
+mod prompt_files;
 pub mod proxy;
 mod public_event;
 mod queue_projection;

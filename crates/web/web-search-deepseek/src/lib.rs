@@ -36,7 +36,8 @@ impl DeepSeekSearchProvider {
     pub fn new(options: Options) -> Self {
         Self {
             options,
-            client: reqwest::Client::builder()
+            client: dsh_http_proxy::builder()
+                .expect("valid outbound proxy policy")
                 .timeout(Duration::from_secs(120))
                 .build()
                 .expect("DeepSeek web search client"),

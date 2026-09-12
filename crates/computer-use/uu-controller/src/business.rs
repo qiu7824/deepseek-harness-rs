@@ -200,7 +200,7 @@ impl Account {
         } else {
             "nochannel".into()
         };
-        let client = reqwest::blocking::Client::builder()
+        let client = dsh_http_proxy::blocking_builder()?
             .timeout(Duration::from_secs(12))
             .redirect(reqwest::redirect::Policy::none())
             .build()

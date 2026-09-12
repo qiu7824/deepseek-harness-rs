@@ -386,7 +386,7 @@ impl AccountAuth {
         credentials: Arc<dsh_credentials_local::LocalCredentialProvider>,
         settings: Arc<dsh_settings::SettingsProvider>,
     ) -> Result<Arc<Self>, String> {
-        let client = reqwest::Client::builder()
+        let client = dsh_http_proxy::builder()?
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(25))
             .user_agent("deepseek-harness-rs")

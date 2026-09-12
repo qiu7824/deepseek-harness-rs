@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 
+mod agent_team_http;
 mod artifacts;
 mod claude_cli_auth;
 mod client_plugins;
@@ -553,7 +554,7 @@ async fn discover_openai_compatible_models(
         base_url
     };
     let url = discovery_models_url(base_url)?;
-    let client = reqwest::Client::builder()
+    let client = dsh_http_proxy::builder()?
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -1655,6 +1656,7 @@ pub struct HostSpine {
     pub agent_presets: Arc<dsh_agent_presets::AgentPresets>,
     api_route: RouteDisposer,
     computer_use_route: RouteDisposer,
+    agent_team_route: RouteDisposer,
     web_preview_route: RouteDisposer,
     provider_auth_route: RouteDisposer,
     free_catalog_route: RouteDisposer,
@@ -1728,6 +1730,7 @@ impl HostSpine {
             .get_or_init(|| async {
                 self.web_server.shutdown().await;
                 (self.computer_use_route)();
+                (self.agent_team_route)();
                 (self.web_preview_route)();
                 (self.provider_auth_route)();
                 (self.free_catalog_route)();
@@ -1782,6 +1785,7 @@ impl Drop for HostSpine {
         {
             self.web_server.request_shutdown();
             (self.computer_use_route)();
+            (self.agent_team_route)();
             (self.web_preview_route)();
             (self.provider_auth_route)();
             (self.free_catalog_route)();
@@ -1934,6 +1938,7 @@ fn compose_host_in_fiber(
     let owns_data_root = configured_root.is_none();
     let requested_root = configured_root
         .unwrap_or_else(|| std::env::temp_dir().join(format!("dsh-host-{}", uuid::Uuid::new_v4())));
+    dsh_http_proxy::initialize(Some(&requested_root))?;
     let runtime_paths = runtime_paths::RuntimePaths::prepare(&requested_root)?;
     let data_root = runtime_paths.paths["dataDirectory"].clone();
     std::fs::create_dir_all(&data_root).map_err(|error| format!("data root: {error}"))?;
@@ -2171,6 +2176,30 @@ fn compose_host_in_fiber(
             },
         )
         .map_err(|error| format!("settings storage-paths: {error}"))?;
+    let team_scope = settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("agent-teams").map_err(|error| error.to_string())?,
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([
+                (
+                    "enabled".into(),
+                    dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(false)),
+                ),
+                (
+                    "maxMembers".into(),
+                    dsh_schemastery::Schema::number()
+                        .min(1.0)
+                        .max(16.0)
+                        .step(1.0)
+                        .default(dsh_schemastery::Data::Number(8.0)),
+                ),
+            ])),
+            dsh_settings::SettingsRegisterOptions {
+                applies: dsh_settings::SettingsApplies::Restart,
+                ..Default::default()
+            },
+        )
+        .map_err(|error| format!("settings agent-teams: {error}"))?;
     let computer_use_scope = settings
         .register(
             ctx,
@@ -3822,6 +3851,19 @@ fn compose_host_in_fiber(
         }),
     )
     .map_err(|error| format!("workspace: {error}"))?;
+    let agent_teams = if let dsh_schemastery::Data::Object(values) = (team_scope.get)() {
+        if values.get("enabled") == Some(&dsh_schemastery::Data::Bool(true)) {
+            let limit = match values.get("maxMembers") {
+                Some(dsh_schemastery::Data::Number(value)) => *value as usize,
+                _ => 8,
+            };
+            Some(dsh_agent_team::install(ctx, limit)?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     // The agent-presets roster: the shipped presets beside this app's
     // config plus the harness-home user root the service appends itself.
     // Anchored to the manifest, not the process cwd (tests and launchers
@@ -4061,6 +4103,7 @@ fn compose_host_in_fiber(
         settings.clone(),
         allow_remote_host,
     );
+    let agent_team_route = agent_team_http::register(&web_server, agent_teams, allow_remote_host);
     let computer_use_route = computer_use_http::register(
         &web_server,
         agents.clone(),
@@ -4129,6 +4172,7 @@ fn compose_host_in_fiber(
         agent_presets,
         api_route,
         computer_use_route,
+        agent_team_route,
         web_preview_route,
         provider_auth_route,
         free_catalog_route,

@@ -33,7 +33,8 @@ async fn endpoint(response: &'static str) -> (String, tokio::task::JoinHandle<Va
             assert!(n > 0);
             bytes.extend_from_slice(&chunk[..n]);
         }
-        let body = serde_json::from_slice(&bytes[start..start + len]).unwrap();
+        let mut body: Value = serde_json::from_slice(&bytes[start..start + len]).unwrap();
+        body["_wireHeaders"] = Value::String(String::from_utf8_lossy(&bytes[..start]).into_owned());
         stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).as_bytes()).await.unwrap();
         body
     });
@@ -215,4 +216,82 @@ fn explicit_field_overrides_legacy_alias_and_model_overrides_provider() {
     let mut title = json!({"model":"custom","messages":[],"max_tokens":32});
     apply_chat(&mut title, &connection, Some("off")).unwrap();
     assert!(title.get("thinking_budget_tokens").is_none());
+}
+
+#[tokio::test]
+async fn lite_is_opt_in_and_reaches_the_actual_http_transport() {
+    for enabled in [false, true] {
+        let (url, server) = endpoint(
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+        )
+        .await;
+        let connection = resolve_adapter_options(&DeepSeekConfig {
+            api: Some("openai-responses".into()),
+            base_url: Some(url),
+            keyless: true,
+            compat: Some(ProviderCompatibility {
+                use_responses_lite: Some(enabled),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        let mut request = options();
+        request.system = Some("fixture policy".into());
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            crate::request_chunks(
+                request,
+                connection,
+                String::new(),
+                "fixture",
+                ReasoningWireFormat::OpenAi,
+                None,
+                &sender,
+                None,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let body = server.await.unwrap();
+        let headers = body["_wireHeaders"].as_str().unwrap().to_ascii_lowercase();
+        assert_eq!(
+            headers.contains("x-openai-internal-codex-responses-lite: true"),
+            enabled
+        );
+        if enabled {
+            assert!(body.get("instructions").is_none());
+            assert!(body.get("tools").is_none());
+            assert_eq!(body["input"][0]["type"], "additional_tools");
+            assert_eq!(body["input"][1]["role"], "developer");
+            assert_eq!(body["input"][1]["content"][0]["text"], "fixture policy");
+            assert_eq!(body["reasoning"]["context"], "all_turns");
+            assert_eq!(body["parallel_tool_calls"], false);
+        } else {
+            assert_eq!(body["instructions"], "fixture policy");
+            assert!(body["reasoning"].get("context").is_none());
+        }
+    }
+}
+
+#[test]
+fn lite_model_override_can_disable_provider_default() {
+    let provider = ProviderCompatibility {
+        use_responses_lite: Some(true),
+        ..Default::default()
+    };
+    let model = ProviderCompatibility {
+        use_responses_lite: Some(false),
+        ..Default::default()
+    };
+    assert_eq!(
+        provider.merged(Some(&model)).use_responses_lite,
+        Some(false)
+    );
+    assert!(provider.validate("openai-completions").is_err());
+    assert!(
+        serde_json::from_value::<ProviderCompatibility>(json!({"useResponsesLite":null})).is_err()
+    );
 }

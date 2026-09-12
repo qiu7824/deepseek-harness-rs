@@ -6,6 +6,7 @@ license.workspace = true
 description = "Anonymous public HTTP(S) fetch provider"
 
 [dependencies]
+dsh-http-proxy = { path = "../../util/http-proxy" }
 async-trait.workspace = true
 cordis = { path = "../../vendor/cordis" }
 dsh-web = { path = "../web" }

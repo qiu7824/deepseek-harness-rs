@@ -7,6 +7,7 @@ publish = false
 description = "MCP stdio client bridge for DeepSeek Harness"
 
 [dependencies]
+dsh-http-proxy = { path = "../../util/http-proxy" }
 cordis = { path = "../../vendor/cordis" }
 dsh-llm = { path = "../../core/llm" }
 dsh-subprocess = { path = "../../subprocess/subprocess" }

@@ -1105,6 +1105,7 @@ pub struct ApiProxyService {
     /// decode/view/serialization lifetimes from overlapping when the browser
     /// concurrently opens, gap-repairs, and jumps through one conversation.
     history_gate: Arc<tokio::sync::Semaphore>,
+    workspace_deletion_gate: tokio::sync::Mutex<()>,
     learning_history: crate::learning_preview::HistoryCache,
 }
 
@@ -1178,6 +1179,7 @@ impl ApiProxyService {
             preset_switch_counter: std::sync::atomic::AtomicU64::new(0),
             interactions: interactions.clone(),
             history_gate: Arc::new(tokio::sync::Semaphore::new(1)),
+            workspace_deletion_gate: tokio::sync::Mutex::new(()),
             learning_history: crate::learning_preview::HistoryCache::default(),
         });
         ctx.register_service(service.clone());
@@ -2456,6 +2458,7 @@ impl ApiProxyService {
                 let views: Vec<DiscoveredModelView> = models
                     .into_iter()
                     .map(|model| DiscoveredModelView {
+                        compat: model.compat,
                         id: model.id,
                         description: model.description,
                         api: model.api,
@@ -3335,11 +3338,73 @@ impl ApiProxyService {
         let Some(registry) = self.workspace_registry() else {
             return err(request.rpc_id, Self::workspace_absent());
         };
-        let session_id = dsh_session::session_id(request.payload.session_id.clone());
-        let live = self.agents().and_then(|agents| agents.get(&session_id));
+        let _deletion = self.workspace_deletion_gate.lock().await;
+        let root = dsh_session::session_id(request.payload.session_id.clone());
+        let _root_admission = self.resolver.admission(&root).lock_owned().await;
+        let _root_retirement = self.resolver.begin_retirement(&root);
+        let outcome = async {
+            // Validate archival and lineage before interrupting any execution.
+            let _ = registry.archived_subagent_tree(&root).await.map_err(|message| RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} }))?;
+            self.retire_session_for_deletion(&root).await?;
+            // Root retirement closes descendant admission and flushes late materializations.
+            let targets = registry.archived_subagent_tree(&root).await.map_err(|message| RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} }))?;
+            let mut admissions = Vec::new();
+            let mut retirements = Vec::new();
+            for id in targets.iter().filter(|id| *id != &root) {
+                admissions.push(self.resolver.admission(id).lock_owned().await);
+                retirements.push(self.resolver.begin_retirement(id));
+                self.retire_session_for_deletion(id).await?;
+            }
+            // All execution is stopped before the first durable artifact is removed.
+            for id in targets.iter().rev() {
+                if id != &root {
+                    registry.archive_session(id).await.map_err(|message| RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} }))?;
+                }
+                registry.delete_archived_session(id, None).await.map_err(|message| RpcError::Internal(RpcErrorBody {
+                    message: format!("workspace.deleteArchivedSession '{id}': {message}; deletion can be retried from '{root}'"), details: EmptyDetails {}
+                }))?;
+            }
+            Ok::<(), RpcError>(())
+        }.await;
+        match outcome {
+            Ok(()) => ok(
+                request.rpc_id,
+                crate::api::workspace::WorkspaceArchiveSessionResult {
+                    deleted: true,
+                    archived_session_ids: registry
+                        .archived_session_ids()
+                        .into_iter()
+                        .map(|id| id.to_string())
+                        .collect(),
+                },
+            ),
+            Err(error) => err(request.rpc_id, error),
+        }
+    }
+
+    async fn retire_session_for_deletion(
+        &self,
+        session_id: &dsh_session::SessionId,
+    ) -> Result<(), RpcError> {
+        let live = self.agents().and_then(|agents| agents.get(session_id));
+        if let Some(live_agent) = live.as_ref()
+            && let Some(subagents) = self.subagents()
+            && let Err(error) = subagents
+                .drain_continuable_descendants(std::slice::from_ref(live_agent))
+                .await
+        {
+            return Err(RpcError::AgentBusy(RpcErrorBody {
+                message: format!(
+                    "session \"{session_id}\" continuable descendants could not be drained: {error}"
+                ),
+                details: crate::api::rpc::ReasonDetails {
+                    reason: "continuable descendant drain failed".to_string(),
+                },
+            }));
+        }
         let owned_dispose = {
             let mut handles = self.owned_agent_handles.lock();
-            match handles.get_mut(&session_id) {
+            match handles.get_mut(session_id) {
                 Some(handle)
                     if live
                         .as_ref()
@@ -3355,50 +3420,22 @@ impl ApiProxyService {
             }
         };
         if let Some(live_agent) = live.as_ref()
-            && let Some(subagents) = self.subagents()
-            && let Err(error) = subagents
-                .drain_continuable_descendants(std::slice::from_ref(live_agent))
-                .await
-        {
-            return err(
-                request.rpc_id,
-                RpcError::AgentBusy(RpcErrorBody {
-                    message: format!(
-                        "session \"{session_id}\" continuable descendants could not be drained: {error}"
-                    ),
-                    details: crate::api::rpc::ReasonDetails {
-                        reason: "continuable descendant drain failed".to_string(),
-                    },
-                }),
-            );
-        }
-        if let Some(live_agent) = live.as_ref()
             && owned_dispose.is_none()
         {
             let Some(agents) = self.agents() else {
-                return err(
-                    request.rpc_id,
-                    RpcError::Internal(RpcErrorBody {
-                        message: "agent registry disappeared while retiring a live session"
-                            .to_string(),
-                        details: EmptyDetails {},
-                    }),
-                );
+                return Err(RpcError::Internal(RpcErrorBody {
+                    message: "agent registry disappeared while retiring a live session".to_string(),
+                    details: EmptyDetails {},
+                }));
             };
             if !agents.can_retire(live_agent) {
-                return err(
-                    request.rpc_id,
-                    RpcError::AgentBusy(RpcErrorBody {
-                        message: format!(
-                            "session \"{session_id}\" is owned by another live subsystem"
-                        ),
-                        details: crate::api::rpc::ReasonDetails {
-                            reason:
-                                "the structural Agent factory does not own this exact lifecycle"
-                                    .to_string(),
-                        },
-                    }),
-                );
+                return Err(RpcError::AgentBusy(RpcErrorBody {
+                    message: format!("session \"{session_id}\" is owned by another live subsystem"),
+                    details: crate::api::rpc::ReasonDetails {
+                        reason: "the structural Agent factory does not own this exact lifecycle"
+                            .to_string(),
+                    },
+                }));
             }
             live_agent.cancel(dsh_agent::AgentCancelCause::User, None);
             match tokio::time::timeout(
@@ -3409,30 +3446,22 @@ impl ApiProxyService {
             {
                 Ok(Ok(true)) => {}
                 Ok(Ok(false)) | Err(_) => {
-                    return err(
-                        request.rpc_id,
-                        RpcError::AgentBusy(RpcErrorBody {
-                            message: format!(
-                                "session \"{session_id}\" did not stop within 5 seconds; permanent deletion was not started"
-                            ),
-                            details: crate::api::rpc::ReasonDetails {
-                                reason: "structural agent retirement did not settle".to_string(),
-                            },
-                        }),
-                    );
+                    return Err(RpcError::AgentBusy(RpcErrorBody {
+                        message: format!(
+                            "session \"{session_id}\" did not stop within 5 seconds; permanent deletion was not started"
+                        ),
+                        details: crate::api::rpc::ReasonDetails {
+                            reason: "structural agent retirement did not settle".to_string(),
+                        },
+                    }));
                 }
                 Ok(Err(error)) => {
-                    return err(
-                        request.rpc_id,
-                        RpcError::AgentBusy(RpcErrorBody {
-                            message: format!(
-                                "session \"{session_id}\" could not be retired: {error}"
-                            ),
-                            details: crate::api::rpc::ReasonDetails {
-                                reason: "structural agent retirement failed".to_string(),
-                            },
-                        }),
-                    );
+                    return Err(RpcError::AgentBusy(RpcErrorBody {
+                        message: format!("session \"{session_id}\" could not be retired: {error}"),
+                        details: crate::api::rpc::ReasonDetails {
+                            reason: "structural agent retirement failed".to_string(),
+                        },
+                    }));
                 }
             }
         }
@@ -3442,54 +3471,29 @@ impl ApiProxyService {
                 .is_err()
             {
                 let mut handles = self.owned_agent_handles.lock();
-                if let Some(current) = handles.get_mut(&session_id)
+                if let Some(current) = handles.get_mut(session_id)
                     && current.dispose.is_none()
                     && Arc::ptr_eq(&current.agent, &disposed_agent)
                 {
                     current.dispose = Some(dispose);
                 }
-                return err(
-                    request.rpc_id,
-                    RpcError::AgentBusy(RpcErrorBody {
-                        message: format!(
-                            "session \"{session_id}\" did not stop within 5 seconds; permanent deletion was not started"
-                        ),
-                        details: crate::api::rpc::ReasonDetails {
-                            reason: "agent disposal timed out".to_string(),
-                        },
-                    }),
-                );
+                return Err(RpcError::AgentBusy(RpcErrorBody {
+                    message: format!(
+                        "session \"{session_id}\" did not stop within 5 seconds; permanent deletion was not started"
+                    ),
+                    details: crate::api::rpc::ReasonDetails {
+                        reason: "agent disposal timed out".to_string(),
+                    },
+                }));
             }
             let mut handles = self.owned_agent_handles.lock();
-            if handles.get(&session_id).is_some_and(|current| {
+            if handles.get(session_id).is_some_and(|current| {
                 current.dispose.is_none() && Arc::ptr_eq(&current.agent, &disposed_agent)
             }) {
-                handles.remove(&session_id);
+                handles.remove(session_id);
             }
         }
-        match registry.delete_archived_session(&session_id, None).await {
-            Ok(_artifact_existed) => ok(
-                request.rpc_id,
-                crate::api::workspace::WorkspaceArchiveSessionResult {
-                    // Success means the session is now durably absent. An
-                    // already-unmaterialized artifact is still a successful
-                    // permanent deletion.
-                    deleted: true,
-                    archived_session_ids: registry
-                        .archived_session_ids()
-                        .into_iter()
-                        .map(|id| id.to_string())
-                        .collect(),
-                },
-            ),
-            Err(error) => err(
-                request.rpc_id,
-                RpcError::Internal(RpcErrorBody {
-                    message: format!("workspace.deleteArchivedSession: {error}"),
-                    details: EmptyDetails {},
-                }),
-            ),
-        }
+        Ok(())
     }
 
     async fn workspace_archive_session(
@@ -5463,6 +5467,10 @@ impl ApiProxyService {
                 );
             }
         }
+        let pending_files = match crate::prompt_files::prepare(&request.payload.content) {
+            Ok(files) => files,
+            Err(message) => return err(request.rpc_id, invalid_prompt(&message)),
+        };
         let attachment_store = self
             .ctx
             .get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false)
@@ -5473,6 +5481,7 @@ impl ApiProxyService {
                 PromptContentPart::Text { text } => {
                     content.push(dsh_llm::ContentBlock::Text { text: text.clone() });
                 }
+                PromptContentPart::File { .. } => {}
                 PromptContentPart::Image {
                     media_type,
                     data,
@@ -5536,6 +5545,21 @@ impl ApiProxyService {
                 }
             }
         }
+        let files = match crate::prompt_files::save(
+            agent.session().header().cwd.as_deref(),
+            agent.id().as_str(),
+            &pending_files,
+        )
+        .await
+        {
+            Ok(files) => files,
+            Err(message) => return err(request.rpc_id, invalid_prompt(&message)),
+        };
+        content.extend(
+            files
+                .into_iter()
+                .map(|text| dsh_llm::ContentBlock::Text { text }),
+        );
         let prepared = match prepare_prompt_references(&agent, content, None).await {
             Ok(prepared) => prepared,
             Err(error) => return err(request.rpc_id, error),
@@ -6274,6 +6298,10 @@ impl ApiProxyService {
             Some(store)
         };
         let limits = store.map(|store| store.image_limits());
+        let pending_files = match crate::prompt_files::prepare(&request.payload.content) {
+            Ok(files) => files,
+            Err(message) => return err(request.rpc_id, invalid_prompt(&message)),
+        };
         let mut pending_images = Vec::with_capacity(image_count as usize);
         let mut pending_parts = Vec::with_capacity(request.payload.content.len());
         let mut admission_content = Vec::with_capacity(request.payload.content.len());
@@ -6283,6 +6311,11 @@ impl ApiProxyService {
                 crate::api::sessions::PromptContentPart::Text { text } => {
                     pending_parts.push(SubagentPromptPart::Text(text.clone()));
                     admission_content.push(dsh_llm::ContentBlock::Text { text: text.clone() });
+                }
+                crate::api::sessions::PromptContentPart::File { name, .. } => {
+                    admission_content.push(dsh_llm::ContentBlock::Text {
+                        text: format!("Attached file: {name}"),
+                    });
                 }
                 crate::api::sessions::PromptContentPart::Image {
                     media_type,
@@ -6455,6 +6488,24 @@ impl ApiProxyService {
                 }
             }
         }
+        let files = match crate::prompt_files::save(
+            admission.agent().session().header().cwd.as_deref(),
+            child_id.as_str(),
+            &pending_files,
+        )
+        .await
+        {
+            Ok(files) => files,
+            Err(message) => {
+                runtime.abort_followup(admission).await;
+                return err(request.rpc_id, invalid_prompt(&message));
+            }
+        };
+        content.extend(
+            files
+                .into_iter()
+                .map(|text| dsh_llm::ContentBlock::Text { text }),
+        );
         let abort = signal.clone();
         let abort: dsh_session_query::corpus::SessionQueryAbort = Arc::new(move || abort.aborted());
         let prepared =

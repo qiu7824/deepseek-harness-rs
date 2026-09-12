@@ -581,6 +581,31 @@ impl WorkspaceRegistry {
         .await
     }
 
+    /// Enumerate only owned subagent edges, parent before child. User forks
+    /// are independent sessions even when they have the same parentSession.
+    pub async fn archived_subagent_tree(&self, root: &SessionId) -> Result<Vec<SessionId>, String> {
+        if !self.archived_session_ids().contains(root) {
+            return Err(WorkspaceSessionNotArchivedError {
+                session_id: root.clone(),
+            }
+            .to_string());
+        }
+        let mut headers: HashMap<SessionId, SessionHeader> = self
+            .host
+            .persistence
+            .list()
+            .await?
+            .into_iter()
+            .map(|header| (header.id.clone(), header))
+            .collect();
+        if let Some(live) = &self.host.live {
+            for header in live.list() {
+                headers.insert(header.id.clone(), header);
+            }
+        }
+        subagent_deletion_order(root, headers.into_values().collect())
+    }
+
     /// Permanently delete one archived, cold session (TS
     /// `deleteArchivedSession`; the durable-log deletion goes through the
     /// caller-supplied closure until the persistence delete seam lands).
@@ -1198,5 +1223,80 @@ mod root_title_tests {
         ] {
             assert_eq!(super::basename(path), expected);
         }
+    }
+}
+
+/// Parent-first traversal; reversed deletion leaves ancestors available for
+/// retry after any child failure and never crosses a user-created fork.
+fn subagent_deletion_order(
+    root: &SessionId,
+    headers: Vec<SessionHeader>,
+) -> Result<Vec<SessionId>, String> {
+    let mut children: HashMap<SessionId, Vec<SessionId>> = HashMap::new();
+    for header in headers {
+        if header.origin.as_deref() == Some("subagent") {
+            if let Some(parent) = header.parent_session {
+                children.entry(parent).or_default().push(header.id);
+            }
+        }
+    }
+    for ids in children.values_mut() {
+        ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    }
+    let mut order = vec![root.clone()];
+    let mut seen = std::collections::HashSet::from([root.clone()]);
+    let mut index = 0;
+    while index < order.len() {
+        if let Some(ids) = children.get(&order[index]) {
+            for id in ids {
+                if !seen.insert(id.clone()) {
+                    return Err(format!("cyclic subagent lineage at '{id}'"));
+                }
+                order.push(id.clone());
+            }
+        }
+        index += 1;
+    }
+    Ok(order)
+}
+
+#[cfg(test)]
+mod deletion_tree_tests {
+    use super::*;
+    fn header(id: &str, parent: &str, origin: &str) -> SessionHeader {
+        serde_json::from_value(
+            serde_json::json!({"version":3,"id":id,"parentSession":parent,
+            "origin":origin,"createdAt":0,"isSeeded":false}),
+        )
+        .unwrap()
+    }
+    #[test]
+    fn only_subagent_edges_are_deleted_leaves_first() {
+        let root = dsh_session::session_id("root");
+        let headers = vec![
+            header("child", "root", "subagent"),
+            header("grandchild", "child", "subagent"),
+            header("fork", "root", "fork"),
+            header("fork-child", "fork", "subagent"),
+            header("unrelated", "other", "subagent"),
+        ];
+        let order = subagent_deletion_order(&root, headers).unwrap();
+        assert_eq!(
+            order.iter().rev().map(|id| id.as_str()).collect::<Vec<_>>(),
+            ["grandchild", "child", "root"]
+        );
+    }
+    #[test]
+    fn malformed_cycles_fail_before_deletion() {
+        assert!(
+            subagent_deletion_order(
+                &dsh_session::session_id("root"),
+                vec![
+                    header("root", "child", "subagent"),
+                    header("child", "root", "subagent")
+                ]
+            )
+            .is_err()
+        );
     }
 }

@@ -204,7 +204,7 @@ fn validate_event(
             open_step = None;
             next_step += 1;
         }
-        "assistant/chunk" => {
+        "assistant/chunk" | "assistant/attempt" => {
             let turn = data_turn().unwrap_or(0);
             let step = data_step().unwrap_or(0);
             require_open_step(trace, "assistant/chunk", turn, step, fail);

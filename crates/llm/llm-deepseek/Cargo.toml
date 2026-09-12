@@ -6,6 +6,7 @@ license = "MIT"
 description = "Production DeepSeek chat-completions adapter for the DeepSeek Harness"
 
 [dependencies]
+dsh-http-proxy = { path = "../../util/http-proxy" }
 async-stream = "=0.3.6"
 async-trait = { workspace = true }
 bytes = "1"

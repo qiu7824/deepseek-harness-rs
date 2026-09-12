@@ -124,7 +124,8 @@ impl RemoteHttpClient {
                     .map_err(|_| error("invalid MCP header value"))?,
             );
         }
-        let client = reqwest::Client::builder()
+        let client = dsh_http_proxy::builder()
+            .map_err(error)?
             .default_headers(headers)
             .redirect(reqwest::redirect::Policy::none())
             .timeout(config.request_timeout)

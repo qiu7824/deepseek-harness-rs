@@ -216,7 +216,7 @@ async fn transmit(path: &Path, value: &mut Submission, target: &Destination) -> 
     value.last_error = None;
     save(path, value).await?;
     let outcome = async {
-        let client = reqwest::Client::builder()
+        let client = dsh_http_proxy::builder()?
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none());
         let client = if target.loopback {

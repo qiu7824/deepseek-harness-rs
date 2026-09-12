@@ -62,6 +62,12 @@ pub enum PromptContentPart {
     Text {
         text: String,
     },
+    File {
+        name: String,
+        data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        media_type: Option<String>,
+    },
     Image {
         media_type: ImageMediaType,
         /// Base64-encoded image bytes.

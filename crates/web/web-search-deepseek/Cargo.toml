@@ -6,6 +6,7 @@ license.workspace = true
 description = "DeepSeek native web search provider"
 
 [dependencies]
+dsh-http-proxy = { path = "../../util/http-proxy" }
 anyhow.workspace = true
 async-trait.workspace = true
 cordis = { path = "../../vendor/cordis" }

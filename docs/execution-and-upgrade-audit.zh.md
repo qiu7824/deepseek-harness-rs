@@ -80,10 +80,10 @@ DSH 采用相同的职责划分原则，使用本地就绪/超时通知、明确
 
 实际远程桌面会话的重算结果为系统约 1,310 token、工具约 7,822 token、普通消息约 3,005 token。此前系统显示为零属于分类错误，并不表示系统指令没有发送。该会话的 12 次请求累计输入为 131,618 token，服务端在这 12 次记录中明确报告缓存读取为零；历史记录保持原样，不能以新代码推断过去已命中缓存。
 
-Codex 还通过模型能力选择 Responses Lite、历史内工具定义、推理上下文和配置更新等协议能力。DSH 尚未完整实现这些协议；不能把启用缓存键等同于复制了 Codex 的全部执行机制，也不能把历史缓存比率当作修复后的效果证明。缓存写入、读取、未披露统计与 ChatGPT 账号额度分别保留其含义。
+Codex 还通过模型能力选择 Responses Lite、历史内工具定义、推理上下文和配置更新等协议能力。DSH 已接入按模型能力启用的 Responses Lite，具体请求范围见[能力说明](session-files-teams-and-network.zh.md)；不能把启用缓存键等同于复制了 Codex 的全部执行机制，也不能把历史缓存比率当作修复后的效果证明。缓存写入、读取、未披露统计与 ChatGPT 账号额度分别保留其含义。
 
 依据：[OpenAI 缓存说明](https://developers.openai.com/api/docs/guides/prompt-caching)、[模型指导](https://developers.openai.com/api/docs/guides/latest-model)、[Codex 请求构造](https://github.com/openai/codex/blob/94697375cb9d2aa8ae74d61957c6b396819bec94/codex-rs/core/src/client.rs)。
 
 ## 支持范围
 
-当前验收覆盖 Windows 本机维护。Linux/macOS 的新发布包、完整官方旧日志导入、通用文件上传、全网络代理策略、Agent Teams 和完整 Responses Lite 属于独立兼容项目。供应商余额、订阅额度、远端登录与解锁要求仍由对应服务控制。
+当前验收覆盖 Windows 本机维护。旧日志导入、通用文件上传、共享代理策略、Agent Teams 与 Responses Lite 的配置和验证边界见[能力说明](session-files-teams-and-network.zh.md)。Linux/macOS 发布包通过对应平台工作流验收。供应商余额、订阅额度、远端登录与解锁要求仍由对应服务控制。

@@ -70,7 +70,7 @@ impl CancelableResponse {
 }
 
 fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    dsh_http_proxy::builder()?
         .connect_timeout(std::time::Duration::from_secs(10))
         .tcp_nodelay(true)
         .build()

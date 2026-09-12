@@ -340,6 +340,17 @@ impl SubagentRuntime {
         self.manager().start_continuable(spec).await
     }
 
+    /// Start a child whose identity was journaled by an orchestration owner.
+    pub async fn start_continuable_reserved(
+        &self,
+        spec: crate::continuation::ContinuableStartSpec,
+        id: dsh_session::SessionId,
+    ) -> Result<crate::continuation::ContinuableStart, SubagentError> {
+        self.manager()
+            .start_continuable_reserved(spec, Some(id))
+            .await
+    }
+
     /// Queue one host-authored prompt as a direct-child turn.
     pub async fn followup(
         &self,

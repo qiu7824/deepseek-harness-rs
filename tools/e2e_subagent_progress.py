@@ -203,14 +203,19 @@ def main():
                             assert turn_ends(row["interruptedHistory"])[-1]["data"]["reason"]["kind"] == "aborted", "an interrupted child must never report completed"
                             Fixture.release.set()
                         elif phase == "archive-delete":
+                            fork = client.call("session.fork", {"sessionId": session})["sessionId"]
+                            row["independentFork"] = fork
                             row["archiveReceipt"] = client.call("workspace.archiveSession", {"sessionId": session})
                             assert session in row["archiveReceipt"]["archivedSessionIds"]
                             row["deleteReceipt"] = client.call("workspace.deleteArchivedSession", {"sessionId": session})
                             assert row["deleteReceipt"]["deleted"] is True
-                            row["hostAfterDelete"] = client.until(lambda: client.call("host.describe", {}), lambda value: value["attachedSessions"] <= attached_before, "permanent deletion must release the parent and child agents", timeout=5)
+                            row["hostAfterDelete"] = client.until(lambda: client.call("host.describe", {}), lambda value: value["attachedSessions"] <= attached_before + 1, "permanent deletion releases parent and child while retaining the independent fork", timeout=5)
                             row["sessionsAfterDelete"] = client.call("session.list", {})
                             assert all(not item.get("running") for item in row["sessionsAfterDelete"]["items"] if item["sessionId"] in (session, child["id"])), "a deleted parent's child cannot remain running"
                             assert all(item["sessionId"] != session for item in row["sessionsAfterDelete"]["items"]), "the parent must be durably deleted"
+                            assert all(item["sessionId"] != child["id"] for item in row["sessionsAfterDelete"]["items"]), "the subagent history must be durably deleted with the parent"
+                            assert any(item["sessionId"] == fork for item in row["sessionsAfterDelete"]["items"]), "independent user forks must survive parent deletion"
+                            row["subagentHistoryDeleted"] = True
                             requests_before_release = len(Fixture.records)
                             Fixture.release.set()
                             time.sleep(0.15)

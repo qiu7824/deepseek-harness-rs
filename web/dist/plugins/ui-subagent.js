@@ -680,6 +680,26 @@ window.__ModuleLoader__.load({
 		const NS = "subagent";
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
+            "team.title": "团队",
+            "team.members": "成员",
+            "team.tasks": "共享任务",
+            "team.lead": "负责人",
+            "team.unassigned": "未分配",
+            "team.close": "关闭",
+            "team.empty": "暂无团队成员，可在对话中明确要求组建团队。",
+            "team.dependencies": "前置任务",
+            "team.writeScopes": "文件范围",
+            "team.scopeNote": "任务分配和文件范围用于协作，不会锁定工作区文件。",
+            "team.status.provisioning": "正在创建",
+            "team.status.active": "已就绪",
+            "team.status.failed": "创建失败",
+            "team.status.running": "运行中",
+            "team.status.idle": "空闲",
+            "team.status.inactive": "未运行",
+            "team.status.pending": "待处理",
+            "team.status.in_progress": "进行中",
+            "team.status.completed": "已完成",
+
 			"diagnostic.corrupt": "会话记录损坏",
 			"diagnostic.unsupported": "旧版子代理记录（只读）",
 			"diagnostic.unavailable": "会话记录暂不可用",
@@ -728,6 +748,26 @@ window.__ModuleLoader__.load({
 		};
 		/** English dictionary, key-identical to the Chinese source of truth. */
 		const en = {
+            "team.title": "Team",
+            "team.members": "Members",
+            "team.tasks": "Shared tasks",
+            "team.lead": "Lead",
+            "team.unassigned": "Unassigned",
+            "team.close": "Close",
+            "team.empty": "No teammates yet. Explicitly request a team in the conversation to create one.",
+            "team.dependencies": "Dependencies",
+            "team.writeScopes": "File scopes",
+            "team.scopeNote": "Task assignments and file scopes coordinate work; they do not lock workspace files.",
+            "team.status.provisioning": "Creating",
+            "team.status.active": "Ready",
+            "team.status.failed": "Creation failed",
+            "team.status.running": "Running",
+            "team.status.idle": "Idle",
+            "team.status.inactive": "Inactive",
+            "team.status.pending": "Pending",
+            "team.status.in_progress": "In progress",
+            "team.status.completed": "Completed",
+
 			"diagnostic.corrupt": "corrupted session record",
 			"diagnostic.unsupported": "legacy subagent record (read-only)",
 			"diagnostic.unavailable": "session record temporarily unavailable",
@@ -796,6 +836,47 @@ window.__ModuleLoader__.load({
 		* Client plugin body: register the '@' subagent source over the root session list.
 		* @param ctx - client root context.
 		*/
+        function TeamBoardAction({ parentSessionId, openChild, t }) {
+            const h = react.createElement;
+            const [open, setOpen] = react.useState(false), [state, setState] = react.useState(null), [error, setError] = react.useState(null);
+            const trigger = react.useRef(null);
+            react.useEffect(() => { setOpen(false); setState(null); setError(null); }, [parentSessionId]);
+            react.useEffect(() => {
+                const abort = new AbortController(); let alive = true, timer;
+                const load = async () => {
+                    if (open && document.visibilityState === 'hidden') { timer = setTimeout(load, 2000); return; }
+                    try {
+                        const response = await fetch('/__dsh-agent-team', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: parentSessionId }), signal: abort.signal });
+                        const value = await response.json();
+                        if (!response.ok) throw new Error(value.error || `HTTP ${response.status}`);
+                        if (alive) { setState(value); setError(null); }
+                    } catch (reason) { if (alive && !abort.signal.aborted) setError(String(reason.message || reason)); }
+                    finally { if (alive && open) timer = setTimeout(load, 2000); }
+                };
+                load(); return () => { alive = false; abort.abort(); clearTimeout(timer); };
+            }, [parentSessionId, open]);
+            if (!state?.enabled && !error) return null;
+            const board = state?.board, members = Object.values(board?.members ?? {}), tasks = Object.values(board?.tasks ?? {});
+            const ownerName = id => id === board?.teamId ? t('team.lead') : members.find(member => member.id === id)?.name ?? t('team.unassigned');
+            const close = () => { setOpen(false); trigger.current?.focus(); };
+            return h(react.Fragment, null,
+                h('button', { ref: trigger, type: 'button', onClick: () => setOpen(true), style: { color: 'var(--dsw-alias-label-secondary)', background: 'transparent', border: 0, borderRadius: 6, padding: '4px 8px', cursor: 'pointer' } }, t('team.title')),
+                open && h(_deepseek_ai_dsh_client_ui_primitives.Modal, { open: true, title: t('team.title'), closeLabel: t('team.close'), onClose: close },
+                    h('div', { style: { display: 'grid', gap: 16, maxHeight: '65vh', overflow: 'auto', overflowWrap: 'anywhere' }, 'data-agent-team-board': true },
+                        error && h('p', { role: 'alert' }, error),
+                        h('h3', null, t('team.members')),
+                        members.length === 0 && h('p', null, t('team.empty')),
+                        members.map(member => h('div', { key: member.id, style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+                            h('button', { type: 'button', disabled: member.phase !== 'active', onClick: () => { setOpen(false); openChild({ parentSessionId: board.teamId, childSessionId: member.id, mode: 'continuable' }); } }, member.name),
+                            h('span', null, t(`team.status.${member.status ?? member.phase}`)), member.error && h('span', { role: 'status' }, member.error))),
+                        h('h3', null, t('team.tasks')),
+                        tasks.filter(task => task.status !== 'deleted').map(task => h('article', { key: task.id, style: { padding: 12, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8 } },
+                            h('strong', null, task.subject), h('p', null, task.description),
+                            h('div', null, `${ownerName(task.ownerId)} · ${t(`team.status.${task.status}`)}`),
+                            task.blockedBy.length > 0 && h('div', null, `${t('team.dependencies')}: ${task.blockedBy.join(', ')}`),
+                            task.writeScopes.length > 0 && h('div', null, `${t('team.writeScopes')}: ${task.writeScopes.join(', ')}`))),
+                        h('p', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('team.scopeNote')))));
+        }
 		function apply(ctx) {
 			ctx.effect(() => ctx.locale.register(NS, {
 				zh,
@@ -859,6 +940,7 @@ window.__ModuleLoader__.load({
 				locale: NS,
 				inject: catalogActions
 			}, SubagentCatalogAction));
+            ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({ name: "conversation.session.header.actions", id: "agent-team-board", order: 11, locale: NS, inject: catalogActions }, TeamBoardAction));
 			ctx.slots.inject("conversation.composer", () => ctx.slots.register({
 				name: "conversation.composer",
 				priority: -10,

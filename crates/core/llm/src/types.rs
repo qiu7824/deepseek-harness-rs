@@ -372,6 +372,8 @@ pub struct LlmModelDiscoveryRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmDiscoveredModel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat: Option<serde_json::Value>,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

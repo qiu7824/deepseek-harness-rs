@@ -903,3 +903,76 @@ pub(crate) fn request_for_endpoint_with_history_for_account(
 #[path = "responses_stream.rs"]
 mod stream;
 pub(crate) use stream::ResponsesTranslator;
+
+/// Responses Lite keeps tools and changing instructions in the input history.
+/// It uses the normal Responses stream and the existing scoped replay path.
+pub(crate) fn apply_lite(body: &mut Value) -> Result<(), LlmFailure> {
+    let object = body
+        .as_object_mut()
+        .ok_or_else(|| failure("Responses body must be an object", "INVALID_REQUEST"))?;
+    let tools = object.remove("tools").unwrap_or_else(|| json!([]));
+    let instructions = object.remove("instructions");
+    let input = object
+        .get_mut("input")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| failure("Responses Lite requires input items", "INVALID_REQUEST"))?;
+    if let Some(text) = instructions
+        .as_ref()
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        input.insert(0, json!({"type":"message","role":"developer","content":[{"type":"input_text","text":text}]}));
+    }
+    input.insert(
+        0,
+        json!({"type":"additional_tools","role":"developer","tools":tools}),
+    );
+    for item in input {
+        for key in ["content", "output"] {
+            if let Some(parts) = item.get_mut(key).and_then(Value::as_array_mut) {
+                for part in parts {
+                    if part["type"] == "input_image" {
+                        part.as_object_mut().unwrap().remove("detail");
+                    }
+                }
+            }
+        }
+    }
+    let reasoning = object
+        .entry("reasoning")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| failure("Responses reasoning must be an object", "INVALID_REQUEST"))?;
+    reasoning.insert("context".into(), json!("all_turns"));
+    object.insert("parallel_tool_calls".into(), json!(false));
+    object.insert("store".into(), json!(false));
+    object.insert("include".into(), json!(["reasoning.encrypted_content"]));
+    Ok(())
+}
+
+#[cfg(test)]
+mod lite_tests {
+    use super::*;
+    #[test]
+    fn tools_instructions_images_and_reasoning_use_lite_shape() {
+        let original = json!({"instructions":"policy","tools":[{"type":"function","name":"read"}],
+            "input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AA==","detail":"high"}]},
+                {"type":"reasoning","encrypted_content":"opaque"},{"role":"developer","content":[{"type":"input_text","text":"changed policy"}]}],
+            "reasoning":{"effort":"high"},"parallel_tool_calls":true});
+        let mut body = original.clone();
+        apply_lite(&mut body).unwrap();
+        assert!(body.get("tools").is_none());
+        assert!(body.get("instructions").is_none());
+        assert_eq!(body["input"][0]["type"], "additional_tools");
+        assert_eq!(body["input"][1]["content"][0]["text"], "policy");
+        assert!(body["input"][2]["content"][0].get("detail").is_none());
+        assert_eq!(body["input"][3]["encrypted_content"], "opaque");
+        assert_eq!(body["input"][4]["content"][0]["text"], "changed policy");
+        assert_eq!(
+            body["reasoning"],
+            json!({"effort":"high","context":"all_turns"})
+        );
+        assert_eq!(body["parallel_tool_calls"], false);
+        assert_eq!(original["input"][0]["content"][0]["detail"], "high");
+    }
+}

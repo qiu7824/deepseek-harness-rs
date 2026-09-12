@@ -1,0 +1,13 @@
+[package]
+name = "dsh-http-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Explicit outbound proxy policy with unconditional loopback bypass"
+
+[dependencies]
+reqwest = { version = "=0.12.24", default-features = false, features = ["rustls-tls", "blocking"] }
+dsh-home-paths = { path = "../home-paths" }
+
+[dev-dependencies]
+tokio.workspace = true

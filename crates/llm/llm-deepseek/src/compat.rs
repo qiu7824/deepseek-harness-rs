@@ -67,6 +67,13 @@ pub struct ProviderCompatibility {
         skip_serializing_if = "Option::is_none"
     )]
     pub supports_max_output_tokens: Option<bool>,
+    /// Enable only for an endpoint/model that advertises Responses Lite.
+    #[serde(
+        default,
+        deserialize_with = "non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub use_responses_lite: Option<bool>,
 }
 fn non_null<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
@@ -93,6 +100,7 @@ impl ProviderCompatibility {
                 .supports_reasoning_effort
                 .or(self.supports_reasoning_effort),
             vllm_priority: model.vllm_priority.or(self.vllm_priority),
+            use_responses_lite: model.use_responses_lite.or(self.use_responses_lite),
             supports_max_output_tokens: model
                 .supports_max_output_tokens
                 .or(self.supports_max_output_tokens),
@@ -113,6 +121,9 @@ impl ProviderCompatibility {
                 || self.supports_reasoning_effort.is_some())
         {
             return Err("thinkingTokenBudgetField, thinkingBudgets, supportsThinkingTokenBudget, supportsReasoningEffort and vllmPriority require openai-completions".into());
+        }
+        if api != "openai-responses" && self.use_responses_lite.is_some() {
+            return Err("useResponsesLite requires openai-responses".into());
         }
         if api != "openai-responses" && self.supports_max_output_tokens.is_some() {
             return Err("supportsMaxOutputTokens requires openai-responses".into());
@@ -244,5 +255,12 @@ pub(crate) fn apply_responses(
             body.remove("max_output_tokens");
         }
     }
+    if compat.use_responses_lite == Some(true) {
+        crate::responses::apply_lite(body)?;
+    }
     Ok(())
+}
+
+pub(crate) fn responses_lite(connection: &ResolvedDeepSeekOptions, model: Option<&str>) -> bool {
+    selected(connection, model).use_responses_lite == Some(true)
 }
