@@ -72,8 +72,8 @@ def validate_payload(directory: Path, tag: str) -> dict[str, str]:
     for name, sha in expected.items():
         if digest(directory / name) != sha:
             raise ValueError("artifact checksum mismatch: " + name)
-    (directory / "SHA256SUMS.txt").write_text(
-        "".join(f"{expected[name]}  {name}\n" for name in sorted(expected)), encoding="utf-8")
+    (directory / "SHA256SUMS.txt").write_bytes(
+        "".join(f"{expected[name]}  {name}\n" for name in sorted(expected)).encode("utf-8"))
     return expected
 
 

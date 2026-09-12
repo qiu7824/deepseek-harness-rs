@@ -35,6 +35,9 @@ class ReleasePromotionTests(unittest.TestCase):
                 (root / f"SHA256SUMS-{platform}.txt").write_text("".join(rows), encoding="utf-8")
             self.assertEqual(validate_payload(root, "v0.1.3-test"), expected)
             self.assertEqual(len(expected), 24)
+            checksums = (root / "SHA256SUMS.txt").read_bytes()
+            self.assertNotIn(b"\r", checksums, "release checksums must have identical bytes on Windows and Unix")
+            self.assertEqual(checksums.count(b"\n"), len(expected))
             first = root / next(iter(expected))
             first.write_bytes(b"wrong build")
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
