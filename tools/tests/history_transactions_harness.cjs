@@ -26,6 +26,30 @@ function fixture(first = 100, last = 111) {
 (async () => {
   let checks = 0;
   {
+    const { session: s, requests } = fixture();
+    const reconnect = s.resync(); await flush();
+    assert.equal(s.openState, 'loading');
+    const sendNavigation = s.returnLatest(); await flush();
+    requests[0].resolve(result(page(100, 111))); await reconnect; await flush();
+    assert.equal(requests.length, 2, 'sending during reconnect must replace the invalidated open request');
+    s.acceptLiveEvent(entry(113).event);
+    requests[1].resolve(result(page(100, 112))); await sendNavigation;
+    assert.equal(s.openState, 'open', 'new replies must not remain buffered until a page refresh');
+    assert.equal(s.windowTailSeq(), 113); assert.equal(s.liveBuffer.length, 0);
+    s.acceptLiveEvent(entry(114).event); assert.equal(s.windowTailSeq(), 114); checks++;
+  }
+  {
+    const { session: s, requests } = fixture();
+    const reconnect = s.resync(); await flush();
+    const latest = s.returnLatest(); const failure = assert.rejects(latest, /returnLatest failed/);
+    requests[0].resolve(result(page(100, 111))); await reconnect; await flush();
+    requests[1].resolve({ result: { ok: false, error: { code: 'offline', message: 'offline' } } });
+    await failure; assert.equal(s.openState, 'error'); assert.ok(s.openError);
+    const retry = s.returnLatest(); await flush();
+    requests[2].resolve(result(page(110, 115))); await retry;
+    assert.equal(s.openState, 'open'); assert.equal(s.windowTailSeq(), 115); checks++;
+  }
+  {
     const { session: s, requests } = fixture(); s.historyTargetSeq = 100; s.hasMoreAfter = true;
     const olderWindow = s.events, pending = s.loadNewer(); await flush();
     const jump = s.loadAround(20, true); await flush();

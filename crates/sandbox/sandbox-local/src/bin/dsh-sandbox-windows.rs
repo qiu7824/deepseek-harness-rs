@@ -429,6 +429,29 @@ pub mod windows_runner {
                             null_mut(),
                         )
                     };
+                    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+                        && unsafe { GetLastError() } == 5
+                    {
+                        // Protected public ancestors (for example Program Files)
+                        // can already be traversable without granting WRITE_DAC
+                        // to the Host. Leave their ACLs unchanged. The AppContainer
+                        // child still has to pass the OS's own access checks.
+                        let readable = unsafe {
+                            CreateFileW(
+                                name.as_ptr(),
+                                0x001200a0, // metadata, traverse and synchronize
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                null(),
+                                OPEN_EXISTING,
+                                FILE_FLAG_BACKUP_SEMANTICS,
+                                null_mut(),
+                            )
+                        };
+                        if readable != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                            drop(Handle(readable));
+                            continue;
+                        }
+                    }
                     if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
                         return Err(format!(
                             "{}: {}",
@@ -466,6 +489,92 @@ pub mod windows_runner {
     }
     fn update_ancestor_access(handle: HANDLE, sid: PSID, grant: bool) -> Result<(), String> {
         update_access(handle, sid, grant, 0x001200a0, 0)
+    }
+
+    #[test]
+    fn protected_public_ancestors_do_not_require_acl_write_access() {
+        use windows_sys::Win32::Security::*;
+        use windows_sys::Win32::Storage::FileSystem::*;
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        struct Impersonation;
+        impl Drop for Impersonation {
+            fn drop(&mut self) {
+                unsafe { RevertToSelf() };
+            }
+        }
+        let profile = AppContainerProfile::create().unwrap();
+        let mut token = null_mut();
+        assert_ne!(
+            unsafe {
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_DUPLICATE | TOKEN_QUERY,
+                    &mut token,
+                )
+            },
+            0
+        );
+        let token = Handle::new(token, "open test token").unwrap();
+        let mut admin_sid = [0u32; 17];
+        let mut size = std::mem::size_of_val(&admin_sid) as u32;
+        assert_ne!(
+            unsafe {
+                CreateWellKnownSid(
+                    WinBuiltinAdministratorsSid,
+                    null_mut(),
+                    admin_sid.as_mut_ptr().cast(),
+                    &mut size,
+                )
+            },
+            0
+        );
+        let disabled = SID_AND_ATTRIBUTES {
+            Sid: admin_sid.as_mut_ptr().cast(),
+            Attributes: 0,
+        };
+        let mut restricted = null_mut();
+        assert_ne!(
+            unsafe {
+                CreateRestrictedToken(
+                    token.0,
+                    DISABLE_MAX_PRIVILEGE,
+                    1,
+                    &disabled,
+                    0,
+                    null(),
+                    0,
+                    null(),
+                    &mut restricted,
+                )
+            },
+            0
+        );
+        let restricted = Handle::new(restricted, "restrict test token").unwrap();
+        assert_ne!(unsafe { ImpersonateLoggedOnUser(restricted.0) }, 0);
+        let impersonation = Impersonation;
+        let parent = PathBuf::from(std::env::var_os("ProgramFiles").unwrap());
+        let raw = unsafe {
+            CreateFileW(
+                wide(parent.as_os_str()).as_ptr(),
+                READ_CONTROL | WRITE_DAC,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                null_mut(),
+            )
+        };
+        if raw != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+            drop(Handle(raw));
+            panic!("test requires a protected Program Files directory");
+        }
+        assert_eq!(unsafe { GetLastError() }, 5);
+        let child = parent.join("dsh-ancestor-access-test");
+        let mut access = AncestorAccess::grant(&[child.as_path()], profile.sid.0).unwrap();
+        run_journal::revoke_if_owned(&parent, profile.sid.0).unwrap();
+        access.revoke().unwrap();
+        drop(impersonation);
     }
     fn update_access(
         handle: HANDLE,

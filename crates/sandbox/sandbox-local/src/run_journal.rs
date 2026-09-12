@@ -151,14 +151,14 @@ fn process_alive(pid: u32) -> Result<bool, String> {
     Ok(code == 259)
 }
 
-fn revoke_if_owned(path: &Path, sid: PSID) -> Result<(), String> {
+pub(super) fn revoke_if_owned(path: &Path, sid: PSID) -> Result<(), String> {
     use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, LocalFree};
     use windows_sys::Win32::Security::{Authorization::*, *};
     use windows_sys::Win32::Storage::FileSystem::*;
     if !path.is_dir() {
         return Ok(());
     }
-    let raw = unsafe {
+    let mut raw = unsafe {
         CreateFileW(
             wide(path.as_os_str()).as_ptr(),
             READ_CONTROL | WRITE_DAC,
@@ -169,6 +169,21 @@ fn revoke_if_owned(path: &Path, sid: PSID) -> Result<(), String> {
             null_mut(),
         )
     };
+    let mut writable = true;
+    if raw == INVALID_HANDLE_VALUE && unsafe { GetLastError() } == 5 {
+        writable = false;
+        raw = unsafe {
+            CreateFileW(
+                wide(path.as_os_str()).as_ptr(),
+                READ_CONTROL,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                null_mut(),
+            )
+        };
+    }
     if raw == INVALID_HANDLE_VALUE {
         return Err(last_error("open sandbox recovery target"));
     }
@@ -216,6 +231,12 @@ fn revoke_if_owned(path: &Path, sid: PSID) -> Result<(), String> {
     }
     // Derive propagation from the actual owned ACE, never from journal input.
     if let Some(inheritance) = inheritance {
+        if !writable {
+            return Err(format!(
+                "cannot revoke owned sandbox ACL on {}: access denied",
+                path.display()
+            ));
+        }
         update_access(handle.0, sid, false, 0, inheritance)?;
     }
     Ok(())

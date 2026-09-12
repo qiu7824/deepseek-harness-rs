@@ -15,6 +15,14 @@ function fixture(address) {
 }
 (async () => {
   const content = [{ type: 'text', text: 'queue fixture' }];
+  {
+    const { session, calls } = fixture();
+    session.returnLatest = async () => { throw new Error('history unavailable'); };
+    const result = await session.prompt(content, 'queue');
+    assert.equal(result.ok, false); assert.equal(session.promptError.op, 'send');
+    assert.equal(calls.length, 0, 'failed history synchronization is reported before admission');
+    assert.equal(session.queueMirror.snapshot().length, 0);
+  }
   for (const address of [undefined, { parentSessionId: 'parent', childSessionId: 'child', mode: 'continuable' }]) {
     const { session, calls, pending } = fixture(address);
     const first = session.prompt(content, 'steer');

@@ -7365,10 +7365,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				this.promptAttempted = true;
 				if (this.blankBit) this.firstPromptPendingTurn = true;
 				this.notifier.markDirty();
-				await this.returnLatest();
-				const runningRevisionAtStart = this.runningRevision;
+				let runningRevisionAtStart = this.runningRevision;
 				let result;
 				try {
+					await this.returnLatest();
+					runningRevisionAtStart = this.runningRevision;
 					if (this.address === void 0) result = (await this.api.sessions.prompt({
 						sessionId: this.sessionId,
 						requestId,
@@ -7770,7 +7771,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			async returnLatest() {
 			    const request = this.beginHistoryNavigation("latest");
 			    this.readingAwayFromTail = false;
-			    if (this.historyTargetSeq === null && !this.hasMoreAfter && !this.tailRepairNeeded) { this.notifier.markDirty(); return; }
+			    if (this.openState === "open" && this.historyTargetSeq === null && !this.hasMoreAfter && !this.tailRepairNeeded) { this.notifier.markDirty(); return; }
 			    this.stitching = true;
 			    try {
 			        const response = await this.fetchHistory({ maxMessages: HISTORY_PAGE_MESSAGES }, () => this.currentHistoryRequest(request, "navigationRequest"));
@@ -7781,6 +7782,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			        this.historyTargetSeq = null;
 			        this.installWindow(result.value.events, result.value.hasMore, result.value.projections);
 			        this.openState = "open"; this.openError = null;
+			    } catch (error) {
+			        if (this.currentHistoryRequest(request, "navigationRequest") && this.openState !== "open") {
+			            this.openState = "error"; this.openError = transportError(error).error;
+			        }
+			        throw error;
 			    } finally {
 			        if (this.currentHistoryRequest(request, "navigationRequest")) {
 			            this.stitching = false; this.notifier.markDirty(); this.maybeRepairTail();
