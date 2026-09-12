@@ -196,7 +196,7 @@ impl ToolPwshService {
             ToolDefinition {
                 name: "pwsh".to_string(),
                 description:
-                    "Execute a PowerShell command in the foreground or as a background job."
+                    "Execute a PowerShell command in the foreground or as a background job. Commands fail fast. For optional native dependency checks use $probe = Invoke-DshNativeProbe -FilePath 'python' -ArgumentList @('-c', 'import sys; print(sys.executable); print(sys.version)'); inspect $probe.ExitCode and $probe.Output. The helper preserves complete native stderr and does not poison later commands when a dependency is absent. For Python modules, prefer importlib.util.find_spec with exceptions handled inside Python instead of repeatedly importing optional packages. Do not assume python is a particular version or environment; use the project's configured interpreter. allow_nonzero preserves the final exit status as diagnostic data; it does not prevent a script from terminating early."
                         .to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
@@ -348,7 +348,10 @@ impl ToolPwshService {
                             }
                         }
                         if (result.exit_code.is_some_and(|code| code != 0) || result.signal.is_some()) && !allow_nonzero {
-                            return Err(ToolBodyError::coded(format!("PowerShell command failed (exit: {:?}, signal: {:?})\n{output}", result.exit_code, result.signal), "ShellError", "SHELL_FAILED"));
+                            let hint = if output.contains("NativeCommandError") {
+                                "\nPowerShell interrupted native stderr handling. For optional dependency checks, use Invoke-DshNativeProbe and inspect its ExitCode and complete Output; allow_nonzero alone cannot resume an interrupted script."
+                            } else { "" };
+                            return Err(ToolBodyError::coded(format!("PowerShell command failed (exit: {:?}, signal: {:?})\n{output}{hint}", result.exit_code, result.signal), "ShellError", "SHELL_FAILED"));
                         }
                         Ok(serde_json::json!({
                             "kind": "foreground",

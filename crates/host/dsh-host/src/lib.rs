@@ -27,6 +27,7 @@ mod computer_use_stream;
 #[cfg(test)]
 mod context_stats_test;
 mod deepseek_settings;
+mod devin_auth;
 mod feedback_delivery;
 mod free_catalog;
 mod free_probe;
@@ -321,6 +322,7 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
                 "openai-completions",
                 "openai-responses",
                 "anthropic-messages",
+                "devin-agent",
             ]
             .into_iter()
             .map(|api| Schema::constant(Data::String(api.into())))
@@ -385,6 +387,7 @@ fn openai_compatible_schema() -> dsh_schemastery::Schema {
             Schema::constant(Data::String("openai-completions".to_string())),
             Schema::constant(Data::String("openai-responses".to_string())),
             Schema::constant(Data::String("anthropic-messages".to_string())),
+            Schema::constant(Data::String("devin-agent".to_string())),
         ])
         .required(true),
     );
@@ -533,11 +536,12 @@ async fn discover_openai_compatible_models(
             "openai-completions",
             "openai-responses",
             "anthropic-messages",
+            "devin-agent",
         ]
         .contains(&api)
     }) {
         return Err(
-            "model discovery only supports openai-completions, openai-responses or anthropic-messages".to_string(),
+            "model discovery only supports openai-completions, openai-responses, anthropic-messages or devin-agent".to_string(),
         );
     }
     let base_url = request
@@ -589,6 +593,18 @@ async fn discover_openai_compatible_models(
             None => None,
         },
     };
+    if request.api.as_deref() == Some(dsh_llm_deepseek::devin::API) {
+        let key = supplied_api_key
+            .as_deref()
+            .ok_or("Devin 模型目录需要已登录的订阅账号")?;
+        let discover = dsh_llm_deepseek::devin::discover_models(base_url, key);
+        let payload = if let Some(signal) = request.signal.as_ref() {
+            tokio::select! {result=discover=>result?,_=async{while !signal(){tokio::time::sleep(std::time::Duration::from_millis(10)).await}}=>return Err("model discovery aborted".into())}
+        } else {
+            discover.await?
+        };
+        return model_discovery::parse_model_listing(&payload);
+    }
     if let Some(api_key) = supplied_api_key {
         let value =
             reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|_| {
@@ -679,11 +695,12 @@ fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSett
             "openai-completions",
             "openai-responses",
             "anthropic-messages",
+            "devin-agent",
         ]
         .contains(&profile.api.as_str())
         {
             return Err(format!(
-                "llm-pi-ai: provider \"{provider}\" must use openai-completions, openai-responses or anthropic-messages"
+                "llm-pi-ai: provider \"{provider}\" must use openai-completions, openai-responses, anthropic-messages or devin-agent"
             ));
         }
         if !(profile.base_url.starts_with("https://")
@@ -725,6 +742,7 @@ fn openai_profiles(value: &dsh_schemastery::Data) -> Result<OpenAiCompatibleSett
                     "openai-completions",
                     "openai-responses",
                     "anthropic-messages",
+                    "devin-agent",
                 ]
                 .contains(&api)
             }) {

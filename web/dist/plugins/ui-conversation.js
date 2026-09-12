@@ -5813,7 +5813,7 @@ window.__ModuleLoader__.load({
 				this.list = list; this.model = model; this.publish = publish;
 				this.mode = "following"; this.direction = 0; this.intentUntil = 0;
 				this.anchor = null; this.page = null; this.opened = false;
-				this.observedTop = 0; this.expectedTop = null;
+				this.observedTop = 0; this.observedFloor = 0; this.expectedTop = null; this.pointerActive = false;
 				this.navigationRevision = null; this.navigation = 0; this.returnReady = false;
 				this.timer = null; this.frame = null; this.disposed = false; this.lastPublished = null;
 			}
@@ -5821,12 +5821,14 @@ window.__ModuleLoader__.load({
 			liveTail() { const m = this.model(); return !m.historyBrowsing && !m.hasMoreAfter; }
 			position() { return scrollPosition(this.list(), this.el); }
 			write(top) {
-				const target = Math.max(0, Math.min(top, this.floor()));
+				const floor = this.floor();
+				const target = Math.max(0, Math.min(top, floor));
 				if (Math.abs(this.el.scrollTop - target) > .5) {
 					this.el.scrollTop = target;
 					this.expectedTop = this.el.scrollTop;
 				}
 				this.observedTop = this.el.scrollTop;
+				this.observedFloor = floor;
 			}
 			save() {
 				const following = this.mode === "following" && this.liveTail();
@@ -5844,6 +5846,14 @@ window.__ModuleLoader__.load({
 				this.save();
 			}
 			maintain() {
+				// Compositor scrolling can precede dispatch of the main-thread
+				// scroll event. Do not let a streaming render undo that movement.
+				const top = this.el.scrollTop, floor = this.floor();
+				const clamped = floor < this.observedFloor && this.observedTop > floor && Math.abs(top - floor) <= .5;
+				if (this.expectedTop === null && !clamped && (this.pointerActive || Date.now() <= this.intentUntil) && Math.abs(top - this.observedTop) > .5) {
+					if (this.anchor !== null) this.anchor.anchorTop -= top - this.observedTop;
+					this.observedTop = top; this.observedFloor = floor;
+				}
 				if (this.anchor === null) { this.anchor = this.position(); return; }
 				const row = anchorElement(this.list(), this.anchor.anchorKey);
 				if (row !== null) this.write(this.el.scrollTop + flowTop(row, this.el) - this.anchor.anchorTop);
@@ -5945,7 +5955,7 @@ window.__ModuleLoader__.load({
 				return true;
 			}
 			mount() {
-				this.disposed = false; this.el = scrollerOf(this.list()); this.observedTop = this.el.scrollTop;
+				this.disposed = false; this.el = scrollerOf(this.list()); this.observedTop = this.el.scrollTop; this.observedFloor = this.floor();
 				this.originalAnchor = this.el.style.overflowAnchor; this.el.style.overflowAnchor = "none";
 				const onWheel = event => { const direction = Math.sign(event.deltaY); if (this.ownsGesture(event.target, direction)) this.input(direction); };
 				const onKeyDown = event => {
@@ -5957,13 +5967,13 @@ window.__ModuleLoader__.load({
 				let touchY = null, pointer = false;
 				const onTouchStart = event => { touchY = event.touches[0]?.clientY ?? null; };
 				const onTouchMove = event => { const y = event.touches[0]?.clientY; if (touchY !== null && y !== undefined && this.ownsGesture(event.target, touchY - y)) this.input(Math.sign(touchY - y)); touchY = y ?? null; };
-				const onPointerDown = event => { pointer = event.target === this.el; if (pointer) this.expectedTop = null; };
-				const onPointerUp = () => { pointer = false; };
+				const onPointerDown = event => { pointer = event.target === this.el; this.pointerActive = pointer; if (pointer) this.expectedTop = null; };
+				const onPointerUp = () => { pointer = false; this.pointerActive = false; };
 				const onScroll = () => {
 					const top = this.el.scrollTop;
 					if (this.expectedTop !== null && Math.abs(top - this.expectedTop) <= .5) { this.expectedTop = null; this.observedTop = top; return; }
 					this.expectedTop = null;
-					const delta = top - this.observedTop; this.observedTop = top;
+					const delta = top - this.observedTop; this.observedTop = top; this.observedFloor = this.floor();
 					if (Math.abs(delta) > .5) {
 						if (this.anchor !== null) this.anchor.anchorTop -= delta;
 						if (pointer) this.input(Math.sign(delta));
@@ -8221,16 +8231,31 @@ window.__ModuleLoader__.load({
 		function compactBlocks(blocks) {
 			return blocks.filter((block) => block !== void 0);
 		}
+		const assistantTextVisibility = new WeakMap();
+		function hasVisibleAssistantText(block) {
+			let visible = assistantTextVisibility.get(block);
+			if (visible === void 0) {
+				visible = block.text.trim() !== "";
+				assistantTextVisibility.set(block, visible);
+			}
+			return visible;
+		}
+		function appendAssistantText(previous, kind, delta) {
+			const sameKind = previous?.kind === kind;
+			const block = { kind, text: (sameKind ? previous.text : "") + delta };
+			assistantTextVisibility.set(block, Boolean(sameKind && hasVisibleAssistantText(previous)) || delta.trim() !== "");
+			return block;
+		}
 		function hasVisibleContent(blocks) {
 			return blocks.some((block) => {
 				if (block.kind === "tool-call") return false;
-				if (block.kind === "text" || block.kind === "reasoning") return block.text.trim() !== "";
+				if (block.kind === "text" || block.kind === "reasoning") return hasVisibleAssistantText(block);
 				return true;
 			});
 		}
 		function hasInterruptionEvidence(blocks) {
 			return blocks.some((block) => {
-				if (block.kind === "text" || block.kind === "reasoning") return block.text.trim() !== "";
+				if (block.kind === "text" || block.kind === "reasoning") return hasVisibleAssistantText(block);
 				return true;
 			});
 		}
@@ -8254,18 +8279,12 @@ window.__ModuleLoader__.load({
 					break;
 				case "text-delta": {
 					const previous = blocks[chunk.index];
-					blocks[chunk.index] = {
-						kind: "text",
-						text: (previous?.kind === "text" ? previous.text : "") + chunk.text
-					};
+					blocks[chunk.index] = appendAssistantText(previous, "text", chunk.text);
 					break;
 				}
 				case "reasoning-delta": {
 					const previous = blocks[chunk.index];
-					blocks[chunk.index] = {
-						kind: "reasoning",
-						text: (previous?.kind === "reasoning" ? previous.text : "") + chunk.text
-					};
+					blocks[chunk.index] = appendAssistantText(previous, "reasoning", chunk.text);
 					break;
 				}
 				case "tool-call-delta": {

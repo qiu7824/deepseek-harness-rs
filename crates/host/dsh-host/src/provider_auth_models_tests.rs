@@ -1,5 +1,131 @@
 use super::*;
 
+#[test]
+fn devin_authorizations_keep_users_and_tenants_isolated() {
+    use base64::Engine;
+    let token = |user: &str, team: Option<&str>, signature: &str| {
+        format!(
+            "header.{}.{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(json!({"sub":user,"team_id":team,"exp":now()+3600}).to_string()),
+            signature
+        )
+    };
+    let a = Session::from_devin_token(&token("user-a", Some("team-a"), "first")).unwrap();
+    let same = Session::from_devin_token(&token("user-a", Some("team-a"), "renewed")).unwrap();
+    let b = Session::from_devin_token(&token("user-b", Some("team-a"), "first")).unwrap();
+    let other = Session::from_devin_token(&token("user-a", Some("team-b"), "first")).unwrap();
+    assert_eq!(a.account_scope, same.account_scope);
+    assert_ne!(a.account_scope, b.account_scope);
+    assert_ne!(a.account_scope, other.account_scope);
+    let mut opaque_a = Session::from_devin_token(&token("same-user", None, "grant-a")).unwrap();
+    let mut opaque_b = Session::from_devin_token(&token("same-user", None, "grant-b")).unwrap();
+    opaque_a.normalize_identity();
+    opaque_b.normalize_identity();
+    assert_ne!(
+        opaque_a.account_scope, opaque_b.account_scope,
+        "unknown tenant grants must not share caches"
+    );
+}
+
+#[tokio::test]
+async fn devin_pkce_exchange_installs_an_account_scoped_native_model_catalog() {
+    use base64::Engine;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (auth, _ctx, root) = setup().await;
+    let token = format!(
+        "header.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            json!({"sub":"devin-user","team_id":"devin-team","exp":now()+3600}).to_string()
+        )
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let returned_token = token.clone();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let count = socket.read(&mut chunk).await.unwrap();
+            assert!(count > 0);
+            bytes.extend_from_slice(&chunk[..count]);
+            assert!(bytes.len() < 65536);
+            if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                let header = String::from_utf8_lossy(&bytes[..end]);
+                let size: usize = header
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':')
+                            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                            .map(|(_, value)| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                if bytes.len() >= end + 4 + size {
+                    let request: Value =
+                        serde_json::from_slice(&bytes[end + 4..end + 4 + size]).unwrap();
+                    assert_eq!(request["code"], "fixture-code");
+                    assert_eq!(request["code_verifier"], "v".repeat(64));
+                    break;
+                }
+            }
+        }
+        let body = json!({"token":returned_token}).to_string();
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+    });
+    *auth.catalog_transport.write() = Some(Arc::new(|request| {
+        Box::pin(async move {
+            assert_eq!(request.url.path(), dsh_llm_deepseek::devin::CATALOG_PATH);
+            Ok(
+                json!({"data":[{"id":"swe-2-high","name":"SWE-2 High","api":"devin-agent","context_window":262144,"max_output_tokens":32768}]}),
+            )
+        })
+    }));
+    let mut provider = provider("devin").unwrap();
+    provider.token = Box::leak(format!("http://{address}/token").into_boxed_str());
+    auth.pending.lock().insert(
+        "devin-attempt".into(),
+        (
+            provider,
+            Arc::new(tokio::sync::Mutex::new(Pending {
+                provider,
+                device: String::new(),
+                user_code: String::new(),
+                expires: now() + 900,
+                next_poll: now(),
+                interval: 2,
+                verifier: Some("v".repeat(64)),
+                authorization: Some(json!({"code":"fixture-code"})),
+            })),
+        ),
+    );
+    let result = auth.poll("devin-attempt").await.unwrap();
+    assert_eq!(result["status"], "complete");
+    server.await.unwrap();
+    let session = auth.session("devin").await.unwrap().unwrap();
+    assert_eq!(session.access_token, token);
+    assert_eq!(session.account_id.as_deref(), Some("devin-team"));
+    let (profile, _) = auth.profile_snapshot("devin", false).unwrap();
+    assert_eq!(profile["api"], "devin-agent");
+    let models = auth.effective_model_rows("devin", &profile);
+    assert_eq!(models[0]["id"], "swe-2-high");
+    assert_eq!(models[0]["api"], "devin-agent");
+    assert!(super::valid_profile(
+        "devin",
+        "https://server.codeium.com",
+        "devin-agent"
+    ));
+    assert!(!super::valid_profile(
+        "devin",
+        "https://untrusted.invalid",
+        "devin-agent"
+    ));
+    let public = auth.handle("providers", &json!({})).await.unwrap();
+    assert!(!public.to_string().contains(&token));
+    drop(auth);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[derive(Default)]
 struct MemorySettings {
     fail_writes: std::sync::atomic::AtomicBool,

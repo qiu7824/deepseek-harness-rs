@@ -237,7 +237,13 @@ async fn async_main() {
             }
         }
         DshInvocation::HistoryImport(invocation) => {
-            match dsh_host_cli::import_legacy_history(&invocation.source, &invocation.target_home) {
+            let imported = tokio::task::spawn_blocking(move || {
+                dsh_host_cli::import_legacy_history(&invocation.source, &invocation.target_home)
+            })
+            .await
+            .map_err(|error| format!("history import worker failed: {error}"))
+            .and_then(|result| result);
+            match imported {
                 Ok(count) => println!("imported_sessions={count}"),
                 Err(error) => {
                     eprintln!("{error}");

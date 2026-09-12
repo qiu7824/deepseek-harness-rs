@@ -108,6 +108,17 @@ const PROVIDERS: &[Provider] = &[
         base: "https://api.x.ai/v1",
         api: "openai-responses",
     },
+    Provider {
+        id: "devin",
+        name: "Devin / Windsurf",
+        issuer: "https://app.devin.ai",
+        client: "",
+        device: "",
+        token: "https://api.devin.ai/auth/cli/token",
+        scope: "",
+        base: "https://server.codeium.com",
+        api: "devin-agent",
+    },
 ];
 fn provider(id: &str) -> Result<Provider, String> {
     PROVIDERS
@@ -230,6 +241,49 @@ fn codex_refresh_requires_login(status: u16, value: &Value) -> bool {
         )
 }
 impl Session {
+    fn from_devin_token(token: &str) -> Result<Self, String> {
+        if token.is_empty() || token.len() > 64 * 1024 || token.chars().any(char::is_whitespace) {
+            return Err("Devin 授权令牌格式无效".into());
+        }
+        let claims = jwt(token);
+        let tenant = claims.as_ref().and_then(|claims| {
+            ["organization_id", "org_id", "team_id", "enterprise_id"]
+                .into_iter()
+                .find_map(|field| {
+                    claims
+                        .get(field)
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                })
+        });
+        let subject = claims.as_ref().and_then(|claims| {
+            ["sub", "user_id", "uid"].into_iter().find_map(|field| {
+                claims
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+            })
+        });
+        let token_scope = crate::provider_auth_catalog::key(token);
+        let identity = if tenant.is_some() {
+            subject.unwrap_or(&token_scope)
+        } else {
+            &token_scope
+        };
+        let mut session = Self::from_tokens(
+            &json!({"access_token":token,"expires_in":365*24*60*60}),
+            None,
+        )?;
+        session.account_id = tenant.map(str::to_owned);
+        session.account_scope = format!(
+            "account-v2-{}",
+            crate::provider_auth_catalog::key(&json!([tenant.unwrap_or(""), identity]).to_string())
+        );
+        if session.expires_at <= now() {
+            return Err("Devin 授权已过期，请重新登录".into());
+        }
+        Ok(session)
+    }
     fn identity_scope(account_id: Option<&str>, claims: Option<&Value>) -> Option<String> {
         let subject = claims
             .and_then(|claims| {
@@ -356,6 +410,7 @@ pub(crate) struct AccountAuth {
     credentials: Arc<dsh_credentials_local::LocalCredentialProvider>,
     settings: Arc<dsh_settings::SettingsProvider>,
     pending: parking_lot::Mutex<HashMap<String, (Provider, Arc<tokio::sync::Mutex<Pending>>)>>,
+    devin_logins: parking_lot::Mutex<HashMap<String, crate::devin_auth::Login>>,
     refresh: tokio::sync::Mutex<()>,
     cli: parking_lot::RwLock<Option<Arc<super::claude_cli_auth::ClaudeCliAuth>>>,
     catalogs: crate::provider_auth_catalog::CatalogStore,
@@ -414,6 +469,7 @@ impl AccountAuth {
             credentials,
             settings,
             pending: Default::default(),
+            devin_logins: Default::default(),
             refresh: tokio::sync::Mutex::new(()),
             cli: Default::default(),
         }))
@@ -694,6 +750,50 @@ impl AccountAuth {
         if self.pending.lock().len() >= 8 {
             return Err("登录请求过多，请取消未完成的登录".to_string());
         }
+        if id == "devin" {
+            let expired: Vec<_> = self
+                .devin_logins
+                .lock()
+                .iter()
+                .filter(|(_, login)| login.expires <= now())
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in expired {
+                let login = self.devin_logins.lock().remove(&id);
+                if let Some(login) = login {
+                    login.close().await;
+                }
+            }
+            let (verifier, challenge) = pkce();
+            let login = crate::devin_auth::Login::start(
+                59653,
+                uuid::Uuid::new_v4().to_string(),
+                verifier,
+                challenge,
+                now(),
+            )
+            .await?;
+            let attempt = uuid::Uuid::new_v4().to_string();
+            let response = json!({"attempt":attempt,"flow":"browser","provider":p.id,"verificationUri":login.authorization_url,"expiresAt":login.expires,"interval":2});
+            self.pending.lock().insert(
+                attempt.clone(),
+                (
+                    p,
+                    Arc::new(tokio::sync::Mutex::new(Pending {
+                        provider: p,
+                        device: String::new(),
+                        user_code: String::new(),
+                        expires: login.expires,
+                        next_poll: now(),
+                        interval: 2,
+                        verifier: Some(login.verifier.clone()),
+                        authorization: None,
+                    })),
+                ),
+            );
+            self.devin_logins.lock().insert(attempt, login);
+            return Ok(response);
+        }
         let request = self.client.post(p.device);
         let (verifier, challenge) = pkce();
         let state = uuid::Uuid::new_v4().to_string();
@@ -824,6 +924,10 @@ impl AccountAuth {
         let mut pending = pending.lock().await;
         if now() >= pending.expires {
             self.pending.lock().remove(attempt);
+            let login = self.devin_logins.lock().remove(attempt);
+            if let Some(login) = login {
+                login.close().await;
+            }
             return Err("登录已超时，请重新开始".to_string());
         }
         if now() < pending.next_poll {
@@ -831,6 +935,58 @@ impl AccountAuth {
         }
         pending.next_poll = now() + pending.interval;
         let p = pending.provider;
+        if p.id == "devin" {
+            if pending.authorization.is_none() {
+                let code = self
+                    .devin_logins
+                    .lock()
+                    .get(attempt)
+                    .and_then(|login| login.code());
+                let Some(code) = code else {
+                    return Ok(json!({"status":"pending","interval":2}));
+                };
+                pending.authorization = Some(json!({"code":code}));
+                let login = self.devin_logins.lock().remove(attempt);
+                if let Some(login) = login {
+                    login.close().await;
+                }
+            }
+            let response = self
+                .client
+                .post(p.token)
+                .json(&json!({
+                    "code":pending.authorization.as_ref().and_then(|value|value.get("code")),
+                    "code_verifier":pending.verifier,
+                }))
+                .send()
+                .await;
+            let response = match response {
+                Ok(value) => value,
+                Err(_) => return Ok(pending.retry("Devin 授权交换暂时无法连接，正在重试")),
+            };
+            let status = response.status();
+            if status.is_server_error() || matches!(status.as_u16(), 408 | 429) {
+                return Ok(pending.retry("Devin 授权服务暂时繁忙，正在重试"));
+            }
+            if !status.is_success() {
+                self.pending.lock().remove(attempt);
+                return Err(format!(
+                    "Devin 登录授权失败（HTTP {}），请重新登录",
+                    status.as_u16()
+                ));
+            }
+            let value: Value = response
+                .json()
+                .await
+                .map_err(|_| "Devin 授权返回无效数据")?;
+            let token = string(&value, "token")?;
+            if token.len() > 64 * 1024 {
+                return Err("Devin 授权令牌超出长度限制".into());
+            }
+            let session = Session::from_devin_token(&token)?;
+            self.commit(attempt, p, &session).await?;
+            return Ok(json!({"status":"complete","provider":p.id}));
+        }
         let mut value = if let Some(value) = pending.authorization.clone() {
             value
         } else {
@@ -1322,11 +1478,12 @@ impl AccountAuth {
             "poll" => self.poll(&string(body, "attempt")?).await,
             "cancel" => {
                 let _guard = self.refresh.lock().await;
-                let removed = self
-                    .pending
-                    .lock()
-                    .remove(&string(body, "attempt")?)
-                    .is_some();
+                let attempt = string(body, "attempt")?;
+                let login = self.devin_logins.lock().remove(&attempt);
+                if let Some(login) = login {
+                    login.close().await;
+                }
+                let removed = self.pending.lock().remove(&attempt).is_some();
                 Ok(json!({"status":if removed { "cancelled" } else { "complete" }}))
             }
             "logout" => {

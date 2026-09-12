@@ -55,6 +55,7 @@ async function fixture({ rows, viewport = 200, heights = {}, before = false, aft
     replace: (rows, flags = {}) => act(async () => { install(rows); Object.assign(state,flags); render(); await wait(1); }),
     wheel: async deltaY => act(async () => { port.dispatchEvent(new window.WheelEvent('wheel', { deltaY, bubbles: true })); await wait(85); }),
     move: async (value, direction) => act(async () => { if (direction) port.dispatchEvent(new window.WheelEvent('wheel', { deltaY: direction, bubbles: true })); port.scrollTop = value; port.dispatchEvent(new window.Event('scroll')); port.dispatchEvent(new window.Event('scrollend')); await wait(1); }),
+    unreportedNativeMove: async value => act(async () => { port.dispatchEvent(new window.WheelEvent('wheel', {deltaY:value-top,bubbles:true})); top = value; render(); await wait(1); }),
     resolve: async (request, next, flags = {}) => act(async () => { if (!request.cancelled) { install(next); Object.assign(state, flags); state.loadingOlder = state.loadingNewer = false; render(); } request.resolve(); await wait(25); }),
     jump: async next => act(async () => { state.historyNavigationRevision++; state.historyBrowsing = true; state.hasMoreAfter = true; install(next); render(); await wait(1); port.scrollTop = 0; port.dispatchEvent(new window.Event('scroll')); port.dispatchEvent(new window.Event('scrollend')); }),
     resize: async () => act(async () => { observers.filter(observer => !observer.dead).forEach(observer => observer.callback()); await wait(25); }),
@@ -144,6 +145,16 @@ async function fixture({ rows, viewport = 200, heights = {}, before = false, aft
   f.state.historyNavigationRevision++;f.state.historyNavigationReason='resync';f.state.openState='loading';await f.render();
   f.heights['0']=300;f.state.openState='open';await f.render();
   assert.equal(f.top(),450,'reconnect retains the reader anchor while restoring the bounded window');
+  await f.close();
+
+  f = await fixture({rows:['0','1','2','3','4','5'],history:false,after:false});
+  await f.move(250,-100);
+  await f.unreportedNativeMove(300);
+  assert.equal(f.top(),300,'a render before the native scroll event cannot undo the reader gesture');
+  await f.move(300);
+  assert.equal(f.top(),300,'the delayed native scroll event must not apply the gesture twice');
+  f.heights['0']=200;await f.resize();
+  assert.equal(f.top(),400,'later content reflow still preserves the new reader position');
   await f.close();
 
   f = await fixture({rows:['0','1','2'],history:false,after:false,viewport:290});

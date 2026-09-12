@@ -381,16 +381,31 @@ window.__ModuleLoader__.load({
 		function compactBlocks(blocks) {
 			return blocks.filter((block) => block !== void 0);
 		}
+		const assistantTextVisibility = new WeakMap();
+		function hasVisibleAssistantText(block) {
+			let visible = assistantTextVisibility.get(block);
+			if (visible === void 0) {
+				visible = block.text.trim() !== "";
+				assistantTextVisibility.set(block, visible);
+			}
+			return visible;
+		}
+		function appendAssistantText(previous, kind, delta) {
+			const sameKind = previous?.kind === kind;
+			const block = { kind, text: (sameKind ? previous.text : "") + delta };
+			assistantTextVisibility.set(block, Boolean(sameKind && hasVisibleAssistantText(previous)) || delta.trim() !== "");
+			return block;
+		}
 		function hasVisibleContent(blocks) {
 			return blocks.some((block) => {
 				if (block.kind === "tool-call") return false;
-				if (block.kind === "text" || block.kind === "reasoning") return block.text.trim() !== "";
+				if (block.kind === "text" || block.kind === "reasoning") return hasVisibleAssistantText(block);
 				return true;
 			});
 		}
 		function hasInterruptionEvidence(blocks) {
 			return blocks.some((block) => {
-				if (block.kind === "text" || block.kind === "reasoning") return block.text.trim() !== "";
+				if (block.kind === "text" || block.kind === "reasoning") return hasVisibleAssistantText(block);
 				return true;
 			});
 		}
@@ -419,18 +434,12 @@ window.__ModuleLoader__.load({
 					break;
 				case "text-delta": {
 					const previous = blocks[chunk.index];
-					blocks[chunk.index] = {
-						kind: "text",
-						text: (previous?.kind === "text" ? previous.text : "") + chunk.text
-					};
+					blocks[chunk.index] = appendAssistantText(previous, "text", chunk.text);
 					break;
 				}
 				case "reasoning-delta": {
 					const previous = blocks[chunk.index];
-					blocks[chunk.index] = {
-						kind: "reasoning",
-						text: (previous?.kind === "reasoning" ? previous.text : "") + chunk.text
-					};
+					blocks[chunk.index] = appendAssistantText(previous, "reasoning", chunk.text);
 					break;
 				}
 				case "tool-call-delta": {

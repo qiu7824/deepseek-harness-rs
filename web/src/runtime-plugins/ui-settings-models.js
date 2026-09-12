@@ -2114,7 +2114,7 @@ window.__ModuleLoader__.load({
             const h=react.createElement;
             return attempt&&h("div",{className:ModelsSection_module_css_default.editor,role:"status"},
                 h("p",{className:ModelsSection_module_css_default.advancedHint},t("accountAddHint")),
-                h("p",null,t(attempt.mode==="cli"?"accountCliVerify":"accountVerify")),
+                h("p",null,t(attempt.flow==="browser"?"accountBrowserVerify":attempt.mode==="cli"?"accountCliVerify":"accountVerify")),
                 attempt.userCode&&h("code",null,attempt.userCode),
                 attempt.verificationUri&&h("a",{className:ModelsSection_module_css_default.secondaryButton,href:attempt.verificationUri,target:"_blank",rel:"noopener noreferrer"},t("accountOpen")),
                 h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy,onClick:onCancel},t("cancel")));
@@ -3081,7 +3081,8 @@ window.__ModuleLoader__.load({
             modelVisible: "Show", providerPreset: "Provider", providerKeyless: "Connect without an API key",
             accountSubagent: "Subagent", accountInstallCli: "Install official client", accountRefresh: "Refresh status", accountCliVerify: "Complete sign-in in the official Claude Code client. Its credentials remain with that client.",
             accountManage: "Manage accounts and models", accountProviders: "Signed-in providers", accountUsageUnavailable: "This provider does not expose usage here.", accountNoLogin: "No signed-in account. Open account settings to connect a provider.", accountReading: "Reading accounts…",
-            accountTitle: "Accounts", accountHint: "Sign in with a provider subscription. Credentials refresh automatically and stay on this device.",
+            accountTitle: "Accounts", accountHint: "Sign in with a provider subscription. Credentials stay on this device and refresh when supported by the provider.",
+            accountBrowserVerify: "Open the authorization page in a browser on the computer running Harness. This page updates after sign-in; no device code is required.",
             accountSignedIn: "Connected", accountSignedOut: "Disconnected", accountReconnect: "Reconnect", accountLogin: "Sign in", accountLogout: "Sign out",
             accountAdd: "Sign in another account", accountSaved: "Accounts for this provider", accountCurrent: "Current account", accountSwitch: "Switch account", accountRemove: "Remove account", accountLabel: "Account", accountSavedLogin: "Saved login", accountNeedsLogin: "Sign in again", accountAddHint: "Existing accounts stay saved. On the authorization page, choose the other account you want to add.",
             accountVerify: "Open the sign-in page, enter this code, and complete authorization. This page will update automatically.", accountOpen: "Open sign-in page",
@@ -3222,7 +3223,8 @@ window.__ModuleLoader__.load({
             modelVisible: "显示", providerPreset: "供应商预设", providerKeyless: "无需 API 密钥",
             accountSubagent: "子智能体", accountInstallCli: "安装官方客户端", accountRefresh: "刷新状态", accountCliVerify: "请在官方 Claude Code 客户端打开的页面完成登录；凭据由该客户端管理。",
             accountManage: "管理账号与模型", accountProviders: "已登录的供应商", accountUsageUnavailable: "该供应商暂未提供此处可读取的用量信息。", accountNoLogin: "尚未登录账号，可在账号设置中连接供应商。", accountReading: "正在读取账号…",
-            accountTitle: "账号登录", accountHint: "使用供应商订阅登录，凭据保存在本机并自动续期。",
+            accountTitle: "账号登录", accountHint: "使用供应商订阅登录，凭据保存在本机；支持续期的供应商会自动续期。",
+            accountBrowserVerify: "请在运行 Harness 的电脑上打开授权页面，登录后此处会自动更新，无需输入设备验证码。",
             accountSignedIn: "已连接", accountSignedOut: "未连接", accountReconnect: "重新连接", accountLogin: "登录", accountLogout: "退出登录",
             accountAdd: "登录另一个账号", accountSaved: "同一登录方式的账号", accountCurrent: "当前账号", accountSwitch: "切换账号", accountRemove: "移除账号", accountLabel: "账号", accountSavedLogin: "已保存登录", accountNeedsLogin: "需要重新登录", accountAddHint: "现有账号会保留，请在授权页面选择要添加的另一个账号。",
             accountVerify: "打开登录页面，输入验证码并完成授权，此处会自动更新。", accountOpen: "打开登录页面",

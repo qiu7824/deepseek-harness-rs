@@ -1,0 +1,26 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const modules=process.argv[2]||process.env.DSH_REACT_TEST_MODULES;
+if(!modules)throw new Error('React test modules are required');
+const {JSDOM}=require(path.join(modules,'jsdom'));
+const dom=new JSDOM('<main></main>',{url:'http://localhost/'});
+Object.assign(globalThis,{window:dom.window,document:dom.window.document,HTMLElement:dom.window.HTMLElement,IS_REACT_ACT_ENVIRONMENT:true});
+const React=require(path.join(modules,'react')),Client=require(path.join(modules,'react-dom/client'));
+const source=fs.readFileSync(path.join(__dirname,'../../web/dist/plugins/ui-settings-models.js'),'utf8');
+const start=source.indexOf('function AccountLoginPrompt('),end=source.indexOf('function SidebarAccount(',start);
+assert.ok(start>=0&&end>start);
+const context={react:React,ModelsSection_module_css_default:{}};
+vm.runInNewContext(source.slice(start,end)+';this.Prompt=AccountLoginPrompt;',context);
+const root=Client.createRoot(document.querySelector('main'));
+const t=key=>({accountVerify:'Enter the device code',accountOpen:'Open authorization',cancel:'Cancel'}[key]||key);
+(async()=>{
+ let cancelled=0;
+ await React.act(()=>root.render(React.createElement(context.Prompt,{attempt:{flow:'browser',verificationUri:'https://app.devin.ai/auth/cli/continue?state=fixture'},t,busy:false,onCancel:()=>cancelled++})));
+ assert.equal(document.querySelector('code'),null);
+ assert.ok(!document.body.textContent.includes('Enter the device code'));
+ assert.equal(new URL(document.querySelector('a').href).hostname,'app.devin.ai');
+ await React.act(()=>document.querySelector('button').click());assert.equal(cancelled,1);
+ await React.act(()=>root.render(React.createElement(context.Prompt,{attempt:{userCode:'ABCD',verificationUri:'https://example.com/device'},t,busy:false,onCancel:()=>{}})));
+ assert.equal(document.querySelector('code').textContent,'ABCD');assert.ok(document.body.textContent.includes('Enter the device code'));
+ await React.act(()=>root.unmount());dom.window.close();
+ console.log('PASS browser OAuth prompt: authorization link, cancellation, no empty device-code instruction, existing device flow preserved');
+})().catch(error=>{console.error(error);process.exitCode=1});

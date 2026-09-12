@@ -19,6 +19,7 @@ use futures::future::{BoxFuture, Shared};
 use parking_lot::Mutex;
 
 pub const ENCODING_PREAMBLE: &str = "$ErrorActionPreference = 'Stop'; $OutputEncoding = [System.Text.Encoding]::UTF8; if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') { [Console]::OutputEncoding = $OutputEncoding }; $PSNativeCommandUseErrorActionPreference = $true; $global:LASTEXITCODE = 0; ";
+const NATIVE_PROBE_PREAMBLE: &str = include_str!("native_probe.ps1");
 
 #[derive(Debug, Clone, Default)]
 pub struct Config {
@@ -110,7 +111,7 @@ fn pwsh_argv(config: &Config, spec: &ShellExecSpec) -> Vec<String> {
         "-NonInteractive".to_string(),
         "-Command".to_string(),
         format!(
-            "{ENCODING_PREAMBLE}{}\nif ($global:LASTEXITCODE -ne 0) {{ exit $global:LASTEXITCODE }}",
+            "{ENCODING_PREAMBLE}\n{NATIVE_PROBE_PREAMBLE}\n{}\nif ($global:LASTEXITCODE -ne 0) {{ exit $global:LASTEXITCODE }}",
             spec.command
         ),
     ]

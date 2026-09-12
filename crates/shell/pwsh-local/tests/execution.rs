@@ -6,6 +6,55 @@ use dsh_subprocess_local::LocalSubprocessRuntime;
 
 #[tokio::test]
 #[cfg(windows)]
+async fn optional_native_probes_preserve_diagnostics_without_weakening_later_failures() {
+    let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let mut executables = vec![system];
+    if let Some(core) = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|directory| directory.join("pwsh.exe"))
+        .find(|path| path.is_file())
+    {
+        executables.push(core);
+    }
+    for executable in executables {
+        let ctx = Context::root();
+        let _processes = LocalSubprocessRuntime::install(&ctx);
+        let shell = LocalPwshExecutor::install(
+            &ctx,
+            Config {
+                pwsh_path: Some(executable.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        );
+        let probe = "$probe = Invoke-DshNativeProbe -FilePath 'cmd.exe' -ArgumentList @('/d', '/c', 'echo native-probe-diagnostic 1>&2 & exit /b 7'); if ($probe.ExitCode -ne 7 -or $probe.Output -notmatch 'native-probe-diagnostic') { throw 'native diagnostic lost' }; if ($ErrorActionPreference -ne 'Stop' -or $global:LASTEXITCODE -ne 0) { throw 'probe changed caller policy' }; Write-Output $probe.Output; Write-Output 'PROBE_HANDLED'";
+        let result = shell
+            .run(shell.resolve(ShellExecRequest::new(probe)))
+            .await
+            .unwrap();
+        assert_eq!(
+            result.exit_code,
+            Some(0),
+            "{executable:?}: {}",
+            result.stderr.text
+        );
+        assert!(result.stdout.text.contains("PROBE_HANDLED"));
+        let bounded = shell.run(shell.resolve(ShellExecRequest::new("$probe = Invoke-DshNativeProbe -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-Command','[Console]::WriteLine([string]::new([char]120,100000))'); if (-not $probe.Truncated -or $probe.Output.Length -gt 65536 -or $probe.ExitCode -ne 0) { throw 'unbounded diagnostic output' }; Write-Output 'BOUNDED_PROBE'"))).await.unwrap();
+        assert_eq!(bounded.exit_code, Some(0), "{}", bounded.stderr.text);
+        assert!(bounded.stdout.text.contains("BOUNDED_PROBE"));
+        let command = format!(
+            "{probe}; Get-Item -LiteralPath 'DSH_MISSING_AFTER_PROBE_7721'; Write-Output 'SHOULD_NOT_CONTINUE'"
+        );
+        let result = shell
+            .run(shell.resolve(ShellExecRequest::new(command)))
+            .await
+            .unwrap();
+        assert_ne!(result.exit_code, Some(0), "{executable:?}");
+        assert!(!result.stdout.text.contains("SHOULD_NOT_CONTINUE"));
+    }
+}
+
+#[tokio::test]
+#[cfg(windows)]
 async fn dropping_a_foreground_call_terminates_its_process_tree() {
     use dsh_subprocess::*;
     use futures::future::BoxFuture;

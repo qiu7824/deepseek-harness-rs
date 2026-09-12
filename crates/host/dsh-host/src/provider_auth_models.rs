@@ -67,7 +67,17 @@ pub(crate) fn catalog_url(profile: &Value) -> Result<reqwest::Url, String> {
         return Err("供应商地址不得包含凭据".into());
     }
     let auth = profile.get("authProvider").and_then(Value::as_str);
-    if auth == Some("openai-codex") {
+    if profile.get("api").and_then(Value::as_str) == Some(dsh_llm_deepseek::devin::API) {
+        if auth.is_some() && !super::valid_profile("devin", base, dsh_llm_deepseek::devin::API) {
+            return Err("Devin 订阅目录仅允许官方服务地址".into());
+        }
+        url.set_path(&format!(
+            "{}{}",
+            url.path().trim_end_matches('/'),
+            dsh_llm_deepseek::devin::CATALOG_PATH
+        ));
+        url.set_query(None);
+    } else if auth == Some("openai-codex") {
         if !super::valid_profile("openai-codex", base, "openai-responses") {
             return Err("Codex目录仅允许官方账号地址".into());
         }
@@ -312,6 +322,23 @@ impl AccountAuth {
         let transport = self.catalog_transport.read().clone();
         if let Some(transport) = transport {
             return transport(request).await;
+        }
+        if let Some(prefix) = request
+            .url
+            .path()
+            .strip_suffix(dsh_llm_deepseek::devin::CATALOG_PATH)
+        {
+            let key = request
+                .headers
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+                .ok_or("Devin 目录请求缺少账号授权")?
+                .to_owned();
+            let prefix = prefix.to_owned();
+            let mut base = request.url;
+            base.set_path(&prefix);
+            return dsh_llm_deepseek::devin::discover_models(base.as_str(), &key).await;
         }
         let mut response = self
             .client

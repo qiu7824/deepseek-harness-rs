@@ -23,6 +23,7 @@ pub(crate) fn preferences_schema() -> dsh_schemastery::Schema {
                     "openai-completions",
                     "openai-responses",
                     "anthropic-messages",
+                    "devin-agent",
                 ]
                 .into_iter()
                 .map(|s| Schema::constant(Data::String(s.into())))

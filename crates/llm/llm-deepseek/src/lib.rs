@@ -3,6 +3,9 @@
 mod anthropic;
 mod anthropic_transport;
 mod compat;
+pub mod devin;
+mod devin_transport;
+mod devin_wire;
 mod files_api;
 mod responses;
 mod serialize;
@@ -250,6 +253,7 @@ pub fn resolve_adapter_options(
                 "openai-completions",
                 "openai-responses",
                 "anthropic-messages",
+                "devin-agent",
             ]
             .contains(&api)
         })
@@ -268,6 +272,7 @@ pub fn resolve_adapter_options(
         "openai-completions",
         "openai-responses",
         "anthropic-messages",
+        "devin-agent",
     ]
     .contains(&api.as_str())
     {
@@ -1321,7 +1326,10 @@ async fn request_chunks(
         options.reasoning_effort.clone()
     };
     map_reasoning_effort_for_request(&mut options, &connection, reasoning_wire_format)?;
-    if connection.api == "openai-responses" || connection.api == "anthropic-messages" {
+    if matches!(
+        connection.api.as_str(),
+        "openai-responses" | "anthropic-messages" | "devin-agent"
+    ) {
         let (image_urls, image_meta) =
             resolve_image_urls(&options, attachment_store.as_ref()).await?;
         let exact_options = project_exact_request(
@@ -1337,6 +1345,17 @@ async fn request_chunks(
             None,
             Some(&image_meta),
         )?;
+        if connection.api == devin::API {
+            return devin_transport::request(
+                &chat_body,
+                &exact_options,
+                &connection,
+                &api_key,
+                sender,
+                cancelled,
+            )
+            .await;
+        }
         if connection.api == "anthropic-messages" {
             return anthropic_transport::request(
                 &chat_body,

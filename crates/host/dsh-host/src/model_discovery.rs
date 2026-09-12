@@ -70,6 +70,7 @@ pub(crate) fn parse_model_listing(value: &Value) -> Result<Vec<LlmDiscoveredMode
                     "openai-completions",
                     "openai-responses",
                     "anthropic-messages",
+                    "devin-agent",
                 ]
                 .contains(&api.as_str())
             })
