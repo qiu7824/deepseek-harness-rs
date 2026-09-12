@@ -3,9 +3,10 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from promote_release import PLATFORMS, validate_payload, validate_run
+from promote_release import PLATFORMS, release_metadata, validate_payload, validate_release, validate_run
 from release_variants import expected_artifacts
 
 
@@ -42,3 +43,37 @@ class ReleasePromotionTests(unittest.TestCase):
     def test_tag_cannot_escape_notes_or_artifact_paths(self):
         with self.assertRaisesRegex(ValueError, "invalid release tag"):
             validate_payload(Path("."), "../../other")
+
+    def test_complete_draft_is_checked_before_publication(self):
+        expected = {"package.zip": "a" * 64, "SHA256SUMS.txt": "b" * 64}
+        release = {"draft": True, "body": "Release notes", "assets": [
+            {"name": name, "digest": "sha256:" + sha} for name, sha in expected.items()]}
+        validate_release(release, expected, "Release notes\n", allow_draft=True)
+        with self.assertRaises(ValueError):
+            validate_release(release, expected, "Release notes")
+        validate_release({**release, "draft": False}, expected, "Release notes")
+
+    def test_draft_mode_never_allows_missing_or_mismatched_assets(self):
+        expected = {"package.zip": "a" * 64}
+        for assets in ([], [{"name": "package.zip", "digest": "sha256:" + "b" * 64}],
+                       [{"name": "package.zip", "digest": None}]):
+            with self.assertRaisesRegex(ValueError, "asset set or checksum"):
+                validate_release({"draft": True, "body": "Notes", "assets": assets},
+                                 expected, "Notes", allow_draft=True)
+
+    def test_draft_notes_must_match_before_publication(self):
+        with self.assertRaisesRegex(ValueError, "release notes differ"):
+            validate_release({"draft": True, "body": "Old notes", "assets": []},
+                             {}, "Current notes", allow_draft=True)
+
+    def test_draft_lookup_uses_paginated_releases_instead_of_published_tag_endpoint(self):
+        draft = {"tag_name": "v1-test", "draft": True}
+        with patch("promote_release.api", side_effect=[
+            [{"tag_name": f"v2-{index}", "draft": False} for index in range(100)], [draft]
+        ]) as api:
+            self.assertEqual(release_metadata("v1-test", allow_draft=True), draft)
+            self.assertEqual([call.args[0] for call in api.call_args_list],
+                             ["releases?per_page=100&page=1", "releases?per_page=100&page=2"])
+        with patch("promote_release.api", return_value=[]) as api:
+            with self.assertRaisesRegex(ValueError, "not found"):
+                release_metadata("v1-test", allow_draft=True)

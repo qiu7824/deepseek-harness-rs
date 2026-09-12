@@ -38,9 +38,13 @@ jobs:
           merge-multiple: true
       - name: 校验完整包与合并校验和
         run: python tools/promote_release.py payload --tag "$RELEASE_TAG"
-      - name: 发布全部平台附件与完整更新说明
+      - name: 上传全部平台附件与完整更新说明
         run: |
           gh release upload "$RELEASE_TAG" dist/deepseek-harness-rs-* dist/SHA256SUMS.txt --clobber
           gh release edit "$RELEASE_TAG" --notes-file "release/notes/$RELEASE_TAG.md"
+      - name: 公开前核验每个附件与更新说明
+        run: python tools/promote_release.py staged --tag "$RELEASE_TAG"
+      - name: 公开已完整核验的版本
+        run: gh release edit "$RELEASE_TAG" --draft=false
       - name: 回读发布页并核对每个附件
         run: python tools/promote_release.py verify --tag "$RELEASE_TAG"

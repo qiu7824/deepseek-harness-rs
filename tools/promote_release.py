@@ -77,9 +77,33 @@ def validate_payload(directory: Path, tag: str) -> dict[str, str]:
     return expected
 
 
+def validate_release(release: dict, expected: dict[str, str], notes: str, *, allow_draft: bool = False) -> None:
+    remote = {asset["name"]: asset.get("digest") for asset in release["assets"]}
+    if ((release["draft"] and not allow_draft)
+            or remote != {name: "sha256:" + sha for name, sha in expected.items()}):
+        raise ValueError("published asset set or checksum differs")
+    if (release.get("body") or "").strip() != notes.strip():
+        raise ValueError("published release notes differ")
+
+
+def release_metadata(tag: str, *, allow_draft: bool = False) -> dict:
+    if not allow_draft:
+        return api("releases/tags/" + urllib.parse.quote(tag, safe=""))
+    # The tag endpoint omits drafts even for an authenticated publisher.
+    page = 1
+    while True:
+        releases = api(f"releases?per_page=100&page={page}")
+        for release in releases:
+            if release["tag_name"] == tag:
+                return release
+        if len(releases) < 100:
+            raise ValueError("release draft or published tag was not found")
+        page += 1
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["identity", "payload", "verify"])
+    parser.add_argument("mode", choices=["identity", "payload", "staged", "verify"])
     parser.add_argument("--run-id", type=int)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--directory", type=Path, default=Path("dist"))
@@ -98,15 +122,12 @@ def main() -> None:
         print(json.dumps({"run": args.run_id, "tag": args.tag, "revision": obj["sha"]}))
     else:
         expected = validate_payload(args.directory, args.tag)
-        if args.mode == "verify":
+        if args.mode in {"staged", "verify"}:
             expected["SHA256SUMS.txt"] = digest(args.directory / "SHA256SUMS.txt")
-            release = api("releases/tags/" + args.tag)
-            remote = {a["name"]: a.get("digest") for a in release["assets"]}
-            if release["draft"] or remote != {name: "sha256:" + sha for name, sha in expected.items()}:
-                raise ValueError("published asset set or checksum differs")
+            release = release_metadata(args.tag, allow_draft=args.mode == "staged")
             notes = Path("release/notes") / (args.tag + ".md")
-            if release["body"].strip() != notes.read_text(encoding="utf-8").strip():
-                raise ValueError("published release notes differ")
+            validate_release(release, expected, notes.read_text(encoding="utf-8"),
+                             allow_draft=args.mode == "staged")
         print(json.dumps({"tag": args.tag, "verifiedFiles": len(expected)}))
 
 
