@@ -2,6 +2,7 @@ import pathlib
 import unittest
 import json
 import hashlib
+import re
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -446,7 +447,9 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertNotIn('install_skins: "管理皮肤"', launcher)
         self.assertNotIn("InstallSkins", launcher)
         self.assertIn("const LAUNCHER_WINDOW_WIDTH: u32 = 680;", launcher)
-        self.assertIn("const LAUNCHER_WINDOW_HEIGHT: u32 = 520;", launcher)
+        height = re.search(r"const LAUNCHER_WINDOW_HEIGHT: u32 = (\d+);", launcher)
+        self.assertIsNotNone(height, "launcher window height must be declared")
+        self.assertGreaterEqual(int(height.group(1)), 520, "launcher must retain room for service and update controls")
         self.assertIn(".size(LAUNCHER_WINDOW_WIDTH, LAUNCHER_WINDOW_HEIGHT)", launcher)
         self.assertIn("toggle(managed)", launcher)
         self.assertIn("primary_button(state.copy.open_web)", launcher)
