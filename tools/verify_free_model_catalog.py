@@ -195,6 +195,8 @@ def streamed_completion(endpoint: str, body: dict, timeout: float, session: str 
                             target["function"][key] += part
                 if choice.get("finish_reason"):
                     finished = True
+            if finished:
+                break
         if not finished:
             raise ValueError("free inference stream ended without completion")
         if calls:
@@ -282,6 +284,7 @@ def responses_completion(endpoint: str, body: dict, timeout: float, session: str
                     elif item.get("type") == "message" and not text:
                         text += "".join(part.get("text", "") for part in item.get("content", []))
                 finished = True
+                break
     if not finished:
         raise ValueError("free Responses stream ended before response.completed")
     return {"text": text, "calls": list(calls.values())}

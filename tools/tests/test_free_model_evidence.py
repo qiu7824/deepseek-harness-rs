@@ -26,6 +26,27 @@ def report(rows):
             "models":rows,"includedModels":included,"defaultModel":included[0] if included else None}
 
 class FreeEvidenceTests(unittest.TestCase):
+    def test_completed_stream_does_not_wait_for_transport_eof(self):
+        class OpenAfterCompletion(io.BytesIO):
+            def __iter__(self):
+                yield self.getvalue()
+                raise AssertionError("attempted another read after logical completion")
+
+        cases = (
+            (verifier.streamed_completion,
+             {"choices": [{"delta": {"content": "OK"}, "finish_reason": "stop"}]}, "content"),
+            (verifier.responses_completion,
+             {"type": "response.completed", "response": {"output": [
+                 {"type": "message", "content": [{"text": "OK"}]}]}}, "text"),
+        )
+        for complete, payload, content_key in cases:
+            with self.subTest(protocol=complete.__name__):
+                stream = OpenAfterCompletion(("data: " + json.dumps(payload) + "\n\n").encode())
+                with patch.object(verifier, "open_with_retry", return_value=stream):
+                    result = complete(evidence.BASE_URL, {"model": "fixture"}, 2)
+                self.assertEqual(result[content_key], "OK")
+                self.assertTrue(stream.closed)
+
     def test_client_restriction_is_explicit_and_never_enters_package_evidence(self):
         payload = {"error": {"type": "MissingSessionID", "message": "OpenCode's free tier can only be used in OpenCode"}}
         def denied(*_args):
