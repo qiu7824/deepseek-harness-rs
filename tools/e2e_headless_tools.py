@@ -1,6 +1,7 @@
 """Verify the real Headless profile, configured model route and default native tools."""
 import argparse,json,pathlib,subprocess,threading
-from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from e2e_http import ThreadingHTTPServer
 from e2e_model_management import isolated_environment
 TASK = 'Return the completion token.'
 

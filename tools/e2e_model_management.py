@@ -14,7 +14,8 @@ import sys
 import threading
 import time
 import uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from e2e_http import ThreadingHTTPServer
 from collections.abc import Iterator
 
 sys.dont_write_bytecode = True

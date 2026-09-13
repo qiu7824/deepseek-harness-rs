@@ -2,6 +2,7 @@
 import argparse
 import functools
 import http.server
+from e2e_http import ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -25,7 +26,7 @@ def main():
         raise SystemExit("Use a fresh output directory for isolated browser verification")
     profile.mkdir()
     handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(args.fixtures))
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     browser_log = (args.output / "browser.log").open("wb")
     process = subprocess.Popen([str(args.browser), "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--remote-debugging-port=0", "--remote-allow-origins=http://localhost", "--user-data-dir=" + str(profile), "about:blank"], stdout=browser_log, stderr=browser_log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)

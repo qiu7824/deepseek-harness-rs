@@ -56,6 +56,7 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then python tools/verify_release_version.py --version "${GITHUB_REF_NAME#v}"; fi
           python tools/verify_product_surface.py
           python -B -m unittest tools.tests.test_release_build_identity -v
+          python -B -m unittest tools.tests.test_e2e_http -v
           python -m unittest tools.tests.test_history_window_contract tools.tests.test_product_surface_contract tools.tests.test_rust_ui_contract tools.tests.test_rust_runtime_contract tools.tests.test_release_product_contract tools.tests.test_release_integrity tools.tests.test_launcher_release_contract tools.tests.test_client_performance tools.tests.test_free_model_evidence tools.tests.test_release_variants tools.tests.test_settings_migration_contract tools.tests.test_installer_compile_gate -v
       - name: Web 交互与滚动回归
         timeout-minutes: 15

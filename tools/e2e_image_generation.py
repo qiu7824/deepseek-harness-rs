@@ -1,7 +1,8 @@
 """Native image generation, edit, vision and durable attachment fixtures; no paid calls."""
 from __future__ import annotations
 import argparse,base64,hashlib,http.client,io,json,pathlib,struct,subprocess,threading,time,urllib.parse,uuid,zipfile,zlib
-from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from e2e_http import ThreadingHTTPServer
 from email.parser import BytesParser
 from email.policy import default
 from e2e_model_management import isolated_environment,running_fixture_host

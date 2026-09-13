@@ -7,7 +7,8 @@ import json
 import pathlib
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from e2e_http import ThreadingHTTPServer
 
 from e2e_model_management import isolated_environment, running_fixture_host
 from e2e_settings_model_preserves_data import require_ok, rpc

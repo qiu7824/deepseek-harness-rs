@@ -12,6 +12,7 @@ jobs:
         os: [ubuntu-24.04, macos-15-intel, macos-14]
     runs-on: ${{ matrix.os }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: 核对本地主机解析与 HTTP 测试服务器启动耗时
         shell: bash
         run: |
@@ -21,7 +22,7 @@ jobs:
           probes = {
               "loopback_fqdn": "import socket; print(socket.getfqdn('127.0.0.1'))",
               "default_http_server": "from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler; server=ThreadingHTTPServer(('127.0.0.1',0),BaseHTTPRequestHandler); server.server_close()",
-              "numeric_http_server": "from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler; from socketserver import TCPServer\nclass LocalServer(ThreadingHTTPServer):\n def server_bind(self):\n  TCPServer.server_bind(self)\n  self.server_name,self.server_port=self.server_address\nserver=LocalServer(('127.0.0.1',0),BaseHTTPRequestHandler); server.server_close()",
+              "numeric_http_server": "import sys; sys.path.insert(0,'tools'); from e2e_http import ThreadingHTTPServer; from http.server import BaseHTTPRequestHandler; server=ThreadingHTTPServer(('127.0.0.1',0),BaseHTTPRequestHandler); server.server_close()",
           }
           for name, source in probes.items():
               started=time.monotonic()
@@ -31,3 +32,5 @@ jobs:
               except subprocess.TimeoutExpired:
                   print(json.dumps({"probe":name,"seconds":round(time.monotonic()-started,3),"timedOut":True}),flush=True)
           PY
+      - name: 核验本地 HTTP 夹具
+        run: python -B -m unittest tools.tests.test_e2e_http -v

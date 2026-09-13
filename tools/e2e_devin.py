@@ -1,7 +1,8 @@
 """Exercise the native Devin adapter and local tool round trip without real accounts."""
 from __future__ import annotations
 import argparse, gzip, json, pathlib, struct, subprocess, threading, time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from e2e_http import ThreadingHTTPServer
 from e2e_model_management import isolated_environment
 
 def integer(value):

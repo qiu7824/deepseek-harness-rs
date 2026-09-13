@@ -16,7 +16,8 @@ import tempfile
 import threading
 import time
 import zlib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from e2e_http import ThreadingHTTPServer
 
 
 def png_chunk(kind: bytes, payload: bytes) -> bytes:

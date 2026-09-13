@@ -1,7 +1,8 @@
 """Native task-board, opt-in memory synchronization and menu persistence fixtures."""
 from __future__ import annotations
 import argparse,http.client,json,pathlib,threading,time,uuid
-from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from e2e_http import ThreadingHTTPServer
 from e2e_model_management import isolated_environment,running_fixture_host
 from e2e_settings_model_preserves_data import rpc,require_ok
 

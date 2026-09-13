@@ -1,6 +1,7 @@
 """Isolated real-Host queue/reference admission regression; no external models."""
 import argparse, base64, json, pathlib, sys, threading, time, uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from e2e_http import ThreadingHTTPServer
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from e2e_model_management import isolated_environment, running_fixture_host

@@ -1,7 +1,8 @@
 """Check execution-copy confinement, bounded model context and versioned delivery."""
 from __future__ import annotations
 import argparse,json,pathlib,time,threading,uuid,sys
-from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from e2e_http import ThreadingHTTPServer
 sys.dont_write_bytecode=True
 from e2e_model_management import isolated_environment,running_fixture_host
 from e2e_settings_model_preserves_data import require_ok,rpc
