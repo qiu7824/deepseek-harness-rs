@@ -1,0 +1,33 @@
+name: 运行器本地接口诊断
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  loopback:
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15-intel, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: 核对本地主机解析与 HTTP 测试服务器启动耗时
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, platform, subprocess, sys, time
+          print(json.dumps({"python": sys.version, "platform": platform.system(), "arch": platform.machine(), "cpuCount": os.cpu_count()}), flush=True)
+          probes = {
+              "loopback_fqdn": "import socket; print(socket.getfqdn('127.0.0.1'))",
+              "default_http_server": "from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler; server=ThreadingHTTPServer(('127.0.0.1',0),BaseHTTPRequestHandler); server.server_close()",
+              "numeric_http_server": "from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler; from socketserver import TCPServer\nclass LocalServer(ThreadingHTTPServer):\n def server_bind(self):\n  TCPServer.server_bind(self)\n  self.server_name,self.server_port=self.server_address\nserver=LocalServer(('127.0.0.1',0),BaseHTTPRequestHandler); server.server_close()",
+          }
+          for name, source in probes.items():
+              started=time.monotonic()
+              try:
+                  result=subprocess.run([sys.executable,'-c',source],capture_output=True,text=True,timeout=50)
+                  print(json.dumps({"probe":name,"seconds":round(time.monotonic()-started,3),"exitCode":result.returncode,"stdout":result.stdout[-500:],"stderr":result.stderr[-500:]}),flush=True)
+              except subprocess.TimeoutExpired:
+                  print(json.dumps({"probe":name,"seconds":round(time.monotonic()-started,3),"timedOut":True}),flush=True)
+          PY
