@@ -7,6 +7,8 @@
 
 /// Semver-stable application-authoring surface for the ZSUI 0.2 release line.
 pub mod stable;
+#[cfg(feature = "surface")]
+pub mod surface;
 
 /// Convenient imports for the semver-stable application-authoring surface.
 pub mod prelude {
@@ -950,6 +952,8 @@ pub use view::settings_card;
 #[cfg(feature = "split-view")]
 #[doc(hidden)]
 pub use view::split_view;
+#[cfg(feature = "canvas")]
+pub use view::surface;
 #[cfg(feature = "teaching-tip")]
 #[doc(hidden)]
 pub use view::teaching_tip;

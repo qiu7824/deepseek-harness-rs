@@ -6,15 +6,15 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: `0.1.3-alpha.19`.
+Current release line: `0.1.3-alpha.20`.
 
-Development version: `0.1.3-alpha.19`; see the [change notes](release/notes/v0.1.3-alpha.19.md).
+Development version: `0.1.3-alpha.20`; see the [change notes](release/notes/v0.1.3-alpha.20.md).
 
-See the [alpha.19 release notes](release/notes/v0.1.3-alpha.19.md) for the complete changes.
+See the [alpha.20 release notes](release/notes/v0.1.3-alpha.20.md) for the complete changes.
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 
-## 0.1.3-alpha.19 capabilities
+## 0.1.3-alpha.20 capabilities
 
 - **Sessions and feedback**: permanent deletion includes owned subagent histories while preserving independent forks; ratings require confirmation and retain failed drafts.
 - **Files and imports**: upload ordinary files through the picker, clipboard or drop; validated V0/V1/V2/V3 and image-bearing ZIP imports preserve source artifacts.
@@ -34,7 +34,7 @@ See [configuration and boundaries](docs/session-files-teams-and-network.zh.md).
 - **UU compatibility**: upgraded client locations and compatible terminal paths are discovered while preserving connection ownership, browser display, annotations, connection reuse and manual handoff.
 - **Release integrity**: `--build-info` exposes the build identity. Packaging checks the version, source commit and modification state. Windows, Linux and macOS packages are verified against the same commit and include SHA-256 checksums.
 
-See the [alpha.19 release notes](release/notes/v0.1.3-alpha.19.md) and [rc.1 capability evaluation](docs/upstream-v0.1.5-rc.1-evaluation.zh.md).
+See the [alpha.20 release notes](release/notes/v0.1.3-alpha.20.md) and [rc.1 capability evaluation](docs/upstream-v0.1.5-rc.1-evaluation.zh.md).
 
 ### UU display and manual handoff
 
@@ -47,11 +47,11 @@ See the [alpha.19 release notes](release/notes/v0.1.3-alpha.19.md) and [rc.1 cap
 
 ## Downloads
 
-Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.19):
+Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.20):
 
-- `deepseek-harness-rs-v0.1.3-alpha.19-windows-x86_64-{core,skin,free}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.19-linux-x86_64-{core,skin,free}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.19-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.20-windows-x86_64-{core,skin,free}-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.20-linux-x86_64-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.20-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
 - matching Windows `setup.exe`, Linux `.deb`, and macOS `.pkg` installers
 
 A complete package contains the binary, `web/dist`, `config/agent-presets`, bundled Web plugins, and security documentation. Copying only the binary does not provide a complete Web installation.
@@ -230,3 +230,5 @@ See `PLUGIN_SECURITY.md` for the Web plugin trust boundary.
 ## License
 
 MIT. See [`LICENSE`](LICENSE) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+Windows packages also include the `dsh-desktop.exe` native reader preview. Composing messages, model selection and settings open the web interface.

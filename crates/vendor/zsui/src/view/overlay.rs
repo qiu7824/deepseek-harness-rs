@@ -13,10 +13,14 @@ fn workbench_message_accessibility_label(message: &crate::ZsWorkbenchMessageSpec
     for block in &message.blocks {
         match block {
             crate::ZsWorkbenchContentBlock::Paragraph { text }
+            | crate::ZsWorkbenchContentBlock::Heading { text, .. }
+            | crate::ZsWorkbenchContentBlock::ListItem { text }
+            | crate::ZsWorkbenchContentBlock::Quote { text }
             | crate::ZsWorkbenchContentBlock::Notice { text, .. } => parts.push(text.clone()),
             crate::ZsWorkbenchContentBlock::Code { language, code } => {
                 parts.push(format!("{language} code: {code}"));
             }
+            crate::ZsWorkbenchContentBlock::Divider => {}
             crate::ZsWorkbenchContentBlock::Tool { title, summary, .. } => {
                 parts.push(format!("{title}: {summary}"));
             }

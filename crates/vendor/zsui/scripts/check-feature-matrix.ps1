@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$cargoArgs = @("check", "--no-default-features")
+$cargoArgs = @("check", "-p", "zsui", "--no-default-features")
 if ($Locked) {
     $cargoArgs += "--locked"
 }
@@ -18,6 +18,7 @@ $singleFeatures = @(
     "split-view",
     "breadcrumb",
     "canvas",
+    "surface",
     "flyout",
     "menu-flyout",
     "context-menu",
@@ -143,8 +144,10 @@ $metadata = (& cargo @metadataArgs | ConvertFrom-Json)
 if ($LASTEXITCODE -ne 0) {
     throw "cargo metadata failed"
 }
+$package = @($metadata.packages | Where-Object { $_.name -eq "zsui" })
+if ($package.Count -ne 1) { throw "expected one zsui package" }
 $manifestFeatures = @(
-    $metadata.packages[0].features.PSObject.Properties.Name |
+    $package[0].features.PSObject.Properties.Name |
         Where-Object { $_ -ne "default" } |
         Sort-Object
 )

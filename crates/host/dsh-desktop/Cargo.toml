@@ -1,0 +1,25 @@
+[package]
+name = "dsh-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ZSUI native desktop reader for DeepSeek Harness"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+ureq = { version = "3.1", features = ["json"] }
+resvg = { version = "=0.48.1", default-features = false }
+pulldown-cmark = { version = "0.13", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+arboard = "3.6"
+[target.'cfg(windows)'.dependencies]
+windows-sys = {version="0.61",features=["Win32_Foundation","Win32_System_JobObjects","Win32_System_Threading","Win32_Security"]}
+
+[build-dependencies]
+winresource = "0.1"
+
+[dependencies.zsui]
+path = "../../vendor/zsui"
+default-features = false
+features = ["window", "surface", "label", "button", "textbox", "scroll", "clipboard", "dark-mode"]

@@ -417,7 +417,10 @@ window.__ModuleLoader__.load({
 				finally {running.current=false;if(alive.current)setBusy(false);}
 			};
 			return h(react.Fragment,null,
-				h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"ghost",size:"sm",onClick:()=>{setOpen(true);setSaved(false);}},t("session.title")),
+				h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"ghost",size:"sm",title:t("session.title"),"aria-label":t("session.title"),"aria-haspopup":"dialog",style:{width:32,height:32,padding:0,flexShrink:0},onClick:()=>{setOpen(true);setSaved(false);}},
+					h("svg",{width:18,height:18,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:1.75,strokeLinecap:"round",strokeLinejoin:"round","aria-hidden":true,focusable:"false"},
+						h("path",{d:"M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z"}),
+						h("path",{d:"M8 10h8M8 14h5"}))),
 				saved&&h("span",{role:"status",style:{fontSize:12,color:"var(--dsw-alias-label-tertiary)"}},t("session.recorded")),
 				open&&h(_deepseek_ai_dsh_client_ui_primitives.Modal,{open,title:t("session.title"),onClose:()=>{if(!busy)setOpen(false);},closeLabel:t("note.cancel"),footer:h(react.Fragment,null,
 					h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",disabled:busy,onClick:()=>setOpen(false)},t("note.cancel")),

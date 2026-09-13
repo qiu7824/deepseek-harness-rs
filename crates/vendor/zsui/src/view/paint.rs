@@ -501,6 +501,26 @@ impl<Msg: Clone> ViewNode<Msg> {
 
 impl<Msg: Clone> View<Msg> for ViewNode<Msg> {
     fn layout(&mut self, cx: &mut ViewLayoutCx) -> LayoutOutput {
+        #[cfg(feature = "canvas")]
+        if let Some(builder) = &self.surface_builder {
+            self.bounds = Some(cx.bounds);
+            self.layout_dpi = cx.dpi;
+            let positioned = (builder.0)(cx.bounds, cx.dpi);
+            let mut children = Vec::new();
+            self.children.clear();
+            for (local, mut child) in positioned {
+                child.assign_automatic_ids();
+                let bounds = Rect {
+                    x: cx.bounds.x + local.x.to_px(cx.dpi).round_i32(),
+                    y: cx.bounds.y + local.y.to_px(cx.dpi).round_i32(),
+                    width: local.width.to_px(cx.dpi).round_i32().max(0),
+                    height: local.height.to_px(cx.dpi).round_i32().max(0),
+                };
+                children.extend(child.layout(&mut cx.child(bounds)).children);
+                self.children.push(child);
+            }
+            return LayoutOutput { bounds: cx.bounds, children };
+        }
         if cx.is_root() {
             self.assign_automatic_ids();
         }

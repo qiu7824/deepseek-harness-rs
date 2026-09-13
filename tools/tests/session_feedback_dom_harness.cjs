@@ -12,7 +12,7 @@ const context={react:React,MessageFeedbackActions_module_css_default:{noteInput:
 vm.runInNewContext(source.slice(source.indexOf('function feedbackSubmissionId('),source.indexOf('function FeedbackSubmissionDialog(')),context);
 const root=Client.createRoot(document.getElementById('root'));
 const act=fn=>React.act(async()=>{await fn();await new Promise(resolve=>setTimeout(resolve,10));});
-const button=label=>[...document.querySelectorAll('button')].find(el=>el.textContent===label);
+const button=label=>[...document.querySelectorAll('button')].find(el=>(el.getAttribute('aria-label')||el.textContent)===label);
 const input=(el,value)=>el[Object.keys(el).find(key=>key.startsWith('__reactProps$'))].onChange({target:{value}});
 (async()=>{
  await act(()=>root.render(React.createElement(context.SessionFeedbackEntry,{key:'a',sessionId:'a',t:key=>key})));

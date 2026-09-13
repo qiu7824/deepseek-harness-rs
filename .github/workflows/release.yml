@@ -127,7 +127,17 @@ jobs:
         run: cargo build --locked --release -p dsh-host-cli --bin dsh -p dsh-launcher --bin dsh-launcher -p dsh-skin-installer --bin dsh-skin-installer
       - name: Build Windows desktop controller
         if: matrix.platform == 'windows'
-        run: cargo build --locked --release -p dsh-desktop-controller -p dsh-uu-controller
+        run: |
+          cargo build --locked --release -p dsh-desktop-controller -p dsh-uu-controller
+          if ($LASTEXITCODE -ne 0) { throw 'Controller build failed' }
+          cargo test --locked -p dsh-desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop tests failed' }
+          cargo build --locked --profile desktop -p dsh-desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed' }
+          Copy-Item target/desktop/dsh-desktop.exe target/release/dsh-desktop.exe
+      - name: Windows 原生阅读客户端验收
+        if: matrix.platform == 'windows'
+        run: python tools/verify_desktop_reader.py --binary target/release/dsh-desktop.exe --workdir "$env:RUNNER_TEMP/dsh-desktop-reader"
       - name: 固化正式 Web 产物
         shell: bash
         run: python tools/stage_release_web.py

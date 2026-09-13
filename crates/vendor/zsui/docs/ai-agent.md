@@ -56,6 +56,7 @@ and is not part of normal task context.
 | `view-widgets` | `View<Msg>`, state/update, basic controls, input routing |
 | `long-list` | Virtual rows, background pagination, prefetch and LRU caching |
 | `image-preview` | Retained raster frames, background PNG decode and no-flicker presentation |
+| `surface` | Responsive raster surfaces, positioned native children and bounded text painting |
 | `navigation-shell` | Left navigation, grouped cards, settings rows, scroll |
 | `workbench` | Conversation/task shell, composer, inspector, message blocks |
 | `document-shell` | Document chrome, text lifecycle, native editor inset, notepad example |

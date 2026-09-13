@@ -1,5 +1,5 @@
 {
-  "rev": "rust-v0.1.3-alpha.19",
+  "rev": "rust-v0.1.3-alpha.20",
   "entries": [
     {
       "id": "@deepseek-ai/dsh-client-ui-file-actions",
@@ -296,7 +296,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-message-feedback",
       "url": "/plugins/ui-message-feedback.js",
-      "rev": "2532cc966775c7cc",
+      "rev": "7abf5c621e67a272",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-api-remotes",

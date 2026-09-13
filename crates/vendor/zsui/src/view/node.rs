@@ -1298,6 +1298,8 @@ pub struct ViewNode<Msg> {
     pub kind: ViewNodeKind<Msg>,
     pub style: ViewStyle,
     pub children: Vec<ViewNode<Msg>>,
+    #[cfg(feature = "canvas")]
+    surface_builder: Option<SurfaceBuilder<Msg>>,
     #[cfg(feature = "text-input-core")]
     editable_text: Option<ViewEditableTextDescriptor>,
     #[cfg(feature = "tooltip")]
@@ -1353,6 +1355,8 @@ impl<Msg> ViewNode<Msg> {
             kind,
             style: ViewStyle::default(),
             children: Vec::new(),
+            #[cfg(feature = "canvas")]
+            surface_builder: None,
             #[cfg(feature = "text-input-core")]
             editable_text: None,
             #[cfg(feature = "tooltip")]

@@ -1,8 +1,8 @@
 ﻿#ifndef MyAppVersion
-#define MyAppVersion "0.1.3-alpha.19"
+#define MyAppVersion "0.1.3-alpha.20"
 #endif
 #ifndef SourceDir
-#define SourceDir "dist\deepseek-harness-rs-v0.1.3-alpha.19-windows-x86_64-core"
+#define SourceDir "dist\deepseek-harness-rs-v0.1.3-alpha.20-windows-x86_64-core"
 #endif
 #ifndef OutputDir
 #define OutputDir "dist"
@@ -83,6 +83,7 @@ Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; GroupDescription: "{cm
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"
+Name: "{group}\DeepSeek Harness Desktop (Preview)"; Filename: "{app}\dsh-desktop.exe"; WorkingDir: "{app}"; Check: FileExists(ExpandConstant('{app}\dsh-desktop.exe'))
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 [Run]
