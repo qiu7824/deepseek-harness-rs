@@ -234,12 +234,19 @@ impl EventsService {
             }
         }
 
+        tracing::debug!(event = name, "collect acquiring hooks");
         let hooks = self.hooks.lock();
+        tracing::debug!(event = name, "collect acquired hooks");
         let Some(list) = hooks.get(name) else {
             return Vec::new();
         };
         let mut result = Vec::new();
         for hook in list {
+            tracing::debug!(
+                event = name,
+                global = hook.global,
+                "collect evaluating filter"
+            );
             let accept = hook.global
                 || match this_arg {
                     None => true,
@@ -255,12 +262,15 @@ impl EventsService {
                 result.push((listener_ctx, hook.callback.clone()));
             }
         }
+        tracing::debug!(event = name, "collect complete");
         result
     }
 
     fn emit_raw(&self, this_arg: Option<&Context>, name: &str, args: Vec<ArcValue>) {
         for (ctx, callback) in self.collect(DispatchMode::Emit, this_arg, name, &args) {
+            tracing::debug!(event = name, "emit constructing listener");
             let future = callback(&ctx, args.clone());
+            tracing::debug!(event = name, "emit scheduling listener");
             tokio::spawn(async move {
                 let _ = future.await;
             });

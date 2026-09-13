@@ -52,6 +52,7 @@ fn main() {
             .with_env_filter("cordis=debug")
             .with_writer(std::io::stderr)
             .with_ansi(false)
+            .with_thread_ids(true)
             .try_init();
     }
     #[cfg(windows)]

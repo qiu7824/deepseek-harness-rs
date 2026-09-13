@@ -1841,13 +1841,19 @@ impl Plugin for HostCompositionPlugin {
     }
 
     async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
-        *self.output.lock() = Some(compose_host_in_fiber(
-            ctx,
-            self.data_root.clone(),
-            self.profile.as_deref(),
-            self.bind_host,
-            self.port,
-        ));
+        let ctx = ctx.clone();
+        let root = self.data_root.clone();
+        let profile = self.profile.clone();
+        let (bind_host, port) = (self.bind_host, self.port);
+        // The synchronous composition bridges loader/plugin futures with
+        // block_on. Running it on a Tokio worker can strand newly spawned
+        // plugin work in that worker's non-stealable LIFO slot.
+        let result = tokio::task::spawn_blocking(move || {
+            compose_host_in_fiber(&ctx, root, profile.as_deref(), bind_host, port)
+        })
+        .await
+        .map_err(|error| PluginError::new(arc(format!("host composition task: {error}"))))?;
+        *self.output.lock() = Some(result);
         Ok(())
     }
 }

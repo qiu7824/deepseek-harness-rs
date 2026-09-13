@@ -599,22 +599,24 @@ impl AgentPresets {
                 )
             })?;
             // Recheck under one lock after the asynchronous stat. Only the
-            // winner constructs a scope and publishes its shared mount.
+            // winner publishes its shared mount future. Scope creation emits
+            // lifecycle events, so it must happen after releasing this lock.
             let created = {
                 let mut standing = self.standing.lock();
                 if let Some(pending) = standing.get(&preset.id) {
                     pending.clone()
                 } else {
-                    let key = ScopeKey::new();
-                    let scope = create_scope(
-                        &self.ctx,
-                        key.clone(),
-                        &dsh_scope::CreateScopeOptions::default(),
-                    );
+                    let scope_ctx = self.ctx.clone();
                     let preset_for_mount = preset.clone();
                     let created: Shared<
                         BoxFuture<'static, Result<Arc<StandingMount>, PresetMountError>>,
                     > = async move {
+                        let key = ScopeKey::new();
+                        let scope = create_scope(
+                            &scope_ctx,
+                            key.clone(),
+                            &dsh_scope::CreateScopeOptions::default(),
+                        );
                         if let Err(error) = mount_preset(&scope.ctx, &preset_for_mount).await {
                             // A settled failure is removed so a later session
                             // retries a preset whose file has been fixed.

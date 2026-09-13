@@ -906,15 +906,19 @@ impl FiberCore {
             self.runner_epoch()
         );
         *self.state.lock() = new;
+        tracing::debug!("status state stored");
         if old == new {
             return;
         }
+        tracing::debug!("status resolving context");
         if let Some(ctx) = self.ctx() {
+            tracing::debug!("status dispatch begin");
             ctx.events.emit(
                 Some(&ctx),
                 "internal/status",
                 vec![arc(self.clone()), arc(old)],
             );
+            tracing::debug!("status dispatch complete");
         }
         // only notify on ACTIVE boundary crossings
         if (old == FiberState::Active) == (new == FiberState::Active) {

@@ -188,3 +188,37 @@ async fn failed_standard_initialization_is_evicted_and_can_mount_after_repair() 
     assert!(mounts.iter().all(|mount| mount.key == mounts[0].key));
     fixture.dispose().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn standing_scope_publication_does_not_hold_the_singleflight_lock() {
+    let fixture = Fixture::new().await;
+    fixture.host.ctx.fiber.settle().await.unwrap();
+    let blocked = Arc::new(AtomicBool::new(false));
+    let service = fixture.service.clone();
+    let observed = blocked.clone();
+    let listener = fixture
+        .host
+        .ctx
+        .on(
+            "internal/status",
+            Arc::new(move |_, _| {
+                if service.standing.try_lock().is_none() {
+                    observed.store(true, Ordering::SeqCst);
+                }
+                Box::pin(async { None })
+            }),
+            cordis::EventOptions::default().global(true),
+        )
+        .await;
+    fixture
+        .service
+        .ensure_standing(&fixture.preset)
+        .await
+        .unwrap();
+    assert!(
+        !blocked.load(Ordering::SeqCst),
+        "scope publication reentered a locked preset registry"
+    );
+    listener().await;
+    fixture.dispose().await;
+}

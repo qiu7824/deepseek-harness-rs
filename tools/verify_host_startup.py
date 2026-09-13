@@ -17,6 +17,11 @@ def main() -> None:
     parser.add_argument('--workdir', type=Path, required=True)
     parser.add_argument('--trace-startup', action='store_true')
     args = parser.parse_args()
+    binary = args.binary.resolve()
+    for relative in ['config/agent-presets/standard/agent.cordis.yml',
+                     'plugins/dsh-better-sidebar/lib/client.js', 'web/dist/plugins/manifest.json']:
+        if not (binary.parent / relative).is_file():
+            raise SystemExit('Startup verification requires the complete adjacent payload: ' + relative)
     work = args.workdir.resolve()
     work.mkdir(parents=True, exist_ok=True)
     stdout_path, stderr_path = work / 'stdout.log', work / 'startup.log'
@@ -26,7 +31,7 @@ def main() -> None:
     started = time.monotonic()
     result = {'ready': False}
     with stdout_path.open('wb') as stdout, stderr_path.open('wb') as stderr:
-        process = subprocess.Popen([str(args.binary.resolve()), 'web', '--port', '0'],
+        process = subprocess.Popen([str(binary), 'web', '--port', '0'],
             stdout=stdout, stderr=stderr, stdin=subprocess.DEVNULL, env=environment, cwd=workspace,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         try:
@@ -37,12 +42,23 @@ def main() -> None:
                     raise RuntimeError('Startup trace exceeded the diagnostic limit')
                 match = re.search(r'dsh web: (http://127\.0\.0\.1:\d+)', stdout_path.read_text(encoding='utf-8', errors='replace'))
                 if match:
-                    payload = json.dumps({'type': 'client-request', 'rpcId': 'startup-check', 'method': 'session.list', 'payload': {}}).encode()
-                    request = urllib.request.Request(match[1] + '/api/session.list', data=payload, headers={'Content-Type': 'application/json'})
-                    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=5) as response:
-                        value = json.load(response)
-                    if value.get('result', {}).get('ok') is not True:
-                        raise RuntimeError('Host readiness did not expose a usable session API')
+                    def rpc(method, value):
+                        payload = json.dumps({'type': 'client-request', 'rpcId': 'startup-' + method, 'method': method, 'payload': value}).encode()
+                        request = urllib.request.Request(match[1] + '/api/' + method, data=payload, headers={'Content-Type': 'application/json'})
+                        remaining = 45 - (time.monotonic() - started)
+                        if remaining <= 0:
+                            raise TimeoutError('Startup API verification exceeded 45 seconds')
+                        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=min(15, remaining)) as response:
+                            result = json.load(response)['result']
+                        if result.get('ok') is not True:
+                            raise RuntimeError('Host startup API failed: ' + method)
+                        return result['value']
+                    rpc('session.list', {})
+                    registered = rpc('workspace.create', {'path': str(workspace)})
+                    created = rpc('session.create', {'workspaceId': registered['workspace']['workspaceId']})
+                    if not created.get('sessionId'):
+                        raise RuntimeError('Default preset did not create a session')
+                    result['defaultPresetSessionCreated'] = True
                     result['ready'] = True
                     break
                 time.sleep(0.1)
