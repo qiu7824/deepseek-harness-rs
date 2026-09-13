@@ -411,12 +411,16 @@ pub(crate) struct AccountAuth {
     settings: Arc<dsh_settings::SettingsProvider>,
     pending: parking_lot::Mutex<HashMap<String, (Provider, Arc<tokio::sync::Mutex<Pending>>)>>,
     devin_logins: parking_lot::Mutex<HashMap<String, crate::devin_auth::Login>>,
+    browsers: crate::account_browser::AccountBrowsers,
     refresh: tokio::sync::Mutex<()>,
     cli: parking_lot::RwLock<Option<Arc<super::claude_cli_auth::ClaudeCliAuth>>>,
     catalogs: crate::provider_auth_catalog::CatalogStore,
     catalog_transport: parking_lot::RwLock<Option<models::CatalogTransport>>,
 }
 impl AccountAuth {
+    pub(crate) async fn close_authorization_browsers(&self) {
+        self.browsers.shutdown().await;
+    }
     pub(crate) fn register_usage_tool(
         self: &Arc<Self>,
         ctx: &cordis::Context,
@@ -466,6 +470,12 @@ impl AccountAuth {
                     .join("cache/model-catalogs"),
             ),
             catalog_transport: Default::default(),
+            browsers: crate::account_browser::AccountBrowsers::new(
+                std::path::Path::new(credentials.filename())
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("cache/authorization-browsers"),
+            ),
             credentials,
             settings,
             pending: Default::default(),
@@ -774,7 +784,15 @@ impl AccountAuth {
             )
             .await?;
             let attempt = uuid::Uuid::new_v4().to_string();
-            let response = json!({"attempt":attempt,"flow":"browser","provider":p.id,"verificationUri":login.authorization_url,"expiresAt":login.expires,"interval":2});
+            let embedded = self
+                .browsers
+                .offer(
+                    &attempt,
+                    &login.authorization_url,
+                    login.expires.saturating_sub(now()),
+                )
+                .is_ok();
+            let response = json!({"attempt":attempt,"flow":"browser","embeddedBrowser":embedded,"provider":p.id,"verificationUri":login.authorization_url,"expiresAt":login.expires,"interval":2});
             self.pending.lock().insert(
                 attempt.clone(),
                 (
@@ -910,8 +928,12 @@ impl AccountAuth {
                 })),
             ),
         );
+        let embedded = self
+            .browsers
+            .offer(&attempt, &verification, expires.saturating_sub(now()))
+            .is_ok();
         Ok(
-            json!({"attempt":attempt,"userCode":user_code,"verificationUri":verification,"expiresAt":expires,"interval":interval}),
+            json!({"attempt":attempt,"embeddedBrowser":embedded,"userCode":user_code,"verificationUri":verification,"expiresAt":expires,"interval":interval}),
         )
     }
     async fn poll(&self, attempt: &str) -> Result<Value, String> {
@@ -924,6 +946,7 @@ impl AccountAuth {
         let mut pending = pending.lock().await;
         if now() >= pending.expires {
             self.pending.lock().remove(attempt);
+            self.browsers.close(attempt).await;
             let login = self.devin_logins.lock().remove(attempt);
             if let Some(login) = login {
                 login.close().await;
@@ -1139,6 +1162,7 @@ impl AccountAuth {
             self.activate(p, session).await?;
             self.pending.lock().remove(attempt);
         }
+        self.browsers.close(attempt).await;
         // Authentication and catalog sync are separate states. An authenticated
         // account with a failing catalog retains an actionable sync error.
         let _ = self.refresh_catalog(p.id).await;
@@ -1476,9 +1500,18 @@ impl AccountAuth {
                 self.refresh_catalog(&id).await
             }
             "poll" => self.poll(&string(body, "attempt")?).await,
+            "browser" => {
+                let attempt = string(body, "attempt")?;
+                if !self.pending.lock().contains_key(&attempt) {
+                    self.browsers.close(&attempt).await;
+                    return Err("登录已结束，请重新登录".into());
+                }
+                self.browsers.action(&attempt, body).await
+            }
             "cancel" => {
                 let _guard = self.refresh.lock().await;
                 let attempt = string(body, "attempt")?;
+                self.browsers.close(&attempt).await;
                 let login = self.devin_logins.lock().remove(&attempt);
                 if let Some(login) = login {
                     login.close().await;

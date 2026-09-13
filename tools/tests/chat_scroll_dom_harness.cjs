@@ -65,6 +65,16 @@ async function fixture({ rows, viewport = 200, heights = {}, before = false, aft
 }
 
 (async () => {
+  let ahead = await fixture({rows:Array.from({length:20},(_v,i)=>String(i)),viewport:400,before:true,after:false,history:false});
+  await ahead.move(700,-100);
+  assert.equal(ahead.calls.older,1,'older history starts loading with more than one viewport of runway');
+  assert.equal(ahead.top(),700,'prefetch does not consume or simulate a scroll gesture');
+  await ahead.close();
+  ahead = await fixture({rows:Array.from({length:20},(_v,i)=>String(i)),viewport:400,before:true,after:false,history:false});
+  await ahead.wheel(-1000);
+  assert.equal(ahead.calls.older,1,'a large wheel delta anticipates the boundary before the native scroll event');
+  assert.equal(ahead.top(),1600);
+  await ahead.close();
   let repeat = await fixture({rows:['0'],heights:{0:80,1:80,2:500},viewport:300,history:false,after:false});
   repeat.state.historyNavigationRevision++; repeat.state.historyNavigationReason='latest';
   await repeat.render();

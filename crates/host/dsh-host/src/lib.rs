@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 
+mod account_browser;
 mod agent_team_http;
 mod artifacts;
 mod claude_cli_auth;
@@ -2799,6 +2800,18 @@ fn compose_host_in_fiber(
         .map_err(|error| format!("web-fetch-http: {error}"))?;
 
     let account_auth = provider_auth::AccountAuth::new(credentials.clone(), settings.clone())?;
+    let browser_cleanup = account_auth.clone();
+    let _ = ctx.effect(
+        "authorization browsers",
+        Box::pin(async move {
+            Some(make_disposer(move || {
+                let auth = browser_cleanup.clone();
+                Box::pin(async move {
+                    auth.close_authorization_browsers().await;
+                })
+            }))
+        }),
+    );
     account_auth.set_catalog_root(runtime_paths.paths["cacheDirectory"].join("model-catalogs"));
     let native_model_catalog = account_auth.clone();
     let deepseek_scope_for_options = deepseek_scope.clone();

@@ -2110,12 +2110,51 @@ window.__ModuleLoader__.load({
                 h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:disabled||item.active||item.needsLogin,"aria-pressed":item.active===true,onClick:()=>onSwitch(item.accountScope)},t(item.active?"accountCurrent":"accountSwitch")),
                 onLogout&&h("button",{type:"button",className:ModelsSection_module_css_default.dangerButton,disabled,onClick:()=>onLogout(item.accountScope)},t("accountRemove")))));
         }
+        function AccountAuthorizationBrowser({attempt,t}) {
+            const h=react.createElement;
+            const [view,setView]=react.useState(null),[imageUrl,setImageUrl]=react.useState(""),[failure,setFailure]=react.useState(""),[working,setWorking]=react.useState(false),[text,setText]=react.useState("");
+            const alive=react.useRef(false),pending=react.useRef(false),sequence=react.useRef(0),input=react.useRef(null),activeRequest=react.useRef(null),userPending=react.useRef(false);
+            const run=async(action,extra={},quiet=false)=>{
+                if(quiet&&pending.current)return;
+                if(!quiet){if(userPending.current)return;userPending.current=true;setWorking(true);await activeRequest.current;if(!alive.current){userPending.current=false;return}}
+                pending.current=true;const token=++sequence.current;
+                let finish;activeRequest.current=new Promise(resolve=>{finish=resolve});
+                try{const value=await accountRequest("browser",{attempt:attempt.attempt,action,...extra});if(alive.current&&sequence.current===token){setView(value);setFailure("")}return value}
+                catch(error){if(alive.current&&sequence.current===token)setFailure(messageOf$1(error))}
+                finally{pending.current=false;if(!quiet)userPending.current=false;finish();if(alive.current&&!quiet)setWorking(false)}
+            };
+            react.useEffect(()=>{
+                alive.current=true;void run("start");
+                const timer=setInterval(()=>{if(document.visibilityState!=="hidden")void run("capture",{},true)},1500);
+                return()=>{alive.current=false;sequence.current++;clearInterval(timer)};
+            },[attempt.attempt]);
+            const send=()=>{if(!text||userPending.current)return;const value=text;setText("");void run("type",{text:value})};
+            const point=event=>{if(userPending.current||!view?.state?.viewport)return;const rect=event.currentTarget.getBoundingClientRect(),viewport=view.state.viewport;void run("click",{x:(event.clientX-rect.left)*viewport.width/rect.width,y:(event.clientY-rect.top)*viewport.height/rect.height}).then(()=>{if(alive.current)input.current?.focus()})};
+            const picture=view?.screenshot;
+            react.useEffect(()=>{
+                if(!picture?.base64){setImageUrl("");return}
+                const bytes=Uint8Array.from(window.atob(picture.base64),character=>character.charCodeAt(0));
+                const url=window.URL.createObjectURL(new window.Blob([bytes],{type:picture.mediaType}));setImageUrl(url);
+                return()=>window.URL.revokeObjectURL(url);
+            },[picture]);
+            return h("section",{"aria-label":t("accountEmbeddedTitle"),style:{width:"100%",maxWidth:900,marginTop:12}},
+                h("p",null,t("accountEmbeddedHint")),
+                view?.state?.url&&h("div",{style:{overflowWrap:"anywhere",fontSize:12}},view.state.url),
+                imageUrl?h("img",{src:imageUrl,alt:t("accountEmbeddedTitle"),onClick:point,onWheel:event=>{if(!pending.current)void run("scroll",{deltaY:event.deltaY,x:550,y:380},true)},style:{display:"block",width:"100%",border:"1px solid #8885",borderRadius:6,cursor:working?"wait":"pointer"}}):h("p",{role:"status"},t("accountBrowserStarting")),
+                h("div",{style:{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}},
+                    h("input",{ref:input,type:"password",maxLength:2048,autoComplete:"off","aria-label":t("accountBrowserInput"),placeholder:t("accountBrowserInput"),value:text,onChange:e=>setText(e.target.value),onKeyDown:e=>{if(e.key==="Enter"){e.preventDefault();send()}},style:{flex:1,minWidth:120}}),
+                    h("button",{type:"button",disabled:working||!text,onClick:send},t("accountBrowserType")),
+                    ...["Tab","Enter","Backspace"].map(key=>h("button",{key,type:"button",disabled:working,onClick:()=>void run("key",{key})},key)),
+                    h("button",{type:"button",disabled:working,onClick:()=>void run(view?"capture":"start")},t("accountRefresh"))),
+                failure&&h("p",{role:"alert"},failure));
+        }
         function AccountLoginPrompt({attempt,t,busy,onCancel}) {
             const h=react.createElement;
             return attempt&&h("div",{className:ModelsSection_module_css_default.editor,role:"status"},
                 h("p",{className:ModelsSection_module_css_default.advancedHint},t("accountAddHint")),
-                h("p",null,t(attempt.flow==="browser"?"accountBrowserVerify":attempt.mode==="cli"?"accountCliVerify":"accountVerify")),
+                h("p",null,t(attempt.embeddedBrowser?"accountEmbeddedVerify":attempt.flow==="browser"?"accountBrowserVerify":attempt.mode==="cli"?"accountCliVerify":"accountVerify")),
                 attempt.userCode&&h("code",null,attempt.userCode),
+                attempt.embeddedBrowser&&h(AccountAuthorizationBrowser,{attempt,t}),
                 attempt.verificationUri&&h("a",{className:ModelsSection_module_css_default.secondaryButton,href:attempt.verificationUri,target:"_blank",rel:"noopener noreferrer"},t("accountOpen")),
                 h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy,onClick:onCancel},t("cancel")));
         }
@@ -3083,6 +3122,8 @@ window.__ModuleLoader__.load({
             accountManage: "Manage accounts and models", accountProviders: "Signed-in providers", accountUsageUnavailable: "This provider does not expose usage here.", accountNoLogin: "No signed-in account. Open account settings to connect a provider.", accountReading: "Reading accounts…",
             accountTitle: "Accounts", accountHint: "Sign in with a provider subscription. Credentials stay on this device and refresh when supported by the provider.",
             accountBrowserVerify: "Open the authorization page in a browser on the computer running Harness. This page updates after sign-in; no device code is required.",
+            accountEmbeddedTitle:"Subscription authorization browser",accountEmbeddedHint:"Click a field in the page, then enter its text below. Input stays in this authorization session. If the provider requires another browser, use the sign-in link below.",accountBrowserStarting:"Opening authorization browser…",accountBrowserInput:"Text for the selected field",accountBrowserType:"Send input",
+            accountEmbeddedVerify:"Complete sign-in in the page below. Enter the device code if one is shown; account status updates automatically.",
             accountSignedIn: "Connected", accountSignedOut: "Disconnected", accountReconnect: "Reconnect", accountLogin: "Sign in", accountLogout: "Sign out",
             accountAdd: "Sign in another account", accountSaved: "Accounts for this provider", accountCurrent: "Current account", accountSwitch: "Switch account", accountRemove: "Remove account", accountLabel: "Account", accountSavedLogin: "Saved login", accountNeedsLogin: "Sign in again", accountAddHint: "Existing accounts stay saved. On the authorization page, choose the other account you want to add.",
             accountVerify: "Open the sign-in page, enter this code, and complete authorization. This page will update automatically.", accountOpen: "Open sign-in page",
@@ -3225,6 +3266,8 @@ window.__ModuleLoader__.load({
             accountManage: "管理账号与模型", accountProviders: "已登录的供应商", accountUsageUnavailable: "该供应商暂未提供此处可读取的用量信息。", accountNoLogin: "尚未登录账号，可在账号设置中连接供应商。", accountReading: "正在读取账号…",
             accountTitle: "账号登录", accountHint: "使用供应商订阅登录，凭据保存在本机；支持续期的供应商会自动续期。",
             accountBrowserVerify: "请在运行 Harness 的电脑上打开授权页面，登录后此处会自动更新，无需输入设备验证码。",
+            accountEmbeddedTitle:"订阅授权浏览器",accountEmbeddedHint:"点击页面中的输入框，再在下方输入内容并发送；输入仅用于当前授权会话。如供应商要求使用其他浏览器，可使用下方的登录链接。",accountBrowserStarting:"正在打开授权浏览器…",accountBrowserInput:"向选中的页面输入框输入内容",accountBrowserType:"发送输入",
+            accountEmbeddedVerify:"在下方授权页面完成登录；如有设备验证码，请在授权页面输入，账号状态会自动更新。",
             accountSignedIn: "已连接", accountSignedOut: "未连接", accountReconnect: "重新连接", accountLogin: "登录", accountLogout: "退出登录",
             accountAdd: "登录另一个账号", accountSaved: "同一登录方式的账号", accountCurrent: "当前账号", accountSwitch: "切换账号", accountRemove: "移除账号", accountLabel: "账号", accountSavedLogin: "已保存登录", accountNeedsLogin: "需要重新登录", accountAddHint: "现有账号会保留，请在授权页面选择要添加的另一个账号。",
             accountVerify: "打开登录页面，输入验证码并完成授权，此处会自动更新。", accountOpen: "打开登录页面",

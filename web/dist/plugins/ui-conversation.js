@@ -5897,7 +5897,7 @@ window.__ModuleLoader__.load({
 				if (this.timer !== null || this.disposed) return;
 				this.timer = window.setTimeout(() => { this.timer = null; this.sample(); }, SCROLL_SAMPLE_INTERVAL_MS);
 			}
-			input(direction) {
+			input(direction, distance = 0) {
 				if (!direction) return;
 				this.expectedTop = null;
 				if (this.page && !this.page.cancelled && this.page.direction !== direction) {
@@ -5905,13 +5905,17 @@ window.__ModuleLoader__.load({
 				}
 				this.direction = direction; this.intentUntil = Date.now() + 1000;
 				if (direction < 0 || this.mode !== "following" || !this.liveTail()) this.read();
+				this.pageAtBoundary(distance);
 				this.schedule();
 			}
-			pageAtBoundary() {
+			pageAtBoundary(distance = 0) {
 				const m = this.model();
 				if (this.page || m.openState !== "open" || m.loadingOlder || m.loadingNewer || this.mode === "returning") return;
 				if (Date.now() > this.intentUntil) { this.direction = 0; return; }
-				const edge = Math.max(80, Math.min(600, this.el.clientHeight * .75));
+				// Keep enough loaded content ahead of a wheel gesture to cover
+				// the request and render, instead of fetching at the visible edge.
+				const runway = Math.max(160, Math.min(2400, this.el.clientHeight * 2));
+				const edge = runway + Math.min(2400, Math.max(0, distance));
 				const older = this.direction < 0 && this.el.scrollTop <= edge && m.hasMoreBefore;
 				const newer = this.direction > 0 && this.floor() - this.el.scrollTop <= edge && m.hasMoreAfter;
 				if (!older && !newer) return;
@@ -5957,7 +5961,7 @@ window.__ModuleLoader__.load({
 			mount() {
 				this.disposed = false; this.el = scrollerOf(this.list()); this.observedTop = this.el.scrollTop; this.observedFloor = this.floor();
 				this.originalAnchor = this.el.style.overflowAnchor; this.el.style.overflowAnchor = "none";
-				const onWheel = event => { const direction = Math.sign(event.deltaY); if (this.ownsGesture(event.target, direction)) this.input(direction); };
+				const onWheel = event => { const direction = Math.sign(event.deltaY); const scale = event.deltaMode === 2 ? this.el.clientHeight : event.deltaMode === 1 ? 16 : 1; if (this.ownsGesture(event.target, direction)) this.input(direction, Math.abs(event.deltaY) * scale); };
 				const onKeyDown = event => {
 					if (event.defaultPrevented || event.altKey || event.metaKey || event.target?.closest?.("input,textarea,[contenteditable=true]")) return;
 					if (["ArrowDown", "PageDown", "End"].includes(event.key)) this.input(1);
