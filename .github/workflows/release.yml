@@ -140,6 +140,14 @@ jobs:
       - name: 固化正式 Web 产物
         shell: bash
         run: python tools/stage_release_web.py
+      - name: Host 启动预检
+        id: startup_preflight
+        shell: bash
+        run: python tools/verify_host_startup.py --binary target/release/${{ matrix.binary }} --workdir "$RUNNER_TEMP/dsh-startup-preflight"
+      - name: Host 启动失败跟踪
+        if: failure() && steps.startup_preflight.outcome == 'failure'
+        shell: bash
+        run: python tools/verify_host_startup.py --binary target/release/${{ matrix.binary }} --workdir "$RUNNER_TEMP/dsh-startup-trace" --trace-startup
       - name: 验证免费模型完整运行链路
         id: free_probe
         continue-on-error: true
@@ -312,6 +320,19 @@ jobs:
             target/free-model-verification.log
             target/release-variants.json
           if-no-files-found: warn
+      - name: 保留 Host 启动诊断
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: host-startup-diagnostics-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/dsh-startup-preflight/stdout.log
+            ${{ runner.temp }}/dsh-startup-preflight/startup.log
+            ${{ runner.temp }}/dsh-startup-preflight/result.json
+            ${{ runner.temp }}/dsh-startup-trace/stdout.log
+            ${{ runner.temp }}/dsh-startup-trace/startup.log
+            ${{ runner.temp }}/dsh-startup-trace/result.json
+          if-no-files-found: ignore
       - name: 保留会话恢复失败证据
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

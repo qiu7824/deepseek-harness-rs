@@ -43,6 +43,8 @@ struct StoreState {
     pending: HashMap<String, Arc<Impl>>,
     active: Option<HashMap<String, Arc<Impl>>>,
     runner_epoch: Epoch,
+    /// Dependency epoch actually used by the current activation.
+    applied_epoch: Epoch,
 }
 
 /// Tree node used to expose nested effect labels for diagnostics.
@@ -184,6 +186,53 @@ mod transition_tests {
         }
     }
 
+    struct GatedPlugin(CountedPlugin);
+    #[async_trait::async_trait]
+    impl Plugin for GatedPlugin {
+        fn inject(&self) -> crate::InjectSpec {
+            crate::InjectSpec::new(["activation-gate"])
+        }
+        async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
+            self.0.apply(ctx, config).await
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn activation_keeps_the_epoch_it_actually_applied() {
+        let ctx = Context::root();
+        let disposed = Arc::new(AtomicUsize::new(0));
+        let fiber = ctx.plugin(
+            Arc::new(GatedPlugin(CountedPlugin(disposed.clone()))),
+            arc(()),
+        );
+        assert_eq!(fiber.state(), FiberState::Pending);
+        let gate = Arc::new(Mutex::new(None::<Disposer>));
+        let (owner, core, gate_for_start) = (ctx.clone(), fiber.clone(), gate.clone());
+        fiber.spawn_inertia(
+            FiberState::Loading,
+            Box::pin(async move {
+                // Model dependency publication between selecting the queued work
+                // and the activation reading its actual dependency snapshot.
+                *gate_for_start.lock() = Some(owner.provide("activation-gate", Some(arc(()))));
+                core.reload().await;
+            }),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), fiber.settle())
+            .await
+            .expect("activation must settle without an unnecessary restart")
+            .unwrap();
+        assert_eq!(fiber.state(), FiberState::Active);
+        assert_eq!(
+            disposed.load(Ordering::SeqCst),
+            0,
+            "the newly applied epoch was already current"
+        );
+        fiber.dispose().await;
+        let cleanup = gate.lock().take().unwrap();
+        cleanup().await;
+        assert_eq!(disposed.load(Ordering::SeqCst), 1);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn refresh_during_active_publication_remains_on_the_drain_chain() {
         let ctx = Context::root();
@@ -247,6 +296,7 @@ impl FiberCore {
                 pending: HashMap::new(),
                 active: Some(HashMap::new()),
                 runner_epoch: Some(String::new()),
+                applied_epoch: Some(String::new()),
             }),
             disposables: Arc::new(DisposableList::default()),
             hooks: Arc::new(Mutex::new(HashMap::new())),
@@ -471,7 +521,6 @@ impl FiberCore {
         tokio::spawn(async move {
             let mut current = Some((state, future));
             while let Some((state, next)) = current.take() {
-                let started_epoch = core.runner_epoch();
                 // Contain unexpected transition panics so the chain always
                 // drains (mirrors the TS transition catch handlers).
                 let transition = async {
@@ -501,8 +550,11 @@ impl FiberCore {
                     // transition's last check but before this handoff. Keep
                     // that refresh on the same reserved chain.
                     if current.is_none() {
-                        let epoch = core.runner_epoch();
-                        if state == FiberState::Loading && epoch != started_epoch {
+                        let (applied, desired) = {
+                            let store = core.store.lock();
+                            (store.applied_epoch.clone(), store.runner_epoch.clone())
+                        };
+                        if applied.is_some() && applied != desired {
                             let inner = core.clone();
                             current = Some((
                                 FiberState::Unloading,
@@ -510,7 +562,7 @@ impl FiberCore {
                                     inner.unload().await;
                                 }),
                             ));
-                        } else if state == FiberState::Unloading && epoch.is_some() {
+                        } else if applied.is_none() && desired.is_some() {
                             let inner = core.clone();
                             current = Some((
                                 FiberState::Loading,
@@ -732,9 +784,14 @@ impl FiberCore {
         Box::pin(async move {
             tracing::debug!("reload start (uid {:?})", self.uid.lock());
             let old_epoch = self.runner_epoch();
+            if old_epoch.is_none() {
+                self.update_state(|| None);
+                return;
+            }
             {
                 let mut store = self.store.lock();
                 store.active = Some(store.pending.clone());
+                store.applied_epoch = old_epoch.clone();
             }
             let ctx = match self.ctx() {
                 Some(ctx) => ctx,
@@ -803,6 +860,7 @@ impl FiberCore {
             {
                 let mut store = self.store.lock();
                 store.active = None;
+                store.applied_epoch = None;
             }
             if self.runner_epoch().is_none() {
                 self.update_state(|| None);

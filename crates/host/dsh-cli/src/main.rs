@@ -47,6 +47,13 @@ fn main() {
     }
     #[cfg(windows)]
     configure_allocator();
+    if std::env::var("DSH_TRACE_STARTUP").as_deref() == Ok("1") {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("cordis=debug")
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .try_init();
+    }
     #[cfg(windows)]
     if let Err(error) = dsh_sandbox_local::register_embedded_windows_runner() {
         eprintln!("dsh: cannot register embedded sandbox runner: {error}");

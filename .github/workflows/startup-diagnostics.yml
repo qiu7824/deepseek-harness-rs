@@ -1,0 +1,51 @@
+name: Host startup diagnostics
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: "4"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with: { toolchain: 1.97.1 }
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        with:
+          cache-on-failure: true
+      - name: Build release Host
+        run: cargo build --locked --release --timings -p dsh-host-cli --bin dsh
+      - name: Stage Web assets
+        run: python tools/stage_release_web.py
+      - name: Startup without tracing
+        id: plain
+        continue-on-error: true
+        run: python tools/verify_host_startup.py --binary target/release/dsh --workdir "$RUNNER_TEMP/startup-plain"
+      - name: Startup with tracing
+        id: trace
+        continue-on-error: true
+        run: python tools/verify_host_startup.py --binary target/release/dsh --workdir "$RUNNER_TEMP/startup-trace" --trace-startup
+      - name: Preserve startup diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: host-startup-linux
+          path: |
+            ${{ runner.temp }}/startup-plain/stdout.log
+            ${{ runner.temp }}/startup-plain/startup.log
+            ${{ runner.temp }}/startup-plain/result.json
+            ${{ runner.temp }}/startup-trace/stdout.log
+            ${{ runner.temp }}/startup-trace/startup.log
+            ${{ runner.temp }}/startup-trace/result.json
+            target/cargo-timings/*.html
+            target/release/dsh
+          if-no-files-found: warn
+      - name: Require both startup checks
+        if: always()
+        env:
+          PLAIN: ${{ steps.plain.outcome }}
+          TRACE: ${{ steps.trace.outcome }}
+        run: test "$PLAIN" = success && test "$TRACE" = success
