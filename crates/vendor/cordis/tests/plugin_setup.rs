@@ -54,3 +54,34 @@ async fn owner_setup_precedes_publication_and_activation() {
     assert!(applied.load(Ordering::SeqCst));
     ordinary.dispose().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn fast_plugin_completion_cannot_be_overwritten_by_loading() {
+    let ctx = Context::root();
+    for _ in 0..64 {
+        let mut fibers = Vec::new();
+        for _ in 0..32 {
+            let applied = Arc::new(AtomicBool::new(false));
+            let fiber = ctx.plugin(
+                Arc::new(RequiresOwner {
+                    owner: Arc::new(AtomicBool::new(true)),
+                    applied: applied.clone(),
+                }),
+                arc(()),
+            );
+            fibers.push((fiber, applied));
+        }
+        for (fiber, applied) in fibers {
+            tokio::time::timeout(std::time::Duration::from_secs(5), fiber.settle())
+                .await
+                .expect("completed initialization must wake its waiters")
+                .unwrap();
+            assert!(applied.load(Ordering::SeqCst));
+            assert_eq!(fiber.state(), FiberState::Active);
+            tokio::time::timeout(std::time::Duration::from_secs(5), fiber.dispose())
+                .await
+                .expect("completed effect setup must allow disposal");
+            assert_eq!(fiber.state(), FiberState::Disposed);
+        }
+    }
+}

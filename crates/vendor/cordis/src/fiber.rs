@@ -86,8 +86,14 @@ impl EffectInner {
             return;
         }
         // Wait for a still-running setup body before draining (TS setupBarrier).
-        while !self.setup_done.load(Ordering::SeqCst) {
-            self.setup_notify.notified().await;
+        loop {
+            let notified = self.setup_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.setup_done.load(Ordering::SeqCst) {
+                break;
+            }
+            notified.await;
         }
         let disposables: Vec<Disposer> = {
             let mut guard = self.disposables.lock();
@@ -140,13 +146,88 @@ pub struct FiberCore {
     /// running; `drain` waits on the notify token.
     inertia: Mutex<Option<Arc<Notify>>>,
     /// Transitions queued behind the running chain (re-entrant spawns).
-    inertia_queue: Mutex<VecDeque<BoxFuture<'static, ()>>>,
+    inertia_queue: Mutex<VecDeque<(FiberState, BoxFuture<'static, ()>)>>,
     /// Self-disposal entrypoint (mirrors TS `Fiber.dispose()`).
     dispose_self: Mutex<Option<Disposer>>,
 }
 
 fn make_disposer(f: impl Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static) -> Disposer {
     Arc::new(f)
+}
+
+#[cfg(test)]
+mod transition_tests {
+    use super::*;
+    use crate::{EventOptions, Plugin};
+    use std::sync::atomic::AtomicUsize;
+
+    struct CountedPlugin(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Plugin for CountedPlugin {
+        fn name(&self) -> Option<&'static str> {
+            Some("handoff-probe")
+        }
+        async fn apply(&self, ctx: &Context, _: ArcValue) -> Result<(), PluginError> {
+            let disposed = self.0.clone();
+            ctx.effect(
+                "probe cleanup",
+                Box::pin(async move {
+                    Some(make_disposer(move || {
+                        let disposed = disposed.clone();
+                        Box::pin(async move {
+                            disposed.fetch_add(1, Ordering::SeqCst);
+                        })
+                    }))
+                }),
+            );
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn refresh_during_active_publication_remains_on_the_drain_chain() {
+        let ctx = Context::root();
+        let changed = Arc::new(AtomicBool::new(false));
+        let changed_for_hook = changed.clone();
+        let listener = ctx
+            .events
+            .on(
+                &ctx,
+                "internal/status",
+                Arc::new(move |_, args| {
+                    if let Some(fiber) = args
+                        .first()
+                        .and_then(crate::util::downcast::<Arc<FiberCore>>)
+                    {
+                        if fiber.name() == "handoff-probe"
+                            && fiber.state() == FiberState::Active
+                            && !changed_for_hook.swap(true, Ordering::SeqCst)
+                        {
+                            // This is after reload's final epoch comparison, but
+                            // before the worker relinquishes its drain reservation.
+                            fiber.set_epoch(None);
+                        }
+                    }
+                    Box::pin(async { None })
+                }),
+                EventOptions {
+                    global: true,
+                    ..Default::default()
+                },
+            )
+            .await;
+        let disposed = Arc::new(AtomicUsize::new(0));
+        let fiber = ctx.plugin(Arc::new(CountedPlugin(disposed.clone())), arc(()));
+        tokio::time::timeout(std::time::Duration::from_secs(5), fiber.settle())
+            .await
+            .expect("late refresh must settle")
+            .unwrap();
+        assert!(changed.load(Ordering::SeqCst));
+        assert_eq!(fiber.state(), FiberState::Pending);
+        assert_eq!(disposed.load(Ordering::SeqCst), 1);
+        fiber.dispose().await;
+        listener().await;
+    }
 }
 
 impl FiberCore {
@@ -267,10 +348,10 @@ impl FiberCore {
                 core.set_runner_epoch(None);
                 if !core.has_inertia() {
                     let inner = core.clone();
-                    core.update_state(|| {
-                        core.spawn_inertia(Box::pin(async move { inner.unload().await }));
-                        Some(FiberState::Unloading)
-                    });
+                    core.spawn_inertia(
+                        FiberState::Unloading,
+                        Box::pin(async move { inner.unload().await }),
+                    );
                 }
                 core.drain().await;
                 // Break the fiber ↔ context ownership cycle (TS sets
@@ -361,13 +442,13 @@ impl FiberCore {
 
     /// Queue a lifecycle transition, chaining behind any running one so
     /// re-entrant spawns (e.g. unload's final `update_state`) are never lost.
-    fn spawn_inertia(self: &Arc<Self>, future: BoxFuture<'static, ()>) {
+    fn spawn_inertia(self: &Arc<Self>, state: FiberState, future: BoxFuture<'static, ()>) {
         let mut future = Some(future);
         let enqueued = {
             let mut guard = self.inertia.lock();
             if guard.is_some() {
                 let inner = future.take().expect("future present");
-                self.inertia_queue.lock().push_back(inner);
+                self.inertia_queue.lock().push_back((state, inner));
                 true
             } else {
                 *guard = Some(Arc::new(Notify::new()));
@@ -378,13 +459,29 @@ impl FiberCore {
             return;
         }
         let future = future.expect("future present");
+        self.update_state(|| Some(state));
+        self.run_inertia(state, future);
+    }
+
+    /// The reservation is published before scheduling. The worker publishes
+    /// Loading/Unloading before running user code, so a fast completion cannot
+    /// be overwritten by its caller after it has already reached Active.
+    fn run_inertia(self: &Arc<Self>, state: FiberState, future: BoxFuture<'static, ()>) {
         let core = self.clone();
         tokio::spawn(async move {
-            let mut current = Some(future);
-            while let Some(next) = current.take() {
+            let mut current = Some((state, future));
+            while let Some((state, next)) = current.take() {
+                let started_epoch = core.runner_epoch();
                 // Contain unexpected transition panics so the chain always
                 // drains (mirrors the TS transition catch handlers).
-                match std::panic::AssertUnwindSafe(next).catch_unwind().await {
+                let transition = async {
+                    core.update_state(|| Some(state));
+                    next.await;
+                };
+                match std::panic::AssertUnwindSafe(transition)
+                    .catch_unwind()
+                    .await
+                {
                     Ok(()) => {}
                     Err(payload) => {
                         let message = payload
@@ -395,11 +492,43 @@ impl FiberCore {
                         tracing::error!("fiber lifecycle transition panicked: {message}");
                     }
                 }
-                current = core.inertia_queue.lock().pop_front();
-            }
-            let notify = { core.inertia.lock().take() };
-            if let Some(notify) = notify {
-                notify.notify_waiters();
+                // Match the producer's lock order. Clearing the reservation
+                // and observing an empty queue must be one atomic decision.
+                let notify = {
+                    let mut guard = core.inertia.lock();
+                    current = core.inertia_queue.lock().pop_front();
+                    // Dependency publication can refresh the epoch after a
+                    // transition's last check but before this handoff. Keep
+                    // that refresh on the same reserved chain.
+                    if current.is_none() {
+                        let epoch = core.runner_epoch();
+                        if state == FiberState::Loading && epoch != started_epoch {
+                            let inner = core.clone();
+                            current = Some((
+                                FiberState::Unloading,
+                                Box::pin(async move {
+                                    inner.unload().await;
+                                }),
+                            ));
+                        } else if state == FiberState::Unloading && epoch.is_some() {
+                            let inner = core.clone();
+                            current = Some((
+                                FiberState::Loading,
+                                Box::pin(async move {
+                                    inner.reload().await;
+                                }),
+                            ));
+                        }
+                    }
+                    if current.is_none() {
+                        guard.take()
+                    } else {
+                        None
+                    }
+                };
+                if let Some(notify) = notify {
+                    notify.notify_waiters();
+                }
             }
         });
     }
@@ -407,9 +536,16 @@ impl FiberCore {
     /// Wait for the lifecycle transition chain to drain.
     pub async fn drain(&self) {
         loop {
-            let notify = { self.inertia.lock().clone() };
-            match notify {
-                Some(notify) => notify.notified().await,
+            let notified = {
+                let guard = self.inertia.lock();
+                guard.as_ref().map(|notify| {
+                    let mut notified = Box::pin(notify.clone().notified_owned());
+                    notified.as_mut().enable();
+                    notified
+                })
+            };
+            match notified {
+                Some(notified) => notified.await,
                 None => break,
             }
         }
@@ -534,25 +670,36 @@ impl FiberCore {
     }
 
     fn set_epoch(self: &Arc<Self>, epoch: Epoch) {
-        let old = self.runner_epoch();
-        if epoch == old {
-            return;
-        }
-        self.set_runner_epoch(epoch.clone());
-        if self.has_inertia() {
-            return; // the running chain re-evaluates at its end
-        }
-        self.update_state(|| {
-            if epoch.is_some() && old.is_none() {
-                let core = self.clone();
-                self.spawn_inertia(Box::pin(async move { core.reload().await }));
-                Some(FiberState::Loading)
-            } else {
-                let core = self.clone();
-                self.spawn_inertia(Box::pin(async move { core.unload().await }));
-                Some(FiberState::Unloading)
+        let old = {
+            let mut reservation = self.inertia.lock();
+            let mut store = self.store.lock();
+            let old = store.runner_epoch.clone();
+            if epoch == old {
+                return;
             }
-        });
+            store.runner_epoch = epoch.clone();
+            if reservation.is_some() {
+                return; // the running chain re-evaluates at its end
+            }
+            // A concurrent refresh/settle must not observe the new epoch
+            // before the corresponding transition has a drain barrier.
+            *reservation = Some(Arc::new(Notify::new()));
+            old
+        };
+        let core = self.clone();
+        if epoch.is_some() && old.is_none() {
+            self.update_state(|| Some(FiberState::Loading));
+            self.run_inertia(
+                FiberState::Loading,
+                Box::pin(async move { core.reload().await }),
+            );
+        } else {
+            self.update_state(|| Some(FiberState::Unloading));
+            self.run_inertia(
+                FiberState::Unloading,
+                Box::pin(async move { core.unload().await }),
+            );
+        }
     }
 
     // ---- load / unload ----
@@ -633,16 +780,16 @@ impl FiberCore {
                     self.set_runner_epoch(None);
                 }
             }
-            self.update_state(|| {
-                if self.runner_epoch() == old_epoch {
-                    tracing::debug!("reload stable (uid {:?})", self.uid.lock());
-                    None // stable
-                } else {
-                    let core = self.clone();
-                    self.spawn_inertia(Box::pin(async move { core.unload().await }));
-                    Some(FiberState::Unloading)
-                }
-            });
+            if self.runner_epoch() == old_epoch {
+                tracing::debug!("reload stable (uid {:?})", self.uid.lock());
+                self.update_state(|| None);
+            } else {
+                let core = self.clone();
+                self.spawn_inertia(
+                    FiberState::Unloading,
+                    Box::pin(async move { core.unload().await }),
+                );
+            }
         })
     }
 
@@ -657,15 +804,15 @@ impl FiberCore {
                 let mut store = self.store.lock();
                 store.active = None;
             }
-            self.update_state(|| {
-                if self.runner_epoch().is_none() {
-                    None
-                } else {
-                    let core = self.clone();
-                    self.spawn_inertia(Box::pin(async move { core.reload().await }));
-                    Some(FiberState::Loading)
-                }
-            });
+            if self.runner_epoch().is_none() {
+                self.update_state(|| None);
+            } else {
+                let core = self.clone();
+                self.spawn_inertia(
+                    FiberState::Loading,
+                    Box::pin(async move { core.reload().await }),
+                );
+            }
         })
     }
 
