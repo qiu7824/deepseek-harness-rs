@@ -10,6 +10,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
+    timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: "2"
     strategy:
@@ -47,6 +48,7 @@ jobs:
           sudo apt-get install -y bubblewrap pkg-config libglib2.0-dev libcairo2-dev libpango1.0-dev libfontconfig1-dev libgdk-pixbuf-2.0-dev libxkbcommon-dev libwayland-dev
           python -B tools/verify_linux_sandbox.py --workdir "$RUNNER_TEMP/dsh-sandbox-preflight" --prepare-ci-profile
       - name: 版本与产品门禁
+        timeout-minutes: 10
         shell: bash
         run: |
           VERSION="$(python tools/verify_release_version.py --print-version)"
@@ -55,6 +57,10 @@ jobs:
           python tools/verify_product_surface.py
           python -B -m unittest tools.tests.test_release_build_identity -v
           python -m unittest tools.tests.test_history_window_contract tools.tests.test_product_surface_contract tools.tests.test_rust_ui_contract tools.tests.test_rust_runtime_contract tools.tests.test_release_product_contract tools.tests.test_release_integrity tools.tests.test_launcher_release_contract tools.tests.test_client_performance tools.tests.test_free_model_evidence tools.tests.test_release_variants tools.tests.test_settings_migration_contract tools.tests.test_installer_compile_gate -v
+      - name: Web 交互与滚动回归
+        timeout-minutes: 15
+        shell: bash
+        run: |
           node tools/tests/connection_controller_harness.js
           node tools/tests/turn_usage_optional_harness.js
           node tools/tests/rust_release_ui_harness.cjs
@@ -100,6 +106,10 @@ jobs:
           node tools/tests/git_terminal_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/xterm_asset_contract.cjs
           node tools/tests/runtime_environment_harness.cjs
+      - name: Agent 与预设生命周期回归
+        timeout-minutes: 35
+        shell: bash
+        run: |
           cargo test --locked -p dsh-agent --test creator_context
           cargo test --locked -p dsh-agent-loop --test lifecycle_failures steering
           cargo test --locked -p dsh-agent --test model_switch_notice
@@ -107,6 +117,10 @@ jobs:
           cargo test --locked -p cordis --test plugin_setup
           cargo test --locked -p dsh-cordis-loader --test group_ownership
           cargo test --locked -p dsh-agent-presets standing_tests --lib
+      - name: 会话存储与原生执行回归
+        timeout-minutes: 30
+        shell: bash
+        run: |
           cargo test --locked -p dsh-host-cli --lib headless_selection_tests
           cargo test --locked -p dsh-host-cli --lib history_import
           cargo test --locked -p dsh-host-cli --test history_import_cli
@@ -115,8 +129,16 @@ jobs:
           cargo check --locked -p dsh-subprocess-e2b
           cargo test --locked -p dsh-llm-retry -p dsh-system-prompt -p dsh-session-reference -p dsh-spill-local -p dsh-subagent-codex -p dsh-message-feedback -- --test-threads=1
           cargo test --locked -p dsh-workspace-resources -p dsh-subagent -p dsh-pwsh-local -p dsh-tool-pwsh -p dsh-sandbox-local -- --test-threads=1
+      - name: Host 与启动器回归
+        timeout-minutes: 30
+        shell: bash
+        run: |
           cargo test --locked -p dsh-settings -p dsh-code-graph -p dsh-app-boot -p dsh-code-runtime-node -p dsh-tools -p dsh-tool-memory-local -p dsh-message-feedback -p dsh-tool-skill -p dsh-skill-filesystem --lib
           cargo test --locked -p dsh-launcher -p dsh-schedule -p dsh-host-plugin-inventory -p dsh-host-apiproxy -p dsh-typert-protocol -p dsh-web -p dsh-web-fetch-http -p dsh-web-search-deepseek -p dsh-tool-web -p dsh-workspace -p dsh-tool-fs -p dsh-native-command -p dsh-subprocess-local -p dsh-terminal -p dsh-terminal-bash -p dsh-jobs-local -p dsh-tool-computer-use-command -p dsh-host -p dsh-storage-domain -p dsh-storage-json -p dsh-session-projection-cache -p dsh-attachment-local -p dsh-llm-deepseek -- --test-threads=1
+      - name: 产物脚本与源码格式检查
+        timeout-minutes: 5
+        shell: bash
+        run: |
           for file in release/plugins/*/lib/client.js; do node --check "$file"; done
           for file in web/dist/plugins/*.js; do node --check "$file"; done
           cargo fmt --all -- --check
@@ -124,7 +146,8 @@ jobs:
         if: matrix.platform == 'windows'
         run: cargo test --locked -p dsh-desktop-controller -p dsh-uu-controller input::tests -- --test-threads=1
       - name: 构建正式二进制
-        run: cargo build --locked --release -p dsh-host-cli --bin dsh -p dsh-launcher --bin dsh-launcher -p dsh-skin-installer --bin dsh-skin-installer
+        timeout-minutes: 45
+        run: cargo build --locked --release --timings -p dsh-host-cli --bin dsh -p dsh-launcher --bin dsh-launcher -p dsh-skin-installer --bin dsh-skin-installer
       - name: Build Windows desktop controller
         if: matrix.platform == 'windows'
         run: |
@@ -142,14 +165,17 @@ jobs:
         run: python tools/stage_release_web.py
       - name: Host 启动预检
         id: startup_preflight
+        timeout-minutes: 2
         shell: bash
         run: python tools/verify_host_startup.py --binary target/release/${{ matrix.binary }} --workdir "$RUNNER_TEMP/dsh-startup-preflight"
       - name: Host 启动失败跟踪
         if: failure() && steps.startup_preflight.outcome == 'failure'
+        timeout-minutes: 2
         shell: bash
         run: python tools/verify_host_startup.py --binary target/release/${{ matrix.binary }} --workdir "$RUNNER_TEMP/dsh-startup-trace" --trace-startup
       - name: 验证免费模型完整运行链路
         id: free_probe
+        timeout-minutes: 20
         continue-on-error: true
         shell: bash
         run: python tools/verify_free_model_catalog.py --all --prefer ling-3.0-flash-fin-free --timeout 160 --binary target/release/${{ matrix.binary }} --report target/free-model-verification.json 2>&1 | tee target/free-model-verification.log
@@ -183,6 +209,7 @@ jobs:
             python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant free --version "$VERSION"
           fi
       - name: 正式包数据与图片回归
+        timeout-minutes: 40
         shell: bash
         run: |
           STAGE="dist/${{ steps.release.outputs.prefix }}-core"
@@ -333,6 +360,14 @@ jobs:
             ${{ runner.temp }}/dsh-startup-trace/startup.log
             ${{ runner.temp }}/dsh-startup-trace/result.json
           if-no-files-found: ignore
+      - name: 保留编译耗时报告
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: build-timings-${{ matrix.platform }}-${{ matrix.arch }}
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 7
       - name: 保留会话恢复失败证据
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -164,7 +164,7 @@ class LauncherReleaseContractTests(unittest.TestCase):
         self.assertIn("package_defaults", VERIFIER.read_text(encoding="utf-8"))
         self.assertIn('stage / "deepseek-black.ico"', PACKAGE.read_text(encoding="utf-8"))
         self.assertIn('prefix + "deepseek-black.ico"', VERIFIER.read_text(encoding="utf-8"))
-        gate = workflow_step(workflow, "版本与产品门禁")
+        gate = workflow_step(workflow, "Host 与启动器回归")
         self.assertIn("cargo test --locked -p dsh-launcher", gate)
         self.assertNotIn("if:", gate)
 
