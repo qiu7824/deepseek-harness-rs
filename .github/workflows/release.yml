@@ -134,10 +134,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Desktop tests failed' }
           cargo build --locked --profile desktop -p dsh-desktop
           if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed' }
-          Copy-Item target/desktop/dsh-desktop.exe target/release/dsh-desktop.exe
       - name: Windows 原生阅读客户端验收
         if: matrix.platform == 'windows'
-        run: python tools/verify_desktop_reader.py --binary target/release/dsh-desktop.exe --workdir "$env:RUNNER_TEMP/dsh-desktop-reader"
+        run: python tools/verify_desktop_reader.py --binary target/desktop/dsh-desktop.exe --workdir "$env:RUNNER_TEMP/dsh-desktop-reader"
       - name: 固化正式 Web 产物
         shell: bash
         run: python tools/stage_release_web.py

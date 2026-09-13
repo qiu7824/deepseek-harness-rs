@@ -47,8 +47,6 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 
 `uu_terminal` 提供远程命令行，桌面画面由上述控制面板提供；终端错误文本本身不是桌面播放器。
 
-Windows 完整包另含 `dsh-desktop.exe` 原生阅读预览客户端，支持会话浏览、Markdown 和工作区图片；发送、模型与设置操作仍在网页版完成。详见 [原生阅读客户端](crates/host/dsh-desktop/README.md)。
-
 ## 下载
 
 从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.20) 下载对应平台的完整包：

@@ -230,5 +230,3 @@ See `PLUGIN_SECURITY.md` for the Web plugin trust boundary.
 ## License
 
 MIT. See [`LICENSE`](LICENSE) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
-
-Windows packages also include the `dsh-desktop.exe` native reader preview. Composing messages, model selection and settings open the web interface.

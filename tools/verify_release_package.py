@@ -141,8 +141,6 @@ def main() -> None:
     if args.platform == "windows":
         required.add(prefix + "dsh-desktop-controller.exe")
         required.add(prefix + "dsh-uu-controller.exe")
-        required.add(prefix + "dsh-desktop.exe")
-        required.add(prefix + "docs/desktop-reader.zh.md")
     if args.variant == "skin":
         required.add(prefix + "plugins/dsh-skin-center/lib/client.js")
     elif any(name.startswith(prefix + "plugins/dsh-skin-center/") for name in names):
@@ -153,6 +151,8 @@ def main() -> None:
         raise SystemExit(f"archive is missing required entries: {missing}")
 
     forbidden_launchers = {
+        prefix + "dsh-desktop.exe",
+        prefix + "docs/desktop-reader.zh.md",
         prefix + "DshServiceManager.ps1",
         prefix + "启动DeepSeek Harness-rs.cmd",
         prefix + "deepseek-harness-rs-web",

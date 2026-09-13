@@ -127,7 +127,7 @@ def main() -> None:
     shutil.copy2(core_source, stage / core_output)
     shutil.copy2(launcher_source, stage / launcher_output)
     if args.platform == "windows":
-        for controller in ("dsh-desktop-controller", "dsh-uu-controller", "dsh-desktop"):
+        for controller in ("dsh-desktop-controller", "dsh-uu-controller"):
             controller_source = ROOT / "target" / "release" / f"{controller}.exe"
             if not controller_source.is_file():
                 raise SystemExit(f"missing controller binary: build {controller} before packaging")
@@ -150,8 +150,6 @@ def main() -> None:
     shutil.rmtree(stage / "web" / "dist" / "skins", ignore_errors=True)
     copy_tree(ROOT / "config" / "agent-presets", stage / "config" / "agent-presets")
     (stage / "docs").mkdir(exist_ok=True)
-    if args.platform == "windows":
-        shutil.copy2(ROOT / "crates/host/dsh-desktop/README.md", stage / "docs/desktop-reader.zh.md")
     shutil.copy2(ROOT / "docs" / "storage-compatibility.md", stage / "docs" / "storage-compatibility.md")
     shutil.copy2(ROOT / "docs" / "protocol-matrix.md", stage / "docs" / "protocol-matrix.md")
     shutil.copy2(ROOT / "docs" / "learning-and-capabilities.zh.md", stage / "docs" / "learning-and-capabilities.zh.md")

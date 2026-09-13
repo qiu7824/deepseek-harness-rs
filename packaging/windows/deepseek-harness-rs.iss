@@ -83,7 +83,6 @@ Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; GroupDescription: "{cm
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"
-Name: "{group}\DeepSeek Harness Desktop (Preview)"; Filename: "{app}\dsh-desktop.exe"; WorkingDir: "{app}"; Check: FileExists(ExpandConstant('{app}\dsh-desktop.exe'))
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 [Run]
