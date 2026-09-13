@@ -32,6 +32,7 @@ mod devin_auth;
 mod feedback_delivery;
 mod free_catalog;
 mod free_probe;
+mod image_generation;
 mod learning_bridge;
 mod model_capabilities;
 mod model_discovery;
@@ -41,6 +42,7 @@ mod provider_auth_catalog;
 mod provider_compatibility;
 pub mod runtime_paths;
 mod sidebar_settings;
+mod task_models;
 mod tool_present;
 #[cfg(test)]
 mod ultra_control_tests;
@@ -1675,6 +1677,7 @@ pub struct HostSpine {
     pub agent_presets: Arc<dsh_agent_presets::AgentPresets>,
     api_route: RouteDisposer,
     computer_use_route: RouteDisposer,
+    task_models_route: RouteDisposer,
     agent_team_route: RouteDisposer,
     web_preview_route: RouteDisposer,
     provider_auth_route: RouteDisposer,
@@ -1804,6 +1807,7 @@ impl Drop for HostSpine {
         {
             self.web_server.request_shutdown();
             (self.computer_use_route)();
+            (self.task_models_route)();
             (self.agent_team_route)();
             (self.web_preview_route)();
             (self.provider_auth_route)();
@@ -3172,6 +3176,9 @@ fn compose_host_in_fiber(
     )
     .map_err(|error| format!("tools: {error}"))?;
     dsh_tools::install_security_policy(ctx, security_policy_state);
+    let task_models = task_models::TaskModels::install(ctx, settings.clone(), llm.clone())?;
+    let _image_generation =
+        image_generation::ImageGeneration::install(ctx, task_models.clone(), account_auth.clone())?;
     resources.install_tools(ctx, &tools, &system_prompt)?;
     dsh_session_reference::SessionReferenceResolver::install(
         ctx,
@@ -4126,6 +4133,7 @@ fn compose_host_in_fiber(
     );
     let fetch_handler = Arc::new(to_fetch_handler(api_proxy.clone()));
     let allow_remote_host = bind_host == BindHost::AllInterfaces;
+    let task_models_route = task_models.register_http(&web_server);
     open_in_app::register(&web_server, ctx, allow_remote_host);
     feedback_delivery::register(
         &web_server,
@@ -4203,6 +4211,7 @@ fn compose_host_in_fiber(
         agent_presets,
         api_route,
         computer_use_route,
+        task_models_route,
         agent_team_route,
         web_preview_route,
         provider_auth_route,

@@ -189,6 +189,10 @@ await act(async()=>[...document.querySelectorAll('button')].find(node=>node.text
 await render(React.createElement('span',null,'signed-out footer'));
 accountRows=[];const unsigned=makeController();let settingsRequest=null;const requested=event=>{settingsRequest=event.detail};window.addEventListener('dsh-open-settings',requested);
 await render(React.createElement(test.SidebarAccount,{controller:unsigned,t,wide:false}));assert.equal(document.querySelector('.dshAccountBadge'),null,'signed-out account is hidden from the sidebar');
+accountRows=[{id:'provider-one',name:'Provider One',signedIn:true},{id:'provider-two',name:'Provider Two',signedIn:true}];const severalProviders=makeController();
+await render(React.createElement(test.SidebarAccount,{controller:severalProviders,t,wide:true}));assert.equal(document.querySelectorAll('.dshAccountBadge').length,2,'each signed-in provider has its own sidebar entry');
+await act(async()=>document.querySelector('.dshAccountBadge[data-provider="provider-two"]').click());await flush();assert.equal(document.querySelector('.dshAccountSwitcher [aria-pressed="true"]').textContent,'Provider Two');
+await render(null);severalProviders.accounts.dispose();
 window.removeEventListener('dsh-open-settings',requested);await render(null);footerController.accounts.dispose();unsigned.accounts.dispose();primitives.Modal=originalModal;
 let sidebar;
 const sideWindow={setTimeout,clearTimeout,__ModuleLoader__:{load:def=>{sidebar=def.factory(id=>id==='react'?React:id==='react/jsx-runtime'?jsx:primitives)}}};

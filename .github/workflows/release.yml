@@ -64,6 +64,8 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/dsh-dom-tests" --ignore-scripts --no-audit --no-fund react@19.2.8 react-dom@19.2.8 react-test-renderer@19.2.8 jsdom@26.1.0
           node tools/tests/model_management_harness.cjs
           node tools/tests/model_management_react_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/task_models_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/generated_images_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/account_browser_login_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/directory_picker_flow_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/learning_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
@@ -173,6 +175,7 @@ jobs:
           python tools/e2e_queue_references.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-queue-references"
           python tools/e2e_headless_tools.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-headless-tools"
           python tools/e2e_devin.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-devin-native"
+          python tools/e2e_image_generation.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-image-generation"
           python tools/e2e_learning_loop.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-learning-loop"
           python tools/e2e_approval_interactions.py --binary "$HOST" --repo . --node-modules "$RUNNER_TEMP/dsh-dom-tests/node_modules" --workdir "$RUNNER_TEMP/dsh-approval-interactions"
           python tools/e2e_skill_injection.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-skill-injection"

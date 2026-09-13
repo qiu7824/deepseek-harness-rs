@@ -75,6 +75,16 @@ pub fn collect_event_image_refs(
     let Some(data) = event.data.as_object() else {
         return;
     };
+    if let Some(meta) = data.get("meta").filter(|value| {
+        value.get("kind").and_then(serde_json::Value::as_str) == Some("image-generation")
+    }) {
+        if let Some(images) = meta.get("images") {
+            collect_image_refs(images, refs);
+        }
+        if let Some(images) = meta.get("sourceImages") {
+            collect_image_refs(images, refs);
+        }
+    }
     if let Some(content) = data.get("content") {
         collect_image_refs(content, refs);
     }
@@ -304,4 +314,30 @@ pub fn safe_session_id_segment(id: &str) -> String {
 /// The export archive filename for one root session.
 pub fn session_log_zip_filename(session_id: &str) -> String {
     format!("dsh-session-{}.zip", safe_session_id_segment(session_id))
+}
+
+#[cfg(test)]
+mod generated_image_tests {
+    #[test]
+    fn generated_images_and_edit_sources_survive_export() {
+        let generated_id = format!("sha256:{}", "a".repeat(64));
+        let source_id = format!("sha256:{}", "b".repeat(64));
+        let reference = serde_json::json!({"type":"image","attachment":{"attachmentId":generated_id,"mediaType":"image/png","bytes":20,"width":1,"height":1,"name":"generated-fixture.png"}});
+        let mut source = reference.clone();
+        source["attachment"]["attachmentId"] = serde_json::json!(source_id);
+        let event = dsh_session::SessionEvent {
+            type_: "tool/result".into(),
+            seq: dsh_session::SessionSeq::new(0).unwrap(),
+            time: 0,
+            data: serde_json::json!({"meta":{"kind":"image-generation","images":[reference.clone(),reference],"sourceImages":[source]}}),
+            ignorable: None,
+            surface_op: None,
+            source_event_seqs: None,
+        };
+        let mut found = std::collections::HashMap::new();
+        super::collect_event_image_refs(&event, &mut found);
+        assert_eq!(found.len(), 2);
+        assert!(found.contains_key(&generated_id));
+        assert!(found.contains_key(&source_id));
+    }
 }

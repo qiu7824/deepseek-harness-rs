@@ -56,7 +56,7 @@ impl std::fmt::Display for JsonSchemaError {
 
 impl std::error::Error for JsonSchemaError {}
 
-const CONSTRAINT_KEYWORDS: [&str; 8] = [
+const CONSTRAINT_KEYWORDS: [&str; 14] = [
     "type",
     "oneOf",
     "properties",
@@ -65,19 +65,120 @@ const CONSTRAINT_KEYWORDS: [&str; 8] = [
     "items",
     "enum",
     "const",
+    "minimum",
+    "maximum",
+    "minLength",
+    "maxLength",
+    "minItems",
+    "maxItems",
 ];
 const ANNOTATION_KEYWORDS: [&str; 4] = ["description", "title", "default", "examples"];
 const SCHEMA_TYPES: [&str; 7] = [
     "object", "array", "string", "number", "integer", "boolean", "null",
 ];
-const ONE_OF_SIBLING_KEYWORDS: [&str; 6] = [
+const ONE_OF_SIBLING_KEYWORDS: [&str; 12] = [
     "properties",
     "required",
     "additionalProperties",
     "items",
     "enum",
     "const",
+    "minimum",
+    "maximum",
+    "minLength",
+    "maxLength",
+    "minItems",
+    "maxItems",
 ];
+
+fn number_order(left: &JsonValue, right: &JsonValue) -> Option<std::cmp::Ordering> {
+    if let (Some(a), Some(b)) = (left.as_i64(), right.as_i64()) {
+        return Some(a.cmp(&b));
+    }
+    if let (Some(a), Some(b)) = (left.as_u64(), right.as_u64()) {
+        return Some(a.cmp(&b));
+    }
+    if left.as_i64().is_some_and(|n| n < 0) && right.as_u64().is_some() {
+        return Some(std::cmp::Ordering::Less);
+    }
+    if right.as_i64().is_some_and(|n| n < 0) && left.as_u64().is_some() {
+        return Some(std::cmp::Ordering::Greater);
+    }
+    fn integer_float(integer: &JsonValue, float: f64) -> Option<std::cmp::Ordering> {
+        use std::cmp::Ordering::*;
+        if let Some(value) = integer.as_u64() {
+            if float < 0.0 {
+                return Some(Greater);
+            }
+            if float >= 18446744073709551616.0 {
+                return Some(Less);
+            }
+            let order = value.cmp(&(float as u64));
+            return Some(if order == Equal && float.fract() > 0.0 {
+                Less
+            } else {
+                order
+            });
+        }
+        if let Some(value) = integer.as_i64() {
+            if float >= 0.0 {
+                return Some(Less);
+            }
+            if float < -9223372036854775808.0 {
+                return Some(Greater);
+            }
+            let order = value.cmp(&(float as i64));
+            return Some(if order == Equal && float.fract() < 0.0 {
+                Greater
+            } else {
+                order
+            });
+        }
+        None
+    }
+    if let Some(result) = right.as_f64().and_then(|value| integer_float(left, value)) {
+        return Some(result);
+    }
+    if let Some(result) = left.as_f64().and_then(|value| integer_float(right, value)) {
+        return Some(result.reverse());
+    }
+    left.as_f64()?.partial_cmp(&right.as_f64()?)
+}
+fn bound_violations(node: &JsonValue, value: &JsonValue, path: &str) -> Vec<String> {
+    let mut failures = vec![];
+    let measured = match node["type"].as_str() {
+        Some("string") => value.as_str().map(|text| {
+            (
+                "minLength",
+                "maxLength",
+                JsonValue::from(text.chars().count()),
+            )
+        }),
+        Some("array") => value
+            .as_array()
+            .map(|items| ("minItems", "maxItems", JsonValue::from(items.len()))),
+        Some("number" | "integer") if is_json_number(value) => {
+            Some(("minimum", "maximum", value.clone()))
+        }
+        _ => None,
+    };
+    if let Some((min, max, value)) = measured {
+        for (key, ordering) in [
+            (min, std::cmp::Ordering::Less),
+            (max, std::cmp::Ordering::Greater),
+        ] {
+            if let Some(limit) = node.get(key) {
+                if number_order(&value, limit) == Some(ordering) {
+                    failures.push(format!(
+                        "\"{}\" violates {key} {limit}",
+                        diagnostic_path(path)
+                    ));
+                }
+            }
+        }
+    }
+    failures
+}
 
 fn is_schema_record(value: &JsonValue) -> bool {
     value.is_object()
@@ -289,19 +390,62 @@ fn check_schema_node(root: &JsonValue, root_path: &str, violations: &mut Vec<Str
                     }
                 };
 
-                let allowed_for: [(&str, &[&str]); 6] = [
+                let allowed_for: [(&str, &[&str]); 12] = [
                     ("properties", &["object"]),
                     ("required", &["object"]),
                     ("additionalProperties", &["object"]),
                     ("items", &["array"]),
                     ("enum", &["string", "number", "integer", "boolean", "null"]),
                     ("const", &["string", "number", "integer", "boolean", "null"]),
+                    ("minimum", &["number", "integer"]),
+                    ("maximum", &["number", "integer"]),
+                    ("minLength", &["string"]),
+                    ("maxLength", &["string"]),
+                    ("minItems", &["array"]),
+                    ("maxItems", &["array"]),
                 ];
                 for (key, types) in allowed_for {
                     if has_own(node, key) && !types.contains(&schema_type.as_str()) {
                         violations.push(format!(
                             "{path}.{key} is not supported on type \"{schema_type}\""
                         ));
+                    }
+                }
+
+                for key in [
+                    "minimum",
+                    "maximum",
+                    "minLength",
+                    "maxLength",
+                    "minItems",
+                    "maxItems",
+                ] {
+                    if let Some(value) = node.get(key) {
+                        let numeric = matches!(key, "minimum" | "maximum");
+                        if !is_json_number(value)
+                            || (!numeric
+                                && (!is_integer(value) || value.as_f64().is_some_and(|n| n < 0.0)))
+                        {
+                            violations.push(format!(
+                                "{path}.{key} must be {}",
+                                if numeric {
+                                    "a finite number"
+                                } else {
+                                    "a non-negative integer"
+                                }
+                            ));
+                        }
+                    }
+                }
+                for (min, max) in [
+                    ("minimum", "maximum"),
+                    ("minLength", "maxLength"),
+                    ("minItems", "maxItems"),
+                ] {
+                    if let (Some(a), Some(b)) = (node.get(min), node.get(max)) {
+                        if number_order(a, b) == Some(std::cmp::Ordering::Greater) {
+                            violations.push(format!("{path}.{min} cannot exceed {max}"));
+                        }
                     }
                 }
 
@@ -606,6 +750,12 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
             continue;
         };
 
+        let bounds = bound_violations(frame.node, frame.value, &frame.path);
+        if !bounds.is_empty() {
+            finish_frame(&mut frames, &mut root_result, bounds);
+            continue;
+        }
+
         match node_type.as_str() {
             "object" => {
                 if !frame.value.is_object() {
@@ -777,6 +927,44 @@ pub fn validate_json_schema_value(
 mod number_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn standard_bounds_are_declared_and_enforced_without_rounding_large_integers() {
+        for (schema, good, bad) in [
+            (
+                json!({"type":"array","minItems":1,"maxItems":2,"items":{"type":"string"}}),
+                json!(["one"]),
+                json!(["one", "two", "three"]),
+            ),
+            (
+                json!({"type":"string","minLength":1,"maxLength":1}),
+                json!("🙂"),
+                json!("你好"),
+            ),
+            (
+                json!({"type":"integer","minimum":-120,"maximum":4}),
+                json!(-120),
+                json!(5),
+            ),
+            (
+                json!({"type":"number","maximum":9007199254740992.0}),
+                json!(9007199254740992u64),
+                json!(9007199254740993u64),
+            ),
+        ] {
+            assert_supported_json_schema(&schema).unwrap();
+            assert!(validate_json_schema_value(&schema, &good, "arguments").is_empty());
+            assert!(!validate_json_schema_value(&schema, &bad, "arguments").is_empty());
+        }
+        for schema in [
+            json!({"type":"array","maxItems":-1}),
+            json!({"type":"string","minLength":2,"maxLength":1}),
+            json!({"type":"object","maximum":3}),
+            json!({"type":"integer","minimum":"0"}),
+        ] {
+            assert!(assert_supported_json_schema(&schema).is_err());
+        }
+    }
 
     #[test]
     fn finite_negative_numbers_validate_as_scalars_and_scroll_deltas() {

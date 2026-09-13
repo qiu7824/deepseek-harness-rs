@@ -134,8 +134,8 @@ impl Plugin for PresentPlugin {
             let file_schema=json!({"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"description":{"type":"string"}},"required":["path"]});
             tools.register(ctx, ToolDefinition {
                 name:"present".into(),
-                description:"Declare existing regular files in this Session workspace as final deliverables. Call present after writing requested outputs and before the final response, including files created through shell or code execution. File contents are not copied or frozen.".into(),
-                parameters:json!({"type":"object","additionalProperties":false,"properties":{"files":{"type":"array","items":file_schema.clone()}},"required":["files"]}),
+                description:"Declare 1 to 8 existing regular files in this Session workspace as final deliverables. Call present after writing requested outputs and before the final response, including files created through shell or code execution. File contents are not copied or frozen.".into(),
+                parameters:json!({"type":"object","additionalProperties":false,"properties":{"files":{"type":"array","minItems":1,"maxItems":MAX_FILES,"items":file_schema.clone()}},"required":["files"]}),
                 output:ToolOutputDefinition {
                     schema:json!({"type":"object","additionalProperties":false,"properties":{"turn":{"type":"integer"},"files":{"type":"array","items":file_schema}},"required":["turn","files"]}),
                     render:Arc::new(|_,value| Ok(vec![dsh_llm::ContentBlock::Text {text:value["files"].as_array().unwrap().iter().map(|file|format!("Presented {}",file["path"].as_str().unwrap())).collect::<Vec<_>>().join("\n")}])),

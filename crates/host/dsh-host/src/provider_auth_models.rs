@@ -112,6 +112,30 @@ pub(crate) fn catalog_url(profile: &Value) -> Result<reqwest::Url, String> {
 }
 
 impl AccountAuth {
+    pub(crate) async fn image_connection(
+        &self,
+        route: &str,
+    ) -> Result<(Value, Option<String>), String> {
+        let _guard = self.refresh.lock().await;
+        let profile = self.model_profile(route)?;
+        let key = if let Some(auth) = profile.get("authProvider").and_then(Value::as_str) {
+            if auth != "openai-codex" {
+                return Err("此订阅连接尚未提供图像生成接口".into());
+            }
+            self.resolve_token_locked(auth, false, true).await?
+        } else if profile.get("keyless") == Some(&Value::Bool(true)) {
+            None
+        } else if let Some(reference) = profile.get("apiKeyEnv").and_then(Value::as_str) {
+            super::super::deepseek_settings::validate_api_key_reference(reference)?;
+            self.credentials
+                .resolve(&dsh_credentials::credential_ref(reference))
+                .await
+                .map(|value| value.value)
+        } else {
+            None
+        };
+        Ok((self.model_profile(route)?, key))
+    }
     pub(crate) fn set_catalog_root(&self, root: std::path::PathBuf) {
         self.catalogs.set_root(root);
     }
