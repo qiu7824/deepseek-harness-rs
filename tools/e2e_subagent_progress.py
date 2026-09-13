@@ -232,9 +232,11 @@ def main():
                 result = results[0]["data"]["message"]["content"][0]
                 assert result["isError"] is False, result
                 if phase != "skill":
-                    row["settledCatalog"] = client.until(lambda: client.call("subagent.list", {"parentSessionId": session}), lambda value: value["entries"][0]["activity"] == "inactive", "child settlement")
+                    # A cold read racing retirement may legitimately return a diagnostic row.
+                    # Keep waiting for this exact child's authoritative inactive identity.
+                    row["settledCatalog"] = client.until(lambda: client.call("subagent.list", {"parentSessionId": session}), lambda value: any(item.get("kind") == "child" and item.get("id") == child["id"] and item.get("activity") == "inactive" for item in value["entries"]), "child settlement")
                     row["settledHistory"] = client.call("subagent.history", {**row["address"], "maxMessages": 8})
-                    assert row["settledCatalog"]["entries"][0]["activity"] == "inactive"
+                    assert next(item for item in row["settledCatalog"]["entries"] if item.get("id") == child["id"])["activity"] == "inactive"
                     end = next(item["event"] for item in reversed(row["settledHistory"]["events"]) if item["event"]["type"] == "turn/end")
                     expected_reason = "error" if phase == "failure" else "aborted" if phase == "interrupt" else "completed"
                     assert end["data"]["reason"]["kind"] == expected_reason, end
