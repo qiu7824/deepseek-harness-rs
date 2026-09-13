@@ -8,7 +8,7 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 当前发布线：`0.1.3-alpha.13`。
 
-开发版本：`0.1.3-alpha.15`，见 [变更说明](release/notes/v0.1.3-alpha.15.md)。
+开发版本：`0.1.3-alpha.16`，见 [变更说明](release/notes/v0.1.3-alpha.16.md)。
 
 完整更新见 [alpha.13 发布说明](release/notes/v0.1.3-alpha.13.md)。
 

@@ -648,13 +648,15 @@ impl JsonlSessionPersistence {
         self.assert_stored_identity(path, &meta, Some(id)).await?;
         let before_seq = request.before_seq.unwrap_or(u64::MAX);
         let capacity = request.max_events.saturating_add(1).max(2);
-        let mut candidates = VecDeque::with_capacity(capacity);
+        // The scan ceiling is a safety limit, not the expected page size.
+        // Reserving it eagerly costs tens of MiB even for a few events.
+        let mut candidates = VecDeque::with_capacity(capacity.min(256));
         let mut candidate_bytes = 0usize;
         let mut candidate_messages = 0u64;
         const MAX_WINDOW_BYTES: usize = 64 * 1024 * 1024;
         let mut dropped = false;
         for (frame_index, frame) in scan.frames[1..].iter().enumerate().rev() {
-            let mut frame_tail = VecDeque::with_capacity(capacity);
+            let mut frame_tail = VecDeque::with_capacity(capacity.min(256));
             let mut frame_dropped = false;
             let mut frame_bytes = 0usize;
             visit_zstd_frame_tail(&mapping[frame.start..frame.end], capacity, &mut |event| {

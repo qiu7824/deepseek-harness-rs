@@ -402,7 +402,10 @@ where
     {
         let mut k = 0_usize;
         let mut time = self.seed.time0;
-        let mut tail = self.seed.tail_capacity.map(VecDeque::with_capacity);
+        let mut tail = self
+            .seed
+            .tail_capacity
+            .map(|capacity| VecDeque::with_capacity(capacity.min(256)));
         loop {
             let event_seq = self.seed.seq0.saturating_add(k as u64);
             let materialize = tail.is_some()

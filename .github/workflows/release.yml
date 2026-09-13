@@ -107,6 +107,7 @@ jobs:
           cargo test --locked -p dsh-host-cli --lib headless_selection_tests
           cargo test --locked -p dsh-host-cli --lib history_import
           cargo test --locked -p dsh-host-cli --test history_import_cli
+          cargo test --locked -p dsh-session-persistence-jsonl --test history_allocations
           cargo test --locked -p dsh-agent-team -p dsh-http-proxy --lib
           cargo check --locked -p dsh-subprocess-e2b
           cargo test --locked -p dsh-llm-retry -p dsh-system-prompt -p dsh-session-reference -p dsh-spill-local -p dsh-subagent-codex -p dsh-message-feedback -- --test-threads=1
