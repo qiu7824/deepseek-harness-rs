@@ -10698,11 +10698,13 @@ window.__ModuleLoader__.load({
 				})
 			}, EnterBehaviorRow));
 			const chatScrollPositions = /* @__PURE__ */ new Map();
+            const miniMenus=ctx.settingsScope.bind({namespace:"mini-menu"});
 			const viewTabs = () => {
 				const tabs = [];
 				for (const entry of slots.entries("conversation.view")) {
 					/* v8 ignore next -- unreachable: list registration validates id at load. */
 					if (entry.options.id === void 0) continue;
+                    if (["trajectory","artifacts","code-graph","context"].includes(entry.options.id)&&miniMenus.getSnapshot().value?.[entry.options.id]===false) continue;
 					tabs.push({
 						id: entry.options.id,
 						label: (0, _deepseek_ai_dsh_client_ui_slots.resolveSlotLabel)(entry.options.label) ?? entry.options.id
@@ -10712,8 +10714,8 @@ window.__ModuleLoader__.load({
 			};
 			const views = {
 				list: viewTabs,
-				subscribe: (fn) => slots.subscribe("conversation.view", fn),
-				version: () => slots.getVersion("conversation.view")
+				subscribe: (fn) => {const a=slots.subscribe("conversation.view",fn),b=miniMenus.subscribe(fn);return()=>{a();b();}},
+				version: () => `${slots.getVersion("conversation.view")}:${JSON.stringify(miniMenus.getSnapshot().value)}`
 			};
 			const inputHub = new InputHub(ctx, t);
 			ctx.inject(["inputTriggers"], scope => { scope.effect(() => scope.inputTriggers.registerSource(createSessionReferenceSource(sessions)), "ui-conversation: session reference source"); });

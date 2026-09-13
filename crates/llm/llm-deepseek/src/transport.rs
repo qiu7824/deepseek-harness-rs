@@ -15,6 +15,28 @@ fn body_error(error: &(dyn std::error::Error + 'static)) -> String {
     message
 }
 
+fn send_error(error: reqwest::Error) -> String {
+    let category = if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_request() {
+        "request"
+    } else {
+        "transport"
+    };
+    let error = error.without_url();
+    let mut text = format!("provider HTTP request failed [{category}]: {error}");
+    let mut cause = std::error::Error::source(&error);
+    for _ in 0..8 {
+        let Some(error) = cause else { break };
+        text.push_str("; caused by: ");
+        text.extend(error.to_string().chars().take(500));
+        cause = error.source();
+    }
+    text
+}
+
 enum ResponseBody {
     Reqwest(reqwest::Response),
     Hyper {
@@ -70,11 +92,20 @@ impl CancelableResponse {
 }
 
 fn client() -> Result<reqwest::Client, String> {
-    dsh_http_proxy::builder()?
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .tcp_nodelay(true)
-        .build()
-        .map_err(|error| format!("provider HTTP client build failed: {error}"))
+    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            dsh_http_proxy::builder()?
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .pool_idle_timeout(std::time::Duration::from_secs(30))
+                .pool_max_idle_per_host(2)
+                .tcp_keepalive(std::time::Duration::from_secs(30))
+                .tcp_nodelay(true)
+                .build()
+                .map_err(|error| format!("provider HTTP client build failed: {error}"))
+        })
+        .clone()
 }
 
 pub(crate) async fn post(
@@ -185,14 +216,13 @@ pub(crate) async fn post(
         tokio::pin!(cancel_wait);
         tokio::select! {
             result = &mut send => result
-                .map_err(|error| format!("provider HTTP request failed: {error}"))?,
+                .map_err(send_error)?,
             _ = &mut cancel_wait => {
                 return Err("provider request cancelled before response headers".to_string());
             }
         }
     } else {
-        send.await
-            .map_err(|error| format!("provider HTTP request failed: {error}"))?
+        send.await.map_err(send_error)?
     };
     let status = response.status();
     let headers = response.headers().clone();
@@ -214,6 +244,34 @@ fn is_loopback_host(host: &str) -> bool {
 mod tests {
     use super::post;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[tokio::test]
+    async fn tls_failure_preserves_cause_and_hides_url_query() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut data = [0u8; 1024];
+            let _ = socket.read(&mut data).await;
+            socket
+                .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let result = post(
+            &format!("https://{address}/?api_key=private-fixture"),
+            None,
+            b"{}".to_vec(),
+            &[],
+            None,
+        )
+        .await;
+        let Err(error) = result else {
+            panic!("invalid TLS unexpectedly succeeded")
+        };
+        assert!(error.contains("caused by"), "{error}");
+        assert!(!error.contains("private-fixture"));
+        task.await.unwrap();
+    }
 
     async fn captured_request(api_key: Option<&str>) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

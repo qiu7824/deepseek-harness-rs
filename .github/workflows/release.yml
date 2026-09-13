@@ -65,6 +65,7 @@ jobs:
           node tools/tests/model_management_harness.cjs
           node tools/tests/model_management_react_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/task_models_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/productivity_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/generated_images_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/account_browser_login_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/directory_picker_flow_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
@@ -176,6 +177,7 @@ jobs:
           python tools/e2e_headless_tools.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-headless-tools"
           python tools/e2e_devin.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-devin-native"
           python tools/e2e_image_generation.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-image-generation"
+          python tools/e2e_productivity.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-productivity" --check-auto
           for assignment in none provider model; do
             python tools/e2e_image_generation.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-image-$assignment" --assignment "$assignment"
           done

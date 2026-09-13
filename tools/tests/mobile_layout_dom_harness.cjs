@@ -12,7 +12,7 @@ async function run(modules, output) {
     let result;
     const source = fs.readFileSync(path.join(rootDirectory, "web/dist/plugins", file), "utf8");
     const runtime = { defineStore: spec => spec, createSnapshotStore: initial => ({ getSnapshot: () => initial, subscribe: () => () => {} }) };
-    const browser = { innerWidth: 390, __ModuleLoader__: { load: definition => result = definition.factory(id => id === "react" ? React : id === "react/jsx-runtime" ? jsx : id === "react-dom" ? require(path.join(modules, "react-dom")) : id.endsWith("/client") ? runtime : id.endsWith("ui-primitives") ? primitives : { Service: class {} }) } };
+    const browser = { innerWidth: 390, addEventListener:dom.window.addEventListener.bind(dom.window),removeEventListener:dom.window.removeEventListener.bind(dom.window),dispatchEvent:dom.window.dispatchEvent.bind(dom.window), __ModuleLoader__: { load: definition => result = definition.factory(id => id === "react" ? React : id === "react/jsx-runtime" ? jsx : id === "react-dom" ? require(path.join(modules, "react-dom")) : id.endsWith("/client") ? runtime : id.endsWith("ui-primitives") ? primitives : { Service: class {} }) } };
     const context = { window: browser, document, console, URL, setTimeout, clearTimeout, setInterval, clearInterval, requestAnimationFrame: callback => setTimeout(callback, 0), cancelAnimationFrame: clearTimeout, ResizeObserver: class { observe() {} disconnect() {} }, ...names.context };
     vm.runInNewContext(source.replace("return module.exports;", names.values.map(name => `exports.${name} = ${name};`).join("\n") + "\nreturn module.exports;"), context);
     return { ...result, browser };

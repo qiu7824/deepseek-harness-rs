@@ -6,17 +6,17 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 > 当前版本仍是预发布版本。功能状态以本README的兼容矩阵和GitHub Release说明为准。
 
-当前发布线：`0.1.3-alpha.13`。
+当前发布线：`0.1.3-alpha.19`。
 
-开发版本：`0.1.3-alpha.18`，见 [变更说明](release/notes/v0.1.3-alpha.18.md)。
+开发版本：`0.1.3-alpha.19`，见 [变更说明](release/notes/v0.1.3-alpha.19.md)。
 
-完整更新见 [alpha.13 发布说明](release/notes/v0.1.3-alpha.13.md)。
+完整更新见 [alpha.19 发布说明](release/notes/v0.1.3-alpha.19.md)。
 
 Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启动器和主题效果。版本号标识 Rust 发布线，不表示与 Node 版本逐项或磁盘格式完全相同。
 
 双向分页、阅读锚点和实时消息缓冲的设计见 [Rust 对话滚动与分页](docs/rust-conversation-scrolling.zh.md)。
 
-## 0.1.3-alpha.13 能力更新
+## 0.1.3-alpha.19 能力更新
 
 - **会话与反馈**：永久删除包含所属子智能体历史，保留独立分支；赞踩先确认，可选分类持久化，失败保留草稿。
 - **通用附件与导入**：支持普通文件选择、粘贴和拖放；官方 V0/V1/V2/V3 日志及带图片 ZIP 经校验后导入，原件保留。
@@ -36,7 +36,7 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 - **UU 兼容**：重新发现升级后的客户端安装位置，支持新版终端兼容路径并保持连接归属隔离；保留网页画面、批注、连接复用和人工接管。
 - **发布一致性**：核心提供 `--build-info`；打包核对版本、源码提交和修改状态；Windows、Linux、macOS 的安装包与便携包均由同一提交验收，附件提供 SHA-256 校验和。
 
-完整变更见 [alpha.13 发布说明](release/notes/v0.1.3-alpha.13.md)，协议适配范围见 [rc.1 能力评估](docs/upstream-v0.1.5-rc.1-evaluation.zh.md)。
+完整变更见 [alpha.19 发布说明](release/notes/v0.1.3-alpha.19.md)，协议适配范围见 [rc.1 能力评估](docs/upstream-v0.1.5-rc.1-evaluation.zh.md)。
 
 ### UU 网页画面与接管
 
@@ -49,11 +49,11 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 
 ## 下载
 
-从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.13) 下载对应平台的完整包：
+从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.19) 下载对应平台的完整包：
 
-- `deepseek-harness-rs-v0.1.3-alpha.13-windows-x86_64-{core,skin,free}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.13-linux-x86_64-{core,skin,free}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.13-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.19-windows-x86_64-{core,skin,free}-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.19-linux-x86_64-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.19-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
 - 对应的 Windows `setup.exe`、Linux `.deb` 与 macOS `.pkg` 安装包
 
 完整包包含二进制、`web/dist`、`config/agent-presets`、随附Web插件和安全说明。不要只复制二进制后再期待完整Web界面和随附插件可用。

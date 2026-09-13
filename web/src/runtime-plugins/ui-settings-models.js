@@ -1864,13 +1864,13 @@ window.__ModuleLoader__.load({
 		* @returns the section, or null while the shell has not injected yet.
 		*/
 		function ModelsSection(props) {
-			const { controller, useSnapshot, api, t } = props;
+			const { controller, useSnapshot, api, t, renderSlot } = props;
 			if (controller === void 0 || useSnapshot === void 0 || api === void 0 || t === void 0) return null;
 			return (0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0, react_jsx_runtime.jsx)(Loaded, { injected: {
 				controller,
 				useSnapshot,
 				api,
-				t
+				t, renderSlot
 			} })});
 		}
         async function accountRequest(action, body = {}) {
@@ -2339,7 +2339,7 @@ window.__ModuleLoader__.load({
 
 
 		function Loaded({ injected }) {
-			const { controller, api, t } = injected;
+			const { controller, api, t, renderSlot } = injected;
 			const state = injected.useSnapshot((snapshot) => snapshot);
 			const [editing, setEditing] = (0, react.useState)(void 0);
 			const [adding, setAdding] = (0, react.useState)(false);
@@ -2446,7 +2446,7 @@ window.__ModuleLoader__.load({
 					(0, react_jsx_runtime.jsx)("p", {
 						className: ModelsSection_module_css_default["intro"],
 						children: t("intro")
-					}),
+					}),renderSlot?.("settings.models.network",{}),
 					!state.writable && state.status === "ready" ? (0, react_jsx_runtime.jsx)("p", {
 						className: ModelsSection_module_css_default["notice"],
 						children: t("readOnly")
@@ -3413,7 +3413,7 @@ window.__ModuleLoader__.load({
 			}, "ui-settings-models: pushed invalidations");
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
-				id: "models",
+				id: "models",children:{"settings.models.network":{kind:"single",scope:"root"}},
 				order: 10,
 				label: () => t("nav"),
 				inject: injected

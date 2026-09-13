@@ -546,20 +546,21 @@ window.__ModuleLoader__.load({
         }
 
 		const memoryFields = [["enabled","持久记忆","checkbox"],["userProfileEnabled","用户画像","checkbox"],["memoryBudget","记忆预算","number"],["profileBudget","画像预算","number"],["provider","记忆提供方","fixed","仅内置"],["contextEngine","上下文引擎","fixed","Compressor"],["autoCompact","自动压缩","checkbox"],["compactThreshold","压缩阈值","number"],["compactTarget","压缩目标","number"],["protectRecentMessages","保护最近消息","number"]];
-		function MemorySection({ api }) {
+		function MemorySection({ api, renderSlot }) {
 			const h=react.createElement;
 			const [settings,setSettings]=react.useState(null),[entries,setEntries]=react.useState([]),[categories,setCategories]=react.useState([]),[scopes,setScopes]=react.useState(["default"]),[scope,setScope]=react.useState("default"),[category,setCategory]=react.useState(""),[draft,setDraft]=react.useState(null),[error,setError]=react.useState(null),[query,setQuery]=react.useState(""),[busy,setBusy]=react.useState(false),[removeId,setRemoveId]=react.useState(null);
 			const generation=react.useRef(0),mounted=react.useRef(true);
 			const unwrap=reply=>{if(!reply.result.ok)throw new Error(reply.result.error.message);return reply.result.value};
 			const load=react.useCallback(async()=>{
 				const turn=++generation.current;
-				const [description,categoryReply,entryReply,roster]=await Promise.all([api.settings.describe({}),api.memory.categories({}),api.memory.list({scope,...category?{category}:{}}),api.agentPresets.list({})]);
+				const [description,categoryReply,entryReply,roster,workspaceReply]=await Promise.all([api.settings.describe({}),api.memory.categories({}),api.memory.list({scope,...category?{category}:{}}),api.agentPresets.list({}),api.workspace?.list?.({})??Promise.resolve(null)]);
 				const namespace=unwrap(description).namespaces.find(item=>item.ns==="memory")??null,groups=unwrap(categoryReply).categories??[],items=unwrap(entryReply).entries??[];
 				if(!mounted.current||turn!==generation.current)return;
 				setSettings(namespace);setCategories(groups);setEntries(items);
-				if(roster.result.ok)setScopes(["default",...(roster.result.value.presets??[]).map(item=>item.id).filter(id=>id!=="default")]);
+				if(roster.result.ok)setScopes([...new Set(["default",...(roster.result.value.presets??[]).map(item=>item.id),...items.map(item=>item.scope),...(workspaceReply?.result?.ok?workspaceReply.result.value.workspaces??[]:[]).map(w=>w.path)])]);
 			},[api,scope,category]);
 			react.useEffect(()=>{mounted.current=true;load().catch(cause=>setError(cause.message));return()=>{mounted.current=false;generation.current++}},[load]);
+            react.useEffect(()=>{const refresh=()=>load().catch(cause=>setError(cause.message));window.addEventListener("dsh-memory-imported",refresh);return()=>window.removeEventListener("dsh-memory-imported",refresh)},[load]);
 			const act=async action=>{if(busy)return;setBusy(true);setError(null);try{await action();await load()}catch(cause){if(mounted.current)setError(cause instanceof Error?cause.message:String(cause))}finally{if(mounted.current)setBusy(false)}};
 			const setOption=(field,value)=>act(async()=>{if(!settings)return;const result=unwrap(await api.settings.mutate({ns:"memory",ops:[{op:"set",path:[field],value}],expectedRevision:settings.revision}));setSettings(result)});
 			const write=entry=>api.memory.upsert({entry:{...entry,id:entry.id??"",revision:entry.revision??0},...entry.revision?{expectedRevision:entry.revision}:{}}).then(unwrap);
@@ -582,10 +583,10 @@ window.__ModuleLoader__.load({
 				draft&&h("div",{className:"dshMemoryItem"},
 					h("input",{"aria-label":"记忆标题",value:draft.title,maxLength:200,placeholder:draft.category==="known-error"?"错误经验标题":"标题",onChange:e=>setDraft({...draft,title:e.target.value})}),
 					h("textarea",{"aria-label":"记忆内容",value:draft.content,maxLength:20000,placeholder:"记忆内容",rows:draft.category==="known-error"?8:4,onChange:e=>setDraft({...draft,content:e.target.value})}),
-					h("div",{className:"dshMemoryToolbar"},h("select",{"aria-label":"编辑记忆分类",value:draft.category,onChange:e=>setDraft({...draft,category:e.target.value})},categories.map(item=>h("option",{key:item.id,value:item.id},item.label))),h("label",null,h("input",{type:"checkbox",checked:draft.enabled,onChange:e=>setDraft({...draft,enabled:e.target.checked})}),"启用"),h("button",{disabled:busy||!draft.title.trim()||!draft.content.trim(),onClick:save},"保存"),h("button",{disabled:busy,onClick:()=>setDraft(null)},"取消"))),
+					h("div",{className:"dshMemoryToolbar"},h("select",{"aria-label":"编辑记忆范围",value:draft.scope,onChange:e=>setDraft({...draft,scope:e.target.value})},scopes.map(id=>h("option",{key:id,value:id},id==="default"?"全局记忆":id))),h("select",{"aria-label":"编辑记忆分类",value:draft.category,onChange:e=>setDraft({...draft,category:e.target.value})},categories.map(item=>h("option",{key:item.id,value:item.id},item.label))),h("label",null,h("input",{type:"checkbox",checked:draft.enabled,onChange:e=>setDraft({...draft,enabled:e.target.checked})}),"启用"),h("button",{disabled:busy||!draft.title.trim()||!draft.content.trim(),onClick:save},"保存"),h("button",{disabled:busy,onClick:()=>setDraft(null)},"取消"))),
 				h("div",{className:"dshMemoryList"},visible.length===0?h("div",{className:"dshMemoryHint"},query?"没有匹配的记忆":"暂无记忆"):visible.map(entry=>h("div",{key:entry.id,className:"dshMemoryItem"},
 					h("div",{className:"dshMemoryItemHead"},h("strong",null,entry.title),h("span",{className:"dshMemoryBadge"},categories.find(item=>item.id===entry.category)?.label??entry.category),h("input",{type:"checkbox",role:"switch","aria-label":`${entry.enabled?"停用":"启用"}记忆 ${entry.title}`,checked:entry.enabled,disabled:busy,onChange:e=>act(()=>write({...entry,enabled:e.target.checked}))}),h("button",{disabled:busy,onClick:()=>setDraft({...entry})},"编辑"),h("button",{disabled:busy,onClick:()=>setRemoveId(entry.id)},"删除")),
-					h("p",null,entry.content),!entry.enabled&&h("span",{className:"dshMemoryHint"},"已停用，不再注入上下文"),removeId===entry.id&&h("div",{className:"dshMemoryToolbar"},h("span",{className:"dshMemoryHint"},"确定删除此条记忆？"),h("button",{disabled:busy,onClick:()=>remove(entry)},"确认删除"),h("button",{onClick:()=>setRemoveId(null)},"取消")))))
+					h("p",null,entry.content),!entry.enabled&&h("span",{className:"dshMemoryHint"},"已停用，不再注入上下文"),removeId===entry.id&&h("div",{className:"dshMemoryToolbar"},h("span",{className:"dshMemoryHint"},"确定删除此条记忆？"),h("button",{disabled:busy,onClick:()=>remove(entry)},"确认删除"),h("button",{onClick:()=>setRemoveId(null)},"取消"))))), renderSlot?.("settings.memory.import", {onImported:()=>load().catch(cause=>setError(cause.message))})
 			);
 		}
 		const subagentCss = ".dshSub{display:flex;flex-direction:column;gap:18px;width:100%;max-width:720px;padding:4px 2px 28px;color:var(--dsw-alias-label-primary)}.dshSub h2{margin:0;font-size:18px;font-weight:600;line-height:26px}.dshSub h3{margin:0;font-size:13px;font-weight:600;color:var(--dsw-alias-label-tertiary);text-transform:uppercase;letter-spacing:.04em}.dshSubHint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}.dshSubGroup{display:flex;flex-direction:column;gap:12px;padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:var(--dsw-alias-bg-layer-1)}.dshSubGrid{display:grid;grid-template-columns:160px minmax(0,1fr);gap:12px 16px;align-items:center}.dshSubGrid>label{font-size:13px;color:var(--dsw-alias-label-secondary);text-align:right;line-height:20px}.dshSubGrid small{display:block;font-size:11px;color:var(--dsw-alias-label-tertiary);margin-top:3px;font-weight:400}.dshSub input,.dshSub select{box-sizing:border-box;width:100%;max-width:320px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:inherit;padding:7px 10px;font:inherit;font-size:13px;line-height:20px;transition:border-color .15s}.dshSub input:focus,.dshSub select:focus{outline:none;border-color:var(--dsw-alias-border-l3)}.dshSub input[type=checkbox]{width:16px;height:16px;max-width:none;justify-self:start;cursor:pointer}.dshSub input[type=number]{max-width:160px}.dshSubError{color:var(--dsw-alias-state-error-primary);font-size:13px;padding:8px 12px;border-radius:8px;background:var(--dsw-alias-state-error-bg,rgba(255,80,80,.08))}.dshSubRow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.dshSubBadge{font-size:11px;padding:2px 8px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}";
@@ -631,8 +632,8 @@ window.__ModuleLoader__.load({
 			const v = (field) => state.namespace?.value?.[field];
 			return (0, react_jsx_runtime.jsxs)("section", { className: "dshSub", children: [
 				(0, react_jsx_runtime.jsx)("h2", { children: "子智能体" }),
-				(0, react_jsx_runtime.jsx)("div", { className: "dshSubHint", children: "为所有子智能体（spawn / fork / workflow）配置默认的提供方、模型、推理强度、轮次和超时。留空或 0 表示继承父会话。" }),
-				(0, react_jsx_runtime.jsx)("div", { className: "dshSubGroup", children: (0, react_jsx_runtime.jsx)("h3", { children: "默认值与限制" }) }),
+				(0, react_jsx_runtime.jsx)("div", { className: "dshSubHint", children: "配置子智能体的默认路由、模型和运行限制。模型留空时继承父会话，其余字段含义见各项说明。" }),
+				(0, react_jsx_runtime.jsx)("div", { className: "dshSubSectionTitle", children: (0, react_jsx_runtime.jsx)("h3", { children: "默认值与限制" }) }),
 				(0, react_jsx_runtime.jsx)("div", { className: "dshSubGroup", children: (0, react_jsx_runtime.jsx)("div", { className: "dshSubGrid", children: subagentFields.map((f) => [
 					(0, react_jsx_runtime.jsxs)("label", { htmlFor: "sub-" + f.field, children: [f.label, f.hint ? (0, react_jsx_runtime.jsx)("small", { children: f.hint }) : null] }, f.field + "-l"),
 					f.type === "select"
@@ -973,8 +974,8 @@ window.__ModuleLoader__.load({
 				name: "settings.section",
 				id: "memory",
 				order: 20,
-				label: "记忆与上下文"
-			}, () => (0, react_jsx_runtime.jsx)(MemorySection, { api: connection.api })));
+				label: "记忆与上下文",inject:()=>({api:connection.api}),children:{"settings.memory.import":{kind:"single",scope:"root"}}
+			}, MemorySection));
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
 				id: "subagent",

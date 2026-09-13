@@ -9,5 +9,8 @@ description = "Explicit outbound proxy policy with unconditional loopback bypass
 reqwest = { version = "=0.12.24", default-features = false, features = ["rustls-tls", "blocking"] }
 dsh-home-paths = { path = "../home-paths" }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Registry"] }
+
 [dev-dependencies]
 tokio.workspace = true

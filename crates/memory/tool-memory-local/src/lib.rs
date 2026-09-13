@@ -152,6 +152,52 @@ impl MemoryStore {
         Ok(true)
     }
 
+    /// Apply an approved import as one durable transaction, preserving concurrent edits.
+    pub async fn import_entries(
+        &self,
+        changes: Vec<(MemoryEntry, Option<u64>)>,
+    ) -> Result<Vec<MemoryEntry>, String> {
+        if changes.len() > 256 {
+            return Err("memory import exceeds 256 entries".into());
+        }
+        let mut document = self.document.lock().await;
+        let mut next = document.clone();
+        let mut saved = Vec::new();
+        for (mut entry, expected) in changes {
+            validate_entry(&entry)?;
+            if let Some(index) = next.entries.iter().position(|row| row.id == entry.id) {
+                if expected != Some(next.entries[index].revision) {
+                    return Err("memory changed during import; refresh the preview".into());
+                }
+                entry.revision = next.entries[index].revision + 1;
+                next.entries[index] = entry.clone();
+            } else {
+                if expected.is_some() {
+                    return Err("memory was removed during import".into());
+                }
+                entry.revision = 1;
+                next.entries.push(entry.clone());
+            }
+            saved.push(entry);
+        }
+        if next.entries.len() > 2048
+            || next
+                .entries
+                .iter()
+                .map(|e| e.title.len() + e.content.len())
+                .sum::<usize>()
+                > 8 * 1024 * 1024
+        {
+            return Err("导入后的记忆超过2048条或8MiB，请减少来源或整理已有记忆".into());
+        }
+        if !saved.is_empty() {
+            next.revision += 1;
+            persist_document(&self.root, &next).await?;
+            *document = next;
+        }
+        Ok(saved)
+    }
+
     pub async fn render_enabled(&self, scope: &str, budget: usize) -> String {
         let document = self.document.lock().await;
         render_entries(&document, scope, budget)
@@ -200,13 +246,16 @@ async fn persist_document(root: &Path, document: &MemoryDocument) -> Result<(), 
 /// Render the current enabled entries for synchronous system-prompt providers.
 /// A malformed or absent document fails closed to no injected memory.
 pub fn render_enabled_file(root: &Path, scope: &str, budget: usize) -> String {
+    render_enabled_file_scopes(root, &[scope], budget)
+}
+pub fn render_enabled_file_scopes(root: &Path, scopes: &[&str], budget: usize) -> String {
     let Ok(bytes) = std::fs::read(root.join("entries.json")) else {
         return String::new();
     };
     let Ok(document) = serde_json::from_slice::<MemoryDocument>(&bytes) else {
         return String::new();
     };
-    let rendered = render_entries(&document, scope, budget);
+    let rendered = render_entries_scopes(&document, scopes, budget);
     if rendered.is_empty() {
         String::new()
     } else {
@@ -217,10 +266,15 @@ pub fn render_enabled_file(root: &Path, scope: &str, budget: usize) -> String {
 }
 
 fn render_entries(document: &MemoryDocument, scope: &str, budget: usize) -> String {
+    render_entries_scopes(document, &[scope], budget)
+}
+fn render_entries_scopes(document: &MemoryDocument, scopes: &[&str], budget: usize) -> String {
     let mut entries: Vec<_> = document
         .entries
         .iter()
-        .filter(|entry| entry.enabled && (entry.scope == "default" || entry.scope == scope))
+        .filter(|entry| {
+            entry.enabled && (entry.scope == "default" || scopes.contains(&entry.scope.as_str()))
+        })
         .collect();
     // Lessons and constraints must survive a tight budget; local scope precedes
     // global notes and newer revisions break ties without changing stored order.
@@ -436,6 +490,46 @@ pub fn install(ctx: &Context, root: PathBuf) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn import_batch_is_atomic_and_workspace_memory_is_isolated() {
+        let root = std::env::temp_dir().join(format!("dsh-import-batch-{}", uuid::Uuid::new_v4()));
+        let store = MemoryStore::open(root.clone()).await.unwrap();
+        let old = store
+            .upsert(entry("one", "user-preference", "original"), None)
+            .await
+            .unwrap();
+        let mut first = old.clone();
+        first.content = "updated".into();
+        let mut invalid = entry("two", "project-knowledge", "");
+        invalid.scope = "workspace-b".into();
+        assert!(
+            store
+                .import_entries(vec![(first.clone(), Some(old.revision)), (invalid, None)])
+                .await
+                .is_err()
+        );
+        assert_eq!(store.list(None, None).await, vec![old.clone()]);
+        let mut second = entry("two", "project-knowledge", "workspace-b-private");
+        second.scope = "workspace-b".into();
+        store
+            .import_entries(vec![(first, Some(old.revision)), (second, None)])
+            .await
+            .unwrap();
+        assert!(
+            !render_enabled_file_scopes(&root, &["standard", "workspace-a"], 2200)
+                .contains("workspace-b-private")
+        );
+        assert!(
+            render_enabled_file_scopes(&root, &["standard", "workspace-b"], 2200)
+                .contains("workspace-b-private")
+        );
+        assert!(
+            root.canonicalize()
+                .unwrap()
+                .starts_with(std::env::temp_dir().canonicalize().unwrap())
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn entry(id: &str, category: &str, content: &str) -> MemoryEntry {
         MemoryEntry {

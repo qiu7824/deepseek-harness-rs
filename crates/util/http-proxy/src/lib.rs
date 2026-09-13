@@ -154,7 +154,100 @@ fn launch_policy(configured_home: Option<&std::path::Path>) -> Result<ProxyPolic
             values.insert(lower, value);
         }
     }
+    apply_system_fallback(&mut values, system_proxy_values());
     ProxyPolicy::from_values(&values)
+}
+
+fn apply_system_fallback(values: &mut HashMap<String, String>, system: HashMap<String, String>) {
+    if ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
+        .iter()
+        .any(|key| selected(values, key).is_some())
+    {
+        return;
+    }
+    for (key, value) in system {
+        values.entry(key).or_insert(value);
+    }
+}
+fn parse_system_proxy(server: &str, bypass: &str) -> HashMap<String, String> {
+    let mut values = HashMap::new();
+    let origin = |v: &str| {
+        if v.contains("://") {
+            v.to_string()
+        } else {
+            format!("http://{v}")
+        }
+    };
+    if server.contains('=') {
+        for pair in server.split(';') {
+            if let Some((scheme, address)) = pair.split_once('=') {
+                if ["http", "https"].contains(&scheme.trim()) && !address.trim().is_empty() {
+                    values.insert(format!("{}_proxy", scheme.trim()), origin(address.trim()));
+                }
+            }
+        }
+    } else if !server.trim().is_empty() {
+        values.insert("all_proxy".into(), origin(server.trim()));
+    }
+    if !bypass.is_empty() {
+        values.insert(
+            "no_proxy".into(),
+            bypass.replace(';', ",").replace("<local>", "localhost"),
+        );
+    }
+    values
+}
+#[cfg(not(windows))]
+fn system_proxy_values() -> HashMap<String, String> {
+    HashMap::new()
+}
+#[cfg(windows)]
+fn system_proxy_values() -> HashMap<String, String> {
+    use windows_sys::Win32::System::Registry::*;
+    fn read(name: &str, flags: u32) -> Option<Vec<u8>> {
+        let sub: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\0"
+            .encode_utf16()
+            .collect();
+        let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        let mut bytes = vec![0u8; 16384];
+        let mut len = bytes.len() as u32;
+        let result = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                sub.as_ptr(),
+                name.as_ptr(),
+                flags,
+                std::ptr::null_mut(),
+                bytes.as_mut_ptr().cast(),
+                &mut len,
+            )
+        };
+        if result != 0 {
+            return None;
+        }
+        bytes.truncate(len as usize);
+        Some(bytes)
+    }
+    if read("ProxyEnable", RRF_RT_REG_DWORD).and_then(|b| {
+        b.get(..4)
+            .map(|v| u32::from_le_bytes(v.try_into().unwrap()))
+    }) != Some(1)
+    {
+        return HashMap::new();
+    }
+    let string = |name| {
+        read(name, RRF_RT_REG_SZ)
+            .map(|b| {
+                String::from_utf16_lossy(
+                    &b.chunks_exact(2)
+                        .map(|v| u16::from_le_bytes([v[0], v[1]]))
+                        .take_while(|v| *v != 0)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or_default()
+    };
+    parse_system_proxy(&string("ProxyServer"), &string("ProxyOverride"))
 }
 
 static POLICY: OnceLock<Result<ProxyPolicy, String>> = OnceLock::new();
@@ -177,6 +270,19 @@ pub fn builder() -> Result<reqwest::ClientBuilder, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn system_proxy_is_only_a_fallback() {
+        let system = super::parse_system_proxy(
+            "http=127.0.0.1:8080;https=127.0.0.1:8081",
+            "localhost;*.local",
+        );
+        let mut values = std::collections::HashMap::new();
+        super::apply_system_fallback(&mut values, system.clone());
+        assert_eq!(values["https_proxy"], "http://127.0.0.1:8081");
+        let mut explicit = std::collections::HashMap::from([("all_proxy".into(), String::new())]);
+        super::apply_system_fallback(&mut explicit, system);
+        assert_eq!(explicit.len(), 1);
+    }
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     #[test]

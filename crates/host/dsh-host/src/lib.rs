@@ -34,9 +34,12 @@ mod free_catalog;
 mod free_probe;
 mod image_generation;
 mod learning_bridge;
+mod memory_import;
 mod model_capabilities;
 mod model_discovery;
 mod open_in_app;
+mod productivity;
+mod project_tasks;
 mod provider_auth;
 mod provider_auth_catalog;
 mod provider_compatibility;
@@ -1678,6 +1681,7 @@ pub struct HostSpine {
     api_route: RouteDisposer,
     computer_use_route: RouteDisposer,
     task_models_route: RouteDisposer,
+    productivity_route: RouteDisposer,
     agent_team_route: RouteDisposer,
     web_preview_route: RouteDisposer,
     provider_auth_route: RouteDisposer,
@@ -1808,6 +1812,7 @@ impl Drop for HostSpine {
             self.web_server.request_shutdown();
             (self.computer_use_route)();
             (self.task_models_route)();
+            (self.productivity_route)();
             (self.agent_team_route)();
             (self.web_preview_route)();
             (self.provider_auth_route)();
@@ -3243,7 +3248,8 @@ fn compose_host_in_fiber(
                         },
                         _ => 2200,
                     };
-                    dsh_tool_memory_local::render_enabled_file(&memory_root, &preset, budget)
+                    let cwd=assembly.field_str("sessionId").and_then(|id|sessions_for_memory.get(&dsh_session::session_id(id))).and_then(|s|s.header().cwd.clone()).unwrap_or_default();
+                    dsh_tool_memory_local::render_enabled_file_scopes(&memory_root, &[&preset,&cwd], budget)
                 })),
             },
         );
@@ -4134,6 +4140,15 @@ fn compose_host_in_fiber(
     let fetch_handler = Arc::new(to_fetch_handler(api_proxy.clone()));
     let allow_remote_host = bind_host == BindHost::AllInterfaces;
     let task_models_route = task_models.register_http(&web_server);
+    let productivity_route = productivity::install(
+        ctx,
+        &data_root,
+        &settings,
+        workspace_registry.clone(),
+        &web_server,
+        allow_remote_host,
+        &system_prompt,
+    )?;
     open_in_app::register(&web_server, ctx, allow_remote_host);
     feedback_delivery::register(
         &web_server,
@@ -4212,6 +4227,7 @@ fn compose_host_in_fiber(
         api_route,
         computer_use_route,
         task_models_route,
+        productivity_route,
         agent_team_route,
         web_preview_route,
         provider_auth_route,
