@@ -13,6 +13,7 @@ def png(color):
 
 class Provider(BaseHTTPRequestHandler):
     calls=[]
+    image_delay=0
     def log_message(self,*args):pass
     def reply(self,data,kind='application/json'):
         data=data if isinstance(data,bytes) else json.dumps(data).encode()
@@ -21,10 +22,12 @@ class Provider(BaseHTTPRequestHandler):
     def do_POST(self):
         data=self.rfile.read(int(self.headers.get('Content-Length',0)))
         if self.path.endswith('/images/generations'):
+            time.sleep(Provider.image_delay)
             body=json.loads(data);assert body['model']=='gpt-image-2.5-sunburst';assert self.headers.get('Authorization')=='Bearer fixture-image-key'
             assert body['n']==2
             Provider.calls.append({'kind':'generate','model':body['model']});self.reply({'data':[{'b64_json':base64.b64encode(png(color)).decode()} for color in [(255,0,0,255),(0,255,0,255)]]});return
         if self.path.endswith('/images/edits'):
+            time.sleep(Provider.image_delay)
             assert self.headers.get('Authorization')=='Bearer fixture-image-key'
             message=BytesParser(policy=default).parsebytes(('Content-Type: '+self.headers['Content-Type']+'\r\nMIME-Version: 1.0\r\n\r\n').encode()+data)
             parts={p.get_param('name',header='content-disposition'):p.get_payload(decode=True) for p in message.iter_parts()}
@@ -63,18 +66,31 @@ class Provider(BaseHTTPRequestHandler):
         self.reply((''.join('data: '+json.dumps(v)+'\n\n' for v in events)+'data: [DONE]\n\n').encode(),'text/event-stream')
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--binary',type=pathlib.Path,required=True);parser.add_argument('--workdir',type=pathlib.Path,required=True);parser.add_argument('--serve',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--binary',type=pathlib.Path,required=True);parser.add_argument('--workdir',type=pathlib.Path,required=True);parser.add_argument('--serve',action='store_true');parser.add_argument('--assignment',choices=['full','none','provider','model'],default='full');args=parser.parse_args()
+    Provider.image_delay=5 if args.serve else 0
     work=args.workdir.resolve()/('image-run-'+str(time.time_ns()));work.mkdir(parents=True)
     home=work/'home';env=isolated_environment(work,home);env['IMAGE_FIXTURE_KEY']='fixture-image-key'
     server=ThreadingHTTPServer(('127.0.0.1',0),Provider);threading.Thread(target=server.serve_forever,daemon=True).start()
     base=f'http://127.0.0.1:{server.server_port}/v1'
     settings={'llm-pi-ai':{'providers':{'text-fixture':{'keyless':True,'api':'openai-completions','baseURL':base,'models':[{'id':'text-fixture','contextWindow':131072,'maxTokens':4096}]},'image-fixture':{'api':'openai-completions','apiKeyEnv':'IMAGE_FIXTURE_KEY','baseURL':base,'models':[{'id':'gpt-image-2.5-sunburst'}]},'vision-fixture':{'keyless':True,'api':'openai-completions','baseURL':base,'models':[{'id':'vision-fixture','imageInput':True,'contextWindow':131072,'maxTokens':8192}]}}},'agent-default-model':{'provider':'text-fixture','model':'text-fixture'},'task-models':{'image':{'provider':'image-fixture','model':'gpt-image-2.5-sunburst'},'vision':{'provider':'vision-fixture','model':'vision-fixture'}}}
+    if args.assignment in ['none','model']:
+        settings['llm-pi-ai']['providers']['text-fixture'].pop('keyless')
+        settings['llm-pi-ai']['providers']['text-fixture']['apiKeyEnv']='IMAGE_FIXTURE_KEY'
+    assignments={'none':{},'provider':{'provider':'image-fixture'},'model':{'model':'gpt-image-2.5-sunburst'}}
+    if args.assignment!='full':settings['task-models']['image']=assignments[args.assignment]
     (home/'settings.json').write_text(json.dumps(settings),encoding='utf-8')
     try:
         with running_fixture_host(args.binary.resolve(),work,env,None,'image-generation') as port:
             count=0
             def call(method,payload):
                 nonlocal count;count+=1;return require_ok(rpc(port,method,payload,count),method)
+            if args.assignment!='full':
+                connection=http.client.HTTPConnection('127.0.0.1',port,timeout=20)
+                headers={'Origin':f'http://127.0.0.1:{port}','Sec-Fetch-Site':'same-origin','Content-Type':'application/json'}
+                try:
+                    connection.request('POST','/task-models/describe','{}',headers);response=connection.getresponse();config=json.loads(response.read());assert response.status==200
+                    connection.request('POST','/task-models/save',json.dumps({'routes':settings['task-models'],'revision':config['revision']}),headers);response=connection.getresponse();saved=json.loads(response.read());assert response.status==200,saved
+                finally:connection.close()
             workspace=call('workspace.create',{'path':str(work)})['workspace']['workspaceId'];sid=call('session.create',{'workspaceId':workspace})['sessionId']
             history=[]
             for turn,prompt in enumerate(['image-generation-fixture','image-edit-fixture: make it blue','vision-fixture'],1):

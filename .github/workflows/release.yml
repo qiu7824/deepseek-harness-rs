@@ -176,6 +176,9 @@ jobs:
           python tools/e2e_headless_tools.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-headless-tools"
           python tools/e2e_devin.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-devin-native"
           python tools/e2e_image_generation.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-image-generation"
+          for assignment in none provider model; do
+            python tools/e2e_image_generation.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-image-$assignment" --assignment "$assignment"
+          done
           python tools/e2e_learning_loop.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-learning-loop"
           python tools/e2e_approval_interactions.py --binary "$HOST" --repo . --node-modules "$RUNNER_TEMP/dsh-dom-tests/node_modules" --workdir "$RUNNER_TEMP/dsh-approval-interactions"
           python tools/e2e_skill_injection.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-skill-injection"

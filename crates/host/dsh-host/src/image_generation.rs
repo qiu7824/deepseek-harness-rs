@@ -161,7 +161,7 @@ impl ImageGeneration {
             .get_typed::<Arc<ToolRuntime>>("tools", false)
             .ok_or("工具运行时不可用")?;
         tools.register(ctx,ToolDefinition{
-            name:"generate_image".into(),description:"Generate an actual image or edit existing images using the separately selected image model and existing provider credentials. Use this for image requests instead of drawing substitutes with code. For edits, pass reference_images as image attachment IDs from this conversation or workspace image paths; optionally pass a PNG mask. Results are displayed as images in this conversation with preview and download. Return image IDs may be reused for further edits. Use consult_model task=vision to review images if a vision route is configured.".into(),
+            name:"generate_image".into(),description:"Generate an actual image or edit existing images using the current conversation connection and existing credentials, or an optional dedicated task model when configured. Task assignments are not required. Use this for image requests instead of drawing substitutes with code. For edits, pass reference_images as image attachment IDs from this conversation or workspace image paths; optionally pass a PNG mask. Results are displayed as images in this conversation with preview and download. Return image IDs may be reused for further edits. Use consult_model task=vision to review images if a vision route is configured.".into(),
             parameters:json!({"type":"object","additionalProperties":false,"properties":{"prompt":{"type":"string","minLength":1,"maxLength":32000},"reference_images":{"type":"array","maxItems":16,"items":{"type":"string"}},"mask":{"type":"string"},"size":{"type":"string"},"quality":{"type":"string","enum":["auto","low","medium","high","xhigh","max"]},"n":{"type":"integer","minimum":1,"maximum":4}},"required":["prompt"]}),
             output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text{text:value.to_string()}])),presentation_meta:Some(Arc::new(|_,value|{let mut meta=value.clone();meta["kind"]=json!("image-generation");Ok(meta)}))},
             timeout_ms:Some(600000),is_concurrency_safe:Some(Arc::new(|_|false)),finalize_content:None,present_call:Some(Arc::new(|args|Some(dsh_tools::ToolCallView::Generic{title:if args["reference_images"].as_array().is_some_and(|v|!v.is_empty()){"编辑图片"}else{"生成图片"}.into(),kind:None,raw_input:None,content:None,locations:None}))),present_result:None,
@@ -180,7 +180,7 @@ impl ImageGeneration {
         let _permit = loop {
             tokio::select! {permit=&mut wait=>break permit.map_err(|_|"生图服务已关闭")?,_=tokio::time::sleep(Duration::from_millis(50))=>if signal(){return Err("图片生成已取消".into())}}
         };
-        let route = self.tasks.route("image")?;
+        let route = self.tasks.route("image", execution).await?;
         let provider = route["provider"].as_str().ok_or("未选择生图连接")?;
         let model = route["model"].as_str().ok_or("未选择生图模型")?;
         let (profile, key) = self.auth.image_connection(provider).await?;

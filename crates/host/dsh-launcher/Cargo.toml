@@ -14,6 +14,12 @@ dsh-home-paths = { path = "../../util/home-paths" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 semver = "1.0"
+sha2 = { workspace = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+aes = "0.8"
+url = "2"
 ureq = { version = "3.1", features = ["json"] }
 zsui = { path = "../../vendor/zsui", default-features = false, features = ["window", "button", "icon", "label", "toggle"] }
 

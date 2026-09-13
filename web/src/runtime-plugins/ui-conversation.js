@@ -5708,6 +5708,18 @@ window.__ModuleLoader__.load({
 		};
 		//#endregion
 		//#region lib/types/client/chat/ChatNodeSeat.js
+		function isImageTool(node) {const root=node?.data?.root;return node?.kind==="tool-call"&&(root?.name==="generate_image"||root?.call?.name==="generate_image"||root?.meta?.kind==="image-generation");}
+		function GeneratedImageTool({root,loadImage,sessionId,onEditSubmitted,t}) {
+			const h=react.createElement,running=!("kind" in root);let args={};try{const raw=root.argsRaw??root.call?.argsRaw;args=typeof raw==="string"?JSON.parse(raw):raw||{}}catch{}
+			const edited=root.meta?.edited||args.reference_images?.length>0,status=t(root.isError?"image.failed":running?(edited?"image.editing":"image.running"):"image.done"),prompt=root.meta?.prompt||args.prompt||"";
+			const message=root.error?.message||(Array.isArray(root.content)?root.content.filter(v=>v.type==="text").map(v=>v.text).join("\n"):"");
+			return h("section",{"data-image-tool":root.callId,"aria-label":status,style:{width:"100%",minWidth:0,boxSizing:"border-box",margin:"4px 0"}},
+				h("div",{role:"status","aria-live":"polite",style:{display:"flex",gap:8,alignItems:"center",fontSize:14,color:root.isError?"var(--dsw-alias-state-error-primary)":"var(--dsw-alias-label-secondary)"}},
+					h("svg",{viewBox:"0 0 24 24",width:20,height:20,fill:"none",stroke:"currentColor",strokeWidth:1.6,"aria-hidden":true,style:{flexShrink:0}},h("rect",{x:3,y:3,width:18,height:18,rx:4}),h("circle",{cx:9,cy:9,r:2}),h("path",{d:"M3 17l5-5 4 4 3-3 6 5"})),h("span",{className:running?"R15qIq_turnStatus":undefined},status)),
+				prompt&&h("details",{style:{fontSize:12,color:"var(--dsw-alias-label-tertiary)",marginTop:6}},h("summary",{style:{cursor:"pointer"}},t("image.description")),h("p",{style:{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}},prompt)),
+				root.isError&&h("p",{role:"alert",style:{fontSize:13,color:"var(--dsw-alias-state-error-primary)",whiteSpace:"pre-wrap",overflowWrap:"anywhere"}},message||status),
+				!running&&!root.isError&&Array.isArray(root.meta?.images)&&root.meta.images.slice(0,4).map((block,index)=>block.type==="image"&&block.attachment?.attachmentId?h(GeneratedImageCard,{key:`${block.attachment.attachmentId}:${index}`,attachment:block.attachment,loadImage,sessionId,onEditSubmitted,t}):null));
+		}
 		function GeneratedImageCard({attachment,loadImage,sessionId,onEditSubmitted,t}) {
 			const [url,setUrl]=react.useState(""),[error,setError]=react.useState(""),[preview,setPreview]=react.useState(false),[editing,setEditing]=react.useState(false),[instruction,setInstruction]=react.useState(""),[sending,setSending]=react.useState(false);
 			const requestId=react.useRef(null),alive=react.useRef(true),element=react.useRef(null),[nearby,setNearby]=react.useState(typeof IntersectionObserver==="undefined");
@@ -5718,9 +5730,9 @@ window.__ModuleLoader__.load({
 				try{const rpcId=`image-edit-${Date.now()}-${Math.random()}`,payload={sessionId,mode:"queue",requestId:requestId.current,clientTimeZone:Intl.DateTimeFormat().resolvedOptions().timeZone,content:[{type:"text",text:`${instruction.trim()}\n\n${t("image.editReference")}: ${attachment.name||attachment.attachmentId}`} ]};const response=await fetch("/api/session.prompt",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({type:"client-request",rpcId,method:"session.prompt",payload})});const result=await response.json();if(!response.ok||result.rpcId!==rpcId||!result.result?.ok||result.result.value?.accepted!==true)throw new Error(result.result?.error?.message||`HTTP ${response.status}`);if(alive.current){setEditing(false);setInstruction("");requestId.current=null;Promise.resolve(onEditSubmitted?.()).catch(error=>{if(alive.current)setError(String(error.message||error))})}}
 				catch(error){if(alive.current)setError(String(error.message||error))}finally{if(alive.current)setSending(false)}
 			};
-			return react.createElement("figure",{ref:element,style:{margin:"12px 0",maxWidth:480},"data-generated-image":attachment.attachmentId},
+			return react.createElement("figure",{ref:element,style:{margin:"12px 0",width:"100%",maxWidth:Math.min(480,420*(attachment.width||1)/(attachment.height||1)),minWidth:0,boxSizing:"border-box"},"data-generated-image":attachment.attachmentId},
 				react.createElement("style",null,"[data-generated-image]{font-size:13px;color:var(--dsw-alias-label-secondary)}[data-generated-image] button,[data-generated-image] a{font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer}[data-generated-image] figcaption{flex-wrap:wrap}[data-generated-image] figcaption button,[data-generated-image] figcaption a,[data-generated-image]>div>button{box-sizing:border-box;display:inline-flex;align-items:center;min-height:32px;padding:5px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:16px;background:transparent;text-decoration:none}[data-generated-image] button:hover:not(:disabled),[data-generated-image] a:hover{background:var(--dsw-alias-interactive-bg-hover)}[data-generated-image] button:disabled{opacity:.45;cursor:default}[data-generated-image] textarea{box-sizing:border-box;resize:vertical;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit}[data-generated-image] :focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}[data-generated-image] [role=alert]{color:var(--dsw-alias-state-error-primary)}"),
-				react.createElement("button",{type:"button",disabled:!url,onClick:()=>setPreview(true),"aria-label":t("image.previewGenerated"),style:{display:"block",padding:0,border:"1px solid var(--dsw-alias-border-l2)",borderRadius:10,overflow:"hidden",width:"100%",aspectRatio:`${attachment.width||1}/${attachment.height||1}`,maxHeight:420,background:"transparent"}},url?react.createElement("img",{src:url,alt:attachment.name||t("image.generated"),width:attachment.width,height:attachment.height,style:{width:"100%",height:"100%",objectFit:"contain"}}):react.createElement("span",null,t("image.loading"))),
+				react.createElement("button",{type:"button",disabled:!url,onClick:()=>setPreview(true),"aria-label":t("image.previewGenerated"),style:{display:"block",padding:0,border:"1px solid var(--dsw-alias-border-l2)",borderRadius:10,overflow:"hidden",width:"100%",aspectRatio:`${attachment.width||1}/${attachment.height||1}`,maxHeight:420,background:"transparent"}},url?react.createElement("img",{src:url,alt:attachment.name||t("image.generated"),width:attachment.width,height:attachment.height,style:{display:"block",width:"100%",height:"100%",objectFit:"contain"}}):react.createElement("span",null,t("image.loading"))),
 				react.createElement("figcaption",{style:{display:"flex",gap:14,alignItems:"center",marginTop:8}},react.createElement("span",null,`${attachment.width} × ${attachment.height}`),url&&react.createElement("a",{href:url,download:attachment.name||"generated.png"},t("image.downloadGenerated")),react.createElement("button",{type:"button",onClick:()=>setEditing(!editing),disabled:sending},t("image.editGenerated"))),
 				editing&&react.createElement("div",null,react.createElement("textarea",{"aria-label":t("image.editInstruction"),value:instruction,onChange:event=>{setInstruction(event.target.value);requestId.current=null},style:{width:"100%",minHeight:72,marginTop:8},placeholder:t("image.editInstruction")}),react.createElement("button",{type:"button",disabled:sending||!instruction.trim(),onClick:()=>void submit()},t("image.submitEdit"))),
 				error&&react.createElement("p",{role:"alert"},error),preview&&url&&react.createElement(_deepseek_ai_dsh_client_ui_attachment.ImageLightbox,{src:url,alt:attachment.name||t("image.generated"),labels:lightboxLabels(t),onClose:()=>setPreview(false)}));
@@ -5757,7 +5769,7 @@ window.__ModuleLoader__.load({
 				"data-chat-anchor-key": routedNode.key,
 				"data-chat-flow-key": routedNode.key,
 				"data-chat-flow-kind": routedNode.kind,
-				children: react.createElement(react.Fragment,null,renderSlot("conversation.chat.node", routedOwner, {
+				children: isImageTool(routedNode) ? react.createElement(GeneratedImageTool,{root:routedNode.data.root,loadImage,sessionId,onEditSubmitted,t}) : renderSlot("conversation.chat.node", routedOwner, {
 					entryKey: routedNode.kind,
 					hookContext: nodeKey,
 					fallback: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.JsonBlock, {
@@ -5765,7 +5777,7 @@ window.__ModuleLoader__.load({
 						payload: routedNode.data,
 						truncatedLabel: (total) => t("json.truncated", { total })
 					})
-				}),routedNode.kind==="tool-call"&&routedNode.data?.root?.meta?.kind==="image-generation"&&!routedNode.data.root.isError&&Array.isArray(routedNode.data.root.meta.images)&&routedNode.data.root.meta.images.slice(0,4).map((block,index)=>block.type==="image"&&block.attachment?.attachmentId?react.createElement(GeneratedImageCard,{key:`${block.attachment.attachmentId}:${index}`,attachment:block.attachment,loadImage,sessionId,onEditSubmitted,t}):null))
+				})
 			});
 		});
 		//#endregion
@@ -6147,7 +6159,7 @@ window.__ModuleLoader__.load({
 								renderSlot,
 								t
 							}),
-							running && (0, react_jsx_runtime.jsx)(TurnStatus, {
+							running && !runningCalls.some(call=>(call.name??call.call?.name)==="generate_image") && (0, react_jsx_runtime.jsx)(TurnStatus, {
 								startTime: runningTurnStart,
 					toolActive: runningCalls.length > 0,
 					toolName: runningCalls[0]?.name ?? runningCalls[0]?.toolName ?? runningCalls[0]?.call?.name ?? runningCalls[0]?.call?.toolName,
@@ -6499,7 +6511,7 @@ window.__ModuleLoader__.load({
 			"image.scrollLeft": "向左滚动图片",
 			"image.scrollRight": "向右滚动图片",
 			"image.original": "原图",
-			"image.generated":"生成图片","image.previewGenerated":"放大预览生成图片","image.downloadGenerated":"下载原图","image.editGenerated":"继续编辑","image.editInstruction":"描述希望如何修改这张图片","image.submitEdit":"发送修改要求","image.editReference":"请使用生图工具编辑这张参考图片",
+			"image.running":"正在生成图片","image.editing":"正在编辑图片","image.done":"图片已生成","image.failed":"图片生成失败","image.description":"查看图片描述","image.generated":"生成图片","image.previewGenerated":"放大预览生成图片","image.downloadGenerated":"下载原图","image.editGenerated":"继续编辑","image.editInstruction":"描述希望如何修改这张图片","image.submitEdit":"发送修改要求","image.editReference":"请使用生图工具编辑这张参考图片",
 			"image.label": "图片",
 			"image.loadFailed": "图片加载失败，点击重试",
 			"image.loading": "图片加载中…",
@@ -6758,7 +6770,7 @@ window.__ModuleLoader__.load({
 			"image.scrollLeft": "Scroll images left",
 			"image.scrollRight": "Scroll images right",
 			"image.original": "Original image",
-			"image.generated":"Generated image","image.previewGenerated":"Preview generated image","image.downloadGenerated":"Download original","image.editGenerated":"Edit image","image.editInstruction":"Describe how to change this image","image.submitEdit":"Send edit request","image.editReference":"Use the image generation tool to edit this reference image",
+			"image.running":"Generating image","image.editing":"Editing image","image.done":"Image generated","image.failed":"Image generation failed","image.description":"View image prompt","image.generated":"Generated image","image.previewGenerated":"Preview generated image","image.downloadGenerated":"Download original","image.editGenerated":"Edit image","image.editInstruction":"Describe how to change this image","image.submitEdit":"Send edit request","image.editReference":"Use the image generation tool to edit this reference image",
 			"image.label": "Image",
 			"image.loadFailed": "Image failed to load; click to retry",
 			"image.loading": "Loading image…",

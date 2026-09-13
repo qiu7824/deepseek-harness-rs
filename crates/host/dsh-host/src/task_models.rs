@@ -58,18 +58,62 @@ impl TaskModels {
         service.register_tool()?;
         Ok(service)
     }
-    pub fn route(&self, role: &str) -> Result<Value, String> {
+    pub async fn route(
+        &self,
+        role: &str,
+        execution: &dsh_tools::ToolExecution,
+    ) -> Result<Value, String> {
         if !ROLES.contains(&role) {
             return Err("未知任务用途".into());
         }
         let value = (self.scope.get)().to_json().ok_or("任务模型配置无效")?;
-        let route = value[role].clone();
-        if ["provider", "model"]
-            .iter()
-            .any(|key| route[*key].as_str().is_none_or(|v| v.trim().is_empty()))
-        {
-            return Err(format!("请在模型设置的任务分工中选择{role}模型"));
-        }
+        let agent = execution.agent.as_ref().ok_or("需要当前会话")?;
+        let selected = agent
+            .ctx()
+            .get_typed::<Arc<parking_lot::Mutex<dsh_agent::ModelSelectionRef>>>(
+                &dsh_agent::model_selection_service_name(agent.ctx()),
+                false,
+            )
+            .and_then(|selection| {
+                let state = selection.lock();
+                state.assembled.clone().or_else(|| state.resolved_current())
+            });
+        let defaults = self
+            .settings
+            .describe(Default::default())
+            .into_iter()
+            .find(|s| s.ns.as_str() == "agent-default-model")
+            .and_then(|s| s.value.to_json())
+            .unwrap_or(json!({}));
+        let current_provider = selected
+            .as_ref()
+            .map(|s| s.provider.as_str())
+            .or(agent.options().provider.as_deref())
+            .or(defaults["provider"].as_str())
+            .ok_or("当前会话未选择模型连接")?;
+        let current_model = selected
+            .as_ref()
+            .map(|s| s.model.as_str())
+            .or(agent.options().model.as_deref())
+            .or(defaults["model"].as_str())
+            .ok_or("当前会话未选择模型")?;
+        let configured = &value[role];
+        let provider = configured["provider"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(current_provider);
+        let models = self
+            .llm
+            .list_models(provider)
+            .await
+            .map_err(|e| e.to_string())?;
+        let route = resolve_route(
+            role,
+            configured,
+            current_provider,
+            current_model,
+            &models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        )?;
         Ok(route)
     }
     async fn snapshot(&self) -> Result<Value, String> {
@@ -146,9 +190,6 @@ impl TaskModels {
                                     if let Some(route) = routes.get(*role) {
                                         let p = route["provider"].as_str().unwrap_or("");
                                         let m = route["model"].as_str().unwrap_or("");
-                                        if p.is_empty() != m.is_empty() {
-                                            return Err(format!("{role}必须同时选择连接和模型"));
-                                        }
                                         if !p.is_empty()
                                             && !service
                                                 .llm
@@ -158,7 +199,7 @@ impl TaskModels {
                                         {
                                             return Err(format!("模型连接不可用：{p}"));
                                         }
-                                        if *role != "image" && !p.is_empty() {
+                                        if *role != "image" && !p.is_empty() && !m.is_empty() {
                                             if image_only(m) {
                                                 return Err(format!("{role}不能使用生图专用模型"));
                                             }
@@ -215,11 +256,11 @@ impl TaskModels {
             .get_typed::<Arc<ToolRuntime>>("tools", false)
             .ok_or("缺少工具运行时")?;
         let service = self.clone();
-        tools.register(&self.ctx,ToolDefinition{name:"consult_model".into(),description:"Consult the separately configured diagnose, optimize, or vision model. Supply the evidence and question; this consultation returns analysis, does not edit files, and uses the existing provider account. Reference images may be session attachment IDs or workspace image paths. Use vision when the main model cannot inspect an image.".into(),
+        tools.register(&self.ctx,ToolDefinition{name:"consult_model".into(),description:"Consult an optionally assigned diagnose, optimize, or vision model. Use dedicated consultation when configured or explicitly requested; otherwise handle the task directly with the current model. Supply the evidence and question; this consultation returns analysis, does not edit files, and uses the existing provider account. Reference images may be session attachment IDs or workspace image paths. Use vision when the main model cannot inspect an image.".into(),
             parameters:json!({"type":"object","additionalProperties":false,"properties":{"task":{"type":"string","enum":["diagnose","optimize","vision"]},"prompt":{"type":"string","maxLength":64000},"reference_images":{"type":"array","maxItems":4,"items":{"type":"string"}}},"required":["task","prompt"]}),
             output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,v|Ok(vec![ContentBlock::Text{text:v.to_string()}])),presentation_meta:None},timeout_ms:Some(300000),is_concurrency_safe:Some(Arc::new(|_|true)),finalize_content:None,present_call:None,present_result:None,
             execute:Arc::new(move|args,run|{let service=service.clone();let args=args.clone();let execution=run.execution.clone();Box::pin(async move{
-                let role=args["task"].as_str().unwrap_or("");let route=service.route(role).map_err(ToolBodyError::plain)?;
+                let role=args["task"].as_str().unwrap_or("");let route=service.route(role,&execution).await.map_err(ToolBodyError::plain)?;
                 let signal=execution.signal.lock().clone();let agent=execution.agent.as_ref().ok_or_else(||ToolBodyError::plain("需要当前会话"))?;
                 let mut content=vec![ContentBlock::Text{text:args["prompt"].as_str().unwrap_or("").into()}];
                 let images=super::image_generation::read_references(&service.ctx,&execution,&args["reference_images"]).await.map_err(ToolBodyError::plain)?;
@@ -241,4 +282,75 @@ impl TaskModels {
 
 fn image_only(model: &str) -> bool {
     model.starts_with("gpt-image") || model.starts_with("dall-e")
+}
+
+fn resolve_route(
+    role: &str,
+    configured: &Value,
+    current_provider: &str,
+    current_model: &str,
+    models: &[&str],
+) -> Result<Value, String> {
+    let provider = configured["provider"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(current_provider);
+    let model = configured["model"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            if role == "image" {
+                if image_only(current_model) && provider == current_provider {
+                    Some(current_model)
+                } else {
+                    models
+                        .iter()
+                        .copied()
+                        .find(|m| image_only(m))
+                        .or(Some("gpt-image-2.5-sunburst"))
+                }
+            } else if provider == current_provider {
+                Some(current_model)
+            } else {
+                models.iter().copied().find(|m| !image_only(m))
+            }
+        })
+        .ok_or("所选连接没有可用模型")?;
+    Ok(json!({"provider":provider,"model":model,"reasoningEffort":configured["reasoningEffort"]}))
+}
+
+#[cfg(test)]
+mod optional_route_tests {
+    use super::*;
+    #[test]
+    fn unassigned_tasks_use_current_connection() {
+        let r = resolve_route("image", &json!({}), "openai-codex", "gpt-main", &[]).unwrap();
+        assert_eq!(r["provider"], "openai-codex");
+        assert_eq!(r["model"], "gpt-image-2.5-sunburst");
+        let r = resolve_route("diagnose", &json!({}), "current", "main", &[]).unwrap();
+        assert_eq!(r["model"], "main");
+    }
+    #[test]
+    fn provider_and_model_overrides_are_independently_optional() {
+        let r = resolve_route(
+            "image",
+            &json!({"model":"gpt-image-2.5-flare"}),
+            "current",
+            "main",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(r["provider"], "current");
+        assert_eq!(r["model"], "gpt-image-2.5-flare");
+        let r = resolve_route(
+            "image",
+            &json!({"provider":"pictures"}),
+            "current",
+            "main",
+            &["gpt-image-2"],
+        )
+        .unwrap();
+        assert_eq!(r["provider"], "pictures");
+        assert_eq!(r["model"], "gpt-image-2");
+    }
 }

@@ -1,5 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod updater;
+
 use std::fs;
 use std::io;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -72,7 +74,7 @@ const LAUNCHER_ACTION_GAP: Dp = Dp::new(8.0);
 /// once title-bar chrome is subtracted, so the height must fit ~470px of
 /// content plus decorations.
 const LAUNCHER_WINDOW_WIDTH: u32 = 680;
-const LAUNCHER_WINDOW_HEIGHT: u32 = 520;
+const LAUNCHER_WINDOW_HEIGHT: u32 = 600;
 const LAUNCHER_WINDOW_MIN_WIDTH: u32 = 600;
 const LAUNCHER_WINDOW_MIN_HEIGHT: u32 = 470;
 
@@ -1002,7 +1004,9 @@ fn acquire_single_instance() -> io::Result<Option<SingleInstanceGuard>> {
     }
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
         unsafe { CloseHandle(handle) };
-        focus_existing_launcher();
+        if std::env::args_os().any(|arg| arg == "--control") {
+            focus_existing_launcher();
+        }
         Ok(None)
     } else {
         Ok(Some(SingleInstanceGuard(handle)))
@@ -1085,6 +1089,12 @@ impl ServiceController {
                 return None;
             }
         };
+        if !same_executable(&state.executable, &self.executable)
+            || state.port != DEFAULT_PORT
+            || !same_executable(&state.home, &active_home(&self.root))
+        {
+            return None;
+        }
         match inspect_process(state.pid) {
             Ok(process) if state.matches_process(&process) => Some((state, process)),
             Ok(_) | Err(_) => {
@@ -1224,10 +1234,50 @@ impl ServiceController {
     }
 
     fn open_web(&mut self) -> Result<(), String> {
-        if !port_is_open(DEFAULT_PORT) {
-            self.start()?;
+        self.start()?;
+        for _ in 0..80 {
+            if port_is_open(DEFAULT_PORT) {
+                return open_target(ADDRESS, self.copy);
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        open_target(ADDRESS, self.copy)
+        Err(self.copy.start_failed.into())
+    }
+
+    fn ensure_update_idle(&mut self) -> Result<(), String> {
+        match self.ownership() {
+            ServiceOwnership::Stopped => return Ok(()),
+            ServiceOwnership::ForeignPort => return Err(self.copy.foreign_port.into()),
+            ServiceOwnership::ManagedRunning => {}
+        }
+        let request = serde_json::json!({"type":"client-request","rpcId":"launcher-update","method":"session.list","payload":{}});
+        let agent = ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .timeout_global(Some(Duration::from_secs(8)))
+                .build(),
+        );
+        let mut response = agent
+            .post("http://127.0.0.1:58080/api/session.list")
+            .header("Origin", "http://127.0.0.1:58080")
+            .header("Sec-Fetch-Site", "same-origin")
+            .send_json(request)
+            .map_err(|e| e.to_string())?;
+        let value: serde_json::Value = response
+            .body_mut()
+            .with_config()
+            .limit(8 * 1024 * 1024)
+            .read_json()
+            .map_err(|e| e.to_string())?;
+        if value["result"]["ok"] != true {
+            return Err("无法确认会话状态，安装包已保留".into());
+        }
+        let rows = value["result"]["value"]["items"]
+            .as_array()
+            .ok_or("会话状态无效")?;
+        if rows.iter().any(|r| r["running"] == true) {
+            return Err("会话仍在运行，请完成或停止任务后再次安装；下载文件已保留".into());
+        }
+        Ok(())
     }
 
     fn set_autostart(&self, enabled: bool) -> Result<String, String> {
@@ -1268,6 +1318,7 @@ impl ServiceController {
             }
             LauncherCommand::SetAutostart(enabled) => self.set_autostart(enabled),
             LauncherCommand::CheckUpdate => self.check_update(),
+            LauncherCommand::InstallUpdate => Err("请先检查更新".into()),
             LauncherCommand::Refresh => Ok(match self.ownership() {
                 ServiceOwnership::Stopped => self.copy.stopped,
                 ServiceOwnership::ManagedRunning => self.copy.running,
@@ -1298,6 +1349,7 @@ enum LauncherCommand {
     OpenWeb,
     SetAutostart(bool),
     CheckUpdate,
+    InstallUpdate,
     Refresh,
 }
 
@@ -1308,6 +1360,8 @@ enum Message {
     OpenWeb,
     SetAutostart(bool),
     CheckUpdate,
+    InstallUpdate,
+    SetMirror(bool),
     Refresh,
 }
 
@@ -1359,6 +1413,8 @@ struct LauncherJobs {
     busy: Arc<AtomicBool>,
     invalidation: UiInvalidationHandle,
     update_url: Option<String>,
+    offer: Arc<Mutex<Option<updater::Offer>>>,
+    mirror: Arc<AtomicBool>,
 }
 
 impl LauncherJobs {
@@ -1377,6 +1433,14 @@ impl LauncherJobs {
             .map(|mut controller| controller.ownership())
             .unwrap_or(ServiceOwnership::ForeignPort);
         let status = ownership_label(copy, ownership).to_string();
+        let mirror_file = controller
+            .lock()
+            .ok()
+            .map(|c| active_home(&c.root).join("launcher/update-settings.json"));
+        let mirror = mirror_file
+            .and_then(|p| fs::read(p).ok())
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .is_some_and(|v| v["mirror"] == true);
         Self {
             controller,
             copy,
@@ -1385,6 +1449,8 @@ impl LauncherJobs {
             busy: Arc::new(AtomicBool::new(false)),
             invalidation,
             update_url,
+            offer: Arc::new(Mutex::new(None)),
+            mirror: Arc::new(AtomicBool::new(mirror)),
         }
     }
 
@@ -1430,7 +1496,33 @@ impl LauncherJobs {
                 .lock()
                 .map_err(|_| jobs.copy.lock_error.to_string())
                 .and_then(|mut controller| match command {
-                    LauncherCommand::CheckUpdate => jobs.jobs_update_status(),
+                    LauncherCommand::CheckUpdate => jobs.jobs_update_status_at(&controller.root),
+                    LauncherCommand::InstallUpdate => {
+                        let offer = jobs
+                            .offer
+                            .lock()
+                            .map_err(|_| "更新状态不可用".to_string())?
+                            .clone()
+                            .ok_or("请先检查更新".to_string())?;
+                        let cache = active_home(&controller.root).join("launcher/updates");
+                        let file = updater::download(
+                            &offer,
+                            &cache,
+                            jobs.mirror.load(Ordering::Acquire),
+                            |text| {
+                                jobs.set_status(text);
+                                jobs.invalidation.request_rebuild();
+                            },
+                        )?;
+                        controller.ensure_update_idle()?;
+                        if offer.installation.distribution == updater::Distribution::Portable {
+                            controller.stop()?;
+                        }
+                        if updater::launch_install(&offer, &file, &controller.root)? {
+                            std::process::exit(0);
+                        }
+                        Ok("下载和校验完成，已打开与当前版本类型一致的安装程序".into())
+                    }
                     _ => controller.execute(command),
                 });
             jobs.refresh_snapshot();
@@ -1450,6 +1542,46 @@ impl LauncherJobs {
         match self.update_url.clone() {
             Some(url) => update_status_from(&url, self.copy),
             None => update_status(self.copy),
+        }
+    }
+
+    fn jobs_update_status_at(&self, root: &Path) -> Result<String, String> {
+        if self.update_url.is_some() {
+            return self.jobs_update_status();
+        }
+        *self.offer.lock().map_err(|_| "更新状态不可用")? = None;
+        let offer = updater::check(root)?;
+        let status = match &offer {
+            Some(offer) => format!(
+                "{} {} · {} {} · {} → {}",
+                self.copy.update_available,
+                offer.release.tag_name,
+                offer.installation.platform,
+                offer.installation.arch,
+                PRODUCT_VERSION,
+                offer.asset.name
+            ),
+            None => format!(
+                "{}（{} {PRODUCT_VERSION}）",
+                self.copy.update_current, self.copy.version
+            ),
+        };
+        *self.offer.lock().map_err(|_| "更新状态不可用")? = offer;
+        Ok(status)
+    }
+
+    fn set_mirror(&self, enabled: bool) {
+        let result = (|| -> Result<(), String> {
+            let root = self.controller.lock().map_err(|_| "启动器状态不可用")?;
+            let file = active_home(&root.root).join("launcher/update-settings.json");
+            fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
+            fs::write(file, serde_json::json!({"mirror":enabled}).to_string())
+                .map_err(|e| e.to_string())?;
+            self.mirror.store(enabled, Ordering::Release);
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.set_status(error);
         }
     }
 }
@@ -1612,30 +1744,55 @@ fn view(state: &State) -> ViewNode<Message> {
         ),
         section(
             state.copy.preferences,
-            [row([
-                column([
+            [
+                row([
+                    column([
+                        styled_text(
+                            state.copy.autostart,
+                            text_style(TextRole::Body, ColorRole::PrimaryText, TextWeight::Medium),
+                        ),
+                        styled_text(
+                            format!("{} {PRODUCT_VERSION}", state.copy.version),
+                            text_style(
+                                TextRole::Caption,
+                                ColorRole::SecondaryText,
+                                TextWeight::Regular,
+                            ),
+                        ),
+                    ])
+                    .gap(Dp::new(2.0).into())
+                    .flex(1.0),
+                    row([
+                        toggle(state.autostart).on_toggle(Message::SetAutostart),
+                        button(state.copy.check_update).on_click(Message::CheckUpdate),
+                        button(if state.copy.check_update == "Check for updates" {
+                            "Download and install"
+                        } else {
+                            "下载并安装"
+                        })
+                        .on_click(Message::InstallUpdate)
+                        .enabled(!busy && state.offer.lock().is_ok_and(|offer| offer.is_some())),
+                    ])
+                    .gap(LAUNCHER_ACTION_GAP.into()),
+                ])
+                .gap(Dp::new(12.0).into()),
+                row([
                     styled_text(
-                        state.copy.autostart,
-                        text_style(TextRole::Body, ColorRole::PrimaryText, TextWeight::Medium),
-                    ),
-                    styled_text(
-                        format!("{} {PRODUCT_VERSION}", state.copy.version),
+                        if state.copy.check_update == "Check for updates" {
+                            "Use Lanzou download mirror"
+                        } else {
+                            "使用蓝奏下载线路"
+                        },
                         text_style(
                             TextRole::Caption,
                             ColorRole::SecondaryText,
                             TextWeight::Regular,
                         ),
                     ),
+                    toggle(state.mirror.load(Ordering::Acquire)).on_toggle(Message::SetMirror),
                 ])
-                .gap(Dp::new(2.0).into())
-                .flex(1.0),
-                row([
-                    toggle(state.autostart).on_toggle(Message::SetAutostart),
-                    button(state.copy.check_update).on_click(Message::CheckUpdate),
-                ])
-                .gap(LAUNCHER_ACTION_GAP.into()),
-            ])
-            .gap(Dp::new(12.0).into())],
+                .gap(Dp::new(12.0).into()),
+            ],
         ),
         section(
             state.copy.last_action,
@@ -1667,6 +1824,10 @@ fn update(state: &mut State, message: Message, _cx: &mut AppCx) {
         Message::OpenWeb => state.dispatch(LauncherCommand::OpenWeb),
         Message::SetAutostart(enabled) => state.run(LauncherCommand::SetAutostart(enabled)),
         Message::CheckUpdate => state.dispatch(LauncherCommand::CheckUpdate),
+        Message::InstallUpdate => state.dispatch(LauncherCommand::InstallUpdate),
+        Message::SetMirror(value) => {
+            state.set_mirror(value);
+        }
         Message::Refresh => {
             state.dispatch(LauncherCommand::Refresh);
         }
@@ -1728,16 +1889,36 @@ fn open_target(target: &str, copy: Copy) -> Result<(), String> {
 }
 
 fn main() -> Result<(), zsui::ZsuiError> {
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments.first().is_some_and(|a| a == "--apply-update") {
+        return updater::apply(Path::new(
+            arguments
+                .get(1)
+                .ok_or_else(|| zsui::ZsuiError::host("update", "missing plan"))?,
+        ))
+        .map_err(|e| zsui::ZsuiError::host("update", e));
+    }
+    let control = arguments.iter().any(|arg| arg == "--control");
+    let background = arguments.iter().any(|arg| arg == "--background");
     let Some(_single_instance) = acquire_single_instance()
         .map_err(|error| zsui::ZsuiError::host("launcher_single_instance", error.to_string()))?
     else {
+        if !control {
+            let mut controller = ServiceController::discover()
+                .map_err(|e| zsui::ZsuiError::host("startup", e.to_string()))?;
+            let result = if background {
+                controller.start()
+            } else {
+                controller.open_web()
+            };
+            result.map_err(|e| zsui::ZsuiError::host("startup", e))?;
+        }
         return Ok(());
     };
-    let background = std::env::args_os().any(|argument| argument == "--background");
     #[cfg(target_os = "linux")]
     let initial_window_visible = true;
     #[cfg(not(target_os = "linux"))]
-    let initial_window_visible = !background;
+    let initial_window_visible = control;
     let controller = Arc::new(Mutex::new(ServiceController::discover().unwrap_or_else(
         |_error| ServiceController {
             root: Path::new(".").to_path_buf(),
@@ -1749,6 +1930,25 @@ fn main() -> Result<(), zsui::ZsuiError> {
     let copy = localized_copy();
     let invalidation = UiInvalidationHandle::new();
     let jobs = LauncherJobs::new(Arc::clone(&controller), invalidation.clone());
+    #[cfg(target_os = "linux")]
+    if !control {
+        let mut service = controller
+            .lock()
+            .map_err(|_| zsui::ZsuiError::host("startup", "state unavailable"))?;
+        return (if background {
+            service.start()
+        } else {
+            service.open_web()
+        })
+        .map_err(|e| zsui::ZsuiError::host("startup", e));
+    }
+    if !control {
+        jobs.dispatch(if background {
+            LauncherCommand::Start
+        } else {
+            LauncherCommand::OpenWeb
+        });
+    }
 
     let icon_path = launcher_icon_path().to_string_lossy().into_owned();
     let tray_ownership = jobs.ownership.get();
@@ -1832,6 +2032,10 @@ fn main() -> Result<(), zsui::ZsuiError> {
                             job_dispatcher.dispatch(slow);
                         }
                     }
+                }
+                #[cfg(windows)]
+                if id == TRAY_CHECK_UPDATE_COMMAND {
+                    focus_existing_launcher();
                 }
                 Ok(Vec::new())
             }

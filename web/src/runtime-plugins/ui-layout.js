@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
         :root{--dsh-control-icon:18px;--dsh-control-hit:34px}
         .dshSidebarAction,.Uzx--a_add,.tMJkdG_trigger,.oHd92q_trigger,.YysEUW_trigger,.fnCloG_action,.EKSdBa_close,._7h7_Oq_close{min-height:var(--dsh-control-hit);min-width:var(--dsh-control-hit);border-radius:8px}
         .dshSidebarAction svg,.Uzx--a_add svg,.Uzx--a_primary svg,.tMJkdG_trigger svg,.oHd92q_trigger svg,.YysEUW_trigger svg,.fnCloG_action svg,.EKSdBa_close svg,._7h7_Oq_close svg,._7h7_Oq_navIcon{width:var(--dsh-control-icon)!important;height:var(--dsh-control-icon)!important;flex-shrink:0}
-        .dshSidebarAction{gap:8px}.dswSuiteToolbar button,.dswSuiteBar button{min-width:32px;min-height:32px;border-radius:8px}.dswSuiteToolbar button svg,.dswSuiteBar button svg{width:18px;height:18px}body .dbs-head>.dbs-icon{min-width:34px;min-height:34px;font-size:18px}
+        @media(min-width:769px){body ._7h7_Oq_panel._7h7_Oq_panel{width:min(1040px,calc(100vw - 48px));max-width:1040px}}.dshSidebarAction{gap:8px}.dswSuiteToolbar button,.dswSuiteBar button{min-width:32px;min-height:32px;border-radius:8px}.dswSuiteToolbar button svg,.dswSuiteBar button svg{width:18px;height:18px}body .dbs-head>.dbs-icon{min-width:34px;min-height:34px;font-size:18px}
         @media(pointer:coarse){:root{--dsh-control-icon:20px;--dsh-control-hit:42px}}
         `;
         if(typeof document!=="undefined"&&!document.querySelector("style[data-dsh-interaction-scale]")){const style=document.createElement("style");style.dataset.dshInteractionScale="";style.textContent=interactionScaleCss;document.head.appendChild(style);}

@@ -216,7 +216,7 @@ class LauncherReleaseContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            '#[cfg(not(target_os = "linux"))]\n    let initial_window_visible = !background;',
+            '#[cfg(not(target_os = "linux"))]\n    let initial_window_visible = control;',
             source,
         )
         self.assertIn(".visible(initial_window_visible)", source)
