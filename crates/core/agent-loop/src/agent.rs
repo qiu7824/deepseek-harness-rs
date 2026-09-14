@@ -545,6 +545,7 @@ impl ReactLoopAgent {
                         messages: claimed_for_payload.clone(),
                         turn,
                         step,
+                        signal: Arc::clone(&signal),
                     })
                 },
                 fallback,

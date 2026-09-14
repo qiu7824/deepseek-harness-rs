@@ -8,10 +8,10 @@ const context={react:React,fetch:async(url,options)=>{const body=JSON.parse(opti
 const root=Client.createRoot(document.querySelector('main')),t=key=>key;const button=label=>[...document.querySelectorAll('button')].find(node=>node.textContent===label);
 (async()=>{
  await React.act(()=>root.render(React.createElement(context.Panel,{t})));
- assert.equal(document.querySelectorAll('[data-task-role]').length,5);assert.equal(document.querySelectorAll('input[type=password]').length,0,'task roles reuse existing credentials');
+ assert.equal(document.querySelectorAll('[data-task-role]').length,6);assert.ok(document.querySelector('[data-task-role=search]'));assert.equal(document.querySelectorAll('input[type=password]').length,0,'task roles reuse existing credentials');
  const image=document.querySelector('[data-task-role=image] input');assert.equal(image.value,'gpt-image-2.5-sunburst');
  await React.act(()=>{Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(image,'gpt-image-2.5-flare');image.dispatchEvent(new window.Event('input',{bubbles:true}))});
  fail=true;await React.act(()=>button('taskSave').click());assert.match(document.querySelector('[role=alert]').textContent,/revision conflict/);assert.equal(image.value,'gpt-image-2.5-flare');
  fail=false;await React.act(()=>button('taskSave').click());assert.equal(writes.at(-1).revision,7);assert.equal(writes.at(-1).routes.image.provider,'existing');assert.equal(writes.at(-1).routes.image.model,'gpt-image-2.5-flare');assert.ok(!('main' in writes.at(-1)),'auxiliary assignment does not change main route');
- await React.act(()=>root.unmount());dom.window.close();console.log('PASS task model assignments: existing connections, five roles, no duplicate credentials, preserved drafts and revision writes');
+ await React.act(()=>root.unmount());dom.window.close();console.log('PASS task model assignments: existing connections, main and five optional roles, no duplicate credentials, preserved drafts and revision writes');
 })().catch(error=>{console.error(error);process.exitCode=1;dom.window.close()});

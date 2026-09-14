@@ -4,6 +4,32 @@ use dsh_llm::{ContentBlock, FinishReason, LlmFailure, StreamChunk, TokenUsage, c
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+fn provider_error_code(code: Option<&str>, message: &str) -> &'static str {
+    if matches!(
+        code,
+        Some("content_filter" | "content_policy_violation" | "safety_refusal")
+    ) {
+        return "CONTENT_FILTER";
+    }
+    let text = message.to_ascii_lowercase();
+    if matches!(
+        code,
+        Some(
+            "context_length_exceeded"
+                | "context_window_exceeded"
+                | "prompt_too_long"
+                | "CONTEXT_WINDOW_EXCEEDED"
+        )
+    ) || (text.contains("context")
+        && (text.contains("length") || text.contains("window"))
+        && (text.contains("exceed") || text.contains("too long") || text.contains("maximum")))
+    {
+        dsh_llm::CONTEXT_WINDOW_EXCEEDED_CODE
+    } else {
+        "PROVIDER_ERROR"
+    }
+}
+
 #[derive(Default)]
 struct Item {
     value: Value,
@@ -413,16 +439,7 @@ impl ResponsesTranslator {
                     .pointer("/error/code")
                     .or_else(|| event.get("code"))
                     .and_then(Value::as_str);
-                let code = if code.is_some_and(|code| {
-                    matches!(
-                        code,
-                        "content_filter" | "content_policy_violation" | "safety_refusal"
-                    )
-                }) {
-                    "CONTENT_FILTER"
-                } else {
-                    "PROVIDER_ERROR"
-                };
+                let code = provider_error_code(code, message);
                 out.extend(self.terminal(None, "failed", Some(failure(message, code))));
             }
             _ => {}
@@ -592,7 +609,15 @@ impl ResponsesTranslator {
                         .and_then(|response| response.pointer("/error/message"))
                         .and_then(Value::as_str)
                         .unwrap_or("Responses request did not complete"),
-                    "PROVIDER_ERROR",
+                    provider_error_code(
+                        response
+                            .and_then(|r| r.pointer("/error/code"))
+                            .and_then(Value::as_str),
+                        response
+                            .and_then(|r| r.pointer("/error/message"))
+                            .and_then(Value::as_str)
+                            .unwrap_or(""),
+                    ),
                 ),
             }
         } else if invalid_tool {

@@ -21,6 +21,8 @@ pub struct AdapterRequest {
     pub owner_id: Option<String>,
     /// Assigned by the Host transport, never deserialized from tool arguments.
     pub origin: ControlOrigin,
+    /// Canonical upload boundary supplied by the Host, never by model arguments.
+    pub workspace_root: Option<std::path::PathBuf>,
 }
 
 impl AdapterRequest {
@@ -42,6 +44,7 @@ impl AdapterRequest {
             arguments: arguments.clone(),
             owner_id: None,
             origin: ControlOrigin::Agent,
+            workspace_root: None,
         })
     }
 

@@ -1,5 +1,6 @@
 //! Anonymous, credential-free HTTP(S) retrieval restricted to public networks.
 
+use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,7 +10,9 @@ use dsh_web::{
     Cancelled, WebError, WebFetchBody, WebFetchProvider, WebFetchRequest, WebFetchResult,
 };
 use futures::StreamExt;
-use reqwest::header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, LOCATION, USER_AGENT};
+use reqwest::header::{
+    ACCEPT, ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, LOCATION, USER_AGENT,
+};
 use url::{Host, Url};
 
 pub const LOCAL_FETCH_PROVIDER_ID: &str = "http";
@@ -150,6 +153,7 @@ impl HttpFetchProvider {
         let request = client
             .get(url.clone())
             .header(USER_AGENT, &self.limits.user_agent)
+            .header(ACCEPT_ENCODING, "gzip, br, deflate")
             .header(
                 ACCEPT,
                 "text/html,application/xhtml+xml,text/*;q=0.9,application/json;q=0.8",
@@ -273,8 +277,32 @@ impl HttpFetchProvider {
                 .unwrap_or("text/plain")
                 .to_ascii_lowercase();
             let kind = classify_content_type(&content_type)?;
+            let charset = text_decoder(&content_type)?;
+            let encoding = response
+                .headers()
+                .get_all(CONTENT_ENCODING)
+                .iter()
+                .map(|value| {
+                    value.to_str().map(str::to_string).map_err(|_| {
+                        WebError::new(
+                            "WEB_UNSUPPORTED_ENCODING",
+                            "Invalid Content-Encoding header",
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join(",");
             let bytes = self.read_body(response, &cancelled).await?;
-            let mut content = String::from_utf8_lossy(&bytes).into_owned();
+            let decoded_limit = self.limits.max_response_bytes;
+            let decode_cancelled = cancelled.clone();
+            let bytes = tokio::task::spawn_blocking(move || {
+                decode_content(bytes, &encoding, decoded_limit, &decode_cancelled)
+            })
+            .await
+            .map_err(|error| {
+                WebError::new("WEB_DECODE_ERROR", format!("Web decoder failed: {error}"))
+            })??;
+            let mut content = charset.decode(&bytes).0.into_owned();
             let truncated = content.chars().count() > self.limits.max_body_chars;
             if truncated {
                 content = content.chars().take(self.limits.max_body_chars).collect();
@@ -292,6 +320,124 @@ impl HttpFetchProvider {
         }
         unreachable!("redirect loop is bounded")
     }
+}
+
+fn text_decoder(content_type: &str) -> Result<&'static encoding_rs::Encoding, WebError> {
+    let label = content_type.split(';').skip(1).find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        key.trim()
+            .eq_ignore_ascii_case("charset")
+            .then(|| value.trim().trim_matches(['\"', '\'']))
+    });
+    match label {
+        None => Ok(encoding_rs::UTF_8),
+        Some(label) => encoding_rs::Encoding::for_label(label.as_bytes()).ok_or_else(|| {
+            WebError::new(
+                "WEB_UNSUPPORTED_CHARSET",
+                "Unsupported web response charset",
+            )
+        }),
+    }
+}
+
+fn read_decoded(
+    mut reader: impl Read,
+    limit: usize,
+    cancelled: &Cancelled,
+) -> Result<Vec<u8>, WebError> {
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        if cancelled() {
+            return Err(WebError::new("WEB_ABORTED", "web fetch aborted"));
+        }
+        let count = reader.read(&mut buffer).map_err(|error| {
+            WebError::new(
+                "WEB_DECODE_ERROR",
+                format!("Invalid compressed web response: {error}"),
+            )
+        })?;
+        if count == 0 {
+            return Ok(output);
+        }
+        if output.len().saturating_add(count) > limit {
+            return Err(WebError::new(
+                "WEB_FETCH_TOO_LARGE",
+                format!("Decoded web response exceeds {limit} bytes"),
+            ));
+        }
+        output.extend_from_slice(&buffer[..count]);
+    }
+}
+
+fn decode_content(
+    mut bytes: Vec<u8>,
+    encoding: &str,
+    limit: usize,
+    cancelled: &Cancelled,
+) -> Result<Vec<u8>, WebError> {
+    let mut codings = encoding
+        .split(',')
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    // Some intermediaries omit Content-Encoding while retaining the gzip body.
+    if codings.is_empty() && bytes.starts_with(&[0x1f, 0x8b, 0x08]) {
+        codings.push("gzip".into());
+    }
+    if codings.len() > 4 {
+        return Err(WebError::new(
+            "WEB_UNSUPPORTED_ENCODING",
+            "Too many Content-Encoding layers",
+        ));
+    }
+    for coding in codings.iter().rev() {
+        bytes = match coding.as_str() {
+            "identity" => bytes,
+            "gzip" | "x-gzip" => read_decoded(
+                flate2::read::MultiGzDecoder::new(bytes.as_slice()),
+                limit,
+                cancelled,
+            )?,
+            "br" => read_decoded(
+                brotli::Decompressor::new(bytes.as_slice(), 4096),
+                limit,
+                cancelled,
+            )?,
+            "deflate" => match read_decoded(
+                flate2::read::ZlibDecoder::new(bytes.as_slice()),
+                limit,
+                cancelled,
+            ) {
+                Ok(decoded) => decoded,
+                Err(error) if error.code() == "WEB_DECODE_ERROR" => read_decoded(
+                    flate2::read::DeflateDecoder::new(bytes.as_slice()),
+                    limit,
+                    cancelled,
+                )?,
+                Err(error) => return Err(error),
+            },
+            _ => {
+                return Err(WebError::new(
+                    "WEB_UNSUPPORTED_ENCODING",
+                    format!(
+                        "Unsupported Content-Encoding: {}",
+                        coding.chars().take(80).collect::<String>()
+                    ),
+                ));
+            }
+        };
+    }
+    if bytes.len() > limit {
+        return Err(WebError::new(
+            "WEB_FETCH_TOO_LARGE",
+            "Decoded web response is too large",
+        ));
+    }
+    if cancelled() {
+        return Err(WebError::new("WEB_ABORTED", "web fetch aborted"));
+    }
+    Ok(bytes)
 }
 
 #[async_trait]
@@ -529,6 +675,103 @@ fn is_public_ipv6(ip: Ipv6Addr) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn compressed_html_is_decoded_before_text_projection() {
+        use std::io::Write;
+        let text = "<html><title>视频标题</title><body>正文</body></html>".as_bytes();
+        let never: Cancelled = Arc::new(|| false);
+        assert_eq!(
+            decode_content(gzip(text), "gzip", 1024, &never).unwrap(),
+            text
+        );
+        assert_eq!(decode_content(gzip(text), "", 1024, &never).unwrap(), text);
+        let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        zlib.write_all(text).unwrap();
+        assert_eq!(
+            decode_content(zlib.finish().unwrap(), "deflate", 1024, &never).unwrap(),
+            text
+        );
+        let mut raw =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        raw.write_all(text).unwrap();
+        assert_eq!(
+            decode_content(raw.finish().unwrap(), "deflate", 1024, &never).unwrap(),
+            text
+        );
+        let mut compressed = Vec::new();
+        {
+            let mut encoder = brotli::CompressorWriter::new(&mut compressed, 4096, 5, 22);
+            encoder.write_all(text).unwrap();
+        }
+        assert_eq!(
+            decode_content(compressed.clone(), "br", 1024, &never).unwrap(),
+            text
+        );
+        assert_eq!(
+            decode_content(gzip(&compressed), "br, gzip", 1024, &never).unwrap(),
+            text
+        );
+    }
+
+    #[test]
+    fn decompression_remains_bounded_and_cancellable() {
+        let compressed = gzip(&vec![b'a'; 100_000]);
+        let never: Cancelled = Arc::new(|| false);
+        assert!(compressed.len() < 1024);
+        assert_eq!(
+            decode_content(compressed.clone(), "gzip", 1024, &never)
+                .unwrap_err()
+                .code(),
+            "WEB_FETCH_TOO_LARGE"
+        );
+        let cancelled: Cancelled = Arc::new(|| true);
+        assert_eq!(
+            decode_content(compressed, "gzip", 200_000, &cancelled)
+                .unwrap_err()
+                .code(),
+            "WEB_ABORTED"
+        );
+        assert_eq!(
+            decode_content(b"bad".to_vec(), "gzip", 1024, &never)
+                .unwrap_err()
+                .code(),
+            "WEB_DECODE_ERROR"
+        );
+        assert_eq!(
+            decode_content(b"bad".to_vec(), "unknown", 1024, &never)
+                .unwrap_err()
+                .code(),
+            "WEB_UNSUPPORTED_ENCODING"
+        );
+    }
+
+    #[test]
+    fn declared_chinese_charset_is_decoded_instead_of_lossy_utf8() {
+        let text = "网页正文";
+        let encoded = encoding_rs::GBK.encode(text).0;
+        assert_eq!(
+            text_decoder("text/html; charset=\"GBK\"")
+                .unwrap()
+                .decode(&encoded)
+                .0,
+            text
+        );
+        assert_eq!(text_decoder("text/plain").unwrap(), encoding_rs::UTF_8);
+        assert_eq!(
+            text_decoder("text/html; charset=unsupported")
+                .unwrap_err()
+                .code(),
+            "WEB_UNSUPPORTED_CHARSET"
+        );
+    }
 
     #[test]
     fn rejects_non_public_ip_ranges() {

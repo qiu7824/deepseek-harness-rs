@@ -6,49 +6,7 @@ impl CompactionEngine for BasicCompactionEngine {
         trigger: CompactionTrigger,
         signal: Option<&CompactionAbort>,
     ) -> Result<Option<CompactionResult>, ManualCompactionError> {
-        let header = fold_request_header(&agent.session.events(), None);
-        let provider = header
-            .as_ref()
-            .map(|header| header.config.provider.clone())
-            .filter(|value| !value.is_empty())
-            .or_else(|| agent.provider.clone());
-        let model = header
-            .as_ref()
-            .map(|header| header.config.model.clone())
-            .filter(|value| !value.is_empty())
-            .or_else(|| agent.model.clone());
-        let (Some(provider), Some(model)) = (provider, model) else {
-            return Ok(None);
-        };
-        let measurement = self.meter.measure(&agent.session, header);
-        if trigger == CompactionTrigger::Pressure {
-            let context = self
-                .llm
-                .resolve_model_info(&provider, &model, signal)
-                .await
-                .map_err(|error| {
-                    ManualCompactionError::new(
-                        ManualCompactionErrorCode::Summary,
-                        error.to_string(),
-                    )
-                })?
-                .context
-                .ok_or_else(|| {
-                    ManualCompactionError::new(
-                        ManualCompactionErrorCode::Summary,
-                        format!("no context capacity is declared for {provider}/{model}"),
-                    )
-                })?;
-            if measurement.total_tokens < context.context_window.saturating_mul(4) / 5 {
-                return Ok(None);
-            }
-        }
-        let Some((start, end)) = Self::select_range(&agent.session)? else {
-            return Ok(None);
-        };
-        self.compact_region_inner(start, end, agent, signal, None, false)
-            .await
-            .map(Some)
+        self.compact_pressure(agent, trigger, signal, 0).await
     }
 
     async fn compact_now(
@@ -62,7 +20,9 @@ impl CompactionEngine for BasicCompactionEngine {
             provider: agent.provider.clone(),
             model: agent.model.clone(),
         };
-        let Some((start, end)) = Self::select_range(&agent.session)? else {
+        let Some((start, end)) =
+            self.select_range(&agent.session, 0, self.resolved()?.protect_recent_messages)?
+        else {
             return Ok(None);
         };
         self.compact_region_inner(start, end, &agent, signal, source_command_id, true)
@@ -92,7 +52,16 @@ impl BasicCompactionEngine {
         source_command_id: Option<&CommandId>,
         manual: bool,
     ) -> Result<CompactionResult, ManualCompactionError> {
-        let _operation = self.operations.lock().await;
+        let lock = self.operations.lock();
+        tokio::pin!(lock);
+        let _operation = loop {
+            tokio::select! {
+                guard = &mut lock => break guard,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => if Self::cancelled(signal) {
+                    return Err(ManualCompactionError::new(ManualCompactionErrorCode::Cancelled, "compaction cancelled"));
+                }
+            }
+        };
         Self::assert_inactive(&agent.session)?;
         let initial_surface = agent.session.surface().map_err(|error| {
             ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
@@ -111,7 +80,15 @@ impl BasicCompactionEngine {
             ));
         };
         let shadowed_seqs = initial_surface.nodes[start_index..=end_index].to_vec();
-        if start_index == 0 && agent.session.with_events(|events|initial_surface.nodes.first().and_then(|seq|events.get(*seq as usize)).is_some_and(|event|event.type_=="system/message")) {
+        if start_index == 0
+            && agent.session.with_events(|events| {
+                initial_surface
+                    .nodes
+                    .first()
+                    .and_then(|seq| events.get(*seq as usize))
+                    .is_some_and(|event| event.type_ == "system/message")
+            })
+        {
             return Err(ManualCompactionError::new(
                 ManualCompactionErrorCode::Commit,
                 "the protected system head cannot be included in a compaction range",
@@ -139,14 +116,38 @@ impl BasicCompactionEngine {
             "sourceCommandId": source_command_id.map(|id| id.as_str()),
             "turn": if manual { None } else { open_turn },
         });
+        let messages = Self::selected_messages(&agent.session, start, end)?;
         let start_event = agent
             .session
             .append("compaction/start", lifecycle.clone(), None)
             .map_err(|error| {
                 ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
             })?;
-        let messages = Self::selected_messages(&agent.session, start, end)?;
-        let summarized = self.summarize(agent, messages, signal).await;
+        let _lifecycle_guard = CompactionLifecycleGuard {
+            session: agent.session.clone(),
+            lifecycle: lifecycle.clone(),
+        };
+        let (provider, model) = self.target(agent)?;
+        let policy = resolve_target_policy(&self.resolved()?, &provider, &model);
+        let mut attempts = 0;
+        let summarized = loop {
+            let result = self.summarize(agent, messages.clone(), signal).await;
+            if !matches!(&result, Err(error) if error.code == ManualCompactionErrorCode::Summary)
+                || attempts >= policy.compaction_retries
+                || Self::cancelled(signal)
+            {
+                break result;
+            }
+            attempts += 1;
+            agent
+                .session
+                .append(
+                    "compaction/retry",
+                    serde_json::json!({"compactionId": compaction.as_str(), "attempt": attempts}),
+                    None,
+                )
+                .map_err(|e| ManualCompactionError::new(ManualCompactionErrorCode::Commit, e))?;
+        };
         let (summary, provider, model, usage) = match summarized {
             Ok(value) => value,
             Err(error) => {
@@ -191,7 +192,7 @@ impl BasicCompactionEngine {
                     "shadowedTokenCount": shadowed_token_count,
                     "provider": provider,
                     "model": model,
-                    "maxTokens": self.max_tokens,
+                    "maxTokens": policy.max_tokens,
                     "usage": usage,
                 }),
                 None,

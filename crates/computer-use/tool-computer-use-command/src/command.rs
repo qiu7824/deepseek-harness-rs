@@ -282,6 +282,7 @@ impl CommandAdapter {
                 }),
                 owner_id: Some(owner_id.to_string()),
                 origin: crate::ControlOrigin::Human,
+                workspace_root: None,
             };
             let result = match self.wire_arguments(&request) {
                 Ok((arguments, _, _, _)) => self

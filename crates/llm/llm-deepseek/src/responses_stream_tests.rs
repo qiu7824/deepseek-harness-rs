@@ -1,6 +1,25 @@
 use super::*;
 use dsh_llm::BlockAssembler;
 
+#[test]
+fn streamed_context_overflow_preserves_the_compaction_recovery_code() {
+    for event in [
+        json!({"type":"error","code":"context_length_exceeded","message":"request too large"}),
+        json!({"type":"response.failed","response":{"status":"failed","error":{"code":"context_window_exceeded","message":"request too large"}}}),
+    ] {
+        let chunks = collect(vec![event]);
+        assert!(chunks.iter().any(|chunk|matches!(chunk,StreamChunk::Finish{reason:FinishReason::Error{failure},..} if failure.code==dsh_llm::CONTEXT_WINDOW_EXCEEDED_CODE)));
+    }
+    assert_eq!(
+        provider_error_code(Some("server_error"), "try again"),
+        "PROVIDER_ERROR"
+    );
+    assert_eq!(
+        provider_error_code(Some("content_filter"), "context window exceeded"),
+        "CONTENT_FILTER"
+    );
+}
+
 fn message(id: &str, phase: Option<&str>, parts: &[&str]) -> Value {
     let mut value = json!({"id":id,"type":"message","role":"assistant","status":"completed","content":parts.iter().map(|text|json!({"type":"output_text","text":text})).collect::<Vec<_>>()});
     if let Some(phase) = phase {

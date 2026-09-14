@@ -2407,14 +2407,14 @@ window.__ModuleLoader__.load({
 		Schema.object({ [BUSY_ENTER_FIELD]: Schema.union([...BUSY_ENTER_BEHAVIORS]).default(DEFAULT_BUSY_ENTER_BEHAVIOR) });
 		//#endregion
         const HINT_DISPLAY_FIELD = "hintDisplay";
-        const HINT_DISPLAY_MODES = ["text", "icons"];
+        const HINT_DISPLAY_MODES = ["both", "text", "icons"];
         const HINT_DISPLAY_OWNER = Symbol.for("dsh.reply-hint-display.owner");
-        const hintDisplayCss = ".dshReplyHintIcon{display:none!important;align-items:center;justify-content:center;flex:none}.dshReplyHintStatus{display:inline-flex!important;width:auto!important;flex:none;align-items:center;gap:4px;font-size:12px;line-height:18px}html[data-reply-hint-display=icons] .dshReplyHintIcon{display:inline-flex!important}html[data-reply-hint-display=icons] .dshReplyHintLabel{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;clip-path:inset(50%)!important;white-space:nowrap!important;border:0!important}.dshTurnStatusLabel{display:inline!important;white-space:nowrap}.dshReplyHintSettingError{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}";
+        const hintDisplayCss = ".dshReplyHintIcon{display:inline-flex!important;align-items:center;justify-content:center;flex:none}.dshReplyHintStatus{display:inline-flex!important;width:auto!important;flex:none;align-items:center;gap:4px;font-size:12px;line-height:18px}html[data-reply-hint-display=text] .dshReplyHintIcon{display:none!important}html[data-reply-hint-display=icons] .dshReplyHintLabel{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;clip-path:inset(50%)!important;white-space:nowrap!important;border:0!important}.dshTurnStatusLabel{display:inline!important;white-space:nowrap}.dshReplyHintSettingError{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}";
         if (typeof document !== "undefined" && !document.querySelector("style[data-dsh-reply-hints]")) {
             const style = document.createElement("style"); style.dataset.dshReplyHints = ""; style.textContent = hintDisplayCss; document.head.appendChild(style);
         }
         class ReplyHintPreference {
-            store = (0, _deepseek_ai_dsh_client_runtime_client.createSnapshotStore)({ mode: "text", writable: false, saving: false, error: null });
+            store = (0, _deepseek_ai_dsh_client_runtime_client.createSnapshotStore)({ mode: "both", writable: false, saving: false, error: null });
             saving = false;
             disposed = false;
             constructor(host, root = document.documentElement) {
@@ -2431,7 +2431,7 @@ window.__ModuleLoader__.load({
             adopt() {
                 if (this.disposed) return;
                 const accepted = this.host.getSnapshot(), previous = this.store.getSnapshot();
-                this.publish({ mode: this.saving ? previous.mode : accepted.value?.hintDisplay === "icons" ? "icons" : "text", writable: accepted.writable === true && accepted.mode !== "memory", saving: this.saving, error: previous.error });
+                this.publish({ mode: this.saving ? previous.mode : HINT_DISPLAY_MODES.includes(accepted.value?.hintDisplay) ? accepted.value.hintDisplay : "both", writable: accepted.writable === true && accepted.mode !== "memory", saving: this.saving, error: previous.error });
             }
             async set(mode) {
                 if (!HINT_DISPLAY_MODES.includes(mode)) throw new Error("Invalid reply hint display mode");
@@ -3609,25 +3609,28 @@ window.__ModuleLoader__.load({
 				side: "top",
 				anchor: (0, react_jsx_runtime.jsxs)("button", {
 					type: "button",
-					className: PermissionSelect_module_css_default.trigger,
+					className: PermissionSelect_module_css_default.trigger + " dshComposerPermission",
+                    "data-composer-control": "permission",
+                    "aria-haspopup": "menu",
+                    "aria-expanded": open,
 					"aria-label": t("input.accessMode", { name: current === void 0 ? displayName(currentValue) : optionLabel(current, t) }),
-					title: permissionDescription(current, t),
+					title: [t("input.accessMode", { name: current === void 0 ? displayName(currentValue) : optionLabel(current, t) }), permissionDescription(current, t)].filter(Boolean).join(" · "),
 					disabled: locked || busy,
 					onClick: () => {
 						setOpen(!open);
 					},
 					children: [
-						permissionGlyph(currentValue) !== void 0 && (0, react_jsx_runtime.jsx)("span", {
+						(0, react_jsx_runtime.jsx)("span", {
 							className: PermissionSelect_module_css_default.triggerIcon,
 							"aria-hidden": true,
-							children: permissionGlyph(currentValue)
+							children: permissionGlyph(currentValue) ?? permissionGlyph("workspace-write")
 						}),
 						(0, react_jsx_runtime.jsx)("span", {
-							className: PermissionSelect_module_css_default.triggerLabel,
+							className: PermissionSelect_module_css_default.triggerLabel + " dshComposerPermissionLabel",
 							children: current === void 0 ? displayName(currentValue) : optionLabel(current, t)
 						}),
 						(0, react_jsx_runtime.jsx)("span", {
-							className: clsx(PermissionSelect_module_css_default.chevron, open && PermissionSelect_module_css_default.chevronOpen),
+							className: clsx(PermissionSelect_module_css_default.chevron, open && PermissionSelect_module_css_default.chevronOpen) + " dshComposerPermissionChevron",
 							"aria-hidden": true,
 							children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
 						})
@@ -4254,6 +4257,7 @@ window.__ModuleLoader__.load({
 											children: (0, react_jsx_runtime.jsx)("button", {
 												type: "button",
 												className: InputBar_module_css_default.add,
+                                                "data-composer-control": "commands",
 												"aria-label": t("input.commands"),
 												"aria-haspopup": "listbox",
 												"aria-expanded": commandMenuOpen,
@@ -4265,18 +4269,17 @@ window.__ModuleLoader__.load({
 										}),
 										toggleReferenceMenu !== undefined && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
 											label: t("input.insertConversation"), side: "top", delayMs: 500,
-											children: (0, react_jsx_runtime.jsx)("button", { type: "button", className: InputBar_module_css_default.add, "aria-label": t("input.insertConversation"), "aria-haspopup": "listbox", disabled: locked || machineBusy, onMouseDown: keepFocus, onClick: () => { const el = inputRef.current; if (el !== null) toggleReferenceMenu(selectionOf(el)); }, children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconLinkOutline16, { size: 14 }) })
-										}),
-										(0, react_jsx_runtime.jsxs)("div", {
-											className: InputBar_module_css_default.modes,
-											children: [accessSelect, renderSlot("conversation.input.plan", { locked })]
+											children: (0, react_jsx_runtime.jsx)("button", { type: "button", className: InputBar_module_css_default.add, "data-composer-control": "reference", "aria-label": t("input.insertConversation"), "aria-haspopup": "listbox", disabled: locked || machineBusy, onMouseDown: keepFocus, onClick: () => { const el = inputRef.current; if (el !== null) toggleReferenceMenu(selectionOf(el)); }, children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconLinkOutline16, { size: 14 }) })
 										}),
                                         addImages !== undefined && react.createElement(react.Fragment, null,
                                             react.createElement("input", { ref: uploadRef, type: "file", multiple: true, hidden: true, "data-file-picker": true,
                                                 onChange: event => { const files = Array.from(event.target.files ?? []); event.target.value = ""; if (!locked && !machineBusy) intakeImages(files); } }),
-                                            react.createElement("button", { type: "button", className: InputBar_module_css_default.add, disabled: locked || machineBusy, "aria-label": t("file.upload"), title: t("file.upload"), onClick: () => uploadRef.current?.click() },
-                                                react.createElement("svg", { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.6, "aria-hidden": true },
-                                                    react.createElement("path", { d: "M8 13l7-7a3 3 0 014 4L9 20a5 5 0 01-7-7L13 2M6 15l9-9" })))),
+                                            react.createElement("button", { type: "button", className: InputBar_module_css_default.add, "data-composer-control": "attachment", disabled: locked || machineBusy, "aria-label": t("file.upload"), title: t("file.upload"), onClick: () => uploadRef.current?.click() },
+                                                react.createElement(_deepseek_ai_dsh_client_ui_primitives.IconPaperclipOutline16, { size: 18, "aria-hidden": true }))),
+										(0, react_jsx_runtime.jsxs)("div", {
+											className: InputBar_module_css_default.modes,
+											children: [accessSelect, renderSlot("conversation.input.plan", { locked })]
+										}),
 										leftItems
 									]
 								}), (0, react_jsx_runtime.jsxs)("div", {
@@ -4396,7 +4399,7 @@ window.__ModuleLoader__.load({
                     (0, react_jsx_runtime.jsx)("div", { className: EnterBehaviorRow_module_css_default.desc, children: t("settings.hints.description") }),
                     value.error && (0, react_jsx_runtime.jsx)("div", { className: "dshReplyHintSettingError", role: "alert", children: value.error.startsWith("settings.hints.") ? t(value.error) : value.error })
                 ] }),
-                (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, { open: open && !unavailable, onClose: () => setOpen(false), items: ["icons", "text"].map(id => ({ id, label: t("settings.hints." + id) })), selectedId: value.mode, onSelect: id => { setOpen(false); setHintDisplay(id); }, align: "end", portal: true,
+                (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, { open: open && !unavailable, onClose: () => setOpen(false), items: ["both", "icons", "text"].map(id => ({ id, label: t("settings.hints." + id) })), selectedId: value.mode, onSelect: id => { setOpen(false); setHintDisplay(id); }, align: "end", portal: true,
                     anchor: (0, react_jsx_runtime.jsxs)("button", { type: "button", className: EnterBehaviorRow_module_css_default.selector, disabled: unavailable, "aria-label": t("settings.hints.title"), "aria-haspopup": "menu", "aria-expanded": open && !unavailable, onClick: () => setOpen(current => !current), children: [t("settings.hints." + value.mode), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, { className: EnterBehaviorRow_module_css_default.chevron })] })
                 })
             ] });
@@ -6368,7 +6371,7 @@ window.__ModuleLoader__.load({
 						(0, react_jsx_runtime.jsxs)("div", {
 							className: ApprovalPanel_module_css_default.strip,
 							role: "status",
-							children: [(0, react_jsx_runtime.jsx)("span", { className: ApprovalPanel_module_css_default.dot }), t(answered ? "approval.submitting" : "approval.waiting")]
+							children: [(0, react_jsx_runtime.jsx)("svg", { width: 16, height: 16, viewBox: "0 0 16 16", fill: "none", "aria-hidden": true, children: (0, react_jsx_runtime.jsx)("path", { d: "M8 1.5 2.5 3.5v4c0 3 2.5 5.5 5.5 7 3-1.5 5.5-4 5.5-7v-4L8 1.5Zm-2 6 1.5 1.5 3-3", stroke: "currentColor", strokeWidth: 1.3, strokeLinecap: "round", strokeLinejoin: "round" }) }), t(answered ? "approval.submitting" : "approval.waiting")]
 						}),
 						(0, react_jsx_runtime.jsxs)("div", {
 							className: ApprovalPanel_module_css_default.body,
@@ -6427,6 +6430,33 @@ window.__ModuleLoader__.load({
 		const PLAN_NEXT_ACTION_EN = "describe your task to generate plan";
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
+            "tool.activity.read_image.running": "正在查看图片",
+            "tool.activity.read_image.ok": "已查看图片",
+            "tool.activity.read_image.error": "查看图片失败",
+            "tool.activity.read_image.stopped": "已停止查看图片",
+            "tool.activity.read_video.running": "正在查看视频",
+            "tool.activity.read_video.ok": "已查看视频",
+            "tool.activity.read_video.error": "查看视频失败",
+            "tool.activity.read_video.stopped": "已停止查看视频",
+            "tool.activity.read.running": "正在读取文件",
+            "tool.activity.read.ok": "已读取文件",
+            "tool.activity.read.error": "读取文件失败",
+            "tool.activity.read.stopped": "已停止读取文件",
+            "tool.activity.write.running": "正在写入文件",
+            "tool.activity.write.ok": "已写入文件",
+            "tool.activity.write.error": "写入文件失败",
+            "tool.activity.write.stopped": "已停止写入文件",
+            "tool.activity.edit.running": "正在编辑文件",
+            "tool.activity.edit.ok": "已编辑文件",
+            "tool.activity.edit.error": "编辑文件失败",
+            "tool.activity.edit.stopped": "已停止编辑文件",
+            "tool.action.list_tabs":"列出标签页",
+            "tool.action.new_tab":"新建标签页",
+            "tool.action.select_tab":"切换标签页",
+            "tool.action.close_tab":"关闭标签页",
+            "tool.action.upload_files":"上传文件",
+            "tool.action.video_info":"查看视频信息",
+            "tool.action.video_frame":"查看视频画面",
             "file.open": "打开文件 {name}", "file.upload": "上传文件", "file.remove": "移除文件 {name}", "file.limits": "每条消息最多 16 个文件，单个不超过 16 MiB，合计不超过 64 MiB",
             "tool.title.codeContext": "代码上下文",
             "tool.title.codeCallers": "代码调用者",
@@ -6437,6 +6467,7 @@ window.__ModuleLoader__.load({
 			"permission.description.fullAccess": "可访问全部文件，不弹出审批提示。",
 			"settings.hints.title": "回复提示显示",
 			"settings.hints.description": "工具、思考、任务和运行提示的显示方式。",
+			"settings.hints.both": "图标＋文字",
 			"settings.hints.icons": "图标显示",
 			"settings.hints.text": "文字显示",
 			"settings.hints.unavailable": "当前主机暂不支持保存此设置。",
@@ -6686,6 +6717,33 @@ window.__ModuleLoader__.load({
 		};
 		/** English dictionary, checked complete against the zh key set. */
 		const en = {
+            "tool.activity.read_image.running": "Viewing image",
+            "tool.activity.read_image.ok": "Viewed image",
+            "tool.activity.read_image.error": "Viewing image failed",
+            "tool.activity.read_image.stopped": "Viewing image stopped",
+            "tool.activity.read_video.running": "Viewing video",
+            "tool.activity.read_video.ok": "Viewed video",
+            "tool.activity.read_video.error": "Viewing video failed",
+            "tool.activity.read_video.stopped": "Viewing video stopped",
+            "tool.activity.read.running": "Reading file",
+            "tool.activity.read.ok": "Read file",
+            "tool.activity.read.error": "Reading file failed",
+            "tool.activity.read.stopped": "Reading file stopped",
+            "tool.activity.write.running": "Writing file",
+            "tool.activity.write.ok": "Wrote file",
+            "tool.activity.write.error": "Writing file failed",
+            "tool.activity.write.stopped": "Writing file stopped",
+            "tool.activity.edit.running": "Editing file",
+            "tool.activity.edit.ok": "Edited file",
+            "tool.activity.edit.error": "Editing file failed",
+            "tool.activity.edit.stopped": "Editing file stopped",
+            "tool.action.list_tabs":"list tabs",
+            "tool.action.new_tab":"new tab",
+            "tool.action.select_tab":"select tab",
+            "tool.action.close_tab":"close tab",
+            "tool.action.upload_files":"upload files",
+            "tool.action.video_info":"video info",
+            "tool.action.video_frame":"video frame",
             "file.open": "Open file {name}", "file.upload": "Upload files", "file.remove": "Remove file {name}", "file.limits": "Up to 16 files per message, 16 MiB each and 64 MiB total",
             "tool.title.codeContext": "Code context",
             "tool.title.codeCallers": "Code callers",
@@ -6696,6 +6754,7 @@ window.__ModuleLoader__.load({
 			"permission.description.fullAccess": "Full file access without approval prompts.",
 			"settings.hints.title": "Reply hints",
 			"settings.hints.description": "Display style for tools, reasoning, tasks and activity hints.",
+			"settings.hints.both": "Icons and text",
 			"settings.hints.icons": "Icons",
 			"settings.hints.text": "Text",
 			"settings.hints.unavailable": "This host cannot save this setting yet.",

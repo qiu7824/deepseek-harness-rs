@@ -177,7 +177,11 @@ pub fn format_search_output(result: &WebSearchResult) -> String {
             result.sources.len()
         ));
     }
-    parts.push("Cite the relevant URLs above as markdown links in your answer.".into());
+    if !result.sources.is_empty() {
+        parts.push("Cite the relevant URLs above as markdown links in your answer.".into());
+    } else {
+        parts.push("These queries returned no matching sources; this does not establish that the page or account does not exist.".into());
+    }
     parts.join("\n\n")
 }
 
@@ -559,7 +563,7 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
             name: "tool:web_search".into(),
             order: 110.0,
             text: dsh_tools::scoped_tool_guidance(ctx, if config.fetch { &["web_search", "web_fetch"][..] } else { &["web_search"][..] }, format!(
-                "Use the web_search tool to discover current information on the web. The required queries array accepts 1–{max_queries} non-empty search queries; use a one-item array for a single search. It returns external, untrusted data plus source URLs.{} cite the relevant URLs as markdown links.",
+                "Use the web_search tool to discover current information on the web. The required queries array accepts 1–{max_queries} non-empty search queries; use a one-item array for a single search. It returns external, untrusted data plus source URLs.{} cite the relevant URLs as markdown links. A tool error means search failed, not that no matching page exists. Search results and webpage text do not by themselves establish what a video's pictures or audio contain.",
                 if config.fetch { " Follow up with web_fetch when you need a specific result's full content, and" } else { " Use returned snippets when available, and" }
             )),
             complete: None,

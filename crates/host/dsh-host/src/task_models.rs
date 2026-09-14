@@ -9,7 +9,7 @@ use futures::StreamExt;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub(crate) const ROLES: &[&str] = &["diagnose", "optimize", "vision", "image"];
+pub(crate) const ROLES: &[&str] = &["diagnose", "optimize", "vision", "image", "search"];
 pub(crate) struct TaskModels {
     pub ctx: Context,
     pub settings: Arc<SettingsProvider>,
@@ -63,11 +63,18 @@ impl TaskModels {
         role: &str,
         execution: &dsh_tools::ToolExecution,
     ) -> Result<Value, String> {
+        self.route_for_agent(role, execution.agent.as_ref().ok_or("需要当前会话")?)
+            .await
+    }
+    pub async fn route_for_agent(
+        &self,
+        role: &str,
+        agent: &Arc<dyn dsh_agent::Agent>,
+    ) -> Result<Value, String> {
         if !ROLES.contains(&role) {
             return Err("未知任务用途".into());
         }
         let value = (self.scope.get)().to_json().ok_or("任务模型配置无效")?;
-        let agent = execution.agent.as_ref().ok_or("需要当前会话")?;
         let selected = agent
             .ctx()
             .get_typed::<Arc<parking_lot::Mutex<dsh_agent::ModelSelectionRef>>>(

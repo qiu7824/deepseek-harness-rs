@@ -180,11 +180,22 @@ impl ComputerUseRuntime {
     ) -> Result<AdapterOutput, AdapterError> {
         let normalized = arguments::normalize(self.adapter_id(), arguments)?;
         let arguments = normalized.as_ref();
+        validate_adapter_url(self.adapter_id(), arguments)?;
         validate_window_target(self.adapter_id(), arguments)?;
         let was_active = self.adapter.has_owner_activity(&owner_id);
-        let request = AdapterRequest::from_arguments(arguments)?
+        let mut request = AdapterRequest::from_arguments(arguments)?
             .with_owner_id(owner_id.clone())
             .with_origin(origin);
+        request.workspace_root = owner
+            .as_ref()
+            .and_then(|agent| agent.session().header().cwd.clone())
+            .or_else(|| {
+                self.ctx
+                    .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
+                    .and_then(|store| store.get(&dsh_session::session_id(&owner_id)))
+                    .and_then(|session| session.header().cwd.clone())
+            })
+            .map(std::path::PathBuf::from);
         let result = tokio::select! {
             result = self.adapter.execute(request, Arc::clone(&signal)) => result,
             _ = wait_for_cancel(Arc::clone(&signal)) => Err(AdapterError::cancelled()),
@@ -270,9 +281,37 @@ impl ComputerUseRuntime {
     }
 }
 
+fn validate_adapter_url(adapter: &str, arguments: &Value) -> Result<(), AdapterError> {
+    if matches!(adapter, "native-desktop" | "uu-desktop")
+        && matches!(
+            arguments.get("action").and_then(Value::as_str),
+            Some("start" | "navigate")
+        )
+        && arguments
+            .get("url")
+            .and_then(Value::as_str)
+            .is_some_and(|url| !url.trim().is_empty())
+    {
+        return Err(AdapterError::new(
+            "COMPUTER_USE_ADAPTER_MISMATCH",
+            format!(
+                "Active adapter is {adapter}; a URL does not open an isolated browser on a desktop adapter. Use the configured desktop's browser UI, or ask the user to select the native-browser adapter. No desktop session was opened for this request."
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn supported_actions(adapter: &str) -> Option<&'static [&'static str]> {
     match adapter {
         "native-browser" => Some(&[
+            "list_tabs",
+            "new_tab",
+            "select_tab",
+            "close_tab",
+            "upload_files",
+            "video_info",
+            "video_frame",
             "start",
             "status",
             "capture",
@@ -403,6 +442,8 @@ const READ_ONLY_ACTIONS: &[&str] = &[
     "status",
     "cua_browser_state",
     "list_sessions",
+    "list_tabs",
+    "video_info",
     "list_apps",
     "list_windows",
 ];
@@ -612,7 +653,7 @@ pub fn install_adapter(
         ctx,
         ToolDefinition {
             name: "computer_use".to_string(),
-            description: "Operate a persistent, isolated browser or configured desktop adapter. Reuse sessionId across calls. Start or navigate, inspect the returned state and screenshot, perform one or more click/type/scroll actions, then inspect the new screenshot. Mutating actions require user approval and all actions support cancellation and timeout.".to_string(),
+            description: format!("Operate a persistent, isolated browser or configured desktop adapter. Active adapter: {}. Reuse sessionId across calls. Start or navigate, inspect the returned state and screenshot, perform one or more click/type/scroll actions, then inspect the new screenshot. Desktop adapters do not open a webpage from the url argument. A waiting-for-frame state or zero-size viewport is not usable page or video evidence. Mutating actions require user approval and all actions support cancellation and timeout.", runtime.adapter_id()),
             parameters: json!({
                 "type": "object",
                 "additionalProperties": true,
@@ -625,7 +666,11 @@ pub fn install_adapter(
                         "type": "string",
                         "description": "Stable isolated browser-session name. Defaults to default."
                     },
-                    "url": { "type": "string", "description": "Absolute http/https URL for start or navigate." },
+                    "tabId": { "type": "string", "description": "Tab id returned by list_tabs or new_tab; scoped to this browser session." },
+                    "selector": { "type": "string", "description": "CSS selector for input[type=file] when uploading." },
+                    "timeSeconds": { "type": "number", "description": "For video_frame: seek to this time before capturing decoded video pixels. Use video_info to discover duration and loaded subtitle cues." },
+                    "files": { "type": "array", "items": { "type": "string" }, "description": "Workspace file paths to upload; empty array clears the file input. Max 16 files, 16 MiB each, 64 MiB total." },
+                    "url": { "type": "string", "description": "Absolute http/https URL for browser start or navigate; physical desktop adapters do not navigate to this URL." },
                     "windowId": { "type": "integer", "description": "Native-desktop start only: positive integer window handle returned by list_windows, validated from 1 through the Host platform handle limit. Omit to use the primary desktop. Close the current control session before changing the target; do not guess a window ID." },
                     "x": { "type": "number", "description": "Viewport x coordinate; validated between 0 and 100000." },
                     "y": { "type": "number", "description": "Viewport y coordinate; validated between 0 and 100000." },
@@ -764,6 +809,47 @@ fn render_output(value: &Value) -> Result<Vec<dsh_llm::ContentBlock>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct DesktopMustNotStart;
+    #[async_trait::async_trait]
+    impl ComputerUseAdapter for DesktopMustNotStart {
+        fn adapter_id(&self) -> &'static str {
+            "uu-desktop"
+        }
+        async fn execute(
+            &self,
+            _: AdapterRequest,
+            _: AbortPredicate,
+        ) -> Result<AdapterOutput, AdapterError> {
+            panic!("a browser URL must not open the configured physical desktop");
+        }
+    }
+    #[tokio::test]
+    async fn desktop_url_mismatch_is_rejected_before_adapter_execution() {
+        let runtime = ComputerUseRuntime {
+            ctx: Context::root(),
+            adapter: Arc::new(DesktopMustNotStart),
+            timeout: Duration::from_secs(1),
+            owner_agents: SyncMutex::new(HashMap::new()),
+        };
+        let error = runtime
+            .execute(
+                "fixture",
+                &json!({"action":"start","url":"https://example.test/video"}),
+                Arc::new(|| false),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "COMPUTER_USE_ADAPTER_MISMATCH");
+        assert!(
+            validate_adapter_url(
+                "native-browser",
+                &json!({"action":"start","url":"https://example.test/"})
+            )
+            .is_ok()
+        );
+        assert!(validate_adapter_url("uu-desktop", &json!({"action":"start"})).is_ok());
+    }
     use dsh_attachment::{
         AttachmentAbort, AttachmentError, ImageAttachmentLimits, ImageAttachmentRef,
         StoredImageAttachment, attachment_id,

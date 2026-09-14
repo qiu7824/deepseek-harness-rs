@@ -32,6 +32,7 @@ mod devin_auth;
 mod feedback_delivery;
 mod free_catalog;
 mod free_probe;
+mod hosted_search;
 mod image_generation;
 mod learning_bridge;
 mod memory_import;
@@ -52,7 +53,10 @@ mod ultra_control_tests;
 mod uu_cli;
 mod uu_devices;
 mod uu_terminal;
+mod video_http;
+mod video_reader;
 mod web_preview;
+mod web_search_settings;
 mod workspace_copy;
 mod workspace_resources;
 
@@ -2403,7 +2407,26 @@ fn compose_host_in_fiber(
                         .default(dsh_schemastery::Data::Number(20.0)),
                 ),
             ])),
-            dsh_settings::SettingsRegisterOptions::default(),
+            dsh_settings::SettingsRegisterOptions {
+                validate: Some(Arc::new(|value| {
+                    let value = value
+                        .to_json()
+                        .ok_or("Memory settings must be JSON-compatible")?;
+                    if value["compactTarget"].as_f64().unwrap_or(0.2)
+                        >= value["compactThreshold"].as_f64().unwrap_or(0.5)
+                    {
+                        return Err("压缩目标必须小于压缩阈值".into());
+                    }
+                    if value["protectRecentMessages"]
+                        .as_f64()
+                        .is_some_and(|n| n.fract() != 0.0)
+                    {
+                        return Err("保护最近消息数量必须为整数".into());
+                    }
+                    Ok(())
+                })),
+                ..Default::default()
+            },
         )
         .map_err(|error| format!("settings memory: {error}"))?;
     let security_scope = settings
@@ -2649,7 +2672,7 @@ fn compose_host_in_fiber(
             fields.insert(
                 "hintDisplay".to_string(),
                 dsh_schemastery::Schema::union(
-                    ["text", "icons"]
+                    ["both", "text", "icons"]
                         .into_iter()
                         .map(|choice| {
                             dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
@@ -2658,7 +2681,7 @@ fn compose_host_in_fiber(
                         })
                         .collect(),
                 )
-                .default(dsh_schemastery::Data::String("text".to_string())),
+                .default(dsh_schemastery::Data::String("both".to_string())),
             );
         }
         settings
@@ -2778,35 +2801,57 @@ fn compose_host_in_fiber(
     let web = dsh_web::WebRuntime::install(
         ctx,
         dsh_web::Config {
-            search_provider: Some("deepseek-official".to_string()),
+            search_provider: Some("session-search".to_string()),
             fetch_provider: Some(dsh_web_fetch_http::LOCAL_FETCH_PROVIDER_ID.to_string()),
         },
     );
+    let web_search_scope = web_search_settings::register(ctx, &settings)?;
     let web_credentials = credentials.clone();
-    let web_provider = Arc::new(dsh_web_search_deepseek::DeepSeekSearchProvider::new(
-        dsh_web_search_deepseek::Options {
-            api_key: None,
-            resolve_api_key: Some(Arc::new(move || {
-                let credentials = web_credentials.clone();
-                Box::pin(async move {
-                    let reference = dsh_credentials::credential_ref("DEEPSEEK_API_KEY");
-                    Ok(credentials
-                        .resolve(&reference)
-                        .await
-                        .map(|resolved| resolved.value))
-                })
-            })),
-            api_key_env: "DEEPSEEK_API_KEY".to_string(),
-            base_url: "https://api.deepseek.com/anthropic/v1".to_string(),
-            model: "deepseek-v4-flash".to_string(),
-            api_version: "2023-06-01".to_string(),
-            max_tokens: 4096,
-            max_uses: 5,
-            record_request: None,
-        },
-    ));
+    let web_agents = agents.clone();
+    let web_provider = Arc::new(
+        dsh_web_search_deepseek::DeepSeekSearchProvider::with_options(Arc::new(move || {
+            let config = web_search_settings::config(
+                &(web_search_scope.get)()
+                    .to_json()
+                    .ok_or("Web search settings must be JSON-compatible")?,
+            )?;
+            let web_credentials = web_credentials.clone();
+            let key_reference = config.api_key_env.clone();
+            let web_agents = web_agents.clone();
+            Ok(dsh_web_search_deepseek::Options {
+                api_key: config.api_key,
+                resolve_api_key: Some(Arc::new(move || {
+                    let credentials = web_credentials.clone();
+                    let key_reference = key_reference.clone();
+                    Box::pin(async move {
+                        let reference = dsh_credentials::credential_ref(&key_reference);
+                        Ok(credentials
+                            .resolve(&reference)
+                            .await
+                            .map(|resolved| resolved.value))
+                    })
+                })),
+                api_key_env: config.api_key_env,
+                base_url: config.base_url,
+                model: config.model,
+                api_version: config.api_version,
+                max_tokens: config.max_tokens,
+                max_uses: config.max_uses,
+                record_request: Some(Arc::new(move |request| {
+                    if let Some(agent) = web_agents.current_initiator()? {
+                        agent.session().append(
+                            "web/deepseek-search-llm-request",
+                            request.clone(),
+                            None,
+                        )?;
+                    }
+                    Ok(())
+                })),
+            })
+        })),
+    );
     let _web_provider = web
-        .register_search_provider(web_provider)
+        .register_search_provider(web_provider.clone())
         .map_err(|error| format!("web-search-deepseek: {error}"))?;
     let _web_fetch_provider = web
         .register_fetch_provider(Arc::new(dsh_web_fetch_http::HttpFetchProvider::new(
@@ -2815,6 +2860,15 @@ fn compose_host_in_fiber(
         .map_err(|error| format!("web-fetch-http: {error}"))?;
 
     let account_auth = provider_auth::AccountAuth::new(credentials.clone(), settings.clone())?;
+    let _hosted_search = web
+        .register_search_provider(Arc::new(hosted_search::RoutedSearch {
+            ctx: ctx.clone(),
+            settings: settings.clone(),
+            agents: agents.clone(),
+            auth: account_auth.clone(),
+            fallback: web_provider,
+        }))
+        .map_err(|e| e.to_string())?;
     let browser_cleanup = account_auth.clone();
     let _ = ctx.effect(
         "authorization browsers",
@@ -3190,6 +3244,7 @@ fn compose_host_in_fiber(
     let task_models = task_models::TaskModels::install(ctx, settings.clone(), llm.clone())?;
     let _image_generation =
         image_generation::ImageGeneration::install(ctx, task_models.clone(), account_auth.clone())?;
+    video_reader::install(ctx, settings.clone())?;
     resources.install_tools(ctx, &tools, &system_prompt)?;
     dsh_session_reference::SessionReferenceResolver::install(
         ctx,

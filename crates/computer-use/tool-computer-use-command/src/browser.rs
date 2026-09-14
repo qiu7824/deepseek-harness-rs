@@ -22,6 +22,7 @@ use crate::adapter::{
 const DEFAULT_SESSION: &str = "default";
 const DEVTOOLS_PORT_FILE: &str = "DevToolsActivePort";
 const MAX_SCREENSHOT_BYTES: usize = 16 * 1024 * 1024;
+include!("browser_tabs.rs");
 const STATE_EXPRESSION: &str = r#"(() => {
   const active = document.activeElement;
   return {
@@ -218,7 +219,7 @@ impl NativeBrowserAdapter {
         };
         let launch_started = Instant::now();
         let port_file = profile.join(DEVTOOLS_PORT_FILE);
-        let page_websocket = loop {
+        let (page_websocket, browser_websocket) = loop {
             if signal() {
                 let _ = child.kill().await;
                 let _ = tokio::fs::remove_dir_all(&profile).await;
@@ -249,7 +250,10 @@ impl NativeBrowserAdapter {
                 && let Ok(port) = first_line.trim().parse::<u16>()
                 && let Ok(websocket) = self.find_page_websocket(port, signal).await
             {
-                break websocket;
+                let browser_path = text.lines().nth(1).ok_or_else(|| {
+                    AdapterError::new("COMPUTER_USE_DEVTOOLS_HTTP", "missing browser websocket")
+                })?;
+                break (websocket, format!("ws://127.0.0.1:{port}{browser_path}"));
             }
             tokio::time::sleep(Duration::from_millis(40)).await;
         };
@@ -258,6 +262,7 @@ impl NativeBrowserAdapter {
             child,
             profile,
             page_websocket,
+            browser_websocket,
             action_timeout: self.config.action_timeout,
         })
     }
@@ -561,6 +566,7 @@ struct BrowserSession {
     child: Child,
     profile: PathBuf,
     page_websocket: String,
+    browser_websocket: String,
     action_timeout: Duration,
 }
 
@@ -604,6 +610,137 @@ impl BrowserSession {
                 }
             }
             "status" | "cua_browser_state" | "capture" => {}
+            "video_info" | "video_frame" => {
+                let selector = request
+                    .arguments
+                    .get("selector")
+                    .and_then(Value::as_str)
+                    .unwrap_or("video");
+                if selector.len() > 4096 {
+                    return Err(AdapterError::new(
+                        "COMPUTER_USE_INVALID_ARGUMENT",
+                        "video selector is too long",
+                    ));
+                }
+                let time = if action == "video_frame" {
+                    request
+                        .arguments
+                        .get("timeSeconds")
+                        .cloned()
+                        .unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                };
+                if !time.is_null() && !time.as_f64().is_some_and(|n| n.is_finite() && n >= 0.0) {
+                    return Err(AdapterError::new(
+                        "COMPUTER_USE_INVALID_ARGUMENT",
+                        "timeSeconds must be a nonnegative number",
+                    ));
+                }
+                let expression = format!(
+                    "({})({}, {})",
+                    include_str!("browser_video.js"),
+                    json!(selector),
+                    if action == "video_frame" && time.is_null() {
+                        format!(
+                            "(document.querySelector({})?.currentTime ?? 0)",
+                            json!(selector)
+                        )
+                    } else {
+                        time.to_string()
+                    }
+                );
+                let value = self
+                    .cdp(
+                        "Runtime.evaluate",
+                        json!({"expression":expression,"returnByValue":true,"awaitPromise":true}),
+                        signal,
+                    )
+                    .await?;
+                if value.get("exceptionDetails").is_some() {
+                    return Err(AdapterError::new(
+                        "COMPUTER_USE_VIDEO_UNAVAILABLE",
+                        value["exceptionDetails"]["exception"]["description"]
+                            .as_str()
+                            .unwrap_or("video could not be read"),
+                    ));
+                }
+                result["video"] = value["result"]["value"].clone();
+            }
+            "list_tabs" => {
+                result["tabs"] = self.tabs(signal).await?;
+            }
+            "new_tab" => {
+                if self.tabs(signal).await?.as_array().map_or(0, Vec::len) >= 16 {
+                    return Err(AdapterError::new(
+                        "COMPUTER_USE_TAB_LIMIT",
+                        "at most 16 tabs per browser session",
+                    ));
+                }
+                let url = request
+                    .arguments
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("about:blank");
+                let target = self
+                    .cdp(
+                        "Target.createTarget",
+                        json!({"url":validate_navigation_url(url)?}),
+                        signal,
+                    )
+                    .await?;
+                self.select_tab(required_string(&target, "targetId", 128)?, signal)
+                    .await?;
+                result["tabId"] = target["targetId"].clone();
+            }
+            "select_tab" => {
+                self.select_tab(required_string(&request.arguments, "tabId", 128)?, signal)
+                    .await?;
+            }
+            "close_tab" => {
+                let id = request
+                    .arguments
+                    .get("tabId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        self.page_websocket
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or("")
+                            .to_string()
+                    });
+                let tabs = self.tabs(signal).await?;
+                if !tabs.as_array().unwrap().iter().any(|t| t["id"] == id) {
+                    return Err(AdapterError::new(
+                        "COMPUTER_USE_TAB_NOT_FOUND",
+                        "tab does not belong to this browser session",
+                    ));
+                }
+                let next = tabs
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|t| t["id"] != id)
+                    .and_then(|t| t["id"].as_str())
+                    .map(str::to_string);
+                self.cdp("Target.closeTarget", json!({"targetId":id}), signal)
+                    .await?;
+                if self.page_websocket.ends_with(&format!("/{id}")) {
+                    self.page_websocket = match next {
+                        Some(next) => self.page_address(&next),
+                        None => String::new(),
+                    };
+                }
+                result["closedTabId"] = json!(id);
+            }
+            "upload_files" => {
+                let files = upload_paths(request).await?;
+                let selector = required_string(&request.arguments, "selector", 4096)?;
+                self.upload_files(selector, &files, signal).await?;
+                result["uploadedFiles"] = json!(files.len());
+            }
+
             "navigate" => {
                 let url = required_string(&request.arguments, "url", 8_192)?;
                 self.navigate(validate_navigation_url(url)?, signal).await?;
@@ -709,7 +846,13 @@ impl BrowserSession {
             }
         }
 
+        if self.page_websocket.is_empty() {
+            result["state"] = json!({"url":null,"title":null,"activeTabId":null});
+            result["tabs"] = self.tabs(signal).await?;
+            return Ok(AdapterOutput::json(result));
+        }
         result["state"] = self.state(signal).await?;
+        result["state"]["activeTabId"] = json!(self.page_websocket.rsplit('/').next());
         let default_screenshot = matches!(
             action,
             "start"
@@ -723,15 +866,45 @@ impl BrowserSession {
                 | "key"
                 | "keypress"
                 | "drag"
+                | "video_frame"
         );
         let include_screenshot = request
             .arguments
             .get("includeScreenshot")
             .and_then(Value::as_bool)
             .unwrap_or(default_screenshot);
+        let frame_data = result
+            .get_mut("video")
+            .and_then(Value::as_object_mut)
+            .and_then(|video| video.remove("frameDataUrl"));
         let screenshot = if include_screenshot {
             Some(AdapterScreenshot {
-                data: self.screenshot(signal).await?,
+                data: if action == "video_frame" {
+                    if let Some(data) = frame_data
+                        .as_ref()
+                        .and_then(Value::as_str)
+                        .and_then(|s| s.strip_prefix("data:image/png;base64,"))
+                    {
+                        decode_screenshot(data, MAX_SCREENSHOT_BYTES)?
+                    } else {
+                        let clip = &result["video"]["clip"];
+                        if clip["width"].as_f64().unwrap_or(0.0) < 1.0
+                            || clip["height"].as_f64().unwrap_or(0.0) < 1.0
+                        {
+                            return Err(AdapterError::new(
+                                "COMPUTER_USE_VIDEO_UNAVAILABLE",
+                                "video is not visible",
+                            ));
+                        }
+                        let capture=self.cdp("Page.captureScreenshot",json!({"format":"png","fromSurface":true,"captureBeyondViewport":false,"clip":clip}),signal).await?;
+                        decode_screenshot(
+                            capture["data"].as_str().unwrap_or(""),
+                            MAX_SCREENSHOT_BYTES,
+                        )?
+                    }
+                } else {
+                    self.screenshot(signal).await?
+                },
                 media_type: "image/png".to_string(),
                 name: Some(format!("computer-use-{session_id}.png")),
             })
@@ -770,7 +943,11 @@ impl BrowserSession {
         params: Value,
         signal: &AbortPredicate,
     ) -> Result<Value, AdapterError> {
-        let websocket = self.page_websocket.clone();
+        let websocket = if method.starts_with("Target.") {
+            self.browser_websocket.clone()
+        } else {
+            self.page_websocket.clone()
+        };
         let method_name = method.to_string();
         run_cancellable(
             async move {
@@ -1413,6 +1590,7 @@ mod tests {
             child,
             profile: profile.clone(),
             page_websocket: "ws://127.0.0.1:1/unreachable".to_string(),
+            browser_websocket: "ws://127.0.0.1:1/unreachable".to_string(),
             action_timeout: Duration::from_secs(1),
         }));
         adapter.sessions.lock().await.insert(

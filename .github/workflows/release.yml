@@ -89,6 +89,8 @@ jobs:
           node tools/tests/ptc_tool_cards_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/response_rendering_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/reply_hint_display_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/question_wait_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          node tools/tests/hosted_search_settings_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/workspace_browser_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/feedback_submission_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/session_feedback_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
@@ -115,6 +117,8 @@ jobs:
           cargo test --locked -p dsh-agent-loop --test lifecycle_failures steering
           cargo test --locked -p dsh-agent --test model_switch_notice
           cargo test --locked -p dsh-agent-loop --test lifecycle_failures model_switch
+          cargo test --locked -p dsh-agent-loop --test lifecycle_failures compaction_recovery
+          cargo test --locked -p dsh-agent-loop --test lifecycle_failures system_prefix
           cargo test --locked -p cordis --test plugin_setup
           cargo test --locked -p dsh-cordis-loader --test group_ownership
           cargo test --locked -p dsh-agent-presets standing_tests --lib

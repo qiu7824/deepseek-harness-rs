@@ -120,7 +120,7 @@ impl AccountAuth {
         let profile = self.model_profile(route)?;
         let key = if let Some(auth) = profile.get("authProvider").and_then(Value::as_str) {
             if auth != "openai-codex" {
-                return Err("此订阅连接尚未提供图像生成接口".into());
+                return Err("此订阅连接尚未提供 OpenAI 原生工具接口".into());
             }
             self.resolve_token_locked(auth, false, true).await?
         } else if profile.get("keyless") == Some(&Value::Bool(true)) {
@@ -134,7 +134,7 @@ impl AccountAuth {
         } else {
             None
         };
-        Ok((self.model_profile(route)?, key))
+        Ok((profile, key))
     }
     pub(crate) fn set_catalog_root(&self, root: std::path::PathBuf) {
         self.catalogs.set_root(root);

@@ -27,6 +27,7 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+dsh-compaction-tool-result-pruner = { path = "../../compaction/compaction-tool-result-pruner" }
 dsh-compaction = { path = "../../compaction/compaction" }
 dsh-token-meter = { path = "../../llm/token-meter" }
 dsh-scope = { path = "../scope" }

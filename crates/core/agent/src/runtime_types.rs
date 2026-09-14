@@ -264,6 +264,7 @@ pub struct AgentPreStepPayload {
     pub messages: Vec<UserMessage>,
     pub turn: u64,
     pub step: u64,
+    pub signal: Arc<CancellationSignal>,
 }
 
 /// `agent/request` payload.

@@ -43,6 +43,7 @@ pub struct BasicCompactionConfig {
     pub max_overflow_retries: Option<u64>,
     pub model_policies: Vec<ModelCompactPolicyConfig>,
     pub auto: Option<bool>,
+    pub protect_recent_messages: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +57,7 @@ pub struct ResolvedConfig {
     pub max_overflow_retries: u64,
     pub model_policies: Vec<ModelCompactPolicyConfig>,
     pub auto: bool,
+    pub protect_recent_messages: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +160,19 @@ pub fn resolve_config(config: BasicCompactionConfig) -> Result<ResolvedConfig, S
             &format!("BasicCompactionConfig: modelPolicies[{index}]"),
         )?;
     }
+    if config.protect_recent_messages == Some(0)
+        || config.compaction_retries.unwrap_or(1) > 10
+        || config.max_overflow_retries.unwrap_or(1) > 10
+        || config.model_policies.iter().any(|p| {
+            p.max_tokens == Some(0)
+                || p.compaction_retries.unwrap_or(1) > 10
+                || p.max_overflow_retries.unwrap_or(1) > 10
+        })
+    {
+        return Err(
+            "Compaction requires at least one protected message and at most 10 retries".into(),
+        );
+    }
     if config.max_tokens == Some(0) {
         return Err("BasicCompactionConfig.maxTokens (0) must be a positive integer".into());
     }
@@ -171,6 +186,7 @@ pub fn resolve_config(config: BasicCompactionConfig) -> Result<ResolvedConfig, S
         max_overflow_retries: config.max_overflow_retries.unwrap_or(1),
         model_policies: config.model_policies,
         auto: config.auto.unwrap_or(true),
+        protect_recent_messages: config.protect_recent_messages.unwrap_or(1),
     })
 }
 
@@ -251,62 +267,14 @@ impl Plugin for BasicCompactionPlugin {
             .downcast_ref::<serde_json::Value>()
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
-        let object = value.as_object().ok_or_else(|| {
-            PluginError::new(arc("BasicCompactionConfig must be an object".to_string()))
-        })?;
-        let allowed = [
-            "thresholdRatio",
-            "retainRatio",
-            "retainTokens",
-            "summarizationProvider",
-            "summarizationModel",
-            "maxTokens",
-            "compactionRetries",
-            "maxOverflowRetries",
-            "modelPolicies",
-            "auto",
-        ];
-        if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
-            return Err(PluginError::new(arc(format!(
-                "BasicCompactionConfig: unknown key \"{key}\""
-            ))));
-        }
-        let max_tokens = object
-            .get("maxTokens")
-            .map(|value| {
-                value.as_u64().ok_or_else(|| {
-                    PluginError::new(arc(
-                        "BasicCompactionConfig.maxTokens must be a positive integer".to_string(),
-                    ))
-                })
-            })
-            .transpose()?
-            .unwrap_or(8192);
-        if max_tokens == 0 {
-            return Err(PluginError::new(arc(
-                "BasicCompactionConfig.maxTokens (0) must be a positive integer".to_string(),
-            )));
-        }
-        let auto = object
-            .get("auto")
-            .map(|value| {
-                value.as_bool().ok_or_else(|| {
-                    PluginError::new(arc(
-                        "BasicCompactionConfig: auto must be a boolean".to_string()
-                    ))
-                })
-            })
-            .transpose()?
-            .unwrap_or(true);
-        let engine = BasicCompactionEngine::install(ctx, max_tokens)
+        let config = parse_config(&value).map_err(|e| PluginError::new(arc(e)))?;
+        let engine = BasicCompactionEngine::install_config(ctx, config)
             .map_err(|error| PluginError::new(arc(error)))?;
-        if auto {
-            let disposer = install_automatic(ctx, &engine);
-            let _ = ctx.effect(
-                "compaction-basic automatic listeners",
-                Box::pin(async move { Some(disposer) }),
-            );
-        }
+        let disposer = install_automatic(ctx, &engine);
+        let _ = ctx.effect(
+            "compaction-basic automatic listeners",
+            Box::pin(async move { Some(disposer) }),
+        );
         Ok(())
     }
 }
@@ -330,11 +298,49 @@ pub struct BasicCompactionEngine {
     sessions: Arc<SessionStore>,
     meter: Arc<TokenMeter>,
     operations: Mutex<()>,
-    max_tokens: u64,
+    config: BasicCompactionConfig,
+    ctx: cordis::Context,
+}
+
+struct CompactionLifecycleGuard {
+    session: Session,
+    lifecycle: serde_json::Value,
+}
+impl Drop for CompactionLifecycleGuard {
+    fn drop(&mut self) {
+        let id = &self.lifecycle["compactionId"];
+        let ended = self.session.with_events(|events| {
+            events
+                .iter()
+                .rev()
+                .any(|e| e.type_ == "compaction/end" && &e.data["compactionId"] == id)
+        });
+        if !ended {
+            self.lifecycle["error"] =
+                serde_json::json!("Compaction interrupted before the checkpoint completed");
+            let _ = self
+                .session
+                .append("compaction/end", self.lifecycle.clone(), None);
+        }
+    }
 }
 
 impl BasicCompactionEngine {
     pub fn install(ctx: &cordis::Context, max_tokens: u64) -> Result<Arc<Self>, String> {
+        Self::install_config(
+            ctx,
+            BasicCompactionConfig {
+                max_tokens: Some(max_tokens),
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn install_config(
+        ctx: &cordis::Context,
+        config: BasicCompactionConfig,
+    ) -> Result<Arc<Self>, String> {
+        resolve_config(config.clone())?;
         let llm = ctx
             .get_typed::<Arc<LlmRuntime>>("llm", false)
             .map(|slot| slot.as_ref().clone())
@@ -352,7 +358,8 @@ impl BasicCompactionEngine {
             sessions,
             meter,
             operations: Mutex::new(()),
-            max_tokens: max_tokens.max(1),
+            config,
+            ctx: ctx.clone(),
         });
         let service: Arc<dyn CompactionEngine> = engine.clone();
         ctx.register_service(service);
@@ -363,7 +370,12 @@ impl BasicCompactionEngine {
         signal.is_some_and(|signal| signal())
     }
 
-    fn select_range(session: &Session) -> Result<Option<(u64, u64)>, ManualCompactionError> {
+    fn select_range(
+        &self,
+        session: &Session,
+        retain_tokens: u64,
+        protect: usize,
+    ) -> Result<Option<(u64, u64)>, ManualCompactionError> {
         let surface = session.surface().map_err(|error| {
             ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
         })?;
@@ -377,12 +389,24 @@ impl BasicCompactionEngine {
                 .and_then(|seq| events.get(*seq as usize))
                 .is_some_and(|event| event.type_ == "system/message"),
         );
-        let Some(mut end_index) = surface
-            .nodes
-            .len()
-            .checked_sub(2)
-            .filter(|index| *index >= start_index)
-        else {
+        let events = session.events();
+        let mut retained = 0u64;
+        let mut count = 0usize;
+        let mut keep_from = surface.nodes.len();
+        for (index, seq) in surface.nodes.iter().enumerate().rev() {
+            if index < start_index {
+                break;
+            }
+            if let Some(message) = events.get(*seq as usize).and_then(derive_event_message) {
+                if count >= protect && retained >= retain_tokens {
+                    break;
+                }
+                retained = retained.saturating_add(self.meter.estimate_message(&message));
+                count += 1;
+            }
+            keep_from = index;
+        }
+        let Some(mut end_index) = keep_from.checked_sub(1).filter(|i| *i >= start_index) else {
             return Ok(None);
         };
         let start = surface.nodes[start_index];
@@ -510,6 +534,17 @@ impl BasicCompactionEngine {
                     "no model is available for summarization",
                 )
             })?;
+        let policy = resolve_target_policy(&self.resolved()?, &provider, &model);
+        let provider = if policy.summarization_provider.is_empty() {
+            provider
+        } else {
+            policy.summarization_provider.clone()
+        };
+        let model = if policy.summarization_model.is_empty() {
+            model
+        } else {
+            policy.summarization_model.clone()
+        };
         messages.push(create_user_message(
             vec![ContentBlock::Text {
                 text: INSTRUCTION.to_string(),
@@ -546,7 +581,7 @@ impl BasicCompactionEngine {
             system: legacy_system,
             tools: header.as_ref().and_then(|header| header.tools.clone()),
             temperature: None,
-            max_tokens: Some(self.max_tokens),
+            max_tokens: Some(policy.max_tokens),
             stop: None,
             signal: signal.cloned(),
             session_id: Some(agent.session.id().to_string()),
@@ -555,8 +590,13 @@ impl BasicCompactionEngine {
         };
         let mut stream = self.llm.stream(options);
         let mut assembler = BlockAssembler::new();
-        while let Some(chunk) = stream.next().await {
-            assembler.push(&chunk);
+        loop {
+            tokio::select! {
+                chunk = stream.next() => match chunk { Some(chunk) => assembler.push(&chunk), None => break },
+                _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => if Self::cancelled(signal) {
+                    return Err(ManualCompactionError::new(ManualCompactionErrorCode::Cancelled, "compaction cancelled"));
+                }
+            }
         }
         match assembler.finish() {
             FinishReason::Stop | FinishReason::ToolCalls => {}
@@ -595,30 +635,121 @@ pub fn install_automatic(
     ctx: &cordis::Context,
     engine: &Arc<BasicCompactionEngine>,
 ) -> cordis::Disposer {
+    let pressure_engine = engine.clone();
+    let listener: Arc<cordis::Listener> = Arc::new(move |_ctx, args| {
+        let engine = pressure_engine.clone();
+        Box::pin(async move {
+            let payload = args
+                .first()
+                .and_then(|v| v.downcast_ref::<dsh_agent::AgentPreStepPayload>())
+                .cloned()
+                .expect("pre-step payload");
+            let next = cordis::downcast_arc::<cordis::NextFn>(args.last().unwrap()).unwrap();
+            let decision = next.call().await;
+            let Some(dsh_agent::PreStepDecision::Enter { messages, .. }) =
+                decision.downcast_ref::<dsh_agent::PreStepDecision>()
+            else {
+                return Some(decision);
+            };
+            let extra = messages
+                .iter()
+                .map(|m| dsh_token_meter::estimate_content(&m.content))
+                .fold(0u64, u64::saturating_add);
+            let agent = CompactionAgentContext {
+                session: payload.agent.session().clone(),
+                provider: payload.agent.options().provider.clone(),
+                model: payload.agent.options().model.clone(),
+            };
+            let signal = payload.signal.clone();
+            let abort: CompactionAbort = Arc::new(move || signal.aborted());
+            if let Err(error) = engine
+                .compact_pressure(&agent, CompactionTrigger::Pressure, Some(&abort), extra)
+                .await
+            {
+                if !payload.signal.aborted() {
+                    let _ = agent.session.append("compaction/error", serde_json::json!({"turn":payload.turn,"step":payload.step,"code":error.code.as_str(),"message":error.message}), None);
+                    payload
+                        .signal
+                        .abort_with(dsh_agent::AgentCancelCause::Hook {
+                            reason: format!("Context compaction failed: {}", error.message),
+                        });
+                }
+                return Some(arc(dsh_agent::PreStepDecision::Reject));
+            }
+            Some(decision)
+        })
+    });
+    let pressure =
+        futures::executor::block_on(ctx.on("agent/pre-step", listener, Default::default()));
     let engine = engine.clone();
     let listener: Arc<cordis::Listener> = Arc::new(move |_ctx, args| {
         let engine = engine.clone();
         Box::pin(async move {
             let payload = args
                 .first()
-                .and_then(|value| value.downcast_ref::<dsh_agent::AgentPreStepPayload>())
+                .and_then(|v| v.downcast_ref::<dsh_agent::AgentRequestErrorPayload>())
                 .cloned()
-                .expect("agent/pre-step payload");
-            let next =
-                cordis::downcast_arc::<cordis::NextFn>(args.last().expect("agent/pre-step next"))
-                    .expect("agent/pre-step next");
-            let context = CompactionAgentContext {
+                .expect("request-error payload");
+            let next = cordis::downcast_arc::<cordis::NextFn>(args.last().unwrap()).unwrap();
+            if payload.failure.code != dsh_llm::CONTEXT_WINDOW_EXCEEDED_CODE {
+                return Some(next.call().await);
+            }
+            let agent = CompactionAgentContext {
                 session: payload.agent.session().clone(),
                 provider: payload.agent.options().provider.clone(),
                 model: payload.agent.options().model.clone(),
             };
-            let _ = engine
-                .compact_if_needed(&context, CompactionTrigger::Pressure, None)
-                .await;
-            Some(next.call().await)
+            let attempt = agent
+                .session
+                .events()
+                .iter()
+                .filter(|e| {
+                    e.type_ == "compaction/recovery"
+                        && e.data["turn"].as_u64() == Some(payload.turn)
+                        && e.data["step"].as_u64() == Some(payload.step)
+                })
+                .count() as u64;
+            let signal = payload.signal.clone();
+            let abort: CompactionAbort = Arc::new(move || signal.aborted());
+            let recover = async {
+                let config = engine.resolved()?;
+                let (provider, model) = engine.target(&agent)?;
+                let policy = resolve_target_policy(&config, &provider, &model);
+                if !config.auto || attempt >= policy.max_overflow_retries || abort() { return Ok(false); }
+                agent.session.append("compaction/recovery", serde_json::json!({"turn":payload.turn,"step":payload.step,"attempt":attempt+1}), None).map_err(|e| ManualCompactionError::new(ManualCompactionErrorCode::Commit,e))?;
+                let before = agent.session.surface().map_err(|e| ManualCompactionError::new(ManualCompactionErrorCode::Commit,e))?.nodes;
+                engine.compact_pressure(&agent, CompactionTrigger::ContextOverflow, Some(&abort), 0).await?;
+                let after = agent.session.surface().map_err(|e| ManualCompactionError::new(ManualCompactionErrorCode::Commit,e))?.nodes;
+                Ok::<bool,ManualCompactionError>(!abort() && before != after)
+            }.await;
+            let recovered = match recover {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = agent.session.append("compaction/error",serde_json::json!({"turn":payload.turn,"step":payload.step,"code":error.code.as_str(),"message":error.message}),None);
+                    false
+                }
+            };
+            Some(arc(if recovered {
+                Some(dsh_agent::RequestErrorAction::Retry)
+            } else {
+                None
+            }))
         })
     });
-    futures::executor::block_on(ctx.on("agent/pre-step", listener, Default::default()))
+    let overflow = futures::executor::block_on(ctx.on(
+        "agent/request-error",
+        listener,
+        cordis::EventOptions::default().prepend(true),
+    ));
+    cordis::make_disposer(move || {
+        let pressure = pressure.clone();
+        let overflow = overflow.clone();
+        Box::pin(async move {
+            pressure().await;
+            overflow().await;
+        })
+    })
 }
 
+include!("policy.rs");
 include!("basic_impl.rs");

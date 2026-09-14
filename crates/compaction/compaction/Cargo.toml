@@ -14,6 +14,8 @@ dsh-invariants = { path = "../../util/invariants" }
 dsh-llm = { path = "../../core/llm" }
 dsh-session = { path = "../../core/session" }
 dsh-token-meter = { path = "../../llm/token-meter" }
+dsh-settings = { path = "../../settings/settings" }
+dsh-compaction-tool-result-pruner = { path = "../compaction-tool-result-pruner" }
 futures = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }

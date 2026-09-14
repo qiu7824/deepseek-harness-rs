@@ -55,6 +55,7 @@ async fn fixture_server() -> (String, tokio::task::JoinHandle<()>) {
                     <style>html,body{{margin:0}}body{{height:3000px}}button{{position:absolute;left:20px;top:20px;width:180px;height:50px}}input{{position:absolute;left:20px;top:100px;width:300px;height:40px}}</style></head>
                     <body><button id="action" onclick="document.title='clicked'">Click target</button>
                     <input id="entry" oninput="document.title='typed:'+this.value">
+                    <input type="file" id="upload" hidden onchange="document.title='uploaded:'+this.files[0]?.name">
                     <div style="position:absolute;top:2600px">bottom</div></body></html>"#
                 );
                 let response = format!(
@@ -108,6 +109,49 @@ async fn edge_controls_isolated_pages_and_returns_real_screenshots() {
         "screenshot should contain rendered pixels"
     );
 
+    let initial_tab = navigated.value["state"]["activeTabId"].as_str().unwrap();
+    let tabs = request(&adapter, json!({"action":"list_tabs","sessionId":"first"})).await;
+    assert_eq!(tabs.value["tabs"].as_array().unwrap().len(), 1);
+    let new_tab = request(
+        &adapter,
+        json!({"action":"new_tab","sessionId":"first","url":format!("{fixture}/second")}),
+    )
+    .await;
+    let created_tab = new_tab.value["tabId"].as_str().unwrap();
+    assert_ne!(initial_tab, created_tab);
+    request(
+        &adapter,
+        json!({"action":"select_tab","sessionId":"first","tabId":initial_tab}),
+    )
+    .await;
+    let closed = request(
+        &adapter,
+        json!({"action":"close_tab","sessionId":"first","tabId":created_tab}),
+    )
+    .await;
+    assert_eq!(closed.value["state"]["activeTabId"], initial_tab);
+    let workspace = test_root.join("upload-workspace");
+    tokio::fs::create_dir_all(&workspace).await.unwrap();
+    tokio::fs::write(workspace.join("fixture.txt"), "UPLOAD_FIXTURE")
+        .await
+        .unwrap();
+    tokio::fs::write(test_root.join("outside.txt"), "OUTSIDE_FIXTURE")
+        .await
+        .unwrap();
+    let mut upload=AdapterRequest::from_arguments(&json!({"action":"upload_files","sessionId":"first","selector":"#upload","files":["fixture.txt"]})).unwrap().with_owner_id("owner-a");
+    upload.workspace_root = Some(workspace.clone());
+    let uploaded = adapter.execute(upload, active_signal()).await.unwrap();
+    assert_eq!(uploaded.value["state"]["title"], "uploaded:fixture.txt");
+    let mut outside=AdapterRequest::from_arguments(&json!({"action":"upload_files","sessionId":"first","selector":"#upload","files":["../outside.txt"]})).unwrap().with_owner_id("owner-a");
+    outside.workspace_root = Some(workspace);
+    assert_eq!(
+        adapter
+            .execute(outside, active_signal())
+            .await
+            .unwrap_err()
+            .code,
+        "COMPUTER_USE_UPLOAD_INVALID"
+    );
     let clicked = request(
         &adapter,
         json!({"action":"click","sessionId":"first","x":60,"y":45,"waitMs":100}),

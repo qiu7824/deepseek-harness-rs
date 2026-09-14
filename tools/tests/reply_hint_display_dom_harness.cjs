@@ -8,7 +8,7 @@ const React = require(path.join(modules, 'react')), jsx = require(path.join(modu
 const plugins = path.resolve(__dirname, '../../web/dist/plugins'), assets = path.resolve(__dirname, '../../web/dist/assets');
 const temporary = fs.mkdtempSync(path.join(process.env.DSH_TEST_TEMP_DIR || os.tmpdir(), 'dsh-hint-display-'));
 const file = path.join(temporary, 'settings.json');
-fs.writeFileSync(file, JSON.stringify({ revision: 7, value: { busyEnter: 'steer', hintDisplay: 'text' } }));
+fs.writeFileSync(file, JSON.stringify({ revision: 7, value: { busyEnter: 'steer' } }));
 const shell = fs.readFileSync(path.join(assets, fs.readdirSync(assets).find(name => /^index-.*\.js$/.test(name))), 'utf8');
 const name = /DisclosureRow:([\w$]+)/.exec(shell)[1], start = shell.indexOf(`function ${name}(`), end = shell.indexOf('}const ', start) + 1;
 const native = { f: jsx, R: React, Fn: {}, ye: (...values) => values.filter(Boolean).join(' '), Bl: () => React.createElement('svg', { 'data-native-chevron': true }) };
@@ -49,7 +49,7 @@ const api = { settings: {
     if (fail) return { result: { ok: false, error: { code: 'write-failed', message: 'fixture disk unavailable' } } };
     const durable = read(); assert.equal(request.expectedRevision, durable.revision);
     assert.equal(request.ns, 'ui-conversation'); assert.deepEqual(Array.from(request.ops[0].path), ['hintDisplay']);
-    assert.ok(['text', 'icons'].includes(request.ops[0].value));
+    assert.ok(['both', 'text', 'icons'].includes(request.ops[0].value));
     durable.value.hintDisplay = request.ops[0].value; durable.revision++;
     fs.writeFileSync(file, JSON.stringify(durable));
     return { result: { ok: true, value: { ns: 'ui-conversation', ...durable } } };
@@ -67,6 +67,8 @@ function Scene() {
   return React.createElement(React.Fragment, null,
     React.createElement(ui.ReplyHintDisplayRow, { useHintDisplay, setHintDisplay: mode => preference.set(mode), t }),
     React.createElement(tools.GenericToolCard, { toolName: 'fixture_tool', block: { kind: 'tool-result', callId: 'tool', call: { argsRaw: '{"value":"PARAMETER_UNCHANGED"}' }, content: [{ type: 'text', text: 'MODEL_OUTPUT_UNCHANGED' }], subCalls: [] }, t }),
+    React.createElement(tools.GenericToolCard, { toolName: 'read_image', block: { kind: 'tool-result', callId: 'viewed-image', call: { argsRaw: '{"path":"diagram.png"}' }, content: [{ type: 'text', text: 'Image inspected' }], subCalls: [] }, t }),
+    React.createElement(tools.GenericToolCard, { toolName: 'edit', block: { kind: 'tool-result', callId: 'failed-edit', call: { argsRaw: '{"path":"app.rs"}' }, isError: true, content: [{ type: 'text', text: 'Edit failed' }], subCalls: [] }, t }),
     React.createElement(ui.GenericCommandCard, { node: { name: 'fixture_command', outcome: { kind: 'ok', text: 'COMMAND_RESULT\nSECOND_LINE' } }, t }),
     React.createElement(cordis.CordisDefineRow, { callId: 'cordis', block: { kind: 'tool-result', call: { argsRaw: '{"name":"fixture","purpose":"PURPOSE_UNCHANGED"}' }, content: [{ type: 'text', text: 'CORDIS_RESULT' }] }, useInventory: selector => selector({ rows: [], removed: new Set() }), useLoaded: selector => selector(new Set()), t: translate(cordis.zh) }),
     React.createElement(cordis.CordisRunRow, { callId: 'cordis-run', block: { kind: 'tool-result', call: { argsRaw: '{}' }, content: [{ type: 'text', text: 'CORDIS_RUN_RESULT' }] }, inspect: () => inspections.push('run'), renderSlot: () => null, useInventory: selector => selector({ rows: [], removed: new Set() }), useLoaded: selector => selector(new Set()), useRunCards: selector => selector(new Map()), useActiveRuns: selector => selector(new Map()), onObserveRunCard: noop, t: translate(cordis.zh) }),
@@ -86,7 +88,7 @@ function assertMode(mode) {
   assert.notEqual(style(task.querySelector('svg')).display, 'none');
   const labels = [...document.querySelectorAll('.dshReplyHintLabel')], icons = [...document.querySelectorAll('.dshReplyHintIcon')];
   assert.ok(labels.length >= 5 && icons.length >= 3, `tools, thinking, task/subtask and activity hints participate: labels=${labels.length} icons=${icons.length}`);
-  for (const icon of icons) assert.equal(style(icon).display, mode === 'icons' ? 'inline-flex' : 'none');
+  for (const icon of icons) assert.equal(style(icon).display, mode === 'text' ? 'none' : 'inline-flex');
   for (const label of labels) assert.equal(style(label).position === 'absolute', mode === 'icons', 'icon mode does not leave the text label visually alongside its icon');
   for (const leading of document.querySelectorAll('.dshReplyHintLeading')) {
     assert.notEqual(style(leading).display, 'none', 'the native leading still owns its interactive disclosure arrow');
@@ -107,19 +109,22 @@ function assertMode(mode) {
 async function main() {
   await scope.load(); await act(() => root.render(React.createElement(Scene)));
   await act(() => document.querySelector('button[title="任务"]').click());
-  assertMode('text'); assert.equal(writes.length, 0, 'default rendering does not rewrite persisted settings');
+  assertMode('both'); assert.equal(writes.length, 0, 'default rendering does not rewrite persisted settings');
+  assert.equal(document.querySelector('[data-tool=read_image] .dshReplyHintLabel').textContent, '已查看图片');
+  assert.equal(document.querySelector('[data-tool=edit] .dshReplyHintLabel').textContent, '编辑文件失败', 'failed edits never claim a successful change');
+  assert.match(document.querySelector('[data-tool=read_image]').textContent, /diagram.png/);
   for (const name of ['cordis_run', 'cordis_stop', 'cordis_undefine']) await act(() => document.querySelector(`[data-tool=${name}] button`).click());
   assert.deepEqual(inspections, ['run', 'cordis_stop', 'cordis_undefine'], 'localized inspection controls preserve their original action');
   await act(() => document.querySelector('[data-disclosure-row]').click());
   assert.equal(document.querySelector('[data-disclosure-row]').getAttribute('aria-expanded'), 'true');
   assert.match(document.body.textContent, /MODEL_OUTPUT_UNCHANGED/);
   await act(() => document.querySelector('[data-reply-hint-setting] button').click());
-  assert.deepEqual([...document.querySelectorAll('[role=menuitemradio]')].map(node => node.textContent), ['图标显示', '文字显示']);
-  await act(() => document.querySelector('[role=menuitemradio]').click());
+  assert.deepEqual([...document.querySelectorAll('[role=menuitemradio]')].map(node => node.textContent), ['图标＋文字', '图标显示', '文字显示']);
+  await act(() => document.querySelectorAll('[role=menuitemradio]')[1].click());
   await scope.tail; await act(flush); assertMode('icons');
   assert.equal(document.querySelector('[data-disclosure-row]').getAttribute('aria-expanded'), 'true', 'changing display preference preserves disclosure state');
   assert.equal(read().value.hintDisplay, 'icons'); assert.equal(read().value.busyEnter, 'steer', 'the other conversation setting is preserved');
-  await assert.rejects(preference.set('both'), /Invalid/); assert.equal(writes.length, 1, 'no third display mode is persisted');
+  await assert.rejects(preference.set('invalid'), /Invalid/); assert.equal(writes.length, 1, 'invalid modes are not persisted');
   fail = true;
   await act(() => preference.set('text')); assertMode('icons');
   assert.match(document.querySelector('[role=alert]').textContent, /fixture disk unavailable/);
@@ -129,8 +134,9 @@ async function main() {
   await act(() => root.render(React.createElement(Scene))); await act(() => document.querySelector('button[title="任务"]').click()); assertMode('icons');
   await act(() => preference.set('text')); assertMode('text');
   assert.equal(read().value.hintDisplay, 'text');
+  await act(() => preference.set('both')); assertMode('both'); assert.equal(read().value.hintDisplay, 'both');
   await act(() => root.unmount()); preference.dispose(); await scope.dispose();
   assert.equal(document.documentElement.hasAttribute('data-reply-hint-display'), false, 'plugin teardown removes its visual preference owner');
-  console.log('PASS reply hints: two native-menu modes; text default; immediate SVG/text switch; accessible tooltip/name; native disclosure leading retained; real SettingsScope persistence/reload and write rollback; untouched content');
+  console.log('PASS reply hints: three native-menu modes; icons and text default; immediate SVG/text switch; accessible tooltip/name; native disclosure leading retained; real SettingsScope persistence/reload and write rollback; untouched content');
 }
 main().catch(async error => { console.error(error); process.exitCode = 1; await act(() => root.unmount()); preference.dispose(); await scope.dispose(); }).finally(() => { dom.window.close(); fs.rmSync(temporary, { recursive: true, force: true }); });

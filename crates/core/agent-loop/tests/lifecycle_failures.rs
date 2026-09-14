@@ -1,5 +1,7 @@
 #[path = "lifecycle_failures/cancellation.rs"]
 mod cancellation;
+#[path = "lifecycle_failures/compaction_recovery.rs"]
+mod compaction_recovery;
 #[path = "lifecycle_failures/model_switch.rs"]
 mod model_switch;
 #[path = "lifecycle_failures/parallel_cancellation.rs"]

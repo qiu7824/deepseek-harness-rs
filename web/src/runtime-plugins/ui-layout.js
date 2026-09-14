@@ -12,6 +12,12 @@ window.__ModuleLoader__.load({
         .dshSidebarAction,.Uzx--a_add,.tMJkdG_trigger,.oHd92q_trigger,.YysEUW_trigger,.fnCloG_action,.EKSdBa_close,._7h7_Oq_close{min-height:var(--dsh-control-hit);min-width:var(--dsh-control-hit);border-radius:8px}
         .dshSidebarAction svg,.Uzx--a_add svg,.Uzx--a_primary svg,.tMJkdG_trigger svg,.oHd92q_trigger svg,.YysEUW_trigger svg,.fnCloG_action svg,.EKSdBa_close svg,._7h7_Oq_close svg,._7h7_Oq_navIcon{width:var(--dsh-control-icon)!important;height:var(--dsh-control-icon)!important;flex-shrink:0}
         @media(min-width:769px){body ._7h7_Oq_panel._7h7_Oq_panel{width:min(1040px,calc(100vw - 48px));max-width:1040px}}.dshSidebarAction{gap:8px}.dswSuiteToolbar button,.dswSuiteBar button{min-width:32px;min-height:32px;border-radius:8px}.dswSuiteToolbar button svg,.dswSuiteBar button svg{width:18px;height:18px}body .dbs-head>.dbs-icon{min-width:34px;min-height:34px;font-size:18px}
+        body .Uzx--a_tools{gap:6px}body .Uzx--a_modes{gap:6px}
+        body .Uzx--a_tools [data-composer-control]{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:var(--dsh-control-hit);height:var(--dsh-control-hit);min-width:var(--dsh-control-hit);min-height:var(--dsh-control-hit);padding:0;border:0;border-radius:8px;background:var(--dsw-specific-selector);color:var(--dsw-alias-label-primary)}
+        body .Uzx--a_tools [data-composer-control]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}
+        body .Uzx--a_tools [data-composer-control]:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}
+        body .Uzx--a_tools [data-composer-control] svg{display:block;width:var(--dsh-control-icon)!important;height:var(--dsh-control-icon)!important;flex:none}
+        body .dshComposerPermissionLabel,body .dshComposerPermissionChevron{display:none}
         @media(pointer:coarse){:root{--dsh-control-icon:20px;--dsh-control-hit:42px}}
         `;
         if(typeof document!=="undefined"&&!document.querySelector("style[data-dsh-interaction-scale]")){const style=document.createElement("style");style.dataset.dshInteractionScale="";style.textContent=interactionScaleCss;document.head.appendChild(style);}

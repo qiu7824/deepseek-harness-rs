@@ -136,10 +136,33 @@ impl ToolResultPruner {
         Some(output)
     }
     pub fn prune_session(&self, session: &Session) -> Result<PruneResult, String> {
-        let candidates: Vec<_> = session
-            .surface()?
-            .nodes
+        self.prune_session_protected(session, 0)
+    }
+
+    pub fn prune_session_protected(
+        &self,
+        session: &Session,
+        protect_recent: usize,
+    ) -> Result<PruneResult, String> {
+        let nodes = session.surface()?.nodes;
+        let mut keep_from = nodes.len();
+        let mut kept = 0;
+        for (index, seq) in nodes.iter().enumerate().rev() {
+            if kept >= protect_recent {
+                break;
+            }
+            keep_from = index;
+            if session
+                .event_at(dsh_session::SessionSeq::new(*seq)?)
+                .and_then(|e| dsh_session::derive_event_message(&e))
+                .is_some()
+            {
+                kept += 1;
+            }
+        }
+        let candidates: Vec<_> = nodes
             .into_iter()
+            .take(keep_from)
             .filter_map(|seq| {
                 session
                     .event_at(dsh_session::SessionSeq::new(seq).ok()?)

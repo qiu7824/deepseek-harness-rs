@@ -34,6 +34,7 @@ window.__ModuleLoader__.load({
 			pwsh: "bash",
 			read: "read",
 			read_image: "read",
+            read_video: "read",
 			web_fetch: "read",
 			web_search: "search",
 			grep: "search",
@@ -671,11 +672,12 @@ window.__ModuleLoader__.load({
 			}
 			return { added, removed };
 		}
-		function toolDisplayTitle(toolName, title, t) {
+		function toolDisplayTitle(toolName, title, t, state) {
+            if (["read_image", "read_video", "read", "write", "edit"].includes(toolName) && ["running", "ok", "error", "stopped"].includes(state)) return t("tool.activity." + toolName + "." + state);
 			const key = ({ "Code context":"tool.title.codeContext","Code callers":"tool.title.codeCallers","Code callees":"tool.title.codeCallees","Code impact":"tool.title.codeImpact","Code path":"tool.title.codePath", Search:"tool.title.search", Read:"tool.title.read", Bash:"tool.title.shell", Pwsh:"tool.title.pwsh", Write:"tool.title.write", Edit:"tool.title.edit", Code:"tool.title.code", "Tool call":"tool.title.call", Inspect:"tool.title.inspect", "Run Cordis Plugin":"tool.title.runPlugin", Fetch:"tool.title.fetch" })[title];
 			return key ? t(key) : title;
 		}
-		const COMPUTER_ACTIONS = new Set(["start", "status", "capture", "click", "double_click", "type", "key", "drag", "scroll", "list_sessions", "close", "navigate", "list_windows", "focus_window", "takeover", "resume", "release_inputs"]);
+		const COMPUTER_ACTIONS = new Set(["start", "status", "capture", "click", "double_click", "type", "key", "drag", "scroll", "list_sessions", "close", "navigate", "list_windows", "focus_window", "takeover", "resume", "release_inputs", "list_tabs", "new_tab", "select_tab", "close_tab", "upload_files", "video_info", "video_frame"]);
 		function toolDisplaySummary(toolName, summary, t) {
 			if (toolName !== "computer_use") return summary;
 			const prefix = toolName + " · ";
@@ -716,7 +718,7 @@ window.__ModuleLoader__.load({
 			const cardBody = variant === "code" ? null : body;
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: ToolRow_module_css_default.root,
-                title: toolDisplayTitle(toolName, title, t),
+                title: toolDisplayTitle(toolName, title, t, state),
 				"data-variant": variant,
 				"data-tool": toolName,
 				"data-state": state,
@@ -728,8 +730,8 @@ window.__ModuleLoader__.load({
 					leadingClassName: ToolRow_module_css_default.leading + " dshReplyHintLeading",
 					titleClassName: ToolRow_module_css_default.title,
 					chevronClassName: ToolRow_module_css_default.chevron,
-					icon: (0, react_jsx_runtime.jsx)("span", { className: toolName === "todo_write" ? void 0 : "dshReplyHintIcon", title: toolDisplayTitle(toolName, title, t), "aria-hidden": true, children: icon ?? (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconApiOutline14, { size: 14 }) }),
-					title: (0, react_jsx_runtime.jsx)("span", { className: toolName === "todo_write" ? void 0 : "dshReplyHintLabel", children: toolDisplayTitle(toolName, title, t) }),
+					icon: (0, react_jsx_runtime.jsx)("span", { className: toolName === "todo_write" ? void 0 : "dshReplyHintIcon", title: toolDisplayTitle(toolName, title, t, state), "aria-hidden": true, children: icon ?? (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconApiOutline14, { size: 14 }) }),
+					title: (0, react_jsx_runtime.jsx)("span", { className: toolName === "todo_write" ? void 0 : "dshReplyHintLabel", children: toolDisplayTitle(toolName, title, t, state) }),
 					open,
 					expandable,
 					expandOnRowClick: true,
