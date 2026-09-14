@@ -20,8 +20,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     let report = dsh_host::boot_report(&spine).await?;
     println!("{}", serde_json::to_string_pretty(&report)?);
-    // Launcher-owned process: keep the web service alive until termination.
-    tokio::signal::ctrl_c().await?;
+    // Launcher-owned process: remain alive until the launcher terminates us.
+    // The launcher owns shutdown and sends a process termination signal; waiting
+    // on ctrl_c alone is unreliable for a hidden Windows child process.
+    std::future::pending::<()>().await;
     spine.shutdown().await?;
     Ok(())
 }
