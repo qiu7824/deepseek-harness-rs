@@ -3147,6 +3147,14 @@ window.__ModuleLoader__.load({
 			const denominator = statistics.reportedInputTokens;
 			return !Number.isFinite(denominator) || denominator <= 0 ? null : Math.round(usage.cacheReadTokens / denominator * 100);
 		}
+		function userFacingPromptError(error, t) {
+			const text = String(error?.message ?? error ?? "");
+			if (/not a git repository|Unable to read current working directory/i.test(text)) return "当前目录不是 Git 仓库，已跳过 Git 检查。";
+			if (/sandbox denied|SANDBOX_DENIED/i.test(text)) return "沙箱拒绝了此文件操作，请选择授权的工作区目录。";
+			if (/尚未提供 OpenAI 原生工具接口|native tool interface/i.test(text)) return "当前连接不支持此工具，请切换到支持工具调用的连接或模型。";
+			if (/agent input requires prompt/i.test(text)) return "Agent 输入缺少任务提示，已阻止无效调用。";
+			return text;
+		}
 		function cacheUsageLabel(usage, t) {
 			const percent = cacheHitPercent(usage);
 			if (percent === null) return t("stats.cacheUnavailable");
@@ -3764,7 +3772,7 @@ window.__ModuleLoader__.load({
 			const imageLimits = useProjection("imageLimits");
 			(0, react.useEffect)(() => {
 				if (promptError === null) return;
-				showToast(promptError.error.code === "attachment-error" ? attachmentErrorText(t, promptError.error.details.reason, imageLimits) : `${promptError.error.message} (${promptError.error.code})`);
+				showToast(promptError.error.code === "attachment-error" ? attachmentErrorText(t, promptError.error.details.reason, imageLimits) : userFacingPromptError(promptError.error, t));
 			}, [
 				promptError,
 				showToast,
