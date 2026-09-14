@@ -199,7 +199,7 @@ async fn handle(
         Err(response) => return response,
     };
     if operation == "meta" {
-        let availability = runtime.as_ref().map(|runtime| runtime.availability());
+        let availability = runtime.as_ref().map(|runtime| runtime.availability_for(&body));
         let available = availability.as_ref().is_some_and(|result| result.is_ok());
         let availability_error = availability.and_then(Result::err).map(|failure| {
             json!({
@@ -209,8 +209,8 @@ async fn handle(
         });
         let actions = runtime.as_ref().map_or(&[][..], |runtime| {
             runtime
-                .supported_actions()
-                .unwrap_or_else(|| runtime.human_only_actions())
+                .actions_for(&body)
+                .unwrap_or_else(|| runtime.human_only_actions_for(&body))
         });
         return json_response(
             StatusCode::OK,
@@ -218,12 +218,13 @@ async fn handle(
                 "enabled": runtime.is_some(),
                 "available": available,
                 "error": availability_error,
-                "adapter": runtime.as_ref().map(|runtime| runtime.adapter_id()),
+                "adapter": runtime.as_ref().and_then(|runtime| runtime.adapter_id_for(&body).ok()),
+                "targets": runtime.as_ref().map(|runtime| runtime.targets()),
                 "ownerSessionId": owner.id,
                 "defaultBrowserSessionId": DEFAULT_BROWSER_SESSION_ID,
                 "actions": actions,
-                "humanOnlyActions": runtime.as_ref().map_or(&[][..], |runtime| runtime.human_only_actions()),
-                "capabilitiesKnown": runtime.as_ref().is_some_and(|runtime| runtime.supported_actions().is_some())
+                "humanOnlyActions": runtime.as_ref().map_or(&[][..], |runtime| runtime.human_only_actions_for(&body)),
+                "capabilitiesKnown": runtime.as_ref().is_some_and(|runtime| runtime.actions_for(&body).is_some())
             }),
         );
     }

@@ -28,6 +28,16 @@ pub struct SessionStatsProjection {
     pub decode_ms: u64,
     /// Summed provider output tokens over the same steps.
     pub decode_tokens: u64,
+    #[serde(default)]
+    pub request_ms: u64,
+    #[serde(default)]
+    pub request_output_tokens: u64,
+    #[serde(default)]
+    pub request_samples: u64,
+    #[serde(default)]
+    pub request_sources: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub request_phase: Option<serde_json::Value>,
 }
 
 impl SessionStatsProjection {
@@ -42,6 +52,11 @@ impl SessionStatsProjection {
             ttft_steps: 0,
             decode_ms: 0,
             decode_tokens: 0,
+            request_ms: 0,
+            request_output_tokens: 0,
+            request_samples: 0,
+            request_sources: Vec::new(),
+            request_phase: None,
         }
     }
 }

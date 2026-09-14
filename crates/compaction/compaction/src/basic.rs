@@ -586,7 +586,7 @@ impl BasicCompactionEngine {
             signal: signal.cloned(),
             session_id: Some(agent.session.id().to_string()),
             purpose: Some("compaction".to_string()),
-            agent_loop_request: false,
+            agent_loop_request: false, telemetry: None,
         };
         let mut stream = self.llm.stream(options);
         let mut assembler = BlockAssembler::new();

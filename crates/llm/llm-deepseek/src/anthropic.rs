@@ -836,7 +836,7 @@ mod tests {
             signal: None,
             session_id: None,
             purpose: None,
-            agent_loop_request: false,
+            agent_loop_request: false, telemetry: None,
         };
         let serialize = |options: &GenerateOptions| {
             crate::serialize::serialize_request_with_prepared_images(

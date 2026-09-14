@@ -116,6 +116,16 @@ impl std::error::Error for AdapterError {}
 pub trait ComputerUseAdapter: Send + Sync + 'static {
     fn adapter_id(&self) -> &'static str;
 
+    fn adapter_id_for(&self, _arguments: &Value) -> Result<&'static str, AdapterError> {
+        Ok(self.adapter_id())
+    }
+
+    fn targets(&self) -> Value { Value::Null }
+
+    fn availability_for(&self, _arguments: &Value) -> Result<(), AdapterError> {
+        self.availability()
+    }
+
     /// Browsers own isolated sessions; desktop drivers override this with a
     /// physical device identity so two conversations cannot race one desktop.
     fn control_scope(&self, request: &AdapterRequest) -> Result<String, AdapterError> {

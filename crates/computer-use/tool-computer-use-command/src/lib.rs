@@ -7,6 +7,10 @@ mod browser;
 mod command;
 mod control;
 mod desktop;
+mod routing;
+pub use routing::TargetRouter;
+mod js;
+pub use js::install_js;
 #[cfg(test)]
 mod lifecycle_tests;
 
@@ -90,6 +94,19 @@ impl cordis::Service for ComputerUseRuntime {
 impl ComputerUseRuntime {
     pub fn adapter_id(&self) -> &'static str {
         self.adapter.adapter_id()
+    }
+    pub fn adapter_id_for(&self, arguments: &Value) -> Result<&'static str, AdapterError> {
+        self.adapter.adapter_id_for(arguments)
+    }
+    pub fn targets(&self) -> Value { self.adapter.targets() }
+    pub fn availability_for(&self, arguments: &Value) -> Result<(), AdapterError> {
+        self.adapter.availability_for(arguments)
+    }
+    pub fn actions_for(&self, arguments: &Value) -> Option<&'static [&'static str]> {
+        self.adapter_id_for(arguments).ok().and_then(supported_actions)
+    }
+    pub fn human_only_actions_for(&self, arguments: &Value) -> &'static [&'static str] {
+        self.adapter_id_for(arguments).map(human_only_actions).unwrap_or(&[])
     }
 
     /// Built-in transport capabilities. External commands provide their own
@@ -178,10 +195,11 @@ impl ComputerUseRuntime {
         signal: AbortPredicate,
         origin: ControlOrigin,
     ) -> Result<AdapterOutput, AdapterError> {
-        let normalized = arguments::normalize(self.adapter_id(), arguments)?;
+        let selected_adapter = self.adapter.adapter_id_for(arguments)?;
+        let normalized = arguments::normalize(selected_adapter, arguments)?;
         let arguments = normalized.as_ref();
-        validate_adapter_url(self.adapter_id(), arguments)?;
-        validate_window_target(self.adapter_id(), arguments)?;
+        validate_adapter_url(selected_adapter, arguments)?;
+        validate_window_target(selected_adapter, arguments)?;
         let was_active = self.adapter.has_owner_activity(&owner_id);
         let mut request = AdapterRequest::from_arguments(arguments)?
             .with_owner_id(owner_id.clone())
@@ -227,7 +245,7 @@ impl ComputerUseRuntime {
         })?;
         object
             .entry("adapter".to_string())
-            .or_insert_with(|| Value::String(self.adapter.adapter_id().to_string()));
+            .or_insert_with(|| Value::String(selected_adapter.to_string()));
         Ok(output)
     }
 
@@ -331,6 +349,13 @@ fn supported_actions(adapter: &str) -> Option<&'static [&'static str]> {
             "resume_agent",
         ]),
         "native-desktop" => Some(&[
+            "list_apps",
+            "launch_app",
+            "ax_state",
+            "invoke",
+            "set_value",
+            "select",
+            "scroll_element",
             "start",
             "status",
             "capture",
@@ -437,6 +462,7 @@ fn validate_window_target(adapter: &str, arguments: &Value) -> Result<(), Adapte
 }
 
 const READ_ONLY_ACTIONS: &[&str] = &[
+    "ax_state",
     "video_frame",
     "capture",
     "status",
@@ -658,6 +684,12 @@ pub fn install_adapter(
                 "type": "object",
                 "additionalProperties": true,
                 "properties": {
+                    "target": {"type":"string","enum":["local","remote","browser"],"description":"The Host computer is the default (local), without any UU connection. Use remote only when the user explicitly requests another computer; it uses the UU device bound in settings. Use browser for the isolated browser. Keep the same target throughout a control session."},
+                    "windowRef":{"type":"string","description":"Process-lifetime window reference returned by list_windows. Send with windowId when binding a window."},
+                    "snapshotId":{"type":"string","description":"Exact current accessibility snapshotId returned by ax_state."},
+                    "elementId":{"type":"integer","minimum":0,"description":"Element index in that snapshot for invoke, set_value, select or scroll_element."},
+                    "direction":{"type":"string","enum":["up","down"],"description":"Direction for scroll_element."},
+                    "executable":{"type":"string","description":"Absolute installed application executable for launch_app; no shell command or arguments."},
                     "action": {
                         "type": "string",
                         "description": "Actions: start, status, capture, click, double_click, type, key, drag, scroll, list_sessions, close. Browser additionally supports navigate. Native desktop additionally supports list_windows after start: read visible windowId/title/bounds, then close before starting a chosen windowId. Native focus_window focuses only the already bound window; when state.foreground is false, use focus_window then capture a fresh screenshot before input. Native desktop controls the Host computer; UU desktop controls the device bound in settings. Each physical desktop is owned by one conversation at a time. If control.mode is manual, stop observing and sending input until the user returns control; only the GUI may resume. After control is returned, capture a fresh screenshot before input. Raw key/mouse edges and video_frame are GUI-only."

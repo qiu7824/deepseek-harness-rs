@@ -654,7 +654,7 @@ impl Session {
                     seq: SessionSeq::new(state.log.len() as u64)?,
                     time: now_ms(),
                     data: data_snapshot,
-                    ignorable: None,
+                    ignorable: (type_ == "request/phase").then_some(true),
                     surface_op: intent.as_ref().map(|intent| intent.surface_op.clone()),
                     source_event_seqs: intent.and_then(|intent| intent.source_event_seqs),
                 };

@@ -877,6 +877,7 @@ window.__ModuleLoader__.load({
     }
     function ControlledBrowserSession(props) {
       const browserSessionId = props.browserSessionId;
+      const [target,setTarget]=React.useState(()=>/^https?:/i.test(props.tab.path||"")?"browser":"local");
       const desktopInput=React.useRef(null), browserImage=React.useRef(null);
       const autoRefresh = props.pluginSettings?.autoRefresh === true;
       const alive = React.useRef(true),closed=React.useRef(false);
@@ -902,7 +903,7 @@ window.__ModuleLoader__.load({
           // viewer. Explicit close still ends it through the Host; the Host's
           // bounded startup timeout handles a viewer that never returns.
           const sessionStart=name==="start"&&(desktop||options?.desktopStart===true);
-          const request={ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: props.scope.sessionId, browserSessionId, action: name, includeScreenshot: !sdkDesktop, ...(extra || {}) }), signal: options?.signal || lifetime.current.signal };
+          const request={ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: props.scope.sessionId, browserSessionId, target, action: name, includeScreenshot: !sdkDesktop, ...(extra || {}) }), signal: options?.signal || lifetime.current.signal };
           const value = await (name==="start"?desktopStart(props.scope.sessionId,browserSessionId,request,sessionStart):name==="close"?desktopClose(props.scope.sessionId,browserSessionId,request):json("/__dsh-computer-use/action",request));
           if (alive.current && sequence >= appliedSequence.current) {
             appliedSequence.current = sequence;
@@ -922,7 +923,7 @@ window.__ModuleLoader__.load({
         if (!props.visible) return;
         let active=true,stop=null;
         const controller=new AbortController();
-        json("/__dsh-computer-use/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: props.scope.sessionId }), signal: controller.signal }).then(async value => {
+        json("/__dsh-computer-use/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: props.scope.sessionId, target }), signal: controller.signal }).then(async value => {
           if (!active) return;
           setMeta(value);
           if (!value.enabled) { setError("Computer Use 未启用，请在设置 → 插件 → Computer Use 中开启并重启 Host"); return; }
@@ -936,7 +937,7 @@ window.__ModuleLoader__.load({
           if(active&&started&&autoRefresh&&!["native-desktop","uu-desktop"].includes(value.adapter))stop=visiblePoll(async signal=>{if(closed.current)return null;await action("capture",null,{quiet:true,signal});return 3000},3000);
         }).catch(reason => { if (active && reason?.name !== "AbortError") setError(reason.message || String(reason)); });
         return () => { active = false; controller.abort(); stop?.(); };
-      }, [props.visible, props.scope.sessionId, browserSessionId, autoRefresh]);
+      }, [props.visible, props.scope.sessionId, browserSessionId, autoRefresh, target]);
       React.useEffect(()=>{
         if(meta?.adapter!=="native-desktop"||!props.visible||!state?.connected||!liveDesktop||busy)return;
         return visiblePoll(async signal=>{if(closed.current)return null;const value=await action("capture",null,{quiet:true,signal});return value?500:null},500);
@@ -972,6 +973,7 @@ window.__ModuleLoader__.load({
       const dragStart=React.useRef(null),dragged=React.useRef(false);
       const pointerPoint=event=>{const rect=event.currentTarget.getBoundingClientRect();return {x:Math.max(0,Math.min(Math.max(0,state.viewport.width-1),(event.clientX-rect.left)*state.viewport.width/rect.width)),y:Math.max(0,Math.min(Math.max(0,state.viewport.height-1),(event.clientY-rect.top)*state.viewport.height/rect.height))}};
       return h("section", { className: "dswSuite", "data-tab": "controlled-browser", "data-browser-session": browserSessionId },
+        Array.isArray(meta?.targets)&&h("label",{className:"dswSuiteBar"},"控制目标",h("select",{"aria-label":"控制目标",value:target,disabled:busy,onChange:async event=>{const next=event.target.value;await desktopInput.current?.releaseAndFlush();if(state){const closed=await action("close",{includeScreenshot:false});if(!closed)return;}closed.current=false;setSelectedWindow(null);setWindows(null);setState(null);setImage("");setControl(null);setMeta(null);setTarget(next);}},meta.targets.map(item=>h("option",{key:item.id,value:item.id},({local:"本机桌面",remote:"已绑定的 UU 远程设备",browser:"隔离浏览器"})[item.id]||item.id)))),
         h("div", { className: "dswSuiteBar" }, h(Button,{variant:"outline",size:"sm",disabled:busy,onClick:reconnect},state?"重新连接":"连接"),h(Button,{variant:"outline",size:"sm","aria-pressed":annotate,onClick:()=>setAnnotate(v=>!v)},annotate?"关闭注释":"注释画面"),windowMenu,windowMenu&&selectedWindow&&h("span",{className:"dswSuiteMeta"},selectedWindow.title.slice(0,512),(selectedWindow.windowId??null)===(state?.windowId??null)?"":" · 重新连接后切换"),h(Button,{variant:"outline",size:"sm",disabled:busy||!state,onClick:async()=>{await desktopInput.current?.releaseAndFlush();await action(control?.mode==="manual"?"resume_agent":"takeover",{includeScreenshot:false})}},control?.mode==="manual"?"交还智能体":"人工接管"),h("span",{className:"dswSuiteMeta",role:"status"},!interactive?state?.connected===false?"连接已断开":state?"等待桌面画面":"未连接":control?.mode==="manual"?"人工接管中 · 智能体控制暂停":"智能体可操作"),!desktop&&h(Button, { variant: "outline", size: "sm", disabled: busy||!state, onClick: () => action("click", { x: 0, y: 0, button: "back" }) }, "后退"), !desktop&&h("input", { value: url, "aria-label": "受控浏览器地址", onChange: event => setUrl(event.target.value), onKeyDown: event => { if (event.key === "Enter") navigate(); } }), !desktop&&h(Button, { variant: "outline", size: "sm", disabled: busy || !url.trim(), onClick: navigate }, "转到"),meta?.adapter==="native-desktop"&&state?.windowId&&meta.actions?.includes("focus_window")&&h(Button,{variant:"outline",size:"sm",disabled:busy||!state?.connected,onClick:()=>desktopInput.current?.activateWindow()},"激活窗口"),desktop&&h("strong",{className:"dswSuiteTitle"},state?.targetTitle||state?.title||(meta?.adapter==="uu-desktop"?"远程设备":"本机桌面")),desktop&&h(Button,{variant:"outline",size:"sm","aria-pressed":liveDesktop,disabled:!state?.connected,onClick:()=>setLiveDesktop(v=>!v)},sdkDesktop?"实时画面":"自动刷新"), !sdkDesktop&&h(Button, { variant: "outline", size: "sm", disabled: busy, onClick: () => action("capture") }, "刷新画面"), h(Button, { variant: "outline", size: "sm", disabled:busy, onClick: async () => {await desktopInput.current?.releaseAndFlush();await action("close", { includeScreenshot: false })} }, "关闭会话")),
         desktop && h("div", { className: "dswSuiteStatus", "data-control-scope": sdkDesktop ? "remote" : "local" }, sdkDesktop ? "UU 远程 · 全局急停 " + (state?.emergencyStopShortcut || "尚未确认") + "；画面内 Esc 释放键鼠。" : "本机桌面 · 与本机共用键鼠；操作其他窗口也会暂停智能体，避免争抢鼠标或将内容输入错误窗口。"),
         control?.mode === "manual" && h("div", { className: "dswSuiteStatus", role: "status", "data-control-pause": control.pauseReason || "unknown" }, "智能体控制暂停 · " + controlPauseText(control, state)),

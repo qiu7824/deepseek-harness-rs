@@ -19,7 +19,7 @@ fn request(effort: &str) -> GenerateOptions {
         signal: None,
         session_id: None,
         purpose: None,
-        agent_loop_request: false,
+        agent_loop_request: false, telemetry: None,
     }
 }
 
@@ -182,6 +182,7 @@ async fn catalog_protocol_and_parameter_capabilities_reach_the_actual_http_body(
             None,
             &sender,
             None,
+            Default::default(),
         ),
     )
     .await

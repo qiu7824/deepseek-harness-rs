@@ -2995,7 +2995,12 @@ window.__ModuleLoader__.load({
 		*/
 		function assistantStepReading(node) {
 			const timing = node.timing;
+            const measurement=node.requestMeasurement;
+            const valid=measurement?.phase==="completed"&&measurement.measurement==="request-average"&&typeof measurement.attemptId==="string"&&typeof measurement.executionInstanceId==="string"&&Number.isSafeInteger(measurement.networkElapsedMs)&&measurement.networkElapsedMs>0&&Number.isSafeInteger(measurement.outputTokens)&&measurement.outputTokens>=0;
 			return {
+                requestMs:valid?measurement.networkElapsedMs:null,
+                requestTokens:valid?measurement.outputTokens:null,
+                source:valid?measurement:null,
 				ttftMs: timing !== void 0 && timing.stepStartTime !== null && timing.firstTokenTime !== null ? Math.max(0, timing.firstTokenTime - timing.stepStartTime) : null,
 				decodeMs: timing !== void 0 && timing.firstTokenTime !== null ? Math.max(0, timing.completedTime - timing.firstTokenTime) : null,
 				outputTokens: usageOutputTokens(node.usage)
@@ -3031,9 +3036,9 @@ window.__ModuleLoader__.load({
 					fold.firstStep = node.step;
 					fold.firstStepTtftMs = reading.ttftMs;
 				}
-				if (reading.decodeMs !== null && reading.outputTokens !== null) {
-					fold.decodeMs += reading.decodeMs;
-					fold.outputTokens += reading.outputTokens;
+				if (reading.requestMs !== null && reading.requestTokens !== null) {
+					fold.decodeMs += reading.requestMs;
+					fold.outputTokens += reading.requestTokens;
 					fold.sampled = true;
 				}
 			}
@@ -3084,6 +3089,7 @@ window.__ModuleLoader__.load({
 			let ttftSteps = 0;
 			let decodeMs = 0;
 			let decodeTokens = 0;
+            let requestMs=0,requestOutputTokens=0,requestSamples=0;const requestSources=new Map();
 			for (const node of nodes) {
 				if (node.kind === "tool-result") {
 					if (node.callTime !== null) toolMs += Math.max(0, node.time - node.callTime);
@@ -3098,10 +3104,11 @@ window.__ModuleLoader__.load({
 					ttftMs += reading.ttftMs;
 					ttftSteps += 1;
 				}
-				if (reading.decodeMs !== null && reading.outputTokens !== null) {
+				if (reading.decodeMs > 0 && reading.outputTokens !== null) {
 					decodeMs += reading.decodeMs;
 					decodeTokens += reading.outputTokens;
 				}
+                if(reading.requestMs!==null&&reading.requestTokens!==null){requestMs+=reading.requestMs;requestOutputTokens+=reading.requestTokens;requestSamples++;const source=reading.source;requestSources.set(JSON.stringify([source.executionInstanceId,source.provider,source.model]),source);}
 			}
 			return {
 				turns: turns.size,
@@ -3112,6 +3119,7 @@ window.__ModuleLoader__.load({
 				ttftSteps,
 				decodeMs,
 				decodeTokens
+                ,requestMs,requestOutputTokens,requestSamples,requestSources:[...requestSources.values()]
 			};
 		}
 		/**
@@ -3209,7 +3217,8 @@ window.__ModuleLoader__.load({
 				if (durations.length > 0) groups.push(durations.join(" · "));
 				const speeds = [];
 				if (stats.ttftSteps > 0) speeds.push(t("stats.ttftAverage", { duration: formatDuration(stats.ttftMs / stats.ttftSteps) }));
-				if (stats.decodeMs > 0) speeds.push(t("stats.tokensPerSecond", { throughput: formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3)) }));
+				if (stats.requestMs > 0 && stats.requestSamples > 0) speeds.push(t("stats.tokensPerSecond", { throughput: formatTokensPerSecond(stats.requestOutputTokens / (stats.requestMs / 1e3)) }));
+                else speeds.push(t("stats.rateUnavailable"));
 				if (speeds.length > 0) groups.push(speeds.join(" · "));
 			}
 			if (usage !== void 0 && (billedInputTokens(usage) > 0 || usage.outputTokens > 0)) {
@@ -3238,10 +3247,10 @@ window.__ModuleLoader__.load({
 			}, [line]);
 			if (groups.length === 0) return null;
 			return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
-				label: line,
+				label: [line,t("stats.rateMeaning"),...(stats.requestSources??[]).map(source=>`${source.provider} / ${source.model} · ${t("stats.backend")} ${source.executionInstanceId}`)].join("\n"),
 				side: "top",
 				delayMs: 500,
-				disabled: !truncated,
+				disabled: !truncated && !(stats.requestSources?.length>0),
 				children: (0, react_jsx_runtime.jsx)("div", {
 					ref: rootRef,
 					className: StatsLine_module_css_default.root,
@@ -6075,7 +6084,7 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(style);
 		}
 		/** Turn-level model activity label retained across first-token, tool, and streaming phases. */
-		function TurnStatus({ startTime, toolActive, toolName, phase, t }) {
+		function TurnStatus({ startTime, toolActive, toolName, phase, requestPhase, t }) {
 			const [mountedAt] = (0, react.useState)(() => Date.now());
 			const anchor = startTime ?? mountedAt;
 			const [elapsedMs, setElapsedMs] = (0, react.useState)(() => Math.max(0, Date.now() - anchor));
@@ -6095,7 +6104,8 @@ window.__ModuleLoader__.load({
 				};
 			}, [anchor]);
 			const showClock = elapsedMs >= 5e3;
-			const phaseLabel = t(phase === "text" ? "turn.generating" : phase === "reasoning" ? "turn.reasoning" : "turn.waiting");
+			const knownRequestPhase=["credentials","attachment_prepare","attachment_upload_wait","attachment_upload","attachment_cache_hit","attachment_upload_complete","attachment_fallback","request_sent","response_headers"].includes(requestPhase);
+            const phaseLabel = t(phase === "text" ? "turn.generating" : phase === "reasoning" ? "turn.reasoning" : knownRequestPhase?`requestPhase.${requestPhase}`:"turn.waiting");
 			const safeToolName = typeof toolName === "string" && toolName.length > 0 && toolName.length <= 96 ? toolName : null;
 			const baseLabel = (toolActive ? `${t("turn.executingTool")}${safeToolName ? ` · ${safeToolName}` : ""}` : phaseLabel).replace(/[…\.]+$/, "");
 			return (0, react_jsx_runtime.jsxs)("div", {
@@ -6119,6 +6129,7 @@ window.__ModuleLoader__.load({
 			const inbox = useSession((s) => s.queue);
 			const cwd = useSessions((s) => s.byId[sessionId]?.cwd);
 			const running = useSession((s) => s.running);
+            const requestPhase=useProjection("sessionStats",value=>value?.requestPhase?.phase);
 			const runningCalls = useSession((s) => s.runningCalls);
 			const openState = useSession((s) => s.openState);
 			const openError = useSession((s) => s.openError);
@@ -6188,6 +6199,7 @@ window.__ModuleLoader__.load({
 					toolActive: runningCalls.length > 0,
 					toolName: runningCalls[0]?.name ?? runningCalls[0]?.toolName ?? runningCalls[0]?.call?.name ?? runningCalls[0]?.call?.toolName,
 								phase: runningPhase,
+                                requestPhase,
 								t
 							}),
 							pendingSteering.map((item) => (0, react_jsx_runtime.jsx)(PendingSteeringBubble, {
@@ -6597,7 +6609,19 @@ window.__ModuleLoader__.load({
 			"stats.llm": "LLM {duration}",
 			"stats.toolCall": "工具调用 {duration}",
 			"stats.ttftAverage": "首 token 平均 {duration}",
-			"stats.tokensPerSecond": "平均生成 {throughput} tok/s",
+			"stats.tokensPerSecond": "请求平均 {throughput} tok/s",
+            "stats.rateUnavailable":"请求速率不可用",
+            "stats.rateMeaning":"供应商输出 token ÷ 请求发送至结束的单调时长；不代表本机或服务端解码性能。",
+            "stats.backend":"执行实例",
+            "requestPhase.credentials":"正在准备账号连接",
+            "requestPhase.attachment_prepare":"正在准备图片",
+            "requestPhase.attachment_upload_wait":"正在等待图片上传",
+            "requestPhase.attachment_upload":"正在上传图片",
+            "requestPhase.attachment_cache_hit":"已使用缓存图片",
+            "requestPhase.attachment_upload_complete":"图片上传完成",
+            "requestPhase.attachment_fallback":"正在准备内联图片",
+            "requestPhase.request_sent":"正在等待服务响应",
+            "requestPhase.response_headers":"正在等待模型输出",
 			"stats.cacheHit": "缓存命中 {percent}%",
 			"stats.cacheHitPartial": "缓存命中 {percent}%（仅已披露请求）",
 			"stats.cacheUnavailable": "缓存数据未提供",
@@ -6687,7 +6711,7 @@ window.__ModuleLoader__.load({
 			"message.turnUsage.reasoning": "（其中推理 {tokens}）",
 			"message.turnTime.title": "本轮用时和速度",
 			"message.turnTime.duration": "本轮总用时",
-			"message.turnTime.speed": "本次请求平均生成速度（含思考）",
+			"message.turnTime.speed": "请求平均输出速率（发送至结束）",
 			"message.turnTime.ttft": "首 token 用时（TTFT）",
 			"duration.seconds": "{seconds}秒",
 			"duration.minutes": "{minutes}分{seconds}秒",
@@ -6893,7 +6917,19 @@ window.__ModuleLoader__.load({
 			"stats.llm": "LLM {duration}",
 			"stats.toolCall": "Tool call {duration}",
 			"stats.ttftAverage": "TTFT avg {duration}",
-			"stats.tokensPerSecond": "Generation avg {throughput} tok/s",
+			"stats.tokensPerSecond": "Request avg {throughput} tok/s",
+            "stats.rateUnavailable":"Request rate unavailable",
+            "stats.rateMeaning":"Provider output tokens divided by monotonic send-to-completion time; not local or server decoding performance.",
+            "stats.backend":"Backend instance",
+            "requestPhase.credentials":"Preparing account connection",
+            "requestPhase.attachment_prepare":"Preparing images",
+            "requestPhase.attachment_upload_wait":"Waiting for image upload",
+            "requestPhase.attachment_upload":"Uploading images",
+            "requestPhase.attachment_cache_hit":"Using cached images",
+            "requestPhase.attachment_upload_complete":"Image upload complete",
+            "requestPhase.attachment_fallback":"Preparing inline images",
+            "requestPhase.request_sent":"Waiting for service response",
+            "requestPhase.response_headers":"Waiting for model output",
 			"stats.cacheHit": "Cache hit {percent}%",
 			"stats.cacheHitPartial": "Cache hit {percent}% (reported requests only)",
 			"stats.cacheUnavailable": "Cache data unavailable",
@@ -6983,7 +7019,7 @@ window.__ModuleLoader__.load({
 			"message.turnUsage.reasoning": " ({tokens} reasoning)",
 			"message.turnTime.title": "Turn time and speed",
 			"message.turnTime.duration": "Total run time",
-			"message.turnTime.speed": "Request generation average (including reasoning)",
+			"message.turnTime.speed": "Request average output rate (send to completion)",
 			"message.turnTime.ttft": "Time to first token (TTFT)",
 			"duration.seconds": "{seconds}s",
 			"duration.minutes": "{minutes}m {seconds}s",
@@ -8479,6 +8515,7 @@ window.__ModuleLoader__.load({
 					step: state.step,
 					blocks: state.settledBlocks,
 					usage: event.data.usage,
+                    requestMeasurement:event.data.requestMetrics?.requestMeasurement,
 					timing: {
 						stepStartTime: context.start?.event.time ?? null,
 						firstTokenTime: state.firstTokenTime ?? null,

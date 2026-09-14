@@ -6,6 +6,7 @@ license = "MIT"
 description = "Local durable attachment backend rooted below DSH_HOME — Rust port of @deepseek-ai/dsh-attachment-local"
 
 [dependencies]
+tokio = { workspace = true }
 cordis = { path = "../../vendor/cordis" }
 dsh-attachment = { path = "../attachment" }
 dsh-home-paths = { path = "../../util/home-paths" }

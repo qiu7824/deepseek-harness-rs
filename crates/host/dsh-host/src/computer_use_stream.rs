@@ -27,7 +27,7 @@ type WebSocket = WebSocketStream<WebUpgraded>;
 fn cleanup_arguments(session: &str, generation: u64, metadata: &Value) -> Option<Value> {
     let control = metadata.pointer("/state/controlId")?.as_str()?;
     Some(
-        json!({"action":"release_inputs","sessionId":session,"controlId":control,"expectedStreamGeneration":generation,"includeScreenshot":false}),
+        json!({"action":"release_inputs","target":"remote","sessionId":session,"controlId":control,"expectedStreamGeneration":generation,"includeScreenshot":false}),
     )
 }
 
@@ -148,7 +148,7 @@ pub(super) async fn upgrade(
         reject(&mut socket, "computer-use-disabled", "Computer Use 未启用").await;
         return;
     };
-    if runtime.adapter_id() != "uu-desktop" {
+    if runtime.adapter_id_for(&json!({"target":"remote"})).ok() != Some("uu-desktop") {
         reject(
             &mut socket,
             "video-unavailable",
@@ -209,7 +209,7 @@ async fn serve<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         }
         tokio::select! {_ = interval.tick()=>{},message=socket.next()=>{match message{Some(Ok(Message::Text(text)))if text=="keyframe"=>keyframe=true,Some(Ok(Message::Close(_)))|None|Some(Err(_))=>break,_=>{}}continue}}
         let signal = lease.abort.clone();
-        let args = json!({"action":"video_frame","sessionId":session,"streamGeneration":lease.generation,"keyFrame":keyframe,"includeScreenshot":false});
+        let args = json!({"action":"video_frame","target":"remote","sessionId":session,"streamGeneration":lease.generation,"keyFrame":keyframe,"includeScreenshot":false});
         let capture = runtime.execute_for_human_session(
             owner.clone(),
             &args,

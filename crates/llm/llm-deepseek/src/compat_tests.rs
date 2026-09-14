@@ -55,7 +55,7 @@ fn options() -> GenerateOptions {
         signal: None,
         session_id: None,
         purpose: None,
-        agent_loop_request: false,
+        agent_loop_request: false, telemetry: None,
     }
 }
 
@@ -88,6 +88,7 @@ async fn all_budget_spellings_and_priority_reach_chat_http_body() {
                 None,
                 &sender,
                 None,
+                Default::default(),
             ),
         )
         .await
@@ -138,6 +139,7 @@ async fn responses_cap_opt_out_reaches_http_body() {
             None,
             &sender,
             None,
+            Default::default(),
         ),
     )
     .await
@@ -250,6 +252,7 @@ async fn lite_is_opt_in_and_reaches_the_actual_http_transport() {
                 None,
                 &sender,
                 None,
+                Default::default(),
             ),
         )
         .await

@@ -3379,7 +3379,8 @@ fn compose_host_in_fiber(
             _ => 60_000,
         };
         computer_use_runtime = Some(
-            if adapter == dsh_tool_computer_use_command::AdapterMode::UuDesktop {
+            if adapter == dsh_tool_computer_use_command::AdapterMode::UuDesktop
+                || (adapter == dsh_tool_computer_use_command::AdapterMode::Auto && command.is_empty()) {
                 let settings_for_uu = settings.clone();
                 let binding = Arc::new(move || {
                     use dsh_tool_computer_use_command::{AdapterError, DesktopBinding};
@@ -3427,15 +3428,27 @@ fn compose_host_in_fiber(
                     } else {
                         "dsh-uu-controller"
                     });
-                dsh_tool_computer_use_command::install_adapter(
-                    ctx,
-                    timeout_ms,
-                    Arc::new(dsh_tool_computer_use_command::DesktopAdapter::for_uu(
-                        worker,
-                        runtime_paths.paths["cacheDirectory"].join("computer-use/uu"),
-                        binding,
-                    )),
-                )
+                let remote: Arc<dyn dsh_tool_computer_use_command::ComputerUseAdapter> = Arc::new(
+                    dsh_tool_computer_use_command::DesktopAdapter::for_uu(worker,
+                        runtime_paths.paths["cacheDirectory"].join("computer-use/uu"), binding));
+                let selected = if adapter == dsh_tool_computer_use_command::AdapterMode::Auto {
+                    let worker = std::env::current_exe().map_err(|e| e.to_string())?
+                        .with_file_name(if cfg!(windows) {"dsh-desktop-controller.exe"} else {"dsh-desktop-controller"});
+                    let local = Arc::new(dsh_tool_computer_use_command::DesktopAdapter::new(
+                        worker, runtime_paths.paths["cacheDirectory"].join("computer-use/desktop"),
+                        Arc::new(|| Ok(dsh_tool_computer_use_command::DesktopBinding {device_id:"local".into(),install_dir:None,account:None}))));
+                    let browser = Arc::new(dsh_tool_computer_use_command::NativeBrowserAdapter::new(
+                        dsh_tool_computer_use_command::NativeBrowserConfig {
+                            executable:browser_executable, data_root:runtime_paths.paths["cacheDirectory"].join("computer-use/browser"),
+                            headless:browser_headless, max_sessions:max_browser_sessions,
+                            launch_timeout:std::time::Duration::from_millis(timeout_ms.min(15000)),
+                            action_timeout:std::time::Duration::from_millis(timeout_ms),
+                            ..Default::default()
+                        }).map_err(|e|e.to_string())?);
+                    Arc::new(dsh_tool_computer_use_command::TargetRouter::new(local,remote,browser))
+                        as Arc<dyn dsh_tool_computer_use_command::ComputerUseAdapter>
+                } else { remote };
+                dsh_tool_computer_use_command::install_adapter(ctx, timeout_ms, selected)
                 .map_err(|e| format!("computer-use: {e}"))?
             } else if adapter == dsh_tool_computer_use_command::AdapterMode::NativeDesktop {
                 let binding = Arc::new(|| {
@@ -3479,6 +3492,12 @@ fn compose_host_in_fiber(
                 .map_err(|error| format!("computer-use: {error}"))?
             },
         );
+    }
+    if computer_use_runtime.is_some() {
+        let packaged=std::env::current_exe().map_err(|e|e.to_string())?.parent().ok_or("Host executable directory unavailable")?.join("runtime/node").join(if cfg!(windows){"node.exe"}else{"node"});
+        let node=if packaged.is_file(){packaged.to_string_lossy().into_owned()}else{runtime_paths.node_command()};
+        dsh_tool_computer_use_command::install_js(ctx,node,runtime_paths.paths["environmentDirectory"].join("computer-use-js"))
+            .map_err(|error|format!("computer-use-js: {error}"))?;
     }
     dsh_tool_terminal::ToolTerminalService::install(ctx)
         .map_err(|error| format!("tool-terminal: {error}"))?;

@@ -49,6 +49,17 @@ pub(crate) struct CancelableResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
     response: ResponseBody,
+    cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
+}
+
+struct ConnectionDriver(Option<tokio::task::JoinHandle<()>>);
+impl Drop for ConnectionDriver { fn drop(&mut self) { if let Some(driver)=self.0.take(){driver.abort();} } }
+
+pub(crate) async fn wait_for_cancel(cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>) {
+    loop {
+        if cancelled.as_ref().is_some_and(|cancelled|cancelled()) {return;}
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 impl Drop for CancelableResponse {
@@ -80,6 +91,16 @@ impl CancelableResponse {
     }
 
     pub async fn collect_limited(mut self, limit: usize) -> Result<Vec<u8>, String> {
+        let cancelled=self.cancelled.clone();
+        tokio::select! {
+            result=tokio::time::timeout(std::time::Duration::from_secs(15),async {
+                self.collect_inner(limit).await
+            })=>result.map_err(|_|"[phase:error_body] response body deadline exceeded (15000 ms)".to_string())?,
+            _=wait_for_cancel(cancelled)=>Err("[phase:error_body] request cancelled".into()),
+        }
+    }
+
+    async fn collect_inner(&mut self, limit: usize) -> Result<Vec<u8>, String> {
         let mut bytes = Vec::new();
         while let Some(chunk) = self.next_data().await? {
             if bytes.len().saturating_add(chunk.len()) > limit {
@@ -115,6 +136,24 @@ pub(crate) async fn post(
     attribution: &[(String, String)],
     cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
 ) -> Result<CancelableResponse, String> {
+    post_with_deadline(url,api_key,body,attribution,cancelled,std::time::Duration::from_secs(60)).await
+}
+
+pub(crate) async fn post_tracked(url:&str,api_key:Option<&str>,body:Vec<u8>,attribution:&[(String,String)],cancelled:Option<std::sync::Arc<dyn Fn()->bool+Send+Sync>>,telemetry:Option<dsh_llm::RequestTelemetry>)->Result<CancelableResponse,String>{
+    if let Some(telemetry)=&telemetry {telemetry.network_start();}
+    let response=post(url,api_key,body,attribution,cancelled).await?;
+    if let Some(telemetry)=&telemetry {telemetry.phase("response_headers",None);}
+    Ok(response)
+}
+
+async fn post_with_deadline(url:&str,api_key:Option<&str>,body:Vec<u8>,attribution:&[(String,String)],cancelled:Option<std::sync::Arc<dyn Fn()->bool+Send+Sync>>,deadline:std::time::Duration)->Result<CancelableResponse,String> {
+    tokio::select! {
+        result=tokio::time::timeout(deadline,post_inner(url,api_key,body,attribution,cancelled.clone()))=>result.map_err(|_|format!("[phase:response_headers] deadline exceeded ({} ms)",deadline.as_millis()))?,
+        _=wait_for_cancel(cancelled)=>Err("[phase:response_headers] request cancelled".into()),
+    }
+}
+
+async fn post_inner(url:&str,api_key:Option<&str>,body:Vec<u8>,attribution:&[(String,String)],cancelled:Option<std::sync::Arc<dyn Fn()->bool+Send+Sync>>)->Result<CancelableResponse,String> {
     let url = reqwest::Url::parse(url).map_err(|error| format!("invalid provider URL: {error}"))?;
     let host = url
         .host_str()
@@ -137,9 +176,9 @@ pub(crate) async fn post(
         let (mut sender, connection) = hyper::client::conn::http1::handshake(io)
             .await
             .map_err(|error| format!("provider HTTP handshake failed: {error}"))?;
-        let driver = tokio::spawn(async move {
+        let mut driver = ConnectionDriver(Some(tokio::spawn(async move {
             let _ = connection.await;
-        });
+        })));
         let authority = match url.port() {
             Some(port) => format!("{host}:{port}"),
             None => host.to_string(),
@@ -177,7 +216,6 @@ pub(crate) async fn post(
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
             } => {
-                driver.abort();
                 return Err("provider request cancelled before response headers".to_string());
             }
         };
@@ -186,8 +224,9 @@ pub(crate) async fn post(
             headers: response.headers().clone(),
             response: ResponseBody::Hyper {
                 body: response.into_body(),
-                driver,
+                driver: driver.0.take().expect("connection driver"),
             },
+            cancelled,
         });
     }
     let client = client()?;
@@ -204,7 +243,7 @@ pub(crate) async fn post(
     }
     let send = request.body(body).send();
     tokio::pin!(send);
-    let response = if let Some(cancelled) = cancelled {
+    let response = if let Some(cancelled) = cancelled.clone() {
         let cancel_wait = async move {
             loop {
                 if cancelled() {
@@ -230,6 +269,7 @@ pub(crate) async fn post(
         status,
         headers,
         response: ResponseBody::Reqwest(response),
+        cancelled,
     })
 }
 
@@ -244,6 +284,30 @@ fn is_loopback_host(host: &str) -> bool {
 mod tests {
     use super::post;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[tokio::test]
+    async fn missing_response_headers_have_a_deadline_and_close_the_socket() {
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move {
+            let (mut socket,_)=listener.accept().await.unwrap();let mut bytes=[0;4096];
+            assert!(socket.read(&mut bytes).await.unwrap()>0);
+            tokio::time::timeout(std::time::Duration::from_secs(1),socket.read(&mut bytes)).await.expect("cancelled HTTP connection must close").unwrap()
+        });
+        let result=super::post_with_deadline(&format!("http://{address}"),None,b"{}".to_vec(),&[],None,std::time::Duration::from_millis(50)).await;
+        assert!(result.err().unwrap().contains("phase:response_headers"));
+        assert_eq!(server.await.unwrap(),0);
+    }
+    #[tokio::test]
+    async fn a_hung_error_body_is_cancellable() {
+        use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move {let (mut socket,_)=listener.accept().await.unwrap();let mut data=[0;4096];socket.read(&mut data).await.unwrap();socket.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 10000\r\n\r\npartial").await.unwrap();let _=socket.read(&mut data).await;});
+        let cancelled=Arc::new(AtomicBool::new(false));let flag=cancelled.clone();
+        let response=post(&format!("http://{address}"),None,b"{}".to_vec(),&[],Some(Arc::new(move||flag.load(Ordering::SeqCst)))).await.unwrap();
+        cancelled.store(true,Ordering::SeqCst);
+        let result=tokio::time::timeout(std::time::Duration::from_secs(1),response.collect_limited(1024)).await.unwrap();
+        assert!(result.err().unwrap().contains("phase:error_body"));server.await.unwrap();
+    }
     #[tokio::test]
     async fn tls_failure_preserves_cause_and_hides_url_query() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -68,12 +68,35 @@ fn options() -> GenerateOptions {
         signal: None,
         session_id: None,
         purpose: None,
-        agent_loop_request: false,
+        agent_loop_request: false, telemetry: None,
     }
 }
 
 fn adapter(base_url: String) -> Arc<DeepSeekAdapter> {
     adapter_for_api(base_url, None)
+}
+
+#[tokio::test]
+async fn idle_deadline_survives_cancellation_polling_and_heartbeats_do_not_count_as_progress() {
+    for heartbeat in [false,true] {
+        let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move {
+            let (mut socket,_)=listener.accept().await.unwrap();read_request(&mut socket).await;
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1000000\r\n\r\n").await.unwrap();
+            for _ in 0..100 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                if heartbeat&&socket.write_all(b": keepalive\n\n").await.is_err(){break;}
+            }
+        });
+        let resolved=resolve_adapter_options(&DeepSeekConfig {base_url:Some(format!("http://{address}")),stream_idle_timeout_ms:Some(50),stream_progress_timeout_ms:Some(90),..Default::default()}).unwrap();
+        let adapter=Arc::new(DeepSeekAdapter::new(DeepSeekAdapterOptions {options:Arc::new(move||Ok(resolved.clone())),resolve_api_key:Arc::new(|_|async{Ok(Some("fixture".into()))}.boxed()),resolve_attachments:None,provider_name:Some("fixture".into()),reasoning_wire_format:ReasoningWireFormat::OpenAi}));
+        let ctx=Context::root();let runtime=LlmRuntime::install(&ctx);apply(&ctx,&runtime,adapter).unwrap();
+        let chunks:Vec<_>=tokio::time::timeout(Duration::from_secs(2),runtime.stream(options()).collect()).await.expect("stream deadlines must settle without a browser refresh");
+        let failures=chunks.iter().filter_map(|chunk|if let StreamChunk::Finish {reason:FinishReason::Error{failure},..}=chunk{Some(failure)}else{None}).collect::<Vec<_>>();
+        assert_eq!(failures.len(),1);assert_eq!(failures[0].code,"TIMEOUT");
+        if heartbeat{assert!(failures[0].message.contains("stream_progress"));}
+        server.abort();
+    }
 }
 
 fn adapter_for_api(base_url: String, api: Option<String>) -> Arc<DeepSeekAdapter> {

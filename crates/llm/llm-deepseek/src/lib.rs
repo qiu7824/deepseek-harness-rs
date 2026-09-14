@@ -7,6 +7,7 @@ pub mod devin;
 mod devin_transport;
 mod devin_wire;
 mod files_api;
+mod files_cleanup;
 mod responses;
 mod serialize;
 mod sse;
@@ -150,6 +151,7 @@ pub struct DeepSeekConfig {
     pub default_context_window: Option<u64>,
     pub models: Option<Vec<DeepSeekCatalogModel>>,
     pub stream_idle_timeout_ms: Option<u64>,
+    pub stream_progress_timeout_ms: Option<u64>,
     pub files_api_timeout_ms: Option<u64>,
     pub files_index_path: Option<std::path::PathBuf>,
     pub retry_policy: Option<serde_json::Value>,
@@ -170,6 +172,7 @@ pub struct ResolvedDeepSeekOptions {
     pub default_context_window: u64,
     pub models: Vec<DeepSeekCatalogModel>,
     pub stream_idle_timeout: Duration,
+    pub stream_progress_timeout: Duration,
     pub files_api_timeout: Duration,
     pub files_index_path: Option<std::path::PathBuf>,
     pub retry_policy: ResolvedRetryPolicy,
@@ -328,6 +331,7 @@ pub fn resolve_adapter_options(
                 .stream_idle_timeout_ms
                 .unwrap_or(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
         ),
+        stream_progress_timeout: Duration::from_millis(config.stream_progress_timeout_ms.unwrap_or(180_000)),
         files_api_timeout: Duration::from_millis(
             config
                 .files_api_timeout_ms
@@ -478,6 +482,7 @@ pub struct DeepSeekAdapterOptions {
 
 pub struct DeepSeekAdapter {
     config: DeepSeekAdapterOptions,
+    cleanup: Arc<files_cleanup::CleanupWorker>,
 }
 
 fn upload_lock(
@@ -504,18 +509,18 @@ fn upload_lock(
 
 impl DeepSeekAdapter {
     pub fn new(config: DeepSeekAdapterOptions) -> Self {
-        Self { config }
+        Self { config, cleanup:Arc::new(files_cleanup::CleanupWorker::default()) }
     }
 
     pub fn frozen(&self) -> Result<Arc<dyn dsh_llm::LlmAdapter>, LlmError> {
         let options = (self.config.options)()?;
-        Ok(Arc::new(Self::new(DeepSeekAdapterOptions {
+        Ok(Arc::new(Self{config:DeepSeekAdapterOptions {
             options: Arc::new(move || Ok(options.clone())),
             resolve_api_key: Arc::clone(&self.config.resolve_api_key),
             resolve_attachments: self.config.resolve_attachments.clone(),
             provider_name: self.config.provider_name.clone(),
             reasoning_wire_format: self.config.reasoning_wire_format,
-        })))
+        },cleanup:self.cleanup.clone()}))
     }
 }
 
@@ -962,6 +967,41 @@ fn project_exact_request(
     projected
 }
 
+async fn prepare_attachments<T>(future:impl std::future::Future<Output=Result<T,LlmFailure>>,signal:Option<Arc<dyn Fn()->bool+Send+Sync>>) -> Result<T,LlmFailure> {
+    tokio::select! {
+        biased;
+        _=transport::wait_for_cancel(signal.clone())=>Err(failure("[phase:attachment_prepare] request cancelled", "CANCELLED")),
+        result=tokio::time::timeout(Duration::from_secs(120),future)=>{
+            if signal.as_ref().is_some_and(|cancelled|cancelled()) {return Err(failure("[phase:attachment_prepare] request cancelled", "CANCELLED"));}
+            result.map_err(|_|failure("[phase:attachment_prepare] total preparation deadline exceeded (120000 ms)","TIMEOUT"))?
+        }
+    }
+}
+
+fn files_can_fallback(error:&LlmFailure)->bool {
+    matches!(error.code.as_str(),"FILES_UNSUPPORTED"|"FILES_SERVER"|"FILES_TRANSPORT")
+}
+
+#[cfg(test)]
+mod preparation_budget_tests {
+    use super::*;
+    #[tokio::test(start_paused=true)]
+    async fn preparation_has_one_total_budget() {
+        let started=tokio::time::Instant::now();
+        let error=prepare_attachments(std::future::pending::<Result<(),LlmFailure>>(),None).await.unwrap_err();
+        assert_eq!(error.code,"TIMEOUT");assert!(error.message.contains("attachment_prepare"));
+        assert_eq!(started.elapsed(),Duration::from_secs(120));
+    }
+    #[tokio::test]
+    async fn cancelled_preparation_does_not_start_fallback_work() {
+        let started=std::sync::atomic::AtomicBool::new(false);
+        let error=prepare_attachments(async {started.store(true,std::sync::atomic::Ordering::SeqCst);Ok(())},Some(Arc::new(||true))).await.unwrap_err();
+        assert_eq!(error.code,"CANCELLED");assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
+        for code in ["AUTH","RATE_LIMIT","CANCELLED","ATTACHMENT_ABORTED","FILES_API"] {assert!(!files_can_fallback(&failure("fixture",code)));}
+        assert!(files_can_fallback(&failure("unsupported","FILES_UNSUPPORTED")));
+    }
+}
+
 async fn resolve_image_urls(
     options: &GenerateOptions,
     store: Option<&Arc<dyn dsh_attachment::AttachmentStore>>,
@@ -975,6 +1015,7 @@ async fn resolve_image_urls(
     use base64::Engine;
     let mut urls = std::collections::HashMap::new();
     let mut image_meta = std::collections::HashMap::new();
+    if !request_image_attachments(options).is_empty() {if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_prepare",None);}}
     for attachment in request_image_attachments(options) {
         let Some(store) = store else {
             return Err(failure(
@@ -989,7 +1030,7 @@ async fn resolve_image_urls(
             preferred_media_type: dsh_attachment::ImageMediaType::Webp,
         };
         let version = store
-            .read_image_request(&reference, &policy, None)
+            .read_image_request(&reference, &policy, options.signal.as_ref())
             .await
             .map_err(|error| {
                 failure(format!("DeepSeek image read failed: {error}"), &error.code)
@@ -1066,7 +1107,13 @@ async fn resolve_image_file_ids(
     connection: &ResolvedDeepSeekOptions,
     api_key: &str,
     store: Option<&Arc<dyn dsh_attachment::AttachmentStore>>,
+    cleanup:&files_cleanup::CleanupWorker,
 ) -> Result<Option<ResolvedRequestFiles>, LlmFailure> {
+    // Anonymous routes have no Files API credential. Inline images do not
+    // require inventing an Authorization header or probing a private upload API.
+    if connection.keyless {return Ok(None);}
+    if request_image_attachments(options).is_empty(){return Ok(None);}
+    if !request_image_attachments(options).is_empty() {if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_prepare",None);}}
     let Some(store) = store else {
         return Ok(None);
     };
@@ -1079,6 +1126,7 @@ async fn resolve_image_file_ids(
     let scope = deepseek_file_scope(&connection.base_url, api_key);
     let files =
         DeepSeekFilesClient::new(&connection.base_url, api_key, connection.files_api_timeout);
+    cleanup.schedule(files.clone(),index.clone(),scope.clone());
     let policy = dsh_attachment::RequestImagePolicy {
         max_pixels: 640_000,
         max_bytes: 1024 * 1024,
@@ -1093,9 +1141,9 @@ async fn resolve_image_file_ids(
     for attachment in request_image_attachments(options) {
         let reference = attachment_reference(attachment)?;
         let version = store
-            .read_image_request(&reference, &policy, None)
+            .read_image_request(&reference, &policy, options.signal.as_ref())
             .await
-            .map_err(|error| failure(error.to_string(), "FILES_API"))?;
+            .map_err(|error| failure(error.to_string(), &error.code))?;
         image_meta.insert(
             attachment.attachment_id.clone(),
             serialize::PreparedImageMeta {
@@ -1128,6 +1176,7 @@ async fn resolve_image_file_ids(
             continue;
         }
         let variant_lock = upload_lock(&scope, &version.variant_id);
+        if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_upload_wait",None);}
         let _variant_guard = variant_lock.lock().await;
         if let Some(record) = index
             .get(&scope, &version.variant_id, now, 86_400_000)
@@ -1136,8 +1185,10 @@ async fn resolve_image_file_ids(
         {
             used.push((record.variant_id.clone(), record.file_id.clone()));
             ids.insert(attachment_id.clone(), record.file_id.as_str().to_string());
+            if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_cache_hit",None);}
             continue;
         }
+        if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_upload",None);}
         let uploaded = files
             .upload(
                 version.data,
@@ -1146,12 +1197,23 @@ async fn resolve_image_file_ids(
                 7 * 24 * 60 * 60,
             )
             .await
-            .map_err(|error| failure(error.to_string(), "FILES_API"))?;
+            .map_err(|error| {
+                let code=match (error.code,error.status) {
+                    (_,Some(404|405|415|501))=>"FILES_UNSUPPORTED",
+                    (FilesErrorCode::Auth,_)=>"AUTH",
+                    (FilesErrorCode::RateLimit,_)=>"RATE_LIMIT",
+                    (FilesErrorCode::Server,_)=>"FILES_SERVER",
+                    (FilesErrorCode::Transport,_)=>"FILES_TRANSPORT",
+                    _=>"FILES_API",
+                };
+                let mut result=failure(format!("[phase:attachment_upload] {}",error.message),code);
+                result.status=error.status.map(u64::from);result
+            })?;
         let expires_at = uploaded
             .expires_at
             .ok_or_else(|| failure("DeepSeek Files upload omitted expiry", "FILES_API"))?
             * 1000;
-        let candidate_file_id = uploaded.id.clone();
+        if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_upload_complete",None);}
         let committed = index
             .commit(
                 DeepSeekUploadRecord {
@@ -1168,14 +1230,7 @@ async fn resolve_image_file_ids(
             )
             .await
             .map_err(|error| failure(error, "FILES_API"))?;
-        if !committed.accepted && committed.record.file_id != candidate_file_id {
-            let _ = files.delete(&candidate_file_id).await;
-        }
-        for evicted in &committed.evicted {
-            if evicted.file_id != committed.record.file_id {
-                let _ = files.delete(&evicted.file_id).await;
-            }
-        }
+        cleanup.schedule(files.clone(),index.clone(),scope.clone());
         used.push((
             committed.record.variant_id.clone(),
             committed.record.file_id.clone(),
@@ -1300,6 +1355,7 @@ async fn request_chunks(
     attachment_store: Option<Arc<dyn dsh_attachment::AttachmentStore>>,
     sender: &tokio::sync::mpsc::Sender<StreamChunk>,
     cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
+    cleanup: Arc<files_cleanup::CleanupWorker>,
 ) -> Result<(), LlmFailure> {
     let mut options = project_estimated_request(&options);
     if let Some(model) = connection
@@ -1330,8 +1386,8 @@ async fn request_chunks(
         connection.api.as_str(),
         "openai-responses" | "anthropic-messages" | "devin-agent"
     ) {
-        let (image_urls, image_meta) =
-            resolve_image_urls(&options, attachment_store.as_ref()).await?;
+        let (image_urls, image_meta) = prepare_attachments(
+            resolve_image_urls(&options, attachment_store.as_ref()),cancelled.clone()).await?;
         let exact_options = project_exact_request(
             &options,
             &image_meta,
@@ -1381,16 +1437,18 @@ async fn request_chunks(
             cancelled.clone(),
             options.session_id.as_deref(),
             &exact_options.messages,
+            options.telemetry.clone(),
         )
         .await;
     }
     let url = endpoint_url(&connection.base_url, "openai-completions");
     let mut file_attempt = 0_u8;
     let mut response = loop {
+        let preparation = async {
         let resolved_files =
-            resolve_image_file_ids(&options, &connection, &api_key, attachment_store.as_ref())
+            resolve_image_file_ids(&options, &connection, &api_key, attachment_store.as_ref(),&cleanup)
                 .await;
-        let (mut body, used_files) = match resolved_files {
+        let prepared = match resolved_files {
             Ok(Some(files)) => {
                 let mut exact_options = options.clone();
                 exact_options.messages = files.messages.clone();
@@ -1406,7 +1464,9 @@ async fn request_chunks(
                     Some(files),
                 )
             }
-            _ => {
+            Err(error) if !files_can_fallback(&error) => return Err(error),
+            fallback => {
+                if let Err(error)=fallback {if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_fallback",Some(&error.code));}}
                 let (image_urls, image_meta) =
                     resolve_image_urls(&options, attachment_store.as_ref()).await?;
                 let exact_options = project_exact_request(
@@ -1427,6 +1487,9 @@ async fn request_chunks(
                 )
             }
         };
+        Ok(prepared)
+        };
+        let (mut body, used_files) = prepare_attachments(preparation,cancelled.clone()).await?;
         compat::apply_chat(
             &mut body,
             &connection,
@@ -1438,7 +1501,7 @@ async fn request_chunks(
                 "INVALID_REQUEST",
             )
         })?;
-        let response = transport::post(
+        let response = transport::post_tracked(
             &url,
             (!connection.keyless).then_some(api_key.as_str()),
             encoded,
@@ -1448,6 +1511,7 @@ async fn request_chunks(
                 options.purpose.as_deref(),
             ),
             cancelled.clone(),
+            options.telemetry.clone(),
         )
         .await
         .map_err(|error| {
@@ -1461,10 +1525,11 @@ async fn request_chunks(
         }
         let status = response.status;
         let headers = response.headers.clone();
+        if let Some(telemetry)=&options.telemetry {telemetry.phase("error_body",None);}
         let error_body = response
             .collect_limited(8 * 1024 * 1024)
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|error|serde_json::json!({"error":{"message":error}}).to_string().into_bytes());
         let detail = String::from_utf8_lossy(&error_body);
         if let Some(files) = used_files.as_ref()
             && file_attempt == 0
@@ -1526,6 +1591,7 @@ async fn request_chunks(
                 cancelled.clone(),
                 options.session_id.as_deref(),
                 &exact_options.messages,
+                options.telemetry.clone(),
             )
             .await;
         }
@@ -1537,6 +1603,7 @@ async fn request_chunks(
     let mut emitted_chunks = 0_usize;
     let mut received_bytes = 0_usize;
     let done_seen = false;
+    let mut progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout;
     loop {
         let next_data = tokio::time::timeout(connection.stream_idle_timeout, response.next_data());
         tokio::pin!(next_data);
@@ -1551,12 +1618,8 @@ async fn request_chunks(
                     }
                 })?,
             _ = sender.closed() => return Err(failure("DeepSeek stream consumer closed", "CANCELLED")),
-            _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                if cancelled.as_ref().is_some_and(|is_cancelled| is_cancelled()) {
-                    return Err(failure("DeepSeek stream cancelled", "CANCELLED"));
-                }
-                continue;
-            },
+            _ = transport::wait_for_cancel(cancelled.clone()) => return Err(failure("DeepSeek stream cancelled", "CANCELLED")),
+            _ = tokio::time::sleep_until(progress_deadline) => return Err(failure("[phase:stream_progress] No observable model progress before the deadline", "TIMEOUT")),
         };
         let Some(bytes) = bytes else {
             break;
@@ -1589,6 +1652,7 @@ async fn request_chunks(
                 ));
             }
             for chunk in translated {
+                if dsh_llm::is_token_delta(&chunk) { progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout; }
                 sender
                     .send(chunk)
                     .await
@@ -1646,6 +1710,7 @@ async fn request_responses_chunks(
     cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
     session_id: Option<&str>,
     history: &[dsh_llm::Message],
+    telemetry: Option<dsh_llm::RequestTelemetry>,
 ) -> Result<(), LlmFailure> {
     let lite = crate::compat::responses_lite(
         connection,
@@ -1715,12 +1780,13 @@ async fn request_responses_chunks(
         )
     })?;
     let url = endpoint_url(&connection.base_url, "openai-responses");
-    let mut response = transport::post(
+    let mut response = transport::post_tracked(
         &url,
         (!connection.keyless).then_some(api_key),
         encoded,
         attribution,
         cancelled.clone(),
+        telemetry.clone(),
     )
     .await
     .map_err(|error| {
@@ -1730,12 +1796,13 @@ async fn request_responses_chunks(
         )
     })?;
     if !response.status.is_success() {
+        if let Some(telemetry)=&telemetry {telemetry.phase("error_body",None);}
         let status = response.status;
         let headers = response.headers.clone();
         let body = response
             .collect_limited(8 * 1024 * 1024)
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|error|serde_json::json!({"error":{"message":error}}).to_string().into_bytes());
         return Err(http_failure(status, &headers, &body, provider_name));
     }
     let mut parser = sse::SseParser::new();
@@ -1743,12 +1810,14 @@ async fn request_responses_chunks(
     let mut emitted_chunks = 0_usize;
     let mut received_bytes = 0_usize;
     let outcome: Result<(), LlmFailure> = async {
+    let mut progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout;
     loop {
         let bytes = tokio::select! {
             bytes = tokio::time::timeout(connection.stream_idle_timeout, response.next_data()) =>
                 bytes.map_err(|_| failure("Responses stream idle timeout", "TIMEOUT"))?
                     .map_err(|error| failure(format!("Responses API stream failed: {error}"), "TRANSPORT"))?,
             _ = sender.closed() => return Err(failure("Responses stream consumer closed", "CANCELLED")),
+            _ = tokio::time::sleep_until(progress_deadline) => return Err(failure("[phase:stream_progress] No observable Responses progress before the deadline", "TIMEOUT")),
             _ = async {
                 loop {
                     if cancelled.as_ref().is_some_and(|is_cancelled| is_cancelled()) { break; }
@@ -1769,6 +1838,7 @@ async fn request_responses_chunks(
             let translated = translator.consume_limited(&payload, MAX_SUCCESS_STREAM_CHUNKS.saturating_sub(emitted_chunks))?;
             emitted_chunks = emitted_chunks.saturating_add(translated.len());
             for mut chunk in translated {
+                if dsh_llm::is_token_delta(&chunk) { progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout; }
                 responses::bind_replay_metadata_for_account(
                     &mut chunk,
                     &connection.base_url,
@@ -1848,8 +1918,10 @@ async fn drive_owned_request(
     provider_name: String,
     reasoning_wire_format: ReasoningWireFormat,
     sender: tokio::sync::mpsc::Sender<StreamChunk>,
+    cleanup: Arc<files_cleanup::CleanupWorker>,
 ) {
     let cancelled = options.signal.clone();
+    if let Some(telemetry)=&options.telemetry {telemetry.phase("credentials",None);}
     let connection = match options_resolver() {
         Ok(connection) => connection,
         Err(error) => {
@@ -1897,6 +1969,7 @@ async fn drive_owned_request(
         attachment_store,
         &sender,
         cancelled.clone(),
+        cleanup,
     )
     .await
     {
@@ -2140,7 +2213,10 @@ impl LlmAdapter for DeepSeekAdapter {
     }
 
     fn stream(&self, options: &GenerateOptions) -> ChunkStream {
-        let options = options.clone();
+        let cleanup=self.cleanup.clone();
+        let mut options = options.clone();
+        let telemetry=options.telemetry.as_ref().map(|telemetry|telemetry.for_attempt(options.provider.clone(),options.model.clone()));
+        options.telemetry=telemetry.clone();
         let options_resolver = Arc::clone(&self.config.options);
         let key_resolver = Arc::clone(&self.config.resolve_api_key);
         let attachment_resolver = self.config.resolve_attachments.clone();
@@ -2162,7 +2238,7 @@ impl LlmAdapter for DeepSeekAdapter {
                         .expect("DeepSeek request runtime");
                     runtime.block_on(async move {
                         tokio::select! {
-                            _ = drive_owned_request(options, options_resolver, key_resolver, attachment_resolver, provider_name, reasoning_wire_format, sender) => {},
+                            _ = drive_owned_request(options, options_resolver, key_resolver, attachment_resolver, provider_name, reasoning_wire_format, sender, cleanup) => {},
                             _ = cancelled => {},
                         }
                     });
@@ -2174,6 +2250,7 @@ impl LlmAdapter for DeepSeekAdapter {
                 thread: Some(thread),
             };
             while let Some(chunk) = receiver.recv().await {
+                if let Some(telemetry)=&telemetry {telemetry.observe(&chunk);}
                 yield chunk;
             }
         })

@@ -519,4 +519,6 @@ pub struct GenerateOptions {
     /// Process-local identity of requests assembled by dsh-agent-loop (the
     /// TS `WeakSet` membership flag).
     pub agent_loop_request: bool,
+    /// Local request diagnostics; never serialized into the provider payload.
+    pub telemetry: Option<crate::RequestTelemetry>,
 }

@@ -10,6 +10,7 @@ pub(crate) struct RequestMetrics {
     first_token: Option<Duration>,
     last_token: Option<Duration>,
     chunks: u64,
+    pub(crate) provider_measurement: std::sync::Arc<parking_lot::Mutex<Option<dsh_llm::RequestPhase>>>,
 }
 
 #[cfg(test)]
@@ -66,6 +67,7 @@ impl RequestMetrics {
             first_token: None,
             last_token: None,
             chunks: 0,
+            provider_measurement: Default::default(),
         }
     }
     pub(crate) fn waited(&mut self, duration: Duration) {
@@ -86,7 +88,7 @@ impl RequestMetrics {
     pub(crate) fn value(&self) -> serde_json::Value {
         let ms = |duration: Duration| duration.as_millis().min(u64::MAX as u128) as u64;
         let elapsed = self.started.elapsed();
-        serde_json::json!({"requestWallMs":ms(elapsed),"streamWaitMs":ms(self.wait),
+        serde_json::json!({"requestMeasurement":self.provider_measurement.lock().clone(),"requestWallMs":ms(elapsed),"streamWaitMs":ms(self.wait),
             "localProcessingMs":ms(self.processing),"maxChunkProcessingMs":ms(self.longest_processing),
             "longestStreamWaitMs":ms(self.longest_wait),"chunks":self.chunks,
             "firstTokenMs":self.first_token.map(ms),"lastTokenMs":self.last_token.map(ms),

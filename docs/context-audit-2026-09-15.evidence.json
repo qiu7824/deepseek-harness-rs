@@ -1,0 +1,355 @@
+{
+  "date": "2026-09-15",
+  "scope": "Original completed main reply only; later session events excluded; static repository inspection, not runtime feature certification.",
+  "harness": {
+    "session_id": "agent-session-5fbc4ccf-c950-4256-b92f-4a987fcbf10f",
+    "last_included_sequence": 225,
+    "source_path": "C:\\Users\\xs\\AppData\\Local\\DeepSeek Harness\\sessions\\--~003F-E-python-test--\\agent-session-5fbc4ccf-c950-4256-b92f-4a987fcbf10f\\session.jsonl.zstd",
+    "usage": {
+      "inputTokens": 7192,
+      "outputTokens": 198,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0
+    },
+    "system_characters": 4957,
+    "system_blocks": [
+      {
+        "characters": 48,
+        "index": 0
+      },
+      {
+        "characters": 992,
+        "index": 1
+      },
+      {
+        "characters": 1304,
+        "index": 2
+      },
+      {
+        "characters": 56,
+        "index": 3
+      },
+      {
+        "characters": 62,
+        "index": 4
+      },
+      {
+        "characters": 156,
+        "index": 5
+      },
+      {
+        "characters": 149,
+        "index": 6
+      },
+      {
+        "characters": 164,
+        "index": 7
+      },
+      {
+        "characters": 71,
+        "index": 8
+      },
+      {
+        "characters": 67,
+        "index": 9
+      },
+      {
+        "characters": 382,
+        "index": 10
+      },
+      {
+        "characters": 164,
+        "index": 11
+      },
+      {
+        "characters": 347,
+        "index": 12
+      },
+      {
+        "characters": 186,
+        "index": 13
+      },
+      {
+        "characters": 734,
+        "index": 14
+      },
+      {
+        "characters": 45,
+        "index": 15
+      }
+    ],
+    "tools": [
+      {
+        "name": "ask_user_question",
+        "compact_json_characters": 756
+      },
+      {
+        "name": "code_callees",
+        "compact_json_characters": 788
+      },
+      {
+        "name": "code_callers",
+        "compact_json_characters": 795
+      },
+      {
+        "name": "code_context",
+        "compact_json_characters": 839
+      },
+      {
+        "name": "code_impact",
+        "compact_json_characters": 861
+      },
+      {
+        "name": "code_path",
+        "compact_json_characters": 778
+      },
+      {
+        "name": "codex_usage",
+        "compact_json_characters": 376
+      },
+      {
+        "name": "computer_use",
+        "compact_json_characters": 3146
+      },
+      {
+        "name": "consult_model",
+        "compact_json_characters": 784
+      },
+      {
+        "name": "create_goal",
+        "compact_json_characters": 726
+      },
+      {
+        "name": "edit",
+        "compact_json_characters": 342
+      },
+      {
+        "name": "exit_plan_mode",
+        "compact_json_characters": 578
+      },
+      {
+        "name": "generate_image",
+        "compact_json_characters": 1069
+      },
+      {
+        "name": "get_goal",
+        "compact_json_characters": 348
+      },
+      {
+        "name": "glob",
+        "compact_json_characters": 261
+      },
+      {
+        "name": "grep",
+        "compact_json_characters": 305
+      },
+      {
+        "name": "interrupt_agent",
+        "compact_json_characters": 739
+      },
+      {
+        "name": "job_kill",
+        "compact_json_characters": 486
+      },
+      {
+        "name": "job_list",
+        "compact_json_characters": 197
+      },
+      {
+        "name": "job_output",
+        "compact_json_characters": 861
+      },
+      {
+        "name": "list_agents",
+        "compact_json_characters": 1339
+      },
+      {
+        "name": "memory",
+        "compact_json_characters": 900
+      },
+      {
+        "name": "present",
+        "compact_json_characters": 588
+      },
+      {
+        "name": "project_tasks",
+        "compact_json_characters": 986
+      },
+      {
+        "name": "pwsh",
+        "compact_json_characters": 1481
+      },
+      {
+        "name": "ralph",
+        "compact_json_characters": 264
+      },
+      {
+        "name": "read",
+        "compact_json_characters": 271
+      },
+      {
+        "name": "read_image",
+        "compact_json_characters": 279
+      },
+      {
+        "name": "schedule_create",
+        "compact_json_characters": 1270
+      },
+      {
+        "name": "schedule_delete",
+        "compact_json_characters": 373
+      },
+      {
+        "name": "schedule_list",
+        "compact_json_characters": 266
+      },
+      {
+        "name": "send_message",
+        "compact_json_characters": 782
+      },
+      {
+        "name": "skill",
+        "compact_json_characters": 405
+      },
+      {
+        "name": "subagent",
+        "compact_json_characters": 1667
+      },
+      {
+        "name": "subagent_fork",
+        "compact_json_characters": 1700
+      },
+      {
+        "name": "terminal_close",
+        "compact_json_characters": 229
+      },
+      {
+        "name": "terminal_list",
+        "compact_json_characters": 181
+      },
+      {
+        "name": "terminal_open",
+        "compact_json_characters": 286
+      },
+      {
+        "name": "terminal_read",
+        "compact_json_characters": 282
+      },
+      {
+        "name": "terminal_send",
+        "compact_json_characters": 336
+      },
+      {
+        "name": "terminal_signal",
+        "compact_json_characters": 270
+      },
+      {
+        "name": "todo_write",
+        "compact_json_characters": 1166
+      },
+      {
+        "name": "update_goal",
+        "compact_json_characters": 1170
+      },
+      {
+        "name": "uu_terminal",
+        "compact_json_characters": 1174
+      },
+      {
+        "name": "web_fetch",
+        "compact_json_characters": 265
+      },
+      {
+        "name": "web_search",
+        "compact_json_characters": 426
+      },
+      {
+        "name": "workflow",
+        "compact_json_characters": 566
+      },
+      {
+        "name": "workspace_scratch",
+        "compact_json_characters": 1340
+      },
+      {
+        "name": "write",
+        "compact_json_characters": 243
+      }
+    ],
+    "title_request_count": 1
+  },
+  "codex": {
+    "session_id": "01a09dc0-d00f-79c0-93d4-07e17a5effc1",
+    "source_path": "C:\\Users\\xs\\.codex\\sessions\\2026\\09\\14\\rollout-2026-09-14T10-30-54-01a09dc0-d00f-79c0-93d4-07e17a5effc1.jsonl",
+    "usage": {
+      "input_tokens": 25958,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 109,
+      "reasoning_output_tokens": 31,
+      "total_tokens": 26067
+    },
+    "base_instruction_characters": 21261,
+    "message_blocks": [
+      {
+        "role": "developer",
+        "characters": 17171
+      },
+      {
+        "role": "developer",
+        "characters": 2429
+      },
+      {
+        "role": "developer",
+        "characters": 271
+      },
+      {
+        "role": "user",
+        "characters": 4238
+      },
+      {
+        "role": "user",
+        "characters": 22
+      }
+    ],
+    "skills": [
+      "imagegen",
+      "openai-docs",
+      "plugin-creator",
+      "skill-creator",
+      "skill-installer",
+      "computer-use:computer-use",
+      "convert-excel-to-word-fidelity",
+      "deep-research-work:deep-research",
+      "documents:documents",
+      "edit-developer-story-video:edit-developer-story-video",
+      "pdf:pdf",
+      "plugin-management:plugin-management",
+      "presentations:Presentations",
+      "sites:sites-building",
+      "sites:sites-hosting",
+      "sites:sites-preview-troubleshooting",
+      "spreadsheets:Spreadsheets",
+      "spreadsheets:excel-live-control",
+      "template-creator:template-creator",
+      "visualize:visualize"
+    ]
+  },
+  "current_harness_roots": {
+    "AGENTS.md": {
+      "exists": false,
+      "entries": null
+    },
+    "skills": {
+      "exists": true,
+      "entries": []
+    },
+    "capabilities/skills": {
+      "exists": true,
+      "entries": []
+    }
+  },
+  "global_codex_agents_exists": true,
+  "evidence_units": "Characters and JSON sizes are not provider token counts."
+}

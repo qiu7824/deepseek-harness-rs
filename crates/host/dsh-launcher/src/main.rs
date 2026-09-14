@@ -1749,7 +1749,7 @@ fn view(state: &State) -> ViewNode<Message> {
                     column([
                         styled_text(
                             state.copy.autostart,
-                            text_style(TextRole::Body, ColorRole::PrimaryText, TextWeight::Medium),
+                            text_style(TextRole::Body, ColorRole::PrimaryText, TextWeight::Regular),
                         ),
                         styled_text(
                             format!("{} {PRODUCT_VERSION}", state.copy.version),

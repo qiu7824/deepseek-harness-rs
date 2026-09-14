@@ -59,8 +59,10 @@ window.__ModuleLoader__.load({
 			"copy.stepIndex": "第 {index} 步",
 			"copy.Total duration": "总耗时",
 			"copy.TTFT": "首 Token 耗时",
-			"copy.Generation": "生成耗时",
-			"copy.Throughput": "生成速度",
+			"copy.Generation": "请求发送至结束",
+			"copy.Throughput": "请求平均输出速率",
+            "copy.Backend instance":"执行实例",
+            "copy.Request rate unavailable":"请求速率不可用",
 			"copy.Reasoning": "思考",
 			"copy.Content": "正文",
 			"copy.Usage not reported": "未报告用量",
@@ -192,8 +194,10 @@ window.__ModuleLoader__.load({
 			"copy.stepIndex": "Step {index}",
 			"copy.Total duration": "Total duration",
 			"copy.TTFT": "TTFT",
-			"copy.Generation": "Generation",
-			"copy.Throughput": "Throughput",
+			"copy.Generation": "Request send to completion",
+			"copy.Throughput": "Request average output rate",
+            "copy.Backend instance":"Backend instance",
+            "copy.Request rate unavailable":"Request rate unavailable",
 			"copy.Reasoning": "Reasoning",
 			"copy.Content": "Content",
 			"copy.Usage not reported": "Usage not reported",
@@ -532,6 +536,7 @@ window.__ModuleLoader__.load({
 					step: state.step,
 					blocks: state.settledBlocks,
 					usage: event.data.usage,
+                    requestMeasurement:event.data.requestMetrics?.requestMeasurement,
 					provenance: {
 						provider: event.data.message.source.provider,
 						model: event.data.message.source.model
@@ -3644,18 +3649,14 @@ window.__ModuleLoader__.load({
 			return formatDurationMs(Math.max(0, metrics.firstTokenTime - metrics.stepStartTime));
 		}
 		function generationTime(metrics) {
-			if (!metrics.timingRecorded || metrics.firstTokenTime === null) return "First token unavailable";
-			if (metrics.completedTime === null) return "Pending";
-			return formatDurationMs(Math.max(0, metrics.completedTime - metrics.firstTokenTime));
+            const measurement=metrics.requestMeasurement;
+            if(!measurement||!Number.isSafeInteger(measurement.networkElapsedMs)||measurement.networkElapsedMs<=0)return "Not recorded";
+            return formatDurationMs(measurement.networkElapsedMs);
 		}
 		function throughput(metrics) {
-			if (!metrics.usageProvided) return "Usage unavailable";
-			if (metrics.outputTokens === null) return "Output tokens unavailable";
-			if (!metrics.timingRecorded || metrics.firstTokenTime === null) return "First token unavailable";
-			if (metrics.completedTime === null) return "Pending";
-			const generationSeconds = (metrics.completedTime - metrics.firstTokenTime) / 1e3;
-			if (generationSeconds <= 0) return "Duration too short";
-			return `${(metrics.outputTokens / generationSeconds).toFixed(1)} tok/s`;
+            const m=metrics.requestMeasurement;
+            if(m?.phase!=="completed"||m.measurement!=="request-average"||!m.attemptId||!m.executionInstanceId||!Number.isSafeInteger(m.networkElapsedMs)||m.networkElapsedMs<=0||!Number.isSafeInteger(m.outputTokens)||m.outputTokens<0)return "Request rate unavailable";
+            return `${(m.outputTokens/(m.networkElapsedMs/1000)).toFixed(1)} tok/s`;
 		}
 		function AssistantTimingPanel({ metrics }) {
 			const localize = useTrajectoryText();
@@ -3663,6 +3664,7 @@ window.__ModuleLoader__.load({
 				className: TrajectoryTable_module_css_default.overview,
 				children: [
 					(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("dt", { children: localize("Started") }), (0, react_jsx_runtime.jsx)(StartedAtValue, { timestamp: metrics.stepStartTime })] }),
+                    metrics.requestMeasurement&&(0,react_jsx_runtime.jsxs)("div",{children:[(0,react_jsx_runtime.jsx)("dt",{children:localize("Backend instance")}), (0,react_jsx_runtime.jsx)("dd",{children:`${metrics.requestMeasurement.provider} / ${metrics.requestMeasurement.model} · ${metrics.requestMeasurement.executionInstanceId}`})]}),
 					(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("dt", { children: localize("Total duration") }), (0, react_jsx_runtime.jsx)("dd", { children: localize(totalTime(metrics)) })] }),
 					(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("dt", { children: localize("TTFT") }), (0, react_jsx_runtime.jsx)("dd", { children: localize(ttft(metrics)) })] }),
 					(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("dt", { children: localize("Generation") }), (0, react_jsx_runtime.jsx)("dd", { children: localize(generationTime(metrics)) })] }),
@@ -6851,6 +6853,7 @@ window.__ModuleLoader__.load({
 			};
 			attachUsage(message, usage);
 			message.assistantMetrics = {
+                requestMeasurement:node.requestMeasurement,
 				timingRecorded: node.timing !== void 0,
 				stepStartTime: node.timing?.stepStartTime ?? null,
 				firstTokenTime: node.timing?.firstTokenTime ?? null,

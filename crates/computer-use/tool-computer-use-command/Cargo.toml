@@ -15,6 +15,8 @@ dsh-llm = { path = "../../core/llm" }
 dsh-native-command = { path = "../../util/native-command" }
 dsh-session = { path = "../../core/session" }
 dsh-tools = { path = "../../core/tools" }
+dsh-subprocess = { path = "../../subprocess/subprocess" }
+dsh-atomic-write = { path = "../../util/atomic-write" }
 futures = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { version = "=0.12.24", default-features = false, features = ["json", "rustls-tls"] }

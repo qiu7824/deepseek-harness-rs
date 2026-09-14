@@ -40,28 +40,31 @@ pub(crate) async fn request(
     } else {
         (!connection.keyless).then_some(api_key)
     };
-    let mut response = transport::post(
+    let mut response = transport::post_tracked(
         &endpoint(&connection.base_url, "messages"),
         bearer,
         encoded,
         &headers,
         options.signal.clone(),
+        options.telemetry.clone(),
     )
     .await
     .map_err(|error| failure(format!("Anthropic request failed: {error}"), "TRANSPORT"))?;
     if !response.status.is_success() {
+        if let Some(telemetry)=&options.telemetry {telemetry.phase("error_body",None);}
         let status = response.status;
         let headers = response.headers.clone();
         let bytes = response
             .collect_limited(8 * 1024 * 1024)
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|error|serde_json::json!({"error":{"message":error}}).to_string().into_bytes());
         return Err(http_failure(status, &headers, &bytes, provider_name));
     }
     let mut parser = sse::SseParser::new();
     let mut translator = anthropic::AnthropicTranslator::new(&options.model, &connection.base_url);
     let mut bytes_read = 0usize;
     let mut chunks_read = 0usize;
+    let mut progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout;
     loop {
         let read = tokio::time::timeout(connection.stream_idle_timeout, response.next_data());
         tokio::pin!(read);
@@ -71,6 +74,7 @@ pub(crate) async fn request(
                     .map_err(|_| failure("Anthropic stream idle timeout", "TIMEOUT"))?
                     .map_err(|error| failure(format!("Anthropic stream failed: {error}"), "TRANSPORT"))?,
                 _ = sender.closed() => return Err(failure("Anthropic consumer closed", "CANCELLED")),
+                _ = tokio::time::sleep_until(progress_deadline) => return Err(failure("[phase:stream_progress] No observable Anthropic progress before the deadline", "TIMEOUT")),
                 _ = tokio::time::sleep(Duration::from_millis(15)) => {
                     if options.signal.as_ref().is_some_and(|signal| signal()) { return Err(failure("Anthropic stream cancelled", "CANCELLED")); }
                 }
@@ -97,6 +101,7 @@ pub(crate) async fn request(
                 ));
             }
             for chunk in chunks {
+                if dsh_llm::is_token_delta(&chunk) { progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout; }
                 sender
                     .send(chunk)
                     .await

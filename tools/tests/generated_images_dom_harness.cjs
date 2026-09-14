@@ -9,6 +9,7 @@ const observers=[];class Observer{constructor(fn){this.fn=fn;this.dead=false;obs
 const submitted=[];let reject=true,followed=0,live=0;
 const context={react:React,IntersectionObserver:Observer,lightboxLabels:()=>({}),fetch:async(_url,options)=>{const body=JSON.parse(options.body);submitted.push(body);return{ok:true,json:async()=>({rpcId:body.rpcId,result:reject?{ok:false,error:{message:'fixture save failure'}}:{ok:true,value:{accepted:true}}})}},
 _deepseek_ai_dsh_client_ui_attachment:{ImageLightbox:({src,onClose})=>React.createElement('dialog',{open:true},React.createElement('img',{src}),React.createElement('button',{onClick:onClose},'close-preview'))}};
+vm.runInNewContext(source.slice(source.indexOf('function userFacingPromptError('),source.indexOf('function cacheUsageLabel(')),context);
 vm.runInNewContext(source.slice(start,end)+';this.Card=GeneratedImageCard;this.Tool=GeneratedImageTool;this.isImageTool=isImageTool;',context);
 const root=Client.createRoot(document.querySelector('main'));const t=key=>key;
 const loadImage=()=>{throw Error('lease expected')};loadImage.acquire=()=>{live++;let released=false;const release=()=>{if(!released){released=true;live--}};const pending=Promise.resolve({url:'blob:fixture-image',release});pending.release=release;return pending};
@@ -20,6 +21,9 @@ async function act(fn){await React.act(async()=>{await fn();await new Promise(re
  assert.match(document.querySelector('[role=status]').textContent,/image.running/);assert.ok(document.querySelector('svg'));assert.equal(document.querySelectorAll('img').length,0,'running state never invents a generated image');
  await act(()=>root.render(React.createElement(context.Tool,{root:{callId:'failed-image',kind:'tool-result',isError:true,call:{name:'generate_image'},content:[{type:'text',text:'Provider unavailable'}]},t,loadImage})));
  assert.match(document.querySelector('[role=alert]').textContent,/Provider unavailable/);
+ await act(()=>root.render(React.createElement(context.Tool,{root:{callId:'unsupported-image',kind:'tool-result',isError:true,call:{name:'generate_image'},content:[{type:'text',text:'NATIVE_TOOL_UNSUPPORTED: fixture connection'}]},t,loadImage})));
+ assert.equal(document.querySelector('[role=alert]').textContent,'error.nativeUnsupported');
+ assert.match(document.querySelector('details pre').textContent,/NATIVE_TOOL_UNSUPPORTED/,'raw diagnosis remains available in details');
  await act(()=>root.render(React.createElement(context.Card,{attachment:{attachmentId:'sha256:fixture',name:'generated-fixture.png',width:64,height:64},loadImage,sessionId:'session-a',onEditSubmitted:()=>{followed++},t})));
  assert.equal(live,0,'offscreen image does not decode');
  await act(()=>observers[0].fn([{isIntersecting:true}]));assert.equal(live,1);

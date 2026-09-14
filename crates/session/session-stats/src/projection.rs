@@ -22,6 +22,31 @@ use dsh_session_projection::ProjectionDefinition;
 
 use crate::types::SessionStatsProjection;
 
+#[cfg(test)]
+mod measurement_tests {
+    use super::*;
+    use serde_json::{Value,json};
+    #[test]
+    fn request_rates_pair_tokens_with_positive_monotonic_duration_and_keep_sources() {
+        let definition=session_stats_projection_definition();
+        let header=serde_json::from_value(json!({"version":dsh_session::SESSION_FORMAT_VERSION,"id":"rate-test","createdAt":0,"isSeeded":false})).unwrap();
+        let mut state=(definition.init)(&header);
+        let mut seq=0;
+        let mut apply=|data:Value|{let event:SessionEvent=serde_json::from_value(json!({"seq":seq,"time":0,"type":"request/phase","data":data})).unwrap();seq+=1;state=(definition.apply)(&state,&event);};
+        let sample=|instance:&str,attempt:&str,duration:i64,tokens:u64|json!({"turn":1,"step":1,"phase":"completed","measurement":"request-average","provider":"fixture","model":"model","executionInstanceId":instance,"attemptId":attempt,"networkElapsedMs":duration,"outputTokens":tokens});
+        apply(sample("host-a","zero",0,999999));
+        apply(sample("host-a","negative",-1,999999));
+        apply(sample("host-a","request",10000,900));
+        apply(sample("host-a","request",10000,900));
+        apply(sample("host-b","request",10000,900));
+        let view=(definition.view)(&state);let value:&Value=cordis::downcast(&view).unwrap();
+        assert_eq!(value["requestSamples"],2);assert_eq!(value["requestMs"],20000);assert_eq!(value["requestOutputTokens"],1800);
+        assert_eq!(value["requestSources"].as_array().unwrap().len(),2);
+        assert_eq!(value["requestOutputTokens"].as_f64().unwrap()/(value["requestMs"].as_f64().unwrap()/1000.0),90.0);
+        (definition.schema)(&view).unwrap();
+    }
+}
+
 /// Provider-reported completion tokens, guarded the way the window fold
 /// guards node usage (TS `usageOutputTokens`).
 fn usage_output_tokens(usage: Option<&serde_json::Value>) -> Option<u64> {
@@ -44,6 +69,7 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
             "turns": 0, "steps": 0,
             "llmMs": 0, "toolMs": 0, "ttftMs": 0, "ttftSteps": 0,
             "decodeMs": 0, "decodeTokens": 0,
+            "requestMs":0,"requestOutputTokens":0,"requestSamples":0,"requestSources":{},"requestPhase":null,"lastMeasuredAttempt":null,
             "lastTurn": serde_json::Value::Null,
             "openStep": serde_json::Value::Null,
             "pendingCalls": {},
@@ -55,8 +81,34 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                 cordis::downcast(state_value).expect("sessionStats state");
             let data = &event.data;
             match event.type_.as_str() {
+                "request/phase" => {
+                    let mut next=state.clone();
+                    next["requestPhase"]=data.clone();
+                    if data["phase"]=="completed" && data["measurement"]=="request-average" {
+                        if let (Some(duration),Some(tokens),Some(attempt),Some(instance),Some(provider),Some(model))=(
+                            data["networkElapsedMs"].as_u64().filter(|n|*n>0),data["outputTokens"].as_u64(),
+                            data["attemptId"].as_str().filter(|v|!v.is_empty()),data["executionInstanceId"].as_str().filter(|v|!v.is_empty()),data["provider"].as_str(),data["model"].as_str()) {
+                            let identity=serde_json::json!([instance,attempt,data["turn"],data["step"]]);
+                            if state["lastMeasuredAttempt"]!=identity {
+                                next["lastMeasuredAttempt"]=identity;
+                                next["requestMs"]=serde_json::json!(number(state,"requestMs").saturating_add(duration));
+                                next["requestOutputTokens"]=serde_json::json!(number(state,"requestOutputTokens").saturating_add(tokens));
+                                next["requestSamples"]=serde_json::json!(number(state,"requestSamples").saturating_add(1));
+                                let key=serde_json::json!([instance,provider,model]).to_string();
+                                let mut source=state["requestSources"][&key].clone();
+                                if source.is_null(){source=serde_json::json!({"executionInstanceId":instance,"provider":provider,"model":model,"durationMs":0,"outputTokens":0,"samples":0});}
+                                source["durationMs"]=serde_json::json!(source["durationMs"].as_u64().unwrap_or(0).saturating_add(duration));
+                                source["outputTokens"]=serde_json::json!(source["outputTokens"].as_u64().unwrap_or(0).saturating_add(tokens));
+                                source["samples"]=serde_json::json!(source["samples"].as_u64().unwrap_or(0).saturating_add(1));
+                                next["requestSources"][key]=source;
+                            }
+                        }
+                    }
+                    cordis::arc(next)
+                }
                 "step/start" => {
                     let mut next = state.clone();
+                    next["requestPhase"]=serde_json::Value::Null;
                     next["openStep"] = serde_json::json!({
                         "turn": data.get("turn"),
                         "step": data.get("step"),
@@ -112,7 +164,8 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                             number(state, "ttftMs") + (first_token - start_time).max(0) as u64
                         );
                         next["ttftSteps"] = serde_json::json!(number(state, "ttftSteps") + 1);
-                        if let Some(output) = usage_output_tokens(data.get("usage")) {
+                        if let Some(output) = usage_output_tokens(data.get("usage"))
+                            && event.time > first_token {
                             next["decodeMs"] = serde_json::json!(
                                 number(state, "decodeMs")
                                     + (event.time - first_token).max(0) as u64
@@ -175,10 +228,11 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                         .get("pendingCalls")
                         .and_then(|calls| calls.as_object())
                         .expect("pendingCalls object");
-                    if pending.is_empty() {
+                    if pending.is_empty() && state["requestPhase"].is_null() {
                         Arc::clone(state_value)
                     } else {
                         let mut next = state.clone();
+                        next["requestPhase"]=serde_json::Value::Null;
                         next["pendingCalls"] = serde_json::json!({});
                         cordis::arc(next)
                     }
@@ -199,6 +253,11 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                 "ttftSteps": state.get("ttftSteps"),
                 "decodeMs": state.get("decodeMs"),
                 "decodeTokens": state.get("decodeTokens"),
+                "requestMs":state.get("requestMs"),
+                "requestOutputTokens":state.get("requestOutputTokens"),
+                "requestSamples":state.get("requestSamples"),
+                "requestSources":state["requestSources"].as_object().map(|sources|sources.values().cloned().collect::<Vec<_>>()).unwrap_or_default(),
+                "requestPhase":state.get("requestPhase"),
             }))
         });
     let schema: Arc<dyn Fn(&ArcValue) -> Result<serde_json::Value, String> + Send + Sync> =
@@ -214,6 +273,9 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                 "ttftSteps",
                 "decodeMs",
                 "decodeTokens",
+                "requestMs",
+                "requestOutputTokens",
+                "requestSamples",
             ];
             for key in expected {
                 let field = value
@@ -232,7 +294,7 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                 }
             }
             if !value.is_object()
-                || value.as_object().map(|object| object.len()).unwrap_or(0) != expected.len()
+                || value.as_object().map(|object| object.len()).unwrap_or(0) != expected.len()+2
             {
                 return Err("sessionStats view carries unexpected keys".to_string());
             }
@@ -245,6 +307,6 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
         init,
         apply,
         view,
-        state_version: 1,
+        state_version: 2,
     }
 }

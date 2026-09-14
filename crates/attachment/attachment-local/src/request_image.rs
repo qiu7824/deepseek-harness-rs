@@ -235,6 +235,7 @@ pub async fn read_request_image_file(
     policy: &RequestImagePolicy,
     signal: Option<&AttachmentAbort>,
 ) -> Result<RequestImageAttachment, AttachmentError> {
+    if aborted(signal) {return Err(AttachmentError::new("ATTACHMENT_ABORTED","attachment read cancelled"));}
     if policy.max_pixels == 0 || policy.max_bytes == 0 {
         return Err(AttachmentError::new(
             "INVALID_REQUEST_IMAGE_POLICY",
@@ -284,6 +285,18 @@ pub async fn read_request_image_file(
             "Animated images cannot be resized or transcoded without losing frames.",
         ));
     }
+    static PREPARATIONS:std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>=std::sync::OnceLock::new();
+    let acquire=PREPARATIONS.get_or_init(||std::sync::Arc::new(tokio::sync::Semaphore::new(4))).clone().acquire_owned();
+    let permit=tokio::select! {
+        permit=acquire=>permit.map_err(|_|AttachmentError::new("ATTACHMENT_UNAVAILABLE","image worker pool closed"))?,
+        _=async {loop {if aborted(signal){break;}tokio::time::sleep(std::time::Duration::from_millis(10)).await;}}=>return Err(AttachmentError::new("ATTACHMENT_ABORTED","attachment read cancelled")),
+    };
+    let worker_policy=policy.clone();let worker_signal=signal.cloned();
+    let (data,width,height)=tokio::task::spawn_blocking(move||{
+    // The permit stays with synchronous work even if its awaiting request is
+    // cancelled, preventing detached image preparation from growing unbounded.
+    let _permit=permit;let policy=worker_policy;let signal=worker_signal.as_ref();
+    if aborted(signal){return Err(AttachmentError::new("ATTACHMENT_ABORTED","attachment read cancelled"));}
     let mut image = image::load_from_memory(&master.data)
         .map_err(|error| AttachmentError::new("INVALID_IMAGE", error.to_string()))?;
     let pixels = u64::from(image.width()) * u64::from(image.height());
@@ -316,6 +329,10 @@ pub async fn read_request_image_file(
             FilterType::Lanczos3,
         );
     };
+    if aborted(signal){return Err(AttachmentError::new("ATTACHMENT_ABORTED","attachment read cancelled"));}
+    Ok((data,width,height))
+    }).await.map_err(|_|AttachmentError::new("ATTACHMENT_PREPARATION_FAILED","image worker failed"))??;
+    if aborted(signal){return Err(AttachmentError::new("ATTACHMENT_ABORTED","attachment read cancelled"));}
     if let Some(parent) = cached.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| AttachmentError::new("ATTACHMENT_WRITE_FAILED", error.to_string()))?;

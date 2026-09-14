@@ -826,6 +826,12 @@ impl ReactLoopAgent {
             let mut saw_tool_call = false;
             let mut chunk_seqs = Vec::new();
             let mut request_metrics = crate::request_metrics::RequestMetrics::new();
+            let (phase_sender,mut phase_receiver)=tokio::sync::mpsc::unbounded_channel::<dsh_llm::RequestPhase>();
+            let measurement=request_metrics.provider_measurement.clone();
+            request.telemetry=Some(dsh_llm::RequestTelemetry::new(Arc::new(move|phase|{
+                *measurement.lock()=Some(phase.clone());
+                let _=phase_sender.send(phase);
+            })));
             let stream = match &prepared_call {
                 Some(prepared) => {
                     let request_for_stream = request.clone();
@@ -842,6 +848,15 @@ impl ReactLoopAgent {
                     biased;
                     _ = signal.cancelled() => {
                         request_metrics.waited(next_wait_started.elapsed());
+                        if let Some(telemetry) = &request.telemetry {
+                            telemetry.cancel_pending();
+                        }
+                        while let Ok(phase) = phase_receiver.try_recv() {
+                            let mut data = serde_json::to_value(phase).expect("request phase JSON");
+                            data["turn"] = serde_json::json!(turn);
+                            data["step"] = serde_json::json!(step);
+                            self.session.append("request/phase", data, None).expect("request phase");
+                        }
                         let content = assembler.interrupted_blocks();
                         if !content.is_empty() {
                             let message = create_assistant_message(
@@ -876,6 +891,15 @@ impl ReactLoopAgent {
                             reason: signal.reason().unwrap_or(AgentCancelCause::User),
                             failure: None,
                         });
+                    },
+                    phase = phase_receiver.recv() => {
+                        request_metrics.waited(next_wait_started.elapsed());
+                        if let Some(phase)=phase {
+                            let mut data=serde_json::to_value(phase).expect("request phase JSON");
+                            data["turn"]=serde_json::json!(turn);data["step"]=serde_json::json!(step);
+                            self.session.append("request/phase",data,None).expect("request phase");
+                        }
+                        continue;
                     },
                     next = stream.next() => next,
                 };
@@ -1407,7 +1431,7 @@ impl ReactLoopAgent {
             signal: None,
             session_id: Some(self.session.id().as_str().to_string()),
             purpose: None,
-            agent_loop_request: false,
+            agent_loop_request: false, telemetry: None,
         };
         if let Some(notice) = notice {
             request.messages.push(notice.into());

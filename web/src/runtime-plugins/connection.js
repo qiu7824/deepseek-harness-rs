@@ -7513,13 +7513,26 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				ttftMs: 0,
 				ttftSteps: 0,
 				decodeMs: 0,
-				decodeTokens: 0
+				decodeTokens: 0,
+                requestMs:0,requestOutputTokens:0,requestSamples:0,requestSources:[],requestPhase:null
 			};
 			let lastTurn = null;
 			let openStep = null;
+            let lastMeasured=null;const sources=new Map();
 			const pendingCalls = /* @__PURE__ */ new Map();
 			for (const event of log) switch (event.type) {
+                case "request/phase": {
+                    const m=event.data;value.requestPhase=m;
+                    const identity=JSON.stringify([m.executionInstanceId,m.attemptId,m.turn,m.step]);
+                    if(m.phase==="completed"&&m.measurement==="request-average"&&m.attemptId&&m.executionInstanceId&&Number.isSafeInteger(m.networkElapsedMs)&&m.networkElapsedMs>0&&Number.isSafeInteger(m.outputTokens)&&m.outputTokens>=0&&identity!==lastMeasured){
+                        lastMeasured=identity;value.requestMs+=m.networkElapsedMs;value.requestOutputTokens+=m.outputTokens;value.requestSamples++;
+                        const key=JSON.stringify([m.executionInstanceId,m.provider,m.model]),source=sources.get(key)||{executionInstanceId:m.executionInstanceId,provider:m.provider,model:m.model,durationMs:0,outputTokens:0,samples:0};
+                        source.durationMs+=m.networkElapsedMs;source.outputTokens+=m.outputTokens;source.samples++;sources.set(key,source);
+                    }
+                    break;
+                }
 				case "step/start":
+                    value.requestPhase=null;
 					openStep = {
 						turn: event.data.turn,
 						step: event.data.step,
@@ -7537,7 +7550,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						value.ttftMs += Math.max(0, openStep.firstTokenTime - openStep.startTime);
 						value.ttftSteps += 1;
 						const outputTokens = event.data.usage?.outputTokens;
-						if (typeof outputTokens === "number" && Number.isFinite(outputTokens) && outputTokens >= 0) {
+						if (typeof outputTokens === "number" && Number.isFinite(outputTokens) && outputTokens >= 0 && event.time > openStep.firstTokenTime) {
 							value.decodeMs += Math.max(0, event.time - openStep.firstTokenTime);
 							value.decodeTokens += outputTokens;
 						}
@@ -7564,11 +7577,12 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					openStep = null;
 					break;
 				case "turn/end":
+                    value.requestPhase=null;
 					pendingCalls.clear();
 					break;
 				default: break;
 			}
-			return value;
+			value.requestSources=[...sources.values()];return value;
 		}
 		/** Fixed token-meter heuristic constants mirrored by this client-only fixture. */
 		const CHARS_PER_TOKEN = 4;
