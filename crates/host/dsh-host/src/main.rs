@@ -14,7 +14,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(58080);
-    let spine = dsh_host::compose_persistent_host_at_port(&ctx, std::env::current_dir()?, Some("default"), port)?;
+    let home = std::env::var_os("DSH_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(dsh_home_paths::default_dsh_home);
+    let spine = dsh_host::compose_persistent_host_at_port(&ctx, home, Some("default"), port)?;
     dsh_host::mount_companions(&spine)?;
     // Allow the optional-service fibers to settle before the report.
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
